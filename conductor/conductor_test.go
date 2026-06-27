@@ -310,6 +310,27 @@ func TestConductorFeedsGraphDecisionsIntoPrompt(t *testing.T) {
 	}
 }
 
+func TestConductorPlannerExtendsTheDAG(t *testing.T) {
+	cfg := &config.Config{
+		Agents: map[string]config.AgentDef{"planner": {ID: "planner"}, "worker": {ID: "worker"}},
+		Workflow: config.Workflow{
+			Stages: map[string]config.Stage{
+				"plan": {Name: "plan", Agent: "planner", Produces: "dag"},
+			},
+		},
+	}
+	driver := &stubDriver{emits: []stubEmit{
+		{typ: conductor.TypeUnitProposed, data: `{"id":"impl","agent":"worker"}`},
+	}}
+	rs, err := conductor.Run(context.Background(), cfg, conductor.Deps{Store: newStore(t), Driver: driver, Gates: gate.ExecRunner{}})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if rs.Units["impl"].Status != ledger.Integrated {
+		t.Errorf("the planner-proposed unit should have run and integrated: %+v", rs.Units["impl"])
+	}
+}
+
 func TestConductorCoverageGate(t *testing.T) {
 	cfg := &config.Config{
 		Agents: map[string]config.AgentDef{"a": {ID: "a"}},
