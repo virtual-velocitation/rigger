@@ -56,11 +56,12 @@ type Deps struct {
 const Stream = "run"
 
 // Run executes the workflow and returns the final run state, projected from the
-// events it emitted. The conductor is the sole writer of the run stream, so it
-// appends with eventstore.Any.
+// events it emitted. Independent stages (those whose dependencies are all
+// integrated) run concurrently in waves; the conductor appends with
+// eventstore.Any since it is the sole logical writer of the run stream and the
+// store serializes concurrent appends.
 func Run(ctx context.Context, cfg *config.Config, deps Deps) (*ledger.RunState, error) {
-	order, err := topoSort(cfg.Workflow.Stages)
-	if err != nil {
+	if _, err := topoSort(cfg.Workflow.Stages); err != nil {
 		return nil, err
 	}
 
@@ -77,18 +78,15 @@ func Run(ctx context.Context, cfg *config.Config, deps Deps) (*ledger.RunState, 
 		return err
 	}
 
-	for _, name := range order {
-		st := cfg.Workflow.Stages[name]
-		if err := emit(ledger.TypeUnitStarted, ledger.UnitStarted{ID: name, SpecCriterion: st.Coverage}); err != nil {
-			return nil, err
+	integrated := map[string]bool{}
+	terminal := map[string]bool{}
+	for {
+		ready := readyStages(cfg.Workflow.Stages, integrated, terminal)
+		if len(ready) == 0 {
+			break // either all done, or the rest are blocked behind an escalation
 		}
-		integrated, err := runStage(ctx, cfg, deps, st, emit)
-		if err != nil {
+		if err := runWave(ctx, cfg, deps, ready, emit, integrated, terminal); err != nil {
 			return nil, err
-		}
-		if !integrated {
-			// Escalated: downstream stages depend on this one, so stop the run.
-			break
 		}
 	}
 
@@ -97,6 +95,64 @@ func Run(ctx context.Context, cfg *config.Config, deps Deps) (*ledger.RunState, 
 		return nil, fmt.Errorf("conductor: read run stream: %w", err)
 	}
 	return ledger.Project(events)
+}
+
+// readyStages returns the not-yet-terminal stages whose dependencies are all
+// integrated, sorted for determinism.
+func readyStages(stages map[string]config.Stage, integrated, terminal map[string]bool) []string {
+	var ready []string
+	for name, st := range stages {
+		if terminal[name] {
+			continue
+		}
+		ok := true
+		for _, need := range st.Needs {
+			if !integrated[need] {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			ready = append(ready, name)
+		}
+	}
+	sort.Strings(ready)
+	return ready
+}
+
+// runWave runs the ready stages concurrently and records which integrated. The
+// integrated/terminal maps are written only here, on the single draining
+// goroutine, so they are race-free.
+func runWave(ctx context.Context, cfg *config.Config, deps Deps, ready []string, emit func(string, any) error, integrated, terminal map[string]bool) error {
+	type result struct {
+		name string
+		ok   bool
+		err  error
+	}
+	results := make(chan result, len(ready))
+	for _, name := range ready {
+		go func(name string) {
+			st := cfg.Workflow.Stages[name]
+			if err := emit(ledger.TypeUnitStarted, ledger.UnitStarted{ID: name, SpecCriterion: st.Coverage}); err != nil {
+				results <- result{name: name, err: err}
+				return
+			}
+			ok, err := runStage(ctx, cfg, deps, st, emit)
+			results <- result{name: name, ok: ok, err: err}
+		}(name)
+	}
+	var firstErr error
+	for range ready {
+		r := <-results
+		terminal[r.name] = true
+		if r.ok {
+			integrated[r.name] = true
+		}
+		if r.err != nil && firstErr == nil {
+			firstErr = r.err
+		}
+	}
+	return firstErr
 }
 
 // runStage runs one stage's agent and gates, retrying under the safety bound and

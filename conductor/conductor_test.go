@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/virtual-velocitation/rigger/conductor"
@@ -18,12 +19,12 @@ import (
 )
 
 type stubDriver struct {
-	spawns    int
+	spawns    atomic.Int64
 	writeFile string // if set, the "agent" creates this file in its working dir
 }
 
 func (d *stubDriver) Spawn(_ context.Context, _ config.AgentDef, _ string, opts conductor.SpawnOpts) (conductor.AgentResult, error) {
-	d.spawns++
+	d.spawns.Add(1)
 	if d.writeFile != "" && opts.Dir != "" {
 		_ = os.WriteFile(filepath.Join(opts.Dir, d.writeFile), []byte("// generated\n"), 0o644)
 	}
@@ -62,8 +63,8 @@ func TestConductorIntegratesStagesInOrder(t *testing.T) {
 	if !rs.Done() {
 		t.Error("the run should be done")
 	}
-	if driver.spawns != 2 {
-		t.Errorf("expected one agent spawn per stage (2), got %d", driver.spawns)
+	if driver.spawns.Load() != 2 {
+		t.Errorf("expected one agent spawn per stage (2), got %d", driver.spawns.Load())
 	}
 }
 
@@ -88,8 +89,34 @@ func TestConductorEscalatesOnPersistentGateFailure(t *testing.T) {
 	if rs.Done() {
 		t.Error("a run with an escalated unit is not done")
 	}
-	if driver.spawns != 3 {
-		t.Errorf("expected the bounded retries (3 attempts), got %d spawns", driver.spawns)
+	if driver.spawns.Load() != 3 {
+		t.Errorf("expected the bounded retries (3 attempts), got %d spawns", driver.spawns.Load())
+	}
+}
+
+func TestConductorRunsIndependentStagesConcurrently(t *testing.T) {
+	cfg := &config.Config{
+		Agents: map[string]config.AgentDef{"a": {ID: "a"}, "b": {ID: "b"}},
+		Workflow: config.Workflow{
+			Stages: map[string]config.Stage{
+				"alpha": {Name: "alpha", Agent: "a"}, // no deps
+				"beta":  {Name: "beta", Agent: "b"},  // no deps - independent of alpha
+			},
+		},
+	}
+	driver := &stubDriver{}
+	rs, err := conductor.Run(context.Background(), cfg, conductor.Deps{Store: newStore(t), Driver: driver, Gates: gate.ExecRunner{}})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if rs.Units["alpha"].Status != ledger.Integrated || rs.Units["beta"].Status != ledger.Integrated {
+		t.Errorf("both independent stages should integrate: %+v", rs.Units)
+	}
+	if !rs.Done() {
+		t.Error("the run should be done")
+	}
+	if driver.spawns.Load() != 2 {
+		t.Errorf("expected 2 spawns, got %d", driver.spawns.Load())
 	}
 }
 
