@@ -1,0 +1,22 @@
+# Build output
+/rigger
+/dist/
+*.exe
+*.test
+*.out
+
+# Go
+/vendor/
+go.work
+go.work.sum
+
+# Local event store / scratch
+*.db
+*.sqlite
+*.sqlite3
+.rigger/cache/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
