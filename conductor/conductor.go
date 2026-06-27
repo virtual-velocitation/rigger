@@ -63,6 +63,10 @@ type Deps struct {
 	// each emitted event into it during the run and feeds each agent the decisions
 	// governing the files it is about to touch. Nil disables graph grounding.
 	Graph contextgraph.Projection
+	// Criteria are the spec's acceptance criteria (from `rigger run <spec>`). When
+	// non-empty, the coverage gate refuses to start a run unless every criterion is
+	// covered by a stage - so "done" means every criterion was addressed.
+	Criteria []string
 }
 
 // Reindexer is an optional grounder capability: the conductor calls it after a
@@ -84,6 +88,9 @@ const Stream = "run"
 // store serializes concurrent appends.
 func Run(ctx context.Context, cfg *config.Config, deps Deps) (*ledger.RunState, error) {
 	if _, err := topoSort(cfg.Workflow.Stages); err != nil {
+		return nil, err
+	}
+	if err := checkCoverage(cfg, deps.Criteria); err != nil {
 		return nil, err
 	}
 
@@ -137,6 +144,31 @@ func Run(ctx context.Context, cfg *config.Config, deps Deps) (*ledger.RunState, 
 		return nil, fmt.Errorf("conductor: read run stream: %w", err)
 	}
 	return ledger.Project(events)
+}
+
+// checkCoverage is the coverage gate: every spec criterion must be covered by a
+// stage's `coverage` field, else the plan missed a requirement and the run is
+// refused before it starts. No criteria (no spec provided) means no gate.
+func checkCoverage(cfg *config.Config, criteria []string) error {
+	if len(criteria) == 0 {
+		return nil
+	}
+	covered := make(map[string]bool, len(cfg.Workflow.Stages))
+	for _, st := range cfg.Workflow.Stages {
+		if c := strings.TrimSpace(st.Coverage); c != "" {
+			covered[c] = true
+		}
+	}
+	var gaps []string
+	for _, c := range criteria {
+		if !covered[strings.TrimSpace(c)] {
+			gaps = append(gaps, c)
+		}
+	}
+	if len(gaps) > 0 {
+		return fmt.Errorf("conductor: coverage gap - no stage covers: %s", strings.Join(gaps, "; "))
+	}
+	return nil
 }
 
 // readyStages returns the not-yet-terminal stages whose dependencies are all

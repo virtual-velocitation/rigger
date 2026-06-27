@@ -30,6 +30,7 @@ import (
 	"github.com/virtual-velocitation/rigger/ledger"
 	"github.com/virtual-velocitation/rigger/mcpserver"
 	"github.com/virtual-velocitation/rigger/sidecar"
+	"github.com/virtual-velocitation/rigger/spec"
 )
 
 const riggerDir = ".rigger"
@@ -84,11 +85,19 @@ storage and graph live in ./.rigger/ (per project, like .git/).
 `)
 }
 
-func cmdRun(_ []string) error {
+func cmdRun(args []string) error {
 	ctx := context.Background()
 	cfg, err := config.Load(".")
 	if err != nil {
 		return err
+	}
+	var criteria []string
+	if len(args) > 0 {
+		specText, err := os.ReadFile(args[0])
+		if err != nil {
+			return fmt.Errorf("read spec %s: %w", args[0], err)
+		}
+		criteria = spec.ExtractCriteria(string(specText))
 	}
 	if err := os.MkdirAll(riggerDir, 0o755); err != nil {
 		return err
@@ -111,6 +120,7 @@ func cmdRun(_ []string) error {
 		Repo:     gitRepo(),
 		Grounder: grounder.Grep{Root: "."},
 		Graph:    graph,
+		Criteria: criteria,
 	})
 	if err != nil {
 		return err
