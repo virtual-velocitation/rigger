@@ -21,8 +21,10 @@ type Driver struct {
 
 var _ conductor.AgentDriver = Driver{}
 
-// Spawn runs one agent headlessly in opts.Dir and returns its output.
-func (d Driver) Spawn(ctx context.Context, agent config.AgentDef, prompt string, opts conductor.SpawnOpts) (conductor.AgentResult, error) {
+// Spawn runs one agent headlessly in opts.Dir. A subprocess agent cannot call the
+// in-process emit callback, so this driver ignores it; the workflow driver is the
+// one that delivers live emission.
+func (d Driver) Spawn(ctx context.Context, agent config.AgentDef, prompt string, opts conductor.SpawnOpts, _ func(eventType string, data any) error) (conductor.AgentResult, error) {
 	cmd := exec.CommandContext(ctx, d.bin(), BuildArgs(agent, prompt)...)
 	cmd.Dir = opts.Dir
 	out, err := cmd.Output()
