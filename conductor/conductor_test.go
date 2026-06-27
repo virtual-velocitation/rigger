@@ -9,10 +9,12 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/virtual-velocitation/rigger/conductor"
 	"github.com/virtual-velocitation/rigger/config"
 	"github.com/virtual-velocitation/rigger/contextgraph"
+	graphsqlite "github.com/virtual-velocitation/rigger/contextgraph/sqlite"
 	"github.com/virtual-velocitation/rigger/eventstore"
 	"github.com/virtual-velocitation/rigger/eventstore/sqlite"
 	"github.com/virtual-velocitation/rigger/gate"
@@ -275,6 +277,59 @@ func TestConductorFansOutAndAdjudicates(t *testing.T) {
 	}
 	if driver.spawns.Load() != 3 {
 		t.Errorf("expected 3 spawns (2 reviewers + the adjudicator), got %d", driver.spawns.Load())
+	}
+}
+
+func TestConductorFeedsGraphDecisionsIntoPrompt(t *testing.T) {
+	root := t.TempDir()
+	// the content must contain the query term so the grep grounder seeds this file
+	if err := os.WriteFile(filepath.Join(root, "modifier.go"), []byte("package modifier\nfunc Apply() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	graph := newGraph(t)
+	applyDecision(t, graph, "d1", "modifier.go uses the generic engine pipeline", []string{"modifier.go"})
+
+	cfg := &config.Config{
+		Agents: map[string]config.AgentDef{"impl": {ID: "impl"}},
+		Workflow: config.Workflow{
+			Stages: map[string]config.Stage{
+				"build": {Name: "build", Agent: "impl", Coverage: "modifier"},
+			},
+		},
+	}
+	driver := &stubDriver{}
+	if _, err := conductor.Run(context.Background(), cfg, conductor.Deps{
+		Store: newStore(t), Driver: driver, Gates: gate.ExecRunner{},
+		Grounder: grounder.Grep{Root: root}, Graph: graph,
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	prompt, _ := driver.lastPrompt.Load().(string)
+	if !strings.Contains(prompt, "generic engine pipeline") {
+		t.Errorf("the agent should be fed the decision governing modifier.go; prompt was %q", prompt)
+	}
+}
+
+func newGraph(t *testing.T) *graphsqlite.Projector {
+	t.Helper()
+	g, err := graphsqlite.Open(filepath.Join(t.TempDir(), "graph.db"))
+	if err != nil {
+		t.Fatalf("open graph: %v", err)
+	}
+	t.Cleanup(func() { _ = g.Close() })
+	return g
+}
+
+func applyDecision(t *testing.T, g *graphsqlite.Projector, id, summary string, governs []string) {
+	t.Helper()
+	data, err := json.Marshal(contextgraph.DecisionMade{ID: id, Summary: summary, Governs: governs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// a high position so it never collides with the run's event positions
+	ev := eventstore.Event{Type: contextgraph.TypeDecisionMade, Data: data, RecordedAt: time.Now().UTC(), Position: 999999}
+	if err := g.Apply(context.Background(), ev); err != nil {
+		t.Fatalf("apply decision: %v", err)
 	}
 }
 

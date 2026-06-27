@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -58,6 +59,10 @@ type Deps struct {
 	// Grounder, when set, grounds each agent (gives it relevant locations to read)
 	// before it runs. Nil grounds nothing.
 	Grounder grounder.Grounder
+	// Graph, when set, is the live context-graph projection: the conductor folds
+	// each emitted event into it during the run and feeds each agent the decisions
+	// governing the files it is about to touch. Nil disables graph grounding.
+	Graph contextgraph.Projection
 }
 
 // Reindexer is an optional grounder capability: the conductor calls it after a
@@ -87,12 +92,16 @@ func Run(ctx context.Context, cfg *config.Config, deps Deps) (*ledger.RunState, 
 		if err != nil {
 			return fmt.Errorf("conductor: encode %s: %w", typ, err)
 		}
-		_, err = deps.Store.Append(ctx, Stream, eventstore.Any, eventstore.Event{
-			ID:   uuid.NewString(),
-			Type: typ,
-			Data: data,
-		})
-		return err
+		ev := eventstore.Event{ID: uuid.NewString(), Type: typ, Data: data, RecordedAt: time.Now().UTC()}
+		pos, err := deps.Store.Append(ctx, Stream, eventstore.Any, ev)
+		if err != nil {
+			return err
+		}
+		if deps.Graph != nil {
+			ev.Position = pos
+			_ = deps.Graph.Apply(ctx, ev) // fold into the live graph so later agents can read it
+		}
+		return nil
 	}
 
 	var integrateMu sync.Mutex
@@ -300,6 +309,7 @@ This writes it to the shared event log live, so other agents see it immediately.
 // (if a grounder is configured) plus the emit protocol.
 func buildPrompt(ctx context.Context, deps Deps, st config.Stage) string {
 	var b strings.Builder
+	var seed []string
 	if deps.Grounder != nil {
 		query := st.Coverage
 		if query == "" {
@@ -309,12 +319,52 @@ func buildPrompt(ctx context.Context, deps Deps, st config.Stage) string {
 			b.WriteString("Relevant locations to read first:\n")
 			for _, r := range refs {
 				fmt.Fprintf(&b, "- %s:%d  %s\n", r.File, r.Line, r.Text)
+				seed = appendUnique(seed, r.File)
 			}
 			b.WriteString("\n")
 		}
 	}
+	b.WriteString(graphContext(ctx, deps, seed))
 	b.WriteString(emitProtocol)
 	return b.String()
+}
+
+// graphContext returns the decisions that currently govern the seed files, read
+// from the live context graph - so an agent never works blind to what a prior
+// agent decided about the code it is about to touch.
+func graphContext(ctx context.Context, deps Deps, seed []string) string {
+	if deps.Graph == nil || len(seed) == 0 {
+		return ""
+	}
+	g, err := deps.Graph.Subgraph(ctx, seed, 2)
+	if err != nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, n := range g.Nodes {
+		if n.Kind != contextgraph.KindDecision {
+			continue
+		}
+		if s := n.Attrs["summary"]; s != "" {
+			if b.Len() == 0 {
+				b.WriteString("Decisions that govern these files (do not contradict them; supersede explicitly if you must):\n")
+			}
+			fmt.Fprintf(&b, "- %s: %s\n", n.ID, s)
+		}
+	}
+	if b.Len() > 0 {
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+func appendUnique(s []string, v string) []string {
+	for _, x := range s {
+		if x == v {
+			return s
+		}
+	}
+	return append(s, v)
 }
 
 // runFanOutStage runs a stage's agents in parallel (each isolated and harvested),
