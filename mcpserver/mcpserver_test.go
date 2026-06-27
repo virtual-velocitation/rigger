@@ -13,11 +13,42 @@ import (
 	"github.com/virtual-velocitation/rigger/driver/workflow"
 	"github.com/virtual-velocitation/rigger/eventstore"
 	"github.com/virtual-velocitation/rigger/eventstore/sqlite"
+	"github.com/virtual-velocitation/rigger/sidecar"
 )
 
 func TestServerBuilds(t *testing.T) {
-	if New(workflow.New(), newStore(t), "run") == nil {
+	if New(workflow.New(), newStore(t), "run", nil) == nil {
 		t.Fatal("New returned nil")
+	}
+}
+
+func TestBridgePeersListsLiveDecisions(t *testing.T) {
+	store := newStore(t)
+	sc, err := sidecar.Start(context.Background(), store, 0, eventstore.Filter{})
+	if err != nil {
+		t.Fatalf("start side-car: %v", err)
+	}
+	t.Cleanup(func() { _ = sc.Close() })
+	b := &bridge{store: store, stream: "run", peers: sc}
+
+	// a peer agent records a decision via rigger_emit
+	if _, _, err := b.emit(context.Background(), nil, emitIn{Type: contextgraph.TypeDecisionMade, Data: map[string]any{"id": "d1", "summary": "chose X"}}); err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+
+	// rigger_peers surfaces it live
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		_, out, _ := b.listPeers(context.Background(), nil, empty{})
+		for _, d := range out.Decisions {
+			if d.ID == "d1" {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("rigger_peers never surfaced the peer decision")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
