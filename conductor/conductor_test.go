@@ -2,20 +2,31 @@ package conductor_test
 
 import (
 	"context"
+	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/virtual-velocitation/rigger/conductor"
 	"github.com/virtual-velocitation/rigger/config"
+	"github.com/virtual-velocitation/rigger/contextgraph"
+	"github.com/virtual-velocitation/rigger/eventstore"
 	"github.com/virtual-velocitation/rigger/eventstore/sqlite"
 	"github.com/virtual-velocitation/rigger/gate"
 	"github.com/virtual-velocitation/rigger/ledger"
 )
 
-type stubDriver struct{ spawns int }
+type stubDriver struct {
+	spawns    int
+	writeFile string // if set, the "agent" creates this file in its working dir
+}
 
-func (d *stubDriver) Spawn(_ context.Context, _ config.AgentDef, _ string) (conductor.AgentResult, error) {
+func (d *stubDriver) Spawn(_ context.Context, _ config.AgentDef, _ string, opts conductor.SpawnOpts) (conductor.AgentResult, error) {
 	d.spawns++
+	if d.writeFile != "" && opts.Dir != "" {
+		_ = os.WriteFile(filepath.Join(opts.Dir, d.writeFile), []byte("// generated\n"), 0o644)
+	}
 	return conductor.AgentResult{}, nil
 }
 
@@ -80,4 +91,63 @@ func TestConductorEscalatesOnPersistentGateFailure(t *testing.T) {
 	if driver.spawns != 3 {
 		t.Errorf("expected the bounded retries (3 attempts), got %d spawns", driver.spawns)
 	}
+}
+
+func TestConductorIsolatesAgentInWorktreeAndCapturesFiles(t *testing.T) {
+	repo := initRepo(t)
+	cfg := &config.Config{
+		Agents: map[string]config.AgentDef{"impl": {ID: "impl"}},
+		Workflow: config.Workflow{
+			Gates: map[string]config.Gate{"ok": {Run: "true", Kind: "core"}},
+			Stages: map[string]config.Stage{
+				"build": {Name: "build", Agent: "impl", Gates: []string{"ok"}},
+			},
+		},
+	}
+	store := newStore(t)
+	driver := &stubDriver{writeFile: "generated.go"}
+	rs, err := conductor.Run(context.Background(), cfg, conductor.Deps{
+		Store: store, Driver: driver, Gates: gate.ExecRunner{}, Repo: repo,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if rs.Units["build"].Status != ledger.Integrated {
+		t.Fatalf("stage should integrate: %+v", rs.Units["build"])
+	}
+
+	// The file the agent wrote inside its worktree must surface as a FileTouched
+	// event, feeding the context graph.
+	events, err := store.ReadAll(context.Background(), 0, eventstore.Forward, eventstore.Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasFileTouched(events, "generated.go") {
+		t.Error("expected a FileTouched event for generated.go captured from the worktree")
+	}
+}
+
+func hasFileTouched(events []eventstore.Event, path string) bool {
+	for _, e := range events {
+		if e.Type == contextgraph.TypeFileTouched && strings.Contains(string(e.Data), path) {
+			return true
+		}
+	}
+	return false
+}
+
+func initRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-q"},
+		{"config", "user.email", "t@example.com"},
+		{"config", "user.name", "t"},
+		{"commit", "--allow-empty", "-q", "-m", "init"},
+	} {
+		if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	return dir
 }
