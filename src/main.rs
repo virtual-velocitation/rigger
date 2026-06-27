@@ -12,7 +12,7 @@ use rigger::driver::cli;
 use rigger::eventstore::{sqlite::Store, Direction, EventStore, Filter};
 use rigger::gate::ExecRunner;
 use rigger::grounder::{Grep, Grounder};
-use rigger::ledger::{RunState, Status};
+use rigger::ledger::RunState;
 use rigger::sidecar::PeerDecision;
 use rigger::{hooks, spec};
 
@@ -263,22 +263,12 @@ fn git_repo() -> String {
 fn print_run_state(rs: &RunState) {
     println!("run state:");
     for (name, u) in &rs.units {
-        println!("  {:<20} {}", name, status_str(u.status));
+        println!("  {:<20} {}", name, u.status.as_str());
     }
     if rs.done() {
         println!("done: every unit integrated");
     } else {
         println!("incomplete: not every unit integrated");
-    }
-}
-
-fn status_str(s: Status) -> &'static str {
-    match s {
-        Status::Pending => "pending",
-        Status::Running => "running",
-        Status::Integrated => "integrated",
-        Status::Failed => "failed",
-        Status::Escalated => "escalated",
     }
 }
 
