@@ -127,14 +127,22 @@ func Run(ctx context.Context, cfg *config.Config, deps Deps) (*ledger.RunState, 
 		return commit, nil
 	}
 
+	stages := make(map[string]config.Stage, len(cfg.Workflow.Stages))
+	for name, st := range cfg.Workflow.Stages {
+		stages[name] = st
+	}
+	proposed := map[string]bool{}
 	integrated := map[string]bool{}
 	terminal := map[string]bool{}
 	for {
-		ready := readyStages(cfg.Workflow.Stages, integrated, terminal)
+		ready := readyStages(stages, integrated, terminal)
 		if len(ready) == 0 {
 			break // either all done, or the rest are blocked behind an escalation
 		}
-		if err := runWave(ctx, cfg, deps, ready, emit, integrate, integrated, terminal); err != nil {
+		if err := runWave(ctx, cfg, deps, stages, ready, emit, integrate, integrated, terminal); err != nil {
+			return nil, err
+		}
+		if err := harvestProposed(ctx, deps, stages, proposed); err != nil {
 			return nil, err
 		}
 	}
@@ -153,6 +161,12 @@ func checkCoverage(cfg *config.Config, criteria []string) error {
 	if len(criteria) == 0 {
 		return nil
 	}
+	// a planning workflow verifies coverage after it produces units, not now
+	for _, st := range cfg.Workflow.Stages {
+		if st.Produces != "" {
+			return nil
+		}
+	}
 	covered := make(map[string]bool, len(cfg.Workflow.Stages))
 	for _, st := range cfg.Workflow.Stages {
 		if c := strings.TrimSpace(st.Coverage); c != "" {
@@ -167,6 +181,44 @@ func checkCoverage(cfg *config.Config, criteria []string) error {
 	}
 	if len(gaps) > 0 {
 		return fmt.Errorf("conductor: coverage gap - no stage covers: %s", strings.Join(gaps, "; "))
+	}
+	return nil
+}
+
+// TypeUnitProposed is the event a planning stage's agent emits to add a unit to
+// the run DAG at runtime (the living-DAG / spawnUnit mechanic).
+const TypeUnitProposed = "UnitProposed"
+
+// UnitProposed is a unit a planning agent proposes, extending the run DAG.
+type UnitProposed struct {
+	ID       string   `json:"id"`
+	Agent    string   `json:"agent"`
+	Needs    []string `json:"needs,omitempty"`
+	Coverage string   `json:"coverage,omitempty"`
+	Gates    []string `json:"gates,omitempty"`
+}
+
+// harvestProposed adds the units that planning agents proposed (UnitProposed
+// events) to the live stage set, so the run DAG grows as agents decompose work.
+// It never overwrites an existing stage.
+func harvestProposed(ctx context.Context, deps Deps, stages map[string]config.Stage, proposed map[string]bool) error {
+	events, err := deps.Store.ReadStream(ctx, Stream, 0, eventstore.Forward)
+	if err != nil {
+		return fmt.Errorf("conductor: read proposed units: %w", err)
+	}
+	for _, e := range events {
+		if e.Type != TypeUnitProposed {
+			continue
+		}
+		var u UnitProposed
+		if json.Unmarshal(e.Data, &u) != nil || u.ID == "" || proposed[u.ID] {
+			continue
+		}
+		proposed[u.ID] = true
+		if _, exists := stages[u.ID]; exists {
+			continue
+		}
+		stages[u.ID] = config.Stage{Name: u.ID, Agent: u.Agent, Needs: u.Needs, Coverage: u.Coverage, Gates: u.Gates}
 	}
 	return nil
 }
@@ -197,7 +249,7 @@ func readyStages(stages map[string]config.Stage, integrated, terminal map[string
 // runWave runs the ready stages concurrently and records which integrated. The
 // integrated/terminal maps are written only here, on the single draining
 // goroutine, so they are race-free.
-func runWave(ctx context.Context, cfg *config.Config, deps Deps, ready []string, emit func(string, any) error, integrate integrateFunc, integrated, terminal map[string]bool) error {
+func runWave(ctx context.Context, cfg *config.Config, deps Deps, stages map[string]config.Stage, ready []string, emit func(string, any) error, integrate integrateFunc, integrated, terminal map[string]bool) error {
 	type result struct {
 		name string
 		ok   bool
@@ -206,7 +258,7 @@ func runWave(ctx context.Context, cfg *config.Config, deps Deps, ready []string,
 	results := make(chan result, len(ready))
 	for _, name := range ready {
 		go func(name string) {
-			st := cfg.Workflow.Stages[name]
+			st := stages[name]
 			if err := emit(ledger.TypeUnitStarted, ledger.UnitStarted{ID: name, SpecCriterion: st.Coverage}); err != nil {
 				results <- result{name: name, err: err}
 				return
