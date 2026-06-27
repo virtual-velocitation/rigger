@@ -10,6 +10,9 @@
 go.work
 go.work.sum
 
+# Rust shim (cgo turbovec) build artifacts; Cargo.lock IS committed
+grounder/turbovec/shim/target/
+
 # Local event store / scratch (runtime state; .rigger/workflow.yml IS committed)
 *.db
 *.db-wal
