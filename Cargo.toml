@@ -19,6 +19,10 @@ path = "src/main.rs"
 # pulls the ONNX runtime and downloads an embedding model, so the default build
 # stays light and the grounder falls back to grep.
 turbovec = ["dep:turbovec", "dep:fastembed"]
+# The KurrentDB EventStore adapter (the trait's server-backed implementation). It
+# pulls the async gRPC client + a tokio runtime; testcontainers drives its
+# contract test against a real KurrentDB.
+kurrentdb = ["dep:kurrentdb", "dep:tokio", "dep:testcontainers"]
 
 [dependencies]
 rusqlite = { version = "0.32", features = ["bundled"] }
@@ -29,6 +33,9 @@ uuid = { version = "1", features = ["v4"] }
 thiserror = "2"
 turbovec = { git = "https://github.com/RyanCodrai/turbovec", optional = true }
 fastembed = { version = "4", optional = true }
+kurrentdb = { version = "1.2", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "time"], optional = true }
+testcontainers = { version = "0.27", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
