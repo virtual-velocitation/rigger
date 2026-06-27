@@ -28,6 +28,8 @@ pub const TYPE_UNIT_PROPOSED: &str = "UnitProposed";
 /// Gate-autonomy ratchet events: a gate's trust moving up or down.
 pub const TYPE_GATE_PROMOTED: &str = "GatePromoted";
 pub const TYPE_GATE_DEMOTED: &str = "GateDemoted";
+/// A proposed unit with no spec criterion - refused (anti-fragmentation, §8).
+pub const TYPE_SCOPE_CREEP: &str = "ScopeCreep";
 
 #[derive(Debug, thiserror::Error)]
 #[error("conductor: {0}")]
@@ -115,10 +117,25 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         integrate_mu: Mutex::new(()),
     };
 
+    // Resume by replay (§4.2): seed integrated/terminal from the existing log so a
+    // crashed or re-run conductor skips work that already landed instead of
+    // re-spawning every agent from scratch.
+    let prior = ledger::project(&deps.store.read_stream(STREAM, 0, Direction::Forward)?)
+        .map_err(|e| Error(e.to_string()))?;
     let mut stages = cfg.workflow.stages.clone();
     let mut proposed: HashSet<String> = HashSet::new();
-    let mut integrated: HashSet<String> = HashSet::new();
-    let mut terminal: HashSet<String> = HashSet::new();
+    let mut integrated: HashSet<String> = prior
+        .units
+        .values()
+        .filter(|u| u.status == ledger::Status::Integrated)
+        .map(|u| u.id.clone())
+        .collect();
+    let mut terminal: HashSet<String> = prior
+        .units
+        .values()
+        .filter(|u| prior.is_terminal(&u.id))
+        .map(|u| u.id.clone())
+        .collect();
     loop {
         let ready = ready_stages(&stages, &integrated, &terminal);
         if ready.is_empty() {
@@ -141,14 +158,24 @@ struct RunCtx<'a> {
 
 impl RunCtx<'_> {
     fn emit(&self, type_: &str, payload: Value) -> Result<(), Error> {
+        self.emit_with_actor("", type_, payload)
+    }
+
+    /// Emit an event, optionally stamping the acting agent in its metadata (the
+    /// DECIDED-edge source), appending to the log and folding it into the live
+    /// graph so later agents can read it.
+    fn emit_with_actor(&self, actor: &str, type_: &str, payload: Value) -> Result<(), Error> {
         let mut ev = Event::new(type_, serde_json::to_vec(&payload)?);
+        if !actor.is_empty() {
+            ev = ev.with_meta(contextgraph::META_ACTOR, actor);
+        }
         let pos =
             self.deps
                 .store
                 .append(STREAM, ExpectedRevision::Any, std::slice::from_ref(&ev))?;
         if let Some(g) = self.deps.graph {
             ev.position = pos;
-            let _ = g.apply(&ev); // fold into the live graph so later agents can read it
+            let _ = g.apply(&ev);
         }
         Ok(())
     }
@@ -193,9 +220,18 @@ impl RunCtx<'_> {
     }
 
     fn start_and_run_stage(&self, name: &str, st: &Stage) -> Result<bool, Error> {
+        // UnitStarted carries the assigned agent and its dependencies, so the graph
+        // can project ASSIGNED_TO (unit->agent) and BLOCKS (need->unit).
         self.emit(
             ledger::TYPE_UNIT_STARTED,
-            json!({"id": name, "spec_criterion": st.coverage}),
+            json!({
+                "id": name,
+                "unit": name,
+                "spec_criterion": st.coverage,
+                "criterion": st.coverage,
+                "agent": st.agent,
+                "needs": st.needs,
+            }),
         )?;
         self.run_stage(st)
     }
@@ -229,7 +265,7 @@ impl RunCtx<'_> {
                     ))
                 })?;
                 let prompt = self.build_prompt(st);
-                let emit = |t: &str, v: Value| self.emit(t, v);
+                let emit = |t: &str, v: Value| self.emit_with_actor(&st.agent, t, v);
                 self.deps
                     .driver
                     .spawn(
@@ -243,9 +279,17 @@ impl RunCtx<'_> {
                     .map_err(|e| {
                         Error(format!("stage {:?} agent {:?}: {}", st.name, st.agent, e.0))
                     })?;
+                self.emit(
+                    ledger::TYPE_UNIT_STATUS,
+                    json!({"id": st.name, "status": "green"}),
+                )?;
             }
 
             if self.run_gates(st, dir)? {
+                self.emit(
+                    ledger::TYPE_UNIT_STATUS,
+                    json!({"id": st.name, "status": "verified"}),
+                )?;
                 let commit = self.integrate_and_emit(wt, &st.agent, &st.name)?;
                 self.emit(
                     ledger::TYPE_UNIT_INTEGRATED,
@@ -353,7 +397,7 @@ impl RunCtx<'_> {
         })?;
         let dir = wt.map(|w| w.dir.clone()).unwrap_or_default();
         let prompt = self.build_prompt(st);
-        let emit = |t: &str, v: Value| self.emit(t, v);
+        let emit = |t: &str, v: Value| self.emit_with_actor(agent_id, t, v);
         self.deps
             .driver
             .spawn(agent_def, &prompt, &SpawnOpts { dir }, &emit)
@@ -422,9 +466,11 @@ impl RunCtx<'_> {
             return (false, true, g.autonomy);
         }
         if gate::propose_promotion(g) {
-            g.autonomy = gate::next_autonomy(g.autonomy);
+            // Promotion is PROPOSED, never auto-applied (§4.3): surface it but keep
+            // the gate at its current autonomy until a human approves.
+            let proposed = gate::next_autonomy(g.autonomy);
             g.history.clear();
-            return (true, false, g.autonomy);
+            return (true, false, proposed);
         }
         (false, false, g.autonomy)
     }
@@ -569,6 +615,16 @@ impl RunCtx<'_> {
             }
             proposed.insert(u.id.clone());
             if stages.contains_key(&u.id) {
+                continue;
+            }
+            // Anti-fragmentation (§8): in a spec-driven run, a proposed unit with no
+            // spec criterion is scope creep - refuse it and record the event, never
+            // silently add it to the DAG.
+            if !self.deps.criteria.is_empty() && u.coverage.trim().is_empty() {
+                self.emit(
+                    TYPE_SCOPE_CREEP,
+                    json!({"unit": u.id, "reason": "proposed unit has no spec_criterion"}),
+                )?;
                 continue;
             }
             stages.insert(
@@ -995,6 +1051,136 @@ mod tests {
         assert!(
             prompt.contains("generic engine pipeline"),
             "the agent should be fed the decision governing modifier.rs; prompt was:\n{prompt}"
+        );
+    }
+
+    #[test]
+    fn resume_skips_already_integrated_units() {
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent("a"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "a".into(),
+                gates: vec!["ok".into()],
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+        run(&cfg, &deps).unwrap(); // resume on the same store
+        let events = st
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        let starts = events
+            .iter()
+            .filter(|e| {
+                e.type_ == ledger::TYPE_UNIT_STARTED
+                    && String::from_utf8_lossy(&e.data).contains("\"id\":\"s\"")
+            })
+            .count();
+        assert_eq!(
+            starts, 1,
+            "a resumed run must not restart an integrated unit"
+        );
+    }
+
+    #[test]
+    fn agent_decision_creates_a_decided_edge() {
+        let graph = crate::contextgraph::sqlite::Projector::open(":memory:").unwrap();
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent("a"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "a".into(),
+                gates: vec!["ok".into()],
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            emits: vec![(
+                contextgraph::TYPE_DECISION_MADE.to_string(),
+                json!({"id": "d1", "summary": "x", "governs": ["f.rs"]}),
+            )],
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: Some(&graph),
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+        let g = graph.subgraph(&["d1".to_string()], 2).unwrap();
+        assert!(
+            g.edges
+                .iter()
+                .any(|e| e.rel == contextgraph::REL_DECIDED && e.from == "a" && e.to == "d1"),
+            "the acting agent 'a' must DECIDE d1 (actor stamped on the emit)"
+        );
+    }
+
+    #[test]
+    fn scope_creep_refuses_a_criterionless_proposed_unit() {
+        let mut cfg = Config::default();
+        cfg.agents.insert("planner".into(), agent("planner"));
+        cfg.workflow.stages.insert(
+            "plan".into(),
+            Stage {
+                name: "plan".into(),
+                agent: "planner".into(),
+                produces: "dag".into(),
+                coverage: "crit".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            emits: vec![(
+                TYPE_UNIT_PROPOSED.to_string(),
+                json!({"id": "impl", "agent": "worker"}), // no coverage
+            )],
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: vec!["crit".into()],
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        let events = st
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        assert!(
+            events.iter().any(|e| e.type_ == TYPE_SCOPE_CREEP),
+            "a criterion-less proposed unit must be refused as scope creep"
+        );
+        assert!(
+            !rs.units.contains_key("impl"),
+            "the refused unit must not be added to the run"
         );
     }
 
