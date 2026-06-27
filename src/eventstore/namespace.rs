@@ -1,14 +1,19 @@
 //! Per-project segregation for any EventStore: a single decorator over the port
 //! that prefixes every stream a project writes and scopes every global read and
-//! subscription to that namespace, so one backend (a shared SQLite file or a
-//! shared KurrentDB instance) can hold many projects without their streams ever
-//! mixing. Callers use plain, unprefixed stream names and never see the namespace.
+//! subscription to that namespace, **stripping the prefix from returned events so
+//! callers see clean stream names**. One backend (a shared SQLite file or a shared
+//! KurrentDB instance) can hold many projects without their streams ever mixing.
 //!
 //! Because it depends only on the port, it is written once and wraps every
 //! backend - dependency inversion buying the single implementation.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::channel;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
 use super::{
-    Direction, Error, Event, EventStore, ExpectedRevision, Filter, Position, Subscription,
+    Direction, Error, Event, EventStore, ExpectedRevision, Filter, Position, Revision, Subscription,
 };
 
 /// Namespaced wraps an EventStore so all of its data is scoped to one project.
@@ -38,6 +43,15 @@ impl<'a> Namespaced<'a> {
             stream_prefix: Some(format!("{}{caller}", self.prefix)),
         }
     }
+
+    fn strip(&self, mut events: Vec<Event>) -> Vec<Event> {
+        for e in &mut events {
+            if let Some(rest) = e.stream.strip_prefix(&self.prefix) {
+                e.stream = rest.to_string();
+            }
+        }
+        events
+    }
 }
 
 impl EventStore for Namespaced<'_> {
@@ -53,10 +67,11 @@ impl EventStore for Namespaced<'_> {
     fn read_stream(
         &self,
         stream: &str,
-        from: Position,
+        from: Revision,
         dir: Direction,
     ) -> Result<Vec<Event>, Error> {
-        self.inner.read_stream(&self.scoped(stream), from, dir)
+        let events = self.inner.read_stream(&self.scoped(stream), from, dir)?;
+        Ok(self.strip(events))
     }
 
     fn read_all(
@@ -65,12 +80,52 @@ impl EventStore for Namespaced<'_> {
         dir: Direction,
         filter: &Filter,
     ) -> Result<Vec<Event>, Error> {
-        self.inner.read_all(from, dir, &self.scope_filter(filter))
+        let events = self.inner.read_all(from, dir, &self.scope_filter(filter))?;
+        Ok(self.strip(events))
     }
 
     fn subscribe_all(&self, from: Position, filter: &Filter) -> Result<Subscription, Error> {
-        self.inner.subscribe_all(from, &self.scope_filter(filter))
+        let inner = self.inner.subscribe_all(from, &self.scope_filter(filter))?;
+        Ok(strip_subscription(inner, self.prefix.clone()))
     }
+
+    fn subscribe_stream(&self, stream: &str, from: Revision) -> Result<Subscription, Error> {
+        let inner = self.inner.subscribe_stream(&self.scoped(stream), from)?;
+        Ok(strip_subscription(inner, self.prefix.clone()))
+    }
+}
+
+/// Wrap a subscription so each delivered event has the namespace prefix stripped
+/// from its stream. Owns the inner subscription; dropping the wrapper stops both.
+fn strip_subscription(inner: Subscription, prefix: String) -> Subscription {
+    let (tx, rx) = channel();
+    let err = Arc::new(Mutex::new(None));
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_thread = Arc::clone(&stop);
+    let err_thread = Arc::clone(&err);
+    let handle = std::thread::spawn(move || {
+        // The inner subscription is owned here; it stops when this thread ends.
+        while !stop_thread.load(Ordering::Relaxed) {
+            match inner.recv_timeout(Duration::from_millis(50)) {
+                Some(mut e) => {
+                    if let Some(rest) = e.stream.strip_prefix(&prefix) {
+                        e.stream = rest.to_string();
+                    }
+                    if tx.send(e).is_err() {
+                        return;
+                    }
+                }
+                None => {
+                    if let Some(msg) = inner.err() {
+                        *err_thread.lock().unwrap() = Some(msg);
+                        return;
+                    }
+                    // a quiet timeout: the inner is still live; re-check stop
+                }
+            }
+        }
+    });
+    Subscription::new(rx, err, stop, handle)
 }
 
 #[cfg(test)]
@@ -79,12 +134,11 @@ mod tests {
     use crate::eventstore::sqlite::Store;
 
     #[test]
-    fn segregates_projects_in_one_backend() {
+    fn segregates_projects_and_strips_the_prefix() {
         let backend = Store::open(":memory:").unwrap();
         let alpha = Namespaced::new(&backend, "alpha");
         let beta = Namespaced::new(&backend, "beta");
 
-        // Both projects write to a stream named "run".
         alpha
             .append(
                 "run",
@@ -99,7 +153,6 @@ mod tests {
         )
         .unwrap();
 
-        // Each project's global read sees only its own events.
         let a = alpha
             .read_all(0, Direction::Forward, &Filter::default())
             .unwrap();
@@ -107,6 +160,9 @@ mod tests {
             a.iter().map(|e| e.type_.as_str()).collect::<Vec<_>>(),
             ["A1"]
         );
+        // the returned stream name is clean (prefix stripped), not "proj-alpha-run"
+        assert_eq!(a[0].stream, "run");
+
         let b = beta
             .read_all(0, Direction::Forward, &Filter::default())
             .unwrap();
@@ -115,10 +171,10 @@ mod tests {
             ["B1"]
         );
 
-        // The same stream name in different projects does not collide.
         let a_run = alpha.read_stream("run", 0, Direction::Forward).unwrap();
         assert_eq!(a_run.len(), 1);
         assert_eq!(a_run[0].type_, "A1");
+        assert_eq!(a_run[0].stream, "run");
     }
 
     #[test]

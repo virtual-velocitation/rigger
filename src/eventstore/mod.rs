@@ -1,7 +1,8 @@
-//! The event store: an append-only log with optimistic concurrency, the source
-//! of truth the ledger and context graph project from. `EventStore` is the port;
-//! `sqlite` is the default adapter, shaped after KurrentDB so the embedded store
-//! is a faithful stand-in for the server one.
+//! The append-only, bi-temporal event store: an immutable log of facts the ledger
+//! and context graph are projected from. `EventStore` is the port; `sqlite` is the
+//! default adapter. The trait mirrors KurrentDB's primitives - per-stream append
+//! with optimistic concurrency, a global $all order, per-stream revisions, and
+//! catch-up subscriptions - so a backend swaps without changing the rest of Rigger.
 
 pub mod namespace;
 pub mod sqlite;
@@ -12,49 +13,25 @@ pub mod kurrentdb;
 #[cfg(test)]
 pub mod contract;
 
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime};
 
 use thiserror::Error;
 
-/// A global ($all-order) position, assigned by the store on append.
+/// Position is an event's place in the global $all order: 1-based, store-assigned,
+/// only ever increasing.
 pub type Position = u64;
 
-/// An event in the log. `data` is the opaque (usually JSON) payload.
-#[derive(Clone, Debug)]
-pub struct Event {
-    pub id: String,
-    pub type_: String,
-    pub data: Vec<u8>,
-    pub recorded_at: SystemTime,
-    pub position: Position,
-}
+/// Revision is an event's place within its own stream: 0-based, so the first event
+/// in a stream is revision 0. An empty stream sits at [`NO_STREAM`].
+pub type Revision = i64;
 
-impl Event {
-    /// A new event with a fresh id and the current time; the store assigns the
-    /// final position on append.
-    pub fn new(type_: impl Into<String>, data: Vec<u8>) -> Self {
-        Event {
-            id: uuid::Uuid::new_v4().to_string(),
-            type_: type_.into(),
-            data,
-            recorded_at: SystemTime::now(),
-            position: 0,
-        }
-    }
-}
-
-/// The version a stream is expected to be at when appending (optimistic
-/// concurrency): any version, no stream yet, or an exact event count.
-#[derive(Clone, Copy, Debug)]
-pub enum ExpectedRevision {
-    Any,
-    NoStream,
-    Exact(u64),
-}
+/// The revision of a stream that does not yet exist.
+pub const NO_STREAM: Revision = -1;
 
 /// Read direction over a stream or the global log.
 #[derive(Clone, Copy, Debug)]
@@ -63,35 +40,110 @@ pub enum Direction {
     Backward,
 }
 
+/// The optimistic-concurrency expectation for [`EventStore::append`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExpectedRevision {
+    /// No concurrency check.
+    Any,
+    /// The stream must not yet exist (its last revision is [`NO_STREAM`]).
+    NoStream,
+    /// The stream's current last revision must equal this exactly.
+    Exact(Revision),
+}
+
 /// A read/subscription filter over the global log.
 #[derive(Clone, Debug, Default)]
 pub struct Filter {
     pub stream_prefix: Option<String>,
 }
 
+/// Event is a single immutable fact. Callers populate the input fields; the store
+/// stamps `recorded_at`, `position`, and `revision` on append (and `stream` to the
+/// target stream). `valid_from` is the bi-temporal valid-time - when the fact
+/// became true - and defaults to the append time unless the caller sets it.
+#[derive(Clone, Debug)]
+pub struct Event {
+    pub id: String,
+    pub stream: String,
+    pub type_: String,
+    pub data: Vec<u8>,
+    /// Causation, correlation, and actor metadata.
+    pub meta: BTreeMap<String, String>,
+    /// When the fact became true (caller-supplied; defaults to the append time).
+    pub valid_from: SystemTime,
+    /// When the store ingested it (store-stamped).
+    pub recorded_at: SystemTime,
+    pub position: Position,
+    pub revision: Revision,
+}
+
+impl Event {
+    /// A new event with a fresh id. The store stamps `stream`, `recorded_at`,
+    /// `position`, and `revision` on append; `valid_from` defaults to now and may
+    /// be overridden with [`Event::with_valid_from`].
+    pub fn new(type_: impl Into<String>, data: Vec<u8>) -> Self {
+        let now = SystemTime::now();
+        Event {
+            id: uuid::Uuid::new_v4().to_string(),
+            stream: String::new(),
+            type_: type_.into(),
+            data,
+            meta: BTreeMap::new(),
+            valid_from: now,
+            recorded_at: now,
+            position: 0,
+            revision: NO_STREAM,
+        }
+    }
+
+    /// Builder: set a metadata entry (causation / correlation / actor).
+    pub fn with_meta(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.meta.insert(key.into(), value.into());
+        self
+    }
+
+    /// Builder: set the valid-from time (when the fact became true).
+    pub fn with_valid_from(mut self, t: SystemTime) -> Self {
+        self.valid_from = t;
+        self
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("event store: wrong expected version for stream {stream:?}")]
-    Conflict { stream: String },
+    #[error("event store: concurrency conflict on stream {stream:?}: expected {expected:?}, actual revision {actual}")]
+    Conflict {
+        stream: String,
+        expected: ExpectedRevision,
+        actual: Revision,
+    },
     #[error("event store: {0}")]
     Backend(String),
 }
 
 /// A catch-up subscription: it replays the existing events from a position, then
 /// streams new ones live, until it is dropped. Adapters feed it from a background
-/// thread; callers consume it with the recv methods.
+/// thread; callers consume it with the recv methods and check [`Subscription::err`]
+/// for a terminal error after the stream ends.
 pub struct Subscription {
     rx: Receiver<Event>,
+    err: Arc<Mutex<Option<String>>>,
     stop: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
 }
 
 impl Subscription {
-    /// Build a subscription from a backend's event channel, its stop flag, and the
-    /// thread feeding it.
-    pub fn new(rx: Receiver<Event>, stop: Arc<AtomicBool>, handle: JoinHandle<()>) -> Self {
+    /// Build a subscription from a backend's event channel, its terminal-error
+    /// cell, its stop flag, and the thread feeding it.
+    pub fn new(
+        rx: Receiver<Event>,
+        err: Arc<Mutex<Option<String>>>,
+        stop: Arc<AtomicBool>,
+        handle: JoinHandle<()>,
+    ) -> Self {
         Subscription {
             rx,
+            err,
             stop,
             handle: Some(handle),
         }
@@ -111,6 +163,11 @@ impl Subscription {
     pub fn try_recv(&self) -> Option<Event> {
         self.rx.try_recv().ok()
     }
+
+    /// The terminal error, if the feeding thread ended in one.
+    pub fn err(&self) -> Option<String> {
+        self.err.lock().unwrap().clone()
+    }
 }
 
 impl Drop for Subscription {
@@ -122,12 +179,13 @@ impl Drop for Subscription {
     }
 }
 
-/// EventStore is the append-only log port (KurrentDB-shaped). Implementations are
-/// safe to share across threads.
+/// EventStore is the append-only, bi-temporal log port (KurrentDB-shaped).
+/// Implementations are safe to share across threads.
 pub trait EventStore: Send + Sync {
-    /// Append events to a stream under an optimistic-concurrency expectation,
-    /// returning the last global position written. A failed expectation yields
-    /// `Error::Conflict`.
+    /// Append events to the end of a stream under an optimistic-concurrency
+    /// expectation, returning the global position of the last event written. A
+    /// failed expectation yields [`Error::Conflict`] carrying the stream's actual
+    /// current revision.
     fn append(
         &self,
         stream: &str,
@@ -135,15 +193,15 @@ pub trait EventStore: Send + Sync {
         events: &[Event],
     ) -> Result<Position, Error>;
 
-    /// Read one stream's events from a global position, in a direction.
+    /// Read one stream's events from a per-stream revision, in a direction.
     fn read_stream(
         &self,
         stream: &str,
-        from: Position,
+        from: Revision,
         dir: Direction,
     ) -> Result<Vec<Event>, Error>;
 
-    /// Read the global log from a position, in a direction, filtered.
+    /// Read the global log from a global position, in a direction, filtered.
     fn read_all(
         &self,
         from: Position,
@@ -154,4 +212,8 @@ pub trait EventStore: Send + Sync {
     /// Open a catch-up subscription over the global log from a position: it
     /// replays the matching events in order, then delivers new ones live.
     fn subscribe_all(&self, from: Position, filter: &Filter) -> Result<Subscription, Error>;
+
+    /// Open a catch-up subscription over one stream from a revision: it replays
+    /// that stream's events from `from`, then delivers new ones live.
+    fn subscribe_stream(&self, stream: &str, from: Revision) -> Result<Subscription, Error>;
 }
