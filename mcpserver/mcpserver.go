@@ -14,16 +14,18 @@ import (
 
 	"github.com/virtual-velocitation/rigger/driver/workflow"
 	"github.com/virtual-velocitation/rigger/eventstore"
+	"github.com/virtual-velocitation/rigger/sidecar"
 )
 
 // New builds the rigger MCP server over the given workflow bridge and event store.
 // Decisions emitted via rigger_emit are appended to stream.
-func New(driver *workflow.Driver, store eventstore.EventStore, stream string) *mcp.Server {
-	b := &bridge{driver: driver, store: store, stream: stream}
+func New(driver *workflow.Driver, store eventstore.EventStore, stream string, peers *sidecar.Sidecar) *mcp.Server {
+	b := &bridge{driver: driver, store: store, stream: stream, peers: peers}
 	srv := mcp.NewServer(&mcp.Implementation{Name: "rigger", Version: "0.1.0"}, nil)
 	mcp.AddTool(srv, &mcp.Tool{Name: "rigger_next", Description: "Pick up the next queued agent spawn. The id is empty when nothing is waiting."}, b.next)
 	mcp.AddTool(srv, &mcp.Tool{Name: "rigger_result", Description: "Report an agent's final result by spawn id."}, b.result)
 	mcp.AddTool(srv, &mcp.Tool{Name: "rigger_emit", Description: "Record a decision on the shared event log, live, so other agents see it immediately."}, b.emit)
+	mcp.AddTool(srv, &mcp.Tool{Name: "rigger_peers", Description: "List the decisions other agents have made so far this run, so you do not work blind to them. Call it before a significant action."}, b.listPeers)
 	return srv
 }
 
@@ -31,6 +33,7 @@ type bridge struct {
 	driver *workflow.Driver
 	store  eventstore.EventStore
 	stream string
+	peers  *sidecar.Sidecar
 }
 
 type empty struct{}
@@ -76,4 +79,24 @@ func (b *bridge) emit(ctx context.Context, _ *mcp.CallToolRequest, in emitIn) (*
 		return nil, empty{}, fmt.Errorf("mcpserver: append emitted event: %w", err)
 	}
 	return nil, empty{}, nil
+}
+
+type peerDecision struct {
+	ID      string   `json:"id"`
+	Summary string   `json:"summary"`
+	Governs []string `json:"governs,omitempty"`
+}
+
+type peersOut struct {
+	Decisions []peerDecision `json:"decisions"`
+}
+
+func (b *bridge) listPeers(_ context.Context, _ *mcp.CallToolRequest, _ empty) (*mcp.CallToolResult, peersOut, error) {
+	var out peersOut
+	if b.peers != nil {
+		for _, d := range b.peers.Decisions() {
+			out.Decisions = append(out.Decisions, peerDecision{ID: d.ID, Summary: d.Summary, Governs: d.Governs})
+		}
+	}
+	return nil, out, nil
 }
