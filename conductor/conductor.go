@@ -10,6 +10,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 
 	"github.com/google/uuid"
@@ -20,6 +22,7 @@ import (
 	"github.com/virtual-velocitation/rigger/gate"
 	"github.com/virtual-velocitation/rigger/ledger"
 	"github.com/virtual-velocitation/rigger/safety"
+	"github.com/virtual-velocitation/rigger/worktree"
 )
 
 // AgentResult is what an agent returns when it finishes.
@@ -27,10 +30,15 @@ type AgentResult struct {
 	Output string
 }
 
+// SpawnOpts are per-spawn options.
+type SpawnOpts struct {
+	Dir string // working directory for the agent; "" means the current directory
+}
+
 // AgentDriver spawns an agent to completion. The cli and workflow drivers
 // implement it; tests inject a stub.
 type AgentDriver interface {
-	Spawn(ctx context.Context, agent config.AgentDef, prompt string) (AgentResult, error)
+	Spawn(ctx context.Context, agent config.AgentDef, prompt string, opts SpawnOpts) (AgentResult, error)
 }
 
 // Deps are the conductor's injected ports.
@@ -38,6 +46,10 @@ type Deps struct {
 	Store  eventstore.EventStore
 	Driver AgentDriver
 	Gates  gate.Runner
+	// Repo, when set, is a git repository the conductor isolates each agent in
+	// via a throwaway worktree, and from which it captures the files the agent
+	// touched. Empty disables isolation (the agent runs in the current directory).
+	Repo string
 }
 
 // Stream is the run's event stream name.
@@ -90,6 +102,16 @@ func Run(ctx context.Context, cfg *config.Config, deps Deps) (*ledger.RunState, 
 // runStage runs one stage's agent and gates, retrying under the safety bound and
 // escalating if the gates keep failing. It returns whether the stage integrated.
 func runStage(ctx context.Context, cfg *config.Config, deps Deps, st config.Stage, emit func(string, any) error) (bool, error) {
+	wt, finish, err := stageWorktree(ctx, deps, st)
+	if err != nil {
+		return false, err
+	}
+	defer finish()
+	dir := ""
+	if wt != nil {
+		dir = wt.Dir
+	}
+
 	attempts := 0
 	for {
 		if st.Agent != "" {
@@ -97,7 +119,7 @@ func runStage(ctx context.Context, cfg *config.Config, deps Deps, st config.Stag
 			if !ok {
 				return false, fmt.Errorf("conductor: stage %q references unknown agent %q", st.Name, st.Agent)
 			}
-			if _, err := deps.Driver.Spawn(ctx, agentDef, agentDef.Prompt); err != nil {
+			if _, err := deps.Driver.Spawn(ctx, agentDef, agentDef.Prompt, SpawnOpts{Dir: dir}); err != nil {
 				return false, fmt.Errorf("conductor: stage %q agent %q: %w", st.Name, st.Agent, err)
 			}
 		}
@@ -115,6 +137,9 @@ func runStage(ctx context.Context, cfg *config.Config, deps Deps, st config.Stag
 		}
 
 		if allPass {
+			if err := emitFilesTouched(ctx, wt, st.Agent, emit); err != nil {
+				return false, err
+			}
 			if err := emit(ledger.TypeUnitIntegrated, ledger.UnitIntegrated{ID: st.Name}); err != nil {
 				return false, err
 			}
@@ -134,6 +159,41 @@ func runStage(ctx context.Context, cfg *config.Config, deps Deps, st config.Stag
 		}
 		// otherwise loop and retry the stage
 	}
+}
+
+// stageWorktree creates an isolated worktree for the stage's agent when a repo is
+// configured. It returns the worktree (or nil), a cleanup func, and an error.
+func stageWorktree(ctx context.Context, deps Deps, st config.Stage) (*worktree.Worktree, func(), error) {
+	noop := func() {}
+	if deps.Repo == "" || st.Agent == "" {
+		return nil, noop, nil
+	}
+	id := uuid.NewString()[:8]
+	dir := filepath.Join(os.TempDir(), "rigger-wt-"+id)
+	wt, err := worktree.Create(ctx, deps.Repo, dir, "rigger/"+st.Name+"-"+id)
+	if err != nil {
+		return nil, noop, fmt.Errorf("conductor: stage %q worktree: %w", st.Name, err)
+	}
+	return wt, func() { _ = wt.Remove(ctx) }, nil
+}
+
+// emitFilesTouched records the files the agent changed in its worktree as
+// FileTouched events, feeding the context graph. It is best-effort: a capture
+// failure never fails the unit.
+func emitFilesTouched(ctx context.Context, wt *worktree.Worktree, agent string, emit func(string, any) error) error {
+	if wt == nil {
+		return nil
+	}
+	files, err := wt.ChangedFiles(ctx)
+	if err != nil {
+		return nil
+	}
+	for _, f := range files {
+		if err := emit(contextgraph.TypeFileTouched, contextgraph.FileTouched{Path: f, By: agent}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // topoSort returns the stages in dependency order (a stage's needs come first).

@@ -21,9 +21,11 @@ type Driver struct {
 
 var _ conductor.AgentDriver = Driver{}
 
-// Spawn runs one agent headlessly and returns its output.
-func (d Driver) Spawn(ctx context.Context, agent config.AgentDef, prompt string) (conductor.AgentResult, error) {
-	out, err := exec.CommandContext(ctx, d.bin(), BuildArgs(agent, prompt)...).Output()
+// Spawn runs one agent headlessly in opts.Dir and returns its output.
+func (d Driver) Spawn(ctx context.Context, agent config.AgentDef, prompt string, opts conductor.SpawnOpts) (conductor.AgentResult, error) {
+	cmd := exec.CommandContext(ctx, d.bin(), BuildArgs(agent, prompt)...)
+	cmd.Dir = opts.Dir
+	out, err := cmd.Output()
 	res := conductor.AgentResult{Output: string(out)}
 	if err != nil {
 		return res, fmt.Errorf("cli driver: spawn agent %q: %w", agent.ID, err)
