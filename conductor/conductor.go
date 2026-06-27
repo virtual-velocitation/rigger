@@ -7,12 +7,14 @@
 package conductor
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/google/uuid"
 
@@ -20,6 +22,7 @@ import (
 	"github.com/virtual-velocitation/rigger/contextgraph"
 	"github.com/virtual-velocitation/rigger/eventstore"
 	"github.com/virtual-velocitation/rigger/gate"
+	"github.com/virtual-velocitation/rigger/grounder"
 	"github.com/virtual-velocitation/rigger/ledger"
 	"github.com/virtual-velocitation/rigger/safety"
 	"github.com/virtual-velocitation/rigger/worktree"
@@ -50,6 +53,9 @@ type Deps struct {
 	// via a throwaway worktree, and from which it captures the files the agent
 	// touched. Empty disables isolation (the agent runs in the current directory).
 	Repo string
+	// Grounder, when set, grounds each agent (gives it relevant locations to read)
+	// before it runs. Nil grounds nothing.
+	Grounder grounder.Grounder
 }
 
 // Stream is the run's event stream name.
@@ -175,7 +181,7 @@ func runStage(ctx context.Context, cfg *config.Config, deps Deps, st config.Stag
 			if !ok {
 				return false, fmt.Errorf("conductor: stage %q references unknown agent %q", st.Name, st.Agent)
 			}
-			if _, err := deps.Driver.Spawn(ctx, agentDef, agentDef.Prompt, SpawnOpts{Dir: dir}); err != nil {
+			if _, err := deps.Driver.Spawn(ctx, agentDef, buildPrompt(ctx, deps, st), SpawnOpts{Dir: dir}); err != nil {
 				return false, fmt.Errorf("conductor: stage %q agent %q: %w", st.Name, st.Agent, err)
 			}
 		}
@@ -193,6 +199,9 @@ func runStage(ctx context.Context, cfg *config.Config, deps Deps, st config.Stag
 		}
 
 		if allPass {
+			if err := harvestEmitted(dir, emit); err != nil {
+				return false, err
+			}
 			if err := emitFilesTouched(ctx, wt, st.Agent, emit); err != nil {
 				return false, err
 			}
@@ -249,6 +258,60 @@ func emitFilesTouched(ctx context.Context, wt *worktree.Worktree, agent string, 
 			return err
 		}
 	}
+	return nil
+}
+
+// emitProtocol tells an agent how to record decisions so they reach the context
+// graph: one JSON line per decision in .rigger/emit.jsonl in its working dir.
+const emitProtocol = `Record each decision you make by appending one JSON line to .rigger/emit.jsonl in your working directory, in the form:
+{"type":"DecisionMade","data":{"id":"<short-id>","summary":"<one line>","governs":["<file>"],"supersedes":"<prior-id-or-empty>"}}`
+
+// buildPrompt assembles the task prompt for a stage's agent: grounded context
+// (if a grounder is configured) plus the emit protocol.
+func buildPrompt(ctx context.Context, deps Deps, st config.Stage) string {
+	var b strings.Builder
+	if deps.Grounder != nil {
+		query := st.Coverage
+		if query == "" {
+			query = st.Name
+		}
+		if refs, err := deps.Grounder.Ground(ctx, query, 8); err == nil && len(refs) > 0 {
+			b.WriteString("Relevant locations to read first:\n")
+			for _, r := range refs {
+				fmt.Fprintf(&b, "- %s:%d  %s\n", r.File, r.Line, r.Text)
+			}
+			b.WriteString("\n")
+		}
+	}
+	b.WriteString(emitProtocol)
+	return b.String()
+}
+
+// harvestEmitted reads the events an agent wrote to <dir>/.rigger/emit.jsonl and
+// emits them to the store (populating the context graph with the agent's
+// decisions), then removes the file so a retry does not double-count.
+func harvestEmitted(dir string, emit func(string, any) error) error {
+	path := filepath.Join(dir, ".rigger", "emit.jsonl")
+	f, err := os.Open(path)
+	if err != nil {
+		return nil // nothing emitted
+	}
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		var line struct {
+			Type string          `json:"type"`
+			Data json.RawMessage `json:"data"`
+		}
+		if json.Unmarshal(scanner.Bytes(), &line) != nil || line.Type == "" {
+			continue
+		}
+		if err := emit(line.Type, line.Data); err != nil {
+			_ = f.Close()
+			return err
+		}
+	}
+	_ = f.Close()
+	_ = os.Remove(path)
 	return nil
 }
 
