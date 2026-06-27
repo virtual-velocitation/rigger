@@ -3,6 +3,9 @@
 //! default; the real turbovec engine (semantic vector search) plugs in behind the
 //! same trait under the `turbovec` feature.
 
+#[cfg(feature = "turbovec")]
+pub mod turbovec;
+
 use std::path::Path;
 
 /// A relevant location: a file, a line, and a snippet.

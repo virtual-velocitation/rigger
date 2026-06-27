@@ -11,7 +11,7 @@ use rigger::contextgraph::{self, sqlite::Projector, Projection};
 use rigger::driver::cli;
 use rigger::eventstore::{sqlite::Store, Direction, EventStore, Filter};
 use rigger::gate::ExecRunner;
-use rigger::grounder::Grep;
+use rigger::grounder::{Grep, Grounder};
 use rigger::ledger::{RunState, Status};
 use rigger::sidecar::PeerDecision;
 use rigger::{hooks, spec};
@@ -84,13 +84,13 @@ fn cmd_run(args: &[String]) -> Res {
     let store = Store::open(&db_path("events.db"))?;
     let graph = Projector::open(&db_path("graph.db"))?;
     let driver = cli::Driver::default();
-    let grep = Grep { root: ".".into() };
+    let grounder = select_grounder();
     let deps = Deps {
         store: &store,
         driver: &driver,
         gates: &ExecRunner,
         repo: git_repo(),
-        grounder: Some(&grep),
+        grounder: Some(grounder.as_ref()),
         graph: Some(&graph),
         criteria,
     };
@@ -201,6 +201,24 @@ fn cmd_prime() -> Res {
         println!("(none yet)");
     }
     Ok(())
+}
+
+/// Build the grounder: the real turbovec engine when compiled with `-F turbovec`
+/// (falling back to grep if its model is unavailable), grep otherwise.
+#[cfg(feature = "turbovec")]
+fn select_grounder() -> Box<dyn Grounder> {
+    match rigger::grounder::turbovec::Turbovec::new(".") {
+        Ok(tv) => Box::new(tv),
+        Err(e) => {
+            eprintln!("rigger: turbovec unavailable ({e}); falling back to grep");
+            Box::new(Grep { root: ".".into() })
+        }
+    }
+}
+
+#[cfg(not(feature = "turbovec"))]
+fn select_grounder() -> Box<dyn Grounder> {
+    Box::new(Grep { root: ".".into() })
 }
 
 fn git_repo() -> String {
