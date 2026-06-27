@@ -9,14 +9,51 @@ use serde::Deserialize;
 
 use crate::eventstore::Event;
 
-/// Status of a unit of work.
+/// Status of a unit of work, over its lifecycle
+/// pending -> grounding -> red -> green -> verified -> reviewed -> integrated,
+/// or the terminal failed / escalated.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
     Pending,
-    Running,
+    Grounding,
+    Red,
+    Green,
+    Verified,
+    Reviewed,
     Integrated,
     Failed,
     Escalated,
+}
+
+impl Status {
+    pub fn parse(s: &str) -> Option<Status> {
+        Some(match s {
+            "pending" => Status::Pending,
+            "grounding" => Status::Grounding,
+            "red" => Status::Red,
+            "green" => Status::Green,
+            "verified" => Status::Verified,
+            "reviewed" => Status::Reviewed,
+            "integrated" => Status::Integrated,
+            "failed" => Status::Failed,
+            "escalated" => Status::Escalated,
+            _ => return None,
+        })
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Status::Pending => "pending",
+            Status::Grounding => "grounding",
+            Status::Red => "red",
+            Status::Green => "green",
+            Status::Verified => "verified",
+            Status::Reviewed => "reviewed",
+            Status::Integrated => "integrated",
+            Status::Failed => "failed",
+            Status::Escalated => "escalated",
+        }
+    }
 }
 
 /// Unit is one unit of work in the run.
@@ -24,7 +61,12 @@ pub enum Status {
 pub struct Unit {
     pub id: String,
     pub spec_criterion: String,
+    pub depends_on: Vec<String>,
     pub status: Status,
+    pub worktree: String,
+    pub branch: String,
+    /// red / green / verify / review summaries.
+    pub evidence: BTreeMap<String, String>,
     pub attempts: u32,
     pub commit: String,
 }
@@ -37,6 +79,7 @@ pub struct RunState {
 
 // Run-event types the conductor emits (folded here into run state).
 pub const TYPE_UNIT_STARTED: &str = "UnitStarted";
+pub const TYPE_UNIT_STATUS: &str = "UnitStatus";
 pub const TYPE_UNIT_FAILED: &str = "UnitFailed";
 pub const TYPE_UNIT_ESCALATED: &str = "UnitEscalated";
 pub const TYPE_UNIT_INTEGRATED: &str = "UnitIntegrated";
@@ -46,6 +89,19 @@ struct UnitStarted {
     id: String,
     #[serde(default)]
     spec_criterion: String,
+    #[serde(default)]
+    needs: Vec<String>,
+    #[serde(default)]
+    worktree: String,
+    #[serde(default)]
+    branch: String,
+}
+#[derive(Deserialize)]
+struct UnitStatus {
+    id: String,
+    status: String,
+    #[serde(default)]
+    evidence: BTreeMap<String, String>,
 }
 #[derive(Deserialize)]
 struct UnitFailed {
@@ -73,7 +129,11 @@ impl RunState {
         self.units.entry(id.to_string()).or_insert_with(|| Unit {
             id: id.to_string(),
             spec_criterion: String::new(),
+            depends_on: Vec::new(),
             status: Status::Pending,
+            worktree: String::new(),
+            branch: String::new(),
+            evidence: BTreeMap::new(),
             attempts: 0,
             commit: String::new(),
         })
@@ -86,7 +146,18 @@ impl RunState {
                 let p: UnitStarted = serde_json::from_slice(&e.data)?;
                 let u = self.unit(&p.id);
                 u.spec_criterion = p.spec_criterion;
-                u.status = Status::Running;
+                u.depends_on = p.needs;
+                u.worktree = p.worktree;
+                u.branch = p.branch;
+                u.status = Status::Grounding;
+            }
+            TYPE_UNIT_STATUS => {
+                let p: UnitStatus = serde_json::from_slice(&e.data)?;
+                let u = self.unit(&p.id);
+                if let Some(s) = Status::parse(&p.status) {
+                    u.status = s;
+                }
+                u.evidence.extend(p.evidence);
             }
             TYPE_UNIT_FAILED => {
                 let p: UnitFailed = serde_json::from_slice(&e.data)?;
@@ -110,8 +181,26 @@ impl RunState {
     }
 
     /// Done reports whether the run is complete: at least one unit, all integrated.
+    /// (Coverage and gate-green are enforced by the conductor's coverage gate and
+    /// per-unit gates; a unit reaches Integrated only after its gates pass.)
     pub fn done(&self) -> bool {
         !self.units.is_empty() && self.units.values().all(|u| u.status == Status::Integrated)
+    }
+
+    /// Whether a unit has reached a terminal state (integrated, failed, escalated).
+    pub fn is_terminal(&self, id: &str) -> bool {
+        matches!(
+            self.units.get(id).map(|u| u.status),
+            Some(Status::Integrated) | Some(Status::Failed) | Some(Status::Escalated)
+        )
+    }
+
+    /// Whether a unit has been integrated (used by resume to skip completed work).
+    pub fn is_integrated(&self, id: &str) -> bool {
+        matches!(
+            self.units.get(id).map(|u| u.status),
+            Some(Status::Integrated)
+        )
     }
 }
 
@@ -135,13 +224,40 @@ mod tests {
     #[test]
     fn projects_unit_lifecycle() {
         let events = vec![
-            ev(TYPE_UNIT_STARTED, r#"{"id":"u"}"#),
+            ev(
+                TYPE_UNIT_STARTED,
+                r#"{"id":"u","needs":["x"],"worktree":"/wt","branch":"b"}"#,
+            ),
+            ev(
+                TYPE_UNIT_STATUS,
+                r#"{"id":"u","status":"green","evidence":{"green":"54 passed"}}"#,
+            ),
             ev(TYPE_UNIT_INTEGRATED, r#"{"id":"u","commit":"abc"}"#),
         ];
         let r = project(&events).unwrap();
         assert_eq!(r.units["u"].status, Status::Integrated);
         assert_eq!(r.units["u"].commit, "abc");
+        assert_eq!(r.units["u"].depends_on, ["x"]);
+        assert_eq!(r.units["u"].branch, "b");
+        assert_eq!(
+            r.units["u"].evidence.get("green").map(String::as_str),
+            Some("54 passed")
+        );
         assert!(r.done());
+        assert!(r.is_integrated("u"));
+    }
+
+    #[test]
+    fn folds_intermediate_lifecycle_states() {
+        let events = vec![
+            ev(TYPE_UNIT_STARTED, r#"{"id":"u"}"#),
+            ev(TYPE_UNIT_STATUS, r#"{"id":"u","status":"red"}"#),
+            ev(TYPE_UNIT_STATUS, r#"{"id":"u","status":"verified"}"#),
+        ];
+        let r = project(&events).unwrap();
+        assert_eq!(r.units["u"].status, Status::Verified);
+        assert!(!r.done());
+        assert!(!r.is_terminal("u"));
     }
 
     #[test]
@@ -149,5 +265,6 @@ mod tests {
         let r = project(&[ev(TYPE_UNIT_ESCALATED, r#"{"id":"u"}"#)]).unwrap();
         assert_eq!(r.units["u"].status, Status::Escalated);
         assert!(!r.done());
+        assert!(r.is_terminal("u"));
     }
 }
