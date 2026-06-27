@@ -16,6 +16,11 @@ pub struct Ref {
 /// Grounder returns up to k locations relevant to a query.
 pub trait Grounder: Send + Sync {
     fn ground(&self, query: &str, k: usize) -> Vec<Ref>;
+
+    /// Re-index the given files after a unit integrates, so the next agent grounds
+    /// on the accepted code (turbovec reindexDelta). The default is a no-op - grep
+    /// re-reads the tree each time and needs no index.
+    fn reindex(&self, _src_dir: &str, _files: &[String]) {}
 }
 
 /// Nop grounds nothing.
