@@ -75,6 +75,9 @@ pub struct Unit {
 #[derive(Default)]
 pub struct RunState {
     pub units: BTreeMap<String, Unit>,
+    /// Whether the run flagged a spec defect (an uncovered criterion, §4.4). Folded
+    /// from the conductor's SpecDefect event; gates `fully_done`.
+    pub spec_defect: bool,
 }
 
 // Run-event types the conductor emits (folded here into run state).
@@ -83,6 +86,9 @@ pub const TYPE_UNIT_STATUS: &str = "UnitStatus";
 pub const TYPE_UNIT_FAILED: &str = "UnitFailed";
 pub const TYPE_UNIT_ESCALATED: &str = "UnitEscalated";
 pub const TYPE_UNIT_INTEGRATED: &str = "UnitIntegrated";
+/// The conductor's SpecDefect event (kept in sync with `conductor::TYPE_SPEC_DEFECT`):
+/// an uncovered criterion the run flagged rather than deviating around (§4.4).
+pub const TYPE_SPEC_DEFECT: &str = "SpecDefect";
 
 #[derive(Deserialize)]
 struct UnitStarted {
@@ -175,6 +181,9 @@ impl RunState {
                 u.status = Status::Integrated;
                 u.commit = p.commit;
             }
+            TYPE_SPEC_DEFECT => {
+                self.spec_defect = true;
+            }
             _ => {}
         }
         Ok(())
@@ -184,6 +193,32 @@ impl RunState {
     /// (Coverage and gate-green are enforced by the conductor's coverage gate and
     /// per-unit gates; a unit reaches Integrated only after its gates pass.)
     pub fn done(&self) -> bool {
+        !self.units.is_empty() && self.units.values().all(|u| u.status == Status::Integrated)
+    }
+
+    /// The full "done" predicate (§4.1, R6): every criterion covered + every unit
+    /// integrated + every gate green.
+    ///
+    /// The three conjuncts collapse to two checks here because the conductor already
+    /// enforces the others by construction:
+    /// - **every gate green** is implied by **every unit integrated**: a unit reaches
+    ///   `Integrated` only after `run_gates` returns all-pass (and an adjudicator
+    ///   verdict, when present, approves), so all-integrated already means gate-green.
+    /// - **every criterion covered** is enforced as a gate at the start of the run
+    ///   (and again after planning for a `produces` workflow); a remaining gap halts
+    ///   the run with a SpecDefect rather than reaching here. So the live witness that
+    ///   coverage held is the *absence* of a flagged spec defect.
+    ///
+    /// Hence: when there are criteria to satisfy, the run is fully done iff no spec
+    /// defect was flagged and every unit integrated. With no criteria there is nothing
+    /// to converge against, so this defers to the plain `done` predicate.
+    pub fn fully_done(&self, criteria: &[String]) -> bool {
+        if self.spec_defect {
+            return false;
+        }
+        if criteria.is_empty() {
+            return self.done();
+        }
         !self.units.is_empty() && self.units.values().all(|u| u.status == Status::Integrated)
     }
 
@@ -266,5 +301,36 @@ mod tests {
         assert_eq!(r.units["u"].status, Status::Escalated);
         assert!(!r.done());
         assert!(r.is_terminal("u"));
+    }
+
+    #[test]
+    fn fully_done_holds_for_a_clean_run_and_fails_on_escalation() {
+        let criteria = vec!["crit".into()];
+
+        // Clean run: every unit integrated, no spec defect -> fully done (§4.1, R6).
+        let clean = project(&[
+            ev(TYPE_UNIT_STARTED, r#"{"id":"u","spec_criterion":"crit"}"#),
+            ev(TYPE_UNIT_INTEGRATED, r#"{"id":"u","commit":"abc"}"#),
+        ])
+        .unwrap();
+        assert!(clean.fully_done(&criteria));
+
+        // An escalated unit is not integrated -> not fully done.
+        let escalated = project(&[
+            ev(TYPE_UNIT_STARTED, r#"{"id":"u","spec_criterion":"crit"}"#),
+            ev(TYPE_UNIT_ESCALATED, r#"{"id":"u"}"#),
+        ])
+        .unwrap();
+        assert!(!escalated.fully_done(&criteria));
+
+        // A flagged spec defect gates fully_done even if every unit integrated.
+        let defect = project(&[
+            ev(TYPE_UNIT_STARTED, r#"{"id":"u","spec_criterion":"crit"}"#),
+            ev(TYPE_UNIT_INTEGRATED, r#"{"id":"u","commit":"abc"}"#),
+            ev(TYPE_SPEC_DEFECT, r#"{"reason":"gap"}"#),
+        ])
+        .unwrap();
+        assert!(defect.spec_defect);
+        assert!(!defect.fully_done(&criteria));
     }
 }
