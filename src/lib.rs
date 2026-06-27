@@ -4,6 +4,7 @@
 //! beside them, and the conductor is the top-level use case depending only on
 //! ports. This is the Rust port of the proven Go design.
 
+pub mod config;
 pub mod eventstore;
 pub mod gate;
 pub mod ledger;
