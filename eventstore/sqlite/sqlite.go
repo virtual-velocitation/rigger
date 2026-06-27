@@ -56,6 +56,12 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: open: %w", err)
 	}
+	// Append does a read-then-write in one transaction; two connections each
+	// holding a read lock and trying to upgrade to a write lock deadlock with
+	// SQLITE_BUSY. Serializing through one connection makes concurrent appends
+	// queue cleanly instead. (Reads are quick, so this is not a bottleneck at
+	// the harness's event volume.)
+	db.SetMaxOpenConns(1)
 	if err := db.PingContext(context.Background()); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("sqlite: ping: %w", err)
