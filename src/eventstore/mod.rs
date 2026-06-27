@@ -5,6 +5,12 @@
 
 pub mod sqlite;
 
+#[cfg(feature = "kurrentdb")]
+pub mod kurrentdb;
+
+#[cfg(test)]
+pub mod contract;
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
 use std::sync::Arc;

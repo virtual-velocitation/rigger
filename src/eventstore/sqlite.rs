@@ -208,6 +208,11 @@ mod tests {
     use super::*;
 
     #[test]
+    fn passes_the_contract() {
+        crate::eventstore::contract::assert_contract(&Store::open(":memory:").unwrap());
+    }
+
+    #[test]
     fn subscribe_all_replays_then_goes_live() {
         let s = Store::open(":memory:").unwrap();
         s.append(

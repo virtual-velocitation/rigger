@@ -40,3 +40,19 @@ jobs:
         run: cargo clippy --features turbovec --lib --bins -- -D warnings
       - name: build
         run: cargo build --features turbovec
+
+  # The KurrentDB EventStore adapter. Its contract test spins up a real KurrentDB
+  # via testcontainers (the runner provides Docker), so it runs the same suite the
+  # SQLite store passes - proxy fidelity.
+  kurrentdb:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: clippy
+        run: cargo clippy --features kurrentdb --lib --tests -- -D warnings
+      - name: contract test (KurrentDB via testcontainers)
+        run: cargo test --features kurrentdb eventstore::kurrentdb -- --test-threads=1
