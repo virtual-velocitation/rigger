@@ -3,6 +3,7 @@
 //! `sqlite` is the default adapter, shaped after KurrentDB so the embedded store
 //! is a faithful stand-in for the server one.
 
+pub mod namespace;
 pub mod sqlite;
 
 #[cfg(feature = "kurrentdb")]
