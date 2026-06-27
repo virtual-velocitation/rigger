@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -13,11 +14,13 @@ import (
 
 	"github.com/virtual-velocitation/rigger/conductor"
 	"github.com/virtual-velocitation/rigger/config"
+	"github.com/virtual-velocitation/rigger/contextgraph"
 	graphsqlite "github.com/virtual-velocitation/rigger/contextgraph/sqlite"
 	"github.com/virtual-velocitation/rigger/driver/cli"
 	"github.com/virtual-velocitation/rigger/eventstore"
 	eventsqlite "github.com/virtual-velocitation/rigger/eventstore/sqlite"
 	"github.com/virtual-velocitation/rigger/gate"
+	"github.com/virtual-velocitation/rigger/hooks"
 	"github.com/virtual-velocitation/rigger/ledger"
 )
 
@@ -36,6 +39,10 @@ func main() {
 		err = cmdGraph(os.Args[2:])
 	case "init":
 		err = cmdInit()
+	case "setup":
+		err = cmdSetup()
+	case "prime":
+		err = cmdPrime()
 	case "help", "-h", "--help":
 		usage()
 	default:
@@ -56,6 +63,8 @@ usage:
   rigger run                  run the workflow in .rigger/workflow.yml
   rigger graph --around <id>  print the context subgraph around a node
   rigger init                 scaffold a workflow and an agents/ folder
+  rigger setup                init, then install a Claude Code SessionStart hook
+  rigger prime                print recent decisions (what the hook runs)
 
 storage and graph live in ./.rigger/ (per project, like .git/).
 `)
@@ -180,6 +189,65 @@ func writeIfAbsent(path, content string) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		fmt.Fprintf(os.Stderr, "rigger: write %s: %v\n", path, err)
 	}
+}
+
+func cmdSetup() error {
+	if err := cmdInit(); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(".claude", 0o755); err != nil {
+		return err
+	}
+	settingsPath := filepath.Join(".claude", "settings.json")
+	existing, err := os.ReadFile(settingsPath)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("read %s: %w", settingsPath, err)
+	}
+	merged, err := hooks.InstallSessionStart(existing, "rigger prime")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(settingsPath, merged, 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", settingsPath, err)
+	}
+	fmt.Println("installed a SessionStart hook in .claude/settings.json (it runs `rigger prime`)")
+	return nil
+}
+
+func cmdPrime() error {
+	path := filepath.Join(riggerDir, "events.db")
+	if _, err := os.Stat(path); err != nil {
+		fmt.Println("# Rigger: no decisions recorded yet (run `rigger run` to start).")
+		return nil
+	}
+	store, err := eventsqlite.Open(path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = store.Close() }()
+	events, err := store.ReadAll(context.Background(), 0, eventstore.Backward, eventstore.Filter{})
+	if err != nil {
+		return err
+	}
+	fmt.Println("# Rigger: recent decisions")
+	shown := 0
+	for _, e := range events {
+		if e.Type != contextgraph.TypeDecisionMade {
+			continue
+		}
+		var d contextgraph.DecisionMade
+		if json.Unmarshal(e.Data, &d) != nil {
+			continue
+		}
+		fmt.Printf("- %s: %s\n", d.ID, d.Summary)
+		if shown++; shown >= 10 {
+			break
+		}
+	}
+	if shown == 0 {
+		fmt.Println("(none yet)")
+	}
+	return nil
 }
 
 const scaffoldWorkflow = `name: example
