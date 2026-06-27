@@ -375,6 +375,17 @@ Because the interface *is* the KurrentDB model, the SQLite impl's test suite (ap
 ordering, optimistic-concurrency conflicts, catch-up replay-then-live) doubles as the
 contract test the KurrentDB adapter must also pass: the proxy fidelity you asked for.
 
+### 5.1.1 Per-project segregation (one mechanism, every backend)
+
+Event streams and the context graph are **scoped to one project by default**, never shared. `go get` installs the rigger *binary* into a shared `$GOBIN`, but its *data* is always project-local, enforced by **one mechanism for every backend**, not a different trick per store: a **project namespace applied to stream names**, via a single scoping decorator over the `EventStore` port.
+
+- The decorator prefixes every stream a project writes with its namespace, and filters every read/subscribe by it (stripping the prefix from returned events, so callers see clean stream names). It is written once and wraps *any* `EventStore`; the backends are namespace-unaware.
+- **SQLite** realizes the filter on the `stream` column (`WHERE stream LIKE 'ns-%'`); its `.rigger/` directory is just the default storage path, not the isolation mechanism.
+- **KurrentDB** realizes the same prefix as a server-side `$all` filter (it supports filtered catch-up subscriptions natively), so one server backs many projects, each seeing only its own events against its own checkpoint.
+- The namespace **defaults to the project identity**, so isolation is the default. A hard boundary (security or multi-tenant) is just config: a dedicated SQLite file, or a dedicated KurrentDB instance.
+
+This is dependency inversion (R8) paying off directly: because the decorator depends on the `EventStore` *interface*, segregation is one implementation for all backends. And the **context graph is always a local, per-project projection**, rebuilt into `.rigger/` from the namespaced stream whatever the log backend, so even a shared KurrentDB server never shares a graph.
+
 ### 5.2 The context graph: a bi-temporal projection
 
 The graph is a **read model** the projector maintains by folding `$all`. Rigger ships the
@@ -630,9 +641,21 @@ Library use (embed the harness) is the same packages imported directly.
     gate green; failures escalate or bounded-retry, never silently drop, never infinite-spin.
   - R7 SELF-CONTAINED PUBLISH: `go get`-installable; no runtime dependency on Claude Code or a
     database server in the default configuration.
+  - R8 CLEAN ARCHITECTURE + DI: ports (EventStore/GraphProjection/AgentDriver/Grounder) are
+    interfaces; sqlite/kurrentdb/cli/workflow are adapters that depend inward; use cases depend
+    only on ports; a single composition root (`cmd/rigger`) constructs the concrete adapters and
+    injects them. No globals, no package-level singletons, no type building its own dependencies.
+    Idiomatic Go throughout: small interfaces, accept interfaces and return concrete types, errors
+    as values, one responsibility per package, no premature abstraction.
+  - R9 PROJECT-SCOPED DATA, ONE MECHANISM: event streams and the context graph are segregated per
+    project by a single scoping decorator over the EventStore port, a project namespace applied to
+    stream names, identical for every backend (SQLite filters the `stream` column; KurrentDB filters
+    `$all` server-side). The shared `go get` binary never implies shared data; the graph is always a
+    local, per-project projection.
 - Consequences: a hardcoded flow, a project-specific concept baked into the core, a mutable
-  (non-event-sourced) source of truth, a deleted-not-invalidated fact, or a default that
-  requires a server/IDE is a defect.
+  (non-event-sourced) source of truth, a deleted-not-invalidated fact, a default that requires a
+  server/IDE, a use case that depends on a concrete adapter instead of a port, or a second
+  segregation mechanism are defects.
 ```
 
 ### Proposed Rigger glossary rows (`rigger/docs/glossary.md`, status `pending ADR-0001`)
