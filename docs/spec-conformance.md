@@ -17,15 +17,15 @@ against the code. Phases are in dependency order; each lands CI-green.
 - [x] KurrentDB `open` fails fast on an unreachable server (§8)
 - [x] Contract suite: revision assignment, `actual` in conflicts, meta/valid_from round-trip (§5.1)
 
-## Phase 2 - Context graph
-- [ ] `DECIDED` (agent->decision) edge from the event actor (meta) (§5.2, §7)
-- [ ] `BLOCKS` (need->unit) edge (§5.2)
-- [ ] `ASSIGNED_TO` (unit->agent) edge (§5.2)
-- [ ] Edge `valid_from` = the event's caller-supplied valid_from (§5.2, §7)
-- [ ] Supersession stamps `valid_to` on the SUPERSEDES edge too, not only GOVERNS (§7)
-- [ ] `Resolve` + a populated alias table that collapses synonyms (§5.2)
-- [ ] `alias_unresolved` event + node-on-miss, never silently dropped (§8)
-- [ ] `GATED_BY` produced in the live run (conductor `GateVerdict` carries `artifact`) (§7)
+## Phase 2 - Context graph (projector DONE; conductor emits the fields in Phase 3)
+- [x] `DECIDED` (agent->decision) edge from the event actor (meta) (§5.2, §7) - fold done
+- [x] `BLOCKS` (need->unit) edge from UnitStarted (§5.2) - fold done
+- [x] `ASSIGNED_TO` (unit->agent) edge from UnitStarted (§5.2) - fold done
+- [x] Edge `valid_from` = the event's caller-supplied valid_from (§5.2, §7)
+- [x] Supersession invalidates the superseded decision's governing edges (§7)
+- [x] `Resolve` + alias table (AliasDefined) that collapses synonyms in the fold (§5.2)
+- [x] `alias_unresolved` event + node-marked-for-merge, never silently dropped (§8)
+- [~] `GATED_BY` produced in the live run - fold ready; conductor `GateVerdict` to carry `artifact` (Phase 3)
 
 ## Phase 3 - Conductor, ledger, rails
 - [ ] Resume-by-replay: `run()` folds existing state, skips integrated units (§4.2, §8)

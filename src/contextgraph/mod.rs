@@ -21,11 +21,17 @@ pub const KIND_UNIT: &str = "unit";
 pub const KIND_LESSON: &str = "lesson";
 
 // Edge relationships.
+pub const REL_DECIDED: &str = "DECIDED";
 pub const REL_SUPERSEDES: &str = "SUPERSEDES";
 pub const REL_TOUCHES: &str = "TOUCHES";
 pub const REL_GOVERNS: &str = "GOVERNS";
 pub const REL_GATED_BY: &str = "GATED_BY";
 pub const REL_ABOUT: &str = "ABOUT";
+pub const REL_BLOCKS: &str = "BLOCKS";
+pub const REL_ASSIGNED_TO: &str = "ASSIGNED_TO";
+
+/// The metadata key carrying the acting agent on an event (the DECIDED source).
+pub const META_ACTOR: &str = "actor";
 
 /// A node in the graph: a decision, artifact, agent, gate, unit, or lesson.
 #[derive(Clone, Debug)]
@@ -58,8 +64,11 @@ pub struct Graph {
 pub const TYPE_DECISION_MADE: &str = "DecisionMade";
 pub const TYPE_FILE_TOUCHED: &str = "FileTouched";
 pub const TYPE_GATE_VERDICT: &str = "GateVerdict";
+pub const TYPE_UNIT_STARTED: &str = "UnitStarted";
 pub const TYPE_UNIT_INTEGRATED: &str = "UnitIntegrated";
 pub const TYPE_LESSON_LEARNED: &str = "LessonLearned";
+pub const TYPE_ALIAS_DEFINED: &str = "AliasDefined";
+pub const TYPE_ALIAS_UNRESOLVED: &str = "AliasUnresolved";
 
 #[derive(Deserialize)]
 struct DecisionMade {
@@ -86,10 +95,29 @@ struct GateVerdict {
     artifact: String,
 }
 #[derive(Deserialize)]
+struct UnitStarted {
+    unit: String,
+    #[serde(default)]
+    criterion: String,
+    #[serde(default)]
+    agent: String,
+    #[serde(default)]
+    needs: Vec<String>,
+}
+#[derive(Deserialize)]
 struct UnitIntegrated {
     unit: String,
     #[serde(default)]
     commit: String,
+}
+#[derive(Deserialize)]
+struct AliasDefined {
+    alias: String,
+    canonical: String,
+}
+#[derive(Deserialize)]
+struct AliasUnresolved {
+    mention: String,
 }
 #[derive(Deserialize)]
 struct LessonLearned {
