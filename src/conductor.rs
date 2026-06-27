@@ -257,6 +257,7 @@ impl RunCtx<'_> {
     ) -> Result<bool, Error> {
         let mut attempts = 0u32;
         loop {
+            let mut spawn_err: Option<String> = None;
             if !st.agent.is_empty() {
                 let agent_def = self.cfg.agents.get(&st.agent).ok_or_else(|| {
                     Error(format!(
@@ -266,26 +267,27 @@ impl RunCtx<'_> {
                 })?;
                 let prompt = self.build_prompt(st);
                 let emit = |t: &str, v: Value| self.emit_with_actor(&st.agent, t, v);
-                self.deps
-                    .driver
-                    .spawn(
-                        agent_def,
-                        &prompt,
-                        &SpawnOpts {
-                            dir: dir.to_string(),
-                        },
-                        &emit,
-                    )
-                    .map_err(|e| {
-                        Error(format!("stage {:?} agent {:?}: {}", st.name, st.agent, e.0))
-                    })?;
-                self.emit(
-                    ledger::TYPE_UNIT_STATUS,
-                    json!({"id": st.name, "status": "green"}),
-                )?;
+                match self.deps.driver.spawn(
+                    agent_def,
+                    &prompt,
+                    &SpawnOpts {
+                        dir: dir.to_string(),
+                    },
+                    &emit,
+                ) {
+                    Ok(_) => {
+                        self.emit(
+                            ledger::TYPE_UNIT_STATUS,
+                            json!({"id": st.name, "status": "green"}),
+                        )?;
+                    }
+                    // A mid-spawn crash (usage limit, non-zero exit) is remediated,
+                    // not propagated: it must not abort the whole run (§8).
+                    Err(e) => spawn_err = Some(format!("agent {:?}: {}", st.agent, e.0)),
+                }
             }
 
-            if self.run_gates(st, dir)? {
+            if spawn_err.is_none() && self.run_gates(st, dir)? {
                 self.emit(
                     ledger::TYPE_UNIT_STATUS,
                     json!({"id": st.name, "status": "verified"}),
@@ -305,18 +307,21 @@ impl RunCtx<'_> {
                 json!({"id": st.name, "attempts": attempts}),
             )?;
             if rem.decision == safety::Decision::Escalate {
+                let why = spawn_err
+                    .clone()
+                    .unwrap_or_else(|| "its gates would not pass".to_string());
                 self.emit_lesson(
                     wt,
                     &st.name,
                     &format!(
-                        "unit {:?} escalated after {attempts} attempts; its gates would not pass",
+                        "unit {:?} escalated after {attempts} attempts; {why}",
                         st.name
                     ),
                 );
                 self.emit(ledger::TYPE_UNIT_ESCALATED, json!({"id": st.name}))?;
                 return Ok(false);
             }
-            // otherwise loop and retry the stage
+            // otherwise loop and retry the stage (with re-grounding via build_prompt)
         }
     }
 
@@ -324,11 +329,19 @@ impl RunCtx<'_> {
         let mut attempts = 0u32;
         loop {
             self.run_agents_concurrently(st, &st.agents)?;
-            if !st.adjudicator.is_empty() {
-                self.run_agents_concurrently(st, std::slice::from_ref(&st.adjudicator))?;
-            }
+            // The adversarial adjudicator's verdict gates the stage (§3.2): an
+            // explicit reject blocks integration, no matter the static gates.
+            let approved = if st.adjudicator.is_empty() {
+                true
+            } else {
+                self.emit(
+                    ledger::TYPE_UNIT_STATUS,
+                    json!({"id": st.name, "status": "reviewed"}),
+                )?;
+                self.run_adjudicator(st, &st.adjudicator)?
+            };
 
-            if self.run_gates(st, "")? {
+            if approved && self.run_gates(st, "")? {
                 self.emit(
                     ledger::TYPE_UNIT_INTEGRATED,
                     json!({"id": st.name, "commit": ""}),
@@ -405,6 +418,30 @@ impl RunCtx<'_> {
         let unit = format!("{}/{}", st.name, agent_id);
         self.integrate_and_emit(wt, agent_id, &unit)?;
         Ok(())
+    }
+
+    /// Run the adjudicator and return whether it approves; its verdict gates the
+    /// stage. The adjudicator reviews - it produces no code to integrate.
+    fn run_adjudicator(&self, st: &Stage, adj_id: &str) -> Result<bool, Error> {
+        let agent_def = self.cfg.agents.get(adj_id).ok_or_else(|| {
+            Error(format!(
+                "stage {:?} references unknown adjudicator {:?}",
+                st.name, adj_id
+            ))
+        })?;
+        let prompt = self.build_prompt(st);
+        let emit = |t: &str, v: Value| self.emit_with_actor(adj_id, t, v);
+        let result = self
+            .deps
+            .driver
+            .spawn(agent_def, &prompt, &SpawnOpts { dir: String::new() }, &emit)
+            .map_err(|e| {
+                Error(format!(
+                    "stage {:?} adjudicator {:?}: {}",
+                    st.name, adj_id, e.0
+                ))
+            })?;
+        Ok(verdict_approves(&result.output))
     }
 
     fn run_gates(&self, st: &Stage, dir: &str) -> Result<bool, Error> {
@@ -651,6 +688,20 @@ fn remove_all(jobs: &[(String, Option<Worktree>)]) {
     }
 }
 
+/// An adjudicator's verdict gates the stage: an explicit "reject" in its REVIEW
+/// output blocks integration; anything else (approve, or no parseable verdict)
+/// passes.
+fn verdict_approves(output: &str) -> bool {
+    for line in output.lines().rev() {
+        if let Ok(v) = serde_json::from_str::<Value>(line.trim()) {
+            if let Some(verdict) = v.get("verdict").and_then(|x| x.as_str()) {
+                return !verdict.eq_ignore_ascii_case("reject");
+            }
+        }
+    }
+    true
+}
+
 const EMIT_PROTOCOL: &str = "Record each decision you make by calling the rigger_emit tool the moment you make it, with type \"DecisionMade\" and data:\n{\"id\":\"<short-id>\",\"summary\":\"<one line>\",\"governs\":[\"<file>\"],\"supersedes\":\"<prior-id-or-empty>\"}\nThis writes it to the shared event log live, so other agents see it immediately.";
 
 fn write_nodes(b: &mut String, g: &Graph, kind: &str, header: &str) {
@@ -783,6 +834,8 @@ mod tests {
     struct Stub {
         write_file: Option<String>,
         emits: Vec<(String, Value)>,
+        output: String,
+        fail_spawn: bool,
         last_prompt: Mutex<String>,
     }
     impl Stub {
@@ -790,6 +843,8 @@ mod tests {
             Stub {
                 write_file: None,
                 emits: Vec::new(),
+                output: String::new(),
+                fail_spawn: false,
                 last_prompt: Mutex::new(String::new()),
             }
         }
@@ -803,6 +858,9 @@ mod tests {
             emit: &dyn Fn(&str, Value) -> Result<(), Error>,
         ) -> Result<AgentResult, Error> {
             *self.last_prompt.lock().unwrap() = prompt.to_string();
+            if self.fail_spawn {
+                return Err(Error("simulated mid-spawn crash".into()));
+            }
             if let Some(f) = &self.write_file {
                 let _ = std::fs::write(Path::new(&opts.dir).join(f), "work\n");
             }
@@ -810,7 +868,7 @@ mod tests {
                 emit(t, v.clone())?;
             }
             Ok(AgentResult {
-                output: String::new(),
+                output: self.output.clone(),
             })
         }
     }
@@ -1182,6 +1240,73 @@ mod tests {
             !rs.units.contains_key("impl"),
             "the refused unit must not be added to the run"
         );
+    }
+
+    #[test]
+    fn adjudicator_reject_blocks_the_stage() {
+        let mut cfg = Config::default();
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("adj".into(), agent("adj"));
+        cfg.workflow.stages.insert(
+            "review".into(),
+            Stage {
+                name: "review".into(),
+                agents: vec!["lens".into()],
+                adjudicator: "adj".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            output: r#"{"verdict":"reject","issues":[]}"#.into(),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs.units["review"].status,
+            ledger::Status::Escalated,
+            "a rejecting adjudicator must block integration even with no static gates"
+        );
+    }
+
+    #[test]
+    fn mid_spawn_crash_escalates_without_aborting_the_run() {
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent("a"));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "a".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            fail_spawn: true,
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        // The run completes (Ok), not aborted; the crashing unit escalates.
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(rs.units["s"].status, ledger::Status::Escalated);
     }
 
     fn init_repo() -> tempfile::TempDir {

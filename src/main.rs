@@ -79,6 +79,14 @@ fn cmd_run(args: &[String]) -> Res {
         let text = std::fs::read_to_string(spec_path)
             .map_err(|e| format!("read spec {spec_path}: {e}"))?;
         criteria = spec::extract_criteria(&text);
+        // Loop-ready gate (§8): never guess "done" - a spec with no enumerable
+        // Done-when criteria blocks until a human adds them.
+        if criteria.is_empty() {
+            return Err(format!(
+                "loop-ready: spec {spec_path} has no enumerable Done-when criteria (checkbox items); add them before running"
+            )
+            .into());
+        }
     }
     std::fs::create_dir_all(RIGGER_DIR)?;
     let store = Store::open(&db_path("events.db"))?;
