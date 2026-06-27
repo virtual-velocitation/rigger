@@ -29,6 +29,7 @@ import (
 	"github.com/virtual-velocitation/rigger/hooks"
 	"github.com/virtual-velocitation/rigger/ledger"
 	"github.com/virtual-velocitation/rigger/mcpserver"
+	"github.com/virtual-velocitation/rigger/sidecar"
 )
 
 const riggerDir = ".rigger"
@@ -143,6 +144,12 @@ func cmdServe(_ []string) error {
 	}
 	defer func() { _ = graph.Close() }()
 
+	peers, err := sidecar.Start(ctx, store, 0, eventstore.Filter{})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = peers.Close() }()
+
 	driver := workflow.New()
 	go func() {
 		if _, runErr := conductor.Run(ctx, cfg, conductor.Deps{
@@ -154,7 +161,7 @@ func cmdServe(_ []string) error {
 		cancel() // the run is done; stop serving
 	}()
 
-	if err := mcpserver.New(driver, store, conductor.Stream).Run(ctx, &mcp.StdioTransport{}); err != nil && ctx.Err() == nil {
+	if err := mcpserver.New(driver, store, conductor.Stream, peers).Run(ctx, &mcp.StdioTransport{}); err != nil && ctx.Err() == nil {
 		return err
 	}
 	return nil
