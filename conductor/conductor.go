@@ -254,6 +254,7 @@ func runStage(ctx context.Context, cfg *config.Config, deps Deps, st config.Stag
 			return false, err
 		}
 		if rem.Decision == safety.Escalate {
+			emitLesson(ctx, wt, emit, st.Name, fmt.Sprintf("unit %q escalated after %d attempts; its gates would not pass", st.Name, attempts))
 			if err := emit(ledger.TypeUnitEscalated, ledger.UnitEscalated{ID: st.Name}); err != nil {
 				return false, err
 			}
@@ -329,9 +330,9 @@ func buildPrompt(ctx context.Context, deps Deps, st config.Stage) string {
 	return b.String()
 }
 
-// graphContext returns the decisions that currently govern the seed files, read
-// from the live context graph - so an agent never works blind to what a prior
-// agent decided about the code it is about to touch.
+// graphContext returns the decisions that govern the seed files and the lessons
+// learned about them, read from the live context graph - so an agent never works
+// blind to what prior agents decided or what the loop already learned the hard way.
 func graphContext(ctx context.Context, deps Deps, seed []string) string {
 	if deps.Graph == nil || len(seed) == 0 {
 		return ""
@@ -341,21 +342,42 @@ func graphContext(ctx context.Context, deps Deps, seed []string) string {
 		return ""
 	}
 	var b strings.Builder
+	writeNodes(&b, g, contextgraph.KindDecision, "Decisions that govern these files (do not contradict them; supersede explicitly if you must):")
+	writeNodes(&b, g, contextgraph.KindLesson, "Lessons already learned about these files (do not repeat these mistakes):")
+	return b.String()
+}
+
+func writeNodes(b *strings.Builder, g contextgraph.Graph, kind, header string) {
+	first := true
 	for _, n := range g.Nodes {
-		if n.Kind != contextgraph.KindDecision {
+		if n.Kind != kind {
 			continue
 		}
 		if s := n.Attrs["summary"]; s != "" {
-			if b.Len() == 0 {
-				b.WriteString("Decisions that govern these files (do not contradict them; supersede explicitly if you must):\n")
+			if first {
+				b.WriteString(header + "\n")
+				first = false
 			}
-			fmt.Fprintf(&b, "- %s: %s\n", n.ID, s)
+			fmt.Fprintf(b, "- %s: %s\n", n.ID, s)
 		}
 	}
-	if b.Len() > 0 {
+	if !first {
 		b.WriteString("\n")
 	}
-	return b.String()
+}
+
+// emitLesson records what the loop learned from a failure, about the files the
+// failed unit touched, so future agents grounded on them surface it.
+func emitLesson(ctx context.Context, wt *worktree.Worktree, emit func(string, any) error, unitName, summary string) {
+	var about []string
+	if wt != nil {
+		about, _ = wt.ChangedFiles(ctx)
+	}
+	_ = emit(contextgraph.TypeLessonLearned, contextgraph.LessonLearned{
+		ID:      "lesson-" + unitName + "-" + uuid.NewString()[:8],
+		Summary: summary,
+		About:   about,
+	})
 }
 
 func appendUnique(s []string, v string) []string {
@@ -406,6 +428,7 @@ func runFanOutStage(ctx context.Context, cfg *config.Config, deps Deps, st confi
 			return false, err
 		}
 		if rem.Decision == safety.Escalate {
+			emitLesson(ctx, nil, emit, st.Name, fmt.Sprintf("review stage %q escalated after %d attempts", st.Name, attempts))
 			if err := emit(ledger.TypeUnitEscalated, ledger.UnitEscalated{ID: st.Name}); err != nil {
 				return false, err
 			}

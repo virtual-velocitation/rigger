@@ -23,6 +23,7 @@ const (
 	KindAgent    = "agent"
 	KindGate     = "gate"
 	KindUnit     = "unit"
+	KindLesson   = "lesson"
 )
 
 // Edge relationships.
@@ -32,6 +33,9 @@ const (
 	RelTouches    = "TOUCHES"
 	RelGoverns    = "GOVERNS"
 	RelGatedBy    = "GATED_BY"
+	RelAbout      = "ABOUT"
+	RelBlocks     = "BLOCKS"
+	RelAssignedTo = "ASSIGNED_TO"
 )
 
 // Node is an entity in the graph: a decision, artifact, agent, gate, or unit.
@@ -87,7 +91,17 @@ const (
 	TypeFileTouched    = "FileTouched"
 	TypeGateVerdict    = "GateVerdict"
 	TypeUnitIntegrated = "UnitIntegrated"
+	TypeLessonLearned  = "LessonLearned"
 )
+
+// LessonLearned records something the loop learned from a failure (a repeated
+// escalation, a recurring rejection), so future agents grounded on the same files
+// surface it instead of repeating the mistake (architecture: the LEARN arc).
+type LessonLearned struct {
+	ID      string   `json:"id"`
+	Summary string   `json:"summary"`
+	About   []string `json:"about,omitempty"` // the files/artifacts the lesson concerns
+}
 
 // DecisionMade records a decision an agent made, what artifacts it governs, and
 // whether it supersedes a prior decision (which invalidates that decision's

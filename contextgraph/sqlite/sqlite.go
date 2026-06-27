@@ -169,6 +169,22 @@ func fold(ctx context.Context, tx *sql.Tx, e eventstore.Event) error {
 		if err := ensureNode(ctx, tx, u.Unit, contextgraph.KindUnit, map[string]string{"commit": u.Commit, "status": "integrated"}); err != nil {
 			return err
 		}
+	case contextgraph.TypeLessonLearned:
+		var l contextgraph.LessonLearned
+		if err := json.Unmarshal(e.Data, &l); err != nil {
+			return fmt.Errorf("graph: decode LessonLearned: %w", err)
+		}
+		if err := ensureNode(ctx, tx, l.ID, contextgraph.KindLesson, map[string]string{"summary": l.Summary}); err != nil {
+			return err
+		}
+		for _, path := range l.About {
+			if err := ensureNode(ctx, tx, path, contextgraph.KindArtifact, nil); err != nil {
+				return err
+			}
+			if err := addEdge(ctx, tx, l.ID, path, contextgraph.RelAbout, at, e.Position); err != nil {
+				return err
+			}
+		}
 	default:
 		// An event type the graph does not model is simply ignored.
 	}
