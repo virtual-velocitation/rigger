@@ -12,3 +12,4 @@ pub mod grounder;
 pub mod ledger;
 pub mod safety;
 pub mod spec;
+pub mod worktree;
