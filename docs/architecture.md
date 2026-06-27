@@ -1,8 +1,8 @@
 # Rigger: Reference Architecture & Blueprint
 
-> **Status:** Reference architecture. **PROPOSAL (pre-implementation).**
+> **Status:** Reference architecture. **[AS-BUILT] (implemented in Rust).**
 > **Subject:** `Rigger`, a standalone, general-purpose, multi-agent development-loop
-> harness, published as a public Go module (`go get github.com/virtual-velocitation/rigger`).
+> harness, published as a public Rust crate (`cargo install --git https://github.com/virtual-velocitation/rigger`).
 > **Scope:** the complete blueprint to reproduce the harness from scratch: the
 > orchestration core, the declarative config model (agent files + workflow YAML),
 > the event-sourced + context-graph memory layer, and the two pluggable seams
@@ -48,7 +48,7 @@ next agent is never blind to what the last one decided.** It is the *producing* 
 (spec → code); an adversarial *review* loop is a stage inside it.
 
 **It is:**
-- A **single static Go binary** + a **public Go module** (`go get`).
+- A **single Rust binary** (cargo-installable) + a **public Rust crate** (`cargo install --git …` / a library dependency).
 - **Language-/project-agnostic.** It knows nothing about your build tool, test runner,
   tracker, or domain. You bring those as config.
 - **Declarative.** The agents are **definition files**; the flow is a **workflow YAML**
@@ -61,9 +61,10 @@ next agent is never blind to what the last one decided.** It is the *producing* 
 - Tied to Claude Code. The default agent driver shells out to the `claude` CLI; running
   *inside* Claude Code (with the Workflow tool) is an *optional* driver, not a requirement.
 - Tied to a database server. The default event store is embedded SQLite (zero-dependency,
-  single file). KurrentDB is an *optional* backend behind the same interface.
+  single file). KurrentDB is an *optional* backend behind the same trait, built and shipped
+  behind the `kurrentdb` cargo feature.
 - Opinionated about your gates. A gate is "a command that must exit 0" plus an autonomy
-  level. `go test`, `cargo test`, `pytest`, `npm test`, a custom lint: all just YAML.
+  level. `cargo test`, `go test`, `pytest`, `npm test`, a custom lint: all just YAML.
 
 ### The inversion (why "no current config exists")
 
@@ -71,7 +72,7 @@ next agent is never blind to what the last one decided.** It is the *producing* 
         tank_game dev-loop (AS-BUILT)              Rigger (TARGET)
    ┌─────────────────────────────────┐     ┌──────────────────────────────┐
    │ MACHINERY  (general)            │     │ MACHINERY  →  the Rigger crate │
-   │  conductor · ledger · DAG ·     │ ══▶ │  (Go: conductor, eventstore,   │
+   │  conductor · ledger · DAG ·     │ ══▶ │  (Rust: conductor, eventstore, │
    │  gates · autonomy · fan-out ·   │     │   contextgraph, drivers, …)    │
    │  review · context-graph(new)    │     └──────────────────────────────┘
    ├─────────────────────────────────┤     ┌──────────────────────────────┐
@@ -88,7 +89,7 @@ surface.
 
 ---
 
-## 2. Architecture at a glance  **[TARGET]**
+## 2. Architecture at a glance  **[AS-BUILT]**
 
 ```mermaid
 flowchart TB
@@ -97,7 +98,7 @@ flowchart TB
     WF[".rigger/workflow.yml<br/>(DAG: stages · needs · gates · autonomy)"]
   end
 
-  subgraph CORE["⚙️ RIGGER CORE (Go - the published module)"]
+  subgraph CORE["⚙️ RIGGER CORE (Rust - the published crate)"]
     direction TB
     LOADER["config loader<br/>(parse agents + workflow → runtime DAG)"]
     COND["conductor<br/>(execute the DAG · sole state writer)"]
@@ -109,11 +110,11 @@ flowchart TB
     LOADER --> COND
   end
 
-  subgraph SEAMS["🔌 PLUGGABLE SEAMS (interfaces, 2 impls each)"]
+  subgraph SEAMS["🔌 PLUGGABLE SEAMS (traits, 2 impls each)"]
     direction LR
-    ES["EventStore<br/>■ sqlite (default)<br/>○ kurrentdb (optional)"]
-    DR["AgentDriver<br/>■ cli  (claude -p, default)<br/>○ workflow (JS shim, optional)"]
-    GR["Grounder<br/>■ none / grep<br/>○ vector (turbovec-like)"]
+    ES["EventStore<br/>■ sqlite (default)<br/>○ kurrentdb (feature)"]
+    DR["AgentDriver<br/>■ cli  (claude, default)<br/>○ workflow (MCP shim)"]
+    GR["Grounder<br/>■ grep (default)<br/>○ turbovec (feature)"]
   end
 
   subgraph MEM["🧠 MEMORY"]
@@ -131,14 +132,14 @@ flowchart TB
   GR -->|top-k chunks| COND
 ```
 
-**Two hard seams, one philosophy:** *the core depends on interfaces; the impls are
-swapped by config:*
+**Two hard seams, one philosophy:** *the core depends on traits; the impls are
+swapped by config / cargo feature:*
 
-| Seam | Interface | Default impl | Optional impl | Why pluggable |
+| Seam | Trait | Default impl | Optional impl | Why pluggable |
 |---|---|---|---|---|
-| **EventStore** | append / read / subscribe / position | `sqlite` (embedded, 1 file) | `kurrentdb` (gRPC server) | local zero-dep dev vs. multi-machine / scale; KurrentDB-shaped so the *test* of the embedded impl is a faithful proxy for the server |
-| **AgentDriver** | `Spawn(agent, prompt, opts) → result` | `cli` (`claude -p`, subprocess) | `workflow` (JS Workflow shim) | self-contained `go get` install vs. in-Claude-Code parallel/journal/resume |
-| **Grounder** | `Ground(query) → []ref` | `nop` / `grep` | `vector` (local embeddings) | a project may want semantic grounding (turbovec-style) or none |
+| **EventStore** | `append` / `read_stream` / `read_all` / `subscribe_all` | `sqlite` (embedded, 1 file) | `kurrentdb` (gRPC server, `kurrentdb` feature) | local zero-dep dev vs. multi-machine / scale; KurrentDB-shaped so the *contract suite* of the embedded impl is a faithful proxy for the server |
+| **AgentDriver** | `spawn(agent, prompt, opts, emit) → result` | `cli` (`claude` subprocess) | `workflow` (MCP shim) | self-contained `cargo install` vs. in-Claude-Code parallel/journal/resume |
+| **Grounder** | `ground(query, k) → Vec<Ref>` | `grep` (default) / `Nop` | `turbovec` (native vector search, `turbovec` feature) | a project may want semantic grounding (turbovec) or none |
 
 ---
 
@@ -192,12 +193,12 @@ on: { spec: { path: "specs/**.md" } }      # what kicks off a run
 
 defaults:
   autonomy: manual                          # manual | auto_notify | silent
-  grounder: vector
+  grounder: turbovec                        # grep (default) | turbovec (needs the cargo feature)
 
 gates:                                      # reusable gate library (commands)
-  build:   { run: "go build ./...",                 kind: core }
-  test:    { run: "go test ./...",                  kind: core }
-  lint:    { run: "golangci-lint run",              kind: elevated }
+  build:   { run: "cargo build",                    kind: core }
+  test:    { run: "cargo test",                     kind: core }
+  lint:    { run: "cargo clippy -- -D warnings",    kind: elevated }
   custom:  { run: "./scripts/my-invariant.sh",      kind: elevated }
 
 stages:
@@ -280,24 +281,21 @@ the event log** (§5): the run's state (units, coverage, gate history, autonomy)
 *derived* by folding the events, so a crashed/compacted run resumes by replaying. The
 Conductor is the sole writer of *projections*; agents only ever *append events*.
 
-```go
-// the conductor owns the run; agents never mutate shared state directly
-type RunState struct {
-    Task     TaskRef
-    DAG      []Unit                 // the living unit DAG
-    Coverage []CriterionCoverage
-    Gates    map[string]GateState   // id → {autonomy, history}
-    Budget   Budget
+```rust
+// the conductor owns the run; agents never mutate shared state directly. RunState
+// is projected from the event log by folding the run events (see `ledger`).
+pub struct RunState {
+    pub units: BTreeMap<String, Unit>,
 }
-type Unit struct {
-    ID            string
-    SpecCriterion string                // every unit maps to a criterion (anti-fragmentation)
-    DependsOn     []string
-    Status        UnitStatus            // pending→grounding→red→green→verified→reviewed→integrated | failed | escalated
-    Worktree, Branch string
-    Evidence      map[string]string     // red/green/verify/review summaries
-    Attempts      int
+pub struct Unit {
+    pub id: String,
+    pub spec_criterion: String,   // every unit maps to a criterion (anti-fragmentation)
+    pub status: Status,           // Pending | Running | Integrated | Failed | Escalated
+    pub attempts: u32,
+    pub commit: String,           // the integrating commit, once it lands
 }
+// The conductor folds run events (UnitStarted / UnitFailed / UnitEscalated /
+// UnitIntegrated) into this state; gate-autonomy history lives in the gate engine.
 ```
 
 ### 4.3 The autonomy ratchet (bidirectional, self-correcting)
@@ -326,102 +324,125 @@ and subscribe for in-flight decisions.**
 
 ### 5.1 The event store: KurrentDB-shaped, embedded by default
 
-The interface mirrors KurrentDB's primitives so the embedded SQLite impl is a faithful
-*test proxy* for the real server; swapping backends is a config flip, not an
+The trait mirrors KurrentDB's primitives so the embedded SQLite impl is a faithful
+*contract proxy* for the real server; swapping backends is a config flip, not an
 architecture change.
 
-```go
-package eventstore
-
+```rust
+// src/eventstore/mod.rs
 // Mirrors KurrentDB: append-only streams, a global $all order, catch-up subscriptions.
-type EventStore interface {
-    // Append events to a stream with optimistic concurrency (expectedVersion).
-    Append(ctx context.Context, stream string, expected Version, events ...Event) (Position, error)
-    // Read a single stream forward/backward from a revision.
-    ReadStream(ctx context.Context, stream string, from Revision, dir Direction) (Iterator, error)
-    // Read the global $all stream (every event, globally ordered): the projector's input.
-    ReadAll(ctx context.Context, from Position, dir Direction) (Iterator, error)
-    // Catch-up subscription: replay history from `from`, then stream live appends.
-    // This is the (A) live-awareness mechanism: a running agent's side-car watches $all.
-    SubscribeAll(ctx context.Context, from Position, filter Filter) (Subscription, error)
-    SubscribeStream(ctx context.Context, stream string, from Revision) (Subscription, error)
+pub trait EventStore: Send + Sync {
+    /// Append events to a stream under an optimistic-concurrency expectation,
+    /// returning the last global position written; a failed expectation yields
+    /// `Error::Conflict`.
+    fn append(&self, stream: &str, expected: ExpectedRevision, events: &[Event])
+        -> Result<Position, Error>;
+
+    /// Read one stream's events from a global position, in a direction.
+    fn read_stream(&self, stream: &str, from: Position, dir: Direction)
+        -> Result<Vec<Event>, Error>;
+
+    /// Read the global $all log from a position, in a direction, filtered: the
+    /// projector's input.
+    fn read_all(&self, from: Position, dir: Direction, filter: &Filter)
+        -> Result<Vec<Event>, Error>;
+
+    /// Open a catch-up subscription over $all: replay matching events from `from`,
+    /// then deliver new ones live. This is the (A) live-awareness mechanism: a
+    /// running agent's side-car watches $all.
+    fn subscribe_all(&self, from: Position, filter: &Filter) -> Result<Subscription, Error>;
 }
 
-type Event struct {
-    ID         string            // idempotency key
-    Stream     string            // e.g. "run-<id>", "decision-<unit>", "agent-<id>"
-    Type       string            // "DecisionMade", "FileTouched", "GateVerdict", "UnitIntegrated", …
-    Data       json.RawMessage   // the payload (see §5.3)
-    Meta       map[string]string // causation/correlation ids, actor
-    ValidFrom  time.Time         // bi-temporal: when the fact became true (caller-supplied)
-    RecordedAt time.Time         // bi-temporal: when the store ingested it (store-stamped)
-    Position   Position          // global order (assigned on append)
-    Revision   Revision          // per-stream order
+pub type Position = u64; // global ($all-order) position, assigned by the store on append
+
+pub struct Event {
+    pub id: String,            // a fresh UUID per event
+    pub type_: String,         // "DecisionMade", "FileTouched", "GateVerdict", "UnitIntegrated", …
+    pub data: Vec<u8>,         // the opaque (usually JSON) payload (see §5.3)
+    pub recorded_at: SystemTime, // when the event was created / ingested
+    pub position: Position,    // global order (assigned on append)
 }
+
+// Optimistic-concurrency expectation: any version, no stream yet, or an exact count.
+pub enum ExpectedRevision { Any, NoStream, Exact(u64) }
+
+// A read/subscription filter over the global log (a stream-name prefix).
+pub struct Filter { pub stream_prefix: Option<String> }
 ```
 
-**Two impls, one interface:**
+`Subscription` is a concrete catch-up handle (not a trait): adapters feed it from a
+background thread, and callers drain it with `recv` / `recv_timeout` / `try_recv`;
+dropping it stops the feed.
+
+**Two impls, one trait:**
 - **`sqlite` (default).** One table `events(position INTEGER PK AUTOINCREMENT, stream,
-  type, data, meta, valid_from, recorded_at, revision)`. `$all` = `ORDER BY position`.
-  A per-stream `(stream, revision)` unique index gives optimistic concurrency.
-  **Subscriptions** = a long-poll/`WATCH` on `MAX(position)` (SQLite WAL makes tailing
-  cheap); at Rigger's event volume (hundreds to thousands of events per run) this is
-  trivial. Zero external dependency; the whole store is one file.
-- **`kurrentdb` (optional).** A thin adapter over the official KurrentDB Go client:
-  `Append`→`AppendToStream`, `ReadAll`→`$all` read, `SubscribeAll`→a catch-up
-  subscription. Selected by `eventstore: { driver: kurrentdb, conn: "esdb://…" }`.
+  type, data, recorded_at, …)`. `$all` = `ORDER BY position`. A per-stream uniqueness
+  constraint gives optimistic concurrency. **Subscriptions** = a poll on `MAX(position)`
+  fed onto an mpsc channel from a background thread; at Rigger's event volume (hundreds
+  to thousands of events per run) this is trivial. Backed by bundled `rusqlite`; zero
+  external service; the whole store is one file.
+- **`kurrentdb` ([AS-BUILT], behind the `kurrentdb` cargo feature).** A thin adapter over
+  the official KurrentDB Rust client, bridging its async gRPC API onto the (sync) port
+  through a tokio runtime: `append`→`AppendToStream`, `read_all`→`$all` read,
+  `subscribe_all`→a filtered catch-up subscription. Selected at the composition root when
+  built with `-F kurrentdb`.
 
-Because the interface *is* the KurrentDB model, the SQLite impl's test suite (append
-ordering, optimistic-concurrency conflicts, catch-up replay-then-live) doubles as the
-contract test the KurrentDB adapter must also pass: the proxy fidelity you asked for.
+Because the trait *is* the KurrentDB model, the SQLite impl's contract suite
+(`eventstore::contract::assert_contract`: append ordering, optimistic-concurrency
+conflicts, catch-up replay-then-live) doubles as the contract test the KurrentDB adapter
+must also pass — its `kurrentdb` CI job runs that same suite against a real KurrentDB via
+testcontainers: the proxy fidelity you asked for.
 
-### 5.1.1 Per-project segregation (one mechanism, every backend)
+### 5.1.1 Per-project segregation (one mechanism, every backend)  **[AS-BUILT]**
 
-Event streams and the context graph are **scoped to one project by default**, never shared. `go get` installs the rigger *binary* into a shared `$GOBIN`, but its *data* is always project-local, enforced by **one mechanism for every backend**, not a different trick per store: a **project namespace applied to stream names**, via a single scoping decorator over the `EventStore` port.
+Event streams and the context graph are **scoped to one project by default**, never shared. `cargo install` puts the rigger *binary* on a shared `PATH`, but its *data* is always project-local, enforced by **one mechanism for every backend**, not a different trick per store: a **project namespace applied to stream names**, via a single scoping decorator over the `EventStore` port. This is implemented as `eventstore::namespace::Namespaced<'a>`, a wrapper struct that itself implements `EventStore`.
 
-- The decorator prefixes every stream a project writes with its namespace, and filters every read/subscribe by it (stripping the prefix from returned events, so callers see clean stream names). It is written once and wraps *any* `EventStore`; the backends are namespace-unaware.
-- **SQLite** realizes the filter on the `stream` column (`WHERE stream LIKE 'ns-%'`); its `.rigger/` directory is just the default storage path, not the isolation mechanism.
+- The decorator (`Namespaced::new(inner, project)`) prefixes every stream a project writes with its `proj-<project>-` namespace, and scopes every read/subscribe filter to it, so callers use plain, unprefixed stream names and never see the namespace. It is written once and wraps *any* `&dyn EventStore`; the backends are namespace-unaware.
+- **SQLite** realizes the filter on the `stream` column (a prefix match); its `.rigger/` directory is just the default storage path, not the isolation mechanism.
 - **KurrentDB** realizes the same prefix as a server-side `$all` filter (it supports filtered catch-up subscriptions natively), so one server backs many projects, each seeing only its own events against its own checkpoint.
 - The namespace **defaults to the project identity**, so isolation is the default. A hard boundary (security or multi-tenant) is just config: a dedicated SQLite file, or a dedicated KurrentDB instance.
 
-This is dependency inversion (R8) paying off directly: because the decorator depends on the `EventStore` *interface*, segregation is one implementation for all backends. And the **context graph is always a local, per-project projection**, rebuilt into `.rigger/` from the namespaced stream whatever the log backend, so even a shared KurrentDB server never shares a graph.
+This is dependency inversion (R8) paying off directly: because the decorator depends on the `EventStore` *trait*, segregation is one implementation for all backends — and it passes the same contract suite (`Namespaced` is contract-tested). The **context graph is always a local, per-project projection**, rebuilt into `.rigger/` from the namespaced stream whatever the log backend, so even a shared KurrentDB server never shares a graph.
 
 ### 5.2 The context graph: a bi-temporal projection
 
 The graph is a **read model** the projector maintains by folding `$all`. Rigger ships the
-projection as **SQLite tables** (one store, no extra engine; subgraph traversal via
-recursive CTEs); `Kuzu` (embedded graph + Cypher) is a drop-in alternative behind the
-same `GraphProjection` interface if traversal richness ever demands it.
+projection as **SQLite tables** (one store, no extra engine; subgraph traversal in the
+adapter); an embedded graph engine with Cypher would be a drop-in alternative behind the
+same `Projection` trait if traversal richness ever demands it.
 
-```go
-type Node struct {
-    ID    string            // stable id (entity-resolved)
-    Kind  string            // "decision" | "artifact" | "agent" | "lesson" | "gate" | "unit"
-    Attrs map[string]string
+```rust
+// src/contextgraph/mod.rs
+pub struct Node {
+    pub id: String,                       // stable id (entity-resolved)
+    pub kind: String,                     // "decision" | "artifact" | "agent" | "gate" | "unit" | "lesson"
+    pub attrs: BTreeMap<String, String>,
 }
-type Edge struct {
-    From, To  string
-    Rel       string        // "DECIDED" | "SUPERSEDES" | "TOUCHES" | "GOVERNS" | "BLOCKS" | "ASSIGNED_TO"
-    ValidFrom time.Time     // bi-temporal validity interval …
-    ValidTo   *time.Time    // … nil = still valid; set = invalidated (NOT deleted)
-    Source    Position      // the event that asserted this edge (provenance)
+pub struct Edge {
+    pub from: String,
+    pub to: String,
+    pub rel: String,                      // "SUPERSEDES" | "TOUCHES" | "GOVERNS" | "GATED_BY" | "ABOUT"
+    pub valid_from: i64,                  // bi-temporal validity interval …
+    pub valid_to: Option<i64>,            // … None = still valid; Some = invalidated (NOT deleted)
+    pub source: Position,                 // the event that asserted this edge (provenance)
 }
-type GraphProjection interface {
-    Apply(Event) error                              // fold one event (the projector loop)
-    Subgraph(seed []string, depth int) (Graph, error) // the FEED arc: connected blast-radius
-    Resolve(mention string) (nodeID string, ok bool)  // entity resolution (alias table)
+pub trait Projection: Send + Sync {
+    fn apply(&self, e: &Event) -> Result<(), Error>;                  // fold one event (idempotent per position)
+    fn subgraph(&self, seed: &[String], depth: i64) -> Result<Graph, Error>; // the FEED arc: connected blast-radius
+    fn resolve(&self, mention: &str) -> Result<Option<String>, Error>;       // entity resolution (alias → node id)
 }
 ```
 
 **Three properties carried from the research:**
-1. **Bi-temporal freshness (Zep/Graphiti).** Supersession sets `ValidTo` on the old edge
+1. **Bi-temporal freshness (Zep/Graphiti).** Supersession sets `valid_to` on the old edge
    and appends a new one: the graph shows the *current* truth, the log keeps the
-   *history*, and a stale fact never surfaces with false confidence. (e.g. a
-   `collapse-decision` edge's `ValidTo` is stamped when the `split-decision` supersedes it.)
-2. **Entity resolution (Graphiti / the TDS alias-table bug).** `Resolve` collapses
+   *history*, and a stale fact never surfaces with false confidence. (e.g. the
+   `collapse-decision`'s governing edge has its `valid_to` stamped when the `split-decision`
+   supersedes it.)
+2. **Entity resolution (Graphiti / the TDS alias-table bug).** `resolve` collapses
    `"the editor" ≡ "content-editor" ≡ "velocity-engine"` to one node on ingest, so
    retrieval joins instead of fragmenting.
-3. **Scoped retrieval (GraphRAG).** `Subgraph(seed, depth)` returns the *connected
+3. **Scoped retrieval (GraphRAG).** `subgraph(seed, depth)` returns the *connected
    subgraph* of an agent's blast-radius (ALL & ONLY its context), not a chunk dump.
 
 ### 5.3 The ∞ loop: emit, project, retrieve
@@ -441,7 +462,8 @@ flowchart LR
 ```
 
 **The (A) live awareness, concretely.** An agent's run is wrapped by a Rigger **side-car**
-that holds a `SubscribeAll` filtered to the agent's blast-radius. When a *concurrent*
+(`sidecar::Sidecar`) that holds a `subscribe_all` catch-up subscription filtered to the
+agent's blast-radius, draining matching events in a background thread. When a *concurrent*
 agent appends a `DecisionMade` touching a shared node, the side-car surfaces it to the
 agent at its next tool-boundary (a context refresh injected before the next action). This
 gives true in-flight awareness **without** touching the agent's files: isolation guards
@@ -451,42 +473,58 @@ two are orthogonal (the insight that makes (A) safe).
 ### 5.4 Grounding stays hybrid (vector + graph)
 
 [AS-BUILT] `turbovec` is local code+memory vector search (`tools/semantic-retrieval`).
-[TARGET] Rigger keeps a pluggable **`Grounder`** (vector is *one* impl) for fuzzy
-"find things like this" and adds the **graph** for "what decisions govern these files / who
-else touches these nodes": the multi-hop questions vector RAG structurally can't answer.
-The research is unanimous the winner is *both*: vector for the fast first pass, graph for
-relationships.
+[AS-BUILT] Rigger keeps a pluggable **`Grounder`** trait (`ground(query, k) -> Vec<Ref>`)
+for fuzzy "find things like this" and adds the **graph** for "what decisions govern these
+files / who else touches these nodes": the multi-hop questions vector RAG structurally
+can't answer. The research is unanimous the winner is *both*: vector for the fast first
+pass, graph for relationships. The default impl is `Grep` (a self-contained literal
+substring search, no index, no dependency); the semantic impl is `grounder::turbovec::Turbovec`,
+built behind the `turbovec` cargo feature (native turbovec quantized vector search +
+fastembed embeddings). The CLI selects turbovec when compiled with `-F turbovec` and
+**falls back to grep** if its embedding model is unavailable, so the default build stays
+light.
 
 ---
 
-## 6. The agent driver: pluggable spawning  **[TARGET]**
+## 6. The agent driver: pluggable spawning  **[AS-BUILT]**
 
-```go
-type AgentDriver interface {
-    // Spawn runs one agent to completion and returns its result.
-    Spawn(ctx context.Context, a AgentDef, prompt string, opts SpawnOpts) (AgentResult, error)
+```rust
+// src/conductor.rs
+pub trait AgentDriver: Send + Sync {
+    /// Spawn one agent to completion. The agent records events it emits during its
+    /// run by calling `emit`, so its decisions reach the log live (the workflow
+    /// driver wires `emit` to an in-process tool the agent calls; the cli driver,
+    /// a subprocess, cannot call back and ignores it).
+    fn spawn(
+        &self,
+        agent: &AgentDef,
+        prompt: &str,
+        opts: &SpawnOpts,
+        emit: &dyn Fn(&str, serde_json::Value) -> Result<(), Error>,
+    ) -> Result<AgentResult, Error>;
 }
-type SpawnOpts struct {
-    Isolation Isolation   // none | worktree
-    Parallel  bool        // hint; the cli driver runs goroutines, the workflow driver uses parallel()
-}
+pub struct SpawnOpts { pub dir: String }   // the working dir (an isolated worktree, or "")
+pub struct AgentResult { pub output: String }
 ```
 
-- **`cli` (default, self-contained).** Spawns `claude -p <prompt> --model <m> --allowed-tools <…>`
-  as a subprocess, parses the final JSON line. Worktree isolation is Rigger's own:
-  `git worktree add` before, harvest the pushed branch + remove after. **No Claude-Code
-  runtime assumption: works for any `go get` user with the `claude` CLI on PATH.** Fan-out
-  = a bounded goroutine pool (default 4, matching the tank_game cap) over disjoint units.
-- **`workflow` (optional).** Runs inside Claude Code to keep the Workflow tool's built-in
-  parallelism / journaling / resume. The Workflow sandbox cannot shell out to a binary, so
-  the bridge is **MCP, not a subprocess**: `rigger serve` runs the conductor and serves an
-  MCP server exposing `rigger_next` / `rigger_result` / `rigger_emit`. A thin Workflow shim
-  loops - `rigger_next` for the next spawn, `agent()` to run it in-process, `rigger_result`
-  to report it - while agents record decisions live by calling `rigger_emit`. The Go core is
-  identical; only the spawn seam changes. See [driver/workflow/README.md](../driver/workflow/README.md).
+- **`cli` (default, self-contained).** `driver::cli::Driver` spawns the `claude` CLI as a
+  subprocess (`bin` defaults to `"claude"`) and reads its output. Worktree isolation is
+  Rigger's own (`worktree::Worktree`): `git worktree add` before, harvest the branch +
+  remove after. **No Claude-Code runtime assumption: works for any `cargo install` user
+  with the `claude` CLI on PATH.** Fan-out = a bounded pool of scoped OS threads
+  (`std::thread::scope`) over disjoint units. A subprocess agent cannot call the in-process
+  `emit`, so this driver ignores it; the workflow driver is the one that delivers live emission.
+- **`workflow` (optional).** `driver::workflow::Driver` runs inside Claude Code to keep the
+  Workflow tool's built-in parallelism / journaling / resume. The Workflow sandbox cannot
+  shell out to a binary, so the bridge is **MCP, not a subprocess**: `rigger serve` runs the
+  conductor on a background thread and serves an MCP server (`mcpserver::Server`) over stdio
+  exposing `rigger_next` / `rigger_result` / `rigger_emit` / `rigger_peers`. A thin Workflow
+  shim loops - `rigger_next` for the next spawn, run it in-process, `rigger_result` to report
+  it - while agents record decisions live via `rigger_emit`. The Rust core is identical; only
+  the spawn seam changes.
 
 **Runaway-proof by construction** (carried from the fan-out lesson): the implementer agent
-def declares `recurse: false` (no Agent/Spawn capability), and units are partitioned
+def declares `recurse: false` (no Agent/spawn capability), and units are partitioned
 disjoint, so parallel worktrees cannot conflict and an agent cannot fan out.
 
 ---
@@ -515,14 +553,15 @@ The real episode from this session, replayed as Rigger would record it. A unit
 The projector folds these into the graph:
 
 ```
-(decision mod-collapse) --SUPERSEDES(validTo=11:30)--> ✗        ← invalidated, not deleted
+(decision mod-split)    --SUPERSEDES--> (decision mod-collapse)
+(decision mod-collapse) --GOVERNS(valid_to=11:30)--> (artifact modifier.rs)   ← invalidated, not deleted
 (decision mod-split)    --GOVERNS--> (artifact modifier.rs)
 (artifact modifier.rs)  --GATED_BY--> (gate e7)
-(agent impl-mod)        --DECIDED--> (decision mod-split)
+(agent impl-mod)        --TOUCHES--> (artifact modifier.rs)
 ```
 
 **The payoff, concretely:** the *next* agent that touches `modifier.rs` calls
-`Subgraph(["modifier.rs"], 2)` and is handed `mod-split` (current), **not** `mod-collapse`
+`subgraph(&["modifier.rs"], 2)` and is handed `mod-split` (current), **not** `mod-collapse`
 (invalidated), plus the `e7` gate that governs the file, plus the no-named-bridge lesson
 linked to the engine crate. It cannot re-litigate the collapse, re-invent a gate-dodge, or
 work a stale base: the three failure classes this session hit, closed structurally.
@@ -551,48 +590,70 @@ work a stale base: the three failure classes this session hit, closed structural
 
 ## 9. Data model / schemas (consolidated)
 
-- **Event:** §5.1 (`Stream, Type, Data, Meta, ValidFrom, RecordedAt, Position, Revision`).
-- **Graph Node / Edge:** §5.2 (Edge carries the bi-temporal `ValidFrom/ValidTo` + `Source` provenance).
-- **RunState / Unit:** §4.2 (the projected ledger).
+- **Event:** §5.1 (`id, type_, data, recorded_at, position`; the stream is an `append`
+  argument, not a field). `ExpectedRevision` (`Any | NoStream | Exact(u64)`) and `Filter`
+  (`stream_prefix`) accompany it.
+- **Graph Node / Edge:** §5.2 (Node `id, kind, attrs`; Edge carries the bi-temporal
+  `valid_from: i64 / valid_to: Option<i64>` + `source: Position` provenance).
+- **RunState / Unit:** §4.2 (the projected ledger; Unit = `id, spec_criterion, status, attempts, commit`).
 - **AgentDef:** §3.1 frontmatter (`id, model, tools, isolation, recurse, prompt`).
-- **Workflow:** §3.2 (`name, on, defaults, gates{}, stages{needs, agent(s), strategy, partition, gates, adjudicator, autonomy, on_pass}`).
-- **Gate:** `{run, kind: core|elevated|deferred}` + runtime `{autonomy, history:[{result,decision}]}`.
+- **Workflow:** §3.2 (`name, gates{}, stages{needs, agent(s), strategy, partition, gates, adjudicator, autonomy, on_pass, …}`).
+- **Gate:** `{id, run, kind: Core|Elevated|Deferred, autonomy: Manual|AutoNotify|Silent, history:[{pass}]}`.
 
 ---
 
-## 10. Repo layout & `go get` usage  **[TARGET]**
+## 10. Repo layout & `cargo install` usage  **[AS-BUILT]**
+
+A single Rust crate: a library (`src/lib.rs`) plus a binary (`src/main.rs`), with the ports
+and adapters as modules under `src/`. Two opt-in cargo features keep the default build light.
 
 ```
 github.com/virtual-velocitation/rigger
-├── go.mod                       module github.com/virtual-velocitation/rigger
-├── cmd/rigger/                  the CLI binary (main)
-├── conductor/                   the DAG executor + run loop
-├── eventstore/                  EventStore iface
-│   ├── sqlite/                  default impl (embedded)
-│   └── kurrentdb/               optional impl (adapter)
-├── contextgraph/                GraphProjection iface + sqlite projector (+ kuzu/ alt)
-├── driver/                      AgentDriver iface
-│   ├── cli/                     default (claude -p)
-│   └── workflow/                optional (JS Workflow shim generator)
-├── grounder/                    Grounder iface (nop, grep, vector)
-├── config/                      agent-file + workflow-YAML loader → runtime DAG
-├── gate/  autonomy/  safety/  learn/    the rails (ports of the .mjs modules)
-└── examples/
-    └── golden-apple/            tank_game's setup as a worked EXAMPLE (agents + workflow.yml)
+├── Cargo.toml                   crate "rigger"; features: turbovec, kurrentdb
+├── src/
+│   ├── lib.rs                   the library: re-exports every module
+│   ├── main.rs                  the CLI binary (run/serve/graph/validate/init/setup/prime)
+│   ├── conductor.rs             the DAG executor + run loop; the AgentDriver port
+│   ├── eventstore/
+│   │   ├── mod.rs               the EventStore trait + Event/Position/Filter/Subscription
+│   │   ├── sqlite.rs            default adapter (embedded, bundled rusqlite)
+│   │   ├── kurrentdb.rs         server adapter (behind the `kurrentdb` feature)
+│   │   ├── namespace.rs         per-project segregation decorator (Namespaced)
+│   │   └── contract.rs          the shared contract suite (assert_contract)
+│   ├── contextgraph/
+│   │   ├── mod.rs               the Projection trait + Node/Edge/Graph
+│   │   └── sqlite.rs            the bi-temporal SQLite projector
+│   ├── driver/
+│   │   ├── mod.rs
+│   │   ├── cli.rs               default driver (claude subprocess)
+│   │   └── workflow.rs          optional driver (in-Claude-Code MCP shim)
+│   ├── grounder/
+│   │   ├── mod.rs               the Grounder trait + Grep (default) + Nop
+│   │   └── turbovec.rs          semantic grounder (behind the `turbovec` feature)
+│   ├── gate.rs                  gate engine + autonomy ratchet (Runner port, ExecRunner)
+│   ├── safety.rs                budget breaker + bounded remediation
+│   ├── ledger.rs                RunState projection (folded from the run events)
+│   ├── config.rs                agent-file + workflow-YAML loader → runtime types
+│   ├── spec.rs  worktree.rs  sidecar.rs  mcpserver.rs  hooks.rs
+└── .github/workflows/rust.yml   CI: build-test, turbovec, kurrentdb jobs
 ```
 
 ```bash
-go install github.com/virtual-velocitation/rigger/cmd/rigger@latest
+cargo install --git https://github.com/virtual-velocitation/rigger
+# opt into the features (each pulls heavier deps):
+cargo install --git https://github.com/virtual-velocitation/rigger --features turbovec,kurrentdb
 
 cd my-project
 rigger init                         # scaffolds .rigger/workflow.yml + .rigger/agents/
 rigger run specs/feature.md         # runs the producing loop on a spec
-rigger run --driver workflow …      # opt into the JS Workflow shim (inside Claude Code)
-rigger run --eventstore kurrentdb … # opt into the server backend
+rigger serve                        # run as an MCP server for the in-Claude-Code workflow shim
 rigger graph --around modifier.rs   # inspect the context graph (subgraph query)
+rigger validate                     # load + validate the workflow + agents
 ```
 
-Library use (embed the harness) is the same packages imported directly.
+The optional backends are selected at build time by cargo feature (`-F kurrentdb`,
+`-F turbovec`), not by a runtime flag. Library use (embed the harness) imports the same
+modules from the `rigger` crate directly.
 
 ---
 
@@ -602,10 +663,10 @@ Library use (embed the harness) is the same packages imported directly.
 |---|---|---|
 | `ledger.mjs` | `conductor` + event projection | ledger becomes a projection of the log |
 | `conductor.mjs` (hardcoded pipeline) | `conductor` executing the workflow DAG | pipeline becomes declared YAML |
-| `plan.mjs` (DAG, coverage, partition) | `conductor` (same logic, Go) | direct port |
+| `plan.mjs` (DAG, coverage, partition) | `conductor` (same logic, Rust) | direct port |
 | `gates.mjs` | `gate` + the YAML `gates:` library | gates become config |
-| `autonomy.mjs`, `safety.mjs`, `learn.mjs` | same names, Go | direct ports |
-| `turbovec.mjs` + `tools/semantic-retrieval` | `grounder` (vector impl) | generalized + pluggable |
+| `autonomy.mjs`, `safety.mjs`, `learn.mjs` | `gate` (ratchet) + `safety`, Rust | direct ports |
+| `turbovec.mjs` + `tools/semantic-retrieval` | `grounder::turbovec` (turbovec feature) | generalized + pluggable |
 | `bd-*.sh` federation memory | the event log + context graph | replaced by event-sourced memory (the new core) |
 | `dev-loop-fanout` / `dev-loop-review` (JS Workflows) | `driver/cli` (default) or `driver/workflow` | spawning becomes a pluggable seam |
 | review lenses, e7 gate, S1 spec | `examples/golden-apple/` | demoted to a worked example |
@@ -636,25 +697,26 @@ Library use (embed the harness) is the same packages imported directly.
     superseded facts are invalidated, never deleted; retrieval returns a connected subgraph,
     not a chunk dump.
   - R4 PLUGGABLE SEAMS: EventStore (sqlite default | kurrentdb), AgentDriver (cli default |
-    workflow), Grounder (nop|grep|vector) are interfaces chosen by config; the core depends
-    only on the interfaces.
+    workflow), Grounder (grep default | turbovec) are traits chosen by config / cargo feature;
+    the core depends only on the traits.
   - R5 ORTHOGONAL ISOLATION: worktree isolation guards FILES; the event stream is the shared
     DECISION channel; live cross-agent awareness never crosses the file boundary.
   - R6 MACHINE-VERIFIABLE DONE: every spec criterion covered + every unit integrated + every
     gate green; failures escalate or bounded-retry, never silently drop, never infinite-spin.
-  - R7 SELF-CONTAINED PUBLISH: `go get`-installable; no runtime dependency on Claude Code or a
-    database server in the default configuration.
-  - R8 CLEAN ARCHITECTURE + DI: ports (EventStore/GraphProjection/AgentDriver/Grounder) are
-    interfaces; sqlite/kurrentdb/cli/workflow are adapters that depend inward; use cases depend
-    only on ports; a single composition root (`cmd/rigger`) constructs the concrete adapters and
-    injects them. No globals, no package-level singletons, no type building its own dependencies.
-    Idiomatic Go throughout: small interfaces, accept interfaces and return concrete types, errors
-    as values, one responsibility per package, no premature abstraction.
+  - R7 SELF-CONTAINED PUBLISH: `cargo install`-able; no runtime dependency on Claude Code or a
+    database server in the default configuration (the server backend and semantic grounder are
+    opt-in cargo features).
+  - R8 CLEAN ARCHITECTURE + DI: ports (EventStore/Projection/AgentDriver/Grounder/gate::Runner) are
+    traits; sqlite/kurrentdb/cli/workflow are adapters that depend inward; use cases depend
+    only on ports; a single composition root (`src/main.rs`) constructs the concrete adapters and
+    injects them. No globals, no module-level singletons, no type building its own dependencies.
+    Idiomatic Rust throughout: small traits, accept `&dyn Trait` and return concrete types, errors
+    as `Result` values, one responsibility per module, no premature abstraction.
   - R9 PROJECT-SCOPED DATA, ONE MECHANISM: event streams and the context graph are segregated per
     project by a single scoping decorator over the EventStore port, a project namespace applied to
     stream names, identical for every backend (SQLite filters the `stream` column; KurrentDB filters
-    `$all` server-side). The shared `go get` binary never implies shared data; the graph is always a
-    local, per-project projection.
+    `$all` server-side). The shared `cargo install` binary never implies shared data; the graph is
+    always a local, per-project projection.
 - Consequences: a hardcoded flow, a project-specific concept baked into the core, a mutable
   (non-event-sourced) source of truth, a deleted-not-invalidated fact, a default that requires a
   server/IDE, a use case that depends on a concrete adapter instead of a port, or a second
@@ -680,27 +742,29 @@ Library use (embed the harness) is the same packages imported directly.
 Each phase lands independently and is demoable. **Task 0 = ratify the records.**
 
 - **Phase 0: Repo + records.** Create the public `github.com/virtual-velocitation/rigger`
-  repo; `go mod init`; move this blueprint to `docs/architecture.md`; **ratify ADR-0001 +
-  the glossary** (Task 0). *Done when:* `go get` resolves an empty module + the ADR is committed.
-- **Phase 1: Event store.** `EventStore` interface + `sqlite` impl + a contract test suite
+  repo; `cargo init` the crate; move this blueprint to `docs/architecture.md`; **ratify
+  ADR-0001 + the glossary** (Task 0). *Done when:* the crate builds + the ADR is committed.
+- **Phase 1: Event store.** `EventStore` trait + `sqlite` adapter + a contract suite
   (append ordering, optimistic-concurrency conflict, catch-up replay-then-live). *Done when:*
-  the contract tests pass against `sqlite`.
-- **Phase 2: KurrentDB adapter.** `kurrentdb` impl passing the *same* contract tests.
-  *Done when:* the proxy fidelity is proven (one suite, two backends green).
-- **Phase 3: Context graph.** `GraphProjection` + sqlite projector: fold events → nodes/edges,
-  bi-temporal supersession, entity resolution, `Subgraph`. *Done when:* the modifier-saga
-  fixture (§7) projects correctly and `Subgraph` returns `mod-split`, not `mod-collapse`.
-- **Phase 4: Config loader.** Parse agent files + workflow YAML → runtime DAG; validate.
-  *Done when:* the `examples/golden-apple` config loads into a DAG.
+  the contract suite passes against `sqlite`.
+- **Phase 2: KurrentDB adapter.** `kurrentdb` adapter (behind the `kurrentdb` feature) passing
+  the *same* contract suite. *Done when:* the proxy fidelity is proven (one suite, two backends
+  green; the `kurrentdb` CI job runs it against a real KurrentDB via testcontainers).
+- **Phase 3: Context graph.** `Projection` trait + sqlite projector: fold events → nodes/edges,
+  bi-temporal supersession, entity resolution, `subgraph`. *Done when:* the modifier-saga
+  fixture (§7) projects correctly and `subgraph` returns `mod-split`, not `mod-collapse`.
+- **Phase 4: Config loader.** Parse agent files + workflow YAML → runtime types; validate.
+  *Done when:* the `examples/golden-apple` config loads (or `rigger validate` passes).
 - **Phase 5: Conductor + rails.** The DAG executor + ledger projection + gate engine +
   autonomy + safety (ports). *Done when:* a trivial 2-stage workflow runs end-to-end with a
   stub driver.
-- **Phase 6: CLI driver + worktrees + side-car.** `driver/cli` (claude -p), git-worktree
+- **Phase 6: CLI driver + worktrees + side-car.** `driver::cli` (claude subprocess), git-worktree
   isolation, the live subscription side-car. *Done when:* a real spec produces an integrated
   commit, and a concurrent decision is observed in-flight.
-- **Phase 7: Workflow driver + grounder(vector) + polish.** The optional JS shim, the vector
-  grounder, `rigger init/run/graph`, README/examples. *Done when:* `go install … && rigger run`
-  works from a clean machine; both drivers + both event stores are switchable by flag.
+- **Phase 7: Workflow driver + turbovec grounder + polish.** The optional MCP workflow shim, the
+  turbovec semantic grounder (behind the `turbovec` feature), `rigger init/run/graph`,
+  README/examples. *Done when:* `cargo install … && rigger run` works from a clean machine; both
+  drivers + both event stores are switchable (driver by config, store by cargo feature).
 
 ---
 
@@ -709,7 +773,7 @@ Each phase lands independently and is demoable. **Task 0 = ratify the records.**
 See §12 for Rigger's own glossary. This blueprint inherits its discipline from the tank_game
 dev-loop design (`docs/superpowers/specs/2026-06-23-development-loop-design.md`) and the
 context-graph research (Zep/Graphiti, the TrustGraph context-graph manifesto, GraphRAG-vs-vector).
-KurrentDB's model (`github.com/kurrent-io/KurrentDB`) is the interface blueprint for `eventstore`.
+KurrentDB's model (`github.com/kurrent-io/KurrentDB`) is the trait blueprint for `eventstore`.
 
 ---
 
