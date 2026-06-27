@@ -10,9 +10,10 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction};
 
 use super::{
     Edge, Error, Graph, Node, Projection, KIND_AGENT, KIND_ARTIFACT, KIND_DECISION, KIND_GATE,
-    KIND_LESSON, KIND_UNIT, REL_ABOUT, REL_GATED_BY, REL_GOVERNS, REL_SUPERSEDES, REL_TOUCHES,
-    TYPE_DECISION_MADE, TYPE_FILE_TOUCHED, TYPE_GATE_VERDICT, TYPE_LESSON_LEARNED,
-    TYPE_UNIT_INTEGRATED,
+    KIND_LESSON, KIND_UNIT, META_ACTOR, REL_ABOUT, REL_ASSIGNED_TO, REL_BLOCKS, REL_DECIDED,
+    REL_GATED_BY, REL_GOVERNS, REL_SUPERSEDES, REL_TOUCHES, TYPE_ALIAS_DEFINED,
+    TYPE_ALIAS_UNRESOLVED, TYPE_DECISION_MADE, TYPE_FILE_TOUCHED, TYPE_GATE_VERDICT,
+    TYPE_LESSON_LEARNED, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
 };
 use crate::eventstore::{Event, Position};
 
@@ -173,19 +174,28 @@ fn row_to_edge(r: &rusqlite::Row) -> rusqlite::Result<Edge> {
 }
 
 fn fold(tx: &Transaction, e: &Event) -> Result<(), Error> {
-    let at = to_nanos(e.recorded_at);
+    // The edge's bi-temporal valid-time is when the fact became true (the event's
+    // caller-supplied valid_from), not the ingest time.
+    let at = to_nanos(e.valid_from);
     match e.type_.as_str() {
         TYPE_DECISION_MADE => {
             let d: super::DecisionMade = serde_json::from_slice(&e.data).map_err(be)?;
             ensure_node(tx, &d.id, KIND_DECISION, &[("summary", &d.summary)])?;
+            // DECIDED: the acting agent (from event metadata) made this decision.
+            if let Some(actor) = e.meta.get(META_ACTOR).filter(|a| !a.is_empty()) {
+                ensure_node(tx, actor, KIND_AGENT, &[])?;
+                add_edge(tx, actor, &d.id, REL_DECIDED, at, e.position)?;
+            }
             for path in &d.governs {
-                ensure_node(tx, path, KIND_ARTIFACT, &[])?;
-                add_edge(tx, &d.id, path, REL_GOVERNS, at, e.position)?;
+                let canonical = resolve_in_tx(tx, path);
+                ensure_node(tx, &canonical, KIND_ARTIFACT, &[])?;
+                add_edge(tx, &d.id, &canonical, REL_GOVERNS, at, e.position)?;
             }
             if !d.supersedes.is_empty() {
                 ensure_node(tx, &d.supersedes, KIND_DECISION, &[])?;
                 add_edge(tx, &d.id, &d.supersedes, REL_SUPERSEDES, at, e.position)?;
-                // Invalidate (never delete) the superseded decision's governing edges.
+                // Invalidate (never delete) the governing edges the superseded
+                // decision asserted.
                 tx.execute(
                     "UPDATE edges SET valid_to = ?1 WHERE from_id = ?2 AND rel = ?3 AND valid_to IS NULL",
                     params![at, d.supersedes, REL_GOVERNS],
@@ -195,18 +205,39 @@ fn fold(tx: &Transaction, e: &Event) -> Result<(), Error> {
         }
         TYPE_FILE_TOUCHED => {
             let f: super::FileTouched = serde_json::from_slice(&e.data).map_err(be)?;
-            ensure_node(tx, &f.path, KIND_ARTIFACT, &[])?;
+            let path = resolve_in_tx(tx, &f.path);
+            ensure_node(tx, &path, KIND_ARTIFACT, &[])?;
             if !f.by.is_empty() {
                 ensure_node(tx, &f.by, KIND_AGENT, &[])?;
-                add_edge(tx, &f.by, &f.path, REL_TOUCHES, at, e.position)?;
+                add_edge(tx, &f.by, &path, REL_TOUCHES, at, e.position)?;
             }
         }
         TYPE_GATE_VERDICT => {
             let g: super::GateVerdict = serde_json::from_slice(&e.data).map_err(be)?;
             ensure_node(tx, &g.gate, KIND_GATE, &[("pass", &g.pass.to_string())])?;
             if !g.artifact.is_empty() {
-                ensure_node(tx, &g.artifact, KIND_ARTIFACT, &[])?;
-                add_edge(tx, &g.artifact, &g.gate, REL_GATED_BY, at, e.position)?;
+                let artifact = resolve_in_tx(tx, &g.artifact);
+                ensure_node(tx, &artifact, KIND_ARTIFACT, &[])?;
+                add_edge(tx, &artifact, &g.gate, REL_GATED_BY, at, e.position)?;
+            }
+        }
+        TYPE_UNIT_STARTED => {
+            let u: super::UnitStarted = serde_json::from_slice(&e.data).map_err(be)?;
+            ensure_node(
+                tx,
+                &u.unit,
+                KIND_UNIT,
+                &[("criterion", &u.criterion), ("status", "started")],
+            )?;
+            // ASSIGNED_TO: the unit is assigned to its agent.
+            if !u.agent.is_empty() {
+                ensure_node(tx, &u.agent, KIND_AGENT, &[])?;
+                add_edge(tx, &u.unit, &u.agent, REL_ASSIGNED_TO, at, e.position)?;
+            }
+            // BLOCKS: each dependency blocks this unit until it lands.
+            for need in &u.needs {
+                ensure_node(tx, need, KIND_UNIT, &[])?;
+                add_edge(tx, need, &u.unit, REL_BLOCKS, at, e.position)?;
             }
         }
         TYPE_UNIT_INTEGRATED => {
@@ -222,13 +253,42 @@ fn fold(tx: &Transaction, e: &Event) -> Result<(), Error> {
             let l: super::LessonLearned = serde_json::from_slice(&e.data).map_err(be)?;
             ensure_node(tx, &l.id, KIND_LESSON, &[("summary", &l.summary)])?;
             for path in &l.about {
-                ensure_node(tx, path, KIND_ARTIFACT, &[])?;
-                add_edge(tx, &l.id, path, REL_ABOUT, at, e.position)?;
+                let canonical = resolve_in_tx(tx, path);
+                ensure_node(tx, &canonical, KIND_ARTIFACT, &[])?;
+                add_edge(tx, &l.id, &canonical, REL_ABOUT, at, e.position)?;
             }
+        }
+        TYPE_ALIAS_DEFINED => {
+            let a: super::AliasDefined = serde_json::from_slice(&e.data).map_err(be)?;
+            tx.execute(
+                "INSERT INTO aliases (alias, canonical_id) VALUES (?1, ?2)
+                 ON CONFLICT(alias) DO UPDATE SET canonical_id = excluded.canonical_id",
+                params![a.alias, a.canonical],
+            )
+            .map_err(be)?;
+        }
+        TYPE_ALIAS_UNRESOLVED => {
+            let a: super::AliasUnresolved = serde_json::from_slice(&e.data).map_err(be)?;
+            // Create the node and mark it unresolved for later merge (never drop).
+            ensure_node(tx, &a.mention, KIND_ARTIFACT, &[("unresolved", "true")])?;
         }
         _ => {}
     }
     Ok(())
+}
+
+/// Collapse a mention onto its canonical node via the alias table; an unknown
+/// mention resolves to itself.
+fn resolve_in_tx(tx: &Transaction, mention: &str) -> String {
+    tx.query_row(
+        "SELECT canonical_id FROM aliases WHERE alias = ?1",
+        [mention],
+        |r| r.get::<_, String>(0),
+    )
+    .optional()
+    .ok()
+    .flatten()
+    .unwrap_or_else(|| mention.to_string())
 }
 
 fn ensure_node(
@@ -335,5 +395,99 @@ mod tests {
         let g = p.subgraph(&["mod.rs".to_string()], 2).unwrap();
         let governs = g.edges.iter().filter(|e| e.rel == REL_GOVERNS).count();
         assert_eq!(governs, 1, "a replayed event must not double the edge");
+    }
+
+    #[test]
+    fn decided_edge_links_the_acting_agent() {
+        let p = Projector::open(":memory:").unwrap();
+        let payload = serde_json::json!({"id": "d1", "summary": "x", "governs": ["mod.rs"]});
+        let mut e = Event::new(TYPE_DECISION_MADE, serde_json::to_vec(&payload).unwrap());
+        e.position = 1;
+        e.meta.insert(META_ACTOR.to_string(), "agent-7".to_string());
+        p.apply(&e).unwrap();
+        let g = p.subgraph(&["d1".to_string()], 2).unwrap();
+        assert!(
+            g.edges
+                .iter()
+                .any(|x| x.rel == REL_DECIDED && x.from == "agent-7" && x.to == "d1"),
+            "DECIDED(agent-7 -> d1) must come from the event actor"
+        );
+    }
+
+    #[test]
+    fn unit_started_creates_assigned_to_and_blocks() {
+        let p = Projector::open(":memory:").unwrap();
+        let payload =
+            serde_json::json!({"unit": "u2", "criterion": "c", "agent": "impl", "needs": ["u1"]});
+        let mut e = Event::new(TYPE_UNIT_STARTED, serde_json::to_vec(&payload).unwrap());
+        e.position = 1;
+        p.apply(&e).unwrap();
+        let g = p.subgraph(&["u2".to_string()], 2).unwrap();
+        assert!(
+            g.edges
+                .iter()
+                .any(|x| x.rel == REL_ASSIGNED_TO && x.from == "u2" && x.to == "impl"),
+            "ASSIGNED_TO(u2 -> impl)"
+        );
+        assert!(
+            g.edges
+                .iter()
+                .any(|x| x.rel == REL_BLOCKS && x.from == "u1" && x.to == "u2"),
+            "BLOCKS(u1 -> u2)"
+        );
+    }
+
+    #[test]
+    fn aliases_collapse_synonyms_onto_one_node() {
+        let p = Projector::open(":memory:").unwrap();
+        let alias = serde_json::json!({"alias": "the editor", "canonical": "content-editor"});
+        let mut ae = Event::new(TYPE_ALIAS_DEFINED, serde_json::to_vec(&alias).unwrap());
+        ae.position = 1;
+        p.apply(&ae).unwrap();
+        apply_decision(&p, 2, "d1", "x", &["the editor"], "");
+        let g = p.subgraph(&["content-editor".to_string()], 2).unwrap();
+        assert!(
+            g.edges
+                .iter()
+                .any(|x| x.rel == REL_GOVERNS && x.from == "d1" && x.to == "content-editor"),
+            "the alias must collapse 'the editor' onto 'content-editor'"
+        );
+        assert_eq!(
+            p.resolve("the editor").unwrap().as_deref(),
+            Some("content-editor")
+        );
+    }
+
+    #[test]
+    fn alias_unresolved_creates_a_node_marked_for_merge() {
+        let p = Projector::open(":memory:").unwrap();
+        let payload = serde_json::json!({"mention": "some thing"});
+        let mut e = Event::new(TYPE_ALIAS_UNRESOLVED, serde_json::to_vec(&payload).unwrap());
+        e.position = 1;
+        p.apply(&e).unwrap();
+        let g = p.subgraph(&["some thing".to_string()], 1).unwrap();
+        let n = g
+            .nodes
+            .iter()
+            .find(|n| n.id == "some thing")
+            .expect("a node is created for an unresolved mention");
+        assert_eq!(n.attrs.get("unresolved").map(String::as_str), Some("true"));
+    }
+
+    #[test]
+    fn edge_valid_from_is_the_event_valid_time() {
+        let p = Projector::open(":memory:").unwrap();
+        let vf = std::time::UNIX_EPOCH + std::time::Duration::from_secs(500);
+        let payload = serde_json::json!({"id": "d1", "summary": "x", "governs": ["mod.rs"]});
+        let mut e = Event::new(TYPE_DECISION_MADE, serde_json::to_vec(&payload).unwrap());
+        e.position = 1;
+        e.valid_from = vf;
+        p.apply(&e).unwrap();
+        let g = p.subgraph(&["mod.rs".to_string()], 2).unwrap();
+        let edge = g.edges.iter().find(|x| x.rel == REL_GOVERNS).unwrap();
+        assert_eq!(
+            edge.valid_from, 500_000_000_000,
+            "the edge valid_from is the event's valid_from in nanos"
+        );
     }
 }
