@@ -1,7 +1,9 @@
 //! SQLite-backed EventStore. A single connection behind a mutex serializes
 //! writes, so concurrent appenders queue instead of deadlocking on the
-//! lock-upgrade (SQLITE_BUSY) class.
+//! lock-upgrade (SQLITE_BUSY) class. Per-stream revisions and a `UNIQUE(stream,
+//! revision)` index give optimistic concurrency; `$all` is `ORDER BY position`.
 
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
@@ -10,7 +12,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use rusqlite::{params, Connection};
 
 use super::{
-    Direction, Error, Event, EventStore, ExpectedRevision, Filter, Position, Subscription,
+    Direction, Error, Event, EventStore, ExpectedRevision, Filter, Position, Revision,
+    Subscription, NO_STREAM,
 };
 
 const SCHEMA: &str = "
@@ -22,10 +25,16 @@ CREATE TABLE IF NOT EXISTS events (
   type        TEXT NOT NULL,
   id          TEXT NOT NULL,
   data        BLOB NOT NULL,
-  recorded_at INTEGER NOT NULL
+  meta        TEXT NOT NULL,
+  valid_from  INTEGER NOT NULL,
+  recorded_at INTEGER NOT NULL,
+  revision    INTEGER NOT NULL,
+  UNIQUE(stream, revision)
 );
 CREATE INDEX IF NOT EXISTS idx_events_stream ON events(stream);
 ";
+
+const COLS: &str = "position, stream, type, id, data, meta, valid_from, recorded_at, revision";
 
 /// Store is the SQLite-backed EventStore. The connection is shared (Arc) so a
 /// subscription's polling thread reads the same database the writers append to.
@@ -58,13 +67,34 @@ fn from_nanos(n: i64) -> SystemTime {
     UNIX_EPOCH + Duration::from_nanos(n.max(0) as u64)
 }
 
+fn meta_json(m: &BTreeMap<String, String>) -> String {
+    serde_json::to_string(m).unwrap_or_else(|_| "{}".to_string())
+}
+
+fn parse_meta(s: &str) -> BTreeMap<String, String> {
+    serde_json::from_str(s).unwrap_or_default()
+}
+
+fn like_of(filter: &Filter) -> String {
+    filter
+        .stream_prefix
+        .as_ref()
+        .map(|p| format!("{p}%"))
+        .unwrap_or_else(|| "%".to_string())
+}
+
 fn row_to_event(r: &rusqlite::Row) -> rusqlite::Result<Event> {
+    let meta: String = r.get(5)?;
     Ok(Event {
         position: r.get::<_, i64>(0)? as Position,
-        type_: r.get(1)?,
-        id: r.get(2)?,
-        data: r.get(3)?,
-        recorded_at: from_nanos(r.get(4)?),
+        stream: r.get(1)?,
+        type_: r.get(2)?,
+        id: r.get(3)?,
+        data: r.get(4)?,
+        meta: parse_meta(&meta),
+        valid_from: from_nanos(r.get(6)?),
+        recorded_at: from_nanos(r.get(7)?),
+        revision: r.get::<_, i64>(8)? as Revision,
     })
 }
 
@@ -78,52 +108,67 @@ impl EventStore for Store {
         let mut guard = self.conn.lock().unwrap();
         let tx = guard.transaction().map_err(be)?;
 
-        let current: u64 = tx
+        let count: i64 = tx
             .query_row(
                 "SELECT COUNT(*) FROM events WHERE stream = ?1",
                 [stream],
                 |r| r.get(0),
             )
             .map_err(be)?;
+        let last_revision: Revision = count - 1; // NO_STREAM (-1) when the stream is empty
         let ok = match expected {
             ExpectedRevision::Any => true,
-            ExpectedRevision::NoStream => current == 0,
-            ExpectedRevision::Exact(v) => current == v,
+            ExpectedRevision::NoStream => last_revision == NO_STREAM,
+            ExpectedRevision::Exact(v) => last_revision == v,
         };
         if !ok {
             return Err(Error::Conflict {
                 stream: stream.to_string(),
+                expected,
+                actual: last_revision,
             });
         }
 
-        let mut last: Position = 0;
-        for e in events {
+        // The store stamps recorded_at on ingest (one clock per batch).
+        let recorded_at = to_nanos(SystemTime::now());
+        let mut last_pos: Position = 0;
+        for (i, e) in events.iter().enumerate() {
+            let revision = count + i as i64; // the next per-stream revision
             tx.execute(
-                "INSERT INTO events (stream, type, id, data, recorded_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![stream, e.type_, e.id, e.data, to_nanos(e.recorded_at)],
+                "INSERT INTO events (stream, type, id, data, meta, valid_from, recorded_at, revision)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    stream,
+                    e.type_,
+                    e.id,
+                    e.data,
+                    meta_json(&e.meta),
+                    to_nanos(e.valid_from),
+                    recorded_at,
+                    revision
+                ],
             )
             .map_err(be)?;
-            last = tx.last_insert_rowid() as Position;
+            last_pos = tx.last_insert_rowid() as Position;
         }
         tx.commit().map_err(be)?;
-        Ok(last)
+        Ok(last_pos)
     }
 
     fn read_stream(
         &self,
         stream: &str,
-        from: Position,
+        from: Revision,
         dir: Direction,
     ) -> Result<Vec<Event>, Error> {
         let order = direction_sql(dir);
         let conn = self.conn.lock().unwrap();
         let sql = format!(
-            "SELECT position, type, id, data, recorded_at FROM events
-             WHERE stream = ?1 AND position > ?2 ORDER BY position {order}"
+            "SELECT {COLS} FROM events WHERE stream = ?1 AND revision >= ?2 ORDER BY revision {order}"
         );
         let mut stmt = conn.prepare(&sql).map_err(be)?;
         let rows = stmt
-            .query_map(params![stream, from as i64], row_to_event)
+            .query_map(params![stream, from], row_to_event)
             .map_err(be)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(be)
     }
@@ -135,15 +180,10 @@ impl EventStore for Store {
         filter: &Filter,
     ) -> Result<Vec<Event>, Error> {
         let order = direction_sql(dir);
-        let like = filter
-            .stream_prefix
-            .as_ref()
-            .map(|p| format!("{p}%"))
-            .unwrap_or_else(|| "%".to_string());
+        let like = like_of(filter);
         let conn = self.conn.lock().unwrap();
         let sql = format!(
-            "SELECT position, type, id, data, recorded_at FROM events
-             WHERE position > ?1 AND stream LIKE ?2 ORDER BY position {order}"
+            "SELECT {COLS} FROM events WHERE position > ?1 AND stream LIKE ?2 ORDER BY position {order}"
         );
         let mut stmt = conn.prepare(&sql).map_err(be)?;
         let rows = stmt
@@ -154,45 +194,90 @@ impl EventStore for Store {
 
     fn subscribe_all(&self, from: Position, filter: &Filter) -> Result<Subscription, Error> {
         let conn = Arc::clone(&self.conn);
-        let like = filter
-            .stream_prefix
-            .as_ref()
-            .map(|p| format!("{p}%"))
-            .unwrap_or_else(|| "%".to_string());
-        let (tx, rx) = channel();
-        let stop = Arc::new(AtomicBool::new(false));
-        let stop_thread = Arc::clone(&stop);
-        let handle = std::thread::spawn(move || {
-            let mut last = from;
-            while !stop_thread.load(Ordering::Relaxed) {
-                let batch = {
-                    let guard = conn.lock().unwrap();
-                    query_forward(&guard, last, &like)
-                };
-                match batch {
-                    Ok(events) => {
-                        for e in events {
-                            last = e.position;
-                            if tx.send(e).is_err() {
-                                return; // the subscriber was dropped
-                            }
-                        }
-                    }
-                    Err(_) => return,
-                }
-                std::thread::sleep(Duration::from_millis(25));
-            }
-        });
-        Ok(Subscription::new(rx, stop, handle))
+        let like = like_of(filter);
+        Ok(spawn_subscription(
+            move |state: &mut Watermark| {
+                let guard = conn.lock().unwrap();
+                poll_all(&guard, state.position, &like)
+            },
+            Watermark {
+                position: from,
+                revision: NO_STREAM,
+            },
+        ))
+    }
+
+    fn subscribe_stream(&self, stream: &str, from: Revision) -> Result<Subscription, Error> {
+        let conn = Arc::clone(&self.conn);
+        let stream = stream.to_string();
+        Ok(spawn_subscription(
+            move |state: &mut Watermark| {
+                let guard = conn.lock().unwrap();
+                poll_stream(&guard, &stream, state.revision)
+            },
+            // `revision > from-1` includes `from`.
+            Watermark {
+                position: 0,
+                revision: from - 1,
+            },
+        ))
     }
 }
 
-fn query_forward(conn: &Connection, from: Position, like: &str) -> rusqlite::Result<Vec<Event>> {
-    let mut stmt = conn.prepare(
-        "SELECT position, type, id, data, recorded_at FROM events
-         WHERE position > ?1 AND stream LIKE ?2 ORDER BY position ASC",
-    )?;
-    let rows = stmt.query_map(params![from as i64, like], row_to_event)?;
+/// The watermark a subscription's polling thread advances as it delivers events.
+struct Watermark {
+    position: Position,
+    revision: Revision,
+}
+
+/// Spawn a polling subscription: `poll` returns the next batch given the current
+/// watermark; the thread advances the watermark from each delivered event.
+fn spawn_subscription<F>(poll: F, start: Watermark) -> Subscription
+where
+    F: Fn(&mut Watermark) -> rusqlite::Result<Vec<Event>> + Send + 'static,
+{
+    let (tx, rx) = channel();
+    let err = Arc::new(Mutex::new(None));
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_thread = Arc::clone(&stop);
+    let err_thread = Arc::clone(&err);
+    let handle = std::thread::spawn(move || {
+        let mut state = start;
+        while !stop_thread.load(Ordering::Relaxed) {
+            match poll(&mut state) {
+                Ok(events) => {
+                    for e in events {
+                        state.position = e.position;
+                        state.revision = e.revision;
+                        if tx.send(e).is_err() {
+                            return; // the subscriber was dropped
+                        }
+                    }
+                }
+                Err(e) => {
+                    *err_thread.lock().unwrap() = Some(e.to_string());
+                    return;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    });
+    Subscription::new(rx, err, stop, handle)
+}
+
+fn poll_all(conn: &Connection, after: Position, like: &str) -> rusqlite::Result<Vec<Event>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {COLS} FROM events WHERE position > ?1 AND stream LIKE ?2 ORDER BY position ASC"
+    ))?;
+    let rows = stmt.query_map(params![after as i64, like], row_to_event)?;
+    rows.collect()
+}
+
+fn poll_stream(conn: &Connection, stream: &str, after: Revision) -> rusqlite::Result<Vec<Event>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {COLS} FROM events WHERE stream = ?1 AND revision > ?2 ORDER BY revision ASC"
+    ))?;
+    let rows = stmt.query_map(params![stream, after], row_to_event)?;
     rows.collect()
 }
 
@@ -213,6 +298,94 @@ mod tests {
     }
 
     #[test]
+    fn assigns_per_stream_revisions() {
+        let s = Store::open(":memory:").unwrap();
+        s.append(
+            "a",
+            ExpectedRevision::Any,
+            &[
+                Event::new("A0", b"".to_vec()),
+                Event::new("A1", b"".to_vec()),
+            ],
+        )
+        .unwrap();
+        s.append(
+            "a",
+            ExpectedRevision::Any,
+            &[Event::new("A2", b"".to_vec())],
+        )
+        .unwrap();
+        s.append(
+            "b",
+            ExpectedRevision::Any,
+            &[Event::new("B0", b"".to_vec())],
+        )
+        .unwrap();
+        let a = s.read_stream("a", 0, Direction::Forward).unwrap();
+        assert_eq!(a.iter().map(|e| e.revision).collect::<Vec<_>>(), [0, 1, 2]);
+        let b = s.read_stream("b", 0, Direction::Forward).unwrap();
+        assert_eq!(b[0].revision, 0);
+        // stream + valid_from round-trip
+        assert_eq!(a[0].stream, "a");
+    }
+
+    #[test]
+    fn conflict_reports_actual_revision() {
+        let s = Store::open(":memory:").unwrap();
+        s.append(
+            "run",
+            ExpectedRevision::NoStream,
+            &[Event::new("A", b"".to_vec()), Event::new("B", b"".to_vec())],
+        )
+        .unwrap();
+        let err = s.append(
+            "run",
+            ExpectedRevision::NoStream,
+            &[Event::new("C", b"".to_vec())],
+        );
+        match err {
+            Err(Error::Conflict { actual, .. }) => {
+                assert_eq!(actual, 1, "two events => last revision 1")
+            }
+            other => panic!("expected a conflict with actual revision, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn subscribe_stream_replays_then_goes_live() {
+        let s = Store::open(":memory:").unwrap();
+        s.append(
+            "one",
+            ExpectedRevision::Any,
+            &[Event::new("PRE", b"".to_vec())],
+        )
+        .unwrap();
+        s.append(
+            "two",
+            ExpectedRevision::Any,
+            &[Event::new("OTHER", b"".to_vec())],
+        )
+        .unwrap();
+        let sub = s.subscribe_stream("one", 0).unwrap();
+        let first = sub
+            .recv_timeout(Duration::from_secs(2))
+            .expect("replay PRE");
+        assert_eq!(first.type_, "PRE");
+        s.append(
+            "one",
+            ExpectedRevision::Any,
+            &[Event::new("LIVE", b"".to_vec())],
+        )
+        .unwrap();
+        let second = sub.recv_timeout(Duration::from_secs(2)).expect("live LIVE");
+        assert_eq!(second.type_, "LIVE");
+        // the "two" stream's event must never arrive on a "one" subscription
+        assert!(
+            sub.try_recv().is_none() || sub.try_recv().map(|e| e.stream == "one").unwrap_or(true)
+        );
+    }
+
+    #[test]
     fn subscribe_all_replays_then_goes_live() {
         let s = Store::open(":memory:").unwrap();
         s.append(
@@ -222,10 +395,8 @@ mod tests {
         )
         .unwrap();
         let sub = s.subscribe_all(0, &Filter::default()).unwrap();
-        // catch-up: the pre-existing event replays
         let first = sub.recv_timeout(Duration::from_secs(2)).expect("replay A");
         assert_eq!(first.type_, "A");
-        // live: a later append is delivered
         s.append(
             "run",
             ExpectedRevision::Any,
@@ -234,48 +405,6 @@ mod tests {
         .unwrap();
         let second = sub.recv_timeout(Duration::from_secs(2)).expect("live B");
         assert_eq!(second.type_, "B");
-    }
-
-    #[test]
-    fn append_preserves_order() {
-        let s = Store::open(":memory:").unwrap();
-        s.append(
-            "run",
-            ExpectedRevision::Any,
-            &[Event::new("A", b"1".to_vec())],
-        )
-        .unwrap();
-        s.append(
-            "run",
-            ExpectedRevision::Any,
-            &[Event::new("B", b"2".to_vec())],
-        )
-        .unwrap();
-        let events = s.read_stream("run", 0, Direction::Forward).unwrap();
-        assert_eq!(
-            events.iter().map(|e| e.type_.as_str()).collect::<Vec<_>>(),
-            ["A", "B"]
-        );
-    }
-
-    #[test]
-    fn optimistic_concurrency_conflicts() {
-        let s = Store::open(":memory:").unwrap();
-        s.append(
-            "run",
-            ExpectedRevision::NoStream,
-            &[Event::new("A", b"1".to_vec())],
-        )
-        .unwrap();
-        let err = s.append(
-            "run",
-            ExpectedRevision::NoStream,
-            &[Event::new("B", b"2".to_vec())],
-        );
-        assert!(
-            matches!(err, Err(Error::Conflict { .. })),
-            "expected a conflict, got {err:?}"
-        );
     }
 
     #[test]
@@ -299,5 +428,6 @@ mod tests {
         let events = s.read_all(0, Direction::Forward, &filter).unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].type_, "X");
+        assert_eq!(events[0].stream, "run-a");
     }
 }

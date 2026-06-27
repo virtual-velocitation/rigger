@@ -2,22 +2,39 @@
 //! the (sync) eventstore port via a tokio runtime, so a project can swap the
 //! embedded SQLite store for a shared KurrentDB server with no change to the rest
 //! of Rigger. It passes the same contract suite SQLite does (proxy fidelity).
+//!
+//! KurrentDB owns the event id and recorded time; Rigger's `meta` and bi-temporal
+//! `valid_from` ride in the event's custom metadata (an envelope), and the
+//! per-stream `revision` maps to KurrentDB's event number.
 
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::channel;
-use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use kurrentdb::{
     AppendToStreamOptions, Client, EventData, Position as KdbPosition, ReadAllOptions,
     ReadStreamOptions, RecordedEvent, ResolvedEvent, StreamPosition, StreamState,
-    SubscribeToAllOptions, SubscriptionFilter,
+    SubscribeToAllOptions, SubscribeToStreamOptions, SubscriptionFilter,
 };
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::{
-    Direction, Error, Event, EventStore, ExpectedRevision, Filter, Position, Subscription,
+    Direction, Error, Event, EventStore, ExpectedRevision, Filter, Position, Revision,
+    Subscription, NO_STREAM,
 };
+
+/// The envelope carrying Rigger's metadata and valid-time in KurrentDB's custom
+/// event metadata (KurrentDB owns the id and recorded time).
+#[derive(Serialize, Deserialize, Default)]
+struct Envelope {
+    #[serde(default)]
+    meta: BTreeMap<String, String>,
+    #[serde(default)]
+    valid_from_nanos: i64,
+}
 
 /// Store is the KurrentDB-backed EventStore.
 pub struct Store {
@@ -41,15 +58,49 @@ impl Store {
             let _guard = rt.enter();
             Client::new(settings).map_err(|e| Error::Backend(format!("kurrentdb: client: {e}")))?
         };
-        Ok(Store { client, rt })
+        let store = Store { client, rt };
+        // Fail fast on an unreachable server (§8): a trivial $all read forces the
+        // lazy gRPC channel to connect now, not on the first append.
+        store
+            .read_all(0, Direction::Forward, &Filter::default())
+            .map_err(|e| Error::Backend(format!("kurrentdb: connect: {e}")))?;
+        Ok(store)
     }
+
+    /// The stream's current last revision, or NO_STREAM if it does not exist.
+    fn current_revision(&self, stream: &str) -> Revision {
+        let opts = ReadStreamOptions::default()
+            .position(StreamPosition::End)
+            .backwards();
+        self.rt.block_on(async {
+            match self.client.read_stream(stream, &opts).await {
+                Ok(mut rs) => match rs.next().await {
+                    Ok(Some(ev)) => original(&ev)
+                        .map(|r| r.revision as Revision)
+                        .unwrap_or(NO_STREAM),
+                    _ => NO_STREAM,
+                },
+                Err(_) => NO_STREAM,
+            }
+        })
+    }
+}
+
+fn to_nanos(t: SystemTime) -> i64 {
+    t.duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as i64)
+        .unwrap_or(0)
+}
+
+fn from_nanos(n: i64) -> SystemTime {
+    UNIX_EPOCH + Duration::from_nanos(n.max(0) as u64)
 }
 
 fn to_stream_state(e: ExpectedRevision) -> StreamState {
     match e {
         ExpectedRevision::Any => StreamState::Any,
         ExpectedRevision::NoStream => StreamState::NoStream,
-        ExpectedRevision::Exact(v) => StreamState::StreamRevision(v),
+        ExpectedRevision::Exact(v) => StreamState::StreamRevision(v.max(0) as u64),
     }
 }
 
@@ -61,6 +112,14 @@ fn all_position(from: Position) -> StreamPosition<KdbPosition> {
             commit: from,
             prepare: from,
         })
+    }
+}
+
+fn stream_position(from: Revision) -> StreamPosition<u64> {
+    if from <= 0 {
+        StreamPosition::Start
+    } else {
+        StreamPosition::Position(from as u64)
     }
 }
 
@@ -87,12 +146,17 @@ fn to_event(rec: &RecordedEvent, filter: &Filter) -> Option<Event> {
             return None;
         }
     }
+    let env: Envelope = serde_json::from_slice(&rec.custom_metadata).unwrap_or_default();
     Some(Event {
         id: rec.id.to_string(),
+        stream: stream.to_string(),
         type_: rec.event_type.clone(),
         data: rec.data.to_vec(),
+        meta: env.meta,
+        valid_from: from_nanos(env.valid_from_nanos),
         recorded_at: SystemTime::from(rec.created),
         position: rec.position.commit as Position,
+        revision: rec.revision as Revision,
     })
 }
 
@@ -110,7 +174,14 @@ impl EventStore for Store {
             .iter()
             .map(|e| {
                 let id = Uuid::parse_str(&e.id).unwrap_or_else(|_| Uuid::new_v4());
-                EventData::binary(e.type_.clone(), e.data.clone().into()).id(id)
+                let env = Envelope {
+                    meta: e.meta.clone(),
+                    valid_from_nanos: to_nanos(e.valid_from),
+                };
+                let meta_bytes = serde_json::to_vec(&env).unwrap_or_default();
+                EventData::binary(e.type_.clone(), e.data.clone().into())
+                    .id(id)
+                    .metadata(meta_bytes.into())
             })
             .collect();
         let opts = AppendToStreamOptions::default().stream_state(to_stream_state(expected));
@@ -121,6 +192,8 @@ impl EventStore for Store {
             Ok(w) => Ok(w.position.commit as Position),
             Err(kurrentdb::Error::WrongExpectedVersion { .. }) => Err(Error::Conflict {
                 stream: stream.to_string(),
+                expected,
+                actual: self.current_revision(stream),
             }),
             Err(e) => Err(Error::Backend(format!("kurrentdb: append: {e}"))),
         }
@@ -129,12 +202,12 @@ impl EventStore for Store {
     fn read_stream(
         &self,
         stream: &str,
-        from: Position,
+        from: Revision,
         dir: Direction,
     ) -> Result<Vec<Event>, Error> {
         let opts = match dir {
             Direction::Forward => ReadStreamOptions::default()
-                .position(StreamPosition::Start)
+                .position(stream_position(from))
                 .forwards(),
             Direction::Backward => ReadStreamOptions::default()
                 .position(StreamPosition::End)
@@ -152,7 +225,7 @@ impl EventStore for Store {
                     Ok(Some(ev)) => {
                         if let Some(rec) = original(&ev) {
                             if let Some(e) = to_event(rec, &Filter::default()) {
-                                if e.position > from {
+                                if e.revision >= from {
                                     out.push(e);
                                 }
                             }
@@ -209,39 +282,85 @@ impl EventStore for Store {
         let client = self.client.clone();
         let filter = filter.clone();
         let (tx, rx) = channel();
+        let err = Arc::new(Mutex::new(None));
         let stop = Arc::new(AtomicBool::new(false));
-        let stop_thread = Arc::clone(&stop);
+        let (stop_t, err_t) = (Arc::clone(&stop), Arc::clone(&err));
         let handle = std::thread::spawn(move || {
-            let rt = match tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            {
-                Ok(rt) => rt,
-                Err(_) => return,
+            let rt = match current_thread_rt(&err_t) {
+                Some(rt) => rt,
+                None => return,
             };
             rt.block_on(async {
                 let opts = SubscribeToAllOptions::default()
                     .position(all_position(from))
                     .filter(all_filter(&filter));
                 let mut sub = client.subscribe_to_all(&opts).await;
-                while !stop_thread.load(Ordering::Relaxed) {
-                    match tokio::time::timeout(Duration::from_millis(200), sub.next()).await {
-                        Ok(Ok(ev)) => {
-                            if let Some(rec) = original(&ev) {
-                                if let Some(e) = to_event(rec, &filter) {
-                                    if tx.send(e).is_err() {
-                                        return;
-                                    }
-                                }
-                            }
-                        }
-                        Ok(Err(_)) => return,
-                        Err(_) => {} // timeout; re-check stop
-                    }
-                }
+                forward_loop(&mut sub, &stop_t, &tx, &err_t, &filter).await;
             });
         });
-        Ok(Subscription::new(rx, stop, handle))
+        Ok(Subscription::new(rx, err, stop, handle))
+    }
+
+    fn subscribe_stream(&self, stream: &str, from: Revision) -> Result<Subscription, Error> {
+        let client = self.client.clone();
+        let stream = stream.to_string();
+        let (tx, rx) = channel();
+        let err = Arc::new(Mutex::new(None));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (stop_t, err_t) = (Arc::clone(&stop), Arc::clone(&err));
+        let handle = std::thread::spawn(move || {
+            let rt = match current_thread_rt(&err_t) {
+                Some(rt) => rt,
+                None => return,
+            };
+            rt.block_on(async {
+                let opts = SubscribeToStreamOptions::default().start_from(stream_position(from));
+                let mut sub = client.subscribe_to_stream(stream.as_str(), &opts).await;
+                forward_loop(&mut sub, &stop_t, &tx, &err_t, &Filter::default()).await;
+            });
+        });
+        Ok(Subscription::new(rx, err, stop, handle))
+    }
+}
+
+fn current_thread_rt(err: &Arc<Mutex<Option<String>>>) -> Option<tokio::runtime::Runtime> {
+    match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => Some(rt),
+        Err(e) => {
+            *err.lock().unwrap() = Some(e.to_string());
+            None
+        }
+    }
+}
+
+/// Drive a KurrentDB subscription until stopped, converting and forwarding events.
+async fn forward_loop(
+    sub: &mut kurrentdb::Subscription,
+    stop: &Arc<AtomicBool>,
+    tx: &std::sync::mpsc::Sender<Event>,
+    err: &Arc<Mutex<Option<String>>>,
+    filter: &Filter,
+) {
+    while !stop.load(Ordering::Relaxed) {
+        match tokio::time::timeout(Duration::from_millis(200), sub.next()).await {
+            Ok(Ok(ev)) => {
+                if let Some(rec) = original(&ev) {
+                    if let Some(e) = to_event(rec, filter) {
+                        if tx.send(e).is_err() {
+                            return;
+                        }
+                    }
+                }
+            }
+            Ok(Err(e)) => {
+                *err.lock().unwrap() = Some(e.to_string());
+                return;
+            }
+            Err(_) => {} // timeout; re-check stop
+        }
     }
 }
 
@@ -286,15 +405,21 @@ mod tests {
                 return;
             }
         };
+        // Wait for readiness before Store::open (which now connects eagerly).
+        std::thread::sleep(Duration::from_secs(2));
         let conn = "kurrentdb://localhost:21133?tls=false".to_string();
-        let store = Store::open(&conn).unwrap();
-        // Run the contract, capturing any failure, so we always remove the
-        // container (rm consumes it, avoiding a panicking Drop) before re-raising.
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // open retries via the readiness loop using a short-lived raw client check
+            let mut store = Store::open(&conn);
+            let deadline = Instant::now() + Duration::from_secs(60);
+            while store.is_err() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(500));
+                store = Store::open(&conn);
+            }
+            let store = store.expect("KurrentDB never became ready");
             wait_ready(&store);
             crate::eventstore::contract::assert_contract(&store);
         }));
-        drop(store);
         let _ = rt.block_on(container.rm());
         if let Err(e) = result {
             std::panic::resume_unwind(e);
