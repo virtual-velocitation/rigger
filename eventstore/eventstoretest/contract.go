@@ -8,6 +8,7 @@ package eventstoretest
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -26,6 +27,7 @@ func RunContract(t *testing.T, factory Factory) {
 	t.Run("GlobalOrderAcrossStreams", func(t *testing.T) { testGlobalOrder(t, factory) })
 	t.Run("OptimisticConcurrency", func(t *testing.T) { testOptimisticConcurrency(t, factory) })
 	t.Run("CatchUpReplayThenLive", func(t *testing.T) { testCatchUp(t, factory) })
+	t.Run("FilterByStreamPrefix", func(t *testing.T) { testFilter(t, factory) })
 }
 
 func ev(id, typ string) eventstore.Event {
@@ -78,7 +80,7 @@ func testGlobalOrder(t *testing.T, factory Factory) {
 	mustAppend(t, s, "b", eventstore.NoStream, ev("b1", "T"))
 	mustAppend(t, s, "a", 0, ev("a2", "T"))
 
-	all, err := s.ReadAll(context.Background(), 0, eventstore.Forward)
+	all, err := s.ReadAll(context.Background(), 0, eventstore.Forward, eventstore.Filter{})
 	if err != nil {
 		t.Fatalf("ReadAll: %v", err)
 	}
@@ -126,7 +128,7 @@ func testCatchUp(t *testing.T, factory Factory) {
 
 	mustAppend(t, s, "a", eventstore.NoStream, ev("h1", "T"), ev("h2", "T"))
 
-	sub, err := s.SubscribeAll(ctx, 0)
+	sub, err := s.SubscribeAll(ctx, 0, eventstore.Filter{})
 	if err != nil {
 		t.Fatalf("SubscribeAll: %v", err)
 	}
@@ -144,6 +146,42 @@ func testCatchUp(t *testing.T, factory Factory) {
 	mustAppend(t, s, "a", 1, ev("live1", "T"))
 	if got := recv(t, sub); got != "live1" {
 		t.Fatalf("live event = %q, want live1", got)
+	}
+}
+
+func testFilter(t *testing.T, factory Factory) {
+	s := factory(t)
+	ctx := context.Background()
+	mustAppend(t, s, "ns1-a", eventstore.NoStream, ev("x1", "T"))
+	mustAppend(t, s, "ns2-b", eventstore.NoStream, ev("y1", "T"))
+	mustAppend(t, s, "ns1-c", eventstore.NoStream, ev("x2", "T"))
+
+	got, err := s.ReadAll(ctx, 0, eventstore.Forward, eventstore.Filter{StreamPrefix: "ns1-"})
+	if err != nil {
+		t.Fatalf("ReadAll filtered: %v", err)
+	}
+	if want := []string{"x1", "x2"}; !equal(ids(got), want) {
+		t.Errorf("filtered ReadAll: got %v, want %v", ids(got), want)
+	}
+	for _, e := range got {
+		if !strings.HasPrefix(e.Stream, "ns1-") {
+			t.Errorf("filter leaked a non-ns1 stream: %q", e.Stream)
+		}
+	}
+
+	// The subscription honors the same filter.
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	sub, err := s.SubscribeAll(subCtx, 0, eventstore.Filter{StreamPrefix: "ns1-"})
+	if err != nil {
+		t.Fatalf("SubscribeAll filtered: %v", err)
+	}
+	defer func() { _ = sub.Close() }()
+	if got := recv(t, sub); got != "x1" {
+		t.Fatalf("filtered sub[0] = %q, want x1", got)
+	}
+	if got := recv(t, sub); got != "x2" {
+		t.Fatalf("filtered sub[1] = %q, want x2", got)
 	}
 }
 

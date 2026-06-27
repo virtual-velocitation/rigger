@@ -40,6 +40,16 @@ const (
 	NoStream ExpectedRevision = -1
 )
 
+// Filter narrows which events a global read (ReadAll) or subscription
+// (SubscribeAll) returns. The zero Filter returns everything.
+type Filter struct {
+	// StreamPrefix, when non-empty, restricts results to events whose stream
+	// name begins with this prefix. This is how per-project segregation pushes
+	// the namespace down to the backend (architecture R9): the namespace
+	// decorator sets it, and each backend realizes it efficiently.
+	StreamPrefix string
+}
+
 // Event is a single immutable fact. Callers populate the input fields; the store
 // stamps RecordedAt, Position, and Revision on append.
 type Event struct {
@@ -82,13 +92,13 @@ type EventStore interface {
 	ReadStream(ctx context.Context, stream string, from Revision, dir Direction) ([]Event, error)
 
 	// ReadAll returns events across all streams from the given global position,
-	// in the given direction, in global $all order.
-	ReadAll(ctx context.Context, from Position, dir Direction) ([]Event, error)
+	// in the given direction, in global $all order, narrowed by filter.
+	ReadAll(ctx context.Context, from Position, dir Direction, filter Filter) ([]Event, error)
 
 	// SubscribeAll returns a catch-up subscription over the global order: every
 	// event from `from` onward (history first), then live events as they are
-	// appended.
-	SubscribeAll(ctx context.Context, from Position) (Subscription, error)
+	// appended, narrowed by filter.
+	SubscribeAll(ctx context.Context, from Position, filter Filter) (Subscription, error)
 
 	// Close releases the store's resources.
 	Close() error

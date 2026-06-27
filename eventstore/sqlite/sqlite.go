@@ -145,14 +145,22 @@ func (s *Store) ReadStream(ctx context.Context, stream string, from eventstore.R
 }
 
 // ReadAll returns events across all streams from a global position, in global
-// order.
-func (s *Store) ReadAll(ctx context.Context, from eventstore.Position, dir eventstore.Direction) ([]eventstore.Event, error) {
+// order, narrowed by filter.
+func (s *Store) ReadAll(ctx context.Context, from eventstore.Position, dir eventstore.Direction, filter eventstore.Filter) ([]eventstore.Event, error) {
 	cmp, order := "position >= ?", "ASC"
 	if dir == eventstore.Backward {
 		cmp, order = "position <= ?", "DESC"
 	}
-	q := fmt.Sprintf(`%s WHERE %s ORDER BY position %s`, selectColumns, cmp, order)
-	rows, err := s.db.QueryContext(ctx, q, int64(from))
+	where := cmp
+	args := []any{int64(from)}
+	if filter.StreamPrefix != "" {
+		// instr(stream, prefix) = 1 means the stream begins with prefix, with
+		// no LIKE/GLOB wildcard hazards from the prefix itself.
+		where += " AND instr(stream, ?) = 1"
+		args = append(args, filter.StreamPrefix)
+	}
+	q := fmt.Sprintf(`%s WHERE %s ORDER BY position %s`, selectColumns, where, order)
+	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: read all: %w", err)
 	}
@@ -161,12 +169,12 @@ func (s *Store) ReadAll(ctx context.Context, from eventstore.Position, dir event
 }
 
 // SubscribeAll returns a catch-up subscription: history from `from`, then live
-// events. The poller advances a cursor over the global position and never
-// re-reads delivered events.
-func (s *Store) SubscribeAll(ctx context.Context, from eventstore.Position) (eventstore.Subscription, error) {
+// events, narrowed by filter. The poller advances a cursor over the global
+// position and never re-reads delivered events.
+func (s *Store) SubscribeAll(ctx context.Context, from eventstore.Position, filter eventstore.Filter) (eventstore.Subscription, error) {
 	subCtx, cancel := context.WithCancel(ctx)
 	sub := &subscription{events: make(chan eventstore.Event, 128), cancel: cancel}
-	go sub.run(subCtx, s, from)
+	go sub.run(subCtx, s, from, filter)
 	return sub, nil
 }
 
@@ -269,7 +277,7 @@ func (sub *subscription) setErr(err error) {
 	sub.mu.Unlock()
 }
 
-func (sub *subscription) run(ctx context.Context, s *Store, from eventstore.Position) {
+func (sub *subscription) run(ctx context.Context, s *Store, from eventstore.Position, filter eventstore.Filter) {
 	defer close(sub.events)
 	const interval = 25 * time.Millisecond
 	next := from
@@ -282,7 +290,7 @@ func (sub *subscription) run(ctx context.Context, s *Store, from eventstore.Posi
 			return
 		case <-timer.C:
 		}
-		evs, err := s.ReadAll(ctx, next, eventstore.Forward)
+		evs, err := s.ReadAll(ctx, next, eventstore.Forward, filter)
 		if err != nil {
 			sub.setErr(err)
 			return
