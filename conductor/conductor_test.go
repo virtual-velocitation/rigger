@@ -310,6 +310,31 @@ func TestConductorFeedsGraphDecisionsIntoPrompt(t *testing.T) {
 	}
 }
 
+func TestConductorCoverageGate(t *testing.T) {
+	cfg := &config.Config{
+		Agents: map[string]config.AgentDef{"a": {ID: "a"}},
+		Workflow: config.Workflow{
+			Stages: map[string]config.Stage{
+				"s": {Name: "s", Agent: "a", Coverage: "criterion one"},
+			},
+		},
+	}
+	// a criterion with no covering stage -> the run is refused before it starts
+	if _, err := conductor.Run(context.Background(), cfg, conductor.Deps{
+		Store: newStore(t), Driver: &stubDriver{}, Gates: gate.ExecRunner{},
+		Criteria: []string{"criterion one", "criterion two"},
+	}); err == nil {
+		t.Error("expected a coverage gap error for the uncovered criterion")
+	}
+	// every criterion covered -> it runs
+	if _, err := conductor.Run(context.Background(), cfg, conductor.Deps{
+		Store: newStore(t), Driver: &stubDriver{}, Gates: gate.ExecRunner{},
+		Criteria: []string{"criterion one"},
+	}); err != nil {
+		t.Errorf("a fully-covered run should not error: %v", err)
+	}
+}
+
 func newGraph(t *testing.T) *graphsqlite.Projector {
 	t.Helper()
 	g, err := graphsqlite.Open(filepath.Join(t.TempDir(), "graph.db"))
