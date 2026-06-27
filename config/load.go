@@ -9,11 +9,11 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Load reads agent definitions from <dir>/agents/*.md and the workflow from
-// <dir>/.rigger/workflow.yml, then validates referential and structural
-// integrity.
+// Load reads agent definitions from <dir>/.rigger/agents/*.md and the workflow
+// from <dir>/.rigger/workflow.yml, then validates referential and structural
+// integrity. Everything lives under the project's .rigger/ directory.
 func Load(dir string) (*Config, error) {
-	agents, err := loadAgents(filepath.Join(dir, "agents"))
+	agents, err := loadAgents(filepath.Join(dir, ".rigger", "agents"))
 	if err != nil {
 		return nil, err
 	}

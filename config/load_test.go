@@ -41,10 +41,10 @@ func TestParseAgentMissingFrontmatter(t *testing.T) {
 
 func TestLoadAndValidate(t *testing.T) {
 	dir := writeProject(t, map[string]string{
-		"agents/planner.md":  agentFile("planner", "sonnet"),
-		"agents/impl.md":     agentFile("impl", "sonnet"),
-		"agents/reviewer.md": agentFile("reviewer", "sonnet"),
-		"agents/da.md":       agentFile("da", "opus"),
+		".rigger/agents/planner.md":  agentFile("planner", "sonnet"),
+		".rigger/agents/impl.md":     agentFile("impl", "sonnet"),
+		".rigger/agents/reviewer.md": agentFile("reviewer", "sonnet"),
+		".rigger/agents/da.md":       agentFile("da", "opus"),
 		".rigger/workflow.yml": "name: produce\n" +
 			"gates:\n" +
 			"  test: { run: \"go test ./...\", kind: core }\n" +
@@ -86,8 +86,8 @@ func TestValidateErrors(t *testing.T) {
 	for name, wf := range cases {
 		t.Run(name, func(t *testing.T) {
 			dir := writeProject(t, map[string]string{
-				"agents/planner.md":    agentFile("planner", "sonnet"),
-				".rigger/workflow.yml": "name: x\n" + wf + "\n",
+				".rigger/agents/planner.md": agentFile("planner", "sonnet"),
+				".rigger/workflow.yml":      "name: x\n" + wf + "\n",
 			})
 			if _, err := config.Load(dir); err == nil {
 				t.Fatalf("expected a validation error for %q", name)

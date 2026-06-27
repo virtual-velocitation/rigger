@@ -75,7 +75,7 @@ usage:
   rigger serve                run as an MCP server for the Claude Code workflow shim
   rigger graph --around <id>  print the context subgraph around a node
   rigger validate             load and validate the workflow + agents
-  rigger init                 scaffold a workflow and an agents/ folder
+  rigger init                 scaffold .rigger/ (workflow.yml + an agents/ folder)
   rigger setup                init, then install a Claude Code SessionStart hook
   rigger prime                print recent decisions (what the hook runs)
 
@@ -242,15 +242,12 @@ func cmdValidate() error {
 }
 
 func cmdInit() error {
-	if err := os.MkdirAll(filepath.Join(riggerDir), 0o755); err != nil {
-		return err
-	}
-	if err := os.MkdirAll("agents", 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(riggerDir, "agents"), 0o755); err != nil {
 		return err
 	}
 	writeIfAbsent(filepath.Join(riggerDir, "workflow.yml"), scaffoldWorkflow)
-	writeIfAbsent(filepath.Join("agents", "builder.md"), scaffoldAgent)
-	fmt.Println("scaffolded .rigger/workflow.yml and agents/builder.md")
+	writeIfAbsent(filepath.Join(riggerDir, "agents", "builder.md"), scaffoldAgent)
+	fmt.Println("scaffolded .rigger/workflow.yml and .rigger/agents/builder.md")
 	return nil
 }
 

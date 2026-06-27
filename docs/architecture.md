@@ -93,7 +93,7 @@ surface.
 ```mermaid
 flowchart TB
   subgraph CFG["📄 CONFIG (your repo - the only thing you write)"]
-    AG["agents/*.md<br/>(id · model · tools · prompt)"]
+    AG[".rigger/agents/*.md<br/>(id · model · tools · prompt)"]
     WF[".rigger/workflow.yml<br/>(DAG: stages · needs · gates · autonomy)"]
   end
 
@@ -146,7 +146,7 @@ swapped by config:*
 
 Two file kinds, both in the *consuming* repo. Rigger reads them; it ships neither.
 
-### 3.1 Agent definition files: `agents/<id>.md`
+### 3.1 Agent definition files: `.rigger/agents/<id>.md`
 
 Markdown-with-YAML-frontmatter (the format the tank_game review lenses already use,
 `.claude/agents/*.md`), so existing agent defs port verbatim.
@@ -585,7 +585,7 @@ github.com/virtual-velocitation/rigger
 go install github.com/virtual-velocitation/rigger/cmd/rigger@latest
 
 cd my-project
-rigger init                         # scaffolds .rigger/workflow.yml + agents/
+rigger init                         # scaffolds .rigger/workflow.yml + .rigger/agents/
 rigger run specs/feature.md         # runs the producing loop on a spec
 rigger run --driver workflow …      # opt into the JS Workflow shim (inside Claude Code)
 rigger run --eventstore kurrentdb … # opt into the server backend
