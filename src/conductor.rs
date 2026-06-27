@@ -5,6 +5,7 @@
 //! top-level use case; it depends only on ports and domain, never on an adapter.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Mutex;
 
 use serde::Deserialize;
@@ -30,6 +31,15 @@ pub const TYPE_GATE_PROMOTED: &str = "GatePromoted";
 pub const TYPE_GATE_DEMOTED: &str = "GateDemoted";
 /// A proposed unit with no spec criterion - refused (anti-fragmentation, §8).
 pub const TYPE_SCOPE_CREEP: &str = "ScopeCreep";
+/// The spawn budget is spent - the circuit-breaker tripped (§4.4, §8).
+pub const TYPE_BUDGET_EXHAUSTED: &str = "BudgetExhausted";
+/// The run is halting because the plan left a spec criterion uncovered - the
+/// coverage gap is a spec defect, not something to silently deviate around (§4.4).
+pub const TYPE_SPEC_DEFECT: &str = "SpecDefect";
+/// The run aborted: un-integrated work is dropped, integrated work is kept (§4.4).
+pub const TYPE_TASK_ABORTED: &str = "TaskAborted";
+/// A Manual-autonomy gate pauses its unit awaiting human review (§4.3).
+pub const TYPE_MANUAL_REVIEW: &str = "ManualReview";
 
 #[derive(Debug, thiserror::Error)]
 #[error("conductor: {0}")]
@@ -108,13 +118,16 @@ struct UnitProposed {
 /// events it emitted. Independent stages run concurrently in waves.
 pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     topo_sort(&cfg.workflow.stages)?;
-    check_coverage(cfg, &deps.criteria)?;
 
+    // The RunCtx is created BEFORE the coverage check so a coverage gap can be
+    // flagged as a spec defect through the event log (item 2 / §4.4) instead of
+    // returning a bare error with no audit trail.
     let ctx = RunCtx {
         cfg,
         deps,
         gate_tracker: Mutex::new(HashMap::new()),
         integrate_mu: Mutex::new(()),
+        spawns: AtomicU32::new(0),
     };
 
     // Resume by replay (§4.2): seed integrated/terminal from the existing log so a
@@ -136,9 +149,37 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         .filter(|u| prior.is_terminal(&u.id))
         .map(|u| u.id.clone())
         .collect();
+
+    // Coverage gate (§3.2, §8). A planner (`produces`) stage DEFERS coverage to
+    // after planning: it has no units yet, so we run the planning wave + harvest
+    // the proposed units FIRST, then check coverage against the extended DAG.
+    // A run with no planner checks coverage up front, before any agent runs.
+    if has_producer(&stages) {
+        let ready = ready_stages(&stages, &integrated, &terminal);
+        if !ready.is_empty() {
+            ctx.run_wave(&stages, &ready, &mut integrated, &mut terminal)?;
+            ctx.harvest_proposed(&mut stages, &mut proposed)?;
+        }
+    }
+    ctx.check_coverage_or_flag(&stages, &deps.criteria)?;
+
     loop {
         let ready = ready_stages(&stages, &integrated, &terminal);
         if ready.is_empty() {
+            break;
+        }
+        // checkBudget circuit-breaker (§4.4, §8): before each wave, if the spawn
+        // budget is spent, trip the breaker - record it, abort the task, and pause
+        // the loop. Resume replays the ledger and continues from where it stopped.
+        if ctx.budget_tripped() {
+            ctx.emit(
+                TYPE_BUDGET_EXHAUSTED,
+                json!({
+                    "budget": cfg.workflow.defaults.budget,
+                    "spawns": ctx.spawns.load(Ordering::Relaxed),
+                }),
+            )?;
+            ctx.abort_task("spawn budget exhausted")?;
             break;
         }
         ctx.run_wave(&stages, &ready, &mut integrated, &mut terminal)?;
@@ -149,11 +190,20 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     ledger::project(&events).map_err(|e| Error(e.to_string()))
 }
 
+/// Whether the workflow has a planner stage that produces a DAG at runtime, which
+/// defers the coverage gate until after planning (§3.2).
+fn has_producer(stages: &BTreeMap<String, Stage>) -> bool {
+    stages.values().any(|st| !st.produces.is_empty())
+}
+
 struct RunCtx<'a> {
     cfg: &'a Config,
     deps: &'a Deps<'a>,
     gate_tracker: Mutex<HashMap<String, Gate>>,
     integrate_mu: Mutex<()>,
+    /// The number of real `driver.spawn(...)` calls this run has made, for the
+    /// budget circuit-breaker (§4.4, §8).
+    spawns: AtomicU32,
 }
 
 impl RunCtx<'_> {
@@ -176,6 +226,37 @@ impl RunCtx<'_> {
         if let Some(g) = self.deps.graph {
             ev.position = pos;
             let _ = g.apply(&ev);
+        }
+        Ok(())
+    }
+
+    /// Whether the spawn budget circuit-breaker has tripped (§4.4, §8): a positive
+    /// `defaults.budget` and at least that many real spawns already made.
+    fn budget_tripped(&self) -> bool {
+        let budget = self.cfg.workflow.defaults.budget;
+        budget > 0
+            && safety::budget_exhausted(budget as i64, self.spawns.load(Ordering::Relaxed) as i64)
+    }
+
+    /// abortTask (§4.4): integrated work is already committed and every per-stage
+    /// worktree is removed as its stage finishes, so there is no un-integrated
+    /// worktree left to discard - abort_task records the abort so the run halts with
+    /// an audit trail, and the loop stops (a pause; resume replays the ledger).
+    fn abort_task(&self, reason: &str) -> Result<(), Error> {
+        self.emit(TYPE_TASK_ABORTED, json!({"reason": reason}))
+    }
+
+    /// The coverage gate, routed through flagSpecDefect (§3.2, §4.4, §8): a remaining
+    /// gap is a spec defect, so emit a SpecDefect event with the reason, then halt by
+    /// returning the error (the conductor never silently deviates around a gap).
+    fn check_coverage_or_flag(
+        &self,
+        stages: &BTreeMap<String, Stage>,
+        criteria: &[String],
+    ) -> Result<(), Error> {
+        if let Some(reason) = coverage_gap(stages, criteria) {
+            self.emit(TYPE_SPEC_DEFECT, json!({"reason": reason}))?;
+            return Err(Error(reason));
         }
         Ok(())
     }
@@ -237,6 +318,15 @@ impl RunCtx<'_> {
     }
 
     fn run_stage(&self, st: &Stage) -> Result<bool, Error> {
+        // Async manual-gate queue (§4.3): a stage whose effective autonomy is Manual
+        // pauses - its gate is awaiting a human, so emit ManualReview and leave the
+        // unit pending (Ok(false), NOT escalated). Independent units in the same wave
+        // run concurrently and advance regardless. Only an explicit `autonomy: manual`
+        // pauses; the AutoNotify default runs and integrates unattended.
+        if self.stage_paused_for_review(st) {
+            self.emit(TYPE_MANUAL_REVIEW, json!({"id": st.name, "unit": st.name}))?;
+            return Ok(false);
+        }
         if !st.agents.is_empty() {
             return self.run_fan_out_stage(st);
         }
@@ -247,6 +337,28 @@ impl RunCtx<'_> {
             let _ = w.remove();
         }
         result
+    }
+
+    /// Whether this stage's gate is paused for human review (§4.3): its effective
+    /// autonomy (the stage override, else `defaults.autonomy`) is Manual and it has a
+    /// gate to pause on. `gate::decide` maps Manual to `Action::Pause`.
+    fn stage_paused_for_review(&self, st: &Stage) -> bool {
+        if st.gates.is_empty() {
+            return false;
+        }
+        let raw = if st.autonomy.is_empty() {
+            &self.cfg.workflow.defaults.autonomy
+        } else {
+            &st.autonomy
+        };
+        let probe = Gate {
+            id: String::new(),
+            run: String::new(),
+            kind: gate::Kind::Core,
+            autonomy: gate::Autonomy::parse(raw),
+            history: Vec::new(),
+        };
+        gate::decide(&probe) == gate::Action::Pause
     }
 
     fn run_single_stage(
@@ -267,6 +379,7 @@ impl RunCtx<'_> {
                 })?;
                 let prompt = self.build_prompt(st);
                 let emit = |t: &str, v: Value| self.emit_with_actor(&st.agent, t, v);
+                self.spawns.fetch_add(1, Ordering::Relaxed);
                 match self.deps.driver.spawn(
                     agent_def,
                     &prompt,
@@ -411,6 +524,7 @@ impl RunCtx<'_> {
         let dir = wt.map(|w| w.dir.clone()).unwrap_or_default();
         let prompt = self.build_prompt(st);
         let emit = |t: &str, v: Value| self.emit_with_actor(agent_id, t, v);
+        self.spawns.fetch_add(1, Ordering::Relaxed);
         self.deps
             .driver
             .spawn(agent_def, &prompt, &SpawnOpts { dir }, &emit)
@@ -431,6 +545,7 @@ impl RunCtx<'_> {
         })?;
         let prompt = self.build_prompt(st);
         let emit = |t: &str, v: Value| self.emit_with_actor(adj_id, t, v);
+        self.spawns.fetch_add(1, Ordering::Relaxed);
         let result = self
             .deps
             .driver
@@ -726,25 +841,27 @@ fn write_nodes(b: &mut String, g: &Graph, kind: &str, header: &str) {
     }
 }
 
-/// checkCoverage is the coverage gate: every spec criterion must be covered by a
-/// stage's coverage field, else the run is refused before it starts. A planning
-/// workflow defers it (it produces units after planning); no criteria means no gate.
-fn check_coverage(cfg: &Config, criteria: &[String]) -> Result<(), Error> {
+/// Whether a stage carries an LLM judge, i.e. a real verifier and not a mechanical
+/// proxy. A stage covers a criterion only if it has one (§8 proxy-gap guard, item 5):
+/// a worker agent, a fan-out lens set, or an adjudicator. A gate-command-only stage
+/// is a mechanical proxy and does not satisfy a conceptual criterion.
+fn has_llm_verifier(st: &Stage) -> bool {
+    !st.agent.is_empty() || !st.agents.is_empty() || !st.adjudicator.is_empty()
+}
+
+/// coverage_gap is the coverage gate (§3.2, §8). Every spec criterion must be
+/// covered by a stage that has a real (LLM-judge) verifier; a criterion covered only
+/// by a mechanical gate counts as NOT covered (the proxy-gap guard, item 5). It runs
+/// against the live `stages` map, so proposed planner units (which carry their own
+/// `coverage`) count toward closing the gap. Returns the gap reason, or None if every
+/// criterion is covered (or there are no criteria to enforce).
+fn coverage_gap(stages: &BTreeMap<String, Stage>, criteria: &[String]) -> Option<String> {
     if criteria.is_empty() {
-        return Ok(());
+        return None;
     }
-    if cfg
-        .workflow
-        .stages
+    let covered: HashSet<&str> = stages
         .values()
-        .any(|st| !st.produces.is_empty())
-    {
-        return Ok(());
-    }
-    let covered: HashSet<&str> = cfg
-        .workflow
-        .stages
-        .values()
+        .filter(|st| has_llm_verifier(st))
         .map(|st| st.coverage.trim())
         .filter(|c| !c.is_empty())
         .collect();
@@ -753,13 +870,13 @@ fn check_coverage(cfg: &Config, criteria: &[String]) -> Result<(), Error> {
         .map(|c| c.trim())
         .filter(|c| !covered.contains(c))
         .collect();
-    if !gaps.is_empty() {
-        return Err(Error(format!(
-            "coverage gap - no stage covers: {}",
-            gaps.join("; ")
-        )));
+    if gaps.is_empty() {
+        return None;
     }
-    Ok(())
+    Some(format!(
+        "coverage gap - no stage with an LLM verifier covers: {}",
+        gaps.join("; ")
+    ))
 }
 
 fn ready_stages(
@@ -1307,6 +1424,321 @@ mod tests {
         // The run completes (Ok), not aborted; the crashing unit escalates.
         let rs = run(&cfg, &deps).unwrap();
         assert_eq!(rs.units["s"].status, ledger::Status::Escalated);
+    }
+
+    #[test]
+    fn budget_breaker_stops_the_run_after_the_first_wave() {
+        // Two stages in sequential waves (s2 needs s1). A spawn budget of 1 lets the
+        // first wave run, then the pre-wave checkBudget (§4.4, §8) trips before the
+        // second wave: s1 integrates, s2 never starts.
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent("a"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.defaults.budget = 1;
+        cfg.workflow.stages.insert(
+            "s1".into(),
+            Stage {
+                name: "s1".into(),
+                agent: "a".into(),
+                gates: vec!["ok".into()],
+                ..Default::default()
+            },
+        );
+        cfg.workflow.stages.insert(
+            "s2".into(),
+            Stage {
+                name: "s2".into(),
+                agent: "a".into(),
+                needs: vec!["s1".into()],
+                gates: vec!["ok".into()],
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(rs.units["s1"].status, ledger::Status::Integrated);
+        assert!(
+            !rs.units.contains_key("s2"),
+            "the budget breaker must stop the second wave before it starts"
+        );
+        let events = st
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        assert!(
+            events.iter().any(|e| e.type_ == TYPE_BUDGET_EXHAUSTED),
+            "tripping the budget must emit a BudgetExhausted event"
+        );
+    }
+
+    #[test]
+    fn budget_exhaustion_aborts_the_task() {
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent("a"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.defaults.budget = 1;
+        cfg.workflow.stages.insert(
+            "s1".into(),
+            Stage {
+                name: "s1".into(),
+                agent: "a".into(),
+                gates: vec!["ok".into()],
+                ..Default::default()
+            },
+        );
+        cfg.workflow.stages.insert(
+            "s2".into(),
+            Stage {
+                name: "s2".into(),
+                agent: "a".into(),
+                needs: vec!["s1".into()],
+                gates: vec!["ok".into()],
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+        let events = st
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        assert!(
+            events.iter().any(|e| e.type_ == TYPE_TASK_ABORTED),
+            "a tripped budget must abort the task"
+        );
+    }
+
+    #[test]
+    fn coverage_gap_flags_a_spec_defect_and_errors() {
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent("a"));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "a".into(),
+                coverage: "criterion one".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: vec!["criterion one".into(), "criterion two".into()],
+        };
+        // The gap halts the run (§4.4): flagSpecDefect, then return Err.
+        assert!(run(&cfg, &deps).is_err());
+        let events = st
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        assert!(
+            events.iter().any(|e| e.type_ == TYPE_SPEC_DEFECT),
+            "an uncovered criterion must be flagged as a spec defect"
+        );
+    }
+
+    #[test]
+    fn planner_covering_every_criterion_passes() {
+        // A `produces` planner defers coverage: it proposes a unit whose `coverage`
+        // closes the only criterion, so coverage holds after planning (§3.2).
+        let mut cfg = Config::default();
+        cfg.agents.insert("planner".into(), agent("planner"));
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.stages.insert(
+            "plan".into(),
+            Stage {
+                name: "plan".into(),
+                agent: "planner".into(),
+                produces: "dag".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            emits: vec![(
+                TYPE_UNIT_PROPOSED.to_string(),
+                json!({"id": "impl", "agent": "worker", "coverage": "crit"}),
+            )],
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: vec!["crit".into()],
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(rs.units["impl"].status, ledger::Status::Integrated);
+        let events = st
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        assert!(
+            !events.iter().any(|e| e.type_ == TYPE_SPEC_DEFECT),
+            "a planner that covers every criterion must not flag a defect"
+        );
+    }
+
+    #[test]
+    fn planner_leaving_a_gap_flags_a_spec_defect() {
+        // The `produces` planner proposes no unit covering "crit"; coverage is checked
+        // AFTER planning and finds the gap -> SpecDefect + Err (§3.2, the coverage gate
+        // is not silently disabled by the presence of a `produces` stage).
+        let mut cfg = Config::default();
+        cfg.agents.insert("planner".into(), agent("planner"));
+        cfg.workflow.stages.insert(
+            "plan".into(),
+            Stage {
+                name: "plan".into(),
+                agent: "planner".into(),
+                produces: "dag".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new(); // proposes nothing
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: vec!["crit".into()],
+        };
+        assert!(run(&cfg, &deps).is_err());
+        let events = st
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        assert!(
+            events.iter().any(|e| e.type_ == TYPE_SPEC_DEFECT),
+            "a planner that leaves a criterion uncovered must flag a spec defect"
+        );
+    }
+
+    #[test]
+    fn gate_only_stage_is_a_coverage_proxy_gap() {
+        // A stage that "covers" a criterion but has only a gate command and no agent
+        // is a mechanical proxy, not an LLM judge: it does not satisfy the criterion,
+        // so the run is refused with a SpecDefect (§8 proxy-gap guard).
+        let mut cfg = Config::default();
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "gateonly".into(),
+            Stage {
+                name: "gateonly".into(),
+                coverage: "crit".into(),
+                gates: vec!["ok".into()],
+                ..Default::default() // no agent / agents / adjudicator
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: vec!["crit".into()],
+        };
+        assert!(
+            run(&cfg, &deps).is_err(),
+            "a criterion covered only by a gate-only stage must be an uncovered gap"
+        );
+        let events = st
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        assert!(events.iter().any(|e| e.type_ == TYPE_SPEC_DEFECT));
+    }
+
+    #[test]
+    fn manual_stage_pauses_while_an_auto_stage_integrates() {
+        // An explicitly-manual stage pauses (ManualReview, not integrated); an
+        // independent default-autonomy stage in the same wave integrates (§4.3).
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent("a"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "manual".into(),
+            Stage {
+                name: "manual".into(),
+                agent: "a".into(),
+                gates: vec!["ok".into()],
+                autonomy: "manual".into(),
+                ..Default::default()
+            },
+        );
+        cfg.workflow.stages.insert(
+            "auto".into(),
+            Stage {
+                name: "auto".into(),
+                agent: "a".into(),
+                gates: vec!["ok".into()],
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs.units["auto"].status,
+            ledger::Status::Integrated,
+            "the auto stage must integrate"
+        );
+        assert_ne!(
+            rs.units["manual"].status,
+            ledger::Status::Integrated,
+            "the manual stage must NOT integrate - it is awaiting review"
+        );
+        assert_ne!(
+            rs.units["manual"].status,
+            ledger::Status::Escalated,
+            "the manual stage is paused, not failed"
+        );
+        let events = st
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        assert!(
+            events.iter().any(|e| e.type_ == TYPE_MANUAL_REVIEW),
+            "a manual stage must emit ManualReview"
+        );
     }
 
     fn init_repo() -> tempfile::TempDir {
