@@ -14,17 +14,21 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+
 	"github.com/virtual-velocitation/rigger/conductor"
 	"github.com/virtual-velocitation/rigger/config"
 	"github.com/virtual-velocitation/rigger/contextgraph"
 	graphsqlite "github.com/virtual-velocitation/rigger/contextgraph/sqlite"
 	"github.com/virtual-velocitation/rigger/driver/cli"
+	"github.com/virtual-velocitation/rigger/driver/workflow"
 	"github.com/virtual-velocitation/rigger/eventstore"
 	eventsqlite "github.com/virtual-velocitation/rigger/eventstore/sqlite"
 	"github.com/virtual-velocitation/rigger/gate"
 	"github.com/virtual-velocitation/rigger/grounder"
 	"github.com/virtual-velocitation/rigger/hooks"
 	"github.com/virtual-velocitation/rigger/ledger"
+	"github.com/virtual-velocitation/rigger/mcpserver"
 )
 
 const riggerDir = ".rigger"
@@ -38,6 +42,8 @@ func main() {
 	switch os.Args[1] {
 	case "run":
 		err = cmdRun(os.Args[2:])
+	case "serve":
+		err = cmdServe(os.Args[2:])
 	case "graph":
 		err = cmdGraph(os.Args[2:])
 	case "init":
@@ -63,7 +69,8 @@ func usage() {
 	fmt.Fprint(os.Stderr, `rigger - a config-driven, event-sourced multi-agent dev-loop harness
 
 usage:
-  rigger run                  run the workflow in .rigger/workflow.yml
+  rigger run                  run the workflow with the standalone CLI driver
+  rigger serve                run as an MCP server for the Claude Code workflow shim
   rigger graph --around <id>  print the context subgraph around a node
   rigger init                 scaffold a workflow and an agents/ folder
   rigger setup                init, then install a Claude Code SessionStart hook
@@ -102,6 +109,44 @@ func cmdRun(_ []string) error {
 		return err
 	}
 	printRunState(rs)
+	return nil
+}
+
+// cmdServe runs the conductor in the background and serves the MCP bridge over
+// stdio, so a Claude Code workflow shim drives the agents via agent() while the
+// Go conductor orchestrates. It exits when the run completes.
+func cmdServe(_ []string) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cfg, err := config.Load(".")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(riggerDir, 0o755); err != nil {
+		return err
+	}
+	store, err := eventsqlite.Open(filepath.Join(riggerDir, "events.db"))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = store.Close() }()
+
+	driver := workflow.New()
+	go func() {
+		if _, runErr := conductor.Run(ctx, cfg, conductor.Deps{
+			Store: store, Driver: driver, Gates: gate.ExecRunner{},
+			Repo: gitRepo(), Grounder: grounder.Grep{Root: "."},
+		}); runErr != nil {
+			fmt.Fprintln(os.Stderr, "rigger: conductor:", runErr)
+		}
+		_ = projectGraph(context.Background(), store)
+		cancel() // the run is done; stop serving
+	}()
+
+	if err := mcpserver.New(driver, store, conductor.Stream).Run(ctx, &mcp.StdioTransport{}); err != nil && ctx.Err() == nil {
+		return err
+	}
 	return nil
 }
 
