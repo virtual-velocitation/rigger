@@ -1,13 +1,17 @@
-# Baseline linters. Expand as the codebase grows.
-run:
-  timeout: 5m
+# golangci-lint v2 config. CI builds golangci-lint from source with the pinned
+# Go toolchain (see .github/workflows/ci.yml) so it always supports the module's
+# Go version; run the same locally with `golangci-lint run ./...`.
+version: "2"
 
 linters:
   enable:
-    - gofmt
-    - govet
-    - staticcheck
     - errcheck
+    - govet
     - ineffassign
+    - staticcheck
     - unused
     - misspell
+
+formatters:
+  enable:
+    - gofmt
