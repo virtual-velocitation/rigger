@@ -8,5 +8,7 @@ pub mod config;
 pub mod contextgraph;
 pub mod eventstore;
 pub mod gate;
+pub mod grounder;
 pub mod ledger;
 pub mod safety;
+pub mod spec;
