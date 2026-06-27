@@ -97,6 +97,11 @@ func cmdRun(_ []string) error {
 		return err
 	}
 	defer func() { _ = store.Close() }()
+	graph, err := graphsqlite.Open(filepath.Join(riggerDir, "graph.db"))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = graph.Close() }()
 
 	rs, err := conductor.Run(ctx, cfg, conductor.Deps{
 		Store:    store,
@@ -104,11 +109,9 @@ func cmdRun(_ []string) error {
 		Gates:    gate.ExecRunner{},
 		Repo:     gitRepo(),
 		Grounder: grounder.Grep{Root: "."},
+		Graph:    graph,
 	})
 	if err != nil {
-		return err
-	}
-	if err := projectGraph(ctx, store); err != nil {
 		return err
 	}
 	printRunState(rs)
@@ -134,16 +137,20 @@ func cmdServe(_ []string) error {
 		return err
 	}
 	defer func() { _ = store.Close() }()
+	graph, err := graphsqlite.Open(filepath.Join(riggerDir, "graph.db"))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = graph.Close() }()
 
 	driver := workflow.New()
 	go func() {
 		if _, runErr := conductor.Run(ctx, cfg, conductor.Deps{
 			Store: store, Driver: driver, Gates: gate.ExecRunner{},
-			Repo: gitRepo(), Grounder: grounder.Grep{Root: "."},
+			Repo: gitRepo(), Grounder: grounder.Grep{Root: "."}, Graph: graph,
 		}); runErr != nil {
 			fmt.Fprintln(os.Stderr, "rigger: conductor:", runErr)
 		}
-		_ = projectGraph(context.Background(), store)
 		cancel() // the run is done; stop serving
 	}()
 
@@ -161,24 +168,6 @@ func gitRepo() string {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
-}
-
-func projectGraph(ctx context.Context, store *eventsqlite.Store) error {
-	events, err := store.ReadAll(ctx, 0, eventstore.Forward, eventstore.Filter{})
-	if err != nil {
-		return err
-	}
-	gp, err := graphsqlite.Open(filepath.Join(riggerDir, "graph.db"))
-	if err != nil {
-		return err
-	}
-	defer func() { _ = gp.Close() }()
-	for _, e := range events {
-		if err := gp.Apply(ctx, e); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func printRunState(rs *ledger.RunState) {
