@@ -4,7 +4,7 @@ Point Rigger at a spec and it produces working, integrated code by running a tea
 
 The name is a climbing reference. A rigger is the person who sets up your harness and checks your gear before you leave the ground. That is the job here: set up the agent fleet, hold the rope, keep everyone clipped into the same system.
 
-> Status: the core loop is built, wired, and CI-green. The event store (SQLite by default, KurrentDB optional - both proven against one shared contract suite), the bi-temporal context graph, per-project segregation, the config loader (agent files + workflow YAML), the gate / autonomy-ratchet / safety rails, the event-sourced ledger, the conductor, both agent drivers (the standalone CLI driver and the in-Claude-Code workflow driver over an MCP bridge - `rigger serve`), and the `rigger` binary are implemented. A run actually lands code: each unit's worktree is committed and merged into the repo on a green gate. Independent stages run concurrently in isolated worktrees; each agent is fed the subgraph of decisions governing the files it touches plus the lessons learned about them; the workflow driver's agents see peers' live decisions through the side-car; escalations are recorded as lessons that resurface later; `rigger run <spec>` refuses to start unless every acceptance criterion is covered by a stage; a planning stage can extend the DAG at runtime; and gates ratchet their own autonomy. The headline piece still pending is semantic grounding - the real turbovec Rust engine via cgo (today's default is a grep grounder) - with a few smaller refinements tracked in [docs/architecture.md](docs/architecture.md). The full blueprint is that same document.
+> Status: Rigger is written in Rust and CI-green. The event store (embedded SQLite behind a KurrentDB-shaped trait, with optimistic concurrency and a contract suite), the bi-temporal context graph (supersession invalidates, never deletes), the config loader (agent files + workflow YAML), the gate / autonomy-ratchet / safety rails, the event-sourced ledger, the conductor, both agent drivers (the standalone CLI driver and the in-Claude-Code workflow driver over a stdio MCP bridge - `rigger serve`), and the `rigger` binary are implemented and tested. A run lands code: each unit's worktree is committed and merged into the repo on a green gate. Independent stages run concurrently in isolated worktrees; each agent is fed the subgraph of decisions governing the files it touches plus the lessons learned about them; the side-car surfaces peers' decisions; escalations are recorded as lessons that resurface later; `rigger run <spec>` refuses to start unless every acceptance criterion is covered by a stage; a planning stage can extend the DAG at runtime; and gates ratchet their own autonomy. Semantic grounding is the real turbovec engine - `turbovec` + `fastembed` as native Rust crates, no FFI - behind the opt-in `turbovec` feature; the default build uses a grep grounder so a plain `cargo install` stays light. The full blueprint is [docs/architecture.md](docs/architecture.md).
 
 ## The problem
 
@@ -32,26 +32,27 @@ Put those together and the three failures stop happening by construction. An age
 
 ## How it is built
 
-Rigger is a single Go binary, installable with `go get`, and it is built to be configured rather than modified. You do not fork it to use it. You point it at config.
+Rigger is a single Rust binary, installable with `cargo install`, and it is built to be configured rather than modified. You do not fork it to use it. You point it at config.
 
 There are two kinds of config, and both live in your repository, not in Rigger:
 
 - Agent definition files. One file per agent, declaring its model, its tools, and its instructions. If you have used agent files in other tools, these will look familiar.
-- A workflow file. A YAML file shaped like a GitHub Actions workflow: a set of stages, the dependencies between them, which agent runs each one, which gates must pass, and how much autonomy each gate gets. This file is the loop. The shape of your process lives in YAML, not in Go, so changing it is an edit, not a pull request against Rigger.
+- A workflow file. A YAML file shaped like a GitHub Actions workflow: a set of stages, the dependencies between them, which agent runs each one, which gates must pass, and how much autonomy each gate gets. This file is the loop. The shape of your process lives in YAML, not in Rust, so changing it is an edit, not a pull request against Rigger.
 
 Gates are config too. A gate is just a command that has to exit clean, plus a label for how much it is trusted. `go test`, `cargo test`, `pytest`, a custom script, all of it is your YAML. Rigger ships zero gates of its own, because it has no opinion about your project.
 
 Everything underneath is pluggable through interfaces, each with a sensible default and an optional upgrade:
 
-- Storage. The event log and the context graph live in embedded SQLite by default. One file, no server, nothing to install. If you outgrow that, you can point the same interface at KurrentDB instead, with no change to the rest of the system. The local store is modeled on KurrentDB's own shape on purpose, so the lightweight version is a faithful stand-in for the server version.
-- Agent driver. By default Rigger runs agents by shelling out to the `claude` command line tool, so it works anywhere that tool is installed, with no dependency on a particular editor or runtime. If you are running inside an environment that offers a richer agent runtime, you can swap in a driver that uses it, again without touching the core.
+- Storage. The event log and the context graph live in embedded SQLite (bundled - one file, no server, nothing to install). The store sits behind a KurrentDB-shaped trait, so a KurrentDB adapter drops in without touching the rest of the system; the local store is modeled on KurrentDB's own shape on purpose, so it is a faithful stand-in.
+- Agent driver. By default Rigger runs agents by shelling out to the `claude` command line tool, so it works anywhere that tool is installed, with no dependency on a particular editor or runtime. The in-Claude-Code workflow driver (`rigger serve`, over a stdio MCP bridge) is the richer alternative, again behind the same trait.
+- Grounding. The default is a self-contained grep grounder. Built with `--features turbovec`, the real turbovec engine (semantic vector search via `turbovec` + `fastembed`) plugs in behind the same trait.
 
 The loop itself is the part that has already been proven. It came out of a real harness that drove a large engine refactor: take a spec, break it into a dependency graph of units, refuse to call anything done until every requirement is covered and every gate is green, run independent units in parallel in isolated worktrees, review each one adversarially before it lands, and escalate or retry on failure instead of silently dropping it or spinning forever. Rigger is that machinery with everything specific to the project it grew up in stripped out.
 
 ## Quick start
 
 ```
-go install github.com/virtual-velocitation/rigger/cmd/rigger@latest
+cargo install --git https://github.com/virtual-velocitation/rigger
 
 cd your-project
 rigger init                    # scaffold a workflow file and an agents folder
@@ -59,7 +60,7 @@ rigger run specs/feature.md    # run the loop on a spec
 rigger graph --around path/to/file
 ```
 
-By default this uses the local SQLite store and the command line agent driver, so there is nothing else to stand up. Flags let you switch the store or the driver when you need to.
+By default this uses the local SQLite store, the grep grounder, and the `claude` CLI agent driver, so there is nothing else to stand up. For semantic grounding, install OpenBLAS and build with `--features turbovec` (it pulls the ONNX runtime and downloads an embedding model). `rigger serve` runs the MCP bridge for the in-Claude-Code workflow driver.
 
 ## Where this is going
 
