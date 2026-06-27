@@ -333,6 +333,54 @@ func applyDecision(t *testing.T, g *graphsqlite.Projector, id, summary string, g
 	}
 }
 
+func TestConductorLearnsFromEscalation(t *testing.T) {
+	repo := initRepo(t)
+	cfg := &config.Config{
+		Agents: map[string]config.AgentDef{"impl": {ID: "impl"}},
+		Workflow: config.Workflow{
+			Gates: map[string]config.Gate{"bad": {Run: "false", Kind: "core"}},
+			Stages: map[string]config.Stage{
+				"s": {Name: "s", Agent: "impl", Gates: []string{"bad"}},
+			},
+		},
+	}
+	store := newStore(t)
+	driver := &stubDriver{writeFile: "broken.go"}
+	rs, err := conductor.Run(context.Background(), cfg, conductor.Deps{
+		Store: store, Driver: driver, Gates: gate.ExecRunner{}, Repo: repo, Graph: newGraph(t),
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if rs.Units["s"].Status != ledger.Escalated {
+		t.Fatalf("the unit should have escalated: %+v", rs.Units["s"])
+	}
+	events, err := store.ReadAll(context.Background(), 0, eventstore.Forward, eventstore.Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasLessonAbout(events, "broken.go") {
+		t.Error("escalation should record a lesson about the file the failed unit touched")
+	}
+}
+
+func hasLessonAbout(events []eventstore.Event, path string) bool {
+	for _, e := range events {
+		if e.Type != contextgraph.TypeLessonLearned {
+			continue
+		}
+		var l contextgraph.LessonLearned
+		if json.Unmarshal(e.Data, &l) == nil {
+			for _, a := range l.About {
+				if a == path {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 func hasDecision(events []eventstore.Event, id string) bool {
 	for _, e := range events {
 		if e.Type == contextgraph.TypeDecisionMade && strings.Contains(string(e.Data), id) {
