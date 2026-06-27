@@ -127,6 +127,11 @@ func Run(ctx context.Context, cfg *config.Config, deps Deps) (*ledger.RunState, 
 		return commit, nil
 	}
 
+	gt := &gateTracker{gates: map[string]*gate.Gate{}}
+	recordGate := func(gid string, pass bool) (bool, bool, gate.Autonomy) {
+		return gt.record(cfg, gid, pass)
+	}
+
 	stages := make(map[string]config.Stage, len(cfg.Workflow.Stages))
 	for name, st := range cfg.Workflow.Stages {
 		stages[name] = st
@@ -139,7 +144,7 @@ func Run(ctx context.Context, cfg *config.Config, deps Deps) (*ledger.RunState, 
 		if len(ready) == 0 {
 			break // either all done, or the rest are blocked behind an escalation
 		}
-		if err := runWave(ctx, cfg, deps, stages, ready, emit, integrate, integrated, terminal); err != nil {
+		if err := runWave(ctx, cfg, deps, stages, ready, emit, integrate, recordGate, integrated, terminal); err != nil {
 			return nil, err
 		}
 		if err := harvestProposed(ctx, deps, stages, proposed); err != nil {
@@ -246,10 +251,77 @@ func readyStages(stages map[string]config.Stage, integrated, terminal map[string
 	return ready
 }
 
+// Gate-autonomy ratchet events: a gate's trust moving up (promoted, after a run
+// of clean passes) or down (demoted, on a failure).
+const (
+	TypeGatePromoted = "GatePromoted"
+	TypeGateDemoted  = "GateDemoted"
+)
+
+// GateAutonomyChanged records a gate's new autonomy after the ratchet moved it.
+type GateAutonomyChanged struct {
+	Gate     string `json:"gate"`
+	Autonomy string `json:"autonomy"`
+}
+
+// gateTracker carries each gate's autonomy and pass/fail history across a run so
+// the ratchet can promote a reliably-passing gate and demote one that fails. It
+// is shared across concurrently-running stages, so its map is mutex-guarded.
+type gateTracker struct {
+	mu    sync.Mutex
+	gates map[string]*gate.Gate
+}
+
+func (t *gateTracker) record(cfg *config.Config, gid string, pass bool) (promoted, demoted bool, autonomy gate.Autonomy) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	g, ok := t.gates[gid]
+	if !ok {
+		a := gate.Autonomy(cfg.Workflow.Defaults.Autonomy)
+		if a == "" {
+			a = gate.Manual
+		}
+		g = &gate.Gate{ID: gid, Autonomy: a}
+		t.gates[gid] = g
+	}
+	g.History = append(g.History, gate.HistoryEntry{Pass: pass})
+	if newA, dem := gate.AutoDemote(*g, pass); dem {
+		g.Autonomy, g.History = newA, nil
+		return false, true, g.Autonomy
+	}
+	if gate.ProposePromotion(*g) {
+		g.Autonomy, g.History = gate.NextAutonomy(g.Autonomy), nil
+		return true, false, g.Autonomy
+	}
+	return false, false, g.Autonomy
+}
+
+// runGates runs a stage's gates in dir, records each verdict, moves the autonomy
+// ratchet (emitting GatePromoted/GateDemoted), and reports whether all passed.
+func runGates(ctx context.Context, deps Deps, cfg *config.Config, st config.Stage, dir string, emit func(string, any) error, recordGate func(string, bool) (bool, bool, gate.Autonomy)) (bool, error) {
+	allPass := true
+	for _, gid := range st.Gates {
+		gc := cfg.Workflow.Gates[gid]
+		res := deps.Gates.Run(ctx, gate.Gate{ID: gid, Run: gc.Run, Kind: gate.Kind(gc.Kind)}, dir)
+		if err := emit(contextgraph.TypeGateVerdict, contextgraph.GateVerdict{Gate: gid, Pass: res.Pass}); err != nil {
+			return false, err
+		}
+		if promoted, demoted, autonomy := recordGate(gid, res.Pass); promoted {
+			_ = emit(TypeGatePromoted, GateAutonomyChanged{Gate: gid, Autonomy: string(autonomy)})
+		} else if demoted {
+			_ = emit(TypeGateDemoted, GateAutonomyChanged{Gate: gid, Autonomy: string(autonomy)})
+		}
+		if !res.Pass {
+			allPass = false
+		}
+	}
+	return allPass, nil
+}
+
 // runWave runs the ready stages concurrently and records which integrated. The
 // integrated/terminal maps are written only here, on the single draining
 // goroutine, so they are race-free.
-func runWave(ctx context.Context, cfg *config.Config, deps Deps, stages map[string]config.Stage, ready []string, emit func(string, any) error, integrate integrateFunc, integrated, terminal map[string]bool) error {
+func runWave(ctx context.Context, cfg *config.Config, deps Deps, stages map[string]config.Stage, ready []string, emit func(string, any) error, integrate integrateFunc, recordGate func(string, bool) (bool, bool, gate.Autonomy), integrated, terminal map[string]bool) error {
 	type result struct {
 		name string
 		ok   bool
@@ -263,7 +335,7 @@ func runWave(ctx context.Context, cfg *config.Config, deps Deps, stages map[stri
 				results <- result{name: name, err: err}
 				return
 			}
-			ok, err := runStage(ctx, cfg, deps, st, emit, integrate)
+			ok, err := runStage(ctx, cfg, deps, st, emit, integrate, recordGate)
 			results <- result{name: name, ok: ok, err: err}
 		}(name)
 	}
@@ -283,9 +355,9 @@ func runWave(ctx context.Context, cfg *config.Config, deps Deps, stages map[stri
 
 // runStage runs one stage's agent and gates, retrying under the safety bound and
 // escalating if the gates keep failing. It returns whether the stage integrated.
-func runStage(ctx context.Context, cfg *config.Config, deps Deps, st config.Stage, emit func(string, any) error, integrate integrateFunc) (bool, error) {
+func runStage(ctx context.Context, cfg *config.Config, deps Deps, st config.Stage, emit func(string, any) error, integrate integrateFunc, recordGate func(string, bool) (bool, bool, gate.Autonomy)) (bool, error) {
 	if len(st.Agents) > 0 {
-		return runFanOutStage(ctx, cfg, deps, st, emit, integrate)
+		return runFanOutStage(ctx, cfg, deps, st, emit, integrate, recordGate)
 	}
 	wt, finish, err := stageWorktree(ctx, deps, st)
 	if err != nil {
@@ -309,16 +381,9 @@ func runStage(ctx context.Context, cfg *config.Config, deps Deps, st config.Stag
 			}
 		}
 
-		allPass := true
-		for _, gid := range st.Gates {
-			gc := cfg.Workflow.Gates[gid]
-			res := deps.Gates.Run(ctx, gate.Gate{ID: gid, Run: gc.Run, Kind: gate.Kind(gc.Kind)}, dir)
-			if err := emit(contextgraph.TypeGateVerdict, contextgraph.GateVerdict{Gate: gid, Pass: res.Pass}); err != nil {
-				return false, err
-			}
-			if !res.Pass {
-				allPass = false
-			}
+		allPass, err := runGates(ctx, deps, cfg, st, dir, emit, recordGate)
+		if err != nil {
+			return false, err
 		}
 
 		if allPass {
@@ -476,7 +541,7 @@ func appendUnique(s []string, v string) []string {
 // runFanOutStage runs a stage's agents in parallel (each isolated and harvested),
 // then its adjudicator, then its gates in the repo, under the same
 // retry-then-escalate rails as a single-agent stage.
-func runFanOutStage(ctx context.Context, cfg *config.Config, deps Deps, st config.Stage, emit func(string, any) error, integrate integrateFunc) (bool, error) {
+func runFanOutStage(ctx context.Context, cfg *config.Config, deps Deps, st config.Stage, emit func(string, any) error, integrate integrateFunc, recordGate func(string, bool) (bool, bool, gate.Autonomy)) (bool, error) {
 	attempts := 0
 	for {
 		if err := runAgentsConcurrently(ctx, cfg, deps, st, st.Agents, emit, integrate); err != nil {
@@ -488,16 +553,9 @@ func runFanOutStage(ctx context.Context, cfg *config.Config, deps Deps, st confi
 			}
 		}
 
-		allPass := true
-		for _, gid := range st.Gates {
-			gc := cfg.Workflow.Gates[gid]
-			res := deps.Gates.Run(ctx, gate.Gate{ID: gid, Run: gc.Run, Kind: gate.Kind(gc.Kind)}, "")
-			if err := emit(contextgraph.TypeGateVerdict, contextgraph.GateVerdict{Gate: gid, Pass: res.Pass}); err != nil {
-				return false, err
-			}
-			if !res.Pass {
-				allPass = false
-			}
+		allPass, err := runGates(ctx, deps, cfg, st, "", emit, recordGate)
+		if err != nil {
+			return false, err
 		}
 		if allPass {
 			if err := emit(ledger.TypeUnitIntegrated, ledger.UnitIntegrated{ID: st.Name}); err != nil {

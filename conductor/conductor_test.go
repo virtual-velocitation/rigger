@@ -310,6 +310,37 @@ func TestConductorFeedsGraphDecisionsIntoPrompt(t *testing.T) {
 	}
 }
 
+func TestConductorRatchetPromotesAReliableGate(t *testing.T) {
+	cfg := &config.Config{
+		Agents: map[string]config.AgentDef{"a": {ID: "a"}},
+		Workflow: config.Workflow{
+			Gates: map[string]config.Gate{"ok": {Run: "true", Kind: "core"}},
+			Stages: map[string]config.Stage{
+				"s1": {Name: "s1", Agent: "a", Gates: []string{"ok"}},
+				"s2": {Name: "s2", Agent: "a", Needs: []string{"s1"}, Gates: []string{"ok"}},
+				"s3": {Name: "s3", Agent: "a", Needs: []string{"s2"}, Gates: []string{"ok"}},
+			},
+		},
+	}
+	store := newStore(t)
+	if _, err := conductor.Run(context.Background(), cfg, conductor.Deps{Store: store, Driver: &stubDriver{}, Gates: gate.ExecRunner{}}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	events, err := store.ReadAll(context.Background(), 0, eventstore.Forward, eventstore.Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	promoted := false
+	for _, e := range events {
+		if e.Type == conductor.TypeGatePromoted && strings.Contains(string(e.Data), `"ok"`) {
+			promoted = true
+		}
+	}
+	if !promoted {
+		t.Error("a gate that passed PromoteThreshold times should earn a promotion")
+	}
+}
+
 func TestConductorPlannerExtendsTheDAG(t *testing.T) {
 	cfg := &config.Config{
 		Agents: map[string]config.AgentDef{"planner": {ID: "planner"}, "worker": {ID: "worker"}},
