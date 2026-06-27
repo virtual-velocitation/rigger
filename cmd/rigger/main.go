@@ -9,8 +9,10 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/virtual-velocitation/rigger/conductor"
 	"github.com/virtual-velocitation/rigger/config"
@@ -20,6 +22,7 @@ import (
 	"github.com/virtual-velocitation/rigger/eventstore"
 	eventsqlite "github.com/virtual-velocitation/rigger/eventstore/sqlite"
 	"github.com/virtual-velocitation/rigger/gate"
+	"github.com/virtual-velocitation/rigger/grounder"
 	"github.com/virtual-velocitation/rigger/hooks"
 	"github.com/virtual-velocitation/rigger/ledger"
 )
@@ -86,9 +89,11 @@ func cmdRun(_ []string) error {
 	defer func() { _ = store.Close() }()
 
 	rs, err := conductor.Run(ctx, cfg, conductor.Deps{
-		Store:  store,
-		Driver: cli.Driver{},
-		Gates:  gate.ExecRunner{},
+		Store:    store,
+		Driver:   cli.Driver{},
+		Gates:    gate.ExecRunner{},
+		Repo:     gitRepo(),
+		Grounder: grounder.Grep{Root: "."},
 	})
 	if err != nil {
 		return err
@@ -98,6 +103,16 @@ func cmdRun(_ []string) error {
 	}
 	printRunState(rs)
 	return nil
+}
+
+// gitRepo returns the git repository root, for worktree isolation, or "" if the
+// current directory is not a git repository (agents then run in place).
+func gitRepo() string {
+	out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func projectGraph(ctx context.Context, store *eventsqlite.Store) error {
