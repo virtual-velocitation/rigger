@@ -10,8 +10,10 @@
 go.work
 go.work.sum
 
-# Local event store / scratch
+# Local event store / scratch (runtime state; .rigger/workflow.yml IS committed)
 *.db
+*.db-wal
+*.db-shm
 *.sqlite
 *.sqlite3
 .rigger/cache/
