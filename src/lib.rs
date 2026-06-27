@@ -7,10 +7,12 @@
 pub mod conductor;
 pub mod config;
 pub mod contextgraph;
+pub mod driver;
 pub mod eventstore;
 pub mod gate;
 pub mod grounder;
 pub mod ledger;
 pub mod safety;
+pub mod sidecar;
 pub mod spec;
 pub mod worktree;
