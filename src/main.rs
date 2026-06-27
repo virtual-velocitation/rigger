@@ -100,7 +100,36 @@ fn cmd_run(args: &[String]) -> Res {
 }
 
 fn cmd_serve(_args: &[String]) -> Res {
-    Err("serve: the MCP server is being wired in the Rust port (use `rigger run` for now)".into())
+    let cfg = config::load(".")?;
+    std::fs::create_dir_all(RIGGER_DIR)?;
+    let store = Store::open(&db_path("events.db"))?;
+    let graph = Projector::open(&db_path("graph.db"))?;
+    let driver = rigger::driver::workflow::Driver::new();
+    let grounder = select_grounder();
+    let peers = rigger::sidecar::Sidecar::new(&store, Filter::default());
+
+    // The conductor orchestrates in the background; this thread serves the MCP
+    // bridge over stdio. The shim drains spawns via rigger_next/result; closing
+    // stdin ends the session.
+    std::thread::scope(|s| {
+        s.spawn(|| {
+            let deps = Deps {
+                store: &store,
+                driver: &driver,
+                gates: &ExecRunner,
+                repo: git_repo(),
+                grounder: Some(grounder.as_ref()),
+                graph: Some(&graph),
+                criteria: Vec::new(),
+            };
+            if let Err(e) = conductor::run(&cfg, &deps) {
+                eprintln!("rigger: conductor: {e}");
+            }
+        });
+        let server = rigger::mcpserver::Server::new(&driver, &store, conductor::STREAM, &peers);
+        let _ = server.run(std::io::stdin().lock(), std::io::stdout().lock());
+    });
+    Ok(())
 }
 
 fn cmd_graph(args: &[String]) -> Res {
