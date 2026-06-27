@@ -2,12 +2,16 @@
 //! writes, so concurrent appenders queue instead of deadlocking on the
 //! lock-upgrade (SQLITE_BUSY) class.
 
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::channel;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection};
 
-use super::{Direction, Error, Event, EventStore, ExpectedRevision, Filter, Position};
+use super::{
+    Direction, Error, Event, EventStore, ExpectedRevision, Filter, Position, Subscription,
+};
 
 const SCHEMA: &str = "
 PRAGMA journal_mode=WAL;
@@ -23,9 +27,10 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS idx_events_stream ON events(stream);
 ";
 
-/// Store is the SQLite-backed EventStore.
+/// Store is the SQLite-backed EventStore. The connection is shared (Arc) so a
+/// subscription's polling thread reads the same database the writers append to.
 pub struct Store {
-    conn: Mutex<Connection>,
+    conn: Arc<Mutex<Connection>>,
 }
 
 impl Store {
@@ -34,7 +39,7 @@ impl Store {
         let conn = Connection::open(path).map_err(be)?;
         conn.execute_batch(SCHEMA).map_err(be)?;
         Ok(Store {
-            conn: Mutex::new(conn),
+            conn: Arc::new(Mutex::new(conn)),
         })
     }
 }
@@ -146,6 +151,49 @@ impl EventStore for Store {
             .map_err(be)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(be)
     }
+
+    fn subscribe_all(&self, from: Position, filter: &Filter) -> Result<Subscription, Error> {
+        let conn = Arc::clone(&self.conn);
+        let like = filter
+            .stream_prefix
+            .as_ref()
+            .map(|p| format!("{p}%"))
+            .unwrap_or_else(|| "%".to_string());
+        let (tx, rx) = channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_thread = Arc::clone(&stop);
+        let handle = std::thread::spawn(move || {
+            let mut last = from;
+            while !stop_thread.load(Ordering::Relaxed) {
+                let batch = {
+                    let guard = conn.lock().unwrap();
+                    query_forward(&guard, last, &like)
+                };
+                match batch {
+                    Ok(events) => {
+                        for e in events {
+                            last = e.position;
+                            if tx.send(e).is_err() {
+                                return; // the subscriber was dropped
+                            }
+                        }
+                    }
+                    Err(_) => return,
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+        });
+        Ok(Subscription::new(rx, stop, handle))
+    }
+}
+
+fn query_forward(conn: &Connection, from: Position, like: &str) -> rusqlite::Result<Vec<Event>> {
+    let mut stmt = conn.prepare(
+        "SELECT position, type, id, data, recorded_at FROM events
+         WHERE position > ?1 AND stream LIKE ?2 ORDER BY position ASC",
+    )?;
+    let rows = stmt.query_map(params![from as i64, like], row_to_event)?;
+    rows.collect()
 }
 
 fn direction_sql(dir: Direction) -> &'static str {
@@ -158,6 +206,30 @@ fn direction_sql(dir: Direction) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn subscribe_all_replays_then_goes_live() {
+        let s = Store::open(":memory:").unwrap();
+        s.append(
+            "run",
+            ExpectedRevision::Any,
+            &[Event::new("A", b"1".to_vec())],
+        )
+        .unwrap();
+        let sub = s.subscribe_all(0, &Filter::default()).unwrap();
+        // catch-up: the pre-existing event replays
+        let first = sub.recv_timeout(Duration::from_secs(2)).expect("replay A");
+        assert_eq!(first.type_, "A");
+        // live: a later append is delivered
+        s.append(
+            "run",
+            ExpectedRevision::Any,
+            &[Event::new("B", b"2".to_vec())],
+        )
+        .unwrap();
+        let second = sub.recv_timeout(Duration::from_secs(2)).expect("live B");
+        assert_eq!(second.type_, "B");
+    }
 
     #[test]
     fn append_preserves_order() {

@@ -17,7 +17,7 @@ pub struct Server<'a> {
     driver: &'a Driver,
     store: &'a dyn EventStore,
     stream: String,
-    peers: &'a Sidecar<'a>,
+    peers: &'a Sidecar,
 }
 
 impl<'a> Server<'a> {
@@ -25,7 +25,7 @@ impl<'a> Server<'a> {
         driver: &'a Driver,
         store: &'a dyn EventStore,
         stream: &str,
-        peers: &'a Sidecar<'a>,
+        peers: &'a Sidecar,
     ) -> Self {
         Server {
             driver,
@@ -183,7 +183,7 @@ mod tests {
     fn emit_tool_appends_to_the_store() {
         let store = Store::open(":memory:").unwrap();
         let driver = Driver::new();
-        let peers = Sidecar::new(&store, Filter::default());
+        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
         let server = Server::new(&driver, &store, "run", &peers);
 
         let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_emit","arguments":{"type":"DecisionMade","data":{"id":"d1","summary":"x"}}}}"#;
@@ -203,7 +203,7 @@ mod tests {
     fn initialize_advertises_tools() {
         let store = Store::open(":memory:").unwrap();
         let driver = Driver::new();
-        let peers = Sidecar::new(&store, Filter::default());
+        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
         let server = Server::new(&driver, &store, "run", &peers);
 
         let input = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}\n\

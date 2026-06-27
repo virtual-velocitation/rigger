@@ -106,7 +106,7 @@ fn cmd_serve(_args: &[String]) -> Res {
     let graph = Projector::open(&db_path("graph.db"))?;
     let driver = rigger::driver::workflow::Driver::new();
     let grounder = select_grounder();
-    let peers = rigger::sidecar::Sidecar::new(&store, Filter::default());
+    let peers = rigger::sidecar::Sidecar::start(&store, 0, Filter::default())?;
 
     // The conductor orchestrates in the background; this thread serves the MCP
     // bridge over stdio. The shim drains spawns via rigger_next/result; closing

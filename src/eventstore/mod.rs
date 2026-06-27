@@ -5,7 +5,12 @@
 
 pub mod sqlite;
 
-use std::time::SystemTime;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::Receiver;
+use std::sync::Arc;
+use std::thread::JoinHandle;
+use std::time::{Duration, SystemTime};
+
 use thiserror::Error;
 
 /// A global ($all-order) position, assigned by the store on append.
@@ -65,6 +70,51 @@ pub enum Error {
     Backend(String),
 }
 
+/// A catch-up subscription: it replays the existing events from a position, then
+/// streams new ones live, until it is dropped. Adapters feed it from a background
+/// thread; callers consume it with the recv methods.
+pub struct Subscription {
+    rx: Receiver<Event>,
+    stop: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl Subscription {
+    /// Build a subscription from a backend's event channel, its stop flag, and the
+    /// thread feeding it.
+    pub fn new(rx: Receiver<Event>, stop: Arc<AtomicBool>, handle: JoinHandle<()>) -> Self {
+        Subscription {
+            rx,
+            stop,
+            handle: Some(handle),
+        }
+    }
+
+    /// Block for the next event, or None once the feeding thread has stopped.
+    pub fn recv(&self) -> Option<Event> {
+        self.rx.recv().ok()
+    }
+
+    /// Block up to `timeout` for the next event.
+    pub fn recv_timeout(&self, timeout: Duration) -> Option<Event> {
+        self.rx.recv_timeout(timeout).ok()
+    }
+
+    /// Take the next event if one is ready, without blocking.
+    pub fn try_recv(&self) -> Option<Event> {
+        self.rx.try_recv().ok()
+    }
+}
+
+impl Drop for Subscription {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+    }
+}
+
 /// EventStore is the append-only log port (KurrentDB-shaped). Implementations are
 /// safe to share across threads.
 pub trait EventStore: Send + Sync {
@@ -93,4 +143,8 @@ pub trait EventStore: Send + Sync {
         dir: Direction,
         filter: &Filter,
     ) -> Result<Vec<Event>, Error>;
+
+    /// Open a catch-up subscription over the global log from a position: it
+    /// replays the matching events in order, then delivers new ones live.
+    fn subscribe_all(&self, from: Position, filter: &Filter) -> Result<Subscription, Error>;
 }
