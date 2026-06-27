@@ -5,6 +5,7 @@
 //! ports. This is the Rust port of the proven Go design.
 
 pub mod config;
+pub mod contextgraph;
 pub mod eventstore;
 pub mod gate;
 pub mod ledger;
