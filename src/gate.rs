@@ -84,7 +84,7 @@ pub enum Action {
 }
 
 /// Runner runs a gate command in a working directory ("" = current dir).
-pub trait Runner {
+pub trait Runner: Send + Sync {
     fn run(&self, g: &Gate, dir: &str) -> GateResult;
 }
 
