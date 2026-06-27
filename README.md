@@ -4,7 +4,7 @@ Point Rigger at a spec and it produces working, integrated code by running a tea
 
 The name is a climbing reference. A rigger is the person who sets up your harness and checks your gear before you leave the ground. That is the job here: set up the agent fleet, hold the rope, keep everyone clipped into the same system.
 
-> Status: early. This repository currently holds the reference architecture in [docs/architecture.md](docs/architecture.md), which is the full blueprint for what gets built. The code follows the phased roadmap in that document.
+> Status: the core is built and runnable. The event store (SQLite by default, KurrentDB optional - both proven against one shared contract suite), the bi-temporal context graph, per-project segregation, the config loader (agent files + workflow YAML), the gate/autonomy/safety rails, the event-sourced run ledger, the conductor, the CLI agent driver, and the `rigger` binary are all implemented and CI-green. Worktree isolation, the live-awareness side-car, the optional workflow driver, and the vector grounder are the remaining refinements. The full blueprint is [docs/architecture.md](docs/architecture.md).
 
 ## The problem
 
