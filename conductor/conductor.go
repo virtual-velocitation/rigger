@@ -183,7 +183,7 @@ func runStage(ctx context.Context, cfg *config.Config, deps Deps, st config.Stag
 		allPass := true
 		for _, gid := range st.Gates {
 			gc := cfg.Workflow.Gates[gid]
-			res := deps.Gates.Run(ctx, gate.Gate{ID: gid, Run: gc.Run, Kind: gate.Kind(gc.Kind)})
+			res := deps.Gates.Run(ctx, gate.Gate{ID: gid, Run: gc.Run, Kind: gate.Kind(gc.Kind)}, dir)
 			if err := emit(contextgraph.TypeGateVerdict, contextgraph.GateVerdict{Gate: gid, Pass: res.Pass}); err != nil {
 				return false, err
 			}

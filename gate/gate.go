@@ -50,9 +50,10 @@ type Gate struct {
 	History  []HistoryEntry
 }
 
-// Runner runs a gate command and returns its compact result.
+// Runner runs a gate command in a working directory ("" means the current
+// directory) and returns its compact result.
 type Runner interface {
-	Run(ctx context.Context, g Gate) Result
+	Run(ctx context.Context, g Gate, dir string) Result
 }
 
 // Conductor action for a gate, given its autonomy.

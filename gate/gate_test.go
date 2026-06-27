@@ -2,6 +2,8 @@ package gate_test
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -60,14 +62,28 @@ func TestActive(t *testing.T) {
 
 func TestExecRunner(t *testing.T) {
 	r := gate.ExecRunner{}
-	if got := r.Run(context.Background(), gate.Gate{Run: "true"}); !got.Pass || !strings.HasPrefix(got.Evidence, "PASS") {
+	if got := r.Run(context.Background(), gate.Gate{Run: "true"}, ""); !got.Pass || !strings.HasPrefix(got.Evidence, "PASS") {
 		t.Errorf("passing gate: %+v", got)
 	}
-	got := r.Run(context.Background(), gate.Gate{Run: "echo 'boom: an error happened'; false"})
+	got := r.Run(context.Background(), gate.Gate{Run: "echo 'boom: an error happened'; false"}, "")
 	if got.Pass {
 		t.Error("a non-zero exit must be a failure")
 	}
 	if !strings.HasPrefix(got.Evidence, "FAIL") || !strings.Contains(got.Evidence, "error") {
 		t.Errorf("failure evidence should be compact and show the error line: %q", got.Evidence)
+	}
+}
+
+func TestExecRunnerRunsInDir(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "marker"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := gate.ExecRunner{}
+	if got := r.Run(context.Background(), gate.Gate{Run: "test -f marker"}, dir); !got.Pass {
+		t.Errorf("gate should run in dir and find the marker: %+v", got)
+	}
+	if got := r.Run(context.Background(), gate.Gate{Run: "test -f marker"}, t.TempDir()); got.Pass {
+		t.Error("gate run in a different dir must not find the marker")
 	}
 }
