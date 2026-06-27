@@ -1,38 +1,32 @@
-// Package workflow is the in-Claude-Code agent driver: a thin bridge to a JS
-// Workflow shim that runs agents in-process via the Workflow tool's agent(). The
-// Go conductor stays the orchestrator (architecture (A): thin JS shim + Go core);
-// this driver writes a spawn request to the shim and reads back the agent's live
-// emissions and final result over a line-delimited JSON protocol, forwarding each
-// emission to the conductor's emit callback as it arrives.
+// Package workflow is the in-Claude-Code agent driver for the (B) model: the real
+// Workflow tool plus an MCP bridge. The Go conductor stays the orchestrator; its
+// Spawn calls enqueue spawn requests here, and an MCP server (in the same process)
+// drains them: the Workflow shim calls rigger_next to pick up a request, runs the
+// agent in-process via the Workflow tool's agent(), and calls rigger_result when
+// it finishes. Agents emit decisions live by calling the MCP rigger_emit tool,
+// which appends straight to the event store (handled by the server, not here).
 package workflow
 
 import (
-	"bufio"
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
-	"io"
 	"strconv"
 	"sync"
-	"sync/atomic"
 
 	"github.com/virtual-velocitation/rigger/conductor"
 	"github.com/virtual-velocitation/rigger/config"
 )
 
-// Driver bridges the conductor to a JS Workflow shim over two streams.
+// Driver bridges the conductor to a polling MCP server.
 type Driver struct {
-	out   *bufio.Writer
-	outMu sync.Mutex
-
 	mu      sync.Mutex
+	queue   []string // ids of undispatched spawns, in order
 	pending map[string]*call
-	nextID  atomic.Int64
+	nextID  int64
 }
 
 type call struct {
-	emit   func(eventType string, data any) error
+	req    SpawnRequest
 	result chan result
 }
 
@@ -41,18 +35,8 @@ type result struct {
 	err    error
 }
 
-var _ conductor.AgentDriver = (*Driver)(nil)
-
-// New returns a driver that writes spawn requests to out and reads the shim's
-// responses from in.
-func New(out io.Writer, in io.Reader) *Driver {
-	d := &Driver{out: bufio.NewWriter(out), pending: map[string]*call{}}
-	go d.read(in)
-	return d
-}
-
-type spawnReq struct {
-	Kind   string   `json:"kind"`
+// SpawnRequest is what the shim picks up via rigger_next.
+type SpawnRequest struct {
 	ID     string   `json:"id"`
 	Prompt string   `json:"prompt"`
 	Model  string   `json:"model,omitempty"`
@@ -60,32 +44,31 @@ type spawnReq struct {
 	Dir    string   `json:"dir,omitempty"`
 }
 
-type inMsg struct {
-	Kind   string          `json:"kind"` // "emit" | "result"
-	Spawn  string          `json:"spawn"`
-	Type   string          `json:"type"`
-	Data   json.RawMessage `json:"data"`
-	Output string          `json:"output"`
-	Error  string          `json:"error"`
-}
+var _ conductor.AgentDriver = (*Driver)(nil)
 
-// Spawn asks the shim to run the agent and blocks until it finishes, forwarding
-// the agent's live emissions to emit as they arrive.
-func (d *Driver) Spawn(ctx context.Context, agent config.AgentDef, prompt string, opts conductor.SpawnOpts, emit func(eventType string, data any) error) (conductor.AgentResult, error) {
-	id := strconv.FormatInt(d.nextID.Add(1), 10)
-	c := &call{emit: emit, result: make(chan result, 1)}
+// New returns an empty driver.
+func New() *Driver { return &Driver{pending: map[string]*call{}} }
+
+// Spawn enqueues a spawn request and blocks until the shim reports its result.
+// Agents emit decisions live via the MCP rigger_emit tool, so the emit callback
+// is unused here.
+func (d *Driver) Spawn(ctx context.Context, agent config.AgentDef, prompt string, opts conductor.SpawnOpts, _ func(eventType string, data any) error) (conductor.AgentResult, error) {
 	d.mu.Lock()
+	d.nextID++
+	id := strconv.FormatInt(d.nextID, 10)
+	c := &call{
+		req:    SpawnRequest{ID: id, Prompt: prompt, Model: agent.Model, Tools: agent.Tools, Dir: opts.Dir},
+		result: make(chan result, 1),
+	}
 	d.pending[id] = c
+	d.queue = append(d.queue, id)
 	d.mu.Unlock()
+
 	defer func() {
 		d.mu.Lock()
 		delete(d.pending, id)
 		d.mu.Unlock()
 	}()
-
-	if err := d.write(spawnReq{Kind: "spawn", ID: id, Prompt: prompt, Model: agent.Model, Tools: agent.Tools, Dir: opts.Dir}); err != nil {
-		return conductor.AgentResult{}, fmt.Errorf("workflow driver: send spawn: %w", err)
-	}
 	select {
 	case r := <-c.result:
 		return conductor.AgentResult{Output: r.output}, r.err
@@ -94,42 +77,33 @@ func (d *Driver) Spawn(ctx context.Context, agent config.AgentDef, prompt string
 	}
 }
 
-func (d *Driver) read(in io.Reader) {
-	scanner := bufio.NewScanner(in)
-	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	for scanner.Scan() {
-		var msg inMsg
-		if json.Unmarshal(scanner.Bytes(), &msg) != nil {
-			continue
-		}
-		d.mu.Lock()
-		c := d.pending[msg.Spawn]
-		d.mu.Unlock()
-		if c == nil {
-			continue
-		}
-		switch msg.Kind {
-		case "emit":
-			_ = c.emit(msg.Type, msg.Data)
-		case "result":
-			var err error
-			if msg.Error != "" {
-				err = errors.New(msg.Error)
-			}
-			c.result <- result{output: msg.Output, err: err}
+// Next returns the next queued spawn request for the shim, or ok=false if none is
+// waiting. The MCP server exposes this as rigger_next.
+func (d *Driver) Next() (SpawnRequest, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for len(d.queue) > 0 {
+		id := d.queue[0]
+		d.queue = d.queue[1:]
+		if c, ok := d.pending[id]; ok {
+			return c.req, true
 		}
 	}
+	return SpawnRequest{}, false
 }
 
-func (d *Driver) write(v any) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
+// Result delivers an agent's result to the waiting Spawn. The MCP server exposes
+// this as rigger_result. A blank errStr means success.
+func (d *Driver) Result(id, output, errStr string) {
+	d.mu.Lock()
+	c := d.pending[id]
+	d.mu.Unlock()
+	if c == nil {
+		return
 	}
-	d.outMu.Lock()
-	defer d.outMu.Unlock()
-	if _, err := d.out.Write(append(b, '\n')); err != nil {
-		return err
+	var err error
+	if errStr != "" {
+		err = errors.New(errStr)
 	}
-	return d.out.Flush()
+	c.result <- result{output: output, err: err}
 }
