@@ -477,10 +477,13 @@ type SpawnOpts struct {
   `git worktree add` before, harvest the pushed branch + remove after. **No Claude-Code
   runtime assumption: works for any `go get` user with the `claude` CLI on PATH.** Fan-out
   = a bounded goroutine pool (default 4, matching the tank_game cap) over disjoint units.
-- **`workflow` (optional).** Emits a thin generated JS Workflow script whose only job is
-  to call `agent()`/`parallel()` and shell back to the Rigger binary for every decision.
-  Selected only when running inside Claude Code, to keep the Workflow tool's built-in
-  parallelism / journaling / resume. The Go core is identical; only the spawn seam changes.
+- **`workflow` (optional).** Runs inside Claude Code to keep the Workflow tool's built-in
+  parallelism / journaling / resume. The Workflow sandbox cannot shell out to a binary, so
+  the bridge is **MCP, not a subprocess**: `rigger serve` runs the conductor and serves an
+  MCP server exposing `rigger_next` / `rigger_result` / `rigger_emit`. A thin Workflow shim
+  loops - `rigger_next` for the next spawn, `agent()` to run it in-process, `rigger_result`
+  to report it - while agents record decisions live by calling `rigger_emit`. The Go core is
+  identical; only the spawn seam changes. See [driver/workflow/README.md](../driver/workflow/README.md).
 
 **Runaway-proof by construction** (carried from the fan-out lesson): the implementer agent
 def declares `recurse: false` (no Agent/Spawn capability), and units are partitioned
