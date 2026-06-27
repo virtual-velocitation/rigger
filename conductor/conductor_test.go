@@ -2,6 +2,7 @@ package conductor_test
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,24 +20,26 @@ import (
 	"github.com/virtual-velocitation/rigger/ledger"
 )
 
+type stubEmit struct {
+	typ  string
+	data string
+}
+
 type stubDriver struct {
 	spawns     atomic.Int64
-	writeFile  string   // if set, the "agent" creates this file in its working dir
-	emitLines  []string // if set, the "agent" writes these to .rigger/emit.jsonl
+	writeFile  string     // if set, the "agent" creates this file in its working dir
+	emits      []stubEmit // if set, the "agent" emits these live during its run
 	lastPrompt atomic.Value
 }
 
-func (d *stubDriver) Spawn(_ context.Context, _ config.AgentDef, prompt string, opts conductor.SpawnOpts) (conductor.AgentResult, error) {
+func (d *stubDriver) Spawn(_ context.Context, _ config.AgentDef, prompt string, opts conductor.SpawnOpts, emit func(string, any) error) (conductor.AgentResult, error) {
 	d.spawns.Add(1)
 	d.lastPrompt.Store(prompt)
-	if opts.Dir != "" {
-		if d.writeFile != "" {
-			_ = os.WriteFile(filepath.Join(opts.Dir, d.writeFile), []byte("// generated\n"), 0o644)
-		}
-		if len(d.emitLines) > 0 {
-			_ = os.MkdirAll(filepath.Join(opts.Dir, ".rigger"), 0o755)
-			_ = os.WriteFile(filepath.Join(opts.Dir, ".rigger", "emit.jsonl"), []byte(strings.Join(d.emitLines, "\n")+"\n"), 0o644)
-		}
+	for _, e := range d.emits {
+		_ = emit(e.typ, json.RawMessage(e.data))
+	}
+	if opts.Dir != "" && d.writeFile != "" {
+		_ = os.WriteFile(filepath.Join(opts.Dir, d.writeFile), []byte("// generated\n"), 0o644)
 	}
 	return conductor.AgentResult{}, nil
 }
@@ -166,8 +169,7 @@ func TestConductorIsolatesAgentInWorktreeAndCapturesFiles(t *testing.T) {
 	}
 }
 
-func TestConductorHarvestsAgentDecisions(t *testing.T) {
-	repo := initRepo(t)
+func TestConductorAgentsEmitLive(t *testing.T) {
 	cfg := &config.Config{
 		Agents: map[string]config.AgentDef{"impl": {ID: "impl"}},
 		Workflow: config.Workflow{
@@ -178,10 +180,10 @@ func TestConductorHarvestsAgentDecisions(t *testing.T) {
 		},
 	}
 	store := newStore(t)
-	driver := &stubDriver{emitLines: []string{
-		`{"type":"DecisionMade","data":{"id":"d1","summary":"chose the generic path","governs":["modifier.go"]}}`,
+	driver := &stubDriver{emits: []stubEmit{
+		{typ: contextgraph.TypeDecisionMade, data: `{"id":"d1","summary":"chose the generic path","governs":["modifier.go"]}`},
 	}}
-	if _, err := conductor.Run(context.Background(), cfg, conductor.Deps{Store: store, Driver: driver, Gates: gate.ExecRunner{}, Repo: repo}); err != nil {
+	if _, err := conductor.Run(context.Background(), cfg, conductor.Deps{Store: store, Driver: driver, Gates: gate.ExecRunner{}}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	events, err := store.ReadAll(context.Background(), 0, eventstore.Forward, eventstore.Filter{})
@@ -189,7 +191,7 @@ func TestConductorHarvestsAgentDecisions(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !hasDecision(events, "d1") {
-		t.Error("the agent's DecisionMade should be harvested into the event store")
+		t.Error("the agent's live-emitted decision should be on the event log")
 	}
 }
 
@@ -216,7 +218,7 @@ func TestConductorGroundsAgentPrompt(t *testing.T) {
 	if !strings.Contains(prompt, "target.go") {
 		t.Errorf("agent prompt should include the grounded location; got %q", prompt)
 	}
-	if !strings.Contains(prompt, "emit.jsonl") {
+	if !strings.Contains(prompt, "rigger_emit") {
 		t.Errorf("agent prompt should include the emit protocol; got %q", prompt)
 	}
 }
@@ -235,7 +237,7 @@ func TestConductorFansOutAndAdjudicates(t *testing.T) {
 		},
 	}
 	store := newStore(t)
-	driver := &stubDriver{emitLines: []string{`{"type":"DecisionMade","data":{"id":"finding","summary":"a finding"}}`}}
+	driver := &stubDriver{emits: []stubEmit{{typ: contextgraph.TypeDecisionMade, data: `{"id":"finding","summary":"a finding"}`}}}
 	rs, err := conductor.Run(context.Background(), cfg, conductor.Deps{Store: store, Driver: driver, Gates: gate.ExecRunner{}, Repo: repo})
 	if err != nil {
 		t.Fatalf("Run: %v", err)

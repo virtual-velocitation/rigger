@@ -7,7 +7,6 @@
 package conductor
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -38,10 +37,12 @@ type SpawnOpts struct {
 	Dir string // working directory for the agent; "" means the current directory
 }
 
-// AgentDriver spawns an agent to completion. The cli and workflow drivers
-// implement it; tests inject a stub.
+// AgentDriver spawns an agent to completion. The agent records events it emits
+// during its run by calling emit, so its decisions reach the event log live
+// (architecture (A)); the workflow driver wires emit to an in-process tool the
+// agent calls. tests inject a stub.
 type AgentDriver interface {
-	Spawn(ctx context.Context, agent config.AgentDef, prompt string, opts SpawnOpts) (AgentResult, error)
+	Spawn(ctx context.Context, agent config.AgentDef, prompt string, opts SpawnOpts, emit func(eventType string, data any) error) (AgentResult, error)
 }
 
 // Deps are the conductor's injected ports.
@@ -184,7 +185,7 @@ func runStage(ctx context.Context, cfg *config.Config, deps Deps, st config.Stag
 			if !ok {
 				return false, fmt.Errorf("conductor: stage %q references unknown agent %q", st.Name, st.Agent)
 			}
-			if _, err := deps.Driver.Spawn(ctx, agentDef, buildPrompt(ctx, deps, st), SpawnOpts{Dir: dir}); err != nil {
+			if _, err := deps.Driver.Spawn(ctx, agentDef, buildPrompt(ctx, deps, st), SpawnOpts{Dir: dir}, emit); err != nil {
 				return false, fmt.Errorf("conductor: stage %q agent %q: %w", st.Name, st.Agent, err)
 			}
 		}
@@ -202,9 +203,6 @@ func runStage(ctx context.Context, cfg *config.Config, deps Deps, st config.Stag
 		}
 
 		if allPass {
-			if err := harvestEmitted(dir, emit); err != nil {
-				return false, err
-			}
 			if err := emitFilesTouched(ctx, wt, st.Agent, emit); err != nil {
 				return false, err
 			}
@@ -264,10 +262,12 @@ func emitFilesTouched(ctx context.Context, wt *worktree.Worktree, agent string, 
 	return nil
 }
 
-// emitProtocol tells an agent how to record decisions so they reach the context
-// graph: one JSON line per decision in .rigger/emit.jsonl in its working dir.
-const emitProtocol = `Record each decision you make by appending one JSON line to .rigger/emit.jsonl in your working directory, in the form:
-{"type":"DecisionMade","data":{"id":"<short-id>","summary":"<one line>","governs":["<file>"],"supersedes":"<prior-id-or-empty>"}}`
+// emitProtocol tells an agent how to record a decision: call the rigger_emit
+// tool the instant the decision is made, which puts it on the shared event log
+// live so other agents see it immediately.
+const emitProtocol = `Record each decision you make by calling the rigger_emit tool the moment you make it, with type "DecisionMade" and data:
+{"id":"<short-id>","summary":"<one line>","governs":["<file>"],"supersedes":"<prior-id-or-empty>"}
+This writes it to the shared event log live, so other agents see it immediately.`
 
 // buildPrompt assembles the task prompt for a stage's agent: grounded context
 // (if a grounder is configured) plus the emit protocol.
@@ -288,34 +288,6 @@ func buildPrompt(ctx context.Context, deps Deps, st config.Stage) string {
 	}
 	b.WriteString(emitProtocol)
 	return b.String()
-}
-
-// harvestEmitted reads the events an agent wrote to <dir>/.rigger/emit.jsonl and
-// emits them to the store (populating the context graph with the agent's
-// decisions), then removes the file so a retry does not double-count.
-func harvestEmitted(dir string, emit func(string, any) error) error {
-	path := filepath.Join(dir, ".rigger", "emit.jsonl")
-	f, err := os.Open(path)
-	if err != nil {
-		return nil // nothing emitted
-	}
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		var line struct {
-			Type string          `json:"type"`
-			Data json.RawMessage `json:"data"`
-		}
-		if json.Unmarshal(scanner.Bytes(), &line) != nil || line.Type == "" {
-			continue
-		}
-		if err := emit(line.Type, line.Data); err != nil {
-			_ = f.Close()
-			return err
-		}
-	}
-	_ = f.Close()
-	_ = os.Remove(path)
-	return nil
 }
 
 // runFanOutStage runs a stage's agents in parallel (each isolated and harvested),
@@ -414,11 +386,8 @@ func runAgentInWorktree(ctx context.Context, cfg *config.Config, deps Deps, st c
 	if wt != nil {
 		dir = wt.Dir
 	}
-	if _, err := deps.Driver.Spawn(ctx, agentDef, buildPrompt(ctx, deps, st), SpawnOpts{Dir: dir}); err != nil {
+	if _, err := deps.Driver.Spawn(ctx, agentDef, buildPrompt(ctx, deps, st), SpawnOpts{Dir: dir}, emit); err != nil {
 		return fmt.Errorf("conductor: stage %q agent %q: %w", st.Name, agentID, err)
-	}
-	if err := harvestEmitted(dir, emit); err != nil {
-		return err
 	}
 	return emitFilesTouched(ctx, wt, agentID, emit)
 }
