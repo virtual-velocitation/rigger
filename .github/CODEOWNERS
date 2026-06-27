@@ -1,0 +1,3 @@
+# Maintainers review every change. `main` is protected, so nothing merges
+# without an approving review from a code owner.
+* @byran-carlock

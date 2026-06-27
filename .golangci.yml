@@ -1,0 +1,13 @@
+# Baseline linters. Expand as the codebase grows.
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - gofmt
+    - govet
+    - staticcheck
+    - errcheck
+    - ineffassign
+    - unused
+    - misspell

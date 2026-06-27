@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build & test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          check-latest: true
+      - name: build
+        run: go build ./...
+      - name: vet
+        run: go vet ./...
+      - name: test
+        run: go test ./... -race -count=1
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: gofiles
+        shell: bash
+        run: |
+          if [ -n "$(find . -name '*.go' -not -path './vendor/*' -print -quit)" ]; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "No Go files yet; nothing to lint."
+          fi
+      - uses: actions/setup-go@v5
+        if: steps.gofiles.outputs.found == 'true'
+        with:
+          go-version: '1.23'
+      - name: golangci-lint
+        if: steps.gofiles.outputs.found == 'true'
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest

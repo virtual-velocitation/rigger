@@ -1,0 +1,38 @@
+name: Release
+
+# On a version tag (vX.Y.Z), verify the build, then ask the public Go module
+# proxy for the new version. pkg.go.dev indexes whatever the proxy has fetched,
+# so requesting it here is what publishes the release (and builds its docs) on
+# pkg.go.dev.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: publish to pkg.go.dev
+    runs-on: ubuntu-latest
+    env:
+      MODULE: github.com/virtual-velocitation/rigger
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+      - name: build & test
+        run: |
+          go build ./...
+          go test ./...
+      - name: Publish to pkg.go.dev
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          GOPROXY=https://proxy.golang.org GOSUMDB=sum.golang.org \
+            go list -m "${MODULE}@${VERSION}"
+          curl -fsS "https://pkg.go.dev/${MODULE}@${VERSION}" -o /dev/null || true
+          echo "Requested ${MODULE}@${VERSION} from the Go proxy; pkg.go.dev will index it."
