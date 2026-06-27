@@ -58,6 +58,9 @@ func Open(path string) (*Projector, error) {
 	if err != nil {
 		return nil, fmt.Errorf("graph: open: %w", err)
 	}
+	// Apply does a read-then-write transaction; serialize through one connection
+	// so concurrent applies during a run queue instead of deadlocking (SQLITE_BUSY).
+	db.SetMaxOpenConns(1)
 	if _, err := db.Exec(schema); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("graph: schema: %w", err)
