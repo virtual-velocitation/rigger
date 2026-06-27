@@ -125,9 +125,11 @@ func TestConductorIsolatesAgentInWorktreeAndCapturesFiles(t *testing.T) {
 	cfg := &config.Config{
 		Agents: map[string]config.AgentDef{"impl": {ID: "impl"}},
 		Workflow: config.Workflow{
-			Gates: map[string]config.Gate{"ok": {Run: "true", Kind: "core"}},
+			// The gate passes only because it runs inside the worktree, where the
+			// agent created generated.go.
+			Gates: map[string]config.Gate{"in-wt": {Run: "test -f generated.go", Kind: "core"}},
 			Stages: map[string]config.Stage{
-				"build": {Name: "build", Agent: "impl", Gates: []string{"ok"}},
+				"build": {Name: "build", Agent: "impl", Gates: []string{"in-wt"}},
 			},
 		},
 	}

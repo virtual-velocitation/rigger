@@ -13,9 +13,12 @@ type ExecRunner struct{}
 
 var _ Runner = ExecRunner{}
 
-// Run executes the gate's command. Exit 0 is a pass.
-func (ExecRunner) Run(ctx context.Context, g Gate) Result {
-	out, err := exec.CommandContext(ctx, "sh", "-c", g.Run).CombinedOutput()
+// Run executes the gate's command in dir (empty means the current directory).
+// Exit 0 is a pass.
+func (ExecRunner) Run(ctx context.Context, g Gate, dir string) Result {
+	cmd := exec.CommandContext(ctx, "sh", "-c", g.Run)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
 	return Result{Pass: err == nil, Evidence: compact(string(out), err == nil)}
 }
 
