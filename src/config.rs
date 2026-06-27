@@ -48,6 +48,10 @@ pub struct Defaults {
     pub autonomy: String,
     #[serde(default)]
     pub grounder: String,
+    /// The token/spawn circuit-breaker budget (§4.4, §8): the maximum number of
+    /// agent spawns a run may perform. 0 (the default) means unlimited.
+    #[serde(default)]
+    pub budget: u32,
 }
 
 /// Stage is one node of the workflow DAG.

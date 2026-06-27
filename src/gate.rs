@@ -32,11 +32,15 @@ pub enum Autonomy {
 }
 
 impl Autonomy {
+    /// Parse an autonomy string. An empty / unset value defaults to `AutoNotify`
+    /// (§4.3): an unconfigured gate still runs and integrates unattended; only an
+    /// explicit `manual` pauses a unit for human review. `manual` is therefore
+    /// opt-in, never the silent default.
     pub fn parse(s: &str) -> Autonomy {
         match s {
-            "auto_notify" => Autonomy::AutoNotify,
+            "manual" => Autonomy::Manual,
             "silent" => Autonomy::Silent,
-            _ => Autonomy::Manual,
+            _ => Autonomy::AutoNotify,
         }
     }
 
