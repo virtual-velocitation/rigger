@@ -45,6 +45,31 @@ func (w *Worktree) ChangedFiles(ctx context.Context) ([]string, error) {
 	return files, nil
 }
 
+// Integrate commits the agent's changes on the worktree's branch and merges that
+// branch into the repository's base branch, returning the new commit hash. A
+// read-only stage (no changes) commits nothing and returns "".
+func (w *Worktree) Integrate(ctx context.Context, message string) (string, error) {
+	if out, err := git(ctx, w.Dir, "add", "-A"); err != nil {
+		return "", fmt.Errorf("worktree: add: %w: %s", err, out)
+	}
+	out, err := git(ctx, w.Dir, "commit", "-m", message)
+	if err != nil {
+		if strings.Contains(out, "nothing to commit") {
+			return "", nil // a read-only stage changed nothing
+		}
+		return "", fmt.Errorf("worktree: commit: %w: %s", err, out)
+	}
+	head, err := git(ctx, w.Dir, "rev-parse", "HEAD")
+	if err != nil {
+		return "", fmt.Errorf("worktree: rev-parse: %w: %s", err, head)
+	}
+	commit := strings.TrimSpace(head)
+	if out, err := git(ctx, w.repo, "merge", "--no-edit", w.Branch); err != nil {
+		return commit, fmt.Errorf("worktree: merge %s into base: %w: %s", w.Branch, err, out)
+	}
+	return commit, nil
+}
+
 // Remove deletes the worktree (its branch is left for the caller to clean up or
 // merge).
 func (w *Worktree) Remove(ctx context.Context) error {

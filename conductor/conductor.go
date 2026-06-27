@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/google/uuid"
 
@@ -59,6 +60,15 @@ type Deps struct {
 	Grounder grounder.Grounder
 }
 
+// Reindexer is an optional grounder capability: the conductor calls it after a
+// unit integrates so the index reflects the accepted code (turbovec reindexDelta).
+type Reindexer interface {
+	Reindex(srcDir string, files []string) error
+}
+
+// integrateFunc commits and merges a worktree's changes, returning the commit.
+type integrateFunc func(ctx context.Context, wt *worktree.Worktree, files []string, name string) (string, error)
+
 // Stream is the run's event stream name.
 const Stream = "run"
 
@@ -85,6 +95,22 @@ func Run(ctx context.Context, cfg *config.Config, deps Deps) (*ledger.RunState, 
 		return err
 	}
 
+	var integrateMu sync.Mutex
+	integrate := func(ctx context.Context, wt *worktree.Worktree, files []string, name string) (string, error) {
+		integrateMu.Lock()
+		defer integrateMu.Unlock()
+		commit, err := wt.Integrate(ctx, "rigger: integrate "+name)
+		if err != nil {
+			return "", err
+		}
+		if commit != "" {
+			if r, ok := deps.Grounder.(Reindexer); ok {
+				_ = r.Reindex(deps.Repo, files)
+			}
+		}
+		return commit, nil
+	}
+
 	integrated := map[string]bool{}
 	terminal := map[string]bool{}
 	for {
@@ -92,7 +118,7 @@ func Run(ctx context.Context, cfg *config.Config, deps Deps) (*ledger.RunState, 
 		if len(ready) == 0 {
 			break // either all done, or the rest are blocked behind an escalation
 		}
-		if err := runWave(ctx, cfg, deps, ready, emit, integrated, terminal); err != nil {
+		if err := runWave(ctx, cfg, deps, ready, emit, integrate, integrated, terminal); err != nil {
 			return nil, err
 		}
 	}
@@ -130,7 +156,7 @@ func readyStages(stages map[string]config.Stage, integrated, terminal map[string
 // runWave runs the ready stages concurrently and records which integrated. The
 // integrated/terminal maps are written only here, on the single draining
 // goroutine, so they are race-free.
-func runWave(ctx context.Context, cfg *config.Config, deps Deps, ready []string, emit func(string, any) error, integrated, terminal map[string]bool) error {
+func runWave(ctx context.Context, cfg *config.Config, deps Deps, ready []string, emit func(string, any) error, integrate integrateFunc, integrated, terminal map[string]bool) error {
 	type result struct {
 		name string
 		ok   bool
@@ -144,7 +170,7 @@ func runWave(ctx context.Context, cfg *config.Config, deps Deps, ready []string,
 				results <- result{name: name, err: err}
 				return
 			}
-			ok, err := runStage(ctx, cfg, deps, st, emit)
+			ok, err := runStage(ctx, cfg, deps, st, emit, integrate)
 			results <- result{name: name, ok: ok, err: err}
 		}(name)
 	}
@@ -164,9 +190,9 @@ func runWave(ctx context.Context, cfg *config.Config, deps Deps, ready []string,
 
 // runStage runs one stage's agent and gates, retrying under the safety bound and
 // escalating if the gates keep failing. It returns whether the stage integrated.
-func runStage(ctx context.Context, cfg *config.Config, deps Deps, st config.Stage, emit func(string, any) error) (bool, error) {
+func runStage(ctx context.Context, cfg *config.Config, deps Deps, st config.Stage, emit func(string, any) error, integrate integrateFunc) (bool, error) {
 	if len(st.Agents) > 0 {
-		return runFanOutStage(ctx, cfg, deps, st, emit)
+		return runFanOutStage(ctx, cfg, deps, st, emit, integrate)
 	}
 	wt, finish, err := stageWorktree(ctx, deps, st)
 	if err != nil {
@@ -203,10 +229,11 @@ func runStage(ctx context.Context, cfg *config.Config, deps Deps, st config.Stag
 		}
 
 		if allPass {
-			if err := emitFilesTouched(ctx, wt, st.Agent, emit); err != nil {
-				return false, err
+			commit, err := integrateAndEmit(ctx, wt, st.Agent, st.Name, emit, integrate)
+			if err != nil {
+				return false, fmt.Errorf("conductor: integrate %q: %w", st.Name, err)
 			}
-			if err := emit(ledger.TypeUnitIntegrated, ledger.UnitIntegrated{ID: st.Name}); err != nil {
+			if err := emit(ledger.TypeUnitIntegrated, ledger.UnitIntegrated{ID: st.Name, Commit: commit}); err != nil {
 				return false, err
 			}
 			return true, nil
@@ -243,23 +270,23 @@ func stageWorktree(ctx context.Context, deps Deps, st config.Stage) (*worktree.W
 	return wt, func() { _ = wt.Remove(ctx) }, nil
 }
 
-// emitFilesTouched records the files the agent changed in its worktree as
-// FileTouched events, feeding the context graph. It is best-effort: a capture
-// failure never fails the unit.
-func emitFilesTouched(ctx context.Context, wt *worktree.Worktree, agent string, emit func(string, any) error) error {
+// integrateAndEmit emits FileTouched for the files the agent changed in its
+// worktree and, if there are any, commits and merges them into the base,
+// returning the commit hash. A read-only agent (no changes) returns "".
+func integrateAndEmit(ctx context.Context, wt *worktree.Worktree, agentID, unitName string, emit func(string, any) error, integrate integrateFunc) (string, error) {
 	if wt == nil {
-		return nil
+		return "", nil
 	}
 	files, err := wt.ChangedFiles(ctx)
-	if err != nil {
-		return nil
+	if err != nil || len(files) == 0 {
+		return "", nil
 	}
 	for _, f := range files {
-		if err := emit(contextgraph.TypeFileTouched, contextgraph.FileTouched{Path: f, By: agent}); err != nil {
-			return err
+		if err := emit(contextgraph.TypeFileTouched, contextgraph.FileTouched{Path: f, By: agentID}); err != nil {
+			return "", err
 		}
 	}
-	return nil
+	return integrate(ctx, wt, files, unitName)
 }
 
 // emitProtocol tells an agent how to record a decision: call the rigger_emit
@@ -293,14 +320,14 @@ func buildPrompt(ctx context.Context, deps Deps, st config.Stage) string {
 // runFanOutStage runs a stage's agents in parallel (each isolated and harvested),
 // then its adjudicator, then its gates in the repo, under the same
 // retry-then-escalate rails as a single-agent stage.
-func runFanOutStage(ctx context.Context, cfg *config.Config, deps Deps, st config.Stage, emit func(string, any) error) (bool, error) {
+func runFanOutStage(ctx context.Context, cfg *config.Config, deps Deps, st config.Stage, emit func(string, any) error, integrate integrateFunc) (bool, error) {
 	attempts := 0
 	for {
-		if err := runAgentsConcurrently(ctx, cfg, deps, st, st.Agents, emit); err != nil {
+		if err := runAgentsConcurrently(ctx, cfg, deps, st, st.Agents, emit, integrate); err != nil {
 			return false, err
 		}
 		if st.Adjudicator != "" {
-			if err := runAgentsConcurrently(ctx, cfg, deps, st, []string{st.Adjudicator}, emit); err != nil {
+			if err := runAgentsConcurrently(ctx, cfg, deps, st, []string{st.Adjudicator}, emit, integrate); err != nil {
 				return false, err
 			}
 		}
@@ -340,7 +367,7 @@ func runFanOutStage(ctx context.Context, cfg *config.Config, deps Deps, st confi
 // runAgentsConcurrently creates each agent's worktree sequentially (git worktree
 // creation is not concurrency-safe), then runs the agents in parallel, harvesting
 // each one's emissions and touched files.
-func runAgentsConcurrently(ctx context.Context, cfg *config.Config, deps Deps, st config.Stage, agentIDs []string, emit func(string, any) error) error {
+func runAgentsConcurrently(ctx context.Context, cfg *config.Config, deps Deps, st config.Stage, agentIDs []string, emit func(string, any) error, integrate integrateFunc) error {
 	type job struct {
 		agentID string
 		wt      *worktree.Worktree
@@ -365,7 +392,7 @@ func runAgentsConcurrently(ctx context.Context, cfg *config.Config, deps Deps, s
 
 	errs := make(chan error, len(jobs))
 	for _, j := range jobs {
-		go func(j job) { errs <- runAgentInWorktree(ctx, cfg, deps, st, j.agentID, j.wt, emit) }(j)
+		go func(j job) { errs <- runAgentInWorktree(ctx, cfg, deps, st, j.agentID, j.wt, emit, integrate) }(j)
 	}
 	var first error
 	for range jobs {
@@ -377,7 +404,7 @@ func runAgentsConcurrently(ctx context.Context, cfg *config.Config, deps Deps, s
 }
 
 // runAgentInWorktree spawns one agent in a prepared worktree and harvests its work.
-func runAgentInWorktree(ctx context.Context, cfg *config.Config, deps Deps, st config.Stage, agentID string, wt *worktree.Worktree, emit func(string, any) error) error {
+func runAgentInWorktree(ctx context.Context, cfg *config.Config, deps Deps, st config.Stage, agentID string, wt *worktree.Worktree, emit func(string, any) error, integrate integrateFunc) error {
 	agentDef, ok := cfg.Agents[agentID]
 	if !ok {
 		return fmt.Errorf("conductor: stage %q references unknown agent %q", st.Name, agentID)
@@ -389,7 +416,8 @@ func runAgentInWorktree(ctx context.Context, cfg *config.Config, deps Deps, st c
 	if _, err := deps.Driver.Spawn(ctx, agentDef, buildPrompt(ctx, deps, st), SpawnOpts{Dir: dir}, emit); err != nil {
 		return fmt.Errorf("conductor: stage %q agent %q: %w", st.Name, agentID, err)
 	}
-	return emitFilesTouched(ctx, wt, agentID, emit)
+	_, err := integrateAndEmit(ctx, wt, agentID, st.Name+"/"+agentID, emit, integrate)
+	return err
 }
 
 // agentWorktree creates an isolated worktree for one agent in a fan-out, or nil
