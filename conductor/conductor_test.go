@@ -221,6 +221,33 @@ func TestConductorGroundsAgentPrompt(t *testing.T) {
 	}
 }
 
+func TestConductorFansOutAndAdjudicates(t *testing.T) {
+	repo := initRepo(t)
+	cfg := &config.Config{
+		Agents: map[string]config.AgentDef{
+			"r1": {ID: "r1"}, "r2": {ID: "r2"}, "da": {ID: "da"},
+		},
+		Workflow: config.Workflow{
+			Gates: map[string]config.Gate{"ok": {Run: "true", Kind: "core"}},
+			Stages: map[string]config.Stage{
+				"review": {Name: "review", Agents: []string{"r1", "r2"}, Adjudicator: "da", Gates: []string{"ok"}},
+			},
+		},
+	}
+	store := newStore(t)
+	driver := &stubDriver{emitLines: []string{`{"type":"DecisionMade","data":{"id":"finding","summary":"a finding"}}`}}
+	rs, err := conductor.Run(context.Background(), cfg, conductor.Deps{Store: store, Driver: driver, Gates: gate.ExecRunner{}, Repo: repo})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if rs.Units["review"].Status != ledger.Integrated {
+		t.Errorf("the review stage should integrate: %+v", rs.Units["review"])
+	}
+	if driver.spawns.Load() != 3 {
+		t.Errorf("expected 3 spawns (2 reviewers + the adjudicator), got %d", driver.spawns.Load())
+	}
+}
+
 func hasDecision(events []eventstore.Event, id string) bool {
 	for _, e := range events {
 		if e.Type == contextgraph.TypeDecisionMade && strings.Contains(string(e.Data), id) {
