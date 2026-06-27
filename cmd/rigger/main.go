@@ -46,6 +46,8 @@ func main() {
 		err = cmdServe(os.Args[2:])
 	case "graph":
 		err = cmdGraph(os.Args[2:])
+	case "validate":
+		err = cmdValidate()
 	case "init":
 		err = cmdInit()
 	case "setup":
@@ -72,6 +74,7 @@ usage:
   rigger run                  run the workflow with the standalone CLI driver
   rigger serve                run as an MCP server for the Claude Code workflow shim
   rigger graph --around <id>  print the context subgraph around a node
+  rigger validate             load and validate the workflow + agents
   rigger init                 scaffold a workflow and an agents/ folder
   rigger setup                init, then install a Claude Code SessionStart hook
   rigger prime                print recent decisions (what the hook runs)
@@ -225,6 +228,16 @@ func cmdGraph(args []string) error {
 	if len(g.Nodes) == 0 {
 		fmt.Println("  (nothing found; has `rigger run` been run yet?)")
 	}
+	return nil
+}
+
+func cmdValidate() error {
+	cfg, err := config.Load(".")
+	if err != nil {
+		return err
+	}
+	fmt.Printf("config valid: %d agents, %d stages, %d gates\n",
+		len(cfg.Agents), len(cfg.Workflow.Stages), len(cfg.Workflow.Gates))
 	return nil
 }
 
