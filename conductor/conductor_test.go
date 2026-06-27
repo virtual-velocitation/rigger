@@ -169,6 +169,34 @@ func TestConductorIsolatesAgentInWorktreeAndCapturesFiles(t *testing.T) {
 	}
 }
 
+func TestConductorLandsWorkInRepo(t *testing.T) {
+	repo := initRepo(t)
+	cfg := &config.Config{
+		Agents: map[string]config.AgentDef{"impl": {ID: "impl"}},
+		Workflow: config.Workflow{
+			Gates: map[string]config.Gate{"ok": {Run: "true", Kind: "core"}},
+			Stages: map[string]config.Stage{
+				"build": {Name: "build", Agent: "impl", Gates: []string{"ok"}},
+			},
+		},
+	}
+	driver := &stubDriver{writeFile: "feature.go"}
+	rs, err := conductor.Run(context.Background(), cfg, conductor.Deps{
+		Store: newStore(t), Driver: driver, Gates: gate.ExecRunner{}, Repo: repo,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// The agent's file must be merged into the main repo, not abandoned in a worktree.
+	if _, err := os.Stat(filepath.Join(repo, "feature.go")); err != nil {
+		t.Errorf("the agent's work should be merged into the repo: %v", err)
+	}
+	// And the integrated unit must carry the resulting commit hash.
+	if u := rs.Units["build"]; u.Status != ledger.Integrated || u.Commit == "" {
+		t.Errorf("unit should be integrated with a commit hash: %+v", u)
+	}
+}
+
 func TestConductorAgentsEmitLive(t *testing.T) {
 	cfg := &config.Config{
 		Agents: map[string]config.AgentDef{"impl": {ID: "impl"}},
