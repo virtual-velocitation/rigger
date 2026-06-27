@@ -8,7 +8,7 @@ Rigger uses a fork-and-pull model with required review. `main` is protected: eve
 
 1. Fork the repository and create a branch off `main`.
 2. Make your change. Keep it focused: one logical change per pull request.
-3. Run `go build ./...`, `go vet ./...`, and `go test ./...` and make sure they pass.
+3. Run `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo test`, and make sure they pass (the same checks CI runs).
 4. Open a pull request against `main`. CI runs automatically.
 5. A maintainer reviews. Once it is approved and CI is green, it can be merged.
 
