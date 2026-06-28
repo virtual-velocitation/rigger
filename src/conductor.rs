@@ -281,11 +281,98 @@ impl RunCtx<'_> {
         integrated: &mut HashSet<String>,
         terminal: &mut HashSet<String>,
     ) -> Result<(), Error> {
-        // Bounded fan-out pool (§6): run the ready stages in chunks of at most
-        // MAX_CONCURRENCY, each chunk a scoped thread group. Every stage still
-        // runs; never more than MAX_CONCURRENCY at once.
-        let mut results: Vec<(String, Result<bool, Error>)> = Vec::with_capacity(ready.len());
-        for chunk in ready.chunks(MAX_CONCURRENCY) {
+        // Safe-parallelism partitioning (§3.2, §8): when partitioning is requested
+        // and a grounder can compute blast radii, split the ready stages into
+        // batches that are DISJOINT by blast-radius and run the batches SEQUENTIALLY
+        // (each batch still concurrent under the pool cap), so two stages whose blast
+        // radii overlap never run at the same time and never share a worktree. With
+        // no grounder or no partition request, the whole wave is one batch - the
+        // historical single-wave behavior.
+        let batches = self.partition_wave(stages, ready);
+        let mut first_err = None;
+        for batch in &batches {
+            let results = self.run_batch(stages, batch);
+            for (name, r) in results {
+                terminal.insert(name.clone());
+                match r {
+                    Ok(true) => {
+                        integrated.insert(name);
+                    }
+                    Ok(false) => {}
+                    Err(e) if first_err.is_none() => first_err = Some(e),
+                    Err(_) => {}
+                }
+            }
+        }
+        match first_err {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+
+    /// Split a wave's ready stages into the batches that run sequentially (§3.2, §8).
+    /// Partitioning applies when a grounder is present AND partitioning is requested
+    /// (any ready stage sets `partition == "by-blast-radius"`, or `defaults.partition`
+    /// does). Then each ready stage's blast-radius file set is computed by grounding
+    /// its `coverage` (or name) and collecting the touched files, and the stages are
+    /// partitioned disjoint by [`partition_by_blast_radius`]. Otherwise the whole wave
+    /// is a single batch (the historical behavior).
+    fn partition_wave(
+        &self,
+        stages: &BTreeMap<String, Stage>,
+        ready: &[String],
+    ) -> Vec<Vec<String>> {
+        let grounder = match self.deps.grounder {
+            Some(g) if self.partition_requested(stages, ready) => g,
+            _ => return vec![ready.to_vec()],
+        };
+        let items: Vec<(String, Vec<String>)> = ready
+            .iter()
+            .map(|name| {
+                let st = &stages[name];
+                let query = if st.coverage.is_empty() {
+                    name.as_str()
+                } else {
+                    st.coverage.as_str()
+                };
+                let mut files: Vec<String> = grounder
+                    .ground(query, 8)
+                    .into_iter()
+                    .map(|r| r.file)
+                    .collect();
+                files.sort();
+                files.dedup();
+                (name.clone(), files)
+            })
+            .collect();
+        partition_by_blast_radius(&items)
+    }
+
+    /// Whether by-blast-radius partitioning is requested for this wave (§3.2, §8): a
+    /// ready stage sets `partition == "by-blast-radius"`, or `defaults.partition`
+    /// does (the stage value, when set, otherwise the default).
+    fn partition_requested(&self, stages: &BTreeMap<String, Stage>, ready: &[String]) -> bool {
+        let by_blast = |p: &str| p.eq_ignore_ascii_case("by-blast-radius");
+        ready.iter().any(|name| {
+            let st = &stages[name];
+            if !st.partition.is_empty() {
+                by_blast(&st.partition)
+            } else {
+                by_blast(&self.cfg.workflow.defaults.partition)
+            }
+        })
+    }
+
+    /// Run one batch of stage names concurrently under the bounded fan-out pool
+    /// (§6): chunks of at most MAX_CONCURRENCY, each chunk a scoped thread group.
+    /// Every stage in the batch runs; never more than MAX_CONCURRENCY at once.
+    fn run_batch(
+        &self,
+        stages: &BTreeMap<String, Stage>,
+        batch: &[String],
+    ) -> Vec<(String, Result<bool, Error>)> {
+        let mut results: Vec<(String, Result<bool, Error>)> = Vec::with_capacity(batch.len());
+        for chunk in batch.chunks(MAX_CONCURRENCY) {
             let chunk_results: Vec<(String, Result<bool, Error>)> = std::thread::scope(|s| {
                 let handles: Vec<_> = chunk
                     .iter()
@@ -302,22 +389,7 @@ impl RunCtx<'_> {
             });
             results.extend(chunk_results);
         }
-        let mut first_err = None;
-        for (name, r) in results {
-            terminal.insert(name.clone());
-            match r {
-                Ok(true) => {
-                    integrated.insert(name);
-                }
-                Ok(false) => {}
-                Err(e) if first_err.is_none() => first_err = Some(e),
-                Err(_) => {}
-            }
-        }
-        match first_err {
-            Some(e) => Err(e),
-            None => Ok(()),
-        }
+        results
     }
 
     fn start_and_run_stage(&self, name: &str, st: &Stage) -> Result<bool, Error> {
@@ -347,7 +419,7 @@ impl RunCtx<'_> {
             self.emit(TYPE_MANUAL_REVIEW, json!({"id": st.name, "unit": st.name}))?;
             return Ok(false);
         }
-        if !st.agents.is_empty() {
+        if is_fan_out(st) {
             return self.run_fan_out_stage(st);
         }
         let wt = self.stage_worktree(st)?;
@@ -467,9 +539,14 @@ impl RunCtx<'_> {
     }
 
     fn run_fan_out_stage(&self, st: &Stage) -> Result<bool, Error> {
+        // The fan-out lens set is `agents` when populated; a `strategy: fan-out`
+        // stage that names a single `agent` (and no `agents`) runs that one agent as
+        // its lone lens on the parallel path, so `strategy` is honored even without an
+        // explicit lens list (§3.2).
+        let lenses = fan_out_lenses(st);
         let mut attempts = 0u32;
         loop {
-            self.run_agents_concurrently(st, &st.agents)?;
+            self.run_agents_concurrently(st, &lenses)?;
             // The adversarial adjudicator's verdict gates the stage (§3.2): an
             // explicit reject blocks integration, no matter the static gates.
             let approved = if st.adjudicator.is_empty() {
@@ -953,6 +1030,63 @@ fn write_nodes(b: &mut String, g: &Graph, kind: &str, header: &str) {
 /// the gates but lands nothing.
 fn integrates(st: &Stage) -> bool {
     st.on_pass.is_empty() || st.on_pass.eq_ignore_ascii_case("merge")
+}
+
+/// Greedily group stage names into disjoint batches by blast-radius (§3.2, §8).
+/// `items` pairs each stage name with the set of files in its blast radius. A stage
+/// joins the FIRST existing batch none of whose members share any file with it;
+/// otherwise it opens a new batch. Stages with an empty blast radius conflict with
+/// nothing and so all collapse into the first batch. The result is deterministic:
+/// `items` is consumed in order and batches keep insertion order, so callers get a
+/// stable partition for a stable (e.g. sorted) input. The guarantee: two stages
+/// whose blast radii overlap never land in the same batch, so running the batches
+/// sequentially keeps overlapping units off the same file at the same time - they
+/// never share a worktree.
+pub fn partition_by_blast_radius(items: &[(String, Vec<String>)]) -> Vec<Vec<String>> {
+    let mut batches: Vec<Vec<String>> = Vec::new();
+    // The accumulated file set of each batch, parallel to `batches`, so the
+    // disjointness test is a set lookup rather than a re-scan of every member.
+    let mut batch_files: Vec<HashSet<&str>> = Vec::new();
+    for (name, files) in items {
+        let want: HashSet<&str> = files.iter().map(|f| f.as_str()).collect();
+        let mut placed = false;
+        for (i, taken) in batch_files.iter_mut().enumerate() {
+            if want.is_disjoint(taken) {
+                batches[i].push(name.clone());
+                taken.extend(want.iter().copied());
+                placed = true;
+                break;
+            }
+        }
+        if !placed {
+            batches.push(vec![name.clone()]);
+            batch_files.push(want);
+        }
+    }
+    batches
+}
+
+/// Whether a stage runs the fan-out (parallel-lens) path rather than the
+/// single-worker path (§3.2). The decision reads `strategy`: a stage fans out when
+/// `strategy == "fan-out"` (case-insensitive) OR it carries a non-empty `agents`
+/// lens list. The `agents`-list branch keeps the historical behavior; the
+/// `strategy` branch means the field is now consulted and honored, not ignored.
+fn is_fan_out(st: &Stage) -> bool {
+    st.strategy.eq_ignore_ascii_case("fan-out") || !st.agents.is_empty()
+}
+
+/// The lens set a fan-out stage runs concurrently: its `agents` list when
+/// populated, else its single `agent` (a `strategy: fan-out` stage that names only
+/// `agent`), else empty. This is what lets `strategy: fan-out` take the parallel
+/// path even without an explicit `agents` list (§3.2).
+fn fan_out_lenses(st: &Stage) -> Vec<String> {
+    if !st.agents.is_empty() {
+        st.agents.clone()
+    } else if !st.agent.is_empty() {
+        vec![st.agent.clone()]
+    } else {
+        Vec::new()
+    }
 }
 
 /// Whether a stage carries an LLM judge, i.e. a real verifier and not a mechanical
@@ -2123,6 +2257,132 @@ mod tests {
                 && e.to == "ok"),
             "the live run must fold GATED_BY(touched.rs -> ok) after the stage integrates"
         );
+    }
+
+    #[test]
+    fn strategy_fan_out_takes_the_fan_out_path() {
+        // A stage with `strategy: fan-out` and a single `agent` (no `agents` list)
+        // must be treated as a fan-out stage: `is_fan_out` reads `strategy`, and the
+        // lens set falls back to the lone agent (§3.2). Asserting via the SpawnOpts
+        // the conductor passed - the fan-out path spawns with `parallel = true`,
+        // whereas the single-worker path spawns with `parallel = false`.
+        let st = Stage {
+            name: "impl".into(),
+            agent: "a".into(),
+            strategy: "fan-out".into(),
+            ..Default::default()
+        };
+        assert!(is_fan_out(&st), "a `strategy: fan-out` stage must fan out");
+        assert_eq!(
+            fan_out_lenses(&st),
+            vec!["a".to_string()],
+            "a fan-out stage with only `agent` runs that agent as its lone lens"
+        );
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent("a"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert("impl".into(), st);
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(rs.units["impl"].status, ledger::Status::Integrated);
+        let opts = driver.opts_by_agent.lock().unwrap();
+        let (_isolation, parallel) = opts.get("a").copied().unwrap();
+        assert!(
+            parallel,
+            "a `strategy: fan-out` stage must spawn its agent on the parallel path"
+        );
+    }
+
+    #[test]
+    fn partition_separates_overlapping_blast_radii() {
+        // Overlapping file sets land in separate batches; disjoint sets share one.
+        let items = vec![
+            (
+                "a".to_string(),
+                vec!["x.rs".to_string(), "y.rs".to_string()],
+            ),
+            ("b".to_string(), vec!["y.rs".to_string()]), // overlaps a on y.rs
+            ("c".to_string(), vec!["z.rs".to_string()]), // disjoint from a
+        ];
+        let batches = partition_by_blast_radius(&items);
+        // a and c are disjoint -> first batch; b overlaps a -> a new batch.
+        let expected: Vec<Vec<String>> = vec![
+            vec!["a".to_string(), "c".to_string()],
+            vec!["b".to_string()],
+        ];
+        assert_eq!(batches, expected);
+
+        // Disjoint sets all share the first batch; empty radii conflict with nothing.
+        let disjoint = vec![
+            ("p".to_string(), vec!["p.rs".to_string()]),
+            ("q".to_string(), vec!["q.rs".to_string()]),
+            ("r".to_string(), Vec::new()),
+        ];
+        let expected_one: Vec<Vec<String>> =
+            vec![vec!["p".to_string(), "q".to_string(), "r".to_string()]];
+        assert_eq!(partition_by_blast_radius(&disjoint), expected_one);
+    }
+
+    #[test]
+    fn partitioned_wave_still_integrates_every_stage() {
+        // Correctness under partitioning: a wave with a grep grounder and
+        // `partition: by-blast-radius` must still integrate EVERY ready stage, even
+        // when blast radii overlap and the wave splits into sequential batches (§3.2,
+        // §8). Two stages ground onto the same file (shared.rs) so they land in
+        // separate batches; a third grounds elsewhere. All three must integrate.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("shared.rs"), "fn shared() {}\n").unwrap();
+        std::fs::write(dir.path().join("solo.rs"), "fn solo() {}\n").unwrap();
+        let grep = crate::grounder::Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent("a"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        for (name, coverage) in [("s1", "shared"), ("s2", "shared"), ("s3", "solo")] {
+            cfg.workflow.stages.insert(
+                name.into(),
+                Stage {
+                    name: name.into(),
+                    agent: "a".into(),
+                    coverage: coverage.into(),
+                    gates: vec!["ok".into()],
+                    partition: "by-blast-radius".into(),
+                    ..Default::default()
+                },
+            );
+        }
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        for name in ["s1", "s2", "s3"] {
+            assert_eq!(
+                rs.units[name].status,
+                ledger::Status::Integrated,
+                "every stage must integrate under by-blast-radius partitioning"
+            );
+        }
     }
 
     fn init_repo() -> tempfile::TempDir {
