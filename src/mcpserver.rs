@@ -13,6 +13,45 @@ use crate::driver::workflow::Driver;
 use crate::eventstore::{Event, EventStore, ExpectedRevision};
 use crate::sidecar::Sidecar;
 
+/// A tool's failure, carrying the JSON-RPC error code to report it with. Most
+/// failures are internal (`-32603`); a bad argument (e.g. an unknown spawn id)
+/// is invalid-params (`-32602`).
+struct ToolError {
+    code: i64,
+    message: String,
+}
+
+impl ToolError {
+    /// An internal error (`-32603`): something went wrong server-side.
+    fn internal(message: impl Into<String>) -> Self {
+        ToolError {
+            code: -32603,
+            message: message.into(),
+        }
+    }
+
+    /// An invalid-params error (`-32602`): the caller's arguments were wrong
+    /// (e.g. a stale/unknown spawn id, a missing required field).
+    fn invalid_params(message: impl Into<String>) -> Self {
+        ToolError {
+            code: -32602,
+            message: message.into(),
+        }
+    }
+}
+
+impl From<String> for ToolError {
+    fn from(message: String) -> Self {
+        ToolError::internal(message)
+    }
+}
+
+impl From<&str> for ToolError {
+    fn from(message: &str) -> Self {
+        ToolError::internal(message)
+    }
+}
+
 /// The MCP bridge over the workflow driver, event store, and side-car.
 pub struct Server<'a> {
     driver: &'a Driver,
@@ -43,11 +82,15 @@ impl<'a> Server<'a> {
             if line.trim().is_empty() {
                 continue;
             }
-            let msg: Value = match serde_json::from_str(&line) {
-                Ok(m) => m,
-                Err(_) => continue,
+            // Unparseable input is a JSON-RPC parse error (-32700): reply rather
+            // than `continue`, which would silently drop the message and hang a
+            // client that is waiting for a response. The id is null because we
+            // could not parse the message to recover it (spec §5.1).
+            let response = match serde_json::from_str::<Value>(&line) {
+                Ok(msg) => self.handle(&msg),
+                Err(_) => Some(err(Value::Null, -32700, "parse error")),
             };
-            if let Some(response) = self.handle(&msg) {
+            if let Some(response) = response {
                 writeln!(output, "{response}")?;
                 output.flush()?;
             }
@@ -56,8 +99,21 @@ impl<'a> Server<'a> {
     }
 
     fn handle(&self, msg: &Value) -> Option<String> {
-        let method = msg.get("method")?.as_str()?;
+        // A JSON-RPC request MUST carry a string `method`. A notification is a
+        // request with no `id` and needs no response; a request with an `id` but
+        // no usable `method` is malformed and gets an Invalid Request error
+        // (-32600), echoing the id when present (spec §4 / §5.1).
         let id = msg.get("id").cloned();
+        let method = match msg.get("method").and_then(Value::as_str) {
+            Some(m) => m,
+            None => {
+                return Some(err(
+                    id.unwrap_or(Value::Null),
+                    -32600,
+                    "invalid request: missing method",
+                ));
+            }
+        };
         match method {
             "initialize" => id.map(|id| {
                 ok(
@@ -71,17 +127,36 @@ impl<'a> Server<'a> {
             }),
             "tools/list" => id.map(|id| ok(id, json!({"tools": tool_list()}))),
             "tools/call" => {
+                // tools/call is a request, so it must carry an id; without one it
+                // is treated as a malformed notification and dropped.
                 let id = id?;
-                let params = msg.get("params")?;
-                let name = params.get("name")?.as_str()?;
-                let args = params
-                    .get("arguments")
+                // A tools/call missing params or the tool name is an Invalid
+                // Params error (-32602): reply rather than drop, so the client is
+                // not left hanging on a request it can never get an answer to.
+                let name = match msg
+                    .get("params")
+                    .and_then(|p| p.get("name"))
+                    .and_then(Value::as_str)
+                {
+                    Some(n) => n,
+                    None => {
+                        return Some(err(
+                            id,
+                            -32602,
+                            "invalid params: tools/call requires params.name",
+                        ));
+                    }
+                };
+                let args = msg
+                    .get("params")
+                    .and_then(|p| p.get("arguments"))
                     .cloned()
                     .unwrap_or_else(|| json!({}));
                 Some(self.call_tool(id, name, &args))
             }
-            // notifications (initialized, etc.) carry no id and need no response
-            _ => None,
+            // Other methods with an id are unknown requests (-32601); methods
+            // without an id are notifications (initialized, etc.) and stay silent.
+            _ => id.map(|id| err(id, -32601, &format!("method not found: {method}"))),
         }
     }
 
@@ -101,18 +176,20 @@ impl<'a> Server<'a> {
                     "structuredContent": structured,
                 }),
             ),
-            Err(e) => err(id, -32603, &e),
+            // A tool may request a specific JSON-RPC code (e.g. -32602 for an
+            // unknown spawn id); otherwise an internal error is -32603.
+            Err(e) => err(id, e.code, &e.message),
         }
     }
 
-    fn tool_next(&self) -> Result<Value, String> {
+    fn tool_next(&self) -> Result<Value, ToolError> {
         match self.driver.next() {
-            Some(req) => serde_json::to_value(req).map_err(|e| e.to_string()),
+            Some(req) => serde_json::to_value(req).map_err(|e| ToolError::internal(e.to_string())),
             None => Ok(json!({"id": ""})),
         }
     }
 
-    fn tool_result(&self, args: &Value) -> Result<Value, String> {
+    fn tool_result(&self, args: &Value) -> Result<Value, ToolError> {
         let id = args.get("id").and_then(Value::as_str).unwrap_or_default();
         let output = args
             .get("output")
@@ -124,11 +201,20 @@ impl<'a> Server<'a> {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
-        self.driver.result(id, output, error);
-        Ok(json!({}))
+        // An unknown / stale id means no spawn is waiting on this result. Report
+        // it as invalid-params rather than swallowing it: silent success here
+        // would leave the real spawn blocked forever (the shim thinks it
+        // delivered a result it never did).
+        if self.driver.result(id, output, error) {
+            Ok(json!({}))
+        } else {
+            Err(ToolError::invalid_params(format!(
+                "unknown spawn id {id:?}"
+            )))
+        }
     }
 
-    fn tool_emit(&self, args: &Value) -> Result<Value, String> {
+    fn tool_emit(&self, args: &Value) -> Result<Value, ToolError> {
         let typ = args
             .get("type")
             .and_then(Value::as_str)
@@ -441,5 +527,94 @@ mod tests {
         server.run(Cursor::new(input), &mut output).unwrap();
         let text = String::from_utf8(output).unwrap();
         assert!(text.contains("rigger_next") && text.contains("rigger_emit"));
+    }
+
+    #[test]
+    fn rigger_result_for_an_unknown_id_is_an_error() {
+        let store = Store::open(":memory:").unwrap();
+        let driver = Driver::new();
+        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
+        let server = Server::new(&driver, &store, "run", &peers);
+
+        // No spawn is pending, so id "999" is unknown. The shim must get an
+        // error, not a silent success that would block the conductor forever.
+        let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_result","arguments":{"id":"999","output":"done"}}}"#;
+        let mut output = Vec::new();
+        server.run(Cursor::new(input), &mut output).unwrap();
+
+        let resp: Value = serde_json::from_str(String::from_utf8(output).unwrap().trim()).unwrap();
+        assert_eq!(resp["id"], 1);
+        assert_eq!(
+            resp["error"]["code"], -32602,
+            "an unknown spawn id must be an invalid-params error: {resp}"
+        );
+        assert!(resp.get("result").is_none(), "no success result: {resp}");
+    }
+
+    #[test]
+    fn malformed_json_gets_a_parse_error() {
+        let store = Store::open(":memory:").unwrap();
+        let driver = Driver::new();
+        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
+        let server = Server::new(&driver, &store, "run", &peers);
+
+        // Unparseable input must not be silently dropped (which hangs the client):
+        // it gets a -32700 parse error with a null id.
+        let input = "{not valid json";
+        let mut output = Vec::new();
+        server.run(Cursor::new(input), &mut output).unwrap();
+
+        let resp: Value = serde_json::from_str(String::from_utf8(output).unwrap().trim()).unwrap();
+        assert_eq!(
+            resp["error"]["code"], -32700,
+            "unparseable input must be a parse error: {resp}"
+        );
+        assert_eq!(
+            resp["id"],
+            Value::Null,
+            "parse error echoes a null id: {resp}"
+        );
+    }
+
+    #[test]
+    fn request_missing_method_gets_an_invalid_request_error() {
+        let store = Store::open(":memory:").unwrap();
+        let driver = Driver::new();
+        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
+        let server = Server::new(&driver, &store, "run", &peers);
+
+        // A well-formed JSON object that is not a valid JSON-RPC request (no
+        // method) must get an Invalid Request error echoing its id, not silence.
+        let input = r#"{"jsonrpc":"2.0","id":7,"params":{}}"#;
+        let mut output = Vec::new();
+        server.run(Cursor::new(input), &mut output).unwrap();
+
+        let resp: Value = serde_json::from_str(String::from_utf8(output).unwrap().trim()).unwrap();
+        assert_eq!(resp["id"], 7, "the error echoes the request id: {resp}");
+        assert_eq!(
+            resp["error"]["code"], -32600,
+            "a request with no method is an invalid request: {resp}"
+        );
+    }
+
+    #[test]
+    fn tools_call_missing_name_gets_an_invalid_params_error() {
+        let store = Store::open(":memory:").unwrap();
+        let driver = Driver::new();
+        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
+        let server = Server::new(&driver, &store, "run", &peers);
+
+        // A tools/call missing params.name must get an invalid-params error, not
+        // be dropped (which would hang the client awaiting a response).
+        let input = r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{}}"#;
+        let mut output = Vec::new();
+        server.run(Cursor::new(input), &mut output).unwrap();
+
+        let resp: Value = serde_json::from_str(String::from_utf8(output).unwrap().trim()).unwrap();
+        assert_eq!(resp["id"], 3);
+        assert_eq!(
+            resp["error"]["code"], -32602,
+            "tools/call without params.name is invalid params: {resp}"
+        );
     }
 }

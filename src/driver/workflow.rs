@@ -77,7 +77,13 @@ impl Driver {
     }
 
     /// Deliver an agent's result to the waiting spawn. A blank `err` means success.
-    pub fn result(&self, id: &str, output: String, err: String) {
+    ///
+    /// Returns `true` if `id` named a pending spawn and the result was delivered,
+    /// `false` if the id was unknown or stale. A `false` must be surfaced to the
+    /// caller (not swallowed): a shim reporting a result for a wrong/stale id
+    /// otherwise gets silent success while the real spawn blocks forever.
+    #[must_use]
+    pub fn result(&self, id: &str, output: String, err: String) -> bool {
         let inner = self.inner.lock().unwrap();
         if let Some(call) = inner.pending.get(id) {
             let r = if err.is_empty() {
@@ -86,6 +92,9 @@ impl Driver {
                 Err(Error(err))
             };
             let _ = call.tx.send(r);
+            true
+        } else {
+            false
         }
     }
 }
@@ -175,9 +184,21 @@ mod tests {
             "the spawn request must carry the blast-radius to the shim"
         );
 
-        driver.result(&req.id, "done".into(), String::new());
+        assert!(
+            driver.result(&req.id, "done".into(), String::new()),
+            "a result for a known spawn id must report it was delivered"
+        );
         let res = handle.join().unwrap().unwrap();
         assert_eq!(res.output, "done");
+    }
+
+    #[test]
+    fn result_reports_an_unknown_id() {
+        let driver = Driver::new();
+        assert!(
+            !driver.result("does-not-exist", "out".into(), String::new()),
+            "a result for an id that names no pending spawn must report unknown"
+        );
     }
 
     #[test]
@@ -214,7 +235,7 @@ mod tests {
         };
         assert_eq!(req.tools, ["Read"]);
         assert!(!req.tools.contains(&"Agent".to_string()));
-        driver.result(&req.id, "done".into(), String::new());
+        assert!(driver.result(&req.id, "done".into(), String::new()));
         handle.join().unwrap().unwrap();
     }
 }
