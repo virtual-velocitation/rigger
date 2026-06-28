@@ -1,0 +1,21 @@
+{
+  "name": "rigger-shim",
+  "version": "0.1.0",
+  "description": "Standalone Node driver for the rigger conductor: connects an MCP client to `rigger serve`, pulls each queued agent spawn, runs it via the Claude Agent SDK with an in-process proxy MCP server (so the agent's rigger_emit/rigger_peers tool calls reach the live shared connection), and reports the result.",
+  "type": "module",
+  "bin": {
+    "rigger-shim": "shim.mjs"
+  },
+  "main": "shim.mjs",
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.195",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^4.4.3"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -203,7 +203,14 @@ impl<'a> Server<'a> {
     fn tool_next(&self) -> Result<Value, ToolError> {
         match self.driver.next() {
             Some(req) => serde_json::to_value(req).map_err(|e| ToolError::internal(e.to_string())),
-            None => Ok(json!({"id": ""})),
+            // An empty id means "no spawn right now". `done` disambiguates the two
+            // cases the shim cannot otherwise tell apart: `done:true` means the
+            // conductor has finished and the shim should exit; `done:false` means the
+            // conductor is still running (grounding, or between waves) and the shim
+            // must poll again rather than exit. Without `done`, an early empty `next`
+            // looks identical to a finished run and the shim exits before the first
+            // spawn is even enqueued.
+            None => Ok(json!({"id": "", "done": self.driver.is_finished()})),
         }
     }
 
@@ -640,6 +647,40 @@ mod tests {
         );
         assert_eq!(arr[0]["id"], "fa");
         assert_eq!(arr[0]["by"], "lensA");
+    }
+
+    #[test]
+    fn next_reports_done_only_after_the_conductor_finishes() {
+        // rigger_next must distinguish "nothing queued yet" (done:false, keep
+        // polling) from "the run is over" (done:true, exit). Before finish() an
+        // empty next is done:false; after finish() it is done:true. This is what
+        // stops the shim exiting before the first spawn is even enqueued.
+        let store = Store::open(":memory:").unwrap();
+        let driver = Driver::new();
+        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
+        let server = Server::new(&driver, &store, "run", &peers);
+
+        let call = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_next","arguments":{}}}"#;
+
+        // Before finish: empty id, done:false.
+        let mut out = Vec::new();
+        server.run(Cursor::new(call), &mut out).unwrap();
+        let resp: Value = serde_json::from_str(String::from_utf8(out).unwrap().trim()).unwrap();
+        let sc = &resp["result"]["structuredContent"];
+        assert_eq!(sc["id"], "", "no spawn queued yet");
+        assert_eq!(sc["done"], false, "a running conductor is not done: {resp}");
+
+        // After finish: empty id, done:true.
+        driver.finish();
+        let mut out = Vec::new();
+        server.run(Cursor::new(call), &mut out).unwrap();
+        let resp: Value = serde_json::from_str(String::from_utf8(out).unwrap().trim()).unwrap();
+        let sc = &resp["result"]["structuredContent"];
+        assert_eq!(sc["id"], "", "still no spawn");
+        assert_eq!(
+            sc["done"], true,
+            "a finished conductor reports done so the shim exits: {resp}"
+        );
     }
 
     #[test]

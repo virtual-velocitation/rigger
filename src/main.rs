@@ -180,6 +180,7 @@ fn main() {
     let result = match args[1].as_str() {
         "run" => cmd_run(&args[2..]),
         "serve" => cmd_serve(&args[2..]),
+        "workflow" => cmd_workflow(&args[2..]),
         "graph" => cmd_graph(&args[2..]),
         "validate" => cmd_validate(),
         "init" => cmd_init(),
@@ -206,7 +207,11 @@ fn usage() {
         "rigger - a config-driven, event-sourced multi-agent dev-loop harness\n\n\
 usage:\n  \
 rigger run [spec] [opts]    run the workflow (opts below)\n  \
-rigger serve [opts]         run as an MCP server (= run --driver workflow)\n  \
+rigger workflow [spec]      turn-key: launch the Node driver, which spawns\n                              \
+`rigger serve`, runs each agent via the Agent SDK,\n                              \
+and drives the loop (one command; needs node + the\n                              \
+shim's npm deps installed - see shim/README.md)\n  \
+rigger serve [opts]         run as an MCP server the driver connects to\n  \
 rigger graph --around <id>  print the context subgraph around a node\n  \
 rigger validate             load and validate the workflow + agents\n  \
 rigger init                 set up a project: scaffold .rigger/ (workflow.yml +\n                              \
@@ -304,6 +309,10 @@ fn run_workflow(parsed: &RunArgs) -> Res {
             if let Err(e) = conductor::run(&cfg, &deps) {
                 eprintln!("rigger: conductor: {e}");
             }
+            // Signal the run is over so an empty rigger_next reports done:true and the
+            // shim exits cleanly. Set on BOTH success and error: a conductor error
+            // still ends the run, and the shim must not poll forever.
+            driver.finish();
         });
         // Wire the graph into the MCP server too, so a ReviewFinding (or DecisionMade)
         // an agent emits via rigger_emit folds into the graph as it lands - the
@@ -324,6 +333,87 @@ fn cmd_serve(args: &[String]) -> Res {
     let mut parsed = parse_run_args(args)?;
     parsed.driver = DriverKind::Workflow;
     run_workflow(&parsed)
+}
+
+/// `rigger workflow [spec]` is the turn-key one-command activation of the workflow
+/// driver: it execs the Node shim (`shim/shim.mjs`), which spawns `rigger serve`
+/// (this same binary, via `RIGGER_BIN`), connects an MCP client to it, and drives
+/// the agent loop via the Claude Agent SDK. The user runs ONE command instead of
+/// hand-wiring `rigger serve` into an MCP host.
+fn cmd_workflow(args: &[String]) -> Res {
+    // The shim takes an optional spec path; reject extra positionals so a typo is a
+    // clear error, not a silently-ignored argument.
+    if args.len() > 1 {
+        return Err(format!(
+            "workflow: expected at most one spec path, got {} arguments",
+            args.len()
+        )
+        .into());
+    }
+    let shim = locate_shim()?;
+    // The shim spawns `rigger serve` itself; point it at THIS binary so the driver
+    // and the served conductor are always the same build (no PATH ambiguity).
+    let rigger_bin = std::env::current_exe()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| "rigger".to_string());
+
+    let node = std::env::var("RIGGER_NODE").unwrap_or_else(|_| "node".to_string());
+    let mut cmd = Command::new(&node);
+    cmd.arg(&shim);
+    if let Some(spec) = args.first() {
+        cmd.arg(spec);
+    }
+    cmd.env("RIGGER_BIN", &rigger_bin);
+
+    let status = cmd.status().map_err(|e| {
+        format!(
+            "workflow: failed to launch the Node driver ({node} {shim}): {e}. \
+             Is node installed, and have you run `npm install` in shim/? (see shim/README.md)"
+        )
+    })?;
+    if !status.success() {
+        return Err(format!("workflow: the Node driver exited unsuccessfully ({status})").into());
+    }
+    Ok(())
+}
+
+/// Locate the shim's `shim.mjs`. Search order: the `RIGGER_SHIM` env override
+/// (an explicit path), then beside the binary (`<exe_dir>/shim/shim.mjs` and the
+/// sibling `<exe_dir>/../shim/shim.mjs` for a `target/<profile>/` layout), then the
+/// repo-relative `shim/shim.mjs` from the current directory (the dev checkout). The
+/// first existing candidate wins; if none exists the error lists where it looked.
+fn locate_shim() -> Result<String, Box<dyn std::error::Error>> {
+    if let Ok(explicit) = std::env::var("RIGGER_SHIM") {
+        if Path::new(&explicit).exists() {
+            return Ok(explicit);
+        }
+        return Err(format!("workflow: RIGGER_SHIM={explicit} does not exist").into());
+    }
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join("shim").join("shim.mjs"));
+            if let Some(parent) = dir.parent() {
+                candidates.push(parent.join("shim").join("shim.mjs"));
+            }
+        }
+    }
+    candidates.push(Path::new("shim").join("shim.mjs"));
+    for c in &candidates {
+        if c.exists() {
+            return Ok(c.to_string_lossy().into_owned());
+        }
+    }
+    let looked: Vec<String> = candidates
+        .iter()
+        .map(|c| c.to_string_lossy().into_owned())
+        .collect();
+    Err(format!(
+        "workflow: could not find shim.mjs (looked in: {}). Set RIGGER_SHIM to its path, \
+         or run from the repo root where shim/shim.mjs lives.",
+        looked.join(", ")
+    )
+    .into())
 }
 
 /// Extract the spec's acceptance criteria, enforcing the loop-ready gate (§8): a

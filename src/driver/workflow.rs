@@ -6,6 +6,7 @@
 //! server, not here), so the emit callback is unused.
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::Mutex;
 
@@ -46,6 +47,13 @@ struct Inner {
 /// Driver bridges the conductor to a polling MCP server.
 pub struct Driver {
     inner: Mutex<Inner>,
+    /// Set once the conductor's `run` has returned. It is the ONLY signal that an
+    /// empty `next()` means "the run is over" rather than "nothing is queued yet":
+    /// the conductor enqueues spawns asynchronously, so an empty queue early in the
+    /// run is transient, not terminal. Without this flag the shim cannot tell a
+    /// not-yet-grounded conductor from a finished one and exits prematurely (the
+    /// pga race the shim's poll loop hit on the first real e2e run).
+    finished: AtomicBool,
 }
 
 impl Default for Driver {
@@ -56,6 +64,7 @@ impl Default for Driver {
                 pending: HashMap::new(),
                 next_id: 0,
             }),
+            finished: AtomicBool::new(false),
         }
     }
 }
@@ -74,6 +83,24 @@ impl Driver {
             }
         }
         None
+    }
+
+    /// Mark the run finished - the conductor's `run` has returned, so no further
+    /// spawns will be enqueued. Called by the composition root after `conductor::run`
+    /// completes; flips an empty `next()` from "wait, more may come" to "done".
+    pub fn finish(&self) {
+        self.finished.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether the conductor has finished AND no spawn is left to drain. Only then is
+    /// it safe for the shim to exit: a pending or queued spawn after `finish()` (e.g.
+    /// a spawn still in flight when the run wound down) must still be served.
+    pub fn is_finished(&self) -> bool {
+        if !self.finished.load(Ordering::SeqCst) {
+            return false;
+        }
+        let inner = self.inner.lock().unwrap();
+        inner.queue.is_empty() && inner.pending.is_empty()
     }
 
     /// Deliver an agent's result to the waiting spawn. A blank `err` means success.
@@ -198,6 +225,74 @@ mod tests {
         assert!(
             !driver.result("does-not-exist", "out".into(), String::new()),
             "a result for an id that names no pending spawn must report unknown"
+        );
+    }
+
+    #[test]
+    fn is_finished_only_after_finish_and_drained() {
+        // A fresh driver is not finished (the conductor is still running).
+        let driver = Driver::new();
+        assert!(
+            !driver.is_finished(),
+            "a running conductor is never finished"
+        );
+
+        // After finish() with nothing pending/queued, it is finished.
+        driver.finish();
+        assert!(
+            driver.is_finished(),
+            "after finish() with an empty queue the run is over"
+        );
+    }
+
+    #[test]
+    fn finish_does_not_strand_an_in_flight_spawn() {
+        // A spawn that is still pending when finish() is called must keep
+        // is_finished() false until it is drained: the shim must still pick it up.
+        let driver = Arc::new(Driver::new());
+        let d2 = driver.clone();
+        let handle = std::thread::spawn(move || {
+            let emit = |_: &str, _: Value| Ok(());
+            d2.spawn(
+                &AgentDef {
+                    id: "a".into(),
+                    ..Default::default()
+                },
+                "do it",
+                &SpawnOpts {
+                    dir: String::new(),
+                    isolation: false,
+                    parallel: false,
+                    blast_radius: Vec::new(),
+                },
+                &emit,
+            )
+        });
+
+        // Wait until the spawn is queued.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while {
+            let inner = driver.inner.lock().unwrap();
+            inner.pending.is_empty()
+        } {
+            assert!(Instant::now() < deadline, "spawn never queued");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+
+        // finish() fires while the spawn is still pending: NOT finished yet.
+        driver.finish();
+        assert!(
+            !driver.is_finished(),
+            "an in-flight spawn after finish() must keep the run from reporting done"
+        );
+
+        // Drain it; now the run is finished.
+        let req = driver.next().expect("the pending spawn is still served");
+        assert!(driver.result(&req.id, "done".into(), String::new()));
+        handle.join().unwrap().unwrap();
+        assert!(
+            driver.is_finished(),
+            "once the last spawn drains, the finished run reports done"
         );
     }
 
