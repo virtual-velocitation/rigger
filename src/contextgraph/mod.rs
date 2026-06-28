@@ -19,6 +19,12 @@ pub const KIND_AGENT: &str = "agent";
 pub const KIND_GATE: &str = "gate";
 pub const KIND_UNIT: &str = "unit";
 pub const KIND_LESSON: &str = "lesson";
+/// A review finding a lens / adversary raised about a unit's files. It is the
+/// cross-agent memory the three review tiers communicate THROUGH: a reviewer emits
+/// a ReviewFinding, the projector folds it ABOUT the files it concerns, and the
+/// later tiers (and concurrent lenses) RETRIEVE it via grounding, never via the
+/// conductor hand-threading one agent's stdout into another's prompt.
+pub const KIND_FINDING: &str = "finding";
 
 // Edge relationships.
 pub const REL_DECIDED: &str = "DECIDED";
@@ -29,6 +35,9 @@ pub const REL_GATED_BY: &str = "GATED_BY";
 pub const REL_ABOUT: &str = "ABOUT";
 pub const REL_BLOCKS: &str = "BLOCKS";
 pub const REL_ASSIGNED_TO: &str = "ASSIGNED_TO";
+/// The acting reviewer raised this finding (a DECIDED-style provenance link from
+/// the `by` agent to the finding node).
+pub const REL_RAISED: &str = "RAISED";
 
 /// The metadata key carrying the acting agent on an event (the DECIDED source).
 pub const META_ACTOR: &str = "actor";
@@ -69,6 +78,9 @@ pub const TYPE_UNIT_INTEGRATED: &str = "UnitIntegrated";
 pub const TYPE_LESSON_LEARNED: &str = "LessonLearned";
 pub const TYPE_ALIAS_DEFINED: &str = "AliasDefined";
 pub const TYPE_ALIAS_UNRESOLVED: &str = "AliasUnresolved";
+/// A review finding a lens / adversary raised about a unit's files. Folded into a
+/// KIND_FINDING node ABOUT each file, plus a RAISED edge from the acting reviewer.
+pub const TYPE_REVIEW_FINDING: &str = "ReviewFinding";
 
 #[derive(Deserialize)]
 struct DecisionMade {
@@ -122,6 +134,18 @@ struct AliasUnresolved {
 #[derive(Deserialize)]
 struct LessonLearned {
     id: String,
+    #[serde(default)]
+    summary: String,
+    #[serde(default)]
+    about: Vec<String>,
+}
+#[derive(Deserialize)]
+struct ReviewFinding {
+    id: String,
+    #[serde(default)]
+    by: String,
+    #[serde(default)]
+    unit: String,
     #[serde(default)]
     summary: String,
     #[serde(default)]
