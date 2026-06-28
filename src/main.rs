@@ -24,6 +24,24 @@ use rigger::{hooks, spec};
 
 const RIGGER_DIR: &str = ".rigger";
 
+/// The JS-driver RUNTIME files, embedded in the binary so `rigger setup` can
+/// provision a per-project shim without the user cloning the repo. Only the three
+/// runtime files ship: `shim.mjs` (the driver), `package.json`, and the
+/// `package-lock.json` (so `npm ci` installs the exact locked tree). The dev-only
+/// `mock-*`/`*.test.mjs` files are deliberately NOT embedded - they are for the
+/// repo's own tests + CI, not the runtime a user runs.
+const SHIM_MJS: &str = include_str!("../shim/shim.mjs");
+const SHIM_PACKAGE_JSON: &str = include_str!("../shim/package.json");
+const SHIM_PACKAGE_LOCK_JSON: &str = include_str!("../shim/package-lock.json");
+
+/// The three embedded shim runtime files as (filename, contents) pairs, written
+/// verbatim into `<project>/.rigger/shim/` by `provision_shim`.
+const SHIM_FILES: &[(&str, &str)] = &[
+    ("shim.mjs", SHIM_MJS),
+    ("package.json", SHIM_PACKAGE_JSON),
+    ("package-lock.json", SHIM_PACKAGE_LOCK_JSON),
+];
+
 type Res = Result<(), Box<dyn std::error::Error>>;
 
 /// Which agent driver a `run` uses (§10): `cli` is the standalone `claude`
@@ -207,17 +225,19 @@ fn usage() {
         "rigger - a config-driven, event-sourced multi-agent dev-loop harness\n\n\
 usage:\n  \
 rigger run [spec] [opts]    run the workflow (opts below)\n  \
-rigger workflow [spec]      turn-key: launch the Node driver, which spawns\n                              \
-`rigger serve`, runs each agent via the Agent SDK,\n                              \
-and drives the loop (one command; needs node + the\n                              \
-shim's npm deps installed - see shim/README.md)\n  \
+rigger workflow [spec]      turn-key: launch the per-project Node driver, which\n                              \
+spawns `rigger serve`, runs each agent via the Agent\n                              \
+SDK, and drives the loop (one command; run `rigger\n                              \
+setup` first - it provisions the driver in .rigger/shim/)\n  \
 rigger serve [opts]         run as an MCP server the driver connects to\n  \
 rigger graph --around <id>  print the context subgraph around a node\n  \
 rigger validate             load and validate the workflow + agents\n  \
 rigger init                 set up a project: scaffold .rigger/ (workflow.yml +\n                              \
 an agents/ folder) and install the Claude Code\n                              \
 SessionStart hook (it runs `rigger prime`)\n  \
-rigger setup                alias for `rigger init` (kept for compatibility)\n  \
+rigger setup                full setup: everything `init` does, PLUS provision the\n                              \
+JS driver (write .rigger/shim/ + run npm install) so\n                              \
+`rigger workflow` is zero-setup\n  \
 rigger prime                print recent decisions (what the hook runs)\n\n\
 run/serve options:\n  \
 --driver <cli|workflow>          cli (default): standalone claude subprocess;\n                                   \
@@ -350,7 +370,7 @@ fn cmd_workflow(args: &[String]) -> Res {
         )
         .into());
     }
-    let shim = locate_shim()?;
+    let shim = locate_shim(Path::new("."))?;
     // The shim spawns `rigger serve` itself; point it at THIS binary so the driver
     // and the served conductor are always the same build (no PATH ambiguity).
     let rigger_bin = std::env::current_exe()
@@ -368,7 +388,8 @@ fn cmd_workflow(args: &[String]) -> Res {
     let status = cmd.status().map_err(|e| {
         format!(
             "workflow: failed to launch the Node driver ({node} {shim}): {e}. \
-             Is node installed, and have you run `npm install` in shim/? (see shim/README.md)"
+             Is Node installed and on your PATH? Run `rigger setup` if the JS driver's \
+             dependencies are not yet installed."
         )
     })?;
     if !status.success() {
@@ -377,41 +398,35 @@ fn cmd_workflow(args: &[String]) -> Res {
     Ok(())
 }
 
-/// Locate the shim's `shim.mjs`. Search order: the `RIGGER_SHIM` env override
-/// (an explicit path), then beside the binary (`<exe_dir>/shim/shim.mjs` and the
-/// sibling `<exe_dir>/../shim/shim.mjs` for a `target/<profile>/` layout), then the
-/// repo-relative `shim/shim.mjs` from the current directory (the dev checkout). The
-/// first existing candidate wins; if none exists the error lists where it looked.
-fn locate_shim() -> Result<String, Box<dyn std::error::Error>> {
+/// Locate the JS driver's `shim.mjs` to run, rooted at the project `root`.
+///
+/// `rigger workflow` runs the PER-PROJECT shim that `rigger setup` provisions
+/// (`<root>/.rigger/shim/shim.mjs`), so the driver and its installed `node_modules`
+/// travel with the project, not the binary. Search order:
+///   1. the `RIGGER_SHIM` env override (an explicit path) - the escape hatch for a
+///      custom or dev shim;
+///   2. the provisioned per-project shim at `<root>/.rigger/shim/shim.mjs`.
+///
+/// When neither exists the error tells the user to run `rigger setup` (which
+/// provisions `.rigger/shim/` and installs its deps), rather than leaving them to
+/// hand-wire a shim. A `RIGGER_SHIM` override that points at a missing path is a
+/// clear error, never a silent fallthrough.
+fn locate_shim(root: &Path) -> Result<String, Box<dyn std::error::Error>> {
     if let Ok(explicit) = std::env::var("RIGGER_SHIM") {
         if Path::new(&explicit).exists() {
             return Ok(explicit);
         }
         return Err(format!("workflow: RIGGER_SHIM={explicit} does not exist").into());
     }
-    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            candidates.push(dir.join("shim").join("shim.mjs"));
-            if let Some(parent) = dir.parent() {
-                candidates.push(parent.join("shim").join("shim.mjs"));
-            }
-        }
+    let provisioned = shim_dir(root).join("shim.mjs");
+    if provisioned.exists() {
+        return Ok(provisioned.to_string_lossy().into_owned());
     }
-    candidates.push(Path::new("shim").join("shim.mjs"));
-    for c in &candidates {
-        if c.exists() {
-            return Ok(c.to_string_lossy().into_owned());
-        }
-    }
-    let looked: Vec<String> = candidates
-        .iter()
-        .map(|c| c.to_string_lossy().into_owned())
-        .collect();
     Err(format!(
-        "workflow: could not find shim.mjs (looked in: {}). Set RIGGER_SHIM to its path, \
-         or run from the repo root where shim/shim.mjs lives.",
-        looked.join(", ")
+        "workflow: the per-project JS driver is not provisioned (looked for {}). \
+         Run `rigger setup` to write the shim into .rigger/shim/ and install its \
+         dependencies, then re-run `rigger workflow`.",
+        provisioned.display()
     )
     .into())
 }
@@ -520,11 +535,95 @@ fn cmd_init() -> Res {
     Ok(())
 }
 
-/// `rigger setup` is now a thin alias for `rigger init` - kept so existing muscle
-/// memory and scripts keep working - since `init` already does the full setup
-/// (scaffold + hook).
+/// The directory the per-project JS driver is provisioned into, relative to the
+/// project root: `<root>/.rigger/shim/`. `rigger setup` writes the embedded runtime
+/// files here and installs their npm deps; `rigger workflow` runs `shim.mjs` from
+/// here.
+fn shim_dir(root: &Path) -> std::path::PathBuf {
+    root.join(RIGGER_DIR).join("shim")
+}
+
+/// Provision the per-project JS driver under `<root>/.rigger/shim/`: write the three
+/// embedded runtime files (`shim.mjs`, `package.json`, `package-lock.json`) and
+/// install their npm dependencies so `node_modules` is ready and `rigger workflow`
+/// is zero-setup. Rooted at `root` so it is testable against a temp dir.
+///
+/// The files are always (re)written from the embedded copies, so a `rigger setup`
+/// after a `rigger` upgrade refreshes the driver to match the binary - the shim and
+/// the conductor it drives stay the same build. npm install runs `npm ci` when the
+/// lockfile is present (a reproducible, locked install) and falls back to `npm
+/// install` otherwise. A missing `npm` is a CLEAR error (with the directory it would
+/// have installed in), never a silent skip - the user must know the driver is not
+/// ready.
+fn provision_shim(root: &Path) -> Res {
+    let dir = write_shim_files(root)?;
+    run_npm_install(&dir)?;
+    Ok(())
+}
+
+/// Write the three embedded shim runtime files into `<root>/.rigger/shim/`,
+/// returning that directory. Split out from [`provision_shim`] (which also runs npm
+/// install) so the file-provisioning step is testable without invoking npm.
+fn write_shim_files(root: &Path) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+    let dir = shim_dir(root);
+    std::fs::create_dir_all(&dir)?;
+    for (name, contents) in SHIM_FILES {
+        std::fs::write(dir.join(name), contents)?;
+    }
+    Ok(dir)
+}
+
+/// Install the shim's npm dependencies in `dir`. Uses `npm ci` when a
+/// `package-lock.json` is present (a clean, lockfile-exact install) and `npm
+/// install` otherwise. `npm` not being on PATH is a clear, actionable error naming
+/// the directory - the JS driver is unusable without its deps, so this never
+/// silently succeeds.
+fn run_npm_install(dir: &Path) -> Res {
+    let npm = std::env::var("RIGGER_NPM").unwrap_or_else(|_| "npm".to_string());
+    let subcmd = if dir.join("package-lock.json").exists() {
+        "ci"
+    } else {
+        "install"
+    };
+    let status = Command::new(&npm)
+        .arg(subcmd)
+        .current_dir(dir)
+        .status()
+        .map_err(|e| {
+            format!(
+                "setup: could not run `{npm} {subcmd}` in {}: {e}. \
+                 Is Node's npm installed and on your PATH? The JS driver needs its \
+                 dependencies before `rigger workflow` can run.",
+                dir.display()
+            )
+        })?;
+    if !status.success() {
+        return Err(format!(
+            "setup: `{npm} {subcmd}` failed in {} ({status}); the JS driver's \
+             dependencies were not installed",
+            dir.display()
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// `rigger setup` is the FULL project setup: it does everything `rigger init` does
+/// (scaffold `.rigger/` + install the Claude Code hook) AND provisions the JS driver
+/// (writes the embedded shim runtime into `.rigger/shim/` and runs `npm install`), so
+/// `rigger workflow` works with zero manual setup afterward.
 fn cmd_setup() -> Res {
-    cmd_init()
+    let root = Path::new(".");
+    init_project(root)?;
+    provision_shim(root)?;
+    let names: Vec<&str> = SCAFFOLD_AGENTS.iter().map(|(f, _)| *f).collect();
+    println!(
+        "scaffolded .rigger/workflow.yml and .rigger/agents/{{{}}}, installed a Claude Code \
+         SessionStart hook in .claude/settings.json, and provisioned the JS driver in \
+         .rigger/shim/ (wrote shim.mjs + package.json + package-lock.json and ran npm install)",
+        names.join(", ")
+    );
+    Ok(())
 }
 
 fn cmd_prime() -> Res {
@@ -838,5 +937,113 @@ mod tests {
     #[test]
     fn project_identity_is_never_empty() {
         assert!(!project_identity().is_empty());
+    }
+
+    /// `rigger setup` must provision the per-project JS driver: write the three
+    /// embedded runtime files into `.rigger/shim/` with the embedded content. (The
+    /// npm-install step is asserted separately so this test does not depend on npm.)
+    #[test]
+    fn setup_provisions_the_shim_runtime_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let shim = write_shim_files(dir.path()).expect("provisioning writes the shim files");
+        assert_eq!(shim, shim_dir(dir.path()));
+
+        for (name, embedded) in SHIM_FILES {
+            let path = shim.join(name);
+            assert!(path.exists(), "{name} must be written into .rigger/shim/");
+            let on_disk = std::fs::read_to_string(&path).unwrap();
+            assert_eq!(
+                &on_disk, embedded,
+                "{name} on disk must be byte-identical to the embedded runtime"
+            );
+        }
+
+        // The dev-only mock/test files must NOT ship - only the three runtime files.
+        let names: Vec<String> = std::fs::read_dir(&shim)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            !names
+                .iter()
+                .any(|n| n.contains("mock") || n.contains(".test.")),
+            "only runtime files ship; no mock-*/*.test.mjs. found: {names:?}"
+        );
+
+        // The embedded shim.mjs is the real driver (a sanity check it is not a stub).
+        assert!(
+            SHIM_MJS.contains("rigger") && SHIM_MJS.contains("query"),
+            "the embedded shim.mjs must be the real JS driver"
+        );
+    }
+
+    /// `rigger setup` runs npm install against the provisioned shim so `node_modules`
+    /// is ready. When npm is available we run it FOR REAL against a temp dir and
+    /// confirm `node_modules` appears; when npm is unavailable we assert the clear
+    /// error path instead (never a silent skip).
+    #[test]
+    fn setup_runs_npm_install_or_reports_a_clear_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let shim = write_shim_files(dir.path()).unwrap();
+
+        if npm_available() {
+            // npm is on PATH: provisioning must run it for real and leave node_modules.
+            provision_shim(dir.path()).expect("provision_shim must succeed when npm is available");
+            assert!(
+                shim.join("node_modules").is_dir(),
+                "npm install must populate node_modules in the provisioned shim dir"
+            );
+        } else {
+            // npm is NOT on PATH: the error must be clear and actionable, not a silent
+            // skip. Point RIGGER_NPM at a binary that does not exist to exercise the
+            // missing-npm path deterministically.
+            std::env::set_var("RIGGER_NPM", "definitely-not-a-real-npm-binary-xyz");
+            let err = run_npm_install(&shim).expect_err("a missing npm must be a clear error");
+            std::env::remove_var("RIGGER_NPM");
+            let msg = err.to_string();
+            assert!(
+                msg.contains("npm") && msg.to_lowercase().contains("path"),
+                "the missing-npm error must mention npm and PATH; got: {msg}"
+            );
+        }
+    }
+
+    /// `rigger workflow` runs the PROVISIONED per-project shim when `.rigger/shim/`
+    /// exists, and otherwise reports a clear "run `rigger setup`" error rather than
+    /// failing obscurely.
+    #[test]
+    fn workflow_locates_the_provisioned_shim_or_tells_you_to_run_setup() {
+        // Guard the RIGGER_SHIM override does not leak in from the environment.
+        let prior = std::env::var("RIGGER_SHIM").ok();
+        std::env::remove_var("RIGGER_SHIM");
+
+        let dir = tempfile::tempdir().unwrap();
+        // Absent: a clear, actionable error naming `rigger setup`.
+        let err = locate_shim(dir.path()).expect_err("an unprovisioned project must error");
+        assert!(
+            err.to_string().contains("rigger setup"),
+            "the unprovisioned error must tell the user to run `rigger setup`; got: {err}"
+        );
+
+        // After provisioning the files, locate_shim finds the per-project shim.mjs.
+        let shim = write_shim_files(dir.path()).unwrap();
+        let found = locate_shim(dir.path()).expect("a provisioned shim must be located");
+        assert_eq!(
+            Path::new(&found),
+            shim.join("shim.mjs"),
+            "locate_shim must return the provisioned .rigger/shim/shim.mjs"
+        );
+
+        if let Some(v) = prior {
+            std::env::set_var("RIGGER_SHIM", v);
+        }
+    }
+
+    fn npm_available() -> bool {
+        Command::new("npm")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
     }
 }

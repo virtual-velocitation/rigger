@@ -45,6 +45,11 @@ pub const TYPE_SPEC_DEFECT: &str = "SpecDefect";
 pub const TYPE_TASK_ABORTED: &str = "TaskAborted";
 /// A Manual-autonomy gate pauses its unit awaiting human review (§4.3).
 pub const TYPE_MANUAL_REVIEW: &str = "ManualReview";
+/// A deferred gate FAILED when it ran at the run's phase boundary (§4.3). Surfaced
+/// truthfully: the ledger folds it (`RunState::deferred_gate_failed`) so the run is
+/// never reported fully done with a red deferred gate. Kept in sync with
+/// `ledger::TYPE_DEFERRED_GATE_FAILED`.
+pub const TYPE_DEFERRED_GATE_FAILED: &str = ledger::TYPE_DEFERRED_GATE_FAILED;
 
 /// The `commit` value a standalone review-only stage records when it reaches its
 /// DAG-terminal state (item 7). A review stage integrates NO code artifact, so
@@ -305,6 +310,13 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         }
         ctx.harvest_proposed(&mut stages, &mut proposed)?;
     }
+
+    // Phase boundary (§4.3): the wave loop has converged - every ready unit reached a
+    // terminal state and integrated on its INLINE gates. Now run the workflow's
+    // deferred gates ONCE, here, at the run's end, rather than per unit inline. Each
+    // deferred gate runs a single time; a failing one is surfaced truthfully (a
+    // DeferredGateFailed event + the run reported not-fully-done).
+    ctx.run_deferred_gates(&stages)?;
 
     let events = deps.store.read_stream(STREAM, 0, Direction::Forward)?;
     ledger::project(&events).map_err(|e| Error(e.to_string()))
@@ -733,7 +745,7 @@ impl RunCtx<'_> {
                     agent_def,
                     &prompt,
                     &SpawnOpts {
-                        system_prompt: agent_def.prompt.clone(),
+                        system_prompt: self.build_system_prompt(agent_def),
                         dir: dir.to_string(),
                         isolation: wt.is_some(),
                         parallel: false,
@@ -988,7 +1000,7 @@ impl RunCtx<'_> {
                 agent_def,
                 &prompt,
                 &SpawnOpts {
-                    system_prompt: agent_def.prompt.clone(),
+                    system_prompt: self.build_system_prompt(agent_def),
                     dir: String::new(),
                     isolation: false,
                     parallel: true,
@@ -1030,7 +1042,7 @@ impl RunCtx<'_> {
                 agent_def,
                 &prompt,
                 &SpawnOpts {
-                    system_prompt: agent_def.prompt.clone(),
+                    system_prompt: self.build_system_prompt(agent_def),
                     dir: String::new(),
                     isolation: false,
                     parallel: false,
@@ -1077,7 +1089,7 @@ impl RunCtx<'_> {
                 agent_def,
                 &prompt,
                 &SpawnOpts {
-                    system_prompt: agent_def.prompt.clone(),
+                    system_prompt: self.build_system_prompt(agent_def),
                     dir: String::new(),
                     isolation: false,
                     parallel: false,
@@ -1108,6 +1120,13 @@ impl RunCtx<'_> {
                 .cloned()
                 .unwrap_or_default();
             let kind = gate::Kind::parse(&gc.kind);
+            // Deferred gates are NOT run inline in the per-unit lifecycle (§4.3): they
+            // are held until the run's phase boundary and run ONCE there (see
+            // `run_deferred_gates`), so a unit integrates on its inline Core/Elevated
+            // gates without paying the expensive deferred check per unit.
+            if !kind.runs_inline() {
+                continue;
+            }
             let g = Gate {
                 id: gid.clone(),
                 run: gc.run,
@@ -1143,6 +1162,106 @@ impl RunCtx<'_> {
             }
         }
         Ok(outcome)
+    }
+
+    /// Run the workflow's DEFERRED gates ONCE at the run's phase boundary (§4.3).
+    ///
+    /// Phase-boundary semantics: a deferred gate is held out of every unit's inline
+    /// lifecycle (`run_gates` skips it via `Kind::runs_inline`) and run exactly once
+    /// here, after the wave loop has converged - i.e. after every unit has integrated
+    /// on its inline Core/Elevated gates. This trades per-unit cost for a single
+    /// end-of-run check: an expensive, whole-run gate (a full integration test, a
+    /// cross-cutting lint) pays once, not once per unit, and it sees the FULLY
+    /// integrated tree rather than one unit's partial state.
+    ///
+    /// We collect the UNIQUE deferred gate ids referenced by ANY stage in the
+    /// (possibly planner-extended) workflow, in deterministic stage/gate order, then
+    /// run each once via the gate runner (in the base repo, dir ""). Each run emits a
+    /// GateVerdict carrying its compact evidence (the same record an inline gate
+    /// produces, so the ledger and graph see deferred verdicts too). A FAILING
+    /// deferred gate is surfaced TRUTHFULLY: it emits a DeferredGateFailed event
+    /// naming the gate and its evidence, which the ledger folds so the run is reported
+    /// not-fully-done - a deferred failure never silently passes as success.
+    fn run_deferred_gates(&self, stages: &BTreeMap<String, Stage>) -> Result<(), Error> {
+        // Collect the unique deferred gate ids referenced across all stages, in a
+        // deterministic order (stages iterate sorted by name; gates in declared
+        // order), so the phase boundary is reproducible run to run.
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut deferred: Vec<String> = Vec::new();
+        for st in stages.values() {
+            for gid in &st.gates {
+                if seen.contains(gid) {
+                    continue;
+                }
+                let gc = self
+                    .cfg
+                    .workflow
+                    .gates
+                    .get(gid)
+                    .cloned()
+                    .unwrap_or_default();
+                if gate::Kind::parse(&gc.kind).runs_inline() {
+                    continue;
+                }
+                seen.insert(gid.clone());
+                deferred.push(gid.clone());
+            }
+        }
+        for gid in &deferred {
+            let gc = self
+                .cfg
+                .workflow
+                .gates
+                .get(gid)
+                .cloned()
+                .unwrap_or_default();
+            let kind = gate::Kind::parse(&gc.kind);
+            let g = Gate {
+                id: gid.clone(),
+                run: gc.run,
+                kind,
+                autonomy: gate::Autonomy::Manual,
+                history: Vec::new(),
+            };
+            // The deferred gate runs in the base repo (the fully integrated tree).
+            let res = self.deps.gates.run(&g, "");
+            self.emit(
+                contextgraph::TYPE_GATE_VERDICT,
+                json!({"gate": gid, "pass": res.pass, "evidence": res.evidence}),
+            )?;
+            // Feed the ratchet the same way an inline gate does, so a deferred gate's
+            // trust still moves on its history (its ceiling is Silent, like Core).
+            let (promoted, demoted, autonomy) = self.record_gate(gid, kind, res.pass, "");
+            if promoted {
+                self.emit(
+                    TYPE_GATE_PROMOTED,
+                    json!({"gate": gid, "autonomy": autonomy.as_str()}),
+                )?;
+            } else if demoted {
+                self.emit(
+                    TYPE_GATE_DEMOTED,
+                    json!({"gate": gid, "autonomy": autonomy.as_str()}),
+                )?;
+            }
+            if !res.pass {
+                // Surface the failure truthfully: a DeferredGateFailed naming the gate
+                // and its compact evidence, folded by the ledger so the run is reported
+                // not-fully-done. A lesson records WHY for the next run's grounding.
+                self.emit(
+                    TYPE_DEFERRED_GATE_FAILED,
+                    json!({"gate": gid, "evidence": res.evidence}),
+                )?;
+                self.emit_lesson(
+                    None,
+                    gid,
+                    &format!(
+                        "deferred gate {gid:?} failed at the phase boundary: {}",
+                        res.evidence
+                    ),
+                );
+            }
+        }
+        Ok(())
     }
 
     /// Record a gate's run on the ratchet, seeding a newly-tracked gate's starting
@@ -1233,6 +1352,17 @@ impl RunCtx<'_> {
             }
         }
         Ok(commit)
+    }
+
+    /// Build the SYSTEM prompt the conductor threads into every spawn: the agent's
+    /// PERSONA (its role - the markdown body of its definition) followed by the
+    /// rigger-authored communication discipline ([`RIGGER_COMMUNICATION`]). This is
+    /// the SINGLE persona-source path - every spawn site builds the system prompt
+    /// here, so BOTH drivers (the cli `--system-prompt`, the workflow shim's
+    /// `options.systemPrompt`) receive an identical persona + discipline and cannot
+    /// diverge.
+    fn build_system_prompt(&self, agent: &AgentDef) -> String {
+        build_system_prompt(&agent.prompt)
     }
 
     /// The stage's blast-radius: the distinct files the grounder surfaces for the
@@ -1476,6 +1606,44 @@ fn verdict_approves(output: &str) -> bool {
 }
 
 const EMIT_PROTOCOL: &str = "Record each decision you make by calling the rigger_emit tool the moment you make it, with type \"DecisionMade\" and data:\n{\"id\":\"<short-id>\",\"summary\":\"<one line>\",\"governs\":[\"<file>\"],\"supersedes\":\"<prior-id-or-empty>\"}\nThis writes it to the shared event log live, so other agents see it immediately.";
+
+/// Rigger's communication discipline, appended to EVERY spawned agent's SYSTEM
+/// prompt (after its persona) by [`RunCtx::build_system_prompt`], so every agent on
+/// every driver path receives it. It REINFORCES the cadence the user-prompt
+/// protocols (`EMIT_PROTOCOL` / `REVIEW_PROTOCOL`) carry the exact JSON shapes for:
+/// emit decisions and findings the MOMENT you make them, check peers between
+/// actions, and never silently contradict a peer - so concurrent agents stay
+/// coordinated through the shared log instead of running blind. This is the single
+/// persona-source path both drivers consume, so the cli and workflow agents receive
+/// identical discipline.
+const RIGGER_COMMUNICATION: &str = "\n\n# Rigger communication discipline (non-negotiable)\n\
+You are one of several agents working concurrently against a shared event log. Other \
+agents act on what you record, live - so your communication is part of the work, not \
+an afterthought.\n\
+- Record EVERY decision the MOMENT you make it by calling the `rigger_emit` tool with \
+type `DecisionMade`. Emit immediately, one decision at a time - never batch them up \
+to the end of your turn, because a concurrent agent must see your decision while it \
+is still acting.\n\
+- If you are a reviewer, record EVERY finding the moment you find it by calling \
+`rigger_emit` with type `ReviewFinding`. Do not hold findings back to a final summary.\n\
+- Between your actions, CHECK the `rigger_peers` tool (scoped to the files you are \
+touching) to stay aware of what concurrent agents have already decided. Do this \
+before you commit to a direction, not after.\n\
+- NEVER silently contradict a peer's decision. If you must change a direction a peer \
+already set, SUPERSEDE it explicitly: emit a new `DecisionMade` whose `supersedes` \
+field cites the prior decision's id, and state why. Diverging silently splits the \
+work; superseding explicitly keeps every agent on one story.\n\
+The exact JSON shapes for these emits are given in your task instructions; this \
+section governs the DISCIPLINE and cadence - follow it on every turn.";
+
+/// Compose an agent's SYSTEM prompt: its `persona` (its role body) followed by the
+/// rigger-authored [`RIGGER_COMMUNICATION`] discipline. An agent with no persona
+/// (empty body) still receives the discipline, so every spawned agent gets it; the
+/// persona, when present, leads so the role frames the discipline. This is the one
+/// place persona and discipline are joined, keeping both driver paths identical.
+fn build_system_prompt(persona: &str) -> String {
+    format!("{persona}{RIGGER_COMMUNICATION}")
+}
 
 /// The protocol a REVIEW agent (a lens or the adversary) follows so its findings
 /// reach the shared context graph - the cross-agent memory the three tiers
@@ -2662,8 +2830,10 @@ mod tests {
         };
         run(&cfg, &deps).unwrap();
 
-        // Every agent the conductor spawned received ITS OWN persona as the system
-        // prompt - the implementer and all three review tiers.
+        // Every agent the conductor spawned received a system prompt that contains
+        // BOTH its OWN persona AND the rigger-authored communication discipline - the
+        // implementer and all three review tiers. The system prompt is persona +
+        // RIGGER_COMMUNICATION, built once for both driver paths.
         for (id, persona) in [
             ("worker", "You are the rust engineer. Implement findings."),
             ("lensA", "You are the architecture lens."),
@@ -2674,10 +2844,75 @@ mod tests {
             ),
             ("adj", "You are the adjudicator. Render the verdict."),
         ] {
+            let sys = driver
+                .system_prompt_for(id)
+                .unwrap_or_else(|| panic!("agent {id:?} was never spawned"));
+            assert!(
+                sys.contains(persona),
+                "agent {id:?} must be spawned with its own persona in the system prompt; got: {sys:?}"
+            );
+            // The exact composition: persona, then the rigger discipline.
             assert_eq!(
-                driver.system_prompt_for(id).as_deref(),
-                Some(persona),
-                "agent {id:?} must be spawned with its own persona as the system prompt"
+                sys,
+                build_system_prompt(persona),
+                "agent {id:?}'s system prompt must be exactly persona + RIGGER_COMMUNICATION"
+            );
+        }
+    }
+
+    #[test]
+    fn the_system_prompt_carries_the_rigger_communication_discipline() {
+        // The conductor threads persona + RIGGER_COMMUNICATION as the system prompt:
+        // every spawned agent receives BOTH its persona AND the rigger-authored
+        // communication discipline (emit decisions/findings live, check peers, never
+        // silently contradict a peer). Assert the discipline's key phrases reach the
+        // agent's system prompt alongside its persona.
+        let mut cfg = Config::default();
+        cfg.agents.insert(
+            "a".into(),
+            agent_with_prompt("a", "You are the implementer persona."),
+        );
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "a".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+
+        let sys = driver.system_prompt_for("a").expect("agent a was spawned");
+        // The persona is present.
+        assert!(
+            sys.contains("You are the implementer persona."),
+            "the system prompt must carry the persona; got: {sys:?}"
+        );
+        // The rigger communication discipline's key phrases are present.
+        for phrase in [
+            "Rigger communication discipline",
+            "DecisionMade",
+            "ReviewFinding",
+            "rigger_peers",
+            "SUPERSEDE it explicitly",
+        ] {
+            assert!(
+                sys.contains(phrase),
+                "the system prompt must carry the discipline phrase {phrase:?}; got: {sys:?}"
             );
         }
     }
@@ -2710,10 +2945,18 @@ mod tests {
             criteria: Vec::new(),
         };
         run(&cfg, &deps).unwrap();
+        // An agent with no persona body still receives the rigger communication
+        // discipline (every agent gets it), but no fabricated persona text - the
+        // system prompt is exactly the empty persona + RIGGER_COMMUNICATION.
+        let sys = driver.system_prompt_for("a").expect("agent a was spawned");
         assert_eq!(
-            driver.system_prompt_for("a").as_deref(),
-            Some(""),
-            "an agent with no body threads an empty (not fabricated) system prompt"
+            sys,
+            build_system_prompt(""),
+            "an agent with no body threads (empty persona) + RIGGER_COMMUNICATION, nothing fabricated"
+        );
+        assert!(
+            sys.contains("Rigger communication discipline"),
+            "even a persona-less agent receives the communication discipline"
         );
     }
 
@@ -4339,6 +4582,187 @@ mod tests {
         assert!(
             validate_acyclic(&cyclic).is_err(),
             "a dependency cycle must be rejected"
+        );
+    }
+
+    /// A gate runner that records the ORDER in which gate ids were run (so a test can
+    /// assert a deferred gate ran at the phase boundary, after every inline gate, and
+    /// exactly once). Each named gate's pass/fail is configurable.
+    struct RecordingRunner {
+        /// The gate ids run, in invocation order.
+        calls: Mutex<Vec<String>>,
+        /// Gate ids that must FAIL; everything else passes.
+        fail: HashSet<String>,
+    }
+    impl RecordingRunner {
+        fn new(fail: &[&str]) -> Self {
+            RecordingRunner {
+                calls: Mutex::new(Vec::new()),
+                fail: fail.iter().map(|s| s.to_string()).collect(),
+            }
+        }
+        fn calls(&self) -> Vec<String> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+    impl gate::Runner for RecordingRunner {
+        fn run(&self, g: &Gate, _dir: &str) -> gate::GateResult {
+            self.calls.lock().unwrap().push(g.id.clone());
+            let pass = !self.fail.contains(&g.id);
+            gate::GateResult {
+                pass,
+                evidence: if pass {
+                    "PASS".into()
+                } else {
+                    format!("FAIL\ngate {} failed", g.id)
+                },
+            }
+        }
+    }
+
+    #[test]
+    fn a_deferred_gate_runs_once_at_the_phase_boundary_not_inline() {
+        // A stage with both an inline (core) gate and a deferred gate. The deferred
+        // gate must NOT run during the unit's inline lifecycle - the unit integrates on
+        // its inline gate alone - and must run EXACTLY ONCE at the run's end-of-run
+        // phase boundary, after the unit has integrated.
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent("a"));
+        cfg.workflow.gates.insert("inline".into(), gate_def("true"));
+        cfg.workflow.gates.insert(
+            "deferred".into(),
+            config::Gate {
+                run: "true".into(),
+                kind: "deferred".into(),
+            },
+        );
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "a".into(),
+                gates: vec!["inline".into(), "deferred".into()],
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let runner = RecordingRunner::new(&[]);
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &runner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        // The unit integrated on its INLINE gate (the deferred gate played no part in
+        // the unit's own lifecycle decision).
+        assert_eq!(rs.units["s"].status, ledger::Status::Integrated);
+
+        // The deferred gate ran exactly once, and it ran AFTER the inline gate - i.e.
+        // at the phase boundary, never inline per unit.
+        let calls = runner.calls();
+        assert_eq!(
+            calls.iter().filter(|c| *c == "deferred").count(),
+            1,
+            "the deferred gate must run exactly once (at the phase boundary), not per unit; calls: {calls:?}"
+        );
+        let inline_at = calls.iter().position(|c| c == "inline").unwrap();
+        let deferred_at = calls.iter().position(|c| c == "deferred").unwrap();
+        assert!(
+            deferred_at > inline_at,
+            "the deferred gate must run AFTER the inline gate (at end-of-run), not during the inline lifecycle; calls: {calls:?}"
+        );
+
+        // The deferred gate emitted a GateVerdict at the boundary, and (since it
+        // passed) the run is fully done.
+        let events = st
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        assert!(
+            events.iter().any(|e| {
+                e.type_ == contextgraph::TYPE_GATE_VERDICT
+                    && String::from_utf8_lossy(&e.data).contains("\"gate\":\"deferred\"")
+            }),
+            "the deferred gate must emit a GateVerdict at the phase boundary"
+        );
+        assert!(
+            rs.done() && rs.fully_done(&[]),
+            "a passing deferred gate must leave the run reported fully done"
+        );
+    }
+
+    #[test]
+    fn a_failing_deferred_gate_is_surfaced_and_the_run_is_not_done() {
+        // A failing DEFERRED gate must be surfaced truthfully: a DeferredGateFailed
+        // event is recorded AND the run is reported not-fully-done, even though the
+        // unit itself integrated on its (passing) inline gate. A deferred failure must
+        // NOT silently pass as success.
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent("a"));
+        cfg.workflow.gates.insert("inline".into(), gate_def("true"));
+        cfg.workflow.gates.insert(
+            "deferred".into(),
+            config::Gate {
+                run: "false".into(),
+                kind: "deferred".into(),
+            },
+        );
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "a".into(),
+                gates: vec!["inline".into(), "deferred".into()],
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        // The deferred gate fails; the inline gate passes.
+        let runner = RecordingRunner::new(&["deferred"]);
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &runner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        // The unit still integrated - its INLINE gate passed; the deferred failure is a
+        // run-level concern, not a per-unit one.
+        assert_eq!(rs.units["s"].status, ledger::Status::Integrated);
+
+        // The failure is recorded as an event naming the gate...
+        let events = st
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        assert!(
+            events.iter().any(|e| {
+                e.type_ == TYPE_DEFERRED_GATE_FAILED
+                    && String::from_utf8_lossy(&e.data).contains("\"gate\":\"deferred\"")
+            }),
+            "a failing deferred gate must emit a DeferredGateFailed event naming the gate"
+        );
+        // ...and the run is reported NOT fully done despite every unit integrating.
+        assert!(
+            !rs.done(),
+            "a failing deferred gate must leave the run reported not done"
+        );
+        assert!(
+            !rs.fully_done(&[]),
+            "a failing deferred gate must leave the run reported not fully done"
+        );
+        assert!(
+            rs.deferred_gate_failed,
+            "the run state must record the deferred-gate failure"
         );
     }
 
