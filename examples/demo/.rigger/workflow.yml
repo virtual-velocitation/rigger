@@ -1,9 +1,10 @@
-# examples/golden-apple - the worked example the architecture references (§10, §11).
+# examples/demo - the worked example the architecture references (§10, §11).
 #
-# This is the tank_game dev-loop, expressed as Rigger CONTENT: every project
-# specific thing (cargo, the review lenses, the e7 lexical gate) is config here,
-# and Rigger itself ships knowing none of it. Run it from this directory with
-# `rigger run <spec>`; the gate commands are real cargo invocations.
+# A small, fictional project (a tiny URL-shortener library) expressed as Rigger
+# CONTENT: every project-specific thing (the build tool, the review lenses, the
+# gate commands) is config here, and Rigger itself ships knowing none of it. Run
+# it from this directory with `rigger run <spec>`; the gate commands are real
+# cargo invocations.
 #
 # The review is PER UNIT, not a downstream stage. Each implementer unit runs its
 # OWN lifecycle - ground -> implement (red/green TDD in a worktree) -> the unit's
@@ -11,7 +12,7 @@
 # integrate - and a reject or a gate failure feeds back into that same unit's
 # remediation loop. `defaults.review` declares the panel once; every unit (the
 # `implement` stage and every planner-proposed unit) inherits it.
-name: golden-apple
+name: demo
 
 defaults:
   autonomy: auto_notify     # manual | auto_notify | silent
@@ -21,13 +22,13 @@ defaults:
   # the expert lenses review the unit's diff in parallel and emit findings. TIER 2:
   # the adversary reviews THE LENSES' findings and tries to prove them wrong (higher
   # bar; refutes overreach; not a parallel lens). TIER 3: the adjudicator is the
-  # neutral final judge - it weighs the lenses against the adversary, is
-  # design-strict, and its verdict GATES the unit's integration. Declared once;
-  # inherited by the implement stage and every planner-proposed unit.
+  # neutral final judge - it weighs the lenses against the adversary, is strict on
+  # adherence to the design, and its verdict GATES the unit's integration. Declared
+  # once; inherited by the implement stage and every planner-proposed unit.
   review:
-    lenses: [reviewer.architecture, reviewer.technical, reviewer.game-design]  # tier 1: lenses
+    lenses: [reviewer.architecture, reviewer.correctness, reviewer.api-design]  # tier 1: lenses
     adversary: adversary           # tier 2: refutes the lenses
-    adjudicator: devils-advocate   # tier 3: neutral judge; verdict gates the unit
+    adjudicator: adjudicator       # tier 3: neutral judge; verdict gates the unit
 
 gates:                      # the project's verification library, referenced by name
   build: { run: "cargo build --workspace",                 kind: core }
@@ -39,7 +40,7 @@ stages:
   plan:
     agent: planner
     produces: dag           # decompose the spec into a unit DAG at runtime
-    coverage: "the spec is decomposed into criterion-bearing units"
+    coverage: required       # every spec criterion must map to a unit
 
   # Implement, review, and integrate PER UNIT. One implementer per ready unit, in
   # isolated worktrees, partitioned by blast-radius. Each unit's complete lifecycle

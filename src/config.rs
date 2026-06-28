@@ -520,19 +520,18 @@ agent: worker\n";
     }
 
     #[test]
-    fn golden_apple_example_loads() {
+    fn demo_example_loads() {
         // The worked example the architecture references (§10, §11) must load and
         // validate into a real DAG, so it never rots. The path is relative to the
         // crate root (cargo runs tests there).
-        let cfg =
-            load("examples/golden-apple").expect("the golden-apple example must load and validate");
+        let cfg = load("examples/demo").expect("the demo example must load and validate");
         // The full agent roster still loads from the dir.
-        assert_eq!(cfg.agents.len(), 8, "golden-apple agent count");
+        assert_eq!(cfg.agents.len(), 7, "demo agent count");
         // Per-unit model: plan -> implement (each unit implements, three-tier-reviews
         // ITSELF, and integrates in one lifecycle). The separate review/integrate
         // stages are folded out.
-        assert_eq!(cfg.workflow.stages.len(), 2, "golden-apple stage count");
-        assert_eq!(cfg.workflow.gates.len(), 4, "golden-apple gate count");
+        assert_eq!(cfg.workflow.stages.len(), 2, "demo stage count");
+        assert_eq!(cfg.workflow.gates.len(), 4, "demo gate count");
         // The shape: a producer, then a worktree-isolated non-recursive implementer
         // stage that runs the full per-unit lifecycle and integrates on_pass: merge.
         assert_eq!(cfg.workflow.stages["plan"].produces, "dag");
@@ -554,7 +553,7 @@ agent: worker\n";
             "tier 2: the adversary refutes the lenses"
         );
         assert_eq!(
-            review.adjudicator, "devils-advocate",
+            review.adjudicator, "adjudicator",
             "tier 3: the neutral adjudicator's verdict gates"
         );
     }

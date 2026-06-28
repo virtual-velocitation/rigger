@@ -2,8 +2,8 @@
 //!
 //! Clean Architecture: the ports are traits (EventStore, ...), the adapters live
 //! beside them, and the conductor is the top-level use case depending only on
-//! ports. It generalizes the proven tank_game dev-loop harness into a standalone,
-//! config-driven product.
+//! ports. It generalizes a proven internal multi-agent dev-loop harness into a
+//! standalone, config-driven product.
 
 pub mod conductor;
 pub mod config;
