@@ -42,17 +42,86 @@ impl Worktree {
         Ok(parse_status_z(&out))
     }
 
-    /// Commit the agent's changes and merge the branch into the base, returning
-    /// the commit hash. A read-only stage (no changes) commits nothing and
-    /// returns "".
-    pub fn integrate(&self, message: &str) -> Result<String, Error> {
+    /// Stage and commit the agent's changes on the worktree's branch, returning
+    /// the new commit hash - or "" when there was nothing to commit (a read-only
+    /// stage, or a stage whose changes are already committed).
+    ///
+    /// This is the seam that makes a gate measure the COMMITTED artifact, not the
+    /// dirty worktree (§3.2): the conductor commits BEFORE running a unit's gates,
+    /// so `cargo test` (and every other gate) runs against exactly the tree the
+    /// subsequent [`Self::integrate`] merges. Without it a gate could pass on
+    /// uncommitted files that never reach the base - a false green.
+    pub fn commit(&self, message: &str) -> Result<String, Error> {
         git(&self.dir, &["add", "-A"])?;
         match run_git(&self.dir, &["commit", "-m", message]) {
             Ok(_) => {}
             Err(out) if out.contains("nothing to commit") => return Ok(String::new()),
             Err(out) => return Err(Error(format!("commit: {out}"))),
         }
-        let commit = git(&self.dir, &["rev-parse", "HEAD"])?.trim().to_string();
+        Ok(git(&self.dir, &["rev-parse", "HEAD"])?.trim().to_string())
+    }
+
+    /// Whether the worktree has uncommitted changes (a dirty tree). Used to assert
+    /// the gate runs against a CLEAN, committed tree.
+    pub fn is_dirty(&self) -> Result<bool, Error> {
+        Ok(!git(&self.dir, &["status", "--porcelain", "-z"])?.is_empty())
+    }
+
+    /// Every path this unit changed relative to the base the worktree branched
+    /// from - the COMMITTED diff (`git diff --name-only <base>..HEAD`) UNIONED with
+    /// any still-uncommitted changes (`git status`).
+    ///
+    /// [`Self::changed_files`] alone reports only the dirty worktree, which goes
+    /// EMPTY once the conductor commits before gating (§3.2); this method spans the
+    /// commit, so the FILE_TOUCHED / GATED_BY edges and the grounder reindex still
+    /// see the unit's real artifact set whether or not it was committed first. Paths
+    /// are sorted and de-duplicated.
+    pub fn changed_since_base(&self) -> Result<Vec<String>, Error> {
+        // Anchor on the branch's merge-base with the repo HEAD, not the repo HEAD
+        // itself: other units may have merged into base since this worktree branched,
+        // and a three-dot diff from the merge-base reports only THIS branch's own
+        // changes, never the unrelated commits that landed meanwhile.
+        let base = git(&self.repo, &["rev-parse", "HEAD"])?.trim().to_string();
+        let committed = git(
+            &self.dir,
+            &["diff", "--name-only", &format!("{base}...HEAD")],
+        )?;
+        let mut paths: Vec<String> = committed
+            .lines()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty())
+            .map(|l| l.to_string())
+            .collect();
+        paths.extend(self.changed_files()?);
+        paths.sort();
+        paths.dedup();
+        Ok(paths)
+    }
+
+    /// Commit any remaining changes and merge the branch into the base, returning
+    /// the commit hash that landed. A read-only stage (no changes, nothing ever
+    /// committed) merges nothing and returns "".
+    ///
+    /// Idempotent with respect to [`Self::commit`]: when the unit's changes were
+    /// already committed (the conductor commits before gating), `commit` here finds
+    /// nothing new, so we resolve the branch's existing HEAD and merge that exact
+    /// commit. The gate-green artifact and the merged artifact are therefore the
+    /// same commit, by construction.
+    pub fn integrate(&self, message: &str) -> Result<String, Error> {
+        let committed = self.commit(message)?;
+        // Resolve the commit to merge: a fresh commit from this call, otherwise the
+        // branch's current HEAD (the pre-committed, already-gated artifact). When the
+        // branch never advanced past the base there is nothing to integrate.
+        let commit = if committed.is_empty() {
+            let head = git(&self.dir, &["rev-parse", "HEAD"])?.trim().to_string();
+            let base = git(&self.repo, &["rev-parse", "HEAD"])?.trim().to_string();
+            if head == base {
+                return Ok(String::new());
+            }
+            head
+        } else {
+            committed
+        };
         git(&self.repo, &["merge", "--no-edit", &self.branch])?;
         Ok(commit)
     }
@@ -148,6 +217,67 @@ mod tests {
         assert!(
             repo.path().join("feature.txt").exists(),
             "the agent's work must be merged into the repo"
+        );
+        wt.remove().unwrap();
+    }
+
+    #[test]
+    fn commit_cleans_the_tree_so_a_gate_sees_the_committed_artifact() {
+        // FIX 2: the conductor commits the worktree BEFORE gating, so a gate runs
+        // against the committed state, not the dirty worktree. After `commit` the
+        // tree must be clean (no uncommitted false-green source) and the work must
+        // be a real commit on the branch.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let wt_path = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wt = Worktree::create(&repo_path, wt_path.to_str().unwrap(), "rigger/commit").unwrap();
+
+        std::fs::write(wt_path.join("feature.txt"), "work\n").unwrap();
+        assert!(
+            wt.is_dirty().unwrap(),
+            "an uncommitted file leaves a dirty tree"
+        );
+
+        let commit = wt.commit("rigger: commit before gating").unwrap();
+        assert!(
+            !commit.is_empty(),
+            "committing must return the new commit hash"
+        );
+        assert!(
+            !wt.is_dirty().unwrap(),
+            "after commit the worktree must be clean - the gate sees the committed artifact"
+        );
+        // The committed file is the one the unit changed relative to base, surviving
+        // the now-clean `git status`.
+        assert_eq!(wt.changed_since_base().unwrap(), ["feature.txt"]);
+
+        // A second commit with nothing new returns "" (idempotent).
+        assert!(wt.commit("rigger: noop").unwrap().is_empty());
+        wt.remove().unwrap();
+    }
+
+    #[test]
+    fn integrate_lands_a_pre_committed_artifact_unchanged() {
+        // After the conductor commits before gating, integrate must merge that EXACT
+        // committed artifact - not re-commit, not drop it. The merged commit equals
+        // the one `commit` produced, so gate-green and merged are the same commit.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let wt_path = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wt = Worktree::create(&repo_path, wt_path.to_str().unwrap(), "rigger/pre").unwrap();
+
+        std::fs::write(wt_path.join("feature.txt"), "work\n").unwrap();
+        let committed = wt.commit("rigger: pre-commit").unwrap();
+        assert!(!wt.is_dirty().unwrap());
+
+        let merged = wt.integrate("rigger: integrate").unwrap();
+        assert_eq!(
+            merged, committed,
+            "integrate must merge the same commit that was gated, not a new one"
+        );
+        assert!(
+            repo.path().join("feature.txt").exists(),
+            "the pre-committed work must land in the repo"
         );
         wt.remove().unwrap();
     }

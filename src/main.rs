@@ -726,6 +726,10 @@ name: example\n\
 defaults:\n  \
 autonomy: auto_notify   # manual | auto_notify | silent\n  \
 grounder: grep          # grep (default) | turbovec (needs the cargo feature)\n  \
+# The spawn-budget circuit-breaker: the hard cap on agent spawns one unattended\n  \
+# run may make. At the cap the breaker emits BudgetExhausted and aborts the run,\n  \
+# so a runaway can never spawn unboundedly. NON-ZERO on purpose - 0 = unlimited.\n  \
+budget: 60\n  \
 # The three-tier review panel applied to EVERY implementer unit. Declared once\n  \
 # here, inherited by the implement stage and every planner-proposed unit.\n  \
 review:\n    \
@@ -886,6 +890,38 @@ mod tests {
             "tier 3: the neutral adjudicator gates"
         );
         assert_eq!(cfg.workflow.defaults.grounder, "grep");
+        // FIX 3: the scaffold ships a NON-ZERO spawn budget so an unattended `rigger
+        // run` cannot spawn unboundedly - 0 would be unlimited.
+        assert!(
+            cfg.workflow.defaults.budget > 0,
+            "the scaffold must ship a non-zero default spawn budget; was {}",
+            cfg.workflow.defaults.budget
+        );
+        assert_eq!(cfg.workflow.defaults.budget, 60, "scaffold default budget");
+    }
+
+    /// The two checked-in workflows that ship with the repo - the self-hosted
+    /// `.rigger/workflow.yml` and `examples/demo` - must each carry a NON-ZERO spawn
+    /// budget (FIX 3): a shipped, unattended config must cap its own spawns. A 0
+    /// (unlimited) budget here is what let a runaway loop churn for hours.
+    #[test]
+    fn shipped_workflows_carry_a_non_zero_spawn_budget() {
+        for root in ["..", "../examples/demo", ".", "examples/demo"] {
+            // The test runs from the crate root in CI and from the workspace root
+            // locally; probe both layouts and skip a path that does not resolve to a
+            // loadable config rather than hard-failing on the working directory.
+            let path = std::path::Path::new(root);
+            if !path.join(RIGGER_DIR).join("workflow.yml").exists() {
+                continue;
+            }
+            let cfg = config::load(root)
+                .unwrap_or_else(|e| panic!("shipped workflow at {root:?} must load: {e}"));
+            assert!(
+                cfg.workflow.defaults.budget > 0,
+                "shipped workflow at {root:?} must cap spawns with a non-zero budget; was {}",
+                cfg.workflow.defaults.budget
+            );
+        }
     }
 
     #[test]
