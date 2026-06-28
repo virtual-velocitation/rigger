@@ -47,8 +47,8 @@ against the code. Phases are in dependency order; each lands CI-green.
 ## Phase 4 - Config + driver
 - [x] `isolation: none|worktree` honored per agent (§3.1, §6)
 - [x] `recurse: false` strips fan-out capability (§3.1, §6)
-- [ ] `strategy: fan-out` drives fan-out (§3.2)
-- [ ] `partition: by-blast-radius` + a real disjoint partitioner (§3.2, §8)
+- [x] `strategy: fan-out` drives fan-out (§3.2)
+- [x] `partition: by-blast-radius` + a real disjoint partitioner (§3.2, §8)
 - [x] stage `autonomy` override honored (§3.2)
 - [x] `on_pass: merge` honored (§3.2)
 - [x] `SpawnOpts` gains `isolation` + `parallel` (§6)

@@ -52,6 +52,12 @@ pub struct Defaults {
     /// agent spawns a run may perform. 0 (the default) means unlimited.
     #[serde(default)]
     pub budget: u32,
+    /// The default partition strategy applied to every wave (§3.2, §8); a stage's
+    /// own `partition` overrides it. `by-blast-radius` makes each wave's ready
+    /// stages disjoint by blast-radius before they run; empty (the default) leaves
+    /// the wave un-partitioned.
+    #[serde(default)]
+    pub partition: String,
 }
 
 /// Stage is one node of the workflow DAG.
