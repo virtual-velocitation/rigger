@@ -25,6 +25,14 @@ defaults:
   autonomy: auto_notify     # manual | auto_notify | silent
   grounder: grep            # grep (default, dependency-free) | turbovec (needs the cargo feature)
 
+  # The spawn-budget circuit-breaker (§4.4, §8): the hard cap on agent spawns a
+  # single unattended run may make. When spawns reach it the breaker records
+  # BudgetExhausted and aborts the run, so a runaway loop (e.g. a unit a reviewer
+  # keeps rejecting) can never spawn unboundedly. NON-ZERO on purpose - 0 means
+  # unlimited, which is what let a 5-hour churn run never trip. Raise it for a big
+  # spec; never set it back to 0 for an unattended run.
+  budget: 60
+
   # The three-tier review panel applied to EVERY implementer unit (§3.2). TIER 1:
   # the expert lenses (architecture + sdet) review the unit's diff in parallel.
   # TIER 2: the adversary reviews THE LENSES' findings and tries to prove them

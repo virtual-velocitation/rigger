@@ -824,6 +824,19 @@ impl RunCtx<'_> {
                     )?;
                     return Ok(true);
                 }
+                // Commit the implementer's worktree BEFORE running the gates (§3.2),
+                // so the gate measures EXACTLY the committed artifact that the
+                // subsequent integrate merges - never a dirty worktree. A unit could
+                // otherwise pass `cargo test` on uncommitted files (e.g. three new
+                // tests the implementer wrote but never `git add`ed) while the
+                // committed tree the adjudicator inspects is still short: a false
+                // green that loops the unit forever on a reject it can never satisfy.
+                // Committing here collapses gate-green to committed-green. The
+                // worktree-less path (no `wt`, e.g. an `isolation: none` agent or a
+                // repo-less run) has no commit step and is unchanged.
+                if let Some(w) = wt {
+                    w.commit(&format!("rigger: {} attempt {}", st.name, attempts + 1))?;
+                }
                 let gate_outcome = self.run_gates(st, dir)?;
                 if gate_outcome.pass {
                     // The verified status carries the gate evidence (item 4): each
@@ -1364,7 +1377,12 @@ impl RunCtx<'_> {
             Some(w) => w,
             None => return Ok(String::new()),
         };
-        let files = wt.changed_files()?;
+        // The unit's changed files span the commit-before-gates seam (§3.2): the
+        // implementer's work is now committed, so a plain `git status` is clean -
+        // we take the COMMITTED diff vs base unioned with any residual dirty files,
+        // so the FILE_TOUCHED / GATED_BY edges and the reindex see the real artifact
+        // set whether or not the unit was pre-committed.
+        let files = wt.changed_since_base()?;
         if files.is_empty() {
             return Ok(String::new());
         }
@@ -1577,7 +1595,14 @@ impl RunCtx<'_> {
     }
 
     fn emit_lesson(&self, wt: Option<&Worktree>, unit_name: &str, summary: &str) {
-        let about: Vec<String> = wt.and_then(|w| w.changed_files().ok()).unwrap_or_default();
+        // The lesson is ABOUT the files the unit touched. The conductor commits the
+        // worktree before gating (§3.2, FIX 2), so a plain `git status` is clean by
+        // the time a unit escalates - we use `changed_since_base` (the committed diff
+        // unioned with any residual dirty files) so the lesson still names the real
+        // artifact, not an empty set.
+        let about: Vec<String> = wt
+            .and_then(|w| w.changed_since_base().ok())
+            .unwrap_or_default();
         let uid = uuid::Uuid::new_v4().to_string();
         let id = format!("lesson-{unit_name}-{}", &uid[..8]);
         let _ = self.emit(
@@ -3763,6 +3788,101 @@ mod tests {
     }
 
     #[test]
+    fn an_always_rejecting_adjudicator_escalates_after_exactly_max_retries_cycles() {
+        // FIX 1 (the churn bug): an adjudicator that ALWAYS rejects must NOT loop the
+        // unit forever. Each implement -> gates -> review cycle that ends in a reject
+        // increments the SAME bounded attempts counter, so after exactly MAX_RETRIES
+        // cycles the unit ESCALATES and the run RETURNS rather than spinning. We count
+        // the cycles via the Stub's recorded worker spawns (one implement spawn per
+        // cycle) and assert it equals MAX_RETRIES - not 6, not unbounded.
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("adversary".into(), agent("adversary"));
+        cfg.agents.insert("adj".into(), agent("adj"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true")); // static gates pass
+        cfg.workflow.defaults.review = config::ReviewPanel {
+            lenses: vec!["lens".into()],
+            adversary: "adversary".into(),
+            adjudicator: "adj".into(),
+        };
+        cfg.workflow.stages.insert(
+            "implement".into(),
+            Stage {
+                name: "implement".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        // Every spawn returns a reject verdict; only the adjudicator's gates, but the
+        // adjudicator never relents - so the unit can only ever escalate.
+        let driver = Stub {
+            output: r#"{"verdict":"reject","issues":[]}"#.into(),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        // The run RETURNS (Ok) - it does not loop forever.
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs.units["implement"].status,
+            ledger::Status::Escalated,
+            "a perpetually-rejecting adjudicator must escalate the unit, not churn"
+        );
+        // EXACTLY MAX_RETRIES implement cycles ran: one worker spawn per cycle. The
+        // bound is applied to the review-reject path, counting the same attempts
+        // counter as a gate failure would.
+        let order = driver.call_order.lock().unwrap().clone();
+        let worker_spawns = order.iter().filter(|a| *a == "worker").count();
+        assert_eq!(
+            worker_spawns as u32,
+            safety::MAX_RETRIES,
+            "the unit must implement exactly MAX_RETRIES times before escalating; spawns were {order:?}"
+        );
+        // The escalation lesson captures the final adjudicator reason (not a generic
+        // placeholder), and the unit emits exactly one UnitEscalated.
+        let events = st
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        let escalations = events
+            .iter()
+            .filter(|e| e.type_ == ledger::TYPE_UNIT_ESCALATED)
+            .count();
+        assert_eq!(escalations, 1, "the unit escalates exactly once");
+        let lesson = events.iter().any(|e| {
+            e.type_ == contextgraph::TYPE_LESSON_LEARNED
+                && String::from_utf8_lossy(&e.data).contains("escalated after")
+        });
+        assert!(
+            lesson,
+            "escalation must record a lesson capturing the final adjudicator reason"
+        );
+        // The final UnitFailed records attempts == MAX_RETRIES (the bound), and the
+        // unit never integrated.
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.type_ == ledger::TYPE_UNIT_INTEGRATED),
+            "a perpetually-rejected unit must never integrate"
+        );
+        assert_eq!(
+            rs.units["implement"].attempts,
+            safety::MAX_RETRIES,
+            "the final attempts count must reach the bound"
+        );
+    }
+
+    #[test]
     fn mid_spawn_crash_escalates_without_aborting_the_run() {
         let mut cfg = Config::default();
         cfg.agents.insert("a".into(), agent("a"));
@@ -5459,5 +5579,99 @@ mod tests {
                 .unwrap();
         }
         dir
+    }
+
+    /// FIX 2: a gate runner that PASSES only when the worktree it is handed (`dir`)
+    /// is CLEAN - `git status --porcelain` is empty. It fails on a dirty tree. So the
+    /// gate passes iff the conductor committed the implementer's work BEFORE running
+    /// it; if the conductor gated the dirty worktree (the false-green bug) this gate
+    /// would see the uncommitted file and fail.
+    struct CleanTreeGate {
+        saw_dirty: std::sync::atomic::AtomicBool,
+    }
+    impl gate::Runner for CleanTreeGate {
+        fn run(&self, _g: &Gate, dir: &str) -> gate::GateResult {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(["status", "--porcelain"])
+                .output()
+                .unwrap();
+            let porcelain = String::from_utf8_lossy(&out.stdout);
+            let dirty = !porcelain.trim().is_empty();
+            if dirty {
+                self.saw_dirty.store(true, Ordering::SeqCst);
+            }
+            gate::GateResult {
+                pass: !dirty,
+                evidence: if dirty {
+                    format!("worktree was dirty when gated: {}", porcelain.trim())
+                } else {
+                    "tree clean".into()
+                },
+            }
+        }
+    }
+
+    #[test]
+    fn gate_measures_the_committed_artifact_not_the_dirty_worktree() {
+        // FIX 2 (the false-green): the implementer writes an uncommitted file; the
+        // gate passes ONLY against a clean, committed tree. The conductor must commit
+        // the worktree BEFORE gating, so the gate sees the committed artifact (clean
+        // tree) and the unit integrates. If the conductor gated the dirty worktree -
+        // the bug a real run hit, where `cargo test` passed on uncommitted tests that
+        // never reached the committed artifact - this gate would fail and the unit
+        // would never integrate.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow
+            .gates
+            .insert("clean".into(), gate_def("unused"));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                gates: vec!["clean".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        // The implementer writes a file but never commits it - exactly the dirty
+        // worktree a real implementer leaves before integration.
+        let driver = Stub {
+            write_file: Some("feature.rs".into()),
+            ..Stub::new()
+        };
+        let runner = CleanTreeGate {
+            saw_dirty: std::sync::atomic::AtomicBool::new(false),
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &runner,
+            repo: repo_path,
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert!(
+            !runner.saw_dirty.load(Ordering::SeqCst),
+            "the gate must run against a COMMITTED (clean) tree - the conductor commits before gating"
+        );
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "with the worktree committed before gating, the clean-tree gate passes and the unit integrates"
+        );
+        // The committed artifact actually landed in the repo.
+        assert!(
+            repo.path().join("feature.rs").exists(),
+            "the committed, gated artifact must merge into the base repo"
+        );
     }
 }
