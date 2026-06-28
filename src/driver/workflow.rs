@@ -26,6 +26,10 @@ pub struct SpawnRequest {
     pub tools: Vec<String>,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub dir: String,
+    /// The agent's blast-radius (the grounded seed files). The shim passes it to
+    /// rigger_peers to scope the tool-boundary injection of peer decisions (§5.3).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub blast_radius: Vec<String>,
 }
 
 struct Call {
@@ -107,6 +111,9 @@ impl AgentDriver for Driver {
                 // cannot spawn sub-agents - runaway-proof by construction (§3.1, §6).
                 tools: agent.allowed_tools(),
                 dir: opts.dir.clone(),
+                // Carried to the shim so it fetches blast-radius-filtered peer
+                // decisions and injects them at the tool boundary (§5.3).
+                blast_radius: opts.blast_radius.clone(),
             };
             inner.pending.insert(id.clone(), Call { req, tx });
             inner.queue.push_back(id.clone());
@@ -143,6 +150,7 @@ mod tests {
                     dir: String::new(),
                     isolation: false,
                     parallel: false,
+                    blast_radius: vec!["a.rs".into()],
                 },
                 &emit,
             )
@@ -161,6 +169,11 @@ mod tests {
         };
         assert_eq!(req.prompt, "do it");
         assert_eq!(req.model, "sonnet");
+        assert_eq!(
+            req.blast_radius,
+            ["a.rs"],
+            "the spawn request must carry the blast-radius to the shim"
+        );
 
         driver.result(&req.id, "done".into(), String::new());
         let res = handle.join().unwrap().unwrap();
@@ -185,6 +198,7 @@ mod tests {
                     dir: String::new(),
                     isolation: true,
                     parallel: false,
+                    blast_radius: Vec::new(),
                 },
                 &emit,
             )
