@@ -805,6 +805,25 @@ impl RunCtx<'_> {
             // runs only once the implementer's own gates are green, so the lenses never
             // review a red diff.
             if spawn_err.is_none() {
+                // A `produces` (planner) stage emits a DAG, NOT code: its agent has
+                // just proposed the units (UnitProposed events). It wrote no diff, so
+                // there is nothing to gate, nothing for the three-tier review to read
+                // (lenses/adversary/adjudicator would review an empty diff - pointless
+                // and slow, and it stalled the live run before the implement units
+                // could start), and nothing to merge. It reaches the DAG-terminal
+                // `Integrated` TRUTHFULLY with the REVIEW_ONLY_NO_ARTIFACT marker (the
+                // same no-code-artifact representation a standalone review stage uses),
+                // so its dependents become ready - WITHOUT `review_unit` and WITHOUT a
+                // code integrate. A non-producer stage keeps the full per-unit
+                // lifecycle (implement -> gates -> three-tier review -> integrate)
+                // below, unchanged.
+                if is_producer(st) {
+                    self.emit(
+                        ledger::TYPE_UNIT_INTEGRATED,
+                        json!({"id": st.name, "commit": REVIEW_ONLY_NO_ARTIFACT}),
+                    )?;
+                    return Ok(true);
+                }
                 let gate_outcome = self.run_gates(st, dir)?;
                 if gate_outcome.pass {
                     // The verified status carries the gate evidence (item 4): each
@@ -3569,6 +3588,103 @@ mod tests {
         assert!(
             order.iter().any(|a| a == "lens") && order.iter().any(|a| a == "adj"),
             "the proposed unit must inherit the default review panel; order was {order:?}"
+        );
+    }
+
+    #[test]
+    fn a_producer_stage_skips_the_three_tier_review_and_unblocks_its_dependents() {
+        // A `produces` (planner) stage emits a DAG, not code, so it must SKIP the
+        // per-unit three-tier review and the code-integrate: lenses/adversary/
+        // adjudicator reviewing an empty diff is pointless and slow (it stalled the
+        // live run before the implement units could start). It still reaches
+        // `Integrated` truthfully (the REVIEW_ONLY_NO_ARTIFACT marker, NOT a code
+        // merge), so its dependents become ready.
+        //
+        // Isolation: only the PRODUCER stage carries a review panel (`lens`/`adversary`/
+        // `adjudicator`); `defaults.review` is empty, so the proposed worker unit
+        // inherits no panel. Therefore ANY lens/adversary/adjudicator spawn could only
+        // be the producer reviewing its own (empty) diff - exactly the bug.
+        let mut cfg = Config::default();
+        cfg.agents.insert("planner".into(), agent("planner"));
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("adversary".into(), agent("adversary"));
+        cfg.agents
+            .insert("adjudicator".into(), agent("adjudicator"));
+        cfg.workflow.stages.insert(
+            "plan".into(),
+            Stage {
+                name: "plan".into(),
+                agent: "planner".into(),
+                produces: "dag".into(),
+                // ONLY the producer has a review panel; if the producer reviewed its
+                // (empty) diff these three would spawn. Post-fix none do.
+                review: config::ReviewPanel {
+                    lenses: vec!["lens".into()],
+                    adversary: "adversary".into(),
+                    adjudicator: "adjudicator".into(),
+                },
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        // The planner proposes one implement unit that depends on the planner, so it
+        // becomes ready only once the producer reaches Integrated (the unblock).
+        let driver = Stub {
+            emits: vec![(
+                TYPE_UNIT_PROPOSED.to_string(),
+                json!({
+                    "id": "impl-unit",
+                    "agent": "worker",
+                    "needs": ["plan"],
+                }),
+            )],
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        // The producer reached the DAG-terminal Integrated TRUTHFULLY - with the
+        // no-code-artifact marker, not a fabricated code commit.
+        assert_eq!(
+            rs.units["plan"].status,
+            ledger::Status::Integrated,
+            "a producer must reach Integrated to unblock its dependents"
+        );
+        assert_eq!(
+            rs.units["plan"].commit, REVIEW_ONLY_NO_ARTIFACT,
+            "a producer integrates NO code artifact; it records the review-only marker"
+        );
+
+        // The dependent unblocked: it became ready once the producer integrated and
+        // ran its implementer.
+        assert_eq!(
+            rs.units["impl-unit"].status,
+            ledger::Status::Integrated,
+            "the producer must unblock its dependent so it runs"
+        );
+
+        // The CORE assertion: NO review-tier agent ran for the producer. The producer
+        // is the only stage with a review panel, so a single such spawn would mean it
+        // reviewed its own empty diff - the bug.
+        let order = driver.call_order.lock().unwrap().clone();
+        assert!(
+            !order.iter().any(|a| a == "lens" || a == "adversary" || a == "adjudicator"),
+            "a producer must NOT spawn any review-tier agent on its empty diff; order was {order:?}"
+        );
+        // The planner and the proposed worker DID run - the producer skipped review,
+        // it did not skip work.
+        assert!(
+            order.iter().any(|a| a == "planner") && order.iter().any(|a| a == "worker"),
+            "the planner and its proposed worker must both run; order was {order:?}"
         );
     }
 
