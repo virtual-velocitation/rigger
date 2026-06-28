@@ -8,7 +8,7 @@ the Rust core does the real work (the DAG, gates, ledger, graph).
 ## How it fits together
 
 1. `rigger serve` runs the conductor in the background and serves an MCP server
-   over stdio (the [`mcpserver`](../../mcpserver) package). Register it with
+   over stdio (the [`mcpserver`](../src/mcpserver.rs) module). Register it with
    Claude Code:
 
    ```
@@ -16,7 +16,7 @@ the Rust core does the real work (the DAG, gates, ledger, graph).
    ```
 
 2. The conductor walks the workflow DAG. Each `Spawn` enqueues a spawn request on
-   the workflow bridge (this package).
+   the workflow bridge (the `driver/workflow` module).
 
 3. The Workflow shim (`shim.mjs`) loops:
    - `rigger_next` -> the next queued spawn `{id, prompt, model, tools, dir,
