@@ -1,60 +1,63 @@
-# Rigger configuring Rigger: a self-reinforcing dev/test feedback loop.
+# Rigger developing Rigger: the self-hosting producing loop, expressed as
+# Rigger CONTENT.
 #
-# This is the canonical example of a Rigger project - and it builds Rigger itself.
-# Run it with `rigger serve` (the Workflow + MCP driver, agents in-process) or
-# `rigger run` (the standalone CLI driver). Validate it with `rigger validate`.
+# This is the canonical example of a Rigger project - and it produces Rigger
+# itself. Rigger is a pure-Rust crate now, so every gate below is a real cargo
+# invocation matching the repo's CI (.github/workflows/rust.yml). Run it from
+# the repo root with `rigger run <spec>` (the standalone CLI driver) or
+# `rigger serve` (the Workflow + MCP driver, agents in-process). Validate it
+# with `rigger validate`.
 #
 # The loop reinforces itself: every agent is grounded on only the code it needs,
-# records its decisions live to the shared event log (so the next stage and any
-# concurrent agent see them), and must pass machine-verifiable gates. Failures
+# records each decision live to the shared event log (so the next stage and any
+# concurrent agent see it), and must pass machine-verifiable gates. Failures
 # escalate or are bounded-retried - never silently dropped.
 name: rigger-self-hosted
 
 defaults:
-  autonomy: auto_notify
-  grounder: grep
+  autonomy: auto_notify     # manual | auto_notify | silent
+  grounder: grep            # grep (default, dependency-free) | turbovec (needs the cargo feature)
 
-gates:
-  build:       { run: "go build ./...", kind: core }
-  vet:         { run: "go vet ./...", kind: core }
-  test:        { run: "go test ./... -short -race -count=1", kind: core }
-  lint:        { run: "golangci-lint run ./...", kind: core }
-  integration: { run: "go test ./eventstore/kurrentdb/... -run TestKurrentDBContract -count=1", kind: elevated }
+gates:                      # the project's verification library, referenced by name
+  fmt:    { run: "cargo fmt --check",                        kind: core }
+  clippy: { run: "cargo clippy --all-targets -- -D warnings", kind: core }
+  build:  { run: "cargo build",                              kind: core }
+  test:   { run: "cargo test",                               kind: core }
 
 stages:
-  # 1. Decompose the task into a unit DAG, each unit mapped to an acceptance criterion.
+  # 1. Decompose the spec into a unit DAG, each unit mapped to an acceptance
+  #    criterion. coverage: required blocks if any criterion has no unit.
   plan:
     agent: planner
-    coverage: "every acceptance criterion maps to a unit; no requirement unaddressed"
+    produces: dag           # decompose the spec into a unit DAG at runtime
+    coverage: required
 
-  # 2. Implement in parallel: the Go core and the JS/MCP surface (disjoint, no conflict).
-  implement-go:
+  # 2. Implement in parallel: one Rust implementer per ready unit, each in an
+  #    isolated worktree, partitioned by blast-radius so the waves stay disjoint.
+  #    red -> green is enforced around each change before the gates run.
+  implement:
     needs: [plan]
-    agent: go-engineer
-    coverage: "the Go core: event store, context graph, config, conductor, drivers, MCP server"
-    gates: [build, vet, test, lint]
-  implement-js:
-    needs: [plan]
-    agent: js-engineer
-    coverage: "the Workflow shim and the MCP bridge integration"
+    agent: rust-engineer
+    strategy: fan-out
+    partition: by-blast-radius
+    gates: [fmt, build, test]
+    coverage: "each unit is implemented and its fmt + build + test gates pass"
 
-  # 3. Strengthen tests until done is machine-verifiable, including the KurrentDB integration.
-  harden:
-    needs: [implement-go, implement-js]
-    agent: sdet
-    coverage: "the contract suite, the testcontainers integration, race + table-driven coverage"
-    gates: [build, vet, test, lint, integration]
-
-  # 4. Review through three lenses in parallel; the adjudicator makes the call.
+  # 3. Review through the architecture and technical (sdet) lenses in parallel;
+  #    the adversary makes the adjudicating call. A human signs off before
+  #    integration (autonomy: manual).
   review:
-    needs: [harden]
-    agents: [adversary, architecture-reviewer, harness-engineer]
-    adjudicator: adjudicator
-    gates: [build, vet, test, lint]
+    needs: [implement]
+    strategy: fan-out
+    agents: [architecture-reviewer, sdet]
+    adjudicator: adversary
+    autonomy: manual
+    coverage: "the change survives multi-lens adversarial review"
 
-  # 5. Reconcile the docs with what actually shipped.
-  document:
+  # 4. Land the reviewed change on a fully green workspace: rebase, re-gate with
+  #    the full cargo set, merge, reindex, record.
+  integrate:
     needs: [review]
-    agent: scribe
-    coverage: "README, architecture.md, and the driver READMEs reflect the code"
-    gates: [build]
+    gates: [fmt, clippy, build, test]
+    on_pass: merge
+    coverage: "the change lands on a fully green workspace"
