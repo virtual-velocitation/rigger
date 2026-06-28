@@ -9,11 +9,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 
 use super::{
-    Edge, Error, Graph, Node, Projection, KIND_AGENT, KIND_ARTIFACT, KIND_DECISION, KIND_GATE,
-    KIND_LESSON, KIND_UNIT, META_ACTOR, REL_ABOUT, REL_ASSIGNED_TO, REL_BLOCKS, REL_DECIDED,
-    REL_GATED_BY, REL_GOVERNS, REL_SUPERSEDES, REL_TOUCHES, TYPE_ALIAS_DEFINED,
-    TYPE_ALIAS_UNRESOLVED, TYPE_DECISION_MADE, TYPE_FILE_TOUCHED, TYPE_GATE_VERDICT,
-    TYPE_LESSON_LEARNED, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
+    Edge, Error, Graph, Node, Projection, KIND_AGENT, KIND_ARTIFACT, KIND_DECISION, KIND_FINDING,
+    KIND_GATE, KIND_LESSON, KIND_UNIT, META_ACTOR, REL_ABOUT, REL_ASSIGNED_TO, REL_BLOCKS,
+    REL_DECIDED, REL_GATED_BY, REL_GOVERNS, REL_RAISED, REL_SUPERSEDES, REL_TOUCHES,
+    TYPE_ALIAS_DEFINED, TYPE_ALIAS_UNRESOLVED, TYPE_DECISION_MADE, TYPE_FILE_TOUCHED,
+    TYPE_GATE_VERDICT, TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED,
+    TYPE_UNIT_STARTED,
 };
 use crate::eventstore::{Event, Position};
 
@@ -258,6 +259,38 @@ fn fold(tx: &Transaction, e: &Event) -> Result<(), Error> {
                 add_edge(tx, &l.id, &canonical, REL_ABOUT, at, e.position)?;
             }
         }
+        TYPE_REVIEW_FINDING => {
+            // A review finding the lenses / adversary raise about a unit's files:
+            // the cross-agent memory the three tiers communicate THROUGH. The finding
+            // node carries the summary, the reviewer (`by`), and the unit; an ABOUT
+            // edge ties it to each file it concerns (so a later reviewer grounded on
+            // those files reaches it the same way it reaches the decisions that GOVERN
+            // them); and a RAISED edge records the reviewer's provenance (the
+            // DECIDED-style link). The actor metadata, when present, takes precedence
+            // over `by` as the provenance source so it matches the other folds.
+            let f: super::ReviewFinding = serde_json::from_slice(&e.data).map_err(be)?;
+            ensure_node(
+                tx,
+                &f.id,
+                KIND_FINDING,
+                &[("summary", &f.summary), ("by", &f.by), ("unit", &f.unit)],
+            )?;
+            let raiser = e
+                .meta
+                .get(META_ACTOR)
+                .filter(|a| !a.is_empty())
+                .map(String::as_str)
+                .unwrap_or(f.by.as_str());
+            if !raiser.is_empty() {
+                ensure_node(tx, raiser, KIND_AGENT, &[])?;
+                add_edge(tx, raiser, &f.id, REL_RAISED, at, e.position)?;
+            }
+            for path in &f.about {
+                let canonical = resolve_in_tx(tx, path);
+                ensure_node(tx, &canonical, KIND_ARTIFACT, &[])?;
+                add_edge(tx, &f.id, &canonical, REL_ABOUT, at, e.position)?;
+            }
+        }
         TYPE_ALIAS_DEFINED => {
             let a: super::AliasDefined = serde_json::from_slice(&e.data).map_err(be)?;
             tx.execute(
@@ -411,6 +444,98 @@ mod tests {
                 .iter()
                 .any(|x| x.rel == REL_DECIDED && x.from == "agent-7" && x.to == "d1"),
             "DECIDED(agent-7 -> d1) must come from the event actor"
+        );
+    }
+
+    #[test]
+    fn review_finding_creates_a_finding_node_about_each_file() {
+        // A ReviewFinding folds into a KIND_FINDING node carrying its summary, an
+        // ABOUT edge to each file it concerns, and a RAISED edge from the reviewer.
+        // The finding is reachable from the file it is ABOUT - the same traversal that
+        // returns the decisions GOVERNING the file - so a later reviewer grounded on
+        // that file retrieves it through the graph, not via hand-threaded prompts.
+        let p = Projector::open(":memory:").unwrap();
+        let payload = serde_json::json!({
+            "id": "f1",
+            "by": "tech-lens",
+            "unit": "u1",
+            "summary": "the new path skips the buffer authority",
+            "about": ["combat.rs"],
+        });
+        let mut e = Event::new(TYPE_REVIEW_FINDING, serde_json::to_vec(&payload).unwrap());
+        e.position = 1;
+        p.apply(&e).unwrap();
+
+        // Reachable from the file it is ABOUT.
+        let g = p.subgraph(&["combat.rs".to_string()], 2).unwrap();
+        let n = g
+            .nodes
+            .iter()
+            .find(|n| n.id == "f1")
+            .expect("the finding node is reachable from the file it is ABOUT");
+        assert_eq!(n.kind, KIND_FINDING);
+        assert_eq!(
+            n.attrs.get("summary").map(String::as_str),
+            Some("the new path skips the buffer authority")
+        );
+        assert_eq!(n.attrs.get("by").map(String::as_str), Some("tech-lens"));
+        assert!(
+            g.edges
+                .iter()
+                .any(|x| x.rel == REL_ABOUT && x.from == "f1" && x.to == "combat.rs"),
+            "ABOUT(f1 -> combat.rs)"
+        );
+        assert!(
+            g.edges
+                .iter()
+                .any(|x| x.rel == REL_RAISED && x.from == "tech-lens" && x.to == "f1"),
+            "RAISED(tech-lens -> f1): the reviewer's provenance"
+        );
+    }
+
+    #[test]
+    fn review_finding_actor_meta_takes_precedence_for_the_raised_edge() {
+        // The acting agent from the event's actor metadata is the RAISED source,
+        // matching the DecisionMade DECIDED fold. It takes precedence over `by`.
+        let p = Projector::open(":memory:").unwrap();
+        let payload = serde_json::json!({
+            "id": "f1", "summary": "x", "about": ["a.rs"],
+        });
+        let mut e = Event::new(TYPE_REVIEW_FINDING, serde_json::to_vec(&payload).unwrap());
+        e.position = 1;
+        e.meta
+            .insert(META_ACTOR.to_string(), "adversary".to_string());
+        p.apply(&e).unwrap();
+        let g = p.subgraph(&["f1".to_string()], 2).unwrap();
+        assert!(
+            g.edges
+                .iter()
+                .any(|x| x.rel == REL_RAISED && x.from == "adversary" && x.to == "f1"),
+            "RAISED(adversary -> f1) must come from the event actor"
+        );
+    }
+
+    #[test]
+    fn review_finding_fold_is_idempotent_per_position() {
+        // A replayed ReviewFinding (same position) must not double the ABOUT edge.
+        let p = Projector::open(":memory:").unwrap();
+        let payload = serde_json::json!({
+            "id": "f1", "by": "lens", "summary": "x", "about": ["a.rs"],
+        });
+        for _ in 0..2 {
+            let mut e = Event::new(TYPE_REVIEW_FINDING, serde_json::to_vec(&payload).unwrap());
+            e.position = 1; // same position, replayed
+            p.apply(&e).unwrap();
+        }
+        let g = p.subgraph(&["a.rs".to_string()], 2).unwrap();
+        let about = g
+            .edges
+            .iter()
+            .filter(|x| x.rel == REL_ABOUT && x.from == "f1")
+            .count();
+        assert_eq!(
+            about, 1,
+            "a replayed finding must not double the ABOUT edge"
         );
     }
 

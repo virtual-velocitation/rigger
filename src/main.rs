@@ -305,7 +305,13 @@ fn run_workflow(parsed: &RunArgs) -> Res {
                 eprintln!("rigger: conductor: {e}");
             }
         });
-        let server = rigger::mcpserver::Server::new(&driver, &store, conductor::STREAM, &peers);
+        // Wire the graph into the MCP server too, so a ReviewFinding (or DecisionMade)
+        // an agent emits via rigger_emit folds into the graph as it lands - the
+        // adversary / adjudicator, which ground afterwards, then retrieve it through
+        // `graph_context` (the cross-agent memory the review tiers communicate
+        // through), not via the conductor hand-threading prompts.
+        let server = rigger::mcpserver::Server::new(&driver, &store, conductor::STREAM, &peers)
+            .with_graph(&graph);
         let _ = server.run(std::io::stdin().lock(), std::io::stdout().lock());
     });
     Ok(())

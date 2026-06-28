@@ -9,6 +9,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 
+use crate::contextgraph::Projection;
 use crate::driver::workflow::Driver;
 use crate::eventstore::{Event, EventStore, ExpectedRevision};
 use crate::sidecar::Sidecar;
@@ -52,12 +53,20 @@ impl From<&str> for ToolError {
     }
 }
 
-/// The MCP bridge over the workflow driver, event store, and side-car.
+/// The MCP bridge over the workflow driver, event store, side-car, and (optionally)
+/// the context-graph projector.
 pub struct Server<'a> {
     driver: &'a Driver,
     store: &'a dyn EventStore,
     stream: String,
     peers: &'a Sidecar,
+    /// The live context-graph projector. When set, an emitted event is folded into
+    /// the graph the moment it is appended - so a ReviewFinding (or DecisionMade) an
+    /// agent emits via rigger_emit becomes retrievable through `graph_context` by the
+    /// agents that ground afterwards (the adversary / adjudicator). Without this, the
+    /// workflow-driver path would write findings only to the log and the side-car, and
+    /// the graph - the system's cross-agent memory - would never see them.
+    graph: Option<&'a dyn Projection>,
 }
 
 impl<'a> Server<'a> {
@@ -72,7 +81,16 @@ impl<'a> Server<'a> {
             store,
             stream: stream.to_string(),
             peers,
+            graph: None,
         }
+    }
+
+    /// Wire the live context-graph projector so emitted events fold into the graph as
+    /// they are appended (the workflow-driver path's bridge from rigger_emit to the
+    /// graph, mirroring the conductor's own `emit_with_actor`).
+    pub fn with_graph(mut self, graph: &'a dyn Projection) -> Self {
+        self.graph = Some(graph);
+        self
     }
 
     /// Serve MCP over the given streams until the input closes (the shim's stdin).
@@ -237,15 +255,33 @@ impl<'a> Server<'a> {
             event = event.with_valid_from(parse_valid_from(vf)?);
         }
 
-        self.store
-            .append(&self.stream, ExpectedRevision::Any, &[event])
+        let pos = self
+            .store
+            .append(
+                &self.stream,
+                ExpectedRevision::Any,
+                std::slice::from_ref(&event),
+            )
             .map_err(|e| e.to_string())?;
+        // Fold the appended event into the live graph (when wired), so a ReviewFinding
+        // or DecisionMade an agent emits becomes retrievable through `graph_context` by
+        // the agents that ground afterwards - the graph is the cross-agent memory the
+        // review tiers communicate through. Best-effort: a fold failure must not fail
+        // the emit, which already landed durably in the log.
+        if let Some(g) = self.graph {
+            let mut folded = event;
+            folded.position = pos;
+            let _ = g.apply(&folded);
+        }
         Ok(json!({}))
     }
 
-    /// List peers' decisions, optionally scoped to a blast-radius (§5.3). When the
-    /// caller passes a `files` array (the agent's blast-radius), only decisions whose
-    /// `governs` intersects it come back; absent or empty, every decision does.
+    /// List peers' decisions AND review findings, optionally scoped to a blast-radius
+    /// (§5.3). When the caller passes a `files` array (the agent's blast-radius), only
+    /// decisions whose `governs` intersects it and findings whose `about` intersects
+    /// it come back; absent or empty, every decision and finding does. The findings
+    /// are how concurrent review lenses see each other's findings LIVE, before any of
+    /// them grounds again - the same side-car channel that surfaces peer decisions.
     fn tool_peers(&self, args: &Value) -> Value {
         let files: Vec<String> = args
             .get("files")
@@ -262,7 +298,13 @@ impl<'a> Server<'a> {
             .iter()
             .map(|d| json!({"id": d.id, "summary": d.summary, "governs": d.governs}))
             .collect();
-        json!({"decisions": decisions})
+        let findings: Vec<Value> = self
+            .peers
+            .findings_for(&files)
+            .iter()
+            .map(|f| json!({"id": f.id, "by": f.by, "summary": f.summary, "about": f.about}))
+            .collect();
+        json!({"decisions": decisions, "findings": findings})
     }
 }
 
@@ -377,7 +419,7 @@ fn tool_list() -> Value {
         {"name": "rigger_next", "description": "Pick up the next queued agent spawn. The id is empty when nothing is waiting.", "inputSchema": {"type": "object", "properties": {}}},
         {"name": "rigger_result", "description": "Report an agent's final result by spawn id.", "inputSchema": {"type": "object", "properties": {"id": {"type": "string"}, "output": {"type": "string"}, "error": {"type": "string"}}, "required": ["id"]}},
         {"name": "rigger_emit", "description": "Record a decision on the shared event log, live, so other agents see it immediately. Optionally set meta (e.g. the acting agent, which stamps the graph's DECIDED edge) and valid_from (the bi-temporal time the fact became true).", "inputSchema": {"type": "object", "properties": {"type": {"type": "string"}, "data": {"type": "object"}, "meta": {"type": "object", "description": "Metadata entries (string->string), e.g. {\"actor\": \"<agent-id>\"}.", "additionalProperties": {"type": "string"}}, "valid_from": {"description": "When the fact became true: unix nanoseconds (integer) or an RFC3339 timestamp string.", "type": ["integer", "string"]}}, "required": ["type", "data"]}},
-        {"name": "rigger_peers", "description": "List the decisions other agents have made so far this run, so you do not work blind to them. Pass `files` (your blast-radius) to scope the result to decisions that touch those files; omit it to see every decision.", "inputSchema": {"type": "object", "properties": {"files": {"type": "array", "items": {"type": "string"}, "description": "The agent's blast-radius: only decisions whose `governs` intersects these files are returned. Omit for all decisions."}}}},
+        {"name": "rigger_peers", "description": "List the decisions AND review findings other agents have raised so far this run, so you do not work blind to them (concurrent reviewers see each other's findings live). Pass `files` (your blast-radius) to scope the result to decisions and findings that touch those files; omit it to see every one.", "inputSchema": {"type": "object", "properties": {"files": {"type": "array", "items": {"type": "string"}, "description": "The agent's blast-radius: only decisions whose `governs`, and findings whose `about`, intersect these files are returned. Omit for all."}}}},
     ])
 }
 
@@ -414,6 +456,44 @@ mod tests {
         let resp: Value = serde_json::from_str(String::from_utf8(output).unwrap().trim()).unwrap();
         assert_eq!(resp["id"], 1);
         assert!(resp.get("result").is_some());
+    }
+
+    #[test]
+    fn emit_tool_folds_a_review_finding_into_the_wired_graph() {
+        // The workflow-driver path's bridge from rigger_emit to the graph: when a
+        // graph is wired, a ReviewFinding an agent emits folds into a KIND_FINDING node
+        // the moment it lands, so an agent that grounds afterwards retrieves it via
+        // graph_context (not via the conductor hand-threading prompts).
+        use crate::contextgraph::{self, sqlite::Projector, Projection};
+
+        let store = Store::open(":memory:").unwrap();
+        let driver = Driver::new();
+        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
+        let graph = Projector::open(":memory:").unwrap();
+        let server = Server::new(&driver, &store, "run", &peers).with_graph(&graph);
+
+        let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_emit","arguments":{"type":"ReviewFinding","data":{"id":"f1","summary":"skips the buffer authority","about":["combat.rs"]},"meta":{"actor":"tech-lens"}}}}"#;
+        let mut output = Vec::new();
+        server.run(Cursor::new(input), &mut output).unwrap();
+
+        // The finding folded into the graph, reachable from the file it is ABOUT.
+        let g = graph.subgraph(&["combat.rs".to_string()], 2).unwrap();
+        let n = g
+            .nodes
+            .iter()
+            .find(|n| n.id == "f1")
+            .expect("the emitted ReviewFinding must fold into the wired graph");
+        assert_eq!(n.kind, contextgraph::KIND_FINDING);
+        assert_eq!(
+            n.attrs.get("summary").map(String::as_str),
+            Some("skips the buffer authority")
+        );
+        assert!(
+            g.edges
+                .iter()
+                .any(|e| e.rel == contextgraph::REL_RAISED && e.from == "tech-lens"),
+            "the actor must be the RAISED source of the folded finding"
+        );
     }
 
     #[test]
@@ -512,6 +592,54 @@ mod tests {
         let arr = decisions.as_array().expect("decisions array");
         assert_eq!(arr.len(), 1, "files=[a.rs] returns only the a.rs decision");
         assert_eq!(arr[0]["id"], "da");
+    }
+
+    #[test]
+    fn peers_tool_surfaces_findings_scoped_to_the_files_arg() {
+        // Item 4: rigger_peers surfaces peer review FINDINGS as well as decisions, so a
+        // concurrent reviewer scoped to its files sees a finding about one of them.
+        use std::time::Instant;
+
+        let store = Store::open(":memory:").unwrap();
+        // Two review findings, one about a.rs, one about b.rs, on the run stream.
+        for (id, about) in [("fa", "a.rs"), ("fb", "b.rs")] {
+            let data = serde_json::to_vec(&serde_json::json!({
+                "id": id, "by": "lensA", "summary": "x", "about": [about],
+            }))
+            .unwrap();
+            store
+                .append(
+                    "run",
+                    ExpectedRevision::Any,
+                    &[Event::new(crate::contextgraph::TYPE_REVIEW_FINDING, data)],
+                )
+                .unwrap();
+        }
+
+        let driver = Driver::new();
+        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
+        // Wait for the side-car to catch up on both findings.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while peers.findings().len() < 2 {
+            assert!(Instant::now() < deadline, "side-car never caught up");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let server = Server::new(&driver, &store, "run", &peers);
+
+        let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_peers","arguments":{"files":["a.rs"]}}}"#;
+        let mut output = Vec::new();
+        server.run(Cursor::new(input), &mut output).unwrap();
+
+        let resp: Value = serde_json::from_str(String::from_utf8(output).unwrap().trim()).unwrap();
+        let findings = &resp["result"]["structuredContent"]["findings"];
+        let arr = findings.as_array().expect("findings array");
+        assert_eq!(
+            arr.len(),
+            1,
+            "files=[a.rs] returns only the a.rs finding: {resp}"
+        );
+        assert_eq!(arr[0]["id"], "fa");
+        assert_eq!(arr[0]["by"], "lensA");
     }
 
     #[test]

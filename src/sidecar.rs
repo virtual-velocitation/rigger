@@ -24,6 +24,22 @@ pub struct PeerDecision {
     pub governs: Vec<String>,
 }
 
+/// A peer reviewer's finding, as the side-car surfaces it to a concurrent reviewer.
+/// This is how concurrent lenses see each other's findings LIVE: a lens emits a
+/// ReviewFinding, the side-car's catch-up subscription picks it up, and a fellow
+/// lens re-checking `rigger_peers` scoped to its files reads it back - the same
+/// channel that surfaces peer decisions, scoped on the finding's `about` files.
+#[derive(Clone, Debug, Deserialize)]
+pub struct PeerFinding {
+    pub id: String,
+    #[serde(default)]
+    pub by: String,
+    #[serde(default)]
+    pub summary: String,
+    #[serde(default)]
+    pub about: Vec<String>,
+}
+
 /// Sidecar collects the events on a filtered catch-up subscription in the
 /// background while one agent works.
 pub struct Sidecar {
@@ -85,6 +101,37 @@ impl Sidecar {
         self.decisions()
             .into_iter()
             .filter(|d| d.governs.iter().any(|f| scope.contains(f.as_str())))
+            .collect()
+    }
+
+    /// The ReviewFinding events seen so far - the findings a concurrent reviewer
+    /// should be aware of before it renders its own. The side-car collects these the
+    /// same way it collects decisions, so concurrent lenses see each other's findings
+    /// live (the later tiers retrieve them via the graph once they ground; the
+    /// side-car covers reviewers running AT THE SAME TIME, before any of them grounds
+    /// again).
+    pub fn findings(&self) -> Vec<PeerFinding> {
+        let seen = self.seen.lock().unwrap();
+        seen.iter()
+            .filter(|e| e.type_ == contextgraph::TYPE_REVIEW_FINDING)
+            .filter_map(|e| serde_json::from_slice(&e.data).ok())
+            .collect()
+    }
+
+    /// The concurrent findings scoped to a reviewer's blast-radius (§5.3), mirroring
+    /// [`decisions_for`]: a peer finding is relevant only when its `about` files
+    /// intersect the reviewer's blast-radius. An empty `blast_radius` returns every
+    /// finding (the unscoped behavior), so a caller that does not know its files still
+    /// sees its peers' findings.
+    pub fn findings_for(&self, blast_radius: &[String]) -> Vec<PeerFinding> {
+        if blast_radius.is_empty() {
+            return self.findings();
+        }
+        let scope: std::collections::HashSet<&str> =
+            blast_radius.iter().map(String::as_str).collect();
+        self.findings()
+            .into_iter()
+            .filter(|f| f.about.iter().any(|file| scope.contains(file.as_str())))
             .collect()
     }
 
@@ -187,6 +234,57 @@ mod tests {
 
         // An empty blast-radius returns every decision.
         let all = sidecar.decisions_for(&[]);
+        assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn findings_for_scopes_to_the_blast_radius() {
+        // A peer reviewer's ReviewFinding is surfaced by the side-car and scoped to a
+        // reviewer's blast-radius the same way decisions are: a finding about a file
+        // is returned by the blast-radius-scoped peers query (item 4), so concurrent
+        // lenses see each other's findings live.
+        let store = Store::open(":memory:").unwrap();
+        let sidecar = Sidecar::start(&store, 0, Filter::default()).unwrap();
+
+        // One finding about a.rs, another about b.rs.
+        for (id, about) in [("fa", "a.rs"), ("fb", "b.rs")] {
+            let data = serde_json::to_vec(&serde_json::json!({
+                "id": id, "by": "lens", "summary": "x", "about": [about],
+            }))
+            .unwrap();
+            store
+                .append(
+                    "run",
+                    ExpectedRevision::Any,
+                    &[Event::new(contextgraph::TYPE_REVIEW_FINDING, data)],
+                )
+                .unwrap();
+        }
+
+        // Wait until both findings have surfaced through the subscription.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if sidecar.findings().len() >= 2 {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the side-car never surfaced both findings"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        // Scoped to a.rs: only the a.rs finding comes back.
+        let scoped = sidecar.findings_for(&["a.rs".into()]);
+        assert_eq!(
+            scoped.len(),
+            1,
+            "a finding about a.rs is returned scoped to a.rs"
+        );
+        assert_eq!(scoped[0].id, "fa");
+
+        // An empty blast-radius returns every finding.
+        let all = sidecar.findings_for(&[]);
         assert_eq!(all.len(), 2);
     }
 }
