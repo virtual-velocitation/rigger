@@ -70,9 +70,12 @@ pub fn build_args(agent: &AgentDef, prompt: &str) -> Vec<String> {
         args.push("--model".to_string());
         args.push(agent.model.clone());
     }
-    if !agent.tools.is_empty() {
+    // recurse: false strips any fan-out (Agent/Task) tool so the agent cannot
+    // spawn sub-agents - runaway-proof by construction (§3.1, §6).
+    let tools = agent.allowed_tools();
+    if !tools.is_empty() {
         args.push("--allowed-tools".to_string());
-        args.push(agent.tools.join(","));
+        args.push(tools.join(","));
     }
     args
 }
@@ -98,6 +101,33 @@ mod tests {
         assert_eq!(args[mi + 1], "sonnet");
         let ti = args.iter().position(|x| x == "--allowed-tools").unwrap();
         assert_eq!(args[ti + 1], "Read,Bash");
+    }
+
+    #[test]
+    fn recurse_false_drops_the_agent_tool_from_allowed_tools() {
+        let a = AgentDef {
+            id: "impl".into(),
+            tools: vec!["Read".into(), "Agent".into()],
+            recurse: false,
+            ..Default::default()
+        };
+        let args = build_args(&a, "task");
+        let ti = args.iter().position(|x| x == "--allowed-tools").unwrap();
+        assert_eq!(args[ti + 1], "Read");
+        assert!(!args[ti + 1].contains("Agent"));
+    }
+
+    #[test]
+    fn recurse_true_keeps_the_agent_tool() {
+        let a = AgentDef {
+            id: "lead".into(),
+            tools: vec!["Read".into(), "Agent".into()],
+            recurse: true,
+            ..Default::default()
+        };
+        let args = build_args(&a, "task");
+        let ti = args.iter().position(|x| x == "--allowed-tools").unwrap();
+        assert_eq!(args[ti + 1], "Read,Agent");
     }
 
     #[test]
