@@ -37,10 +37,13 @@ gates:                      # the project's verification library, referenced by 
   fmt:   { run: "cargo fmt --check",                       kind: elevated }
 
 stages:
+  # The conductor itself creates one baseline implement unit per acceptance
+  # criterion (the deterministic decomposition); this planner REFINES that baseline
+  # via UnitProposed. A produces stage decomposes the whole spec, so it has no single
+  # coverage criterion - it grounds on the spec's acceptance criteria, not a label.
   plan:
     agent: planner
-    produces: dag           # decompose the spec into a unit DAG at runtime
-    coverage: required       # every spec criterion must map to a unit
+    produces: dag           # refine the spec's unit DAG at runtime
 
   # Implement, review, and integrate PER UNIT. One implementer per ready unit, in
   # isolated worktrees, partitioned by blast-radius. Each unit's complete lifecycle

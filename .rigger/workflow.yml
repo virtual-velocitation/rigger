@@ -46,12 +46,15 @@ gates:                      # the project's verification library, referenced by 
   test:   { run: "cargo test",                               kind: core }
 
 stages:
-  # 1. Decompose the spec into a unit DAG, each unit mapped to an acceptance
-  #    criterion. coverage: required blocks if any criterion has no unit.
+  # 1. Refine the spec's decomposition. The conductor itself creates one baseline
+  #    implement unit per acceptance criterion (the deterministic decomposition);
+  #    the planner REFINES that baseline - splitting a criterion into several units,
+  #    or adding a necessary sub-unit / dependency - via UnitProposed. A produces
+  #    stage decomposes the whole spec, so it has no single coverage criterion: it
+  #    grounds on the spec's acceptance criteria, not on a `coverage` label.
   plan:
     agent: planner
-    produces: dag           # decompose the spec into a unit DAG at runtime
-    coverage: required
+    produces: dag           # refine the spec's unit DAG at runtime
 
   # 2. Implement, review, and integrate PER UNIT. One Rust implementer per ready
   #    unit, each in an isolated worktree, partitioned by blast-radius so the waves
