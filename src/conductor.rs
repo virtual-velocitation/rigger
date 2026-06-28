@@ -86,14 +86,6 @@ struct GateOutcome {
     evidence: Vec<String>,
 }
 
-/// One expert lens's review output, captured so the later tiers (the adversary and
-/// the adjudicator) actually receive it (item 1: the three tiers must inform each
-/// other, not run mutually blind).
-struct LensFinding {
-    agent: String,
-    output: String,
-}
-
 /// The outcome of a unit's three-tier review: whether the adjudicator approved, and
 /// its verdict reasoning (the adjudicator's raw output). On approval the reason is
 /// folded into the unit's `reviewed` evidence (item 4); on a reject it is threaded
@@ -641,18 +633,23 @@ impl RunCtx<'_> {
     }
 
     /// Run the three-tier review of THIS unit's diff and return the outcome (whether
-    /// it is approved, plus the adjudicator's verdict reasoning) (§3.2). TIER 1: the
-    /// expert lenses review the diff in parallel and their findings are CAPTURED.
-    /// TIER 2: the adversary is prompted with those captured findings and tries to
-    /// prove them wrong; its refutation is CAPTURED. TIER 3: the adjudicator is
-    /// prompted with BOTH the lens findings and the adversary's refutation, weighs
-    /// them, and its verdict GATES integration - it approves ONLY on an explicit
-    /// `approve` (fail-closed), blocking the merge otherwise no matter what the
-    /// static gates said. So the three tiers actually inform each other (item 1)
-    /// rather than running mutually blind. The lenses/adversary/adjudicator review
-    /// the unit (they produce no code), so they run with no worktree of their own.
-    /// After the adjudicator approves, the unit is marked `reviewed` and its evidence
-    /// carries the verdict reason (item 4). An empty panel runs no review and
+    /// it is approved, plus the adjudicator's verdict reasoning) (§3.2). The three
+    /// tiers communicate THROUGH THE CONTEXT GRAPH - the system's actual cross-agent
+    /// memory - not through the conductor hand-threading one agent's stdout into the
+    /// next agent's prompt. TIER 1: the expert lenses review the diff in parallel and
+    /// EMIT each finding as a ReviewFinding (the REVIEW_PROTOCOL); the projector folds
+    /// each finding ABOUT the unit's files live. TIER 2: the adversary GROUNDS after
+    /// the lenses, so `graph_context` already surfaces their findings, and it tries to
+    /// prove them wrong, emitting its own findings the same way. TIER 3: the
+    /// adjudicator grounds last, reads BOTH the lenses' and the adversary's findings
+    /// from the graph, and renders the gating verdict - it approves ONLY on an
+    /// explicit `approve` (fail-closed), blocking the merge otherwise no matter what
+    /// the static gates said. So the three tiers inform each other via the graph
+    /// (concurrent lenses see each other live via the side-car), never running
+    /// mutually blind and never via spliced prompts. The lenses/adversary/adjudicator
+    /// review the unit (they produce no code), so they run with no worktree of their
+    /// own. After the adjudicator approves, the unit is marked `reviewed` and its
+    /// evidence carries the verdict reason (item 4). An empty panel runs no review and
     /// approves trivially (the historical behavior).
     fn review_unit(&self, st: &Stage) -> Result<ReviewOutcome, Error> {
         let panel = self.effective_review_panel(st);
@@ -662,26 +659,22 @@ impl RunCtx<'_> {
         let lenses = panel.lenses.clone();
         let adversary = panel.adversary.clone();
         let adjudicator = panel.adjudicator.clone();
-        // TIER 1: capture the lenses' findings (item 1).
-        let findings = if lenses.is_empty() {
-            Vec::new()
-        } else {
-            self.run_agents_concurrently(st, &lenses, "")?
-        };
-        // TIER 2: the adversary is prompted with the lenses' findings and tries to
-        // prove them wrong; capture its refutation (item 1).
-        let refutation = if adversary.is_empty() {
-            String::new()
-        } else {
-            self.run_adversary(st, &adversary, &lens_findings_block(&findings))?
-        };
+        // TIER 1: the lenses emit their findings to the graph (REVIEW_PROTOCOL); the
+        // projector folds them ABOUT the unit's files live.
+        if !lenses.is_empty() {
+            self.run_review_agents_concurrently(st, &lenses)?;
+        }
+        // TIER 2: the adversary grounds AFTER the lenses, so `graph_context` surfaces
+        // their findings; it tries to prove them wrong and emits its own findings.
+        if !adversary.is_empty() {
+            self.run_adversary(st, &adversary)?;
+        }
         if adjudicator.is_empty() {
             return Ok(ReviewOutcome::approved(String::new()));
         }
-        // TIER 3: the adjudicator weighs BOTH the lens findings and the adversary's
-        // refutation and renders the gating verdict (item 1).
-        let weigh = adjudicator_block(&findings, &refutation);
-        let (approved, reason) = self.run_adjudicator(st, &adjudicator, &weigh)?;
+        // TIER 3: the adjudicator grounds last, reads the lenses' and adversary's
+        // findings from the graph, and renders the gating verdict.
+        let (approved, reason) = self.run_adjudicator(st, &adjudicator)?;
         if approved {
             // The adjudicator's verdict reason is folded into the unit's `reviewed`
             // evidence (item 4).
@@ -847,27 +840,28 @@ impl RunCtx<'_> {
         let lenses = fan_out_lenses(st);
         let mut attempts = 0u32;
         loop {
-            // Three-tier review (§3.2): the expert lenses review the diff in
-            // parallel and their findings are CAPTURED, THEN the adversary is prompted
-            // with those findings and tries to prove them wrong (a higher bar than the
-            // lenses; it reviews the reviews, it is not a parallel lens), THEN the
-            // neutral adjudicator is prompted with BOTH the lens findings and the
-            // adversary's refutation, weighs them, and its verdict gates the stage.
-            // So the three tiers actually inform each other (item 1).
-            let findings = self.run_agents_concurrently(st, &lenses, "")?;
-            let refutation = if st.adversary.is_empty() {
-                String::new()
-            } else {
-                self.run_adversary(st, &st.adversary, &lens_findings_block(&findings))?
-            };
+            // Three-tier review (§3.2), communicating THROUGH THE CONTEXT GRAPH (item
+            // 1): the expert lenses review the diff in parallel and EMIT each finding
+            // as a ReviewFinding the projector folds ABOUT the diff's files live (and
+            // concurrent lenses see each other's via the side-car); THEN the adversary
+            // GROUNDS after them, so `graph_context` surfaces their findings, and it
+            // tries to prove them wrong (a higher bar than the lenses; it reviews the
+            // reviews, it is not a parallel lens), emitting its own findings the same
+            // way; THEN the neutral adjudicator grounds last, reads BOTH the lenses'
+            // and the adversary's findings from the graph, and its verdict gates the
+            // stage. So the three tiers inform each other via the graph, not via the
+            // conductor splicing one agent's stdout into another's prompt.
+            self.run_review_agents_concurrently(st, &lenses)?;
+            if !st.adversary.is_empty() {
+                self.run_adversary(st, &st.adversary)?;
+            }
             // The neutral adjudicator's verdict gates the stage (§3.2), fail-closed:
             // it approves ONLY on an explicit `approve`, blocking integration
             // otherwise, no matter the static gates.
             let (approved, reason) = if st.adjudicator.is_empty() {
                 (true, String::new())
             } else {
-                let weigh = adjudicator_block(&findings, &refutation);
-                self.run_adjudicator(st, &st.adjudicator, &weigh)?
+                self.run_adjudicator(st, &st.adjudicator)?
             };
 
             let gates_pass = approved && self.run_gates(st, "")?.pass;
@@ -926,42 +920,44 @@ impl RunCtx<'_> {
         }
     }
 
-    /// Run the expert lenses (tier 1) concurrently and CAPTURE each lens's output
-    /// (its findings), keyed by agent id, in declared order. The lenses REVIEW the
-    /// diff - they produce no code to integrate - so they spawn with NO worktree and
-    /// never integrate (item 6: a reviewing lens must not get its writes merged into
-    /// the base repo). The captured findings are threaded into the adversary's and
-    /// the adjudicator's prompts so the three tiers actually inform each other
-    /// (item 1). `block`, when non-empty, prepends a prior-failure heading on a retry.
-    fn run_agents_concurrently(
+    /// Run the expert lenses (tier 1) concurrently. Each lens REVIEWS the diff and
+    /// EMITS its findings to the shared context graph as ReviewFindings (the
+    /// REVIEW_PROTOCOL), so the later tiers and concurrent lenses retrieve them via
+    /// grounding + the side-car rather than via the conductor splicing one lens's
+    /// stdout into another agent's prompt. The lenses produce no code to integrate, so
+    /// they spawn with NO worktree and never integrate (item 6: a reviewing lens must
+    /// not get its writes merged into the base repo).
+    fn run_review_agents_concurrently(
         &self,
         st: &Stage,
         agent_ids: &[String],
-        block: &str,
-    ) -> Result<Vec<LensFinding>, Error> {
+    ) -> Result<(), Error> {
         // Bounded fan-out pool (§6): run the lenses in chunks of at most
         // MAX_CONCURRENCY, each chunk a scoped thread group. Every lens still runs;
         // never more than MAX_CONCURRENCY at once.
-        let mut findings: Vec<LensFinding> = Vec::with_capacity(agent_ids.len());
         for chunk in agent_ids.chunks(MAX_CONCURRENCY) {
-            let chunk_results: Vec<Result<LensFinding, Error>> = std::thread::scope(|s| {
+            let chunk_results: Vec<Result<(), Error>> = std::thread::scope(|s| {
                 let handles: Vec<_> = chunk
                     .iter()
-                    .map(|a| s.spawn(move || self.run_lens(st, a, block)))
+                    .map(|a| s.spawn(move || self.run_lens(st, a)))
                     .collect();
                 handles.into_iter().map(|h| h.join().unwrap()).collect()
             });
             for r in chunk_results {
-                findings.push(r?);
+                r?;
             }
         }
-        Ok(findings)
+        Ok(())
     }
 
-    /// Run a single review lens and return its findings. A lens reviews - it writes
-    /// no code - so it spawns with NO worktree and its output is never integrated
-    /// (item 6). Budget-refused spawns (item 9) surface as an error so the run halts.
-    fn run_lens(&self, st: &Stage, agent_id: &str, block: &str) -> Result<LensFinding, Error> {
+    /// Run a single review lens. A lens reviews - it writes no code - so it spawns
+    /// with NO worktree and its output is never integrated (item 6). It is prompted
+    /// with the grounded base prompt plus the REVIEW_PROTOCOL, so it EMITS each
+    /// finding it raises to the shared context graph (the cross-agent memory), where
+    /// the adversary, the adjudicator, and its fellow lenses retrieve it. Its stdout
+    /// is no longer captured to thread into another agent's prompt - the graph is the
+    /// channel. Budget-refused spawns (item 9) surface as an error so the run halts.
+    fn run_lens(&self, st: &Stage, agent_id: &str) -> Result<(), Error> {
         let agent_def = self.cfg.agents.get(agent_id).ok_or_else(|| {
             Error(format!(
                 "stage {:?} references unknown agent {:?}",
@@ -974,10 +970,9 @@ impl RunCtx<'_> {
                 st.name, agent_id
             )));
         }
-        let prompt = format!("{block}{}", self.build_prompt(st));
+        let prompt = self.build_review_prompt(st);
         let emit = |t: &str, v: Value| self.emit_with_actor(agent_id, t, v);
-        let result = self
-            .deps
+        self.deps
             .driver
             .spawn(
                 agent_def,
@@ -991,27 +986,19 @@ impl RunCtx<'_> {
                 &emit,
             )
             .map_err(|e| Error(format!("stage {:?} agent {:?}: {}", st.name, agent_id, e.0)))?;
-        Ok(LensFinding {
-            agent: agent_id.to_string(),
-            output: result.output,
-        })
+        Ok(())
     }
 
-    /// Run the adversary: a single agent that reviews the lenses' emitted findings
-    /// and the diff and tries to prove the lenses wrong (§3.2). It runs AFTER the
-    /// lenses and BEFORE the adjudicator, and is prompted with the lenses' CAPTURED
-    /// findings (the `findings_block`) so it actually sees what they reported (item
-    /// 1), then emits its refutations. This method RETURNS that refutation (the
-    /// adversary's output) so it can be threaded into the adjudicator's prompt. Like
+    /// Run the adversary: a single agent that reviews the lenses' findings and the
+    /// diff and tries to prove the lenses wrong (§3.2). It runs AFTER the lenses, so
+    /// the lenses' ReviewFindings are already folded into the graph and its grounded
+    /// prompt (via `graph_context`) surfaces them - it retrieves the lenses' findings
+    /// through the graph, not from a hand-threaded block. It then EMITS its own
+    /// findings (the REVIEW_PROTOCOL) so the adjudicator reads them the same way. Like
     /// the adjudicator it reviews - it produces no code to integrate, so it spawns
     /// with no worktree - and unlike the adjudicator its output does NOT gate the
-    /// stage; it informs the adjudicator's judgment.
-    fn run_adversary(
-        &self,
-        st: &Stage,
-        adv_id: &str,
-        findings_block: &str,
-    ) -> Result<String, Error> {
+    /// stage; it informs the adjudicator's judgment via the graph.
+    fn run_adversary(&self, st: &Stage, adv_id: &str) -> Result<(), Error> {
         let agent_def = self.cfg.agents.get(adv_id).ok_or_else(|| {
             Error(format!(
                 "stage {:?} references unknown adversary {:?}",
@@ -1024,10 +1011,9 @@ impl RunCtx<'_> {
                 st.name, adv_id
             )));
         }
-        let prompt = format!("{findings_block}{}", self.build_prompt(st));
+        let prompt = self.build_review_prompt(st);
         let emit = |t: &str, v: Value| self.emit_with_actor(adv_id, t, v);
-        let result = self
-            .deps
+        self.deps
             .driver
             .spawn(
                 agent_def,
@@ -1046,22 +1032,18 @@ impl RunCtx<'_> {
                     st.name, adv_id, e.0
                 ))
             })?;
-        Ok(result.output)
+        Ok(())
     }
 
     /// Run the adjudicator and return whether it approves PLUS its raw output (the
-    /// verdict reasoning). Its verdict gates the stage. The adjudicator is prompted
-    /// with BOTH the lenses' findings and the adversary's refutation (the
-    /// `weigh_block`) so it actually weighs the prior tiers (item 1). The reviewer
-    /// produces no code to integrate. The returned output is the verdict reason: it
-    /// is folded into the unit's `reviewed` evidence on approval (item 4) and into
-    /// the next attempt's prompt on a reject (item 5).
-    fn run_adjudicator(
-        &self,
-        st: &Stage,
-        adj_id: &str,
-        weigh_block: &str,
-    ) -> Result<(bool, String), Error> {
+    /// verdict reasoning). Its verdict gates the stage. The adjudicator grounds LAST,
+    /// so the lenses' and the adversary's ReviewFindings are already in the graph and
+    /// its grounded prompt (via `graph_context`) surfaces them - it weighs the prior
+    /// tiers by retrieving their findings through the graph, not from a hand-threaded
+    /// block. The reviewer produces no code to integrate. The returned output is the
+    /// verdict reason: it is folded into the unit's `reviewed` evidence on approval
+    /// (item 4) and into the next attempt's prompt on a reject (item 5).
+    fn run_adjudicator(&self, st: &Stage, adj_id: &str) -> Result<(bool, String), Error> {
         let agent_def = self.cfg.agents.get(adj_id).ok_or_else(|| {
             Error(format!(
                 "stage {:?} references unknown adjudicator {:?}",
@@ -1074,7 +1056,7 @@ impl RunCtx<'_> {
                 st.name, adj_id
             )));
         }
-        let prompt = format!("{weigh_block}{}", self.build_prompt(st));
+        let prompt = self.build_prompt(st);
         let emit = |t: &str, v: Value| self.emit_with_actor(adj_id, t, v);
         let result = self
             .deps
@@ -1269,6 +1251,17 @@ impl RunCtx<'_> {
         self.build_prompt_with_failure(st, &PriorFailure::default())
     }
 
+    /// Build a REVIEW agent's prompt: the grounded base prompt (which already
+    /// surfaces, via `graph_context`, the decisions, lessons, AND findings other
+    /// reviewers raised about the unit's files) plus the REVIEW_PROTOCOL telling this
+    /// reviewer to emit each finding it raises as a ReviewFinding. This is how the
+    /// three tiers communicate THROUGH the graph: a lens emits findings, the adversary
+    /// and adjudicator (which ground after it) read them back from the graph, and a
+    /// reviewer who emits its own findings feeds the next tier the same way.
+    fn build_review_prompt(&self, st: &Stage) -> String {
+        format!("{}{REVIEW_PROTOCOL}", self.build_prompt(st))
+    }
+
     /// Build a stage's prompt, optionally prepending a first-class prior-failure
     /// block (spec 02 / item 3 + 5). On the first attempt `prior` is empty and the
     /// prompt is byte-identical to the historical `build_prompt`; on a retry the
@@ -1324,6 +1317,14 @@ impl RunCtx<'_> {
             contextgraph::KIND_LESSON,
             "Lessons already learned about these files (do not repeat these mistakes):",
         );
+        // Findings other reviewers already raised about these files. The subgraph is
+        // seeded on the unit's files and a ReviewFinding folds ABOUT those files, so
+        // the same traversal that returns the GOVERNING decisions returns the findings
+        // too: this is the graph path by which the adversary and adjudicator (which
+        // ground AFTER the lenses) retrieve the lenses' findings, replacing the
+        // conductor hand-threading one agent's stdout into another's prompt. Each line
+        // names the reviewer (`by`) and the finding summary.
+        write_findings(&mut b, &g);
         b
     }
 
@@ -1415,53 +1416,6 @@ impl RunCtx<'_> {
     }
 }
 
-/// Format the lenses' captured findings into the labeled block the adversary is
-/// prompted with: it must try to prove them wrong / find what they missed (item 1).
-/// Returns the empty string when there are no non-empty findings.
-fn lens_findings_block(findings: &[LensFinding]) -> String {
-    let any = findings.iter().any(|f| !f.output.trim().is_empty());
-    if !any {
-        return String::new();
-    }
-    let mut b = String::from(
-        "The expert lenses reported the following findings; try to prove them wrong / find what they missed:\n",
-    );
-    for f in findings {
-        if f.output.trim().is_empty() {
-            continue;
-        }
-        b.push_str(&format!("- {}: {}\n", f.agent, f.output.trim()));
-    }
-    b.push('\n');
-    b
-}
-
-/// Format BOTH the lenses' findings and the adversary's refutation into the block
-/// the adjudicator is prompted with: it must weigh them and decide (item 1). Either
-/// part may be empty; the block names whichever is present.
-fn adjudicator_block(findings: &[LensFinding], refutation: &str) -> String {
-    let lens_any = findings.iter().any(|f| !f.output.trim().is_empty());
-    let adv_any = !refutation.trim().is_empty();
-    if !lens_any && !adv_any {
-        return String::new();
-    }
-    let mut b = String::new();
-    if lens_any {
-        b.push_str("Lens findings:\n");
-        for f in findings {
-            if f.output.trim().is_empty() {
-                continue;
-            }
-            b.push_str(&format!("- {}: {}\n", f.agent, f.output.trim()));
-        }
-    }
-    if adv_any {
-        b.push_str(&format!("Adversary's refutation: {}\n", refutation.trim()));
-    }
-    b.push_str("Weigh them and decide.\n\n");
-    b
-}
-
 /// The evidence map folded into a unit's `verified` status (item 4): the gates that
 /// governed the unit, under the `verified` key, so the ledger records WHAT verified
 /// it. Empty when the unit ran no gates.
@@ -1510,6 +1464,14 @@ fn verdict_approves(output: &str) -> bool {
 
 const EMIT_PROTOCOL: &str = "Record each decision you make by calling the rigger_emit tool the moment you make it, with type \"DecisionMade\" and data:\n{\"id\":\"<short-id>\",\"summary\":\"<one line>\",\"governs\":[\"<file>\"],\"supersedes\":\"<prior-id-or-empty>\"}\nThis writes it to the shared event log live, so other agents see it immediately.";
 
+/// The protocol a REVIEW agent (a lens or the adversary) follows so its findings
+/// reach the shared context graph - the cross-agent memory the three tiers
+/// communicate THROUGH. A reviewer records each finding by calling rigger_emit the
+/// moment it raises it; the projector folds it ABOUT the files it concerns, and the
+/// later tiers (and concurrent lenses) retrieve it via grounding + rigger_peers,
+/// never via the conductor splicing one agent's stdout into another's prompt.
+const REVIEW_PROTOCOL: &str = "Record each review finding you raise by calling the rigger_emit tool the moment you raise it, with type \"ReviewFinding\" and data:\n{\"id\":\"<short-id>\",\"summary\":\"<one line>\",\"about\":[\"<file>\"]}\nThis writes it to the shared context graph live, so the adversary, the adjudicator, and your fellow reviewers see it immediately (via grounding and rigger_peers) and address or refute it.";
+
 fn write_nodes(b: &mut String, g: &Graph, kind: &str, header: &str) {
     let mut first = true;
     for n in &g.nodes {
@@ -1526,6 +1488,40 @@ fn write_nodes(b: &mut String, g: &Graph, kind: &str, header: &str) {
             first = false;
         }
         b.push_str(&format!("- {}: {}\n", n.id, summary));
+    }
+    if !first {
+        b.push('\n');
+    }
+}
+
+/// Surface the KIND_FINDING nodes a prior reviewer raised about the seeded files
+/// (item 2): the graph path by which a later review agent retrieves the findings the
+/// lenses already emitted. Each line names the raising reviewer (`by`) and the
+/// finding summary so the agent can address or refute it. A finding with no summary
+/// is skipped (nothing actionable to surface).
+fn write_findings(b: &mut String, g: &Graph) {
+    let header =
+        "Findings other reviewers have already raised about these files (address or refute them):";
+    let mut first = true;
+    for n in &g.nodes {
+        if n.kind != contextgraph::KIND_FINDING {
+            continue;
+        }
+        let summary = match n.attrs.get("summary") {
+            Some(s) if !s.is_empty() => s,
+            _ => continue,
+        };
+        if first {
+            b.push_str(header);
+            b.push('\n');
+            first = false;
+        }
+        let by = n.attrs.get("by").map(String::as_str).unwrap_or("");
+        if by.is_empty() {
+            b.push_str(&format!("- {}: {}\n", n.id, summary));
+        } else {
+            b.push_str(&format!("- {by} ({}): {summary}\n", n.id));
+        }
     }
     if !first {
         b.push('\n');
@@ -1715,6 +1711,10 @@ mod tests {
     struct Stub {
         write_file: Option<String>,
         emits: Vec<(String, Value)>,
+        /// Per-agent emits, in addition to the shared `emits`: lets one test give a
+        /// single lens a ReviewFinding to emit so the test can assert the finding
+        /// reaches a LATER tier through the graph (not through prompt threading).
+        emits_by_agent: HashMap<String, Vec<(String, Value)>>,
         output: String,
         /// Per-agent canned output, overriding `output` for that agent id. Lets one
         /// test give a lens a distinct finding and the adjudicator a distinct verdict
@@ -1737,6 +1737,7 @@ mod tests {
             Stub {
                 write_file: None,
                 emits: Vec::new(),
+                emits_by_agent: HashMap::new(),
                 output: String::new(),
                 output_by_agent: HashMap::new(),
                 fail_spawn: false,
@@ -1785,6 +1786,11 @@ mod tests {
             }
             for (t, v) in &self.emits {
                 emit(t, v.clone())?;
+            }
+            if let Some(per) = self.emits_by_agent.get(&a.id) {
+                for (t, v) in per {
+                    emit(t, v.clone())?;
+                }
             }
             let output = self
                 .output_by_agent
@@ -3491,12 +3497,119 @@ mod tests {
     }
 
     #[test]
-    fn three_tiers_inform_each_other() {
-        // Item 1: the three review tiers must actually pass findings between each
-        // other. The lens emits a finding, the adversary a refutation, the adjudicator
-        // an approve verdict. We assert the adversary's prompt carries the lens's
-        // finding, and the adjudicator's prompt carries BOTH the lens finding and the
-        // adversary's refutation. (Standalone fan-out review stage.)
+    fn lens_finding_reaches_later_tiers_through_the_graph() {
+        // Item 1 + 5: the three review tiers communicate THROUGH THE CONTEXT GRAPH,
+        // not via the conductor hand-threading one agent's stdout into the next
+        // agent's prompt. The lens EMITS a ReviewFinding about a grounded file; the
+        // projector folds it ABOUT that file live; the adversary and the adjudicator
+        // GROUND on the same file AFTER the lens, so `graph_context` surfaces the
+        // finding in THEIR prompts. We assert the finding text reaches the adversary's
+        // and the adjudicator's prompts via the graph - and, to prove it is the graph
+        // path and not threading, that the lens's STDOUT (which is no longer captured)
+        // never appears in a later prompt.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("combat.rs"), "fn combat() {}\n").unwrap();
+        let grep = crate::grounder::Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+        let graph = crate::contextgraph::sqlite::Projector::open(":memory:").unwrap();
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("adversary".into(), agent("adversary"));
+        cfg.agents.insert("adj".into(), agent("adj"));
+        cfg.workflow.stages.insert(
+            "review".into(),
+            Stage {
+                name: "review".into(),
+                agents: vec!["lens".into()],
+                adversary: "adversary".into(),
+                adjudicator: "adj".into(),
+                coverage: "combat".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        // Only the LENS emits the ReviewFinding. The lens's own stdout is a distinct
+        // marker we expect to NEVER reach a later prompt (threading is gone).
+        let mut emits_by_agent = HashMap::new();
+        emits_by_agent.insert(
+            "lens".to_string(),
+            vec![(
+                contextgraph::TYPE_REVIEW_FINDING.to_string(),
+                json!({
+                    "id": "f1",
+                    "summary": "FINDING_SUMMARY_skips_buffer_authority",
+                    "about": ["combat.rs"],
+                }),
+            )],
+        );
+        let mut output_by_agent = HashMap::new();
+        output_by_agent.insert(
+            "lens".to_string(),
+            "LENS_STDOUT_must_not_thread".to_string(),
+        );
+        output_by_agent.insert("adj".to_string(), r#"{"verdict":"approve"}"#.to_string());
+        let driver = Stub {
+            emits_by_agent,
+            output_by_agent,
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: Some(&graph),
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(rs.units["review"].status, ledger::Status::Integrated);
+
+        // The finding reached the adversary and the adjudicator THROUGH THE GRAPH:
+        // each grounded after the lens emitted it, so `graph_context` surfaced it.
+        let adv_prompt = driver.prompts_for("adversary").pop().unwrap();
+        assert!(
+            adv_prompt.contains("FINDING_SUMMARY_skips_buffer_authority"),
+            "the adversary must retrieve the lens's finding via the graph; prompt was:\n{adv_prompt}"
+        );
+        assert!(
+            adv_prompt.contains("Findings other reviewers have already raised"),
+            "the finding must arrive under the graph_context findings header; prompt was:\n{adv_prompt}"
+        );
+        let adj_prompt = driver.prompts_for("adj").pop().unwrap();
+        assert!(
+            adj_prompt.contains("FINDING_SUMMARY_skips_buffer_authority"),
+            "the adjudicator must retrieve the lens's finding via the graph; prompt was:\n{adj_prompt}"
+        );
+
+        // Proof it is the graph path, not threading: the lens's STDOUT is no longer
+        // captured, so it appears in NO later agent's prompt.
+        assert!(
+            !adv_prompt.contains("LENS_STDOUT_must_not_thread"),
+            "the lens's stdout must NOT be threaded into the adversary's prompt; threading is replaced by the graph"
+        );
+        assert!(
+            !adj_prompt.contains("LENS_STDOUT_must_not_thread"),
+            "the lens's stdout must NOT be threaded into the adjudicator's prompt; threading is replaced by the graph"
+        );
+
+        // The finding really landed in the graph as a KIND_FINDING ABOUT combat.rs.
+        let g = graph.subgraph(&["combat.rs".to_string()], 2).unwrap();
+        assert!(
+            g.nodes
+                .iter()
+                .any(|n| n.id == "f1" && n.kind == contextgraph::KIND_FINDING),
+            "the emitted ReviewFinding must fold into a KIND_FINDING node in the graph"
+        );
+    }
+
+    #[test]
+    fn review_agents_emit_findings_via_the_review_protocol() {
+        // Item 3: a lens / adversary prompt must carry the REVIEW_PROTOCOL telling it
+        // to record each finding as a ReviewFinding; the adjudicator's must NOT (it
+        // ends with its verdict line, not a finding emit).
         let mut cfg = Config::default();
         cfg.agents.insert("lens".into(), agent("lens"));
         cfg.agents.insert("adversary".into(), agent("adversary"));
@@ -3512,15 +3625,8 @@ mod tests {
             },
         );
         let st = Store::open(":memory:").unwrap();
-        let mut output_by_agent = HashMap::new();
-        output_by_agent.insert("lens".to_string(), "LENS_FINDING_alpha".to_string());
-        output_by_agent.insert(
-            "adversary".to_string(),
-            "ADVERSARY_REFUTATION_beta".to_string(),
-        );
-        output_by_agent.insert("adj".to_string(), r#"{"verdict":"approve"}"#.to_string());
         let driver = Stub {
-            output_by_agent,
+            output: r#"{"verdict":"approve"}"#.into(),
             ..Stub::new()
         };
         let deps = Deps {
@@ -3532,22 +3638,21 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
         };
-        let rs = run(&cfg, &deps).unwrap();
-        assert_eq!(rs.units["review"].status, ledger::Status::Integrated);
-
+        run(&cfg, &deps).unwrap();
+        let lens_prompt = driver.prompts_for("lens").pop().unwrap();
+        assert!(
+            lens_prompt.contains("ReviewFinding"),
+            "a lens must be told to emit findings as ReviewFindings; prompt was:\n{lens_prompt}"
+        );
         let adv_prompt = driver.prompts_for("adversary").pop().unwrap();
         assert!(
-            adv_prompt.contains("LENS_FINDING_alpha"),
-            "the adversary must be prompted with the lens's finding; prompt was:\n{adv_prompt}"
+            adv_prompt.contains("ReviewFinding"),
+            "the adversary must be told to emit its findings as ReviewFindings; prompt was:\n{adv_prompt}"
         );
         let adj_prompt = driver.prompts_for("adj").pop().unwrap();
         assert!(
-            adj_prompt.contains("LENS_FINDING_alpha"),
-            "the adjudicator must be prompted with the lens finding; prompt was:\n{adj_prompt}"
-        );
-        assert!(
-            adj_prompt.contains("ADVERSARY_REFUTATION_beta"),
-            "the adjudicator must be prompted with the adversary's refutation; prompt was:\n{adj_prompt}"
+            !adj_prompt.contains("ReviewFinding"),
+            "the adjudicator emits a verdict, not findings; prompt was:\n{adj_prompt}"
         );
     }
 
