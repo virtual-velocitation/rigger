@@ -65,15 +65,16 @@ test('the loop drives one spawn end-to-end and the proxied rigger_emit reaches t
   await client.connect(transport)
 
   // What the stub agent saw, so we can assert the peers refresh was injected and
-  // the spawn fields arrived.
-  const seen = { prompts: [], models: [], tools: [] }
+  // the spawn fields (including the persona/system prompt) arrived.
+  const seen = { prompts: [], systemPrompts: [], models: [], tools: [] }
 
   // The stub agent simulates a real agent: it calls the PROXIED rigger_emit on the
   // in-process proxy server the shim built (proxyServer.instance, an McpServer),
   // through a real in-memory MCP client pair - the same machinery the Agent SDK's
   // CLI uses. That call must travel proxy handler -> shim's shared client -> mock.
-  const stubAgent = async ({ prompt, model, tools, proxyServer }) => {
+  const stubAgent = async ({ prompt, systemPrompt, model, tools, proxyServer }) => {
     seen.prompts.push(prompt)
+    seen.systemPrompts.push(systemPrompt)
     seen.models.push(model)
     seen.tools.push(tools)
 
@@ -111,6 +112,18 @@ test('the loop drives one spawn end-to-end and the proxied rigger_emit reaches t
   // The spawn fields were unwrapped from structuredContent and passed to the agent.
   assert.equal(seen.models[0], 'sonnet', 'the spawn model reached the agent')
   assert.deepEqual(seen.tools[0], ['Read'], 'the spawn tools reached the agent')
+  // The persona (the agent's role) reached the agent runner as the system prompt -
+  // the workflow path threads the role exactly as the cli path does.
+  assert.equal(
+    seen.systemPrompts[0],
+    'You are the rust engineer. Implement the unit.',
+    'the persona/system_prompt from the spawn reached the agent runner',
+  )
+  // The persona is NOT spliced into the task prompt: it is a distinct system prompt.
+  assert.ok(
+    !seen.prompts[0].includes('You are the rust engineer'),
+    'the persona must be the system prompt, not concatenated into the task prompt',
+  )
   // The blast-radius peer decision was injected into the prompt (tool-boundary injection).
   assert.match(seen.prompts[0], /PEERS CONTEXT REFRESH/, 'peers refresh was prepended')
   assert.match(seen.prompts[0], /use the buffer authority/, 'the mock peer decision was injected')

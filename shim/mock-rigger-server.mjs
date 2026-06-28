@@ -25,10 +25,13 @@ function record(entry) {
   if (recordPath) appendFileSync(recordPath, JSON.stringify(entry) + '\n')
 }
 
-// The single spawn the mock hands out, then never again.
+// The single spawn the mock hands out, then never again. system_prompt is the
+// agent's persona (its role), which the shim must pass to the agent runner as the
+// system prompt (mirrors the Rust SpawnRequest carrying it from the conductor).
 const SPAWN = {
   id: '1',
   prompt: 'do the one unit',
+  system_prompt: 'You are the rust engineer. Implement the unit.',
   model: 'sonnet',
   tools: ['Read'],
   dir: '',

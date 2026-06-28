@@ -43,7 +43,7 @@ impl AgentDriver for Driver {
             &self.bin
         };
         let mut cmd = Command::new(bin);
-        cmd.args(build_args(agent, prompt));
+        cmd.args(build_args(agent, prompt, &opts.system_prompt));
         if !opts.dir.is_empty() {
             cmd.current_dir(&opts.dir);
         }
@@ -126,15 +126,19 @@ fn bridge_emits(
     Ok(())
 }
 
-/// Build the `claude` headless invocation: the agent's instructions plus the task
-/// become the prompt, with the model and allowed tools the agent declares.
-pub fn build_args(agent: &AgentDef, prompt: &str) -> Vec<String> {
-    let full = if agent.prompt.is_empty() {
-        prompt.to_string()
-    } else {
-        format!("{}\n\n{}", agent.prompt, prompt)
-    };
-    let mut args = vec!["-p".to_string(), full];
+/// Build the `claude` headless invocation: the grounded task is the `-p` prompt and
+/// the agent's PERSONA (its role) is the SYSTEM prompt (`--system-prompt`), with the
+/// model and allowed tools the agent declares. The persona is taken from
+/// `system_prompt` - the conductor's single persona source (`SpawnOpts::system_prompt`,
+/// set from `AgentDef::prompt`) - NOT read from `agent.prompt` here, so the cli and
+/// workflow paths thread the SAME persona and cannot diverge. An empty persona omits
+/// the flag (the agent runs with the default system prompt).
+pub fn build_args(agent: &AgentDef, prompt: &str, system_prompt: &str) -> Vec<String> {
+    let mut args = vec!["-p".to_string(), prompt.to_string()];
+    if !system_prompt.is_empty() {
+        args.push("--system-prompt".to_string());
+        args.push(system_prompt.to_string());
+    }
     if !agent.model.is_empty() {
         args.push("--model".to_string());
         args.push(agent.model.clone());
@@ -285,6 +289,7 @@ echo '{{\"id\":\"final\",\"pass\":true}}'"
                 },
                 "the task",
                 &SpawnOpts {
+                    system_prompt: String::new(),
                     dir: String::new(),
                     isolation: false,
                     parallel: false,
@@ -311,18 +316,29 @@ echo '{{\"id\":\"final\",\"pass\":true}}'"
     }
 
     #[test]
-    fn combines_persona_and_task() {
+    fn persona_is_the_system_prompt_task_is_the_prompt() {
+        // The persona (the agent's role) is threaded in as the `system_prompt` arg -
+        // the conductor's single persona source - and goes to `--system-prompt`; the
+        // grounded task is the `-p` prompt. The persona is NOT read from agent.prompt
+        // here, so the cli path uses the same persona source the workflow path does.
         let a = AgentDef {
             id: "impl".into(),
             model: "sonnet".into(),
             tools: vec!["Read".into(), "Bash".into()],
-            prompt: "You implement findings.".into(),
+            // agent.prompt is deliberately set but must NOT leak into the args: the
+            // persona arrives via the system_prompt parameter, not from this field.
+            prompt: "stale body that must not be used".into(),
             ..Default::default()
         };
-        let args = build_args(&a, "do the thing");
+        let args = build_args(&a, "do the thing", "You implement findings.");
+        // The grounded task is the -p prompt, and the persona is NOT spliced into it.
         let pi = args.iter().position(|x| x == "-p").unwrap();
-        assert!(args[pi + 1].contains("You implement findings."));
-        assert!(args[pi + 1].contains("do the thing"));
+        assert_eq!(args[pi + 1], "do the thing");
+        assert!(!args[pi + 1].contains("You implement findings."));
+        assert!(!args[pi + 1].contains("stale body"));
+        // The persona is the system prompt.
+        let si = args.iter().position(|x| x == "--system-prompt").unwrap();
+        assert_eq!(args[si + 1], "You implement findings.");
         let mi = args.iter().position(|x| x == "--model").unwrap();
         assert_eq!(args[mi + 1], "sonnet");
         let ti = args.iter().position(|x| x == "--allowed-tools").unwrap();
@@ -337,7 +353,7 @@ echo '{{\"id\":\"final\",\"pass\":true}}'"
             recurse: false,
             ..Default::default()
         };
-        let args = build_args(&a, "task");
+        let args = build_args(&a, "task", "");
         let ti = args.iter().position(|x| x == "--allowed-tools").unwrap();
         assert_eq!(args[ti + 1], "Read");
         assert!(!args[ti + 1].contains("Agent"));
@@ -351,19 +367,22 @@ echo '{{\"id\":\"final\",\"pass\":true}}'"
             recurse: true,
             ..Default::default()
         };
-        let args = build_args(&a, "task");
+        let args = build_args(&a, "task", "");
         let ti = args.iter().position(|x| x == "--allowed-tools").unwrap();
         assert_eq!(args[ti + 1], "Read,Agent");
     }
 
     #[test]
-    fn minimal_agent_yields_just_the_prompt() {
+    fn minimal_agent_with_no_persona_yields_just_the_prompt() {
+        // No persona (empty system_prompt) omits --system-prompt entirely, so a bare
+        // agent's args are exactly the task prompt.
         let args = build_args(
             &AgentDef {
                 id: "bare".into(),
                 ..Default::default()
             },
             "task",
+            "",
         );
         assert_eq!(args, ["-p", "task"]);
     }
