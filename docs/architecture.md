@@ -7,34 +7,35 @@
 > orchestration core, the declarative config model (agent files + workflow YAML),
 > the event-sourced + context-graph memory layer, and the two pluggable seams
 > (event store, agent driver).
-> **Grounded against (2026-06-27):** the tank_game dev-loop harness it generalizes,
-> `scripts/dev-loop/*.mjs` (conductor, plan, ledger, gates, autonomy, safety, learn,
-> coordinate, turbovec), `.claude/workflows/dev-loop-{fanout,review}.mjs`,
-> `.claude/workflows/review-and-remediate.js`, `tools/semantic-retrieval/`,
-> `scripts/bd-*.sh`, the review-lens agent definitions, and
-> `docs/superpowers/specs/2026-06-23-development-loop-design.md`. Plus the
-> context-graph research corpus (Zep/Graphiti temporal KG, the TrustGraph context-graph
-> manifesto, GraphRAG-vs-vector findings) and KurrentDB's event-sourcing model.
+> **Grounded against (2026-06-27):** a proven internal multi-agent dev-loop harness it
+> generalizes - its conductor, plan, ledger, gates, autonomy, safety, learn, coordinate
+> and semantic-retrieval modules, its fan-out / review workflow drivers, its
+> review-and-remediate flow, its semantic-retrieval tooling, its federation memory
+> scripts, its review-lens agent definitions, and the prior harness's development-loop
+> design spec. Plus the context-graph research corpus (Zep/Graphiti temporal KG, the
+> TrustGraph context-graph manifesto, GraphRAG-vs-vector findings) and KurrentDB's
+> event-sourcing model.
 >
 > **This is Rigger's canonical architecture doc.** It was drafted while building the
-> tank_game dev-loop it generalizes, then moved into this repo. The proposed records in
-> §12 (ADR-0001 + glossary) stay PROPOSALS until ratified at roadmap Phase 0; they are
-> not yet written into `docs/adr/`.
+> prior internal dev-loop it generalizes, then moved into this repo. The proposed
+> records in §12 (ADR-0001 + glossary) stay PROPOSALS until ratified at roadmap Phase 0;
+> they are not yet written into `docs/adr/`.
 
 ---
 
 ## How to read this
 
 Sections tagged **[AS-BUILT]** describe what the Rigger crate now implements. The
-design started as a generalization of the proven tank_game dev-loop harness (the
-*prior art*); it has since been built out in full as the standalone, config-driven,
-language-agnostic product, so what was once a target is now code you can read under
-`src/`. The single sentence that relates them:
+design started as a generalization of a proven internal multi-agent dev-loop harness
+(the *prior art*); it has since been built out in full as the standalone,
+config-driven, language-agnostic product, so what was once a target is now code you
+can read under `src/`. The single sentence that relates them:
 
-> **Rigger is the *machinery* of the tank_game dev-loop, inverted the same way the
-> engine was: every project-specific thing (Rust, cargo, bd, e7, Golden Apple) becomes
-> user-supplied *content* (agent files, a workflow YAML, gate commands), and Rigger
-> itself ships knowing none of it.**
+> **Rigger is the *machinery* of that prior dev-loop, with the inversion taken all the
+> way: every project-specific thing (a particular language, build tool, federation
+> memory system, project-specific gate, or codebase) becomes user-supplied *content*
+> (agent files, a workflow YAML, gate commands), and Rigger itself ships knowing none
+> of it.**
 
 The reader who wants the 5-minute version: §1 (what it is) → §2 (the picture) → §3
 (the declarative model) → §5 (the memory ∞). The reader reproducing it: read all of it.
@@ -70,23 +71,23 @@ next agent is never blind to what the last one decided.** It is the *producing* 
 ### The inversion (why "no current config exists")
 
 ```
-        tank_game dev-loop (prior art)             Rigger (AS-BUILT)
+        prior dev-loop (prior art)                 Rigger (AS-BUILT)
    ┌─────────────────────────────────┐     ┌──────────────────────────────┐
    │ MACHINERY  (general)            │     │ MACHINERY  →  the Rigger crate │
    │  conductor · ledger · DAG ·     │ ══▶ │  (Rust: conductor, eventstore, │
    │  gates · autonomy · fan-out ·   │     │   contextgraph, drivers, …)    │
    │  review · context-graph(new)    │     └──────────────────────────────┘
    ├─────────────────────────────────┤     ┌──────────────────────────────┐
-   │ CONTENT   (Golden-Apple-specific)│ ══▶ │ CONTENT  →  YOUR repo's config │
-   │  cargo/e7 gates · bd federation ·│     │  agents/*.md · .rigger/*.yml · │
-   │  Rust turbovec corpus · review   │     │  gate commands · grounding src │
-   │  lenses · the S1 spec            │     │  (tank_game becomes one EXAMPLE)│
+   │ CONTENT   (project-specific)    │ ══▶ │ CONTENT  →  YOUR repo's config │
+   │  project gates · federation     │     │  agents/*.md · .rigger/*.yml · │
+   │  memory · code corpus · review  │     │  gate commands · grounding src │
+   │  lenses · the spec              │     │  (the prior loop is one EXAMPLE)│
    └─────────────────────────────────┘     └──────────────────────────────┘
 ```
 
-The tank_game harness already proved the machinery (it drove the ADR-0008 engine
-inversion). Rigger is that machinery with the content cut out and replaced by a config
-surface.
+The prior harness already proved the machinery (it drove a large internal
+architecture inversion). Rigger is that machinery with the content cut out and
+replaced by a config surface.
 
 ---
 
@@ -150,8 +151,8 @@ Two file kinds, both in the *consuming* repo. Rigger reads them; it ships neithe
 
 ### 3.1 Agent definition files: `.rigger/agents/<id>.md`
 
-Markdown-with-YAML-frontmatter (the format the tank_game review lenses already use,
-`.claude/agents/*.md`), so existing agent defs port verbatim.
+Markdown-with-YAML-frontmatter (the format the prior harness's review lenses already
+use, `.claude/agents/*.md`), so existing agent defs port verbatim.
 
 ```markdown
 ---
@@ -184,8 +185,8 @@ references it by `id`.
 
 GitHub-Actions-shaped: a DAG of **stages**, each with `needs:` edges, each binding an
 **agent**, optional **gates**, and an **autonomy** level. *This* is the loop: the thing
-that is hardcoded as `ground→plan→red→green→verify→review→integrate` in the tank_game
-conductor becomes data anyone can rewrite.
+that is hardcoded as `ground→plan→red→green→verify→review→integrate` in the prior
+harness's conductor becomes data anyone can rewrite.
 
 ```yaml
 # .rigger/workflow.yml - a GitHub-Actions-style DAG for the producing loop
@@ -272,8 +273,8 @@ planner-proposed unit inherits `defaults.review` automatically.
 
 A gate is `{ run: <command>, kind: core|elevated|deferred }`. Rigger runs it, captures a
 **compact summary** (verdict + ≤5 failing lines, capped), never the raw log, and feeds
-that to the autonomy ratchet. `cargo test` / the e7 lexical check / `pytest` are all just
-entries in a project's `gates:` map. Rigger ships **zero** gates.
+that to the autonomy ratchet. `cargo test` / a project-specific lexical check / `pytest`
+are all just entries in a project's `gates:` map. Rigger ships **zero** gates.
 
 ---
 
@@ -281,7 +282,7 @@ entries in a project's `gates:` map. Rigger ships **zero** gates.
 
 ### 4.1 The pipeline, now *declared*
 
-The tank_game prior art hardcoded `Intake → Loop-readiness → Ground → Plan →
+The prior art hardcoded `Intake → Loop-readiness → Ground → Plan →
 Coverage → Partition → Fan-out → Verify+Review → Integrate → Converge`. Rigger's
 `conductor::run` (`src/conductor.rs`) executes whatever DAG the workflow YAML
 declares: it topo-sorts the stages, runs the ready set wave by wave (independent
@@ -327,7 +328,7 @@ integrated + every gate green. Never "looks done."
 
 ### 4.2 Durable state: the ledger *is* a projection of the event log
 
-The tank_game prior art kept a JSON ledger written solely by the Conductor; executors
+The prior art kept a JSON ledger written solely by the Conductor; executors
 appended to a `.buffer` and the Conductor `drain()`d it (one-mutation-authority).
 Rigger keeps that one-writer discipline but makes the ledger a **projection of
 the event log** (§5): the run's state (units, lifecycle, attempts, the integrating
@@ -367,20 +368,20 @@ Per gate: `manual → auto_notify → silent` on N consecutive clean passes (pro
 auto-applied); any non-manual gate that **fails** auto-demotes to `manual`. Autonomy
 tracks demonstrated reliability: a graduated gate can never become a silent hole that
 auto-passes bad work. The async manual-gate queue lets *independent* units advance while
-one waits on a human. (Direct port of `autonomy.mjs`.)
+one waits on a human. (Direct port of the prior harness's autonomy module.)
 
 ### 4.4 Safety rails
 
 `checkBudget` (token/time circuit-breaker → pause), `remediate` (bounded retry with
 re-grounding → escalate after N), `flagSpecDefect` (halt + amend the spec, don't
 deviate), `abortTask` (discard un-integrated worktrees, keep integrated). Never silent,
-never infinite. (Port of `safety.mjs`.)
+never infinite. (Port of the prior harness's safety module.)
 
 ---
 
 ## 5. The memory layer: event source + context graph  **[AS-BUILT: the new heart]**
 
-This is what the tank_game harness does *not* have and what makes Rigger more than a
+This is what the prior harness does *not* have and what makes Rigger more than a
 port. The model, in one line: **agents append immutable events to a log; a projector
 folds the log into a bi-temporal context graph; agents retrieve their connected subgraph
 and subscribe for in-flight decisions.**
@@ -638,8 +639,8 @@ disjoint, so parallel worktrees cannot conflict and an agent cannot fan out.
 
 ## 7. Worked example: the modifier saga through Rigger
 
-The real episode from this session, as Rigger records it - and the edges below are the
-ones `sqlite::Projector` actually folds (DECIDED from the event actor, GOVERNS from a
+A representative episode, as Rigger records it - and the edges below are the ones
+`sqlite::Projector` actually folds (DECIDED from the event actor, GOVERNS from a
 decision's `governs`, SUPERSEDES + invalidation, GATED_BY from a verdict's `artifact`,
 ASSIGNED_TO + BLOCKS from `UnitStarted`, TOUCHES from `FileTouched`). A unit
 "genericize the modifier pipeline" runs; here is the **event log** it appends and the
@@ -648,16 +649,16 @@ ASSIGNED_TO + BLOCKS from `UnitStarted`, TOUCHES from `FileTouched`). A unit
 ```jsonc
 // stream "run", appended over the unit's life (Position grows globally; meta.actor is
 // the acting agent, valid_from is the bi-temporal valid-time).
-{ "type":"UnitStarted",   "data":{"id":"mod","unit":"mod","criterion":"engine names no game concept","agent":"impl-mod"} }
+{ "type":"UnitStarted",   "data":{"id":"mod","unit":"mod","criterion":"core names no domain concept","agent":"impl-mod"} }
 { "type":"DecisionMade",  "meta":{"actor":"impl-mod"},
-  "data":{"id":"mod-collapse","summary":"move whole modifier to ga-*","governs":["engine-schema/src/modifier.rs"]},
+  "data":{"id":"mod-collapse","summary":"move whole modifier into the domain layer","governs":["core-schema/src/modifier.rs"]},
   "valid_from":"…T10:00Z" }
 // … owner rejects; the split decision supersedes the collapse …
 { "type":"DecisionMade",  "meta":{"actor":"impl-mod"},
-  "data":{"id":"mod-split","summary":"generic FoldRule pipeline in engine, GA taxonomy on top",
-  "governs":["engine-schema/src/modifier.rs"],"supersedes":"mod-collapse"}, "valid_from":"…T11:30Z" }
-{ "type":"FileTouched",   "data":{"path":"engine-schema/src/modifier.rs","by":"impl-mod"} }
-{ "type":"GateVerdict",   "data":{"gate":"e7","pass":true,"artifact":"engine-schema/src/modifier.rs"} }
+  "data":{"id":"mod-split","summary":"generic FoldRule pipeline in core, domain taxonomy on top",
+  "governs":["core-schema/src/modifier.rs"],"supersedes":"mod-collapse"}, "valid_from":"…T11:30Z" }
+{ "type":"FileTouched",   "data":{"path":"core-schema/src/modifier.rs","by":"impl-mod"} }
+{ "type":"GateVerdict",   "data":{"gate":"boundary-check","pass":true,"artifact":"core-schema/src/modifier.rs"} }
 { "type":"UnitIntegrated","data":{"id":"mod","unit":"mod","commit":"f848b97"} }
 ```
 
@@ -670,15 +671,15 @@ The projector folds these into the graph:
 (decision mod-collapse) --GOVERNS(valid_to=11:30)--> (artifact modifier.rs)   ← invalidated, not deleted
 (decision mod-split)    --GOVERNS--> (artifact modifier.rs)
 (unit mod)              --ASSIGNED_TO--> (agent impl-mod)
-(artifact modifier.rs)  --GATED_BY--> (gate e7)
+(artifact modifier.rs)  --GATED_BY--> (gate boundary-check)
 (agent impl-mod)        --TOUCHES--> (artifact modifier.rs)
 ```
 
 **The payoff, concretely:** the *next* agent that touches `modifier.rs` calls
 `subgraph(&["modifier.rs"], 2)` and is handed `mod-split` (current), **not** `mod-collapse`
-(invalidated), plus the `e7` gate that governs the file, plus the no-named-bridge lesson
-linked to the engine crate. It cannot re-litigate the collapse, re-invent a gate-dodge, or
-work a stale base: the three failure classes this session hit, closed structurally.
+(invalidated), plus the `boundary-check` gate that governs the file, plus the
+no-named-bridge lesson linked to the core crate. It cannot re-litigate the collapse,
+re-invent a gate-dodge, or work a stale base: three failure classes closed structurally.
 
 ---
 
@@ -761,6 +762,8 @@ github.com/virtual-velocitation/rigger
 │   ├── ledger.rs                RunState projection (folded from the run events)
 │   ├── config.rs                agent-file + workflow-YAML loader → runtime types
 │   ├── spec.rs  worktree.rs  sidecar.rs  mcpserver.rs  hooks.rs
+├── examples/
+│   └── demo/                    a worked example: a fictional project's .rigger config
 └── .github/workflows/rust.yml   CI: build-test, turbovec, kurrentdb jobs
 ```
 
@@ -785,17 +788,17 @@ modules from the `rigger` crate directly.
 
 ## 11. What carries over vs. what's new
 
-| tank_game module **(prior art)** | Rigger **[AS-BUILT]** | Change |
+| prior-harness module **(prior art)** | Rigger **[AS-BUILT]** | Change |
 |---|---|---|
-| `ledger.mjs` | `conductor` + event projection | ledger becomes a projection of the log |
-| `conductor.mjs` (hardcoded pipeline) | `conductor` executing the workflow DAG | pipeline becomes declared YAML |
-| `plan.mjs` (DAG, coverage, partition) | `conductor` (same logic, Rust) | direct port |
-| `gates.mjs` | `gate` + the YAML `gates:` library | gates become config |
-| `autonomy.mjs`, `safety.mjs`, `learn.mjs` | `gate` (ratchet) + `safety`, Rust | direct ports |
-| `turbovec.mjs` + `tools/semantic-retrieval` | `grounder::turbovec` (turbovec feature) | generalized + pluggable |
-| `bd-*.sh` federation memory | the event log + context graph | replaced by event-sourced memory (the new core) |
-| `dev-loop-fanout` / `dev-loop-review` (JS Workflows) | `driver/cli` (default) or `driver/workflow` | spawning becomes a pluggable seam |
-| review lenses, e7 gate, S1 spec | `examples/golden-apple/` | demoted to a worked example |
+| ledger module | `conductor` + event projection | ledger becomes a projection of the log |
+| conductor (hardcoded pipeline) | `conductor` executing the workflow DAG | pipeline becomes declared YAML |
+| plan module (DAG, coverage, partition) | `conductor` (same logic, Rust) | direct port |
+| gates module | `gate` + the YAML `gates:` library | gates become config |
+| autonomy / safety / learn modules | `gate` (ratchet) + `safety`, Rust | direct ports |
+| semantic-retrieval grounder + tooling | `grounder::turbovec` (turbovec feature) | generalized + pluggable |
+| federation memory scripts | the event log + context graph | replaced by event-sourced memory (the new core) |
+| fan-out / review workflow drivers | `driver/cli` (default) or `driver/workflow` | spawning becomes a pluggable seam |
+| review lenses, project gate, the spec | `examples/demo/` | demoted to a worked example |
 | (none) | **event store + bi-temporal context graph + (A) subscriptions** | **net-new** |
 
 ---
@@ -803,7 +806,7 @@ modules from the `rigger` crate directly.
 ## 12. Records to ratify during execution
 
 > These are **Rigger's** future records (created in the *rigger* repo at Phase 0), embedded
-> here as proposals. **Do not** write them into tank_game's `adr/` or `ubiquitous-language.md`.
+> here as proposals. **Do not** write them into the prior harness's `adr/` or `ubiquitous-language.md`.
 
 ### Proposed `rigger/docs/adr/0001-rigger-architecture.md`
 
@@ -812,8 +815,8 @@ modules from the `rigger` crate directly.
 
 - Status: Proposed
 - Context: We need a standalone, publishable harness that turns a spec into integrated
-  code via a fleet of AI agents, generalized from the tank_game dev-loop, owning none of
-  any consumer's project specifics.
+  code via a fleet of AI agents, generalized from a proven internal dev-loop, owning none
+  of any consumer's project specifics.
 - Decision: Rigger is governed by:
   - R1 CONFIG-OVER-CODE: agents are definition files; the flow is a workflow YAML (a DAG);
     gates are commands. Reconfiguring the loop never recompiles the binary.
@@ -882,7 +885,7 @@ note. **Task 0 = ratify the records.**
   bi-temporal supersession, entity resolution, `subgraph`. *Done when:* the modifier-saga
   fixture (§7) projects correctly and `subgraph` returns `mod-split`, not `mod-collapse`.
 - **Phase 4: Config loader.** Parse agent files + workflow YAML → runtime types; validate.
-  *Done when:* the `examples/golden-apple` config loads (or `rigger validate` passes).
+  *Done when:* the `examples/demo` config loads (or `rigger validate` passes).
 - **Phase 5: Conductor + rails.** The DAG executor + ledger projection + gate engine +
   autonomy + safety (ports). *Done when:* a trivial 2-stage workflow runs end-to-end with a
   stub driver.
@@ -898,15 +901,15 @@ note. **Task 0 = ratify the records.**
 
 ## 14. Glossary & cross-references
 
-See §12 for Rigger's own glossary. This blueprint inherits its discipline from the tank_game
-dev-loop design (`docs/superpowers/specs/2026-06-23-development-loop-design.md`) and the
-context-graph research (Zep/Graphiti, the TrustGraph context-graph manifesto, GraphRAG-vs-vector).
-KurrentDB's model (`github.com/kurrent-io/KurrentDB`) is the trait blueprint for `eventstore`.
+See §12 for Rigger's own glossary. This blueprint inherits its discipline from a proven
+internal dev-loop design and the context-graph research (Zep/Graphiti, the TrustGraph
+context-graph manifesto, GraphRAG-vs-vector). KurrentDB's model
+(`github.com/kurrent-io/KurrentDB`) is the trait blueprint for `eventstore`.
 
 ---
 
 *End of reference architecture. The harness described here is **built** - the crate, the
 two event-store backends, the bi-temporal context graph, the conductor and its rails, both
-agent drivers, and the golden-apple example all exist under `src/` and `examples/`. The §12
+agent drivers, and the demo example all exist under `src/` and `examples/`. The §12
 ADR-0001 + glossary records remain governance PROPOSALS until ratified; the architecture
 itself is as-built.*
