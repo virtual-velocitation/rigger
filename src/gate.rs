@@ -144,26 +144,71 @@ impl Runner for ExecRunner {
             Ok(out) => {
                 let mut evidence = String::from_utf8_lossy(&out.stdout).into_owned();
                 evidence.push_str(&String::from_utf8_lossy(&out.stderr));
+                let pass = out.status.success();
                 GateResult {
-                    pass: out.status.success(),
-                    evidence: compact(&evidence),
+                    pass,
+                    evidence: compact(pass, &evidence),
                 }
             }
             Err(e) => GateResult {
                 pass: false,
-                evidence: format!("gate {}: {e}", g.id),
+                evidence: format!("FAIL\ngate {}: {e}", g.id),
             },
         }
     }
 }
 
-fn compact(s: &str) -> String {
-    const CAP: usize = 780;
-    let s = s.trim();
-    if s.len() <= CAP {
-        return s.to_string();
+/// Cap on the length of any single evidence line (§3.3).
+const LINE_CAP: usize = 200;
+/// Cap on the number of signal lines carried in the evidence (§3.3).
+const MAX_LINES: usize = 5;
+
+/// Reduce a gate's raw output to a compact summary (§3.3): the verdict
+/// (`PASS`/`FAIL`) followed by up to five lines that signal failure - lines
+/// containing `error`, `fail`, `panic`, or `assert` (case-insensitive), or the
+/// last five non-empty lines if none match. Each line is length-capped; the raw
+/// log is never carried.
+fn compact(pass: bool, s: &str) -> String {
+    let verdict = if pass { "PASS" } else { "FAIL" };
+    let lines: Vec<&str> = s.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+
+    let signal: Vec<&str> = lines
+        .iter()
+        .filter(|l| is_signal(l))
+        .take(MAX_LINES)
+        .copied()
+        .collect();
+    let chosen: Vec<&str> = if signal.is_empty() {
+        // No failure-signalling line matched: fall back to the last few lines.
+        let start = lines.len().saturating_sub(MAX_LINES);
+        lines[start..].to_vec()
+    } else {
+        signal
+    };
+
+    let mut out = String::from(verdict);
+    for line in chosen {
+        out.push('\n');
+        out.push_str(&cap_line(line));
     }
-    s[s.len() - CAP..].trim().to_string()
+    out
+}
+
+/// Whether a line signals a failure (matched case-insensitively).
+fn is_signal(line: &str) -> bool {
+    let lower = line.to_lowercase();
+    ["error", "fail", "panic", "assert"]
+        .iter()
+        .any(|kw| lower.contains(kw))
+}
+
+/// Truncate a line to [`LINE_CAP`] characters, on a char boundary.
+fn cap_line(line: &str) -> String {
+    if line.chars().count() <= LINE_CAP {
+        return line.to_string();
+    }
+    let truncated: String = line.chars().take(LINE_CAP).collect();
+    format!("{truncated}...")
 }
 
 #[cfg(test)]
@@ -201,6 +246,32 @@ mod tests {
     fn exec_runner_reports_pass_fail() {
         assert!(ExecRunner.run(&gate_cmd("true"), "").pass);
         assert!(!ExecRunner.run(&gate_cmd("false"), "").pass);
+    }
+
+    #[test]
+    fn compact_summary_is_verdict_plus_failing_lines() {
+        // A gate that prints 20 lines including a failure signal, then fails.
+        let mut cmd = String::new();
+        for i in 1..=20 {
+            if i == 7 {
+                cmd.push_str("echo 'error: boom'; ");
+            } else {
+                cmd.push_str(&format!("echo 'line {i}'; "));
+            }
+        }
+        cmd.push_str("false");
+        let res = ExecRunner.run(&gate_cmd(&cmd), "");
+        assert!(!res.pass);
+
+        let lines: Vec<&str> = res.evidence.lines().collect();
+        // Verdict line plus at most MAX_LINES signal lines.
+        assert!(lines.len() <= MAX_LINES + 1, "evidence: {:?}", res.evidence);
+        assert_eq!(lines[0], "FAIL", "verdict names the failure");
+        assert!(
+            res.evidence.contains("error: boom"),
+            "evidence keeps the failure line, not just the trailing bytes: {:?}",
+            res.evidence
+        );
     }
 
     fn gate_cmd(run: &str) -> Gate {

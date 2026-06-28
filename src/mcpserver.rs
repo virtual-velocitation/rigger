@@ -5,6 +5,7 @@
 //! newline-delimited stdio loop - no async runtime needed.
 
 use std::io::{BufRead, Write};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 
@@ -134,12 +135,24 @@ impl<'a> Server<'a> {
             .ok_or("rigger_emit: missing type")?;
         let data = args.get("data").cloned().unwrap_or_else(|| json!({}));
         let bytes = serde_json::to_vec(&data).map_err(|e| e.to_string())?;
+
+        // The actor metadata stamps the DECIDED edge; valid_from sets the
+        // bi-temporal validity (§6). Both are optional builder overrides.
+        let mut event = Event::new(typ, bytes);
+        if let Some(meta) = args.get("meta").and_then(Value::as_object) {
+            for (k, v) in meta {
+                let v = v
+                    .as_str()
+                    .ok_or_else(|| format!("rigger_emit: meta value for {k:?} must be a string"))?;
+                event = event.with_meta(k, v);
+            }
+        }
+        if let Some(vf) = args.get("valid_from") {
+            event = event.with_valid_from(parse_valid_from(vf)?);
+        }
+
         self.store
-            .append(
-                &self.stream,
-                ExpectedRevision::Any,
-                &[Event::new(typ, bytes)],
-            )
+            .append(&self.stream, ExpectedRevision::Any, &[event])
             .map_err(|e| e.to_string())?;
         Ok(json!({}))
     }
@@ -155,11 +168,117 @@ impl<'a> Server<'a> {
     }
 }
 
+/// Parse a `valid_from` argument into a [`SystemTime`]: a JSON integer of unix
+/// nanoseconds, or an RFC3339 string (the common `YYYY-MM-DDTHH:MM:SS[.fff][Z|±HH:MM]`
+/// forms). The integer-nanos form is the canonical one (§6).
+fn parse_valid_from(v: &Value) -> Result<SystemTime, String> {
+    if let Some(nanos) = v.as_i64() {
+        return nanos_to_time(nanos);
+    }
+    if let Some(s) = v.as_str() {
+        // Allow a bare integer-as-string too, then fall through to RFC3339.
+        if let Ok(nanos) = s.parse::<i64>() {
+            return nanos_to_time(nanos);
+        }
+        return rfc3339_to_time(s);
+    }
+    Err("rigger_emit: valid_from must be unix-nanos (integer) or an RFC3339 string".into())
+}
+
+/// Convert unix nanoseconds (which may be negative, i.e. before the epoch) to a
+/// [`SystemTime`].
+fn nanos_to_time(nanos: i64) -> Result<SystemTime, String> {
+    if nanos >= 0 {
+        Ok(UNIX_EPOCH + Duration::from_nanos(nanos as u64))
+    } else {
+        Ok(UNIX_EPOCH - Duration::from_nanos((-nanos) as u64))
+    }
+}
+
+/// A dependency-free RFC3339 parser for the common forms: a `YYYY-MM-DD` date, a
+/// `T`/space separator, an `HH:MM:SS` time, optional fractional seconds, and a
+/// `Z` or `±HH:MM` offset.
+fn rfc3339_to_time(s: &str) -> Result<SystemTime, String> {
+    let bad = || format!("rigger_emit: invalid RFC3339 valid_from {s:?}");
+    let bytes = s.as_bytes();
+    if bytes.len() < 19 {
+        return Err(bad());
+    }
+    let num = |a: usize, b: usize| -> Result<i64, String> {
+        s.get(a..b)
+            .and_then(|p| p.parse::<i64>().ok())
+            .ok_or_else(bad)
+    };
+    let (year, month, day) = (num(0, 4)?, num(5, 7)?, num(8, 10)?);
+    let (hour, min, sec) = (num(11, 13)?, num(14, 16)?, num(17, 19)?);
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return Err(bad());
+    }
+
+    let rest = &s[19..];
+    // Optional fractional seconds.
+    let mut idx = 0;
+    let rest_bytes = rest.as_bytes();
+    let mut nanos_frac: u64 = 0;
+    if rest_bytes.first() == Some(&b'.') {
+        idx = 1;
+        let frac_start = idx;
+        while idx < rest_bytes.len() && rest_bytes[idx].is_ascii_digit() {
+            idx += 1;
+        }
+        let mut frac = rest[frac_start..idx].to_string();
+        if frac.is_empty() {
+            return Err(bad());
+        }
+        frac.truncate(9);
+        while frac.len() < 9 {
+            frac.push('0');
+        }
+        nanos_frac = frac.parse::<u64>().map_err(|_| bad())?;
+    }
+
+    // Timezone offset: Z, +HH:MM, or -HH:MM.
+    let tz = &rest[idx..];
+    let offset_secs: i64 = match tz {
+        "Z" | "z" => 0,
+        _ => {
+            let sign = match tz.as_bytes().first() {
+                Some(b'+') => 1,
+                Some(b'-') => -1,
+                _ => return Err(bad()),
+            };
+            if tz.len() < 6 {
+                return Err(bad());
+            }
+            let oh: i64 = tz.get(1..3).and_then(|p| p.parse().ok()).ok_or_else(bad)?;
+            let om: i64 = tz.get(4..6).and_then(|p| p.parse().ok()).ok_or_else(bad)?;
+            sign * (oh * 3600 + om * 60)
+        }
+    };
+
+    let days = days_from_civil(year, month as u32, day as u32);
+    let secs = days * 86_400 + hour * 3600 + min * 60 + sec - offset_secs;
+    let total_nanos = secs * 1_000_000_000 + nanos_frac as i64;
+    nanos_to_time(total_nanos)
+}
+
+/// Days since the unix epoch (1970-01-01) for a civil (proleptic Gregorian) date,
+/// per Howard Hinnant's `days_from_civil` algorithm. Works for dates before the
+/// epoch (negative result).
+fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400; // [0, 399]
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) as i64 + 2) / 5 + d as i64 - 1; // [0, 365]
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
+    era * 146_097 + doe - 719_468
+}
+
 fn tool_list() -> Value {
     json!([
         {"name": "rigger_next", "description": "Pick up the next queued agent spawn. The id is empty when nothing is waiting.", "inputSchema": {"type": "object", "properties": {}}},
         {"name": "rigger_result", "description": "Report an agent's final result by spawn id.", "inputSchema": {"type": "object", "properties": {"id": {"type": "string"}, "output": {"type": "string"}, "error": {"type": "string"}}, "required": ["id"]}},
-        {"name": "rigger_emit", "description": "Record a decision on the shared event log, live, so other agents see it immediately.", "inputSchema": {"type": "object", "properties": {"type": {"type": "string"}, "data": {"type": "object"}}, "required": ["type", "data"]}},
+        {"name": "rigger_emit", "description": "Record a decision on the shared event log, live, so other agents see it immediately. Optionally set meta (e.g. the acting agent, which stamps the graph's DECIDED edge) and valid_from (the bi-temporal time the fact became true).", "inputSchema": {"type": "object", "properties": {"type": {"type": "string"}, "data": {"type": "object"}, "meta": {"type": "object", "description": "Metadata entries (string->string), e.g. {\"actor\": \"<agent-id>\"}.", "additionalProperties": {"type": "string"}}, "valid_from": {"description": "When the fact became true: unix nanoseconds (integer) or an RFC3339 timestamp string.", "type": ["integer", "string"]}}, "required": ["type", "data"]}},
         {"name": "rigger_peers", "description": "List the decisions other agents have made so far this run, so you do not work blind to them.", "inputSchema": {"type": "object", "properties": {}}},
     ])
 }
@@ -197,6 +316,63 @@ mod tests {
         let resp: Value = serde_json::from_str(String::from_utf8(output).unwrap().trim()).unwrap();
         assert_eq!(resp["id"], 1);
         assert!(resp.get("result").is_some());
+    }
+
+    #[test]
+    fn emit_tool_carries_meta_actor() {
+        let store = Store::open(":memory:").unwrap();
+        let driver = Driver::new();
+        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
+        let server = Server::new(&driver, &store, "run", &peers);
+
+        let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_emit","arguments":{"type":"DecisionMade","data":{"id":"d1"},"meta":{"actor":"a7"}}}}"#;
+        let mut output = Vec::new();
+        server.run(Cursor::new(input), &mut output).unwrap();
+
+        let events = store
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        let e = events
+            .iter()
+            .find(|e| e.type_ == "DecisionMade")
+            .expect("stored the emitted event");
+        assert_eq!(e.meta.get("actor").map(String::as_str), Some("a7"));
+    }
+
+    #[test]
+    fn emit_tool_sets_valid_from_from_nanos() {
+        let store = Store::open(":memory:").unwrap();
+        let driver = Driver::new();
+        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
+        let server = Server::new(&driver, &store, "run", &peers);
+
+        // 2_000_000_000 ns = 2 seconds after the unix epoch.
+        let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_emit","arguments":{"type":"DecisionMade","data":{},"valid_from":2000000000}}}"#;
+        let mut output = Vec::new();
+        server.run(Cursor::new(input), &mut output).unwrap();
+
+        let events = store
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        let e = events
+            .iter()
+            .find(|e| e.type_ == "DecisionMade")
+            .expect("stored the emitted event");
+        assert_eq!(
+            e.valid_from,
+            UNIX_EPOCH + Duration::from_nanos(2_000_000_000)
+        );
+    }
+
+    #[test]
+    fn rfc3339_valid_from_parses_to_epoch_seconds() {
+        // 1970-01-01T00:00:02Z is two seconds after the epoch.
+        let t = parse_valid_from(&json!("1970-01-01T00:00:02Z")).unwrap();
+        assert_eq!(t, UNIX_EPOCH + Duration::from_secs(2));
+        // A real-world timestamp with an offset.
+        let z = parse_valid_from(&json!("2021-01-01T00:00:00Z")).unwrap();
+        let off = parse_valid_from(&json!("2021-01-01T01:00:00+01:00")).unwrap();
+        assert_eq!(z, off, "the offset is applied back to UTC");
     }
 
     #[test]

@@ -11,7 +11,9 @@ use rigger::contextgraph::{self, sqlite::Projector, Projection};
 use rigger::driver::cli;
 use rigger::eventstore::{sqlite::Store, Direction, EventStore, Filter};
 use rigger::gate::ExecRunner;
-use rigger::grounder::{Grep, Grounder};
+#[cfg(feature = "turbovec")]
+use rigger::grounder::Grep;
+use rigger::grounder::Grounder;
 use rigger::ledger::RunState;
 use rigger::sidecar::PeerDecision;
 use rigger::{hooks, spec};
@@ -92,7 +94,7 @@ fn cmd_run(args: &[String]) -> Res {
     let store = Store::open(&db_path("events.db"))?;
     let graph = Projector::open(&db_path("graph.db"))?;
     let driver = cli::Driver::default();
-    let grounder = select_grounder();
+    let grounder = select_grounder(&cfg.workflow.defaults.grounder);
     let deps = Deps {
         store: &store,
         driver: &driver,
@@ -113,7 +115,7 @@ fn cmd_serve(_args: &[String]) -> Res {
     let store = Store::open(&db_path("events.db"))?;
     let graph = Projector::open(&db_path("graph.db"))?;
     let driver = rigger::driver::workflow::Driver::new();
-    let grounder = select_grounder();
+    let grounder = select_grounder(&cfg.workflow.defaults.grounder);
     let peers = rigger::sidecar::Sidecar::start(&store, 0, Filter::default())?;
 
     // The conductor orchestrates in the background; this thread serves the MCP
@@ -240,22 +242,28 @@ fn cmd_prime() -> Res {
     Ok(())
 }
 
-/// Build the grounder: the real turbovec engine when compiled with `-F turbovec`
-/// (falling back to grep if its model is unavailable), grep otherwise.
+/// Build the grounder named by `defaults.grounder` (§3.2, §5.4, R4): `nop` and
+/// `grep` (and the empty default) resolve via `grounder::grounder_for`; the
+/// semantic names (`vector`/`turbovec`) resolve to the real turbovec engine only
+/// when compiled with `-F turbovec`, falling back to grep with a note if its model
+/// is unavailable. Anything else falls back to grep via `grounder_for`.
 #[cfg(feature = "turbovec")]
-fn select_grounder() -> Box<dyn Grounder> {
-    match rigger::grounder::turbovec::Turbovec::new(".") {
-        Ok(tv) => Box::new(tv),
-        Err(e) => {
-            eprintln!("rigger: turbovec unavailable ({e}); falling back to grep");
-            Box::new(Grep { root: ".".into() })
-        }
+fn select_grounder(name: &str) -> Box<dyn Grounder> {
+    match name.to_lowercase().as_str() {
+        "vector" | "turbovec" => match rigger::grounder::turbovec::Turbovec::new(".") {
+            Ok(tv) => Box::new(tv),
+            Err(e) => {
+                eprintln!("rigger: turbovec unavailable ({e}); falling back to grep");
+                Box::new(Grep { root: ".".into() })
+            }
+        },
+        other => rigger::grounder::grounder_for(other, "."),
     }
 }
 
 #[cfg(not(feature = "turbovec"))]
-fn select_grounder() -> Box<dyn Grounder> {
-    Box::new(Grep { root: ".".into() })
+fn select_grounder(name: &str) -> Box<dyn Grounder> {
+    rigger::grounder::grounder_for(name, ".")
 }
 
 fn git_repo() -> String {
