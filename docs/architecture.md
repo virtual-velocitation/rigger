@@ -362,6 +362,31 @@ pub struct Unit {
 // adds: no spec defect flagged (§4.1, R6).
 ```
 
+**Resume-continuity: the per-unit branch is the durable checkpoint.** Skipping
+*integrated* units is not enough - a unit that was implemented, gated, and partway
+through review when a window was capped must not re-run from scratch on the next
+window, or progress never accumulates. So a unit's worktree branch is
+**deterministic**, derived purely from its id: `rigger/u/<unit-id>` (`unit_branch`).
+The same unit reuses the same branch on every run, and a git branch ref survives
+process death and worktree removal - making the branch, not the transient temp-dir
+worktree, the checkpoint. `Worktree::create` handles both a fresh branch (create off
+`HEAD`) and an existing branch with prior commits (check it out into a fresh dir,
+reusing the work). On resume, `RunCtx::resume_phase` reads the unit's last recorded
+`Status` from the folded log AND whether its branch carries committed work
+(`branch_has_work`), and continues mid-stream:
+
+| Recorded status + branch          | `ResumePhase` | Resume behavior                                         |
+| --------------------------------- | ------------- | ------------------------------------------------------- |
+| `reviewed` (approved) + has work  | `Reviewed`    | skip implement AND review; integrate directly           |
+| `green` / `verified` + has work   | `Implemented` | skip the implementer spawn; re-run gates + three-tier review on the committed code |
+| below `green`, or branch empty/missing | `Fresh`  | the full lifecycle (implement → gates → review → integrate), unchanged |
+
+**Branch lifecycle.** A unit's branch is deleted **only after a successful integrate**
+(`Worktree::delete_branch`, called after the worktree dir is removed - git refuses to
+delete a branch still checked out). An **interrupted** unit (pause, escalation, error,
+or crash before integrate) keeps its branch, which is exactly what the next window
+reuses. `Worktree::remove` tears down only the transient dir, never the branch.
+
 ### 4.3 The autonomy ratchet (bidirectional, self-correcting)
 
 Per gate: `manual → auto_notify → silent` on N consecutive clean passes (proposed, never

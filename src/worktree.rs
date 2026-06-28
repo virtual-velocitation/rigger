@@ -17,15 +17,73 @@ pub struct Worktree {
 }
 
 impl Worktree {
-    /// Add a worktree at dir (which must not already exist), on a new branch off
-    /// the repo's current HEAD.
+    /// Add a worktree at dir (which must not already exist), on `branch`.
+    ///
+    /// The branch is a unit's DURABLE checkpoint (resume-continuity): it survives
+    /// process death and worktree removal, so the same deterministic branch name is
+    /// reused across runs and the unit's committed work persists. This handles BOTH
+    /// cases:
+    /// - the branch does NOT exist yet: create it off the repo's current HEAD (a
+    ///   fresh unit, the historical behavior);
+    /// - the branch ALREADY exists with prior commits: check it out into the fresh
+    ///   `dir`, REUSING the work a prior window committed - never throwing it away.
+    ///
+    /// The worktree DIR is transient (it can live in a temp dir and be recreated);
+    /// the BRANCH is the checkpoint. A branch that already exists cannot be
+    /// `worktree add -b`'d (git refuses to clobber a ref), so we detect it and check
+    /// it out instead.
     pub fn create(repo: &str, dir: &str, branch: &str) -> Result<Self, Error> {
-        git(repo, &["worktree", "add", "-b", branch, dir, "HEAD"])?;
+        if branch_exists(repo, branch) {
+            // Reuse the existing branch's committed work: check it out into the fresh
+            // worktree dir, no `-b` (which would refuse, the ref already exists).
+            git(repo, &["worktree", "add", dir, branch])?;
+        } else {
+            git(repo, &["worktree", "add", "-b", branch, dir, "HEAD"])?;
+        }
         Ok(Worktree {
             dir: dir.to_string(),
             branch: branch.to_string(),
             repo: repo.to_string(),
         })
+    }
+
+    /// Whether the unit's branch has at least one commit beyond the base the run is
+    /// integrating into - i.e. the branch carries committed work to REUSE on resume.
+    /// A branch that exists but never advanced past the base (`git worktree add -b`
+    /// then nothing committed) carries nothing and is treated as no prior work.
+    pub fn branch_has_work(repo: &str, branch: &str) -> bool {
+        if !branch_exists(repo, branch) {
+            return false;
+        }
+        let base = match run_git(repo, &["rev-parse", "HEAD"]) {
+            Ok(b) => b.trim().to_string(),
+            Err(_) => return false,
+        };
+        let tip = match run_git(repo, &["rev-parse", &format!("refs/heads/{branch}")]) {
+            Ok(t) => t.trim().to_string(),
+            Err(_) => return false,
+        };
+        if tip == base {
+            return false;
+        }
+        // The branch carries work iff it has commits the base does not: a non-empty
+        // `base..branch` range.
+        match run_git(repo, &["rev-list", "--count", &format!("{base}..{branch}")]) {
+            Ok(n) => n.trim() != "0" && !n.trim().is_empty(),
+            Err(_) => false,
+        }
+    }
+
+    /// Delete the unit's branch ref. Called ONLY after a successful integrate has
+    /// merged the branch into the base - the checkpoint has served its purpose and
+    /// the merged work lives in the base. An INTERRUPTED unit's branch is NEVER
+    /// deleted (that is the whole point of the durable checkpoint), so this is not
+    /// part of `remove`, which only tears down the transient dir.
+    pub fn delete_branch(repo: &str, branch: &str) -> Result<(), Error> {
+        if branch_exists(repo, branch) {
+            git(repo, &["branch", "-D", branch])?;
+        }
+        Ok(())
     }
 
     /// The paths an agent created or modified in the worktree.
@@ -159,6 +217,22 @@ fn parse_status_z(out: &str) -> Vec<String> {
         paths.push(path.to_string());
     }
     paths
+}
+
+/// Whether a local branch ref exists in the repo. Used by [`Worktree::create`] to
+/// decide between creating the unit's deterministic branch and checking out the
+/// existing one (reusing a prior window's committed work).
+fn branch_exists(repo: &str, branch: &str) -> bool {
+    run_git(
+        repo,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch}"),
+        ],
+    )
+    .is_ok()
 }
 
 fn git(dir: &str, args: &[&str]) -> Result<String, Error> {
@@ -309,6 +383,62 @@ mod tests {
         // original `orig.txt`.
         assert_eq!(wt.changed_files().unwrap(), ["renamed.txt"]);
         wt.remove().unwrap();
+    }
+
+    #[test]
+    fn create_reuses_an_existing_branchs_head() {
+        // Resume-continuity: a unit's deterministic branch is the durable checkpoint.
+        // After its worktree dir is removed, `create` on the SAME branch must check
+        // out the existing branch (not fail trying to re-create the ref, and not
+        // branch fresh off HEAD), so a file the prior window committed is present in
+        // the recreated worktree - the work is reused, never thrown away.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let branch = "rigger/u/unit-1";
+
+        // Window 1: create the branch, commit work, remove the transient dir. The
+        // branch ref survives.
+        let dir1 = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wt1 = Worktree::create(&repo_path, dir1.to_str().unwrap(), branch).unwrap();
+        std::fs::write(dir1.join("carried.txt"), "prior-window work\n").unwrap();
+        let committed = wt1.commit("rigger: window 1").unwrap();
+        assert!(!committed.is_empty(), "window 1 must commit work");
+        assert!(
+            Worktree::branch_has_work(&repo_path, branch),
+            "the branch must carry committed work for resume to reuse"
+        );
+        wt1.remove().unwrap(); // tear down the transient dir; branch survives.
+
+        // Window 2: a FRESH dir, same branch. `create` must check out the existing
+        // branch, so the committed file is present without re-implementing.
+        let dir2 = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wt2 = Worktree::create(&repo_path, dir2.to_str().unwrap(), branch).unwrap();
+        assert!(
+            dir2.join("carried.txt").exists(),
+            "the recreated worktree must contain the file committed on the branch in the prior window"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir2.join("carried.txt")).unwrap(),
+            "prior-window work\n",
+            "the reused branch's committed content must be intact"
+        );
+        // The reused worktree's HEAD is the prior window's commit, not the base.
+        let head = git(dir2.to_str().unwrap(), &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
+        assert_eq!(
+            head, committed,
+            "the reused worktree's HEAD is the branch tip"
+        );
+        wt2.remove().unwrap();
+
+        // After integrate the branch is cleaned up; an interrupted branch is not.
+        Worktree::delete_branch(&repo_path, branch).unwrap();
+        assert!(
+            !Worktree::branch_has_work(&repo_path, branch),
+            "delete_branch removes the checkpoint after it has served its purpose"
+        );
     }
 
     #[test]

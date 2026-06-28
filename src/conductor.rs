@@ -168,6 +168,29 @@ impl PriorFailure {
     }
 }
 
+/// How a unit ENTERS its lifecycle on this run (resume-continuity). A unit that ran
+/// in a prior window CONTINUES from its recorded phase - its deterministic branch is
+/// the durable checkpoint carrying the committed work - instead of restarting from
+/// implement, so progress accumulates across capped windows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ResumePhase {
+    /// No reusable prior work: the branch is missing/empty, or the unit's last
+    /// recorded status is below `green` (it never got an implementation committed).
+    /// Run the FULL lifecycle (implement -> gates -> three-tier review -> integrate) -
+    /// the historical behavior.
+    Fresh,
+    /// The unit was implemented in a prior window (last status >= green/verified) and
+    /// its branch carries committed work, but it was NOT yet approved+merged. SKIP the
+    /// implementer spawn, recreate the worktree from the unit's branch, and continue
+    /// the lifecycle from gates + the three-tier review on the committed code.
+    Implemented,
+    /// The unit's review was APPROVED in a prior window (last status `reviewed`) and
+    /// its branch carries committed work, but the merge was interrupted (no
+    /// UnitIntegrated). SKIP both implement and review and go straight to integrate -
+    /// the work was approved, only the merge did not land.
+    Reviewed,
+}
+
 /// Per-spawn options.
 pub struct SpawnOpts {
     /// The agent's PERSONA - its role instructions, the markdown body of its
@@ -246,9 +269,24 @@ struct UnitProposed {
 pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     validate_acyclic(&cfg.workflow.stages)?;
 
+    // Resume by replay (§4.2): seed integrated/terminal from the existing log so a
+    // crashed or re-run conductor skips work that already landed instead of
+    // re-spawning every agent from scratch.
+    let prior = ledger::project(&deps.store.read_stream(STREAM, 0, Direction::Forward)?)
+        .map_err(|e| Error(e.to_string()))?;
+
     // The RunCtx is created BEFORE the coverage check so a coverage gap can be
     // flagged as a spec defect through the event log (item 2 / §4.4) instead of
-    // returning a bare error with no audit trail.
+    // returning a bare error with no audit trail. It carries the per-unit prior
+    // status (resume-continuity): a non-integrated unit that ran in a prior window
+    // CONTINUES from its recorded phase (skip re-implement when its code already
+    // exists on its branch, skip re-review when already approved) rather than
+    // restarting from implement.
+    let prior_status: HashMap<String, ledger::Status> = prior
+        .units
+        .values()
+        .map(|u| (u.id.clone(), u.status))
+        .collect();
     let ctx = RunCtx {
         cfg,
         deps,
@@ -256,13 +294,9 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         integrate_mu: Mutex::new(()),
         spawns: AtomicU32::new(0),
         budget_broke: std::sync::atomic::AtomicBool::new(false),
+        prior_status,
     };
 
-    // Resume by replay (§4.2): seed integrated/terminal from the existing log so a
-    // crashed or re-run conductor skips work that already landed instead of
-    // re-spawning every agent from scratch.
-    let prior = ledger::project(&deps.store.read_stream(STREAM, 0, Direction::Forward)?)
-        .map_err(|e| Error(e.to_string()))?;
     let mut stages = cfg.workflow.stages.clone();
     let mut proposed: HashSet<String> = HashSet::new();
     let mut integrated: HashSet<String> = prior
@@ -365,6 +399,14 @@ struct RunCtx<'a> {
     /// breaker now trips at spawn granularity, mid-wave, not only at wave boundaries.
     /// The run loop checks this after each wave to record the breaker and stop.
     budget_broke: std::sync::atomic::AtomicBool,
+    /// Each unit's LAST recorded status from the folded prior log (resume-continuity):
+    /// a non-integrated, non-terminal unit that ran in a prior window has a status
+    /// here (green/verified/reviewed/...), which `run_single_stage` uses to CONTINUE
+    /// the unit from where it stopped rather than restart from implement. A unit
+    /// absent from the map (a fresh unit this run, or one with no prior progress) runs
+    /// the full lifecycle. Integrated/terminal units are skipped before they ever
+    /// reach the lifecycle, so their presence here is harmless.
+    prior_status: HashMap<String, ledger::Status>,
 }
 
 impl RunCtx<'_> {
@@ -606,8 +648,10 @@ impl RunCtx<'_> {
     }
 
     fn start_and_run_stage(&self, name: &str, st: &Stage) -> Result<bool, Error> {
-        // UnitStarted carries the assigned agent and its dependencies, so the graph
-        // can project ASSIGNED_TO (unit->agent) and BLOCKS (need->unit).
+        // UnitStarted carries the assigned agent, its dependencies, and the unit's
+        // DETERMINISTIC branch, so the graph can project ASSIGNED_TO (unit->agent) and
+        // BLOCKS (need->unit), and the ledger records the durable checkpoint branch
+        // (resume-continuity) the unit's committed work persists on across runs.
         self.emit(
             ledger::TYPE_UNIT_STARTED,
             json!({
@@ -617,6 +661,7 @@ impl RunCtx<'_> {
                 "criterion": st.coverage,
                 "agent": st.agent,
                 "needs": st.needs,
+                "branch": unit_branch(name),
             }),
         )?;
         self.run_stage(st)
@@ -635,11 +680,27 @@ impl RunCtx<'_> {
         if is_fan_out(st) {
             return self.run_fan_out_stage(st);
         }
+        // Resume-continuity: decide whether this unit CONTINUES from a prior window's
+        // recorded phase (its deterministic branch carries committed work) or runs the
+        // full lifecycle fresh. Computed before the worktree is created so a resumed
+        // unit reuses its branch's work instead of re-implementing from scratch.
+        let phase = self.resume_phase(st);
         let wt = self.stage_worktree(st)?;
         let dir = wt.as_ref().map(|w| w.dir.clone()).unwrap_or_default();
-        let result = self.run_single_stage(st, wt.as_ref(), &dir);
+        let result = self.run_single_stage(st, wt.as_ref(), &dir, phase);
         if let Some(w) = &wt {
             let _ = w.remove();
+            // The unit's branch is its DURABLE checkpoint (resume-continuity): it must
+            // survive an interrupted unit so the next run reuses its committed work.
+            // Delete it ONLY on a SUCCESSFUL integrate (Ok(true)), where the branch has
+            // already merged into the base and the checkpoint has served its purpose -
+            // the merged work lives in the base now. An un-integrated unit (Ok(false),
+            // an Err, a pause/escalation, or a crash before this line) KEEPS its branch.
+            // Deletion happens after the worktree dir is removed, since git refuses to
+            // delete a branch that is still checked out in a worktree.
+            if matches!(result, Ok(true)) {
+                let _ = Worktree::delete_branch(&self.deps.repo, &w.branch);
+            }
         }
         result
     }
@@ -743,15 +804,61 @@ impl RunCtx<'_> {
         st: &Stage,
         wt: Option<&Worktree>,
         dir: &str,
+        phase: ResumePhase,
     ) -> Result<bool, Error> {
+        // Resume-continuity, Reviewed phase: the unit's review was APPROVED in a prior
+        // window and its branch carries the committed, approved code - only the merge
+        // was interrupted. Skip BOTH implement and review and integrate the existing
+        // work directly. No implementer, no lenses/adversary/adjudicator spawn: the
+        // adjudicator already approved, re-reviewing would re-litigate a settled
+        // verdict and re-spend the budget. A `none`-on_pass unit (verified-but-never-
+        // merged by design) still does not merge.
+        if phase == ResumePhase::Reviewed {
+            if !integrates(st) {
+                return Ok(false);
+            }
+            let commit = self.integrate_and_emit(wt, &st.agent, &st.name, &st.gates)?;
+            self.emit(
+                ledger::TYPE_UNIT_INTEGRATED,
+                json!({"id": st.name, "commit": commit}),
+            )?;
+            return Ok(true);
+        }
+
         let mut attempts = 0u32;
         // The last attempt's concrete failure, threaded into the NEXT attempt's
         // prompt (item 3 + 5 / spec 02). Empty on the first attempt, so that prompt
         // is unchanged.
         let mut prior = PriorFailure::default();
+        // Resume-continuity, Implemented phase: the unit was implemented in a prior
+        // window and its branch carries the committed code, but it was not yet
+        // approved+merged. Skip the implementer spawn on the FIRST iteration and pick
+        // the lifecycle up at gates + the three-tier review on the committed code.
+        // Only the first iteration is skipped - if review then rejects, the retry
+        // re-spawns the implementer normally to fix the rejected code.
+        let mut skip_implement = phase == ResumePhase::Implemented;
         loop {
             let mut spawn_err: Option<String> = None;
-            if !st.agent.is_empty() {
+            if skip_implement {
+                // Reuse the prior window's committed implementation: re-record the
+                // `green` status (the ledger reflects the reused diff) without
+                // re-spawning the implementer, then fall through to gates + review on
+                // the existing code.
+                let mut green = BTreeMap::new();
+                green.insert(
+                    "green".to_string(),
+                    format!(
+                        "resumed from prior window's branch {}",
+                        unit_branch(&st.name)
+                    ),
+                );
+                self.emit(
+                    ledger::TYPE_UNIT_STATUS,
+                    json!({"id": st.name, "status": "green", "evidence": green}),
+                )?;
+                // Subsequent iterations (after a review reject) re-implement normally.
+                skip_implement = false;
+            } else if !st.agent.is_empty() {
                 let agent_def = self.cfg.agents.get(&st.agent).ok_or_else(|| {
                     Error(format!(
                         "stage {:?} references unknown agent {:?}",
@@ -1622,6 +1729,50 @@ impl RunCtx<'_> {
             .unwrap_or(true)
     }
 
+    /// Decide how a unit ENTERS its lifecycle on this run (resume-continuity).
+    ///
+    /// A unit whose deterministic branch carries committed work AND whose last
+    /// recorded status proves how far it got CONTINUES from that phase instead of
+    /// restarting from implement:
+    /// - last status `reviewed` (the adjudicator approved, only the merge was
+    ///   interrupted) -> [`ResumePhase::Reviewed`]: skip implement AND review, integrate.
+    /// - last status `green`/`verified` (implemented + maybe gated, not yet approved)
+    ///   -> [`ResumePhase::Implemented`]: skip the implementer spawn, re-run gates +
+    ///   the three-tier review on the committed code.
+    /// - anything below `green`, or no committed work on the branch, or a non-isolated
+    ///   / repo-less run -> [`ResumePhase::Fresh`]: the full lifecycle, unchanged.
+    ///
+    /// Both the recorded status AND real committed work on the branch are required:
+    /// the status alone could be stale (e.g. the prior worktree was lost), so we never
+    /// skip implement unless the branch actually holds the code to build on.
+    fn resume_phase(&self, st: &Stage) -> ResumePhase {
+        // A repo-less or non-isolated unit has no branch to checkpoint on, so there is
+        // never reusable prior work - it always runs fresh.
+        if self.deps.repo.is_empty() || st.agent.is_empty() || !self.agent_isolated(&st.agent) {
+            return ResumePhase::Fresh;
+        }
+        let prior = match self.prior_status.get(&st.name) {
+            Some(s) => *s,
+            None => return ResumePhase::Fresh,
+        };
+        // The unit's branch must actually carry committed work to build on; a recorded
+        // status with an empty/missing branch (the prior worktree's commits were lost)
+        // falls back to a fresh run rather than skipping a non-existent implementation.
+        if !Worktree::branch_has_work(&self.deps.repo, &unit_branch(&st.name)) {
+            return ResumePhase::Fresh;
+        }
+        match prior {
+            // Approved last window; only the merge was interrupted -> integrate.
+            ledger::Status::Reviewed => ResumePhase::Reviewed,
+            // Implemented (and possibly gated) last window, not yet approved -> re-run
+            // gates + review on the committed code, skip the implementer.
+            ledger::Status::Green | ledger::Status::Verified => ResumePhase::Implemented,
+            // Below green (pending/grounding/red), or a terminal status that should not
+            // have reached the lifecycle: run fresh.
+            _ => ResumePhase::Fresh,
+        }
+    }
+
     fn stage_worktree(&self, st: &Stage) -> Result<Option<Worktree>, Error> {
         if self.deps.repo.is_empty() || st.agent.is_empty() {
             return Ok(None);
@@ -1631,13 +1782,24 @@ impl RunCtx<'_> {
         if !self.agent_isolated(&st.agent) {
             return Ok(None);
         }
-        let uid = uuid::Uuid::new_v4().to_string();
-        let id = &uid[..8];
-        let dir = std::env::temp_dir().join(format!("rigger-wt-{id}"));
+        // The BRANCH is DETERMINISTIC, derived from the unit id (resume-continuity):
+        // `rigger/u/<unit-id>`. The same unit uses the same branch across runs, so a
+        // git branch ref - which survives process death and worktree removal - is the
+        // unit's DURABLE checkpoint: a prior window's committed work is found and
+        // reused on the next run instead of being thrown away under a per-run-uuid
+        // branch. `Worktree::create` handles both a fresh branch (create off HEAD) and
+        // an existing branch with prior commits (check it out, reusing the work). The
+        // worktree DIR stays transient - a fresh, unique temp dir each time, recreated
+        // from the branch as needed.
+        let dir = std::env::temp_dir().join(format!(
+            "rigger-wt-{}-{}",
+            sanitize_for_path(&st.name),
+            &uuid::Uuid::new_v4().to_string()[..8]
+        ));
         let wt = Worktree::create(
             &self.deps.repo,
             dir.to_str().unwrap_or_default(),
-            &format!("rigger/{}-{id}", st.name),
+            &unit_branch(&st.name),
         )?;
         Ok(Some(wt))
     }
@@ -1846,6 +2008,38 @@ fn write_findings(b: &mut String, g: &Graph) {
     }
     if !first {
         b.push('\n');
+    }
+}
+
+/// The DETERMINISTIC branch a unit's worktree uses across runs (resume-continuity):
+/// `rigger/u/<unit-id>`. Derived purely from the unit id, so the SAME unit reuses the
+/// SAME branch on every run - the git ref persists the unit's committed work across
+/// process death and worktree removal, making the branch the unit's durable
+/// checkpoint. The id is sanitized to the bytes git accepts in a ref component, so an
+/// id with spaces or other ref-illegal characters still yields a valid, stable branch.
+fn unit_branch(unit_id: &str) -> String {
+    format!("rigger/u/{}", sanitize_for_path(unit_id))
+}
+
+/// Map an arbitrary unit id to a stable token safe for a git ref component and a
+/// filesystem path: ASCII alphanumerics kept, every other run of characters collapsed
+/// to a single hyphen, leading/trailing hyphens trimmed. Deterministic - the same id
+/// always yields the same token - so the derived branch and dir are stable run to run.
+/// An id that sanitizes to empty falls back to a fixed token so the ref stays valid.
+fn sanitize_for_path(id: &str) -> String {
+    let mut out = String::with_capacity(id.len());
+    for ch in id.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch);
+        } else if !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    let trimmed = out.trim_matches('-');
+    if trimmed.is_empty() {
+        "unit".to_string()
+    } else {
+        trimmed.to_string()
     }
 }
 
@@ -2191,6 +2385,16 @@ mod tests {
                 .get(agent_id)
                 .cloned()
         }
+
+        /// Whether the named agent was spawned at all this run (resume tests assert an
+        /// implementer is NOT re-spawned, or a reviewer is NOT spawned, on resume).
+        fn spawned(&self, agent_id: &str) -> bool {
+            self.call_order
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|id| id == agent_id)
+        }
     }
     impl AgentDriver for Stub {
         fn spawn(
@@ -2219,8 +2423,14 @@ mod tests {
             if self.fail_spawn {
                 return Err(Error("simulated mid-spawn crash".into()));
             }
+            // Only an ISOLATED spawn (a real worktree dir) writes its file: a review
+            // agent spawns with an empty `dir`, and writing there would land the file
+            // in the process cwd (the actual rigger repo) - a test leak. An implementer
+            // always has a worktree dir, so this still exercises the write path.
             if let Some(f) = &self.write_file {
-                let _ = std::fs::write(Path::new(&opts.dir).join(f), "work\n");
+                if !opts.dir.is_empty() {
+                    let _ = std::fs::write(Path::new(&opts.dir).join(f), "work\n");
+                }
             }
             for (t, v) in &self.emits {
                 emit(t, v.clone())?;
@@ -3017,6 +3227,272 @@ mod tests {
             starts, 1,
             "a resumed run must not restart an integrated unit"
         );
+    }
+
+    /// Append events into the run stream as if a prior window had emitted them, so a
+    /// resumed `run` folds them and continues from the recorded phase.
+    fn seed_events(st: &Store, events: &[Event]) {
+        st.append(STREAM, ExpectedRevision::Any, events).unwrap();
+    }
+
+    /// Commit a file on a unit's DETERMINISTIC branch exactly as a prior window would:
+    /// create the branch via a worktree, write+commit the file, then remove the
+    /// transient worktree dir (the branch ref survives as the durable checkpoint).
+    fn commit_on_unit_branch(repo: &str, unit_id: &str, file: &str, content: &str) {
+        let branch = unit_branch(unit_id);
+        let dir = std::env::temp_dir().join(format!(
+            "rigger-seed-{}-{}",
+            sanitize_for_path(unit_id),
+            &uuid::Uuid::new_v4().to_string()[..8]
+        ));
+        let wt = crate::worktree::Worktree::create(repo, dir.to_str().unwrap(), &branch).unwrap();
+        std::fs::write(Path::new(&wt.dir).join(file), content).unwrap();
+        let committed = wt.commit("rigger: prior window work").unwrap();
+        assert!(!committed.is_empty(), "the prior window must commit work");
+        wt.remove().unwrap();
+        assert!(
+            crate::worktree::Worktree::branch_has_work(repo, &branch),
+            "the seeded branch must carry committed work"
+        );
+    }
+
+    #[test]
+    fn resume_reuses_a_units_branch_instead_of_reimplementing() {
+        // Resume-continuity: a unit recorded at `verified` in a prior window, with its
+        // deterministic branch carrying committed work, must NOT re-run the
+        // implementer on resume. It picks the lifecycle up at gates + the three-tier
+        // review on the committed code and integrates - building on the prior window's
+        // work rather than throwing it away under a per-run-uuid branch.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+
+        // The prior window implemented unit `s` and committed it on the deterministic
+        // branch, reaching `verified` (gates passed) but not yet approved+merged.
+        commit_on_unit_branch(&repo_path, "s", "feature.rs", "fn feature() {}\n");
+
+        let st = Store::open(":memory:").unwrap();
+        seed_events(
+            &st,
+            &[
+                Event::new(
+                    ledger::TYPE_UNIT_STARTED,
+                    serde_json::to_vec(
+                        &json!({"id": "s", "agent": "worker", "branch": unit_branch("s")}),
+                    )
+                    .unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_STATUS,
+                    serde_json::to_vec(&json!({"id": "s", "status": "green"})).unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_STATUS,
+                    serde_json::to_vec(&json!({"id": "s", "status": "verified"})).unwrap(),
+                ),
+            ],
+        );
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                review: crate::config::ReviewPanel {
+                    lenses: vec!["lens".into()],
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        // The adjudicator approves; the unit must integrate via review, not implement.
+        let driver = Stub {
+            output_by_agent: HashMap::from([(
+                "judge".to_string(),
+                r#"{"verdict":"approve"}"#.to_string(),
+            )]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path,
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        assert!(
+            !driver.spawned("worker"),
+            "the implementer must NOT be re-spawned on resume - the prior window's branch is reused"
+        );
+        assert!(
+            driver.spawned("judge"),
+            "the resumed unit must still proceed through the three-tier review"
+        );
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "the resumed unit must integrate, building on the reused branch"
+        );
+        assert!(
+            repo.path().join("feature.rs").exists(),
+            "the prior window's committed file must land in the base on resume-integrate"
+        );
+    }
+
+    #[test]
+    fn resume_integrates_an_already_approved_unit_without_re_reviewing() {
+        // Resume-continuity: a unit whose log shows review APPROVED (`reviewed`) but no
+        // UnitIntegrated - the merge was interrupted - must integrate on resume with NO
+        // lens/adversary/adjudicator spawns. The verdict was already settled; re-review
+        // would re-litigate it and re-spend the budget.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+
+        commit_on_unit_branch(&repo_path, "s", "feature.rs", "fn feature() {}\n");
+
+        let st = Store::open(":memory:").unwrap();
+        seed_events(
+            &st,
+            &[
+                Event::new(
+                    ledger::TYPE_UNIT_STARTED,
+                    serde_json::to_vec(
+                        &json!({"id": "s", "agent": "worker", "branch": unit_branch("s")}),
+                    )
+                    .unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_STATUS,
+                    serde_json::to_vec(&json!({"id": "s", "status": "verified"})).unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_STATUS,
+                    serde_json::to_vec(&json!({"id": "s", "status": "reviewed"})).unwrap(),
+                ),
+            ],
+        );
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("adversary".into(), agent("adversary"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                review: crate::config::ReviewPanel {
+                    lenses: vec!["lens".into()],
+                    adversary: "adversary".into(),
+                    adjudicator: "judge".into(),
+                },
+                ..Default::default()
+            },
+        );
+
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path,
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        assert!(
+            !driver.spawned("worker"),
+            "an approved unit must not re-implement on resume"
+        );
+        assert!(
+            !driver.spawned("lens") && !driver.spawned("adversary") && !driver.spawned("judge"),
+            "an already-approved unit must integrate with NO review spawns on resume"
+        );
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "the approved-but-uninterrupted-merge unit must integrate on resume"
+        );
+        assert!(
+            repo.path().join("feature.rs").exists(),
+            "the approved work must land in the base"
+        );
+    }
+
+    #[test]
+    fn a_fresh_unit_with_no_branch_runs_the_full_lifecycle() {
+        // The no-prior-branch path is unchanged: a unit with no deterministic branch
+        // (a first run) implements, gates, reviews, and integrates - the implementer
+        // and the adjudicator both spawn.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+
+        let st = Store::open(":memory:").unwrap();
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                review: crate::config::ReviewPanel {
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let driver = Stub {
+            write_file: Some("feature.rs".into()),
+            output_by_agent: HashMap::from([(
+                "judge".to_string(),
+                r#"{"verdict":"approve"}"#.to_string(),
+            )]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path,
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        assert!(
+            driver.spawned("worker"),
+            "a fresh unit with no prior branch must run the implementer"
+        );
+        assert!(
+            driver.spawned("judge"),
+            "a fresh unit must run the three-tier review"
+        );
+        assert_eq!(rs.units["s"].status, ledger::Status::Integrated);
     }
 
     #[test]
@@ -4348,6 +4824,7 @@ mod tests {
             integrate_mu: Mutex::new(()),
             spawns: AtomicU32::new(0),
             budget_broke: std::sync::atomic::AtomicBool::new(false),
+            prior_status: HashMap::new(),
         };
         ctx.record_gate("ok", gate::Kind::Core, true, "silent");
         let seeded = ctx.gate_tracker.lock().unwrap().get("ok").unwrap().autonomy;
