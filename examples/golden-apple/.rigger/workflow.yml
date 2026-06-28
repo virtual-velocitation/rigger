@@ -4,11 +4,30 @@
 # specific thing (cargo, the review lenses, the e7 lexical gate) is config here,
 # and Rigger itself ships knowing none of it. Run it from this directory with
 # `rigger run <spec>`; the gate commands are real cargo invocations.
+#
+# The review is PER UNIT, not a downstream stage. Each implementer unit runs its
+# OWN lifecycle - ground -> implement (red/green TDD in a worktree) -> the unit's
+# gates -> three-tier review OF THIS UNIT (lenses -> adversary -> adjudicator) ->
+# integrate - and a reject or a gate failure feeds back into that same unit's
+# remediation loop. `defaults.review` declares the panel once; every unit (the
+# `implement` stage and every planner-proposed unit) inherits it.
 name: golden-apple
 
 defaults:
   autonomy: auto_notify     # manual | auto_notify | silent
   grounder: grep            # grep (default) | turbovec (needs the cargo feature)
+
+  # The three-tier review panel applied to EVERY implementer unit (§3.2). TIER 1:
+  # the expert lenses review the unit's diff in parallel and emit findings. TIER 2:
+  # the adversary reviews THE LENSES' findings and tries to prove them wrong (higher
+  # bar; refutes overreach; not a parallel lens). TIER 3: the adjudicator is the
+  # neutral final judge - it weighs the lenses against the adversary, is
+  # design-strict, and its verdict GATES the unit's integration. Declared once;
+  # inherited by the implement stage and every planner-proposed unit.
+  review:
+    lenses: [reviewer.architecture, reviewer.technical, reviewer.game-design]  # tier 1: lenses
+    adversary: adversary           # tier 2: refutes the lenses
+    adjudicator: devils-advocate   # tier 3: neutral judge; verdict gates the unit
 
 gates:                      # the project's verification library, referenced by name
   build: { run: "cargo build --workspace",                 kind: core }
@@ -22,31 +41,20 @@ stages:
     produces: dag           # decompose the spec into a unit DAG at runtime
     coverage: "the spec is decomposed into criterion-bearing units"
 
+  # Implement, review, and integrate PER UNIT. One implementer per ready unit, in
+  # isolated worktrees, partitioned by blast-radius. Each unit's complete lifecycle
+  # runs inside this one stage: red -> green is enforced around the change, the full
+  # gate set (build + test + lint + fmt) must pass, THEN the unit reviews ITSELF
+  # through `defaults.review`'s three tiers, and only on adjudicator-approve + green
+  # gates does it integrate (on_pass: merge). A reject or a gate failure feeds back
+  # into this same unit's remediation loop and escalates after the retry bound - it
+  # does NOT integrate. Every planner-proposed unit inherits the same per-unit
+  # review via defaults.review.
   implement:
     needs: [plan]
     agent: implementer
-    strategy: fan-out       # one implementer per ready unit, in isolated worktrees
-    partition: by-blast-radius
-    gates: [build, test]    # red -> green enforced around each change
-    coverage: "each unit is implemented and its build + test gates pass"
-
-  # Three-tier review. TIER 1: the expert lenses review the diff in parallel and
-  # emit findings. TIER 2: the adversary reviews THE LENSES' findings and tries to
-  # prove them wrong (higher bar; refutes overreach; not a parallel lens). TIER 3:
-  # the adjudicator is the neutral final judge - it weighs the lenses against the
-  # adversary, is design-strict, and its verdict GATES integration.
-  review:
-    needs: [implement]
     strategy: fan-out
-    agents: [reviewer.architecture, reviewer.technical, reviewer.game-design]  # tier 1: lenses
-    adversary: adversary           # tier 2: refutes the lenses
-    adjudicator: devils-advocate   # tier 3: neutral judge; verdict gates the stage
-    autonomy: manual               # a human signs off before integration
-    coverage: "the change survives three-tier adversarial review"
-
-  integrate:
-    needs: [review]
-    agent: integrator
+    partition: by-blast-radius
     gates: [build, test, lint, fmt]
-    on_pass: merge          # rebase, re-gate, land, reindex, record
-    coverage: "the change lands on a fully green workspace"
+    on_pass: merge
+    coverage: "each unit is implemented, three-tier-reviews itself, and integrates on a green workspace"

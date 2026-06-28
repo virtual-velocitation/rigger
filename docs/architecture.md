@@ -196,6 +196,14 @@ defaults:
   autonomy: manual                          # manual | auto_notify | silent
   grounder: turbovec                        # grep (default) | turbovec (needs the cargo feature)
 
+  # The three-tier review panel, declared ONCE and applied to every implementer
+  # unit. Each unit reviews ITSELF with this panel inside its own lifecycle (§4.1);
+  # a stage may override it with its own `review:` block.
+  review:
+    lenses: [reviewer.architecture, reviewer.technical]   # tier 1: the expert lenses (parallel)
+    adversary: devils-advocate              # tier 2: refutes the lenses (higher bar; not a lens)
+    adjudicator: chief-judge                # tier 3: neutral judge; verdict gates the unit
+
 gates:                                      # reusable gate library (commands)
   build:   { run: "cargo build",                    kind: core }
   test:    { run: "cargo test",                     kind: core }
@@ -208,25 +216,18 @@ stages:
     produces: dag                           # decomposes the spec into a unit DAG
     coverage: required                      # block if a spec criterion has no unit
 
+  # Each unit runs its WHOLE lifecycle here: implement (red→green in a worktree) →
+  # the unit's gates → three-tier review OF THIS UNIT (via defaults.review) →
+  # integrate. A reject or a gate failure feeds back into this same unit's
+  # remediation loop; it integrates only on approve + green gates (on_pass: merge).
   implement:
     needs: [plan]
     agent: implementer
     strategy: fan-out                       # one agent per ready unit, in worktrees
     partition: by-blast-radius              # disjoint batches → safe parallelism
-    gates: [build, test]                    # red→green enforced around these
-
-  review:                                   # three-tier review (lenses -> adversary -> adjudicator)
-    needs: [implement]
-    strategy: fan-out
-    agents: [reviewer.architecture, reviewer.technical]   # tier 1: the expert lenses (parallel)
-    adversary: devils-advocate              # tier 2: refutes the lenses (higher bar; not a lens)
-    adjudicator: chief-judge                # tier 3: neutral judge; verdict gates the stage
-    autonomy: manual
-
-  integrate:
-    needs: [review]
-    gates: [build, test, lint, custom]
-    on_pass: merge                          # land + reindex + record
+    gates: [build, test, lint, custom]      # red→green enforced; the full final set
+    on_pass: merge                          # land + reindex + record, per unit
+    # review:                               # (optional) override defaults.review here
 ```
 
 **The YAML → runtime mapping** (loader, §4.1): each `stage` becomes a node in the run
@@ -234,29 +235,38 @@ DAG; `needs` are the edges; `strategy: fan-out` + `partition` triggers the parti
 the AgentDriver per unit; `gates` are looked up in the `gates:` library and run via the
 gate engine; `autonomy` seeds that gate/stage's ratchet. A stage with `produces: dag`
 runs an agent whose output *extends* the run DAG (the living-DAG / `spawnUnit` mechanic).
+`defaults.review` is the three-tier panel every implementer unit reviews itself with; a
+stage's own `review:` block overrides it.
 
-**The three-tier review (the `review` stage shape).** A review stage runs its change
-through three tiers, in order, each a distinct role:
+**The three-tier review is PER UNIT, not a downstream stage.** Review and integration
+happen *inside each implementer unit's lifecycle* (§4.1) - there is no separate `review`
+or `integrate` stage. Once a unit's own gates are green, it reviews ITSELF through the
+effective `review` panel (the stage's override, else `defaults.review`), in three tiers,
+in order:
 
-1. **Lenses** (`agents: [...]`) - the expert reviewers (architecture, technical/sdet,
-   game-design, …) review the diff *in parallel* and emit their findings to the log.
-2. **Adversary** (`adversary: <id>`) - a single agent that runs AFTER the lenses and
-   reviews *the lenses' output* and the diff, trying to **prove the lenses wrong**: it
+1. **Lenses** (`review.lenses: [...]`) - the expert reviewers (architecture,
+   technical/sdet, game-design, …) review *this unit's diff* in parallel and emit their
+   findings to the log.
+2. **Adversary** (`review.adversary: <id>`) - a single agent that runs AFTER the lenses
+   and reviews *the lenses' output* and the diff, trying to **prove the lenses wrong**: it
    holds them to a HIGHER bar, surfaces the substantive issues all the lenses missed, and
    refutes lens overreach. It reviews the reviews - it is **not** a parallel lens, and it
    does **not** render the final verdict. It is grounded on the same graph/log context the
    lenses fed, so it sees their live findings; like the adjudicator it reviews and produces
    no code to integrate (no worktree).
-3. **Adjudicator** (`adjudicator: <id>`) - the **neutral final judge**. It weighs the
-   expert lenses against the adversary and decides who wins: **approve**, or **reject with
-   specific actionable feedback**. It is neutral in tone but EXTREMELY strict on adherence
-   to the design / architecture / ADRs. **Its verdict GATES integration**: an explicit
-   `{"verdict":"reject"}` blocks the change no matter what the static gates say.
+3. **Adjudicator** (`review.adjudicator: <id>`) - the **neutral final judge**. It weighs
+   the expert lenses against the adversary and decides who wins: **approve**, or **reject
+   with specific actionable feedback**. It is neutral in tone but EXTREMELY strict on
+   adherence to the design / architecture / ADRs. **Its verdict GATES the unit's
+   integration**: an explicit `{"verdict":"reject"}` blocks the merge no matter what the
+   static gates say, and feeds the unit back into its own remediation loop.
 
-So per review wave the conductor runs: **lenses (parallel) → adversary (if present) →
-adjudicator (if present, verdict gates)**. The lenses and adversary are advisory inputs to
-the judgment; only the adjudicator's verdict is binding. All three are optional and
-compose: a stage may run lenses alone, lenses + an adjudicator, or the full three tiers.
+So per unit the conductor runs: **implement → the unit's gates → lenses (parallel) →
+adversary (if present) → adjudicator (if present, verdict gates) → integrate**. The lenses
+and adversary are advisory inputs to the judgment; only the adjudicator's verdict is
+binding. All three tiers are optional and compose: a panel may run lenses alone, lenses +
+an adjudicator, or the full three tiers; an empty panel runs no per-unit review. Every
+planner-proposed unit inherits `defaults.review` automatically.
 
 ### 3.3 Gates are config, not code
 
@@ -279,6 +289,15 @@ stages concurrently), defers the coverage gate past a `produces` planner stage,
 trips the budget breaker before each wave, and projects the final `RunState`. The
 canonical pipeline above is simply the *default* workflow shipped as an example.
 
+**Review and integration are per UNIT, inside each unit's lifecycle - not separate
+downstream stages.** Every implementer unit (the `implement` stage and every
+planner-proposed unit) runs its OWN complete lifecycle in `run_single_stage`: ground →
+implement (red→green TDD in a worktree) → the unit's gates → the three-tier review OF
+THIS UNIT'S DIFF (lenses → adversary → adjudicator) → integrate. A reject or a gate
+failure feeds back into that same unit's remediation loop (re-ground, re-implement with
+the feedback) and escalates after the retry bound; it does NOT integrate. The review
+panel is the unit's effective `review` (the stage's override, else `defaults.review`).
+
 ```mermaid
 flowchart LR
   S["spec"] --> RDY{loop-ready?\n(enumerable\nDone-when criteria)}
@@ -288,9 +307,16 @@ flowchart LR
   P --> COV{coverage gate\nevery criterion has a unit?}
   COV -->|gap| BLK2["block: plan missed a requirement"]
   COV -->|ok| PAR["partition ready units\n(disjoint by blast-radius)"]
-  PAR --> FAN["fan-out: AgentDriver per unit\n(red → green → gates)"]
-  FAN --> VR["verify + review\n(lenses → adversary → adjudicator)"]
-  VR --> INT["integrate\ncommit · land · emit events · reindex"]
+  PAR --> FAN["fan-out: AgentDriver per unit"]
+  subgraph UNIT["each unit's lifecycle (run_single_stage)"]
+    IMPL["implement\n(red → green)"] --> GATES["the unit's gates"]
+    GATES -->|green| REV["three-tier review of THIS unit\n(lenses → adversary → adjudicator)"]
+    GATES -->|red| REMED
+    REV -->|approve| INT["integrate\ncommit · land · emit events · reindex"]
+    REV -->|reject| REMED["remediate\n(re-ground, re-implement;\nescalate after N)"]
+    REMED --> IMPL
+  end
+  FAN --> IMPL
   INT --> CONV{converged?\nall criteria covered +\nall units integrated +\nall gates green}
   CONV -->|no| G
   CONV -->|yes| DONE["done (machine-verified)"]
@@ -689,10 +715,14 @@ work a stale base: the three failure classes this session hit, closed structural
   Unit = `id, spec_criterion, depends_on, status, worktree, branch, evidence, attempts,
   commit`; Status spans Pending → … → Integrated plus Failed / Escalated).
 - **AgentDef:** §3.1 frontmatter (`id, model, tools, isolation, recurse, prompt`).
-- **Workflow:** §3.2 (`name, defaults{autonomy, grounder, budget, partition}, gates{},
-  stages{needs, agent(s), strategy, partition, gates, adversary, adjudicator, autonomy,
-  produces, coverage, on_pass}`). The three-tier review stage binds `agents` (the lenses),
-  `adversary` (refutes the lenses), and `adjudicator` (the neutral judge whose verdict gates).
+- **Workflow:** §3.2 (`name, defaults{autonomy, grounder, budget, partition,
+  review{lenses, adversary, adjudicator}}, gates{}, stages{needs, agent(s), strategy,
+  partition, gates, review{...}, adversary, adjudicator, autonomy, produces, coverage,
+  on_pass}`). `defaults.review` is the three-tier panel every implementer unit reviews
+  ITSELF with (lenses = tier 1, `adversary` = tier 2 refuting the lenses, `adjudicator` =
+  tier 3 neutral judge whose verdict gates the unit's integration); a stage's own `review`
+  block overrides it. A standalone review stage may still bind `agents` + `adversary` +
+  `adjudicator` directly for an aggregate fan-out review.
 - **Gate (config):** `{run, kind}` in the YAML library; the conductor's runtime `Gate`
   adds `id`, `autonomy: Manual|AutoNotify|Silent`, and `history:[{pass}]` for the ratchet.
 

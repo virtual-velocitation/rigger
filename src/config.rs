@@ -41,6 +41,43 @@ pub struct Gate {
     pub kind: String,
 }
 
+/// ReviewPanel is the three-tier review roster a unit reviews ITSELF with: the
+/// expert lenses (tier 1, parallel), the adversary that refutes the lenses (tier
+/// 2), and the neutral adjudicator whose verdict gates integration (tier 3). It is
+/// declared once on `defaults.review` and applied to every implementer unit; a
+/// stage may override it with its own `review` block (§3.2). All three are
+/// optional and compose: lenses alone, lenses + adjudicator, or the full trio.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct ReviewPanel {
+    #[serde(default)]
+    pub lenses: Vec<String>,
+    #[serde(default)]
+    pub adversary: String,
+    #[serde(default)]
+    pub adjudicator: String,
+}
+
+impl ReviewPanel {
+    /// Whether this panel has any review tier configured. An empty panel runs no
+    /// per-unit review (the historical implement-then-integrate behavior).
+    pub fn is_empty(&self) -> bool {
+        self.lenses.is_empty() && self.adversary.is_empty() && self.adjudicator.is_empty()
+    }
+
+    /// Every agent id this panel references (the lenses, the adversary, the
+    /// adjudicator), for referential validation.
+    pub fn agent_ids(&self) -> Vec<String> {
+        let mut ids = self.lenses.clone();
+        if !self.adversary.is_empty() {
+            ids.push(self.adversary.clone());
+        }
+        if !self.adjudicator.is_empty() {
+            ids.push(self.adjudicator.clone());
+        }
+        ids
+    }
+}
+
 /// Defaults are workflow-wide fallbacks for stages that do not set their own.
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct Defaults {
@@ -48,6 +85,12 @@ pub struct Defaults {
     pub autonomy: String,
     #[serde(default)]
     pub grounder: String,
+    /// The three-tier review panel applied to every implementer unit (§3.2): each
+    /// unit runs its own lifecycle and reviews ITSELF with this panel unless its
+    /// stage overrides it with a `review` block. Declared once here, inherited by
+    /// every planner-proposed unit too.
+    #[serde(default)]
+    pub review: ReviewPanel,
     /// The token/spawn circuit-breaker budget (§4.4, §8): the maximum number of
     /// agent spawns a run may perform. 0 (the default) means unlimited.
     #[serde(default)]
@@ -86,6 +129,11 @@ pub struct Stage {
     pub adversary: String,
     #[serde(default)]
     pub adjudicator: String,
+    /// An optional per-stage override of `defaults.review` (§3.2): when set, this
+    /// stage's units review themselves with this panel instead of the workflow
+    /// default. Absent (the common case) means the unit uses `defaults.review`.
+    #[serde(default)]
+    pub review: ReviewPanel,
     #[serde(default)]
     pub autonomy: String,
     #[serde(default)]
@@ -128,7 +176,8 @@ fn is_fan_out_tool(tool: &str) -> bool {
 
 impl Stage {
     /// Every agent a stage references (the worker, the fan-out lens set, the
-    /// adversary, the adjudicator).
+    /// standalone-review adversary/adjudicator, and any per-stage `review` override
+    /// panel).
     pub fn agent_ids(&self) -> Vec<String> {
         let mut ids = Vec::new();
         if !self.agent.is_empty() {
@@ -141,6 +190,7 @@ impl Stage {
         if !self.adjudicator.is_empty() {
             ids.push(self.adjudicator.clone());
         }
+        ids.extend(self.review.agent_ids());
         ids
     }
 }
@@ -245,6 +295,14 @@ impl Config {
     /// Validate checks that every reference resolves and the stage graph is acyclic.
     pub fn validate(&self) -> Result<(), Error> {
         let wf = &self.workflow;
+        // The default review panel (applied to every unit) must reference real agents.
+        for aid in wf.defaults.review.agent_ids() {
+            if !self.agents.contains_key(&aid) {
+                return Err(err(format!(
+                    "defaults.review references unknown agent {aid:?}"
+                )));
+            }
+        }
         for (name, st) in &wf.stages {
             for need in &st.needs {
                 if !wf.stages.contains_key(need) {
@@ -399,30 +457,98 @@ mod tests {
     }
 
     #[test]
+    fn validate_catches_unknown_default_review_agent() {
+        // The default review panel's agent ids are validated like every other agent
+        // reference: an unknown lens/adversary/adjudicator fails validation.
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent_def("a"));
+        cfg.workflow.defaults.review = ReviewPanel {
+            lenses: vec!["ghost".into()],
+            ..Default::default()
+        };
+        assert!(
+            cfg.validate().is_err(),
+            "an unknown agent in defaults.review must fail validation"
+        );
+    }
+
+    #[test]
+    fn default_review_panel_parses_and_validates() {
+        // A workflow declaring `defaults.review` parses the three-tier panel and
+        // validates it referentially: known lenses + adversary + adjudicator load.
+        let yaml = "name: w\n\
+defaults:\n  \
+review:\n    \
+lenses: [archlens, techlens]\n    \
+adversary: adv\n    \
+adjudicator: adj\n\
+stages:\n  \
+implement:\n    \
+agent: worker\n";
+        let mut wf: Workflow = serde_yaml::from_str(yaml).unwrap();
+        for name in wf.stages.keys().cloned().collect::<Vec<_>>() {
+            if let Some(st) = wf.stages.get_mut(&name) {
+                st.name = name;
+            }
+        }
+        let review = &wf.defaults.review;
+        assert_eq!(review.lenses, ["archlens", "techlens"]);
+        assert_eq!(review.adversary, "adv");
+        assert_eq!(review.adjudicator, "adj");
+        assert_eq!(
+            review.agent_ids(),
+            ["archlens", "techlens", "adv", "adj"],
+            "the panel reports every agent it references for validation"
+        );
+
+        // With those agents present, the config validates.
+        let mut cfg = Config {
+            workflow: wf,
+            ..Default::default()
+        };
+        for id in ["archlens", "techlens", "adv", "adj", "worker"] {
+            cfg.agents.insert(id.into(), agent_def(id));
+        }
+        assert!(cfg.validate().is_ok());
+    }
+
+    fn agent_def(id: &str) -> AgentDef {
+        AgentDef {
+            id: id.to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
     fn golden_apple_example_loads() {
         // The worked example the architecture references (§10, §11) must load and
         // validate into a real DAG, so it never rots. The path is relative to the
         // crate root (cargo runs tests there).
         let cfg =
             load("examples/golden-apple").expect("the golden-apple example must load and validate");
-        // The full lens set + planner + implementer + adversary + adjudicator + integrator.
+        // The full agent roster still loads from the dir.
         assert_eq!(cfg.agents.len(), 8, "golden-apple agent count");
-        assert_eq!(cfg.workflow.stages.len(), 4, "golden-apple stage count");
+        // Per-unit model: plan -> implement (each unit implements, three-tier-reviews
+        // ITSELF, and integrates in one lifecycle). The separate review/integrate
+        // stages are folded out.
+        assert_eq!(cfg.workflow.stages.len(), 2, "golden-apple stage count");
         assert_eq!(cfg.workflow.gates.len(), 4, "golden-apple gate count");
-        // The shape: a producer, a worktree-isolated non-recursive implementer, a
-        // three-tier review (lenses -> adversary -> adjudicator), and an
-        // on_pass: merge integrate.
+        // The shape: a producer, then a worktree-isolated non-recursive implementer
+        // stage that runs the full per-unit lifecycle and integrates on_pass: merge.
         assert_eq!(cfg.workflow.stages["plan"].produces, "dag");
         let implement = &cfg.workflow.stages["implement"];
         assert_eq!(implement.strategy, "fan-out");
+        assert_eq!(implement.on_pass, "merge");
         let impl_agent = &cfg.agents[&implement.agent];
         assert!(impl_agent.isolated(), "the implementer runs in a worktree");
         assert!(
             !impl_agent.recurse,
             "the implementer must not be able to fan out"
         );
-        let review = &cfg.workflow.stages["review"];
-        assert_eq!(review.agents.len(), 3, "tier 1: three expert lenses");
+        // The three-tier review panel is declared once on defaults.review and applied
+        // to every implementer unit.
+        let review = &cfg.workflow.defaults.review;
+        assert_eq!(review.lenses.len(), 3, "tier 1: three expert lenses");
         assert_eq!(
             review.adversary, "adversary",
             "tier 2: the adversary refutes the lenses"
@@ -431,7 +557,6 @@ mod tests {
             review.adjudicator, "devils-advocate",
             "tier 3: the neutral adjudicator's verdict gates"
         );
-        assert_eq!(cfg.workflow.stages["integrate"].on_pass, "merge");
     }
 
     #[test]
