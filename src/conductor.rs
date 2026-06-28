@@ -458,6 +458,55 @@ impl RunCtx<'_> {
         gate::decide(&probe) == gate::Action::Pause
     }
 
+    /// The review panel a unit reviews ITSELF with (§3.2): the stage's own `review`
+    /// override when it sets one, otherwise the workflow-wide `defaults.review`.
+    /// Declared once and inherited by every implementer unit, including the
+    /// planner-proposed units that run through `run_single_stage`.
+    fn effective_review_panel<'a>(&'a self, st: &'a Stage) -> &'a crate::config::ReviewPanel {
+        if st.review.is_empty() {
+            &self.cfg.workflow.defaults.review
+        } else {
+            &st.review
+        }
+    }
+
+    /// Run the three-tier review of THIS unit's diff and return whether it is
+    /// approved (§3.2). TIER 1: the expert lenses review the diff in parallel and
+    /// emit findings. TIER 2: the adversary reviews the lenses' findings and refutes
+    /// them. TIER 3: the adjudicator weighs the lenses against the adversary and its
+    /// verdict GATES integration - an explicit reject blocks the merge no matter what
+    /// the static gates said. The lenses/adversary/adjudicator review the unit (they
+    /// produce no code), so they run with no worktree of their own; they are grounded
+    /// on this unit through the same `build_prompt` path the implementer used. After
+    /// the adjudicator approves, the unit is marked `reviewed`. An empty panel runs
+    /// no review and approves trivially (the historical behavior).
+    fn review_unit(&self, st: &Stage) -> Result<bool, Error> {
+        let panel = self.effective_review_panel(st);
+        if panel.is_empty() {
+            return Ok(true);
+        }
+        let lenses = panel.lenses.clone();
+        let adversary = panel.adversary.clone();
+        let adjudicator = panel.adjudicator.clone();
+        if !lenses.is_empty() {
+            self.run_agents_concurrently(st, &lenses)?;
+        }
+        if !adversary.is_empty() {
+            self.run_adversary(st, &adversary)?;
+        }
+        if adjudicator.is_empty() {
+            return Ok(true);
+        }
+        let approved = self.run_adjudicator(st, &adjudicator)?;
+        if approved {
+            self.emit(
+                ledger::TYPE_UNIT_STATUS,
+                json!({"id": st.name, "status": "reviewed"}),
+            )?;
+        }
+        Ok(approved)
+    }
+
     fn run_single_stage(
         &self,
         st: &Stage,
@@ -500,23 +549,34 @@ impl RunCtx<'_> {
                 }
             }
 
+            // The unit's own lifecycle (§3.2): implement -> the unit's gates -> the
+            // three-tier review OF THIS UNIT -> integrate. The gates and the
+            // adjudicator's verdict BOTH gate integration: a gate failure OR a reject
+            // feeds back into this same loop (re-ground via build_prompt, re-implement,
+            // re-review) and escalates after the retry bound. Review runs only once the
+            // implementer's own gates are green, so the lenses never review a red diff.
             if spawn_err.is_none() && self.run_gates(st, dir)? {
                 self.emit(
                     ledger::TYPE_UNIT_STATUS,
                     json!({"id": st.name, "status": "verified"}),
                 )?;
-                // on_pass governs integration (§3.2): empty or `merge` lands the
-                // work; any other value (e.g. `none`) runs the gates but never
-                // integrates - the verified work stays un-merged.
-                if !integrates(st) {
-                    return Ok(false);
+                let approved = self.review_unit(st)?;
+                if approved {
+                    // on_pass governs integration (§3.2): empty or `merge` lands the
+                    // work; any other value (e.g. `none`) runs the gates but never
+                    // integrates - the verified, reviewed work stays un-merged.
+                    if !integrates(st) {
+                        return Ok(false);
+                    }
+                    let commit = self.integrate_and_emit(wt, &st.agent, &st.name, &st.gates)?;
+                    self.emit(
+                        ledger::TYPE_UNIT_INTEGRATED,
+                        json!({"id": st.name, "commit": commit}),
+                    )?;
+                    return Ok(true);
                 }
-                let commit = self.integrate_and_emit(wt, &st.agent, &st.name, &st.gates)?;
-                self.emit(
-                    ledger::TYPE_UNIT_INTEGRATED,
-                    json!({"id": st.name, "commit": commit}),
-                )?;
-                return Ok(true);
+                // A rejecting adjudicator is treated exactly like a gate failure: fall
+                // through to remediation, do NOT integrate.
             }
 
             let rem = safety::remediate(attempts, safety::MAX_RETRIES);
@@ -528,7 +588,7 @@ impl RunCtx<'_> {
             if rem.decision == safety::Decision::Escalate {
                 let why = spawn_err
                     .clone()
-                    .unwrap_or_else(|| "its gates would not pass".to_string());
+                    .unwrap_or_else(|| "its gates or review would not pass".to_string());
                 self.emit_lesson(
                     wt,
                     &st.name,
@@ -1148,18 +1208,24 @@ pub fn partition_by_blast_radius(items: &[(String, Vec<String>)]) -> Vec<Vec<Str
 }
 
 /// Whether a stage runs the fan-out (parallel-lens) path rather than the
-/// single-worker path (§3.2). The decision reads `strategy`: a stage fans out when
-/// `strategy == "fan-out"` (case-insensitive) OR it carries a non-empty `agents`
-/// lens list. The `agents`-list branch keeps the historical behavior; the
-/// `strategy` branch means the field is now consulted and honored, not ignored.
+/// single-worker path (§3.2). A stage takes the standalone fan-out path ONLY when it
+/// is a standalone review stage: it carries an `agents` lens list (or `strategy:
+/// fan-out`) and has NO `agent`. A stage that names an `agent` runs the per-unit
+/// lifecycle in `run_single_stage` - implement -> the unit's gates -> the three-tier
+/// review OF THIS UNIT -> integrate - even when it sets `strategy: fan-out` (which on
+/// an implementer stage means "one implementer per ready unit", driven by the
+/// partitioner and the planner-proposed units, not "run my lone agent as a lens").
+/// So review and integration live INSIDE the unit's lifecycle, never as a separate
+/// downstream stage.
 fn is_fan_out(st: &Stage) -> bool {
-    st.strategy.eq_ignore_ascii_case("fan-out") || !st.agents.is_empty()
+    st.agent.is_empty() && (!st.agents.is_empty() || st.strategy.eq_ignore_ascii_case("fan-out"))
 }
 
-/// The lens set a fan-out stage runs concurrently: its `agents` list when
-/// populated, else its single `agent` (a `strategy: fan-out` stage that names only
-/// `agent`), else empty. This is what lets `strategy: fan-out` take the parallel
-/// path even without an explicit `agents` list (§3.2).
+/// The lens set a standalone review stage runs concurrently: its `agents` list when
+/// populated, else its single `agent`, else empty (§3.2). A standalone review stage
+/// always has `agents` (it has no `agent` - that is what routes it to the fan-out
+/// path), so the `agent` fallback is defensive; an implementer stage with an `agent`
+/// runs its per-unit lifecycle instead and never reaches here.
 fn fan_out_lenses(st: &Stage) -> Vec<String> {
     if !st.agents.is_empty() {
         st.agents.clone()
@@ -1922,6 +1988,232 @@ mod tests {
     }
 
     #[test]
+    fn unit_reviews_itself_within_its_own_lifecycle() {
+        // The per-unit lifecycle (§3.2): an `agent` stage with a `defaults.review`
+        // panel runs implement -> the unit's gates -> three-tier review OF THIS UNIT
+        // (lenses -> adversary -> adjudicator) -> integrate, all inside ONE stage. The
+        // unit must reach Integrated, and the implementer, both lenses, the adversary,
+        // and the adjudicator must all have run on it - in that order.
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lensA".into(), agent("lensA"));
+        cfg.agents.insert("lensB".into(), agent("lensB"));
+        cfg.agents.insert("adversary".into(), agent("adversary"));
+        cfg.agents.insert("adj".into(), agent("adj"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        // The review panel is declared once on defaults and applied to the unit.
+        cfg.workflow.defaults.review = config::ReviewPanel {
+            lenses: vec!["lensA".into(), "lensB".into()],
+            adversary: "adversary".into(),
+            adjudicator: "adj".into(),
+        };
+        cfg.workflow.stages.insert(
+            "implement".into(),
+            Stage {
+                name: "implement".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new(); // empty adjudicator output => approve
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs.units["implement"].status,
+            ledger::Status::Integrated,
+            "a unit that implements, passes review, and gates green must integrate"
+        );
+        // The implementer ran, then both lenses, then the adversary, then the
+        // adjudicator - all on this one unit, inside its own lifecycle.
+        let order = driver.call_order.lock().unwrap().clone();
+        let worker = order
+            .iter()
+            .position(|a| a == "worker")
+            .expect("the implementer must run");
+        let last_lens = order
+            .iter()
+            .rposition(|a| a == "lensA" || a == "lensB")
+            .expect("the lenses must run on the unit");
+        let adv = order
+            .iter()
+            .position(|a| a == "adversary")
+            .expect("the adversary must run on the unit");
+        let adj = order
+            .iter()
+            .position(|a| a == "adj")
+            .expect("the adjudicator must run on the unit");
+        assert!(
+            worker < last_lens,
+            "the implementer runs before its own review; order was {order:?}"
+        );
+        assert!(
+            last_lens < adv,
+            "the adversary runs AFTER every lens; order was {order:?}"
+        );
+        assert!(
+            adv < adj,
+            "the adjudicator runs LAST (its verdict gates); order was {order:?}"
+        );
+        // The unit was marked `reviewed` after the adjudicator approved.
+        let events = st
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        assert!(
+            events.iter().any(|e| {
+                e.type_ == ledger::TYPE_UNIT_STATUS
+                    && String::from_utf8_lossy(&e.data).contains("\"status\":\"reviewed\"")
+            }),
+            "an approved unit must be marked reviewed before it integrates"
+        );
+    }
+
+    #[test]
+    fn planner_proposed_unit_inherits_the_default_review_panel() {
+        // A planner-proposed unit runs through `run_single_stage`, so it inherits the
+        // per-unit three-tier review from `defaults.review` automatically (§3.2): the
+        // harvested unit must be reviewed by the panel and only then integrate.
+        let mut cfg = Config::default();
+        cfg.agents.insert("planner".into(), agent("planner"));
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("adj".into(), agent("adj"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.defaults.review = config::ReviewPanel {
+            lenses: vec!["lens".into()],
+            adversary: String::new(),
+            adjudicator: "adj".into(),
+        };
+        cfg.workflow.stages.insert(
+            "plan".into(),
+            Stage {
+                name: "plan".into(),
+                agent: "planner".into(),
+                produces: "dag".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            emits: vec![(
+                TYPE_UNIT_PROPOSED.to_string(),
+                json!({
+                    "id": "impl-unit",
+                    "agent": "worker",
+                    "needs": ["plan"],
+                    "gates": ["ok"],
+                }),
+            )],
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs.units["impl-unit"].status,
+            ledger::Status::Integrated,
+            "a proposed unit must review itself via defaults.review, then integrate"
+        );
+        // The default panel's lens and adjudicator both ran on the proposed unit.
+        let order = driver.call_order.lock().unwrap().clone();
+        assert!(
+            order.iter().any(|a| a == "lens") && order.iter().any(|a| a == "adj"),
+            "the proposed unit must inherit the default review panel; order was {order:?}"
+        );
+    }
+
+    #[test]
+    fn per_unit_adjudicator_reject_blocks_integration_and_escalates() {
+        // A rejecting adjudicator on the per-unit review (§3.2) is treated like a gate
+        // failure: it blocks THAT unit's integration and remediates, escalating after
+        // the retry bound - EVEN THOUGH the unit's static gates pass. The shared Stub
+        // returns {"verdict":"reject"} for every spawn, but only the adjudicator's
+        // output gates; the implementer keeps producing a green diff each retry.
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("adversary".into(), agent("adversary"));
+        cfg.agents.insert("adj".into(), agent("adj"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.defaults.review = config::ReviewPanel {
+            lenses: vec!["lens".into()],
+            adversary: "adversary".into(),
+            adjudicator: "adj".into(),
+        };
+        cfg.workflow.stages.insert(
+            "implement".into(),
+            Stage {
+                name: "implement".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()], // static gates pass
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            output: r#"{"verdict":"reject","issues":[]}"#.into(),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs.units["implement"].status,
+            ledger::Status::Escalated,
+            "a rejecting per-unit adjudicator must block integration and escalate, even with green static gates"
+        );
+        // The reject re-looped the unit's implement -> gates -> review remediation: the
+        // adversary and adjudicator both ran, and the unit never integrated.
+        let order = driver.call_order.lock().unwrap().clone();
+        assert!(
+            order.iter().any(|a| a == "adversary"),
+            "the adversary must have run before the gating verdict"
+        );
+        assert!(
+            order.iter().any(|a| a == "adj"),
+            "the adjudicator must have rendered the gating verdict"
+        );
+        let events = st
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.type_ == ledger::TYPE_UNIT_INTEGRATED),
+            "a rejected unit must emit no UnitIntegrated"
+        );
+        assert!(
+            events.iter().any(|e| e.type_ == ledger::TYPE_UNIT_FAILED),
+            "a rejected unit must record a UnitFailed as it remediates"
+        );
+    }
+
+    #[test]
     fn mid_spawn_crash_escalates_without_aborting_the_run() {
         let mut cfg = Config::default();
         cfg.agents.insert("a".into(), agent("a"));
@@ -2531,23 +2823,24 @@ mod tests {
     }
 
     #[test]
-    fn strategy_fan_out_takes_the_fan_out_path() {
-        // A stage with `strategy: fan-out` and a single `agent` (no `agents` list)
-        // must be treated as a fan-out stage: `is_fan_out` reads `strategy`, and the
-        // lens set falls back to the lone agent (§3.2). Asserting via the SpawnOpts
-        // the conductor passed - the fan-out path spawns with `parallel = true`,
-        // whereas the single-worker path spawns with `parallel = false`.
+    fn agent_stage_runs_the_per_unit_lifecycle_not_the_fan_out_path() {
+        // An implement stage names an `agent` AND `strategy: fan-out`. Under the
+        // per-unit model (§3.2) it must run the SINGLE-UNIT lifecycle in
+        // `run_single_stage` - implement -> gates -> the unit's own review ->
+        // integrate - NOT the standalone fan-out path. `strategy: fan-out` on an
+        // implementer stage means "one implementer per ready unit" (the partitioner +
+        // planner-proposed units), not "run my lone agent as a parallel lens". The
+        // single-worker path spawns with `parallel = false`; the fan-out path with
+        // `parallel = true`.
         let st = Stage {
             name: "impl".into(),
             agent: "a".into(),
             strategy: "fan-out".into(),
             ..Default::default()
         };
-        assert!(is_fan_out(&st), "a `strategy: fan-out` stage must fan out");
-        assert_eq!(
-            fan_out_lenses(&st),
-            vec!["a".to_string()],
-            "a fan-out stage with only `agent` runs that agent as its lone lens"
+        assert!(
+            !is_fan_out(&st),
+            "a stage that names an `agent` runs the per-unit lifecycle, not the fan-out path"
         );
 
         let mut cfg = Config::default();
@@ -2570,8 +2863,47 @@ mod tests {
         let opts = driver.opts_by_agent.lock().unwrap();
         let (_isolation, parallel) = opts.get("a").copied().unwrap();
         assert!(
+            !parallel,
+            "an `agent` stage runs the per-unit lifecycle (single-worker path), not the parallel lens path"
+        );
+    }
+
+    #[test]
+    fn standalone_review_stage_still_takes_the_fan_out_path() {
+        // A standalone review stage - `agents` lens list, NO `agent` - keeps the
+        // `run_fan_out_stage` aggregate-review path (§3.2). Asserted via SpawnOpts:
+        // the lens spawns with `parallel = true`.
+        let review = Stage {
+            name: "review".into(),
+            agents: vec!["lens".into()],
+            ..Default::default()
+        };
+        assert!(
+            is_fan_out(&review),
+            "a stage with `agents` and no `agent` is a standalone fan-out review stage"
+        );
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.workflow.stages.insert("review".into(), review);
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(rs.units["review"].status, ledger::Status::Integrated);
+        let opts = driver.opts_by_agent.lock().unwrap();
+        let (_isolation, parallel) = opts.get("lens").copied().unwrap();
+        assert!(
             parallel,
-            "a `strategy: fan-out` stage must spawn its agent on the parallel path"
+            "a standalone review stage spawns its lenses on the parallel fan-out path"
         );
     }
 
