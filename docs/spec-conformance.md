@@ -58,8 +58,8 @@ against the code. Phases are in dependency order; each lands CI-green.
 - [x] `rigger_emit` sets meta/actor/valid_from (§6)
 
 ## Phase 5 - Side-car
-- [ ] subscription filtered to the agent's blast-radius (§5.3)
-- [ ] mid-run injection: surface peer decisions at the next tool boundary (§5.3)
+- [x] subscription filtered to the agent's blast-radius (§5.3)
+- [x] mid-run injection: surface peer decisions at the next tool boundary (§5.3)
 
 ## Phase 6 - CLI + composition
 - [ ] `rigger run --driver <cli|workflow>` flag (§10)

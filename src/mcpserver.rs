@@ -90,7 +90,7 @@ impl<'a> Server<'a> {
             "rigger_next" => self.tool_next(),
             "rigger_result" => self.tool_result(args),
             "rigger_emit" => self.tool_emit(args),
-            "rigger_peers" => Ok(self.tool_peers()),
+            "rigger_peers" => Ok(self.tool_peers(args)),
             _ => return err(id, -32602, &format!("unknown tool {name}")),
         };
         match result {
@@ -157,10 +157,22 @@ impl<'a> Server<'a> {
         Ok(json!({}))
     }
 
-    fn tool_peers(&self) -> Value {
+    /// List peers' decisions, optionally scoped to a blast-radius (§5.3). When the
+    /// caller passes a `files` array (the agent's blast-radius), only decisions whose
+    /// `governs` intersects it come back; absent or empty, every decision does.
+    fn tool_peers(&self, args: &Value) -> Value {
+        let files: Vec<String> = args
+            .get("files")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
         let decisions: Vec<Value> = self
             .peers
-            .decisions()
+            .decisions_for(&files)
             .iter()
             .map(|d| json!({"id": d.id, "summary": d.summary, "governs": d.governs}))
             .collect();
@@ -279,7 +291,7 @@ fn tool_list() -> Value {
         {"name": "rigger_next", "description": "Pick up the next queued agent spawn. The id is empty when nothing is waiting.", "inputSchema": {"type": "object", "properties": {}}},
         {"name": "rigger_result", "description": "Report an agent's final result by spawn id.", "inputSchema": {"type": "object", "properties": {"id": {"type": "string"}, "output": {"type": "string"}, "error": {"type": "string"}}, "required": ["id"]}},
         {"name": "rigger_emit", "description": "Record a decision on the shared event log, live, so other agents see it immediately. Optionally set meta (e.g. the acting agent, which stamps the graph's DECIDED edge) and valid_from (the bi-temporal time the fact became true).", "inputSchema": {"type": "object", "properties": {"type": {"type": "string"}, "data": {"type": "object"}, "meta": {"type": "object", "description": "Metadata entries (string->string), e.g. {\"actor\": \"<agent-id>\"}.", "additionalProperties": {"type": "string"}}, "valid_from": {"description": "When the fact became true: unix nanoseconds (integer) or an RFC3339 timestamp string.", "type": ["integer", "string"]}}, "required": ["type", "data"]}},
-        {"name": "rigger_peers", "description": "List the decisions other agents have made so far this run, so you do not work blind to them.", "inputSchema": {"type": "object", "properties": {}}},
+        {"name": "rigger_peers", "description": "List the decisions other agents have made so far this run, so you do not work blind to them. Pass `files` (your blast-radius) to scope the result to decisions that touch those files; omit it to see every decision.", "inputSchema": {"type": "object", "properties": {"files": {"type": "array", "items": {"type": "string"}, "description": "The agent's blast-radius: only decisions whose `governs` intersects these files are returned. Omit for all decisions."}}}},
     ])
 }
 
@@ -373,6 +385,47 @@ mod tests {
         let z = parse_valid_from(&json!("2021-01-01T00:00:00Z")).unwrap();
         let off = parse_valid_from(&json!("2021-01-01T01:00:00+01:00")).unwrap();
         assert_eq!(z, off, "the offset is applied back to UTC");
+    }
+
+    #[test]
+    fn peers_tool_scopes_to_the_files_arg() {
+        use std::time::Instant;
+
+        let store = Store::open(":memory:").unwrap();
+        // Two decisions, one touching a.rs, one touching b.rs, on the run stream.
+        for (id, governs) in [("da", "a.rs"), ("db", "b.rs")] {
+            let data = serde_json::to_vec(&serde_json::json!({
+                "id": id, "summary": "x", "governs": [governs],
+            }))
+            .unwrap();
+            store
+                .append(
+                    "run",
+                    ExpectedRevision::Any,
+                    &[Event::new(crate::contextgraph::TYPE_DECISION_MADE, data)],
+                )
+                .unwrap();
+        }
+
+        let driver = Driver::new();
+        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
+        // Wait for the side-car to catch up on both decisions.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while peers.decisions().len() < 2 {
+            assert!(Instant::now() < deadline, "side-car never caught up");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let server = Server::new(&driver, &store, "run", &peers);
+
+        let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_peers","arguments":{"files":["a.rs"]}}}"#;
+        let mut output = Vec::new();
+        server.run(Cursor::new(input), &mut output).unwrap();
+
+        let resp: Value = serde_json::from_str(String::from_utf8(output).unwrap().trim()).unwrap();
+        let decisions = &resp["result"]["structuredContent"]["decisions"];
+        let arr = decisions.as_array().expect("decisions array");
+        assert_eq!(arr.len(), 1, "files=[a.rs] returns only the a.rs decision");
+        assert_eq!(arr[0]["id"], "da");
     }
 
     #[test]
