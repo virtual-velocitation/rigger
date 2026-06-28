@@ -232,7 +232,10 @@ struct UnitProposed {
     agent: String,
     #[serde(default)]
     needs: Vec<String>,
-    #[serde(default)]
+    /// The spec criterion the proposed unit serves. The planner emits it as
+    /// `criterion` (the PLAN_PROTOCOL shape); `coverage` is accepted as an alias so a
+    /// hand-authored proposal using the stage `coverage` vocabulary still maps.
+    #[serde(default, alias = "criterion")]
     coverage: String,
     #[serde(default)]
     gates: Vec<String>,
@@ -274,6 +277,28 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         .filter(|u| prior.is_terminal(&u.id))
         .map(|u| u.id.clone())
         .collect();
+
+    // Deterministic decomposition baseline (§3.2): when the run is spec-driven
+    // (`deps.criteria` non-empty), the conductor itself creates ONE implement unit per
+    // acceptance criterion from the fan-out implement TEMPLATE, BEFORE any agent runs.
+    // The template is a template, not a unit, so it is removed and the per-criterion
+    // units replace it; each unit carries the criterion text as its `coverage`, so it
+    // grounds on the real criterion and its UnitStarted records the real
+    // spec_criterion - not the template's label, and never the `coverage: required`
+    // bug. Each baseline unit `needs` the planner when one exists, so the planner runs
+    // FIRST and refines this baseline (splitting a criterion, adding a sub-unit) via
+    // UnitProposed. With no fan-out template the run synthesizes no baseline units and
+    // falls back to the historical shape. The no-spec (empty criteria) path is
+    // untouched: no template expansion, the workflow's own stages run as authored.
+    if !deps.criteria.is_empty() {
+        if let Some(template_name) = fan_out_template_name(&stages) {
+            let template = stages.remove(&template_name).expect("template just found");
+            let producer = producer_name(&stages);
+            for (name, unit) in baseline_units(&template, &deps.criteria, producer.as_deref()) {
+                stages.entry(name).or_insert(unit);
+            }
+        }
+    }
 
     // Coverage gate (§3.2, §8). A planner (`produces`) stage DEFERS coverage to
     // after planning: it has no units yet, so we run the planning wave + harvest
@@ -1365,24 +1390,83 @@ impl RunCtx<'_> {
         build_system_prompt(&agent.prompt)
     }
 
+    /// The grounding QUERY for a stage. A normal unit grounds on its `coverage` (now
+    /// the real criterion text), falling back to its name when it has none. A PLANNER
+    /// (`produces`) stage must NOT ground on its `coverage` label (the `coverage:
+    /// required` bug grep-matched the word "required" in LICENSE): it decomposes the
+    /// WHOLE spec, so it grounds on the spec's acceptance criteria, joined into one
+    /// query. With no criteria a producer falls back to its name. This is the single
+    /// source of the query, so `grounded_seed` and `build_prompt_with_failure` ground
+    /// the same way.
+    fn ground_query(&self, st: &Stage) -> String {
+        if is_producer(st) {
+            if !self.deps.criteria.is_empty() {
+                return self.deps.criteria.join(" ");
+            }
+            return st.name.clone();
+        }
+        if st.coverage.is_empty() {
+            st.name.clone()
+        } else {
+            st.coverage.clone()
+        }
+    }
+
+    /// The implementer agent id the conductor assigns each baseline unit: the fan-out
+    /// implement template's `agent` (read from the ORIGINAL workflow, since the template
+    /// is removed from the live `stages` once expanded). The planner is told this id so
+    /// its refinements assign the same implementer. Empty when there is no template.
+    fn implementer_agent(&self) -> String {
+        fan_out_template_name(&self.cfg.workflow.stages)
+            .and_then(|name| {
+                self.cfg
+                    .workflow
+                    .stages
+                    .get(&name)
+                    .map(|st| st.agent.clone())
+            })
+            .unwrap_or_default()
+    }
+
+    /// The planner's refine protocol, with the run's acceptance criteria and the
+    /// implementer agent id filled in. Empty for a non-producer stage.
+    fn plan_protocol(&self, st: &Stage) -> String {
+        if !is_producer(st) {
+            return String::new();
+        }
+        let criteria = if self.deps.criteria.is_empty() {
+            "(no enumerated acceptance criteria)".to_string()
+        } else {
+            self.deps
+                .criteria
+                .iter()
+                .map(|c| format!("- {c}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        format!(
+            "\n\n{}\n",
+            PLAN_PROTOCOL
+                .replace("{implementer}", &self.implementer_agent())
+                .replace("{criteria}", &criteria)
+        )
+    }
+
     /// The stage's blast-radius: the distinct files the grounder surfaces for the
-    /// stage's `coverage` (or its name when `coverage` is empty), in ground order
-    /// (§5.3). This is the same grounding `build_prompt` seeds the graph context from
-    /// and `partition_wave` partitions by, so the blast-radius the side-car filters
-    /// peer decisions against is exactly the files the agent was grounded on. Empty
-    /// when no grounder is configured (best-effort but real, not always empty).
+    /// stage's grounding query (its `coverage`/name, or the spec criteria for a
+    /// planner), in ground order (§5.3). This is the same grounding `build_prompt` seeds
+    /// the graph context from and `partition_wave` partitions by, so the blast-radius
+    /// the side-car filters peer decisions against is exactly the files the agent was
+    /// grounded on. Empty when no grounder is configured (best-effort but real, not
+    /// always empty).
     fn grounded_seed(&self, st: &Stage) -> Vec<String> {
         let gr = match self.deps.grounder {
             Some(g) => g,
             None => return Vec::new(),
         };
-        let query = if st.coverage.is_empty() {
-            &st.name
-        } else {
-            &st.coverage
-        };
+        let query = self.ground_query(st);
         let mut seed: Vec<String> = Vec::new();
-        for r in gr.ground(query, 8) {
+        for r in gr.ground(&query, 8) {
             if !seed.contains(&r.file) {
                 seed.push(r.file);
             }
@@ -1416,12 +1500,10 @@ impl RunCtx<'_> {
         b.push_str(&prior.block());
         let mut seed: Vec<String> = Vec::new();
         if let Some(gr) = self.deps.grounder {
-            let query = if st.coverage.is_empty() {
-                &st.name
-            } else {
-                &st.coverage
-            };
-            let refs = gr.ground(query, 8);
+            // Ground on the criterion (a unit) or the spec criteria (a planner), never
+            // on the `coverage: required` label - see `ground_query`.
+            let query = self.ground_query(st);
+            let refs = gr.ground(&query, 8);
             if !refs.is_empty() {
                 b.push_str("Relevant locations to read first:\n");
                 for r in &refs {
@@ -1435,6 +1517,10 @@ impl RunCtx<'_> {
         }
         b.push_str(&self.graph_context(&seed));
         b.push_str(EMIT_PROTOCOL);
+        // A planner stage carries the refine protocol + the spec's acceptance criteria,
+        // so it knows the baseline already exists and proposes only criterion-mapped
+        // refinements (never re-decomposing, never scope creep).
+        b.push_str(&self.plan_protocol(st));
         b
     }
 
@@ -1607,6 +1693,16 @@ fn verdict_approves(output: &str) -> bool {
 
 const EMIT_PROTOCOL: &str = "Record each decision you make by calling the rigger_emit tool the moment you make it, with type \"DecisionMade\" and data:\n{\"id\":\"<short-id>\",\"summary\":\"<one line>\",\"governs\":[\"<file>\"],\"supersedes\":\"<prior-id-or-empty>\"}\nThis writes it to the shared event log live, so other agents see it immediately.";
 
+/// The protocol a PLANNER (a `produces: dag`) stage follows. The conductor has ALREADY
+/// created one deterministic baseline implement unit per acceptance criterion, so the
+/// planner's job is to REFINE, not to decompose from scratch: split a criterion into
+/// several units, or add a necessary sub-unit or dependency the baseline missed. Each
+/// refinement is a `UnitProposed` carrying the spec criterion it serves; a proposed
+/// unit that maps to NO criterion is scope creep and is refused. The `{criteria}`
+/// placeholder is filled with the run's actual acceptance criteria, and
+/// `{implementer}` with the implementer agent id the conductor assigned the baseline.
+const PLAN_PROTOCOL: &str = "You are the planner. The conductor has ALREADY created one baseline implement unit per acceptance criterion below - the spec is decomposed by construction. Your job is to REFINE that baseline, not to re-decompose it:\n- If a criterion is too large for one unit, split it into several units (each still mapped to that same criterion).\n- If you discover a NECESSARY sub-unit or an ordering dependency the baseline missed, propose it.\nPropose each refinement the moment you decide it by calling the rigger_emit tool with type \"UnitProposed\" and data:\n{\"id\":\"<short-id>\",\"agent\":\"{implementer}\",\"criterion\":\"<the spec criterion it serves>\",\"needs\":[\"<unit ids it depends on>\"]}\nNEVER propose a unit that maps to no acceptance criterion - that is scope creep and will be refused. Do not write code.\n\nThe acceptance criteria to refine against:\n{criteria}";
+
 /// Rigger's communication discipline, appended to EVERY spawned agent's SYSTEM
 /// prompt (after its persona) by [`RunCtx::build_system_prompt`], so every agent on
 /// every driver path receives it. It REINFORCES the cadence the user-prompt
@@ -1762,6 +1858,104 @@ pub fn partition_by_blast_radius(items: &[(String, Vec<String>)]) -> Vec<Vec<Str
 /// downstream stage.
 fn is_fan_out(st: &Stage) -> bool {
     st.agent.is_empty() && (!st.agents.is_empty() || st.strategy.eq_ignore_ascii_case("fan-out"))
+}
+
+/// The implement TEMPLATE stage the conductor expands into one per-criterion unit
+/// (the deterministic decomposition baseline). It is the stage that names an `agent`,
+/// sets `strategy: fan-out` ("one implementer per ready unit"), and does NOT
+/// `produces` a DAG (it is a worker, not the planner). There is normally exactly one;
+/// the FIRST in stable (BTreeMap) order is chosen. Returns its name, or None when the
+/// workflow has no fan-out implementer template (a non-decomposing workflow), in which
+/// case the conductor synthesizes no baseline units and the no-spec path is unchanged.
+fn fan_out_template_name(stages: &BTreeMap<String, Stage>) -> Option<String> {
+    stages
+        .iter()
+        .find(|(_, st)| {
+            !st.agent.is_empty()
+                && st.strategy.eq_ignore_ascii_case("fan-out")
+                && st.produces.is_empty()
+        })
+        .map(|(name, _)| name.clone())
+}
+
+/// Whether a stage `produces` a DAG at runtime (the planner that decomposes the spec).
+fn is_producer(st: &Stage) -> bool {
+    !st.produces.is_empty()
+}
+
+/// The name of the (first) `produces` planner stage, if any: baseline units depend on
+/// it so they run only AFTER the planner has had its chance to refine the DAG.
+fn producer_name(stages: &BTreeMap<String, Stage>) -> Option<String> {
+    stages
+        .iter()
+        .find(|(_, st)| is_producer(st))
+        .map(|(name, _)| name.clone())
+}
+
+/// A stable, unique, human-legible unit id derived from a criterion's text plus its
+/// ordinal: a lowercased, hyphen-joined slug of the first words, prefixed `unit-<n>-`
+/// so the id is deterministic, collision-free across criteria, and references the
+/// criterion it serves. The ordinal alone guarantees uniqueness even when two criteria
+/// slug identically; the slug makes the id readable in the event log.
+fn unit_slug(n: usize, criterion: &str) -> String {
+    let mut slug = String::new();
+    for ch in criterion.chars() {
+        if ch.is_ascii_alphanumeric() {
+            slug.extend(ch.to_lowercase());
+        } else if !slug.ends_with('-') {
+            slug.push('-');
+        }
+        if slug.trim_matches('-').len() >= 32 {
+            break;
+        }
+    }
+    let slug = slug.trim_matches('-');
+    if slug.is_empty() {
+        format!("unit-{n}")
+    } else {
+        format!("unit-{n}-{slug}")
+    }
+}
+
+/// The deterministic decomposition BASELINE (§3.2): given a fan-out implement
+/// `template` stage and the spec's acceptance `criteria`, synthesize ONE implement
+/// unit per criterion. Each unit inherits the template's executable shape - its
+/// `agent`, `gates`, `on_pass`, and `partition` - but carries THE CRITERION TEXT as
+/// its `coverage`, so it grounds on the real criterion (not the template's label) and
+/// its `UnitStarted` records the real `spec_criterion`. Each unit `needs` the planner
+/// (`producer`) when one exists, so the baseline runs only after the planner refines.
+/// The template itself is NOT run as a unit - these per-criterion units replace it.
+fn baseline_units(
+    template: &Stage,
+    criteria: &[String],
+    producer: Option<&str>,
+) -> Vec<(String, Stage)> {
+    let mut needs = template.needs.clone();
+    if let Some(p) = producer {
+        if !needs.iter().any(|n| n == p) {
+            needs.push(p.to_string());
+        }
+    }
+    let mut units = Vec::with_capacity(criteria.len());
+    for (i, criterion) in criteria.iter().enumerate() {
+        let name = unit_slug(i + 1, criterion);
+        units.push((
+            name.clone(),
+            Stage {
+                name,
+                agent: template.agent.clone(),
+                gates: template.gates.clone(),
+                on_pass: template.on_pass.clone(),
+                partition: template.partition.clone(),
+                needs: needs.clone(),
+                // The criterion text IS the unit's coverage: it grounds on the
+                // criterion, and its UnitStarted spec_criterion is the real criterion.
+                coverage: criterion.clone(),
+                ..Default::default()
+            },
+        ));
+    }
+    units
 }
 
 /// The lens set a standalone review stage runs concurrently: its `agents` list when
@@ -2183,6 +2377,360 @@ mod tests {
                     && String::from_utf8_lossy(&e.data).contains("impl-feature")
             }),
             "the harvested unit must be started by the conductor"
+        );
+    }
+
+    #[test]
+    fn conductor_creates_one_baseline_unit_per_criterion() {
+        // The deterministic decomposition baseline (§3.2): given the spec's acceptance
+        // criteria [A, B, C] and a fan-out implement TEMPLATE, the conductor itself
+        // synthesizes ONE implement unit per criterion - each carrying the REAL
+        // criterion text as its coverage/spec_criterion (not the template label, never
+        // "required") and the template's agent. The bare template is NOT run as a unit.
+        let criteria = [
+            "the metrics module projects first-pass yield",
+            "rigger stats prints the report",
+            "the projection is covered by a unit test",
+        ];
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "implement".into(),
+            Stage {
+                name: "implement".into(),
+                agent: "worker".into(),
+                strategy: "fan-out".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                // The template's own coverage label - the per-criterion units must NOT
+                // inherit it; they carry the real criterion text instead.
+                coverage: "each unit is implemented and integrates".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: criteria.iter().map(|c| c.to_string()).collect(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        // The bare template was NOT run as its own unit - the per-criterion units
+        // replaced it.
+        assert!(
+            !rs.units.contains_key("implement"),
+            "the fan-out template is a template, not a unit; it must not run as `implement`"
+        );
+
+        // Exactly one unit per criterion was started, each carrying the REAL criterion
+        // as its spec_criterion (never the template label, never "required") and the
+        // template's agent. Read the raw UnitStarted events to inspect both fields.
+        let started: Vec<Value> = st
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap()
+            .iter()
+            .filter(|e| e.type_ == ledger::TYPE_UNIT_STARTED)
+            .map(|e| serde_json::from_slice::<Value>(&e.data).unwrap())
+            .collect();
+        assert_eq!(
+            started.len(),
+            criteria.len(),
+            "one baseline unit per acceptance criterion"
+        );
+        let field = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+        let mut got_criteria: Vec<String> =
+            started.iter().map(|u| field(u, "spec_criterion")).collect();
+        got_criteria.sort();
+        let mut want: Vec<String> = criteria.iter().map(|c| c.to_string()).collect();
+        want.sort();
+        assert_eq!(
+            got_criteria, want,
+            "each baseline unit's spec_criterion is the REAL criterion text, not the template label or \"required\""
+        );
+        assert!(
+            started.iter().all(|u| field(u, "agent") == "worker"),
+            "each baseline unit is assigned the template's agent"
+        );
+
+        // And the per-unit ledger carries the real criterion, so each criterion's unit
+        // actually ran and integrated.
+        for c in criteria {
+            let unit = rs
+                .units
+                .values()
+                .find(|u| u.spec_criterion == c)
+                .unwrap_or_else(|| panic!("a unit must cover criterion {c:?}"));
+            assert_eq!(unit.status, ledger::Status::Integrated);
+        }
+    }
+
+    #[test]
+    fn producer_prompt_carries_the_criteria_and_plan_protocol_grounded_on_the_spec() {
+        // A `produces: dag` planner stage must be wired: its prompt carries the spec's
+        // acceptance criteria AND the PLAN_PROTOCOL (the refine-protocol), and it
+        // GROUNDS on the spec criteria - NOT on a `coverage: required` label. A file
+        // named for the criterion is found by grounding; a "required" decoy is NOT,
+        // proving the literal coverage label is never the grounding query.
+        let dir = tempfile::tempdir().unwrap();
+        // A real source file whose content matches the criterion text - grounding on
+        // the spec criteria must surface it.
+        std::fs::write(
+            dir.path().join("metrics.rs"),
+            "// the metrics module projects first-pass yield\nfn project() {}\n",
+        )
+        .unwrap();
+        // The decoy: a file mentioning "required" (as the LICENSE bug did). Grounding
+        // on the spec criteria must NOT surface it; grounding on "required" would.
+        std::fs::write(
+            dir.path().join("LICENSE_DECOY.txt"),
+            "this is required by the license terms\n",
+        )
+        .unwrap();
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("planner".into(), agent("planner"));
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        // The planner stage carries the BUGGY `coverage: required` label, to prove the
+        // fix grounds on the spec criteria regardless of that label.
+        cfg.workflow.stages.insert(
+            "plan".into(),
+            Stage {
+                name: "plan".into(),
+                agent: "planner".into(),
+                produces: "dag".into(),
+                coverage: "required".into(),
+                ..Default::default()
+            },
+        );
+        // A fan-out implement template, so the conductor's baseline closes the
+        // criterion (coverage holds after planning) and the implementer agent id the
+        // PLAN_PROTOCOL names is "worker".
+        cfg.workflow.stages.insert(
+            "implement".into(),
+            Stage {
+                name: "implement".into(),
+                agent: "worker".into(),
+                strategy: "fan-out".into(),
+                needs: vec!["plan".into()],
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let grep = crate::grounder::Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+        let criterion = "the metrics module projects first-pass yield";
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: None,
+            criteria: vec![criterion.to_string()],
+        };
+        run(&cfg, &deps).unwrap();
+
+        let prompts = driver.prompts_for("planner");
+        assert!(!prompts.is_empty(), "the planner must have been spawned");
+        let prompt = &prompts[0];
+        // The criteria reach the planner.
+        assert!(
+            prompt.contains(criterion),
+            "the planner prompt must list the spec acceptance criteria; got:\n{prompt}"
+        );
+        // The PLAN_PROTOCOL (refine-protocol) reaches the planner, naming the
+        // implementer agent and the UnitProposed shape.
+        assert!(
+            prompt.contains("UnitProposed") && prompt.contains("REFINE"),
+            "the planner prompt must carry the PLAN_PROTOCOL refine instructions; got:\n{prompt}"
+        );
+        assert!(
+            prompt.contains("\"agent\":\"worker\""),
+            "the PLAN_PROTOCOL must tell the planner the implementer agent id; got:\n{prompt}"
+        );
+        // Grounding is on the SPEC, not the label: the criterion-matching file is
+        // surfaced, the "required" decoy is not.
+        assert!(
+            prompt.contains("metrics.rs"),
+            "the planner must ground on the spec criteria (surfacing metrics.rs); got:\n{prompt}"
+        );
+        assert!(
+            !prompt.contains("LICENSE_DECOY"),
+            "the planner must NOT ground on the `coverage: required` label (no LICENSE decoy); got:\n{prompt}"
+        );
+    }
+
+    #[test]
+    fn planner_refinement_unit_is_still_harvested() {
+        // Refinement still works on top of the deterministic baseline: a `produces`
+        // planner proposes an EXTRA unit (splitting a criterion into a sub-unit) via
+        // UnitProposed, and the conductor still harvests it into the run DAG alongside
+        // the baseline unit. The proposal uses the PLAN_PROTOCOL's `criterion` field.
+        let criterion = "the feature is implemented";
+        let mut cfg = Config::default();
+        cfg.agents.insert("planner".into(), agent("planner"));
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "plan".into(),
+            Stage {
+                name: "plan".into(),
+                agent: "planner".into(),
+                produces: "dag".into(),
+                ..Default::default()
+            },
+        );
+        cfg.workflow.stages.insert(
+            "implement".into(),
+            Stage {
+                name: "implement".into(),
+                agent: "worker".into(),
+                strategy: "fan-out".into(),
+                needs: vec!["plan".into()],
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        // The planner proposes a refinement sub-unit, emitting the `criterion` field
+        // (the PLAN_PROTOCOL shape) - it must map to a real spec criterion, else it is
+        // refused as scope creep.
+        let driver = Stub {
+            emits: vec![(
+                TYPE_UNIT_PROPOSED.to_string(),
+                json!({
+                    "id": "refine-sub-unit",
+                    "agent": "worker",
+                    "criterion": criterion,
+                    "gates": ["ok"],
+                }),
+            )],
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: vec![criterion.to_string()],
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        // The planner's refinement unit was harvested, ran, and integrated.
+        assert_eq!(
+            rs.units["refine-sub-unit"].status,
+            ledger::Status::Integrated,
+            "the planner-proposed refinement unit must still be harvested and run"
+        );
+        assert_eq!(
+            rs.units["refine-sub-unit"].spec_criterion, criterion,
+            "the harvested refinement carries the criterion it was emitted with"
+        );
+        // The deterministic baseline unit for the same criterion ran too: refinement
+        // is ON TOP OF the baseline, not instead of it.
+        assert!(
+            rs.units
+                .values()
+                .any(|u| u.id != "refine-sub-unit" && u.spec_criterion == criterion),
+            "the deterministic baseline unit for the criterion must also run"
+        );
+    }
+
+    #[test]
+    fn decomposes_the_real_spec_01_into_per_criterion_units() {
+        // End-to-end against the REAL repo: load `specs/01-observability.md`'s actual
+        // acceptance criteria and the REAL `.rigger/workflow.yml`, then run the conductor
+        // through the real decomposition path. A stub planner stands in for the slow live
+        // review (the decomposition itself is what the conductor does, not the agent), so
+        // this asserts the PROOF the dogfood run wants: the conductor emits one
+        // UnitStarted per real spec criterion, each carrying the REAL criterion text
+        // (metrics/stats), never the `coverage: required` label. This is exactly the path
+        // the live `rigger workflow specs/01-observability.md` drives.
+        let mut cfg = config::load(".").expect("the repo's own .rigger config must load");
+        // Neutralize the real cargo gate COMMANDS to `true` so this test exercises the
+        // decomposition path without recursively invoking cargo (the gate IDENTITIES and
+        // the stage graph stay exactly as authored - only the shell command is stubbed).
+        for g in cfg.workflow.gates.values_mut() {
+            g.run = "true".into();
+        }
+        let spec_text = std::fs::read_to_string("specs/01-observability.md")
+            .expect("the real spec 01 must be present");
+        let criteria = crate::spec::extract_criteria(&spec_text);
+        assert_eq!(
+            criteria.len(),
+            4,
+            "spec 01 has four Done-when acceptance criteria"
+        );
+
+        let st = Store::open(":memory:").unwrap();
+        // The stub stands in for every live agent (no slow review needed): the planner
+        // proposes nothing - the conductor's deterministic baseline alone covers every
+        // criterion - and the review tiers approve, so the plan stage integrates and the
+        // per-criterion implement wave runs. The decomposition under test is the
+        // conductor's, not the agents'.
+        let driver = Stub {
+            output: r#"{"verdict":"approve"}"#.into(),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: criteria.clone(),
+        };
+        run(&cfg, &deps).expect("the real spec must decompose and run without a coverage gap");
+
+        // One UnitStarted per real criterion, carrying the REAL criterion as
+        // spec_criterion - the proof the loop now decomposes the spec.
+        let started: Vec<Value> = st
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap()
+            .iter()
+            .filter(|e| e.type_ == ledger::TYPE_UNIT_STARTED)
+            .map(|e| serde_json::from_slice::<Value>(&e.data).unwrap())
+            .collect();
+        let started_criteria: Vec<String> = started
+            .iter()
+            .map(|v| {
+                v.get("spec_criterion")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string()
+            })
+            .collect();
+        for c in &criteria {
+            assert!(
+                started_criteria.iter().any(|s| s == c),
+                "a per-criterion unit must carry the REAL criterion {c:?}; got {started_criteria:?}"
+            );
+        }
+        assert!(
+            started_criteria.iter().all(|s| s != "required"),
+            "no unit may carry the bogus `coverage: required` label as its criterion"
+        );
+        // The real criteria are about metrics/stats, not LICENSE.
+        assert!(
+            started_criteria
+                .iter()
+                .any(|s| s.contains("metrics") || s.contains("rigger stats")),
+            "the decomposed criteria must be the real spec-01 metrics/stats criteria"
         );
     }
 
