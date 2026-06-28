@@ -342,7 +342,7 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         let ready = ready_stages(&stages, &integrated, &terminal);
         if !ready.is_empty() {
             ctx.run_wave(&stages, &ready, &mut integrated, &mut terminal)?;
-            ctx.harvest_proposed(&mut stages, &mut proposed)?;
+            ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)?;
         }
     }
     ctx.check_coverage_or_flag(&stages, &deps.criteria)?;
@@ -367,7 +367,7 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
             ctx.trip_budget_breaker()?;
             break;
         }
-        ctx.harvest_proposed(&mut stages, &mut proposed)?;
+        ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)?;
     }
 
     // Phase boundary (§4.3): the wave loop has converged - every ready unit reached a
@@ -1808,6 +1808,8 @@ impl RunCtx<'_> {
         &self,
         stages: &mut BTreeMap<String, Stage>,
         proposed: &mut HashSet<String>,
+        integrated: &HashSet<String>,
+        terminal: &HashSet<String>,
     ) -> Result<(), Error> {
         let events = self.deps.store.read_stream(STREAM, 0, Direction::Forward)?;
         for e in &events {
@@ -1835,6 +1837,38 @@ impl RunCtx<'_> {
                 )?;
                 continue;
             }
+            // Supersede the deterministic baseline (the duplication fix): the planner,
+            // told to REFINE, re-proposes one unit per criterion - exactly the baselines
+            // the conductor already synthesized. Without this, a criterion would get TWO
+            // units doing the same work (the baseline AND the planner's unit), colliding
+            // at integrate and doubling the work. So a planner unit that cites a
+            // criterion SUPERSEDES that criterion's baseline: we remove the baseline so
+            // the planner's unit replaces it (one unit per criterion). The match is on
+            // the criterion text the planner is given verbatim (PLAN_PROTOCOL), compared
+            // with whitespace normalized on both sides. A baseline survives ONLY if NO
+            // planner unit cites its criterion (the reliable fallback). Multiple planner
+            // units for one criterion (a real split) all survive and the one baseline is
+            // removed once - the next match finds no baseline left and simply adds.
+            //
+            // Ordering safety: a baseline that still needs the `plan` stage has not run
+            // when planner units are harvested, so removing it before it runs is correct.
+            // We GUARD on the baseline not having started or reached a terminal state
+            // (not in `integrated`/`terminal`) so a baseline already underway or merged
+            // in a prior wave/window is never yanked out from under its own work.
+            if !u.coverage.trim().is_empty() {
+                if let Some(baseline_id) = stages
+                    .iter()
+                    .find(|(name, st)| {
+                        st.baseline
+                            && !integrated.contains(*name)
+                            && !terminal.contains(*name)
+                            && normalize_ws(&st.coverage) == normalize_ws(&u.coverage)
+                    })
+                    .map(|(name, _)| name.clone())
+                {
+                    stages.remove(&baseline_id);
+                }
+            }
             stages.insert(
                 u.id.clone(),
                 Stage {
@@ -1849,6 +1883,17 @@ impl RunCtx<'_> {
         }
         Ok(())
     }
+}
+
+/// Normalize a criterion string for the supersede match (the duplication fix): trim,
+/// then collapse every internal run of ASCII whitespace to a single space. The planner
+/// is told to cite the criterion text VERBATIM (PLAN_PROTOCOL), so an exact match is
+/// the contract; normalizing whitespace on both sides makes it robust to incidental
+/// reflowing/indentation differences without loosening into fuzzy matching (a planner
+/// that PARAPHRASES a criterion deliberately will not match, and is correctly treated
+/// as a genuinely new sub-unit added on top of the surviving baseline).
+fn normalize_ws(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// The evidence map folded into a unit's `verified` status (item 4): the gates that
@@ -1907,7 +1952,7 @@ const EMIT_PROTOCOL: &str = "Record each decision you make by calling the rigger
 /// unit that maps to NO criterion is scope creep and is refused. The `{criteria}`
 /// placeholder is filled with the run's actual acceptance criteria, and
 /// `{implementer}` with the implementer agent id the conductor assigned the baseline.
-const PLAN_PROTOCOL: &str = "You are the planner. The conductor has ALREADY created one baseline implement unit per acceptance criterion below - the spec is decomposed by construction. Your job is to REFINE that baseline, not to re-decompose it:\n- If a criterion is too large for one unit, split it into several units (each still mapped to that same criterion).\n- If you discover a NECESSARY sub-unit or an ordering dependency the baseline missed, propose it.\nPropose each refinement the moment you decide it by calling the rigger_emit tool with type \"UnitProposed\" and data:\n{\"id\":\"<short-id>\",\"agent\":\"{implementer}\",\"criterion\":\"<the spec criterion it serves>\",\"needs\":[\"<unit ids it depends on>\"]}\nNEVER propose a unit that maps to no acceptance criterion - that is scope creep and will be refused. Do not write code.\n\nThe acceptance criteria to refine against:\n{criteria}";
+const PLAN_PROTOCOL: &str = "You are the planner. The conductor has ALREADY created one baseline implement unit per acceptance criterion below - the spec is decomposed by construction. Your job is to REFINE that baseline, not to re-decompose it:\n- If a criterion is too large for one unit, split it into several units (each still citing that same criterion).\n- If you discover a NECESSARY sub-unit or an ordering dependency the baseline missed, propose it.\nWhen your unit serves a criterion, your unit SUPERSEDES (replaces) that criterion's baseline - it does NOT run alongside it - so cite the criterion you serve EXACTLY. Copy the criterion text VERBATIM from the list below into the `criterion` field, character for character - do not paraphrase, summarize, or reword it. The conductor matches your unit to the baseline by that exact text; a paraphrase will NOT match and your unit will run as an EXTRA unit on top of the baseline (duplicated work). Several units citing the SAME verbatim criterion (a real split) all run and replace the one baseline.\nPropose each refinement the moment you decide it by calling the rigger_emit tool with type \"UnitProposed\" and data:\n{\"id\":\"<short-id>\",\"agent\":\"{implementer}\",\"criterion\":\"<the spec criterion it serves, copied verbatim>\",\"needs\":[\"<unit ids it depends on>\"]}\nNEVER propose a unit that maps to no acceptance criterion - that is scope creep and will be refused. Do not write code.\n\nThe acceptance criteria to refine against (copy one of these VERBATIM into each unit's `criterion`):\n{criteria}";
 
 /// Rigger's communication discipline, appended to EVERY spawned agent's SYSTEM
 /// prompt (after its persona) by [`RunCtx::build_system_prompt`], so every agent on
@@ -2189,6 +2234,10 @@ fn baseline_units(
                 // The criterion text IS the unit's coverage: it grounds on the
                 // criterion, and its UnitStarted spec_criterion is the real criterion.
                 coverage: criterion.clone(),
+                // Mark it the deterministic baseline for this criterion, so a
+                // planner-proposed unit citing the same criterion supersedes it in
+                // `harvest_proposed` rather than duplicating the work.
+                baseline: true,
                 ..Default::default()
             },
         ));
@@ -2826,13 +2875,17 @@ mod tests {
         );
     }
 
-    #[test]
-    fn planner_refinement_unit_is_still_harvested() {
-        // Refinement still works on top of the deterministic baseline: a `produces`
-        // planner proposes an EXTRA unit (splitting a criterion into a sub-unit) via
-        // UnitProposed, and the conductor still harvests it into the run DAG alongside
-        // the baseline unit. The proposal uses the PLAN_PROTOCOL's `criterion` field.
-        let criterion = "the feature is implemented";
+    /// A criterion's deterministic baseline unit id, as the conductor synthesizes it
+    /// from the criterion's ordinal + slug (the `baseline_units` / `unit_slug` shape).
+    /// Lets a supersede test name the exact baseline id it expects removed.
+    fn baseline_id(ordinal: usize, criterion: &str) -> String {
+        unit_slug(ordinal, criterion)
+    }
+
+    /// A two-stage spec-driven workflow (a `produces` planner + a fan-out implement
+    /// template) and a `planner`/`worker` agent pair, the shared scaffold of the
+    /// supersede tests. The caller supplies the planner's UnitProposed emits.
+    fn supersede_cfg() -> Config {
         let mut cfg = Config::default();
         cfg.agents.insert("planner".into(), agent("planner"));
         cfg.agents.insert("worker".into(), agent("worker"));
@@ -2858,17 +2911,29 @@ mod tests {
                 ..Default::default()
             },
         );
+        cfg
+    }
+
+    #[test]
+    fn planner_unit_supersedes_the_matching_baseline() {
+        // The duplication fix: a planner unit that cites a criterion VERBATIM SUPERSEDES
+        // (replaces) that criterion's deterministic baseline - one unit per criterion,
+        // not baseline + refinement both doing the same work. Given two criteria [A, B]
+        // each with a baseline, a planner that proposes ONE unit citing criterion A must
+        // remove A's baseline (A's final unit is the planner's, not the baseline) while
+        // B's baseline survives untouched.
+        let crit_a = "criterion A: the metrics module is implemented";
+        let crit_b = "criterion B: the stats endpoint is implemented";
+        let cfg = supersede_cfg();
         let st = Store::open(":memory:").unwrap();
-        // The planner proposes a refinement sub-unit, emitting the `criterion` field
-        // (the PLAN_PROTOCOL shape) - it must map to a real spec criterion, else it is
-        // refused as scope creep.
+        // The planner proposes exactly one unit, citing criterion A verbatim.
         let driver = Stub {
             emits: vec![(
                 TYPE_UNIT_PROPOSED.to_string(),
                 json!({
-                    "id": "refine-sub-unit",
+                    "id": "planner-unit-a",
                     "agent": "worker",
-                    "criterion": criterion,
+                    "criterion": crit_a,
                     "gates": ["ok"],
                 }),
             )],
@@ -2881,26 +2946,171 @@ mod tests {
             repo: String::new(),
             grounder: None,
             graph: None,
+            criteria: vec![crit_a.to_string(), crit_b.to_string()],
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        // The planner's unit for A ran and integrated, carrying criterion A.
+        assert_eq!(
+            rs.units["planner-unit-a"].status,
+            ledger::Status::Integrated,
+            "the planner unit citing criterion A must run and integrate"
+        );
+        assert_eq!(rs.units["planner-unit-a"].spec_criterion, crit_a);
+
+        // Criterion A's BASELINE is gone - superseded, never run.
+        let a_baseline = baseline_id(1, crit_a);
+        assert!(
+            !rs.units.contains_key(&a_baseline),
+            "criterion A's baseline {a_baseline:?} must be superseded (removed), not run; units present: {:?}",
+            rs.units.keys().collect::<Vec<_>>()
+        );
+
+        // Criterion B has NO planner unit, so its baseline survived and ran.
+        let b_baseline = baseline_id(2, crit_b);
+        assert_eq!(
+            rs.units[&b_baseline].status,
+            ledger::Status::Integrated,
+            "criterion B's baseline {b_baseline:?} must survive and run (no planner unit covers B)"
+        );
+        assert_eq!(rs.units[&b_baseline].spec_criterion, crit_b);
+
+        // EXACTLY two implement units total: planner-A + baseline-B. The plan stage is
+        // a producer (it integrates with no code artifact), so exclude it; the two that
+        // remain are the implement units, one per criterion - no duplication.
+        let implement_units: Vec<&str> = rs
+            .units
+            .values()
+            .filter(|u| u.id != "plan")
+            .map(|u| u.id.as_str())
+            .collect();
+        assert_eq!(
+            implement_units.len(),
+            2,
+            "exactly two implement units (planner-A + baseline-B), one per criterion; got: {implement_units:?}"
+        );
+        // And exactly one unit per criterion - never two doing the same work.
+        for c in [crit_a, crit_b] {
+            let n = rs.units.values().filter(|u| u.spec_criterion == c).count();
+            assert_eq!(
+                n, 1,
+                "criterion {c:?} must be served by exactly one unit, got {n}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_criterion_with_no_planner_unit_keeps_its_baseline() {
+        // The reliable fallback: a baseline survives ONLY if no planner unit covers its
+        // criterion. With a planner that proposes NOTHING, every criterion's baseline
+        // remains and runs - the deterministic decomposition stands on its own.
+        let crit_a = "criterion A: the metrics module is implemented";
+        let crit_b = "criterion B: the stats endpoint is implemented";
+        let cfg = supersede_cfg();
+        let st = Store::open(":memory:").unwrap();
+        // The planner proposes nothing (no emits) - pure baseline decomposition.
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: vec![crit_a.to_string(), crit_b.to_string()],
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        for (ordinal, crit) in [(1, crit_a), (2, crit_b)] {
+            let id = baseline_id(ordinal, crit);
+            assert_eq!(
+                rs.units[&id].status,
+                ledger::Status::Integrated,
+                "criterion {crit:?} baseline {id:?} must survive and run when no planner unit covers it"
+            );
+            assert_eq!(rs.units[&id].spec_criterion, crit);
+        }
+        // Exactly one unit per criterion (the two baselines), no more.
+        let implement_units = rs.units.values().filter(|u| u.id != "plan").count();
+        assert_eq!(
+            implement_units, 2,
+            "both baselines run, one per criterion, no duplication"
+        );
+    }
+
+    #[test]
+    fn planner_refinement_split_is_still_harvested() {
+        // Refinement STILL works on top of the baseline: when the planner SPLITS one
+        // criterion into several units (each citing that SAME criterion verbatim), all
+        // the split units survive and run, and they REPLACE the one baseline for that
+        // criterion - the split is the refined decomposition, not baseline + refinement
+        // both. A genuinely new planner unit is still added; it simply supersedes the
+        // baseline it refines instead of duplicating it.
+        let criterion = "the feature is implemented";
+        let cfg = supersede_cfg();
+        let st = Store::open(":memory:").unwrap();
+        // The planner splits the one criterion into TWO sub-units, both citing it
+        // verbatim (the PLAN_PROTOCOL shape).
+        let driver = Stub {
+            emits: vec![
+                (
+                    TYPE_UNIT_PROPOSED.to_string(),
+                    json!({
+                        "id": "refine-part-1",
+                        "agent": "worker",
+                        "criterion": criterion,
+                        "gates": ["ok"],
+                    }),
+                ),
+                (
+                    TYPE_UNIT_PROPOSED.to_string(),
+                    json!({
+                        "id": "refine-part-2",
+                        "agent": "worker",
+                        "criterion": criterion,
+                        "gates": ["ok"],
+                    }),
+                ),
+            ],
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
             criteria: vec![criterion.to_string()],
         };
         let rs = run(&cfg, &deps).unwrap();
-        // The planner's refinement unit was harvested, ran, and integrated.
-        assert_eq!(
-            rs.units["refine-sub-unit"].status,
-            ledger::Status::Integrated,
-            "the planner-proposed refinement unit must still be harvested and run"
-        );
-        assert_eq!(
-            rs.units["refine-sub-unit"].spec_criterion, criterion,
-            "the harvested refinement carries the criterion it was emitted with"
-        );
-        // The deterministic baseline unit for the same criterion ran too: refinement
-        // is ON TOP OF the baseline, not instead of it.
+        // Both split units were harvested, ran, and integrated.
+        for id in ["refine-part-1", "refine-part-2"] {
+            assert_eq!(
+                rs.units[id].status,
+                ledger::Status::Integrated,
+                "the planner split unit {id:?} must be harvested and run"
+            );
+            assert_eq!(rs.units[id].spec_criterion, criterion);
+        }
+        // The one baseline for the criterion was SUPERSEDED by the split - it did not
+        // run alongside the split units (no duplication).
+        let baseline = baseline_id(1, criterion);
         assert!(
-            rs.units
-                .values()
-                .any(|u| u.id != "refine-sub-unit" && u.spec_criterion == criterion),
-            "the deterministic baseline unit for the criterion must also run"
+            !rs.units.contains_key(&baseline),
+            "the criterion's baseline {baseline:?} must be superseded by the split, not run too"
+        );
+        // The criterion is served by exactly the two split units - no extra baseline.
+        let serving: Vec<&str> = rs
+            .units
+            .values()
+            .filter(|u| u.spec_criterion == criterion)
+            .map(|u| u.id.as_str())
+            .collect();
+        assert_eq!(
+            serving.len(),
+            2,
+            "the criterion is served by the two split units only; got: {serving:?}"
         );
     }
 
