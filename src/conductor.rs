@@ -82,6 +82,11 @@ pub struct SpawnOpts {
     /// Whether this spawn is one of several running concurrently in a fan-out
     /// stage (§6). False for a single-worker stage.
     pub parallel: bool,
+    /// The agent's blast-radius: the grounded seed files this spawn is scoped to
+    /// (§5.3). The workflow driver carries it to the shim, which fetches
+    /// blast-radius-filtered peer decisions and injects them at the tool boundary;
+    /// the cli driver (a subprocess) cannot do mid-run injection and ignores it.
+    pub blast_radius: Vec<String>,
 }
 
 /// AgentDriver spawns an agent to completion. The agent records events it emits
@@ -479,6 +484,7 @@ impl RunCtx<'_> {
                         dir: dir.to_string(),
                         isolation: wt.is_some(),
                         parallel: false,
+                        blast_radius: self.grounded_seed(st),
                     },
                     &emit,
                 ) {
@@ -651,6 +657,7 @@ impl RunCtx<'_> {
                     dir,
                     isolation: wt.is_some(),
                     parallel: true,
+                    blast_radius: self.grounded_seed(st),
                 },
                 &emit,
             )
@@ -682,6 +689,7 @@ impl RunCtx<'_> {
                     dir: String::new(),
                     isolation: false,
                     parallel: false,
+                    blast_radius: self.grounded_seed(st),
                 },
                 &emit,
             )
@@ -818,6 +826,31 @@ impl RunCtx<'_> {
             }
         }
         Ok(commit)
+    }
+
+    /// The stage's blast-radius: the distinct files the grounder surfaces for the
+    /// stage's `coverage` (or its name when `coverage` is empty), in ground order
+    /// (§5.3). This is the same grounding `build_prompt` seeds the graph context from
+    /// and `partition_wave` partitions by, so the blast-radius the side-car filters
+    /// peer decisions against is exactly the files the agent was grounded on. Empty
+    /// when no grounder is configured (best-effort but real, not always empty).
+    fn grounded_seed(&self, st: &Stage) -> Vec<String> {
+        let gr = match self.deps.grounder {
+            Some(g) => g,
+            None => return Vec::new(),
+        };
+        let query = if st.coverage.is_empty() {
+            &st.name
+        } else {
+            &st.coverage
+        };
+        let mut seed: Vec<String> = Vec::new();
+        for r in gr.ground(query, 8) {
+            if !seed.contains(&r.file) {
+                seed.push(r.file);
+            }
+        }
+        seed
     }
 
     fn build_prompt(&self, st: &Stage) -> String {
