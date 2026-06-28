@@ -43,16 +43,22 @@ stages:
     gates: [fmt, build, test]
     coverage: "each unit is implemented and its fmt + build + test gates pass"
 
-  # 3. Review through the architecture and technical (sdet) lenses in parallel;
-  #    the adversary makes the adjudicating call. A human signs off before
-  #    integration (autonomy: manual).
+  # 3. Three-tier review. TIER 1: the expert lenses (architecture + sdet) review
+  #    the diff in parallel and emit findings. TIER 2: the adversary then reviews
+  #    THE LENSES' findings and tries to prove them wrong - it holds them to a
+  #    higher bar, surfaces what they all missed, and refutes overreach (it reviews
+  #    the reviews; it is not a parallel lens). TIER 3: the adjudicator is the
+  #    neutral final judge - it weighs the lenses against the adversary, is
+  #    EXTREMELY strict on design/architecture adherence, and its approve/reject
+  #    verdict GATES integration. A human signs off too (autonomy: manual).
   review:
     needs: [implement]
     strategy: fan-out
-    agents: [architecture-reviewer, sdet]
-    adjudicator: adversary
+    agents: [architecture-reviewer, sdet]   # tier 1: the expert lenses
+    adversary: adversary                    # tier 2: refutes the lenses
+    adjudicator: adjudicator                # tier 3: neutral judge; verdict gates
     autonomy: manual
-    coverage: "the change survives multi-lens adversarial review"
+    coverage: "the change survives three-tier adversarial review"
 
   # 4. Land the reviewed change on a fully green workspace: rebase, re-gate with
   #    the full cargo set, merge, reindex, record.

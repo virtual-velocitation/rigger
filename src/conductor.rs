@@ -552,9 +552,18 @@ impl RunCtx<'_> {
         let lenses = fan_out_lenses(st);
         let mut attempts = 0u32;
         loop {
+            // Three-tier review (§3.2): the expert lenses review the diff in
+            // parallel, THEN the adversary reviews the lenses' emitted findings and
+            // tries to prove them wrong (a higher bar than the lenses; it reviews
+            // the reviews, it is not a parallel lens), THEN the neutral adjudicator
+            // weighs the lenses against the adversary and its verdict gates the
+            // stage.
             self.run_agents_concurrently(st, &lenses)?;
-            // The adversarial adjudicator's verdict gates the stage (§3.2): an
-            // explicit reject blocks integration, no matter the static gates.
+            if !st.adversary.is_empty() {
+                self.run_adversary(st, &st.adversary)?;
+            }
+            // The neutral adjudicator's verdict gates the stage (§3.2): an explicit
+            // reject blocks integration, no matter the static gates.
             let approved = if st.adjudicator.is_empty() {
                 true
             } else {
@@ -664,6 +673,45 @@ impl RunCtx<'_> {
             .map_err(|e| Error(format!("stage {:?} agent {:?}: {}", st.name, agent_id, e.0)))?;
         let unit = format!("{}/{}", st.name, agent_id);
         self.integrate_and_emit(wt, agent_id, &unit, &st.gates)?;
+        Ok(())
+    }
+
+    /// Run the adversary: a single agent that reviews the lenses' emitted findings
+    /// and the diff and tries to prove the lenses wrong (§3.2). It runs AFTER the
+    /// lenses and BEFORE the adjudicator, grounded on the same graph/log context the
+    /// lenses fed (so it sees their live findings), and emits its refutations. Like
+    /// the adjudicator it reviews - it produces no code to integrate, so it spawns
+    /// with no worktree - and unlike the adjudicator its output does NOT gate the
+    /// stage; it informs the adjudicator's judgment.
+    fn run_adversary(&self, st: &Stage, adv_id: &str) -> Result<(), Error> {
+        let agent_def = self.cfg.agents.get(adv_id).ok_or_else(|| {
+            Error(format!(
+                "stage {:?} references unknown adversary {:?}",
+                st.name, adv_id
+            ))
+        })?;
+        let prompt = self.build_prompt(st);
+        let emit = |t: &str, v: Value| self.emit_with_actor(adv_id, t, v);
+        self.spawns.fetch_add(1, Ordering::Relaxed);
+        self.deps
+            .driver
+            .spawn(
+                agent_def,
+                &prompt,
+                &SpawnOpts {
+                    dir: String::new(),
+                    isolation: false,
+                    parallel: false,
+                    blast_radius: self.grounded_seed(st),
+                },
+                &emit,
+            )
+            .map_err(|e| {
+                Error(format!(
+                    "stage {:?} adversary {:?}: {}",
+                    st.name, adv_id, e.0
+                ))
+            })?;
         Ok(())
     }
 
@@ -1237,6 +1285,9 @@ mod tests {
         last_prompt: Mutex<String>,
         /// Per-agent (isolation, parallel) the conductor passed at each spawn.
         opts_by_agent: Mutex<HashMap<String, (bool, bool)>>,
+        /// The order agents were spawned in, by id - used to assert the lenses ->
+        /// adversary -> adjudicator three-tier review order.
+        call_order: Mutex<Vec<String>>,
     }
     impl Stub {
         fn new() -> Self {
@@ -1247,6 +1298,7 @@ mod tests {
                 fail_spawn: false,
                 last_prompt: Mutex::new(String::new()),
                 opts_by_agent: Mutex::new(HashMap::new()),
+                call_order: Mutex::new(Vec::new()),
             }
         }
     }
@@ -1263,6 +1315,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .insert(a.id.clone(), (opts.isolation, opts.parallel));
+            self.call_order.lock().unwrap().push(a.id.clone());
             if self.fail_spawn {
                 return Err(Error("simulated mid-spawn crash".into()));
             }
@@ -1749,6 +1802,122 @@ mod tests {
             rs.units["review"].status,
             ledger::Status::Escalated,
             "a rejecting adjudicator must block integration even with no static gates"
+        );
+    }
+
+    #[test]
+    fn adversary_runs_between_the_lenses_and_the_adjudicator() {
+        // Three-tier review order (§3.2): a stage with `agents` + `adversary` +
+        // `adjudicator` must spawn the lenses FIRST (in parallel), THEN the adversary
+        // (which reviews the lenses' findings), THEN the adjudicator (the neutral
+        // judge). The Stub records every spawn's agent id in order; we assert the
+        // adversary lands after every lens and before the adjudicator.
+        let mut cfg = Config::default();
+        cfg.agents.insert("lensA".into(), agent("lensA"));
+        cfg.agents.insert("lensB".into(), agent("lensB"));
+        cfg.agents.insert("adversary".into(), agent("adversary"));
+        cfg.agents
+            .insert("adjudicator".into(), agent("adjudicator"));
+        cfg.workflow.stages.insert(
+            "review".into(),
+            Stage {
+                name: "review".into(),
+                agents: vec!["lensA".into(), "lensB".into()],
+                adversary: "adversary".into(),
+                adjudicator: "adjudicator".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new(); // empty output => adjudicator approves
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs.units["review"].status,
+            ledger::Status::Integrated,
+            "an approving three-tier review must integrate"
+        );
+        let order = driver.call_order.lock().unwrap().clone();
+        let adv = order
+            .iter()
+            .position(|a| a == "adversary")
+            .expect("the adversary must be spawned");
+        let adj = order
+            .iter()
+            .position(|a| a == "adjudicator")
+            .expect("the adjudicator must be spawned");
+        let last_lens = order
+            .iter()
+            .rposition(|a| a == "lensA" || a == "lensB")
+            .expect("the lenses must be spawned");
+        assert!(
+            last_lens < adv,
+            "the adversary must run AFTER every lens (it reviews their findings); order was {order:?}"
+        );
+        assert!(
+            adv < adj,
+            "the adversary must run BEFORE the adjudicator (the adjudicator judges last); order was {order:?}"
+        );
+    }
+
+    #[test]
+    fn adjudicator_reject_gates_even_with_an_adversary_present() {
+        // The adjudicator's verdict still gates the three-tier flow (§3.2): with an
+        // adversary present and the adjudicator returning {"verdict":"reject"},
+        // integration is blocked even though the adversary ran and there are no
+        // static gates. (The shared Stub output is "reject" for every spawn, but only
+        // the adjudicator's output is run through verdict_approves.)
+        let mut cfg = Config::default();
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("adversary".into(), agent("adversary"));
+        cfg.agents
+            .insert("adjudicator".into(), agent("adjudicator"));
+        cfg.workflow.stages.insert(
+            "review".into(),
+            Stage {
+                name: "review".into(),
+                agents: vec!["lens".into()],
+                adversary: "adversary".into(),
+                adjudicator: "adjudicator".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            output: r#"{"verdict":"reject","issues":[]}"#.into(),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs.units["review"].status,
+            ledger::Status::Escalated,
+            "a rejecting adjudicator must block integration even though the adversary ran"
+        );
+        assert!(
+            driver
+                .call_order
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|a| a == "adversary"),
+            "the adversary must have run before the adjudicator's gating verdict"
         );
     }
 
