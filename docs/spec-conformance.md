@@ -53,9 +53,9 @@ against the code. Phases are in dependency order; each lands CI-green.
 - [x] `on_pass: merge` honored (§3.2)
 - [x] `SpawnOpts` gains `isolation` + `parallel` (§6)
 - [x] bounded fan-out pool, default 4 (§6)
-- [ ] gate compact summary = verdict + <=5 failing lines, not a byte-tail (§3.3)
-- [ ] grounder selected by config (`defaults.grounder`), `nop` reachable (§3.2, §5.4, R4)
-- [ ] `rigger_emit` sets meta/actor/valid_from (§6)
+- [x] gate compact summary = verdict + <=5 failing lines, not a byte-tail (§3.3)
+- [x] grounder selected by config (`defaults.grounder`), `nop` reachable (§3.2, §5.4, R4)
+- [x] `rigger_emit` sets meta/actor/valid_from (§6)
 
 ## Phase 5 - Side-car
 - [ ] subscription filtered to the agent's blast-radius (§5.3)
