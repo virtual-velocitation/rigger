@@ -12,6 +12,9 @@
 *.sqlite3
 .rigger/cache/
 
+# Node deps for the workflow shim (shim/package-lock.json IS committed)
+shim/node_modules/
+
 # Editor / OS
 .DS_Store
 .idea/

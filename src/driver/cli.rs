@@ -1,14 +1,20 @@
 //! The default AgentDriver: spawn agents by shelling out to the `claude` CLI, so
 //! Rigger depends on no particular editor or runtime. A subprocess agent cannot
-//! call the in-process emit callback, so this driver ignores it; the workflow
-//! driver is the one that delivers live emission.
+//! call the in-process emit callback WHILE it runs (it has no live MCP channel),
+//! so this driver bridges emission AFTER the run: it parses the agent's stdout for
+//! the emit-protocol lines (DecisionMade / ReviewFinding / UnitProposed JSON, the
+//! same shape the EMIT_PROTOCOL / REVIEW_PROTOCOL instruct the agent to print) and
+//! replays each through `emit`. So the cli path also records decisions, extends the
+//! living DAG (UnitProposed), and feeds the side-car - the only difference from the
+//! workflow driver is that emission is post-hoc, not live mid-run.
 
 use std::process::Command;
 
 use serde_json::Value;
 
-use crate::conductor::{AgentDriver, AgentResult, Error, SpawnOpts};
+use crate::conductor::{AgentDriver, AgentResult, Error, SpawnOpts, TYPE_UNIT_PROPOSED};
 use crate::config::AgentDef;
+use crate::contextgraph::{TYPE_DECISION_MADE, TYPE_REVIEW_FINDING};
 
 /// Driver spawns agents via the `claude` CLI.
 pub struct Driver {
@@ -29,7 +35,7 @@ impl AgentDriver for Driver {
         agent: &AgentDef,
         prompt: &str,
         opts: &SpawnOpts,
-        _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+        emit: &dyn Fn(&str, Value) -> Result<(), Error>,
     ) -> Result<AgentResult, Error> {
         let bin = if self.bin.is_empty() {
             "claude"
@@ -44,9 +50,15 @@ impl AgentDriver for Driver {
         let out = cmd
             .output()
             .map_err(|e| Error(format!("cli driver: spawn agent {:?}: {e}", agent.id)))?;
-        let result = AgentResult {
-            output: String::from_utf8_lossy(&out.stdout).into_owned(),
-        };
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        // Bridge emission: a subprocess agent has no live MCP channel, so its
+        // decisions/findings are printed to stdout per the EMIT_PROTOCOL /
+        // REVIEW_PROTOCOL. Replay each through `emit` so the cli path also records
+        // decisions, extends the living DAG (UnitProposed), and feeds the side-car -
+        // exactly what the workflow driver does live. Done BEFORE the exit-status
+        // check so a partially-failed run still records what the agent decided.
+        bridge_emits(&stdout, emit)?;
+        let result = AgentResult { output: stdout };
         if !out.status.success() {
             return Err(Error(format!(
                 "cli driver: agent {:?} exited unsuccessfully ({})",
@@ -55,6 +67,63 @@ impl AgentDriver for Driver {
         }
         Ok(result)
     }
+}
+
+/// The emit-protocol event types the cli driver bridges from agent stdout. Only
+/// these self-describing types are replayed; any other JSON line (the agent's
+/// final result JSON, a verdict line, ad-hoc logging) is ignored.
+fn is_emit_type(type_: &str) -> bool {
+    matches!(
+        type_,
+        TYPE_DECISION_MADE | TYPE_REVIEW_FINDING | TYPE_UNIT_PROPOSED
+    )
+}
+
+/// Parse an agent's stdout for emit-protocol lines and replay each through `emit`.
+///
+/// An emit line is a single-line JSON object carrying its own `type` (one of
+/// `DecisionMade` / `ReviewFinding` / `UnitProposed`) and a `data` object - the
+/// same `{type, data}` shape the rigger_emit MCP tool takes, so the cli and
+/// workflow paths record byte-identical events. Lines that are not JSON, not
+/// objects, or not one of the emit types are skipped (an agent prints plenty of
+/// other text). A bare object with the protocol fields but no `data` wrapper (the
+/// EMIT_PROTOCOL prints the decision fields at the top level) is tolerated: the
+/// object minus `type` becomes the data.
+///
+/// The first `emit` error is propagated (the event store is down, etc.); it is not
+/// swallowed, since a lost decision silently corrupts the cross-agent memory.
+fn bridge_emits(
+    stdout: &str,
+    emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+) -> Result<(), Error> {
+    for line in stdout.lines() {
+        let line = line.trim();
+        if !line.starts_with('{') {
+            continue;
+        }
+        let Ok(Value::Object(obj)) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let Some(type_) = obj.get("type").and_then(Value::as_str) else {
+            continue;
+        };
+        if !is_emit_type(type_) {
+            continue;
+        }
+        // Prefer an explicit `data` object (the rigger_emit shape). Absent it, treat
+        // the rest of the object (everything but `type`) as the data, so an agent
+        // that printed the EMIT_PROTOCOL's flat decision fields still records.
+        let data = match obj.get("data") {
+            Some(d) => d.clone(),
+            None => {
+                let mut rest = obj.clone();
+                rest.remove("type");
+                Value::Object(rest)
+            }
+        };
+        emit(type_, data)?;
+    }
+    Ok(())
 }
 
 /// Build the `claude` headless invocation: the agent's instructions plus the task
@@ -83,6 +152,163 @@ pub fn build_args(agent: &AgentDef, prompt: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::sync::Mutex;
+
+    /// The (type, data) pairs `emit` was called with, captured by the test recorder.
+    type Recorded = Rc<RefCell<Vec<(String, Value)>>>;
+
+    /// A test emit sink: records every (type, data) pair `emit` was called with.
+    fn recorder() -> (impl Fn(&str, Value) -> Result<(), Error>, Recorded) {
+        let calls: Recorded = Rc::new(RefCell::new(Vec::new()));
+        let sink = calls.clone();
+        let emit = move |t: &str, v: Value| {
+            sink.borrow_mut().push((t.to_string(), v));
+            Ok(())
+        };
+        (emit, calls)
+    }
+
+    #[test]
+    fn bridge_emits_replays_each_emit_protocol_line() {
+        // A fake agent stdout with a DecisionMade and a UnitProposed line (plus
+        // chatter and the agent's final result JSON, which must NOT be emitted).
+        let stdout = "\
+thinking out loud, not json\n\
+{\"type\":\"DecisionMade\",\"data\":{\"id\":\"d1\",\"summary\":\"split the pipeline\",\"governs\":[\"a.rs\"]}}\n\
+{\"some\":\"unrelated json object\"}\n\
+{\"type\":\"UnitProposed\",\"data\":{\"id\":\"u1\",\"agent\":\"implementer\",\"coverage\":\"c1\"}}\n\
+{\"id\":\"final\",\"pass\":true,\"evidence\":\"done\"}\n";
+
+        let (emit, calls) = recorder();
+        bridge_emits(stdout, &emit).unwrap();
+
+        let calls = calls.borrow();
+        assert_eq!(
+            calls.len(),
+            2,
+            "exactly the two emit-protocol lines are bridged: {calls:?}"
+        );
+
+        let (t0, d0) = &calls[0];
+        assert_eq!(t0, TYPE_DECISION_MADE);
+        assert_eq!(d0["id"], "d1");
+        assert_eq!(d0["summary"], "split the pipeline");
+        assert_eq!(d0["governs"][0], "a.rs");
+
+        let (t1, d1) = &calls[1];
+        assert_eq!(t1, TYPE_UNIT_PROPOSED);
+        assert_eq!(d1["id"], "u1");
+        assert_eq!(d1["agent"], "implementer");
+        assert_eq!(d1["coverage"], "c1");
+    }
+
+    #[test]
+    fn bridge_emits_bridges_a_review_finding_and_tolerates_a_flat_object() {
+        // A ReviewFinding with an explicit data wrapper, and a flat DecisionMade
+        // (the EMIT_PROTOCOL prints the decision fields at the top level) - the
+        // flat form's non-type fields become the data.
+        let stdout = "\
+{\"type\":\"ReviewFinding\",\"data\":{\"id\":\"f1\",\"summary\":\"skips the buffer\",\"about\":[\"combat.rs\"]}}\n\
+{\"type\":\"DecisionMade\",\"id\":\"d2\",\"summary\":\"flat form\",\"governs\":[\"b.rs\"]}\n";
+
+        let (emit, calls) = recorder();
+        bridge_emits(stdout, &emit).unwrap();
+
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].0, TYPE_REVIEW_FINDING);
+        assert_eq!(calls[0].1["id"], "f1");
+        assert_eq!(calls[0].1["about"][0], "combat.rs");
+        // The flat object's data is everything but `type`.
+        assert_eq!(calls[1].0, TYPE_DECISION_MADE);
+        assert_eq!(calls[1].1["id"], "d2");
+        assert_eq!(calls[1].1["summary"], "flat form");
+        assert!(
+            calls[1].1.get("type").is_none(),
+            "the type field is not duplicated into the data"
+        );
+    }
+
+    #[test]
+    fn bridge_emits_propagates_the_first_emit_error() {
+        // A failing emit (e.g. the event store is down) must not be swallowed: a lost
+        // decision silently corrupts the cross-agent memory.
+        let stdout = "{\"type\":\"DecisionMade\",\"data\":{\"id\":\"d1\"}}\n";
+        let emit = |_: &str, _: Value| Err(Error("store down".into()));
+        let err = bridge_emits(stdout, &emit).unwrap_err();
+        assert_eq!(err.0, "store down");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn spawn_shells_out_and_bridges_the_agents_emits() {
+        // End-to-end through the real spawn path: a tiny executable shell script
+        // acts as the "agent" binary. It ignores its args (build_args passes `-p
+        // <prompt>`) and prints two emit-protocol lines plus chatter. The driver
+        // must shell out, capture stdout, and bridge BOTH emits through the
+        // callback - proving the cli path records decisions and extends the DAG.
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let script_path = dir.path().join("fake-agent.sh");
+        let mut f = std::fs::File::create(&script_path).unwrap();
+        // `"$@"` is ignored; the script just emits. The final line is the agent's
+        // result JSON, which must NOT be bridged (it has no emit `type`).
+        writeln!(
+            f,
+            "#!/bin/sh\n\
+echo 'starting work, not json'\n\
+echo '{{\"type\":\"DecisionMade\",\"data\":{{\"id\":\"sd1\",\"summary\":\"from a real subprocess\"}}}}'\n\
+echo '{{\"type\":\"UnitProposed\",\"data\":{{\"id\":\"su1\",\"coverage\":\"c\"}}}}'\n\
+echo '{{\"id\":\"final\",\"pass\":true}}'"
+        )
+        .unwrap();
+        drop(f);
+        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let driver = Driver {
+            bin: script_path.to_string_lossy().into_owned(),
+        };
+        let calls = Mutex::new(Vec::new());
+        let emit = |t: &str, v: Value| {
+            calls.lock().unwrap().push((t.to_string(), v));
+            Ok(())
+        };
+        let result = driver
+            .spawn(
+                &AgentDef {
+                    id: "echoer".into(),
+                    ..Default::default()
+                },
+                "the task",
+                &SpawnOpts {
+                    dir: String::new(),
+                    isolation: false,
+                    parallel: false,
+                    blast_radius: Vec::new(),
+                },
+                &emit,
+            )
+            .unwrap();
+
+        // The full stdout is returned as the agent result.
+        assert!(result.output.contains("from a real subprocess"));
+        // Both emit-protocol lines were bridged; the chatter and the final result
+        // JSON were not.
+        let calls = calls.lock().unwrap();
+        assert_eq!(
+            calls.len(),
+            2,
+            "the subprocess agent's two emits were bridged: {calls:?}"
+        );
+        assert_eq!(calls[0].0, TYPE_DECISION_MADE);
+        assert_eq!(calls[0].1["id"], "sd1");
+        assert_eq!(calls[1].0, TYPE_UNIT_PROPOSED);
+        assert_eq!(calls[1].1["id"], "su1");
+    }
 
     #[test]
     fn combines_persona_and_task() {
