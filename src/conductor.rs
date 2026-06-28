@@ -46,6 +46,13 @@ pub const TYPE_TASK_ABORTED: &str = "TaskAborted";
 /// A Manual-autonomy gate pauses its unit awaiting human review (§4.3).
 pub const TYPE_MANUAL_REVIEW: &str = "ManualReview";
 
+/// The `commit` value a standalone review-only stage records when it reaches its
+/// DAG-terminal state (item 7). A review stage integrates NO code artifact, so
+/// rather than fabricating an integration with an empty commit hash - which reads
+/// as a dropped/missing value - it records this EXPLICIT marker, truthfully saying
+/// "this stage reviewed; it produced no artifact to commit".
+pub const REVIEW_ONLY_NO_ARTIFACT: &str = "(review-only: no integrated artifact)";
+
 #[derive(Debug, thiserror::Error)]
 #[error("conductor: {0}")]
 pub struct Error(pub String);
@@ -69,6 +76,99 @@ impl From<serde_json::Error> for Error {
 /// What an agent returns when it finishes.
 pub struct AgentResult {
     pub output: String,
+}
+
+/// The result of running a stage's gates: whether they all passed, and the compact
+/// evidence of any that failed (carried into the next attempt's prompt, item 3 /
+/// spec 02).
+struct GateOutcome {
+    pass: bool,
+    evidence: Vec<String>,
+}
+
+/// One expert lens's review output, captured so the later tiers (the adversary and
+/// the adjudicator) actually receive it (item 1: the three tiers must inform each
+/// other, not run mutually blind).
+struct LensFinding {
+    agent: String,
+    output: String,
+}
+
+/// The outcome of a unit's three-tier review: whether the adjudicator approved, and
+/// its verdict reasoning (the adjudicator's raw output). On approval the reason is
+/// folded into the unit's `reviewed` evidence (item 4); on a reject it is threaded
+/// into the next attempt's prompt (item 5).
+struct ReviewOutcome {
+    approved: bool,
+    reason: String,
+}
+
+impl ReviewOutcome {
+    fn approved(reason: String) -> Self {
+        ReviewOutcome {
+            approved: true,
+            reason,
+        }
+    }
+    fn rejected(reason: String) -> Self {
+        ReviewOutcome {
+            approved: false,
+            reason,
+        }
+    }
+}
+
+/// The specifics of a unit's previous failed attempt, threaded into the next
+/// attempt's prompt (spec 02, targeted remediation). Empty on the first attempt.
+#[derive(Default)]
+struct PriorFailure {
+    /// The compact PASS/FAIL evidence of each gate that failed last attempt.
+    gate_evidence: Vec<String>,
+    /// The adjudicator's rejection reasoning (its raw output) when review rejected.
+    review_reason: String,
+}
+
+impl PriorFailure {
+    fn is_empty(&self) -> bool {
+        self.gate_evidence.is_empty() && self.review_reason.trim().is_empty()
+    }
+
+    /// A one-line summary of the failure, for the escalation lesson (spec 02: the
+    /// escalation lesson must carry the concrete reason, not a generic placeholder).
+    fn summary(&self) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        if !self.gate_evidence.is_empty() {
+            parts.push(format!("gates failed: {}", self.gate_evidence.join(" | ")));
+        }
+        if !self.review_reason.trim().is_empty() {
+            parts.push(format!("review rejected: {}", self.review_reason.trim()));
+        }
+        parts.join("; ")
+    }
+
+    /// The first-class, clearly-delimited prior-failure block prepended to a retry
+    /// prompt. Empty when there is no prior failure, so the first attempt's prompt is
+    /// byte-identical to the historical prompt.
+    fn block(&self) -> String {
+        if self.is_empty() {
+            return String::new();
+        }
+        let mut b = String::from(
+            "Your previous attempt failed the checks below. Fix exactly these - do not start over:\n",
+        );
+        for ev in &self.gate_evidence {
+            b.push_str("Your previous attempt failed these gates: ");
+            b.push_str(ev);
+            b.push('\n');
+        }
+        if !self.review_reason.trim().is_empty() {
+            b.push_str("Your previous attempt was rejected by review: ");
+            b.push_str(self.review_reason.trim());
+            b.push('\n');
+        }
+        b.push('\n');
+        b
+    }
 }
 
 /// Per-spawn options.
@@ -135,7 +235,7 @@ struct UnitProposed {
 /// Run executes the workflow and returns the final run state, projected from the
 /// events it emitted. Independent stages run concurrently in waves.
 pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
-    topo_sort(&cfg.workflow.stages)?;
+    validate_acyclic(&cfg.workflow.stages)?;
 
     // The RunCtx is created BEFORE the coverage check so a coverage gap can be
     // flagged as a spec defect through the event log (item 2 / §4.4) instead of
@@ -146,6 +246,7 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         gate_tracker: Mutex::new(HashMap::new()),
         integrate_mu: Mutex::new(()),
         spawns: AtomicU32::new(0),
+        budget_broke: std::sync::atomic::AtomicBool::new(false),
     };
 
     // Resume by replay (§4.2): seed integrated/terminal from the existing log so a
@@ -190,17 +291,17 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         // budget is spent, trip the breaker - record it, abort the task, and pause
         // the loop. Resume replays the ledger and continues from where it stopped.
         if ctx.budget_tripped() {
-            ctx.emit(
-                TYPE_BUDGET_EXHAUSTED,
-                json!({
-                    "budget": cfg.workflow.defaults.budget,
-                    "spawns": ctx.spawns.load(Ordering::Relaxed),
-                }),
-            )?;
-            ctx.abort_task("spawn budget exhausted")?;
+            ctx.trip_budget_breaker()?;
             break;
         }
         ctx.run_wave(&stages, &ready, &mut integrated, &mut terminal)?;
+        // The breaker also trips at SPAWN granularity, mid-wave (item 9): a single
+        // wide wave can exhaust the budget partway through, refusing later spawns.
+        // Record the breaker and stop here too, not only at the next wave boundary.
+        if ctx.budget_broke() {
+            ctx.trip_budget_breaker()?;
+            break;
+        }
         ctx.harvest_proposed(&mut stages, &mut proposed)?;
     }
 
@@ -222,6 +323,10 @@ struct RunCtx<'a> {
     /// The number of real `driver.spawn(...)` calls this run has made, for the
     /// budget circuit-breaker (§4.4, §8).
     spawns: AtomicU32,
+    /// Set the moment a spawn is REFUSED because the budget is spent (item 9): the
+    /// breaker now trips at spawn granularity, mid-wave, not only at wave boundaries.
+    /// The run loop checks this after each wave to record the breaker and stop.
+    budget_broke: std::sync::atomic::AtomicBool,
 }
 
 impl RunCtx<'_> {
@@ -256,12 +361,62 @@ impl RunCtx<'_> {
             && safety::budget_exhausted(budget as i64, self.spawns.load(Ordering::Relaxed) as i64)
     }
 
+    /// Atomically reserve one spawn against the budget at SPAWN granularity (item 9):
+    /// admit a spawn (incrementing the counter) only while the budget has room, so a
+    /// single wide wave that overruns the budget is stopped mid-wave rather than only
+    /// at the next wave boundary. Returns `true` when the spawn is admitted and
+    /// `false` when it is refused (the budget is spent); on refusal it sets
+    /// `budget_broke` so the run loop records the breaker and halts. A zero budget
+    /// means unlimited - every spawn is admitted. The `fetch_update` makes the
+    /// check-and-increment atomic, so concurrent lenses in one wave never overshoot.
+    fn reserve_spawn(&self) -> bool {
+        let budget = self.cfg.workflow.defaults.budget;
+        if budget == 0 {
+            self.spawns.fetch_add(1, Ordering::Relaxed);
+            return true;
+        }
+        let admitted = self
+            .spawns
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+                if n < budget {
+                    Some(n + 1)
+                } else {
+                    None
+                }
+            })
+            .is_ok();
+        if !admitted {
+            self.budget_broke.store(true, Ordering::SeqCst);
+        }
+        admitted
+    }
+
+    /// Whether a spawn was refused mid-wave because the budget was spent (item 9).
+    fn budget_broke(&self) -> bool {
+        self.budget_broke.load(Ordering::SeqCst)
+    }
+
     /// abortTask (§4.4): integrated work is already committed and every per-stage
     /// worktree is removed as its stage finishes, so there is no un-integrated
     /// worktree left to discard - abort_task records the abort so the run halts with
     /// an audit trail, and the loop stops (a pause; resume replays the ledger).
     fn abort_task(&self, reason: &str) -> Result<(), Error> {
         self.emit(TYPE_TASK_ABORTED, json!({"reason": reason}))
+    }
+
+    /// Trip the spawn-budget circuit-breaker (§4.4, §8): record BudgetExhausted with
+    /// the budget and the spawns made, then abort the task. Shared by the pre-wave
+    /// check and the mid-wave (spawn-granularity, item 9) trip so both halt the run
+    /// the same way, with one audit trail.
+    fn trip_budget_breaker(&self) -> Result<(), Error> {
+        self.emit(
+            TYPE_BUDGET_EXHAUSTED,
+            json!({
+                "budget": self.cfg.workflow.defaults.budget,
+                "spawns": self.spawns.load(Ordering::Relaxed),
+            }),
+        )?;
+        self.abort_task("spawn budget exhausted")
     }
 
     /// The coverage gate, routed through flagSpecDefect (§3.2, §4.4, §8): a remaining
@@ -304,8 +459,23 @@ impl RunCtx<'_> {
                         integrated.insert(name);
                     }
                     Ok(false) => {}
-                    Err(e) if first_err.is_none() => first_err = Some(e),
-                    Err(_) => {}
+                    Err(e) => {
+                        // EVERY erroring stage leaves a record, not just the first
+                        // (item 8): the wave collapses to a single returned error, so
+                        // without this the run record could not explain the stages
+                        // whose errors were dropped. Emit a lesson naming the stage
+                        // and its error before the collapse, so the log accounts for
+                        // each terminal stage. The error never propagated up
+                        // mid-stage, so `emit_lesson` is best-effort and infallible.
+                        self.emit_lesson(
+                            None,
+                            &name,
+                            &format!("stage {name:?} failed in its wave: {}", e.0),
+                        );
+                        if first_err.is_none() {
+                            first_err = Some(e);
+                        }
+                    }
                 }
             }
         }
@@ -470,41 +640,63 @@ impl RunCtx<'_> {
         }
     }
 
-    /// Run the three-tier review of THIS unit's diff and return whether it is
-    /// approved (§3.2). TIER 1: the expert lenses review the diff in parallel and
-    /// emit findings. TIER 2: the adversary reviews the lenses' findings and refutes
-    /// them. TIER 3: the adjudicator weighs the lenses against the adversary and its
-    /// verdict GATES integration - an explicit reject blocks the merge no matter what
-    /// the static gates said. The lenses/adversary/adjudicator review the unit (they
-    /// produce no code), so they run with no worktree of their own; they are grounded
-    /// on this unit through the same `build_prompt` path the implementer used. After
-    /// the adjudicator approves, the unit is marked `reviewed`. An empty panel runs
-    /// no review and approves trivially (the historical behavior).
-    fn review_unit(&self, st: &Stage) -> Result<bool, Error> {
+    /// Run the three-tier review of THIS unit's diff and return the outcome (whether
+    /// it is approved, plus the adjudicator's verdict reasoning) (§3.2). TIER 1: the
+    /// expert lenses review the diff in parallel and their findings are CAPTURED.
+    /// TIER 2: the adversary is prompted with those captured findings and tries to
+    /// prove them wrong; its refutation is CAPTURED. TIER 3: the adjudicator is
+    /// prompted with BOTH the lens findings and the adversary's refutation, weighs
+    /// them, and its verdict GATES integration - it approves ONLY on an explicit
+    /// `approve` (fail-closed), blocking the merge otherwise no matter what the
+    /// static gates said. So the three tiers actually inform each other (item 1)
+    /// rather than running mutually blind. The lenses/adversary/adjudicator review
+    /// the unit (they produce no code), so they run with no worktree of their own.
+    /// After the adjudicator approves, the unit is marked `reviewed` and its evidence
+    /// carries the verdict reason (item 4). An empty panel runs no review and
+    /// approves trivially (the historical behavior).
+    fn review_unit(&self, st: &Stage) -> Result<ReviewOutcome, Error> {
         let panel = self.effective_review_panel(st);
         if panel.is_empty() {
-            return Ok(true);
+            return Ok(ReviewOutcome::approved(String::new()));
         }
         let lenses = panel.lenses.clone();
         let adversary = panel.adversary.clone();
         let adjudicator = panel.adjudicator.clone();
-        if !lenses.is_empty() {
-            self.run_agents_concurrently(st, &lenses)?;
-        }
-        if !adversary.is_empty() {
-            self.run_adversary(st, &adversary)?;
-        }
+        // TIER 1: capture the lenses' findings (item 1).
+        let findings = if lenses.is_empty() {
+            Vec::new()
+        } else {
+            self.run_agents_concurrently(st, &lenses, "")?
+        };
+        // TIER 2: the adversary is prompted with the lenses' findings and tries to
+        // prove them wrong; capture its refutation (item 1).
+        let refutation = if adversary.is_empty() {
+            String::new()
+        } else {
+            self.run_adversary(st, &adversary, &lens_findings_block(&findings))?
+        };
         if adjudicator.is_empty() {
-            return Ok(true);
+            return Ok(ReviewOutcome::approved(String::new()));
         }
-        let approved = self.run_adjudicator(st, &adjudicator)?;
+        // TIER 3: the adjudicator weighs BOTH the lens findings and the adversary's
+        // refutation and renders the gating verdict (item 1).
+        let weigh = adjudicator_block(&findings, &refutation);
+        let (approved, reason) = self.run_adjudicator(st, &adjudicator, &weigh)?;
         if approved {
+            // The adjudicator's verdict reason is folded into the unit's `reviewed`
+            // evidence (item 4).
             self.emit(
                 ledger::TYPE_UNIT_STATUS,
-                json!({"id": st.name, "status": "reviewed"}),
+                json!({
+                    "id": st.name,
+                    "status": "reviewed",
+                    "evidence": review_evidence(&reason),
+                }),
             )?;
+            Ok(ReviewOutcome::approved(reason))
+        } else {
+            Ok(ReviewOutcome::rejected(reason))
         }
-        Ok(approved)
     }
 
     fn run_single_stage(
@@ -514,6 +706,10 @@ impl RunCtx<'_> {
         dir: &str,
     ) -> Result<bool, Error> {
         let mut attempts = 0u32;
+        // The last attempt's concrete failure, threaded into the NEXT attempt's
+        // prompt (item 3 + 5 / spec 02). Empty on the first attempt, so that prompt
+        // is unchanged.
+        let mut prior = PriorFailure::default();
         loop {
             let mut spawn_err: Option<String> = None;
             if !st.agent.is_empty() {
@@ -523,9 +719,14 @@ impl RunCtx<'_> {
                         st.name, st.agent
                     ))
                 })?;
-                let prompt = self.build_prompt(st);
+                // Budget breaker at spawn granularity (item 9): refuse this spawn if
+                // the budget is spent. A refused implementer spawn stops the unit
+                // (Ok(false), not escalated); the run loop records BudgetExhausted.
+                if !self.reserve_spawn() {
+                    return Ok(false);
+                }
+                let prompt = self.build_prompt_with_failure(st, &prior);
                 let emit = |t: &str, v: Value| self.emit_with_actor(&st.agent, t, v);
-                self.spawns.fetch_add(1, Ordering::Relaxed);
                 match self.deps.driver.spawn(
                     agent_def,
                     &prompt,
@@ -538,9 +739,14 @@ impl RunCtx<'_> {
                     &emit,
                 ) {
                     Ok(_) => {
+                        // The green status records that the implementer produced a
+                        // diff (item 4): the per-unit evidence names the agent that
+                        // implemented it.
+                        let mut green = BTreeMap::new();
+                        green.insert("green".to_string(), format!("implemented by {}", st.agent));
                         self.emit(
                             ledger::TYPE_UNIT_STATUS,
-                            json!({"id": st.name, "status": "green"}),
+                            json!({"id": st.name, "status": "green", "evidence": green}),
                         )?;
                     }
                     // A mid-spawn crash (usage limit, non-zero exit) is remediated,
@@ -549,34 +755,53 @@ impl RunCtx<'_> {
                 }
             }
 
+            // A fresh accumulator for THIS attempt's failure specifics (item 3 + 5).
+            let mut next = PriorFailure::default();
             // The unit's own lifecycle (§3.2): implement -> the unit's gates -> the
             // three-tier review OF THIS UNIT -> integrate. The gates and the
             // adjudicator's verdict BOTH gate integration: a gate failure OR a reject
-            // feeds back into this same loop (re-ground via build_prompt, re-implement,
-            // re-review) and escalates after the retry bound. Review runs only once the
-            // implementer's own gates are green, so the lenses never review a red diff.
-            if spawn_err.is_none() && self.run_gates(st, dir)? {
-                self.emit(
-                    ledger::TYPE_UNIT_STATUS,
-                    json!({"id": st.name, "status": "verified"}),
-                )?;
-                let approved = self.review_unit(st)?;
-                if approved {
-                    // on_pass governs integration (§3.2): empty or `merge` lands the
-                    // work; any other value (e.g. `none`) runs the gates but never
-                    // integrates - the verified, reviewed work stays un-merged.
-                    if !integrates(st) {
-                        return Ok(false);
-                    }
-                    let commit = self.integrate_and_emit(wt, &st.agent, &st.name, &st.gates)?;
+            // feeds back into this same loop (re-ground via build_prompt, re-implement
+            // WITH THE FEEDBACK, re-review) and escalates after the retry bound. Review
+            // runs only once the implementer's own gates are green, so the lenses never
+            // review a red diff.
+            if spawn_err.is_none() {
+                let gate_outcome = self.run_gates(st, dir)?;
+                if gate_outcome.pass {
+                    // The verified status carries the gate evidence (item 4): each
+                    // gate that ran summarized for the ledger's per-unit evidence.
                     self.emit(
-                        ledger::TYPE_UNIT_INTEGRATED,
-                        json!({"id": st.name, "commit": commit}),
+                        ledger::TYPE_UNIT_STATUS,
+                        json!({
+                            "id": st.name,
+                            "status": "verified",
+                            "evidence": verified_evidence(&st.gates),
+                        }),
                     )?;
-                    return Ok(true);
+                    let review = self.review_unit(st)?;
+                    if review.approved {
+                        // on_pass governs integration (§3.2): empty or `merge` lands
+                        // the work; any other value (e.g. `none`) runs the gates but
+                        // never integrates - the verified, reviewed work stays
+                        // un-merged.
+                        if !integrates(st) {
+                            return Ok(false);
+                        }
+                        let commit = self.integrate_and_emit(wt, &st.agent, &st.name, &st.gates)?;
+                        self.emit(
+                            ledger::TYPE_UNIT_INTEGRATED,
+                            json!({"id": st.name, "commit": commit}),
+                        )?;
+                        return Ok(true);
+                    }
+                    // A rejecting adjudicator is treated exactly like a gate failure:
+                    // capture its reasoning for the next attempt's prompt (item 5) and
+                    // fall through to remediation, do NOT integrate.
+                    next.review_reason = review.reason;
+                } else {
+                    // Capture the failing gates' evidence for the next attempt's
+                    // prompt (item 3 / spec 02).
+                    next.gate_evidence = gate_outcome.evidence;
                 }
-                // A rejecting adjudicator is treated exactly like a gate failure: fall
-                // through to remediation, do NOT integrate.
             }
 
             let rem = safety::remediate(attempts, safety::MAX_RETRIES);
@@ -586,9 +811,16 @@ impl RunCtx<'_> {
                 json!({"id": st.name, "attempts": attempts}),
             )?;
             if rem.decision == safety::Decision::Escalate {
-                let why = spawn_err
-                    .clone()
-                    .unwrap_or_else(|| "its gates or review would not pass".to_string());
+                // The escalation lesson carries the CONCRETE final failure (spec 02):
+                // the spawn crash, or the specific gate/review reason, never a generic
+                // placeholder when one is available.
+                let why = if let Some(e) = &spawn_err {
+                    e.clone()
+                } else if !next.is_empty() {
+                    next.summary()
+                } else {
+                    "its gates or review would not pass".to_string()
+                };
                 self.emit_lesson(
                     wt,
                     &st.name,
@@ -600,7 +832,10 @@ impl RunCtx<'_> {
                 self.emit(ledger::TYPE_UNIT_ESCALATED, json!({"id": st.name}))?;
                 return Ok(false);
             }
-            // otherwise loop and retry the stage (with re-grounding via build_prompt)
+            // Carry this attempt's failure into the next iteration's prompt.
+            prior = next;
+            // otherwise loop and retry the stage (re-grounding + the prior-failure
+            // block via build_prompt_with_failure)
         }
     }
 
@@ -613,36 +848,52 @@ impl RunCtx<'_> {
         let mut attempts = 0u32;
         loop {
             // Three-tier review (§3.2): the expert lenses review the diff in
-            // parallel, THEN the adversary reviews the lenses' emitted findings and
-            // tries to prove them wrong (a higher bar than the lenses; it reviews
-            // the reviews, it is not a parallel lens), THEN the neutral adjudicator
-            // weighs the lenses against the adversary and its verdict gates the
-            // stage.
-            self.run_agents_concurrently(st, &lenses)?;
-            if !st.adversary.is_empty() {
-                self.run_adversary(st, &st.adversary)?;
-            }
-            // The neutral adjudicator's verdict gates the stage (§3.2): an explicit
-            // reject blocks integration, no matter the static gates.
-            let approved = if st.adjudicator.is_empty() {
-                true
+            // parallel and their findings are CAPTURED, THEN the adversary is prompted
+            // with those findings and tries to prove them wrong (a higher bar than the
+            // lenses; it reviews the reviews, it is not a parallel lens), THEN the
+            // neutral adjudicator is prompted with BOTH the lens findings and the
+            // adversary's refutation, weighs them, and its verdict gates the stage.
+            // So the three tiers actually inform each other (item 1).
+            let findings = self.run_agents_concurrently(st, &lenses, "")?;
+            let refutation = if st.adversary.is_empty() {
+                String::new()
             } else {
-                self.emit(
-                    ledger::TYPE_UNIT_STATUS,
-                    json!({"id": st.name, "status": "reviewed"}),
-                )?;
-                self.run_adjudicator(st, &st.adjudicator)?
+                self.run_adversary(st, &st.adversary, &lens_findings_block(&findings))?
+            };
+            // The neutral adjudicator's verdict gates the stage (§3.2), fail-closed:
+            // it approves ONLY on an explicit `approve`, blocking integration
+            // otherwise, no matter the static gates.
+            let (approved, reason) = if st.adjudicator.is_empty() {
+                (true, String::new())
+            } else {
+                let weigh = adjudicator_block(&findings, &refutation);
+                self.run_adjudicator(st, &st.adjudicator, &weigh)?
             };
 
-            if approved && self.run_gates(st, "")? {
+            let gates_pass = approved && self.run_gates(st, "")?.pass;
+            if gates_pass {
                 // on_pass governs integration (§3.2): any value other than empty /
                 // `merge` runs the gates but does not mark the stage integrated.
                 if !integrates(st) {
                     return Ok(false);
                 }
+                // A standalone review stage produces NO code artifact, so it must not
+                // fabricate an integration (item 7). The terminal status is `reviewed`
+                // and carries the adjudicator's verdict in its evidence; the unit then
+                // reaches the DAG-terminal `Integrated` with an EXPLICIT "no artifact"
+                // marker (REVIEW_ONLY_NO_ARTIFACT) instead of an empty commit hash
+                // that reads as a dropped value. Dependents still see it as satisfied.
+                self.emit(
+                    ledger::TYPE_UNIT_STATUS,
+                    json!({
+                        "id": st.name,
+                        "status": "reviewed",
+                        "evidence": review_evidence(&reason),
+                    }),
+                )?;
                 self.emit(
                     ledger::TYPE_UNIT_INTEGRATED,
-                    json!({"id": st.name, "commit": ""}),
+                    json!({"id": st.name, "commit": REVIEW_ONLY_NO_ARTIFACT}),
                 )?;
                 return Ok(true);
             }
@@ -654,11 +905,18 @@ impl RunCtx<'_> {
                 json!({"id": st.name, "attempts": attempts}),
             )?;
             if rem.decision == safety::Decision::Escalate {
+                let why = if approved {
+                    "its gates would not pass".to_string()
+                } else if reason.trim().is_empty() {
+                    "the adjudicator did not approve".to_string()
+                } else {
+                    format!("review rejected: {}", reason.trim())
+                };
                 self.emit_lesson(
                     None,
                     &st.name,
                     &format!(
-                        "review stage {:?} escalated after {attempts} attempts",
+                        "review stage {:?} escalated after {attempts} attempts; {why}",
                         st.name
                     ),
                 );
@@ -668,92 +926,108 @@ impl RunCtx<'_> {
         }
     }
 
-    fn run_agents_concurrently(&self, st: &Stage, agent_ids: &[String]) -> Result<(), Error> {
-        // Worktrees are created sequentially (git worktree add is not concurrency-safe).
-        let mut jobs: Vec<(String, Option<Worktree>)> = Vec::new();
-        for a in agent_ids {
-            match self.agent_worktree(st, a) {
-                Ok(wt) => jobs.push((a.clone(), wt)),
-                Err(e) => {
-                    remove_all(&jobs);
-                    return Err(e);
-                }
-            }
-        }
-        // Bounded fan-out pool (§6): run the agents in chunks of at most
-        // MAX_CONCURRENCY, each chunk a scoped thread group. Every agent still
-        // runs; never more than MAX_CONCURRENCY at once.
-        let mut results: Vec<Result<(), Error>> = Vec::with_capacity(jobs.len());
-        for chunk in jobs.chunks(MAX_CONCURRENCY) {
-            let chunk_results: Vec<Result<(), Error>> = std::thread::scope(|s| {
+    /// Run the expert lenses (tier 1) concurrently and CAPTURE each lens's output
+    /// (its findings), keyed by agent id, in declared order. The lenses REVIEW the
+    /// diff - they produce no code to integrate - so they spawn with NO worktree and
+    /// never integrate (item 6: a reviewing lens must not get its writes merged into
+    /// the base repo). The captured findings are threaded into the adversary's and
+    /// the adjudicator's prompts so the three tiers actually inform each other
+    /// (item 1). `block`, when non-empty, prepends a prior-failure heading on a retry.
+    fn run_agents_concurrently(
+        &self,
+        st: &Stage,
+        agent_ids: &[String],
+        block: &str,
+    ) -> Result<Vec<LensFinding>, Error> {
+        // Bounded fan-out pool (§6): run the lenses in chunks of at most
+        // MAX_CONCURRENCY, each chunk a scoped thread group. Every lens still runs;
+        // never more than MAX_CONCURRENCY at once.
+        let mut findings: Vec<LensFinding> = Vec::with_capacity(agent_ids.len());
+        for chunk in agent_ids.chunks(MAX_CONCURRENCY) {
+            let chunk_results: Vec<Result<LensFinding, Error>> = std::thread::scope(|s| {
                 let handles: Vec<_> = chunk
                     .iter()
-                    .map(|(a, wt)| s.spawn(move || self.run_agent_in_worktree(st, a, wt.as_ref())))
+                    .map(|a| s.spawn(move || self.run_lens(st, a, block)))
                     .collect();
                 handles.into_iter().map(|h| h.join().unwrap()).collect()
             });
-            results.extend(chunk_results);
+            for r in chunk_results {
+                findings.push(r?);
+            }
         }
-        remove_all(&jobs);
-        for r in results {
-            r?;
-        }
-        Ok(())
+        Ok(findings)
     }
 
-    fn run_agent_in_worktree(
-        &self,
-        st: &Stage,
-        agent_id: &str,
-        wt: Option<&Worktree>,
-    ) -> Result<(), Error> {
+    /// Run a single review lens and return its findings. A lens reviews - it writes
+    /// no code - so it spawns with NO worktree and its output is never integrated
+    /// (item 6). Budget-refused spawns (item 9) surface as an error so the run halts.
+    fn run_lens(&self, st: &Stage, agent_id: &str, block: &str) -> Result<LensFinding, Error> {
         let agent_def = self.cfg.agents.get(agent_id).ok_or_else(|| {
             Error(format!(
                 "stage {:?} references unknown agent {:?}",
                 st.name, agent_id
             ))
         })?;
-        let dir = wt.map(|w| w.dir.clone()).unwrap_or_default();
-        let prompt = self.build_prompt(st);
+        if !self.reserve_spawn() {
+            return Err(Error(format!(
+                "stage {:?} lens {:?}: spawn budget exhausted",
+                st.name, agent_id
+            )));
+        }
+        let prompt = format!("{block}{}", self.build_prompt(st));
         let emit = |t: &str, v: Value| self.emit_with_actor(agent_id, t, v);
-        self.spawns.fetch_add(1, Ordering::Relaxed);
-        self.deps
+        let result = self
+            .deps
             .driver
             .spawn(
                 agent_def,
                 &prompt,
                 &SpawnOpts {
-                    dir,
-                    isolation: wt.is_some(),
+                    dir: String::new(),
+                    isolation: false,
                     parallel: true,
                     blast_radius: self.grounded_seed(st),
                 },
                 &emit,
             )
             .map_err(|e| Error(format!("stage {:?} agent {:?}: {}", st.name, agent_id, e.0)))?;
-        let unit = format!("{}/{}", st.name, agent_id);
-        self.integrate_and_emit(wt, agent_id, &unit, &st.gates)?;
-        Ok(())
+        Ok(LensFinding {
+            agent: agent_id.to_string(),
+            output: result.output,
+        })
     }
 
     /// Run the adversary: a single agent that reviews the lenses' emitted findings
     /// and the diff and tries to prove the lenses wrong (§3.2). It runs AFTER the
-    /// lenses and BEFORE the adjudicator, grounded on the same graph/log context the
-    /// lenses fed (so it sees their live findings), and emits its refutations. Like
+    /// lenses and BEFORE the adjudicator, and is prompted with the lenses' CAPTURED
+    /// findings (the `findings_block`) so it actually sees what they reported (item
+    /// 1), then emits its refutations. This method RETURNS that refutation (the
+    /// adversary's output) so it can be threaded into the adjudicator's prompt. Like
     /// the adjudicator it reviews - it produces no code to integrate, so it spawns
     /// with no worktree - and unlike the adjudicator its output does NOT gate the
     /// stage; it informs the adjudicator's judgment.
-    fn run_adversary(&self, st: &Stage, adv_id: &str) -> Result<(), Error> {
+    fn run_adversary(
+        &self,
+        st: &Stage,
+        adv_id: &str,
+        findings_block: &str,
+    ) -> Result<String, Error> {
         let agent_def = self.cfg.agents.get(adv_id).ok_or_else(|| {
             Error(format!(
                 "stage {:?} references unknown adversary {:?}",
                 st.name, adv_id
             ))
         })?;
-        let prompt = self.build_prompt(st);
+        if !self.reserve_spawn() {
+            return Err(Error(format!(
+                "stage {:?} adversary {:?}: spawn budget exhausted",
+                st.name, adv_id
+            )));
+        }
+        let prompt = format!("{findings_block}{}", self.build_prompt(st));
         let emit = |t: &str, v: Value| self.emit_with_actor(adv_id, t, v);
-        self.spawns.fetch_add(1, Ordering::Relaxed);
-        self.deps
+        let result = self
+            .deps
             .driver
             .spawn(
                 agent_def,
@@ -772,21 +1046,36 @@ impl RunCtx<'_> {
                     st.name, adv_id, e.0
                 ))
             })?;
-        Ok(())
+        Ok(result.output)
     }
 
-    /// Run the adjudicator and return whether it approves; its verdict gates the
-    /// stage. The adjudicator reviews - it produces no code to integrate.
-    fn run_adjudicator(&self, st: &Stage, adj_id: &str) -> Result<bool, Error> {
+    /// Run the adjudicator and return whether it approves PLUS its raw output (the
+    /// verdict reasoning). Its verdict gates the stage. The adjudicator is prompted
+    /// with BOTH the lenses' findings and the adversary's refutation (the
+    /// `weigh_block`) so it actually weighs the prior tiers (item 1). The reviewer
+    /// produces no code to integrate. The returned output is the verdict reason: it
+    /// is folded into the unit's `reviewed` evidence on approval (item 4) and into
+    /// the next attempt's prompt on a reject (item 5).
+    fn run_adjudicator(
+        &self,
+        st: &Stage,
+        adj_id: &str,
+        weigh_block: &str,
+    ) -> Result<(bool, String), Error> {
         let agent_def = self.cfg.agents.get(adj_id).ok_or_else(|| {
             Error(format!(
                 "stage {:?} references unknown adjudicator {:?}",
                 st.name, adj_id
             ))
         })?;
-        let prompt = self.build_prompt(st);
+        if !self.reserve_spawn() {
+            return Err(Error(format!(
+                "stage {:?} adjudicator {:?}: spawn budget exhausted",
+                st.name, adj_id
+            )));
+        }
+        let prompt = format!("{weigh_block}{}", self.build_prompt(st));
         let emit = |t: &str, v: Value| self.emit_with_actor(adj_id, t, v);
-        self.spawns.fetch_add(1, Ordering::Relaxed);
         let result = self
             .deps
             .driver
@@ -807,11 +1096,14 @@ impl RunCtx<'_> {
                     st.name, adj_id, e.0
                 ))
             })?;
-        Ok(verdict_approves(&result.output))
+        Ok((verdict_approves(&result.output), result.output))
     }
 
-    fn run_gates(&self, st: &Stage, dir: &str) -> Result<bool, Error> {
-        let mut all_pass = true;
+    fn run_gates(&self, st: &Stage, dir: &str) -> Result<GateOutcome, Error> {
+        let mut outcome = GateOutcome {
+            pass: true,
+            evidence: Vec::new(),
+        };
         for gid in &st.gates {
             let gc = self
                 .cfg
@@ -828,9 +1120,12 @@ impl RunCtx<'_> {
                 history: Vec::new(),
             };
             let res = self.deps.gates.run(&g, dir);
+            // The compact gate evidence is threaded into the GateVerdict event
+            // payload (item 3): a real run otherwise discarded it, so neither the
+            // ledger nor the workflow driver ever saw WHY a gate passed or failed.
             self.emit(
                 contextgraph::TYPE_GATE_VERDICT,
-                json!({"gate": gid, "pass": res.pass}),
+                json!({"gate": gid, "pass": res.pass, "evidence": res.evidence}),
             )?;
             let (promoted, demoted, autonomy) = self.record_gate(gid, res.pass, &st.autonomy);
             if promoted {
@@ -845,10 +1140,13 @@ impl RunCtx<'_> {
                 )?;
             }
             if !res.pass {
-                all_pass = false;
+                outcome.pass = false;
+                // Capture the failing gate's compact summary so the next attempt's
+                // prompt names exactly which gate failed and why (item 3 / spec 02).
+                outcome.evidence.push(format!("{gid}: {}", res.evidence));
             }
         }
-        Ok(all_pass)
+        Ok(outcome)
     }
 
     /// Record a gate's run on the ratchet, seeding a newly-tracked gate's starting
@@ -962,7 +1260,18 @@ impl RunCtx<'_> {
     }
 
     fn build_prompt(&self, st: &Stage) -> String {
+        self.build_prompt_with_failure(st, &PriorFailure::default())
+    }
+
+    /// Build a stage's prompt, optionally prepending a first-class prior-failure
+    /// block (spec 02 / item 3 + 5). On the first attempt `prior` is empty and the
+    /// prompt is byte-identical to the historical `build_prompt`; on a retry the
+    /// block names exactly the gates that failed (with their compact evidence) and
+    /// the adjudicator's rejection reasoning, so the next attempt addresses the
+    /// specific failure instead of a blind re-grounded restart.
+    fn build_prompt_with_failure(&self, st: &Stage, prior: &PriorFailure) -> String {
         let mut b = String::new();
+        b.push_str(&prior.block());
         let mut seed: Vec<String> = Vec::new();
         if let Some(gr) = self.deps.grounder {
             let query = if st.coverage.is_empty() {
@@ -1053,26 +1362,6 @@ impl RunCtx<'_> {
         Ok(Some(wt))
     }
 
-    fn agent_worktree(&self, st: &Stage, agent_id: &str) -> Result<Option<Worktree>, Error> {
-        if self.deps.repo.is_empty() {
-            return Ok(None);
-        }
-        // An agent declaring `isolation: none` runs in the current dir, no
-        // worktree, even when a repo is set (§3.1, §6).
-        if !self.agent_isolated(agent_id) {
-            return Ok(None);
-        }
-        let uid = uuid::Uuid::new_v4().to_string();
-        let id = &uid[..8];
-        let dir = std::env::temp_dir().join(format!("rigger-wt-{id}"));
-        let wt = Worktree::create(
-            &self.deps.repo,
-            dir.to_str().unwrap_or_default(),
-            &format!("rigger/{}-{agent_id}-{id}", st.name),
-        )?;
-        Ok(Some(wt))
-    }
-
     fn harvest_proposed(
         &self,
         stages: &mut BTreeMap<String, Stage>,
@@ -1120,26 +1409,97 @@ impl RunCtx<'_> {
     }
 }
 
-fn remove_all(jobs: &[(String, Option<Worktree>)]) {
-    for (_, w) in jobs {
-        if let Some(w) = w {
-            let _ = w.remove();
-        }
+/// Format the lenses' captured findings into the labeled block the adversary is
+/// prompted with: it must try to prove them wrong / find what they missed (item 1).
+/// Returns the empty string when there are no non-empty findings.
+fn lens_findings_block(findings: &[LensFinding]) -> String {
+    let any = findings.iter().any(|f| !f.output.trim().is_empty());
+    if !any {
+        return String::new();
     }
+    let mut b = String::from(
+        "The expert lenses reported the following findings; try to prove them wrong / find what they missed:\n",
+    );
+    for f in findings {
+        if f.output.trim().is_empty() {
+            continue;
+        }
+        b.push_str(&format!("- {}: {}\n", f.agent, f.output.trim()));
+    }
+    b.push('\n');
+    b
 }
 
-/// An adjudicator's verdict gates the stage: an explicit "reject" in its REVIEW
-/// output blocks integration; anything else (approve, or no parseable verdict)
-/// passes.
+/// Format BOTH the lenses' findings and the adversary's refutation into the block
+/// the adjudicator is prompted with: it must weigh them and decide (item 1). Either
+/// part may be empty; the block names whichever is present.
+fn adjudicator_block(findings: &[LensFinding], refutation: &str) -> String {
+    let lens_any = findings.iter().any(|f| !f.output.trim().is_empty());
+    let adv_any = !refutation.trim().is_empty();
+    if !lens_any && !adv_any {
+        return String::new();
+    }
+    let mut b = String::new();
+    if lens_any {
+        b.push_str("Lens findings:\n");
+        for f in findings {
+            if f.output.trim().is_empty() {
+                continue;
+            }
+            b.push_str(&format!("- {}: {}\n", f.agent, f.output.trim()));
+        }
+    }
+    if adv_any {
+        b.push_str(&format!("Adversary's refutation: {}\n", refutation.trim()));
+    }
+    b.push_str("Weigh them and decide.\n\n");
+    b
+}
+
+/// The evidence map folded into a unit's `verified` status (item 4): the gates that
+/// governed the unit, under the `verified` key, so the ledger records WHAT verified
+/// it. Empty when the unit ran no gates.
+fn verified_evidence(gates: &[String]) -> BTreeMap<String, String> {
+    let mut m = BTreeMap::new();
+    if !gates.is_empty() {
+        m.insert(
+            "verified".to_string(),
+            format!("gates passed: {}", gates.join(", ")),
+        );
+    }
+    m
+}
+
+/// The evidence map folded into a unit's `reviewed` status (item 4): the
+/// adjudicator's verdict reason under the `review` key. An empty reason still
+/// records that review approved, so the ledger's per-unit evidence is never empty
+/// after a reviewed run.
+fn review_evidence(reason: &str) -> BTreeMap<String, String> {
+    let mut m = BTreeMap::new();
+    let r = reason.trim();
+    if r.is_empty() {
+        m.insert("review".to_string(), "approved".to_string());
+    } else {
+        m.insert("review".to_string(), r.to_string());
+    }
+    m
+}
+
+/// An adjudicator's verdict gates the stage, FAIL-CLOSED: ONLY an explicit
+/// `{"verdict":"approve"}` (the verdict field, case-insensitively "approve", on a
+/// JSON line in the output) approves and lets integration proceed. Anything else -
+/// no JSON, no `verdict` field, prose, `reject`, or any unrecognized value - does
+/// NOT approve and routes the unit to remediation. A missing or unparseable verdict
+/// is treated as a non-approval, never a silent pass.
 fn verdict_approves(output: &str) -> bool {
     for line in output.lines().rev() {
         if let Ok(v) = serde_json::from_str::<Value>(line.trim()) {
             if let Some(verdict) = v.get("verdict").and_then(|x| x.as_str()) {
-                return !verdict.eq_ignore_ascii_case("reject");
+                return verdict.eq_ignore_ascii_case("approve");
             }
         }
     }
-    true
+    false
 }
 
 const EMIT_PROTOCOL: &str = "Record each decision you make by calling the rigger_emit tool the moment you make it, with type \"DecisionMade\" and data:\n{\"id\":\"<short-id>\",\"summary\":\"<one line>\",\"governs\":[\"<file>\"],\"supersedes\":\"<prior-id-or-empty>\"}\nThis writes it to the shared event log live, so other agents see it immediately.";
@@ -1290,9 +1650,15 @@ fn ready_stages(
     ready
 }
 
-/// topoSort returns the stages in dependency order; a residual cycle is a hard
-/// error (the config is already validated acyclic, so this is defense in depth).
-fn topo_sort(stages: &BTreeMap<String, Stage>) -> Result<Vec<String>, Error> {
+/// validate_acyclic checks that the stage DAG has no dependency cycle; a residual
+/// cycle is a hard error (the config is already validated acyclic, so this is
+/// defense in depth). It is a CYCLE CHECK, not a scheduler: the conductor schedules
+/// waves with [`ready_stages`] (which selects every stage whose `needs` are all
+/// integrated), so the Kahn-style topological order computed here is used ONLY to
+/// detect a cycle - if every node can be peeled off in dependency order the graph is
+/// acyclic, otherwise it is not. It therefore returns no order (item 10: the name
+/// now matches the behavior - it does not compute an order anyone consumes).
+fn validate_acyclic(stages: &BTreeMap<String, Stage>) -> Result<(), Error> {
     let mut indeg: HashMap<String, usize> = HashMap::new();
     let mut dependents: HashMap<String, Vec<String>> = HashMap::new();
     for (name, st) in stages {
@@ -1309,29 +1675,26 @@ fn topo_sort(stages: &BTreeMap<String, Stage>) -> Result<Vec<String>, Error> {
         .filter(|(_, d)| **d == 0)
         .map(|(n, _)| n.clone())
         .collect();
-    queue.sort();
-    let mut order: Vec<String> = Vec::new();
-    while !queue.is_empty() {
-        let n = queue.remove(0);
-        order.push(n.clone());
-        let mut newly: Vec<String> = Vec::new();
+    // The count of nodes successfully peeled off in dependency order: if it reaches
+    // the stage count the graph is acyclic, otherwise a cycle blocked some nodes.
+    let mut peeled = 0usize;
+    while let Some(n) = queue.pop() {
+        peeled += 1;
         if let Some(deps) = dependents.get(&n) {
             for dep in deps {
                 if let Some(d) = indeg.get_mut(dep) {
                     *d -= 1;
                     if *d == 0 {
-                        newly.push(dep.clone());
+                        queue.push(dep.clone());
                     }
                 }
             }
         }
-        newly.sort();
-        queue.extend(newly);
     }
-    if order.len() != stages.len() {
+    if peeled != stages.len() {
         return Err(Error("workflow has a dependency cycle".into()));
     }
-    Ok(order)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1347,10 +1710,18 @@ mod tests {
         write_file: Option<String>,
         emits: Vec<(String, Value)>,
         output: String,
+        /// Per-agent canned output, overriding `output` for that agent id. Lets one
+        /// test give a lens a distinct finding and the adjudicator a distinct verdict
+        /// (item 1: assert the findings actually flow between tiers).
+        output_by_agent: HashMap<String, String>,
         fail_spawn: bool,
         last_prompt: Mutex<String>,
         /// Per-agent (isolation, parallel) the conductor passed at each spawn.
         opts_by_agent: Mutex<HashMap<String, (bool, bool)>>,
+        /// Every prompt each agent was spawned with, in order, keyed by agent id.
+        /// Used to assert the cross-tier findings block (item 1) and the prior-failure
+        /// block on a retry (items 3 + 5) reached the right agent's prompt.
+        prompts_by_agent: Mutex<HashMap<String, Vec<String>>>,
         /// The order agents were spawned in, by id - used to assert the lenses ->
         /// adversary -> adjudicator three-tier review order.
         call_order: Mutex<Vec<String>>,
@@ -1361,11 +1732,23 @@ mod tests {
                 write_file: None,
                 emits: Vec::new(),
                 output: String::new(),
+                output_by_agent: HashMap::new(),
                 fail_spawn: false,
                 last_prompt: Mutex::new(String::new()),
                 opts_by_agent: Mutex::new(HashMap::new()),
+                prompts_by_agent: Mutex::new(HashMap::new()),
                 call_order: Mutex::new(Vec::new()),
             }
+        }
+
+        /// Every prompt the named agent was spawned with, in spawn order.
+        fn prompts_for(&self, agent_id: &str) -> Vec<String> {
+            self.prompts_by_agent
+                .lock()
+                .unwrap()
+                .get(agent_id)
+                .cloned()
+                .unwrap_or_default()
         }
     }
     impl AgentDriver for Stub {
@@ -1381,6 +1764,12 @@ mod tests {
                 .lock()
                 .unwrap()
                 .insert(a.id.clone(), (opts.isolation, opts.parallel));
+            self.prompts_by_agent
+                .lock()
+                .unwrap()
+                .entry(a.id.clone())
+                .or_default()
+                .push(prompt.to_string());
             self.call_order.lock().unwrap().push(a.id.clone());
             if self.fail_spawn {
                 return Err(Error("simulated mid-spawn crash".into()));
@@ -1391,9 +1780,12 @@ mod tests {
             for (t, v) in &self.emits {
                 emit(t, v.clone())?;
             }
-            Ok(AgentResult {
-                output: self.output.clone(),
-            })
+            let output = self
+                .output_by_agent
+                .get(&a.id)
+                .cloned()
+                .unwrap_or_else(|| self.output.clone());
+            Ok(AgentResult { output })
         }
     }
 
@@ -1895,7 +2287,13 @@ mod tests {
             },
         );
         let st = Store::open(":memory:").unwrap();
-        let driver = Stub::new(); // empty output => adjudicator approves
+        // The adjudicator is now fail-closed (item 2): approval requires an explicit
+        // {"verdict":"approve"}. The shared Stub returns it for every spawn; only the
+        // adjudicator's output is run through verdict_approves.
+        let driver = Stub {
+            output: r#"{"verdict":"approve"}"#.into(),
+            ..Stub::new()
+        };
         let deps = Deps {
             store: &st,
             driver: &driver,
@@ -2018,7 +2416,11 @@ mod tests {
             },
         );
         let st = Store::open(":memory:").unwrap();
-        let driver = Stub::new(); // empty adjudicator output => approve
+        // Fail-closed adjudicator (item 2): approval needs an explicit verdict.
+        let driver = Stub {
+            output: r#"{"verdict":"approve"}"#.into(),
+            ..Stub::new()
+        };
         let deps = Deps {
             store: &st,
             driver: &driver,
@@ -2104,7 +2506,10 @@ mod tests {
             },
         );
         let st = Store::open(":memory:").unwrap();
+        // Fail-closed adjudicator (item 2): the proposed unit's review needs an
+        // explicit approve verdict to integrate.
         let driver = Stub {
+            output: r#"{"verdict":"approve"}"#.into(),
             emits: vec![(
                 TYPE_UNIT_PROPOSED.to_string(),
                 json!({
@@ -2678,6 +3083,7 @@ mod tests {
             gate_tracker: Mutex::new(HashMap::new()),
             integrate_mu: Mutex::new(()),
             spawns: AtomicU32::new(0),
+            budget_broke: std::sync::atomic::AtomicBool::new(false),
         };
         ctx.record_gate("ok", true, "silent");
         let seeded = ctx.gate_tracker.lock().unwrap().get("ok").unwrap().autonomy;
@@ -2986,6 +3392,630 @@ mod tests {
                 "every stage must integrate under by-blast-radius partitioning"
             );
         }
+    }
+
+    /// A gate runner that FAILS its first N runs, then passes, with a fixed evidence
+    /// string on the failures. Lets a test exercise the targeted-remediation path
+    /// (items 3): the conductor must thread the failing gate's evidence into the next
+    /// attempt's prompt.
+    struct FlakyGate {
+        fail_first: u32,
+        runs: AtomicU32,
+        evidence: String,
+    }
+    impl gate::Runner for FlakyGate {
+        fn run(&self, _g: &Gate, _dir: &str) -> gate::GateResult {
+            let n = self.runs.fetch_add(1, Ordering::SeqCst);
+            if n < self.fail_first {
+                gate::GateResult {
+                    pass: false,
+                    evidence: self.evidence.clone(),
+                }
+            } else {
+                gate::GateResult {
+                    pass: true,
+                    evidence: "PASS".into(),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn three_tiers_inform_each_other() {
+        // Item 1: the three review tiers must actually pass findings between each
+        // other. The lens emits a finding, the adversary a refutation, the adjudicator
+        // an approve verdict. We assert the adversary's prompt carries the lens's
+        // finding, and the adjudicator's prompt carries BOTH the lens finding and the
+        // adversary's refutation. (Standalone fan-out review stage.)
+        let mut cfg = Config::default();
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("adversary".into(), agent("adversary"));
+        cfg.agents.insert("adj".into(), agent("adj"));
+        cfg.workflow.stages.insert(
+            "review".into(),
+            Stage {
+                name: "review".into(),
+                agents: vec!["lens".into()],
+                adversary: "adversary".into(),
+                adjudicator: "adj".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let mut output_by_agent = HashMap::new();
+        output_by_agent.insert("lens".to_string(), "LENS_FINDING_alpha".to_string());
+        output_by_agent.insert(
+            "adversary".to_string(),
+            "ADVERSARY_REFUTATION_beta".to_string(),
+        );
+        output_by_agent.insert("adj".to_string(), r#"{"verdict":"approve"}"#.to_string());
+        let driver = Stub {
+            output_by_agent,
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(rs.units["review"].status, ledger::Status::Integrated);
+
+        let adv_prompt = driver.prompts_for("adversary").pop().unwrap();
+        assert!(
+            adv_prompt.contains("LENS_FINDING_alpha"),
+            "the adversary must be prompted with the lens's finding; prompt was:\n{adv_prompt}"
+        );
+        let adj_prompt = driver.prompts_for("adj").pop().unwrap();
+        assert!(
+            adj_prompt.contains("LENS_FINDING_alpha"),
+            "the adjudicator must be prompted with the lens finding; prompt was:\n{adj_prompt}"
+        );
+        assert!(
+            adj_prompt.contains("ADVERSARY_REFUTATION_beta"),
+            "the adjudicator must be prompted with the adversary's refutation; prompt was:\n{adj_prompt}"
+        );
+    }
+
+    #[test]
+    fn unparseable_adjudicator_output_blocks_integration() {
+        // Item 2 (fail-closed): an adjudicator whose output has no parseable verdict
+        // does NOT approve - integration is blocked and the unit escalates, even with
+        // no static gates. (Prose, not JSON.)
+        let mut cfg = Config::default();
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("adj".into(), agent("adj"));
+        cfg.workflow.stages.insert(
+            "review".into(),
+            Stage {
+                name: "review".into(),
+                agents: vec!["lens".into()],
+                adjudicator: "adj".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            output: "the diff looks fine to me, ship it".into(), // no JSON verdict
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs.units["review"].status,
+            ledger::Status::Escalated,
+            "an unparseable adjudicator verdict must NOT approve (fail-closed)"
+        );
+        let events = st
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.type_ == ledger::TYPE_UNIT_INTEGRATED),
+            "an unapproved unit must emit no UnitIntegrated"
+        );
+    }
+
+    #[test]
+    fn failing_gate_evidence_threaded_into_retry_prompt() {
+        // Item 3 (spec 02): a gate that fails the first attempt must thread its compact
+        // evidence into the SECOND attempt's prompt for that unit. The first prompt has
+        // no prior-failure block; the second names the failing gate's evidence.
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow
+            .gates
+            .insert("flaky".into(), gate_def("unused"));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                gates: vec!["flaky".into()],
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let flaky = FlakyGate {
+            fail_first: 1,
+            runs: AtomicU32::new(0),
+            evidence: "FAIL\nGATE_EVIDENCE_clippy_lint".into(),
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &flaky,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "the second attempt's gate passes, so the unit integrates"
+        );
+        let prompts = driver.prompts_for("worker");
+        assert!(
+            prompts.len() >= 2,
+            "the worker must have been retried at least once; got {} spawn(s)",
+            prompts.len()
+        );
+        assert!(
+            !prompts[0].contains("GATE_EVIDENCE_clippy_lint"),
+            "the FIRST attempt's prompt must have no prior-failure block; prompt was:\n{}",
+            prompts[0]
+        );
+        assert!(
+            prompts[1].contains("GATE_EVIDENCE_clippy_lint"),
+            "the SECOND attempt's prompt must carry the failing gate's evidence; prompt was:\n{}",
+            prompts[1]
+        );
+        assert!(
+            prompts[1].contains("Your previous attempt failed these gates"),
+            "the retry prompt must carry an explicit prior-failed-gates block; prompt was:\n{}",
+            prompts[1]
+        );
+    }
+
+    #[test]
+    fn unit_evidence_is_populated_after_a_run() {
+        // Item 4: every TYPE_UNIT_STATUS emit used to omit `evidence`, leaving the
+        // ledger's Unit.evidence always empty. After a passing run the unit's projected
+        // evidence must be non-empty (gate summaries for verified, etc.).
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent("a"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "a".into(),
+                gates: vec!["ok".into()],
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(rs.units["s"].status, ledger::Status::Integrated);
+        assert!(
+            !rs.units["s"].evidence.is_empty(),
+            "a unit's projected evidence must be non-empty after a run; was {:?}",
+            rs.units["s"].evidence
+        );
+        assert!(
+            rs.units["s"].evidence.contains_key("verified"),
+            "the verified status must carry gate evidence; was {:?}",
+            rs.units["s"].evidence
+        );
+    }
+
+    #[test]
+    fn adjudicator_rejection_reasoning_threaded_into_retry_prompt() {
+        // Item 5: when the per-unit adjudicator rejects, its reasoning must reach the
+        // NEXT attempt's prompt for that unit. The adjudicator always rejects (with a
+        // distinctive reason), so the worker is retried; its second prompt must carry
+        // the reject reason. The unit ultimately escalates (the reject never relents).
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("adj".into(), agent("adj"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.defaults.review = config::ReviewPanel {
+            lenses: vec!["lens".into()],
+            adversary: String::new(),
+            adjudicator: "adj".into(),
+        };
+        cfg.workflow.stages.insert(
+            "implement".into(),
+            Stage {
+                name: "implement".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let mut output_by_agent = HashMap::new();
+        output_by_agent.insert(
+            "adj".to_string(),
+            r#"{"verdict":"reject","reason":"REJECT_REASON_missing_tests"}"#.to_string(),
+        );
+        let driver = Stub {
+            output_by_agent,
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs.units["implement"].status,
+            ledger::Status::Escalated,
+            "a perpetually-rejecting adjudicator escalates the unit"
+        );
+        let prompts = driver.prompts_for("worker");
+        assert!(
+            prompts.len() >= 2,
+            "the worker must have been retried after the reject; got {} spawn(s)",
+            prompts.len()
+        );
+        assert!(
+            !prompts[0].contains("REJECT_REASON_missing_tests"),
+            "the first prompt must have no prior-failure block; prompt was:\n{}",
+            prompts[0]
+        );
+        assert!(
+            prompts[1].contains("REJECT_REASON_missing_tests"),
+            "the retry prompt must carry the adjudicator's rejection reasoning; prompt was:\n{}",
+            prompts[1]
+        );
+        assert!(
+            prompts[1].contains("Your previous attempt was rejected by review"),
+            "the retry prompt must carry an explicit prior-rejection block; prompt was:\n{}",
+            prompts[1]
+        );
+    }
+
+    #[test]
+    fn fan_out_lens_does_not_integrate() {
+        // Item 6: a standalone fan-out review lens must NOT be given a worktree and
+        // must NOT integrate - so even a lens that writes code could never get it
+        // merged into the base repo. We run the lens on the fan-out review path against
+        // a real repo; the base repo must gain NO commit from the lens, the lens must
+        // have spawned with isolation = false (no worktree), and no per-lens
+        // UnitIntegrated may be emitted.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let head_before = git_head(&repo_path);
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.workflow.stages.insert(
+            "review".into(),
+            Stage {
+                name: "review".into(),
+                agents: vec!["lens".into()],
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+
+        let (isolation, _parallel) = driver
+            .opts_by_agent
+            .lock()
+            .unwrap()
+            .get("lens")
+            .copied()
+            .unwrap();
+        assert!(
+            !isolation,
+            "a fan-out review lens must run with NO worktree (isolation = false)"
+        );
+        assert_eq!(
+            head_before,
+            git_head(&repo_path),
+            "a review lens must not produce any commit in the base repo"
+        );
+        // The lens wrote into the current dir, never a worktree path: no integration
+        // event ever carried a real commit for it.
+        let events = st
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        assert!(
+            !events.iter().any(|e| {
+                e.type_ == ledger::TYPE_UNIT_INTEGRATED
+                    && String::from_utf8_lossy(&e.data).contains("lens")
+            }),
+            "no per-lens UnitIntegrated must be emitted on the fan-out review path"
+        );
+    }
+
+    #[test]
+    fn review_only_stage_records_no_artifact_truthfully() {
+        // Item 7: a standalone review stage produces no code artifact, so it must not
+        // fabricate an integration with an empty commit hash. Its terminal status is
+        // `reviewed` and its UnitIntegrated commit is the explicit no-artifact marker.
+        let mut cfg = Config::default();
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("adj".into(), agent("adj"));
+        cfg.workflow.stages.insert(
+            "review".into(),
+            Stage {
+                name: "review".into(),
+                agents: vec!["lens".into()],
+                adjudicator: "adj".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            output: r#"{"verdict":"approve"}"#.into(),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        // The stage reached its DAG-terminal state with the EXPLICIT no-artifact
+        // marker, not an empty (dropped-looking) commit hash.
+        assert_eq!(
+            rs.units["review"].commit, REVIEW_ONLY_NO_ARTIFACT,
+            "a review-only stage must record an explicit no-artifact marker, not an empty commit"
+        );
+        assert_ne!(
+            rs.units["review"].commit, "",
+            "a review-only stage must NOT record an empty commit hash"
+        );
+        // It was truthfully marked reviewed before reaching its terminal state.
+        let events = st
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        assert!(
+            events.iter().any(|e| {
+                e.type_ == ledger::TYPE_UNIT_STATUS
+                    && String::from_utf8_lossy(&e.data).contains("\"status\":\"reviewed\"")
+            }),
+            "a review-only stage must emit a truthful `reviewed` status"
+        );
+    }
+
+    #[test]
+    fn two_erroring_stages_both_leave_a_record() {
+        // Item 8: run_wave collapses a batch to a single returned error, dropping the
+        // rest. Both erroring stages must still leave a record (a lesson) naming the
+        // stage and its error. Two independent stages each reference an agent missing
+        // from cfg.agents, so each errors inside run_single_stage.
+        let mut cfg = Config::default();
+        // NOTE: agents map is intentionally missing "ghost1"/"ghost2" so each stage's
+        // run_single_stage hits the unknown-agent error.
+        cfg.workflow.stages.insert(
+            "s1".into(),
+            Stage {
+                name: "s1".into(),
+                agent: "ghost1".into(),
+                ..Default::default()
+            },
+        );
+        cfg.workflow.stages.insert(
+            "s2".into(),
+            Stage {
+                name: "s2".into(),
+                agent: "ghost2".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        // The wave returns the first error (run halts), but BOTH stages must have left
+        // a record before the collapse.
+        let _ = run(&cfg, &deps);
+        let events = st
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        let names_with_lessons: Vec<bool> = ["s1", "s2"]
+            .iter()
+            .map(|name| {
+                events.iter().any(|e| {
+                    e.type_ == contextgraph::TYPE_LESSON_LEARNED
+                        && String::from_utf8_lossy(&e.data).contains(*name)
+                })
+            })
+            .collect();
+        assert!(
+            names_with_lessons[0],
+            "the first erroring stage (s1) must leave a lesson record"
+        );
+        assert!(
+            names_with_lessons[1],
+            "the second erroring stage (s2) must ALSO leave a record - errors after the first must not be dropped"
+        );
+    }
+
+    #[test]
+    fn single_wide_wave_overruns_budget_and_is_stopped() {
+        // Item 9: the budget breaker must trip at SPAWN granularity, mid-wave. Three
+        // INDEPENDENT implementer stages form one wide wave; with a budget of 1, only
+        // one may spawn - the other two are refused, the breaker trips, and the run is
+        // actually stopped. Fewer than 3 integrate, and BudgetExhausted is recorded.
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent("a"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.defaults.budget = 1;
+        for name in ["w1", "w2", "w3"] {
+            cfg.workflow.stages.insert(
+                name.into(),
+                Stage {
+                    name: name.into(),
+                    agent: "a".into(),
+                    gates: vec!["ok".into()],
+                    ..Default::default()
+                },
+            );
+        }
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        let integrated = ["w1", "w2", "w3"]
+            .iter()
+            .filter(|n| {
+                rs.units
+                    .get(**n)
+                    .map(|u| u.status == ledger::Status::Integrated)
+                    .unwrap_or(false)
+            })
+            .count();
+        assert!(
+            integrated < 3,
+            "a budget of 1 must stop a wide wave mid-flight; {integrated} of 3 integrated"
+        );
+        let events = st
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        assert!(
+            events.iter().any(|e| e.type_ == TYPE_BUDGET_EXHAUSTED),
+            "overrunning the budget mid-wave must record BudgetExhausted"
+        );
+        // No more than one real implementer spawn was admitted against the budget of 1.
+        assert!(
+            driver
+                .call_order
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|a| *a == "a")
+                .count()
+                <= 1,
+            "the budget breaker must refuse spawns beyond the budget, mid-wave"
+        );
+    }
+
+    #[test]
+    fn validate_acyclic_detects_a_cycle() {
+        // Item 10: the function formerly named `topo_sort` computed an order nobody
+        // consumed; it is now `validate_acyclic`, a pure cycle check whose name matches
+        // its behavior. It returns Ok for an acyclic DAG and Err for a cycle.
+        let mut acyclic: BTreeMap<String, Stage> = BTreeMap::new();
+        acyclic.insert(
+            "a".into(),
+            Stage {
+                name: "a".into(),
+                ..Default::default()
+            },
+        );
+        acyclic.insert(
+            "b".into(),
+            Stage {
+                name: "b".into(),
+                needs: vec!["a".into()],
+                ..Default::default()
+            },
+        );
+        assert!(
+            validate_acyclic(&acyclic).is_ok(),
+            "an acyclic DAG must validate"
+        );
+
+        let mut cyclic: BTreeMap<String, Stage> = BTreeMap::new();
+        cyclic.insert(
+            "x".into(),
+            Stage {
+                name: "x".into(),
+                needs: vec!["y".into()],
+                ..Default::default()
+            },
+        );
+        cyclic.insert(
+            "y".into(),
+            Stage {
+                name: "y".into(),
+                needs: vec!["x".into()],
+                ..Default::default()
+            },
+        );
+        assert!(
+            validate_acyclic(&cyclic).is_err(),
+            "a dependency cycle must be rejected"
+        );
+    }
+
+    /// The current HEAD commit hash of a git repo, for asserting a lens produced no
+    /// commit.
+    fn git_head(repo: &str) -> String {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
     fn init_repo() -> tempfile::TempDir {
