@@ -2,7 +2,8 @@
 //!
 //! Clean Architecture: the ports are traits (EventStore, ...), the adapters live
 //! beside them, and the conductor is the top-level use case depending only on
-//! ports. This is the Rust port of the proven Go design.
+//! ports. It generalizes the proven tank_game dev-loop harness into a standalone,
+//! config-driven product.
 
 pub mod conductor;
 pub mod config;
