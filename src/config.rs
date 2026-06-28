@@ -77,6 +77,13 @@ pub struct Stage {
     pub partition: String,
     #[serde(default)]
     pub gates: Vec<String>,
+    /// The adversary reviews the lenses' findings and the diff and tries to prove
+    /// the lenses wrong - it holds them to a higher bar, surfaces what they all
+    /// missed, and refutes overreach. It runs AFTER the lenses and BEFORE the
+    /// adjudicator (§3.2); it reviews the reviews, it is not a parallel lens, and
+    /// it does not render the final verdict.
+    #[serde(default)]
+    pub adversary: String,
     #[serde(default)]
     pub adjudicator: String,
     #[serde(default)]
@@ -120,13 +127,17 @@ fn is_fan_out_tool(tool: &str) -> bool {
 }
 
 impl Stage {
-    /// Every agent a stage references (the worker, the fan-out lens set, the adjudicator).
+    /// Every agent a stage references (the worker, the fan-out lens set, the
+    /// adversary, the adjudicator).
     pub fn agent_ids(&self) -> Vec<String> {
         let mut ids = Vec::new();
         if !self.agent.is_empty() {
             ids.push(self.agent.clone());
         }
         ids.extend(self.agents.iter().cloned());
+        if !self.adversary.is_empty() {
+            ids.push(self.adversary.clone());
+        }
         if !self.adjudicator.is_empty() {
             ids.push(self.adjudicator.clone());
         }
@@ -394,12 +405,13 @@ mod tests {
         // crate root (cargo runs tests there).
         let cfg =
             load("examples/golden-apple").expect("the golden-apple example must load and validate");
-        // The full lens set + planner + implementer + adjudicator + integrator.
-        assert_eq!(cfg.agents.len(), 7, "golden-apple agent count");
+        // The full lens set + planner + implementer + adversary + adjudicator + integrator.
+        assert_eq!(cfg.agents.len(), 8, "golden-apple agent count");
         assert_eq!(cfg.workflow.stages.len(), 4, "golden-apple stage count");
         assert_eq!(cfg.workflow.gates.len(), 4, "golden-apple gate count");
         // The shape: a producer, a worktree-isolated non-recursive implementer, a
-        // three-lens review with an adjudicator, and an on_pass: merge integrate.
+        // three-tier review (lenses -> adversary -> adjudicator), and an
+        // on_pass: merge integrate.
         assert_eq!(cfg.workflow.stages["plan"].produces, "dag");
         let implement = &cfg.workflow.stages["implement"];
         assert_eq!(implement.strategy, "fan-out");
@@ -410,8 +422,15 @@ mod tests {
             "the implementer must not be able to fan out"
         );
         let review = &cfg.workflow.stages["review"];
-        assert_eq!(review.agents.len(), 3);
-        assert_eq!(review.adjudicator, "devils-advocate");
+        assert_eq!(review.agents.len(), 3, "tier 1: three expert lenses");
+        assert_eq!(
+            review.adversary, "adversary",
+            "tier 2: the adversary refutes the lenses"
+        );
+        assert_eq!(
+            review.adjudicator, "devils-advocate",
+            "tier 3: the neutral adjudicator's verdict gates"
+        );
         assert_eq!(cfg.workflow.stages["integrate"].on_pass, "merge");
     }
 
