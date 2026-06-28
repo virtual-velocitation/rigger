@@ -25,10 +25,11 @@
 
 ## How to read this
 
-Sections tagged **[AS-BUILT]** describe the proven tank_game dev-loop harness, the
-*prior art* Rigger generalizes (it already runs; it built the engine inversion this
-session). Sections tagged **[TARGET]** describe Rigger: the standalone, config-driven,
-language-agnostic product. The single sentence that relates them:
+Sections tagged **[AS-BUILT]** describe what the Rigger crate now implements. The
+design started as a generalization of the proven tank_game dev-loop harness (the
+*prior art*); it has since been built out in full as the standalone, config-driven,
+language-agnostic product, so what was once a target is now code you can read under
+`src/`. The single sentence that relates them:
 
 > **Rigger is the *machinery* of the tank_game dev-loop, inverted the same way the
 > engine was: every project-specific thing (Rust, cargo, bd, e7, Golden Apple) becomes
@@ -69,7 +70,7 @@ next agent is never blind to what the last one decided.** It is the *producing* 
 ### The inversion (why "no current config exists")
 
 ```
-        tank_game dev-loop (AS-BUILT)              Rigger (TARGET)
+        tank_game dev-loop (prior art)             Rigger (AS-BUILT)
    ┌─────────────────────────────────┐     ┌──────────────────────────────┐
    │ MACHINERY  (general)            │     │ MACHINERY  →  the Rigger crate │
    │  conductor · ledger · DAG ·     │ ══▶ │  (Rust: conductor, eventstore, │
@@ -143,7 +144,7 @@ swapped by config / cargo feature:*
 
 ---
 
-## 3. The declarative model: the heart of "reconfigure by editing, not coding"  **[TARGET]**
+## 3. The declarative model: the heart of "reconfigure by editing, not coding"  **[AS-BUILT]**
 
 Two file kinds, both in the *consuming* repo. Rigger reads them; it ships neither.
 
@@ -242,15 +243,17 @@ entries in a project's `gates:` map. Rigger ships **zero** gates.
 
 ---
 
-## 4. The execution model: the conductor  **[TARGET, generalizing AS-BUILT]**
+## 4. The execution model: the conductor  **[AS-BUILT]**
 
 ### 4.1 The pipeline, now *declared*
 
-[AS-BUILT] the tank_game conductor hardcodes `Intake → Loop-readiness → Ground → Plan →
-Coverage → Partition → Fan-out → Verify+Review → Integrate → Converge`
-(`conductor.mjs`, `runLoop`). [TARGET] Rigger executes whatever DAG the workflow YAML
-declares; the canonical pipeline above is simply the *default* workflow shipped as an
-example.
+The tank_game prior art hardcoded `Intake → Loop-readiness → Ground → Plan →
+Coverage → Partition → Fan-out → Verify+Review → Integrate → Converge`. Rigger's
+`conductor::run` (`src/conductor.rs`) executes whatever DAG the workflow YAML
+declares: it topo-sorts the stages, runs the ready set wave by wave (independent
+stages concurrently), defers the coverage gate past a `produces` planner stage,
+trips the budget breaker before each wave, and projects the final `RunState`. The
+canonical pipeline above is simply the *default* workflow shipped as an example.
 
 ```mermaid
 flowchart LR
@@ -274,28 +277,38 @@ integrated + every gate green. Never "looks done."
 
 ### 4.2 Durable state: the ledger *is* a projection of the event log
 
-[AS-BUILT] tank_game keeps a JSON ledger written solely by the Conductor; executors
-append to a `.buffer` and the Conductor `drain()`s it (one-mutation-authority §6.8).
-[TARGET] Rigger keeps that one-writer discipline but makes the ledger a **projection of
-the event log** (§5): the run's state (units, coverage, gate history, autonomy) is
-*derived* by folding the events, so a crashed/compacted run resumes by replaying. The
-Conductor is the sole writer of *projections*; agents only ever *append events*.
+The tank_game prior art kept a JSON ledger written solely by the Conductor; executors
+appended to a `.buffer` and the Conductor `drain()`d it (one-mutation-authority).
+Rigger keeps that one-writer discipline but makes the ledger a **projection of
+the event log** (§5): the run's state (units, lifecycle, attempts, the integrating
+commit, evidence) is *derived* by folding the run events, so a crashed/compacted run
+resumes by replaying. `conductor::run` folds the existing `run` stream up front and
+skips units already integrated. The Conductor is the sole writer of *projections*;
+agents only ever *append events*.
 
 ```rust
-// the conductor owns the run; agents never mutate shared state directly. RunState
-// is projected from the event log by folding the run events (see `ledger`).
+// src/ledger.rs - RunState is projected from the event log by folding the run
+// events; the conductor is the only writer. `ledger::project(events)` rebuilds it.
 pub struct RunState {
     pub units: BTreeMap<String, Unit>,
+    pub spec_defect: bool,        // a coverage gap was flagged (gates fully_done)
 }
 pub struct Unit {
     pub id: String,
     pub spec_criterion: String,   // every unit maps to a criterion (anti-fragmentation)
-    pub status: Status,           // Pending | Running | Integrated | Failed | Escalated
+    pub depends_on: Vec<String>,  // the units this one needs (BLOCKS edges)
+    pub status: Status,           // Pending | Grounding | Red | Green | Verified |
+                                  // Reviewed | Integrated | Failed | Escalated
+    pub worktree: String,
+    pub branch: String,
+    pub evidence: BTreeMap<String, String>, // red / green / verify / review summaries
     pub attempts: u32,
     pub commit: String,           // the integrating commit, once it lands
 }
-// The conductor folds run events (UnitStarted / UnitFailed / UnitEscalated /
-// UnitIntegrated) into this state; gate-autonomy history lives in the gate engine.
+// `fold`s UnitStarted / UnitStatus / UnitFailed / UnitEscalated / UnitIntegrated /
+// SpecDefect into this state; gate-autonomy history lives in the conductor's gate
+// tracker. `done()` = at least one unit, all integrated; `fully_done(criteria)`
+// adds: no spec defect flagged (§4.1, R6).
 ```
 
 ### 4.3 The autonomy ratchet (bidirectional, self-correcting)
@@ -315,7 +328,7 @@ never infinite. (Port of `safety.mjs`.)
 
 ---
 
-## 5. The memory layer: event source + context graph  **[TARGET: the new heart]**
+## 5. The memory layer: event source + context graph  **[AS-BUILT: the new heart]**
 
 This is what the tank_game harness does *not* have and what makes Rigger more than a
 port. The model, in one line: **agents append immutable events to a log; a projector
@@ -330,16 +343,18 @@ architecture change.
 
 ```rust
 // src/eventstore/mod.rs
-// Mirrors KurrentDB: append-only streams, a global $all order, catch-up subscriptions.
+// Mirrors KurrentDB: per-stream append with optimistic concurrency, a global $all
+// order, per-stream revisions, and catch-up subscriptions over both.
 pub trait EventStore: Send + Sync {
-    /// Append events to a stream under an optimistic-concurrency expectation,
-    /// returning the last global position written; a failed expectation yields
-    /// `Error::Conflict`.
+    /// Append events to the end of a stream under an optimistic-concurrency
+    /// expectation, returning the global position of the last event written. A
+    /// failed expectation yields `Error::Conflict { stream, expected, actual }`,
+    /// carrying the stream's actual current revision.
     fn append(&self, stream: &str, expected: ExpectedRevision, events: &[Event])
         -> Result<Position, Error>;
 
-    /// Read one stream's events from a global position, in a direction.
-    fn read_stream(&self, stream: &str, from: Position, dir: Direction)
+    /// Read one stream's events from a per-stream revision, in a direction.
+    fn read_stream(&self, stream: &str, from: Revision, dir: Direction)
         -> Result<Vec<Event>, Error>;
 
     /// Read the global $all log from a position, in a direction, filtered: the
@@ -351,47 +366,64 @@ pub trait EventStore: Send + Sync {
     /// then deliver new ones live. This is the (A) live-awareness mechanism: a
     /// running agent's side-car watches $all.
     fn subscribe_all(&self, from: Position, filter: &Filter) -> Result<Subscription, Error>;
+
+    /// Open a catch-up subscription over one stream from a revision: replay that
+    /// stream's events, then deliver new ones live.
+    fn subscribe_stream(&self, stream: &str, from: Revision) -> Result<Subscription, Error>;
 }
 
-pub type Position = u64; // global ($all-order) position, assigned by the store on append
+pub type Position = u64; // global ($all-order) position, store-assigned on append
+pub type Revision = i64; // per-stream position, 0-based; an empty stream is NO_STREAM (-1)
 
 pub struct Event {
     pub id: String,            // a fresh UUID per event
+    pub stream: String,        // the stream it belongs to (store-stamped on append)
     pub type_: String,         // "DecisionMade", "FileTouched", "GateVerdict", "UnitIntegrated", …
     pub data: Vec<u8>,         // the opaque (usually JSON) payload (see §5.3)
-    pub recorded_at: SystemTime, // when the event was created / ingested
-    pub position: Position,    // global order (assigned on append)
+    pub meta: BTreeMap<String, String>, // causation / correlation / actor (the DECIDED source)
+    pub valid_from: SystemTime,  // bi-temporal valid-time: when the fact became true (caller-supplied)
+    pub recorded_at: SystemTime, // store-stamped ingest time
+    pub position: Position,    // global order (store-assigned on append)
+    pub revision: Revision,    // per-stream order (store-assigned on append)
 }
 
-// Optimistic-concurrency expectation: any version, no stream yet, or an exact count.
-pub enum ExpectedRevision { Any, NoStream, Exact(u64) }
+// Optimistic-concurrency expectation: any version, no stream yet, or an exact revision.
+pub enum ExpectedRevision { Any, NoStream, Exact(Revision) }
 
 // A read/subscription filter over the global log (a stream-name prefix).
 pub struct Filter { pub stream_prefix: Option<String> }
 ```
 
+`Event::new(type_, data)` mints a fresh id and defaults `valid_from` to now; the
+builders `with_meta` and `with_valid_from` set the actor metadata and the valid-time.
+The store stamps `stream`, `recorded_at`, `position`, and `revision` on append.
 `Subscription` is a concrete catch-up handle (not a trait): adapters feed it from a
-background thread, and callers drain it with `recv` / `recv_timeout` / `try_recv`;
-dropping it stops the feed.
+background thread, callers drain it with `recv` / `recv_timeout` / `try_recv` and
+check `err()` for a terminal error after it ends; dropping it stops the feed.
 
-**Two impls, one trait:**
+**Two impls, one trait (both [AS-BUILT]):**
 - **`sqlite` (default).** One table `events(position INTEGER PK AUTOINCREMENT, stream,
-  type, data, recorded_at, …)`. `$all` = `ORDER BY position`. A per-stream uniqueness
-  constraint gives optimistic concurrency. **Subscriptions** = a poll on `MAX(position)`
-  fed onto an mpsc channel from a background thread; at Rigger's event volume (hundreds
-  to thousands of events per run) this is trivial. Backed by bundled `rusqlite`; zero
-  external service; the whole store is one file.
-- **`kurrentdb` ([AS-BUILT], behind the `kurrentdb` cargo feature).** A thin adapter over
-  the official KurrentDB Rust client, bridging its async gRPC API onto the (sync) port
+  type, id, data, meta, valid_from, recorded_at, revision)` with `UNIQUE(stream,
+  revision)`. `$all` = `ORDER BY position`; the per-stream uniqueness constraint gives
+  optimistic concurrency (a failed expectation reads the actual last revision and
+  returns `Conflict`). **Subscriptions** = a poll on `MAX(position)` (or the stream's
+  last revision for `subscribe_stream`) fed onto an mpsc channel from a background
+  thread; at Rigger's event volume (hundreds to thousands of events per run) this is
+  trivial. A single connection behind a mutex serializes writes (the SQLITE_BUSY
+  lock-upgrade class). Backed by bundled `rusqlite`; zero external service; one file.
+- **`kurrentdb` (behind the `kurrentdb` cargo feature).** A thin adapter over the
+  official KurrentDB Rust client, bridging its async gRPC API onto the (sync) port
   through a tokio runtime: `append`→`AppendToStream`, `read_all`→`$all` read,
-  `subscribe_all`→a filtered catch-up subscription. Selected at the composition root when
-  built with `-F kurrentdb`.
+  `subscribe_all`→a filtered catch-up subscription. `open` connects eagerly and
+  **fails fast on an unreachable server** (a trivial `$all` read forces the connection
+  at startup). Selected at the composition root when built with `-F kurrentdb`.
 
-Because the trait *is* the KurrentDB model, the SQLite impl's contract suite
-(`eventstore::contract::assert_contract`: append ordering, optimistic-concurrency
-conflicts, catch-up replay-then-live) doubles as the contract test the KurrentDB adapter
-must also pass — its `kurrentdb` CI job runs that same suite against a real KurrentDB via
-testcontainers: the proxy fidelity you asked for.
+Because the trait *is* the KurrentDB model, the contract suite
+(`eventstore::contract::assert_contract`: revision assignment, append ordering,
+optimistic-concurrency conflicts that carry `actual`, meta/valid_from round-trip,
+catch-up replay-then-live) is run against **both** backends - the SQLite impl and,
+behind its `kurrentdb` CI job, the KurrentDB adapter against a real KurrentDB via
+testcontainers. One suite, two backends green: the proxy fidelity the design needs.
 
 ### 5.1.1 Per-project segregation (one mechanism, every backend)  **[AS-BUILT]**
 
@@ -400,9 +432,9 @@ Event streams and the context graph are **scoped to one project by default**, ne
 - The decorator (`Namespaced::new(inner, project)`) prefixes every stream a project writes with its `proj-<project>-` namespace, and scopes every read/subscribe filter to it, so callers use plain, unprefixed stream names and never see the namespace. It is written once and wraps *any* `&dyn EventStore`; the backends are namespace-unaware.
 - **SQLite** realizes the filter on the `stream` column (a prefix match); its `.rigger/` directory is just the default storage path, not the isolation mechanism.
 - **KurrentDB** realizes the same prefix as a server-side `$all` filter (it supports filtered catch-up subscriptions natively), so one server backs many projects, each seeing only its own events against its own checkpoint.
-- The namespace **defaults to the project identity**, so isolation is the default. A hard boundary (security or multi-tenant) is just config: a dedicated SQLite file, or a dedicated KurrentDB instance.
+- The namespace **defaults to the project identity** (the git top-level basename, via `project_identity()`), so isolation is the default. The composition root (`src/main.rs`) wraps the chosen backend in `Namespaced::new(backend, &project_identity())` before injecting it into the conductor and the side-car, so every `rigger run` is scoped without any caller action. A hard boundary (security or multi-tenant) is just config: a dedicated SQLite file, or a dedicated KurrentDB instance.
 
-This is dependency inversion (R8) paying off directly: because the decorator depends on the `EventStore` *trait*, segregation is one implementation for all backends — and it passes the same contract suite (`Namespaced` is contract-tested). The **context graph is always a local, per-project projection**, rebuilt into `.rigger/` from the namespaced stream whatever the log backend, so even a shared KurrentDB server never shares a graph.
+This is dependency inversion (R8) paying off directly: because the decorator depends on the `EventStore` *trait*, segregation is one implementation for all backends - and it passes the same contract suite (`Namespaced` is contract-tested). The **context graph is always a local, per-project projection**, rebuilt into `.rigger/` from the namespaced stream whatever the log backend, so even a shared KurrentDB server never shares a graph.
 
 ### 5.2 The context graph: a bi-temporal projection
 
@@ -421,8 +453,10 @@ pub struct Node {
 pub struct Edge {
     pub from: String,
     pub to: String,
-    pub rel: String,                      // "SUPERSEDES" | "TOUCHES" | "GOVERNS" | "GATED_BY" | "ABOUT"
-    pub valid_from: i64,                  // bi-temporal validity interval …
+    // the full vocabulary the projector emits:
+    pub rel: String,                      // DECIDED | SUPERSEDES | TOUCHES | GOVERNS |
+                                          // GATED_BY | ABOUT | BLOCKS | ASSIGNED_TO
+    pub valid_from: i64,                  // bi-temporal validity interval, from the event's valid_from …
     pub valid_to: Option<i64>,            // … None = still valid; Some = invalidated (NOT deleted)
     pub source: Position,                 // the event that asserted this edge (provenance)
 }
@@ -433,15 +467,24 @@ pub trait Projection: Send + Sync {
 }
 ```
 
+The `sqlite::Projector` folds each event type into edges from the event's valid-time:
+`DecisionMade` → `DECIDED` (from the actor in `meta`), `GOVERNS` (to each governed
+file, entity-resolved), and `SUPERSEDES` + invalidation of the superseded decision's
+`GOVERNS` edges; `FileTouched` → `TOUCHES`; `GateVerdict` with an artifact → `GATED_BY`;
+`UnitStarted` → `ASSIGNED_TO` (unit→agent) + `BLOCKS` (need→unit); `LessonLearned` →
+`ABOUT`. `AliasDefined` populates the alias table; `AliasUnresolved` creates the node
+marked `unresolved` rather than dropping the mention.
+
 **Three properties carried from the research:**
-1. **Bi-temporal freshness (Zep/Graphiti).** Supersession sets `valid_to` on the old edge
-   and appends a new one: the graph shows the *current* truth, the log keeps the
+1. **Bi-temporal freshness (Zep/Graphiti).** Supersession sets `valid_to` on the old
+   edge and appends a new one: the graph shows the *current* truth, the log keeps the
    *history*, and a stale fact never surfaces with false confidence. (e.g. the
    `collapse-decision`'s governing edge has its `valid_to` stamped when the `split-decision`
    supersedes it.)
-2. **Entity resolution (Graphiti / the TDS alias-table bug).** `resolve` collapses
-   `"the editor" ≡ "content-editor" ≡ "velocity-engine"` to one node on ingest, so
-   retrieval joins instead of fragmenting.
+2. **Entity resolution (Graphiti / the TDS alias-table bug).** `resolve` (and the
+   in-fold `resolve_in_tx`) collapses `"the editor" ≡ "content-editor" ≡ "velocity-engine"`
+   to one node via the alias table on ingest, so retrieval joins instead of fragmenting;
+   an unresolved mention becomes a node marked for later merge, never silently dropped.
 3. **Scoped retrieval (GraphRAG).** `subgraph(seed, depth)` returns the *connected
    subgraph* of an agent's blast-radius (ALL & ONLY its context), not a chunk dump.
 
@@ -462,13 +505,17 @@ flowchart LR
 ```
 
 **The (A) live awareness, concretely.** An agent's run is wrapped by a Rigger **side-car**
-(`sidecar::Sidecar`) that holds a `subscribe_all` catch-up subscription filtered to the
-agent's blast-radius, draining matching events in a background thread. When a *concurrent*
-agent appends a `DecisionMade` touching a shared node, the side-car surfaces it to the
-agent at its next tool-boundary (a context refresh injected before the next action). This
-gives true in-flight awareness **without** touching the agent's files: isolation guards
-the *files* (worktree), the event stream is the *separate shared decision channel*. The
-two are orthogonal (the insight that makes (A) safe).
+(`sidecar::Sidecar`) that holds a `subscribe_all` catch-up subscription, draining
+matching `DecisionMade` events in a background thread. The subscription is filtered by
+stream prefix; the blast-radius scoping then lives in `Sidecar::decisions_for(blast_radius)`,
+which keeps only the peer decisions whose `governs` files intersect the agent's
+blast-radius (an empty blast-radius returns all). On the workflow driver, the shim calls
+`rigger_peers` with the spawn's `blast_radius` at the next tool-boundary, and the MCP
+server renders the blast-radius-scoped peer decisions into a context refresh prepended to
+the prompt - so a *concurrent* agent's in-flight decision about a shared file reaches the
+agent before its next action. This gives true in-flight awareness **without** touching the
+agent's files: isolation guards the *files* (worktree), the event stream is the *separate
+shared decision channel*. The two are orthogonal (the insight that makes (A) safe).
 
 ### 5.4 Grounding stays hybrid (vector + graph)
 
@@ -503,9 +550,19 @@ pub trait AgentDriver: Send + Sync {
         emit: &dyn Fn(&str, serde_json::Value) -> Result<(), Error>,
     ) -> Result<AgentResult, Error>;
 }
-pub struct SpawnOpts { pub dir: String }   // the working dir (an isolated worktree, or "")
+pub struct SpawnOpts {
+    pub dir: String,               // the working dir (an isolated worktree, or "")
+    pub isolation: bool,           // whether this spawn runs in an isolated worktree (§6)
+    pub parallel: bool,            // whether it is one of several concurrent in a fan-out stage
+    pub blast_radius: Vec<String>, // the grounded seed files this spawn is scoped to (§5.3)
+}
 pub struct AgentResult { pub output: String }
 ```
+
+The conductor fills `blast_radius` from the same grounding it seeds the prompt with
+(`grounded_seed`), so the side-car filters peer decisions against exactly the files the
+agent was grounded on. The cli driver (a subprocess) ignores it; the workflow driver
+carries it to the shim for tool-boundary injection.
 
 - **`cli` (default, self-contained).** `driver::cli::Driver` spawns the `claude` CLI as a
   subprocess (`bin` defaults to `"claude"`) and reads its output. Worktree isolation is
@@ -531,31 +588,38 @@ disjoint, so parallel worktrees cannot conflict and an agent cannot fan out.
 
 ## 7. Worked example: the modifier saga through Rigger
 
-The real episode from this session, replayed as Rigger would record it. A unit
+The real episode from this session, as Rigger records it - and the edges below are the
+ones `sqlite::Projector` actually folds (DECIDED from the event actor, GOVERNS from a
+decision's `governs`, SUPERSEDES + invalidation, GATED_BY from a verdict's `artifact`,
+ASSIGNED_TO + BLOCKS from `UnitStarted`, TOUCHES from `FileTouched`). A unit
 "genericize the modifier pipeline" runs; here is the **event log** it appends and the
 **graph** that results.
 
 ```jsonc
-// stream "run-7", appended over the unit's life (Position grows globally)
-{ "type":"UnitStarted",   "data":{"unit":"mod","criterion":"engine names no game concept"} }
-{ "type":"Grounded",      "data":{"refs":["modifier.rs","FoldRule","GA_STAGES"]} }
-{ "type":"DecisionMade",  "data":{"id":"mod-collapse","summary":"move whole modifier to ga-*"},
-  "validFrom":"…T10:00Z" }
+// stream "run", appended over the unit's life (Position grows globally; meta.actor is
+// the acting agent, valid_from is the bi-temporal valid-time).
+{ "type":"UnitStarted",   "data":{"id":"mod","unit":"mod","criterion":"engine names no game concept","agent":"impl-mod"} }
+{ "type":"DecisionMade",  "meta":{"actor":"impl-mod"},
+  "data":{"id":"mod-collapse","summary":"move whole modifier to ga-*","governs":["engine-schema/src/modifier.rs"]},
+  "valid_from":"…T10:00Z" }
 // … owner rejects; the split decision supersedes the collapse …
-{ "type":"DecisionMade",  "data":{"id":"mod-split","summary":"generic FoldRule pipeline in engine, GA taxonomy on top",
-  "supersedes":"mod-collapse"}, "validFrom":"…T11:30Z" }
-{ "type":"FileTouched",   "data":{"path":"engine-schema/src/modifier.rs"} }
-{ "type":"GateVerdict",   "data":{"gate":"e7","pass":true,"evidence":"TOTAL 0"} }
-{ "type":"GateVerdict",   "data":{"gate":"test","pass":true,"evidence":"54 passed"} }
-{ "type":"UnitIntegrated","data":{"unit":"mod","commit":"f848b97"} }
+{ "type":"DecisionMade",  "meta":{"actor":"impl-mod"},
+  "data":{"id":"mod-split","summary":"generic FoldRule pipeline in engine, GA taxonomy on top",
+  "governs":["engine-schema/src/modifier.rs"],"supersedes":"mod-collapse"}, "valid_from":"…T11:30Z" }
+{ "type":"FileTouched",   "data":{"path":"engine-schema/src/modifier.rs","by":"impl-mod"} }
+{ "type":"GateVerdict",   "data":{"gate":"e7","pass":true,"artifact":"engine-schema/src/modifier.rs"} }
+{ "type":"UnitIntegrated","data":{"id":"mod","unit":"mod","commit":"f848b97"} }
 ```
 
 The projector folds these into the graph:
 
 ```
+(agent impl-mod)        --DECIDED--> (decision mod-split)
+(agent impl-mod)        --DECIDED--> (decision mod-collapse)
 (decision mod-split)    --SUPERSEDES--> (decision mod-collapse)
 (decision mod-collapse) --GOVERNS(valid_to=11:30)--> (artifact modifier.rs)   ← invalidated, not deleted
 (decision mod-split)    --GOVERNS--> (artifact modifier.rs)
+(unit mod)              --ASSIGNED_TO--> (agent impl-mod)
 (artifact modifier.rs)  --GATED_BY--> (gate e7)
 (agent impl-mod)        --TOUCHES--> (artifact modifier.rs)
 ```
@@ -578,7 +642,7 @@ work a stale base: the three failure classes this session hit, closed structural
 | Two concurrent units edit the same file | Partitioner makes batches disjoint by blast-radius; they never share a worktree |
 | Agent crashes / hits usage limit mid-spawn | `cli` driver: non-zero exit → `remediate` (bounded retry, re-grounded) → escalate |
 | Stale base (a peer landed while I ran) | Integrate does `pull --rebase` + re-runs gates; the graph's `TOUCHES` edges flag the overlap pre-merge |
-| Event store append conflict (optimistic concurrency) | `expectedVersion` mismatch → re-read stream, re-project, retry the append |
+| Event store append conflict (optimistic concurrency) | `ExpectedRevision` mismatch → `Error::Conflict { stream, expected, actual }` carries the actual last revision; re-read, re-project, retry the append |
 | Projector falls behind / crashes | The graph is a *pure projection*: rebuild it from `$all` from position 0 (event sourcing's superpower); idempotent |
 | Superseded decision still in the graph | Bi-temporal `ValidTo` set on supersession; `Subgraph` filters `ValidTo IS NULL` by default |
 | Entity mention doesn't resolve | `Resolve` miss ⇒ create a new node + log an `alias_unresolved` event for later merge (never silently drop) |
@@ -590,15 +654,22 @@ work a stale base: the three failure classes this session hit, closed structural
 
 ## 9. Data model / schemas (consolidated)
 
-- **Event:** §5.1 (`id, type_, data, recorded_at, position`; the stream is an `append`
-  argument, not a field). `ExpectedRevision` (`Any | NoStream | Exact(u64)`) and `Filter`
+- **Event:** §5.1 (`id, stream, type_, data, meta, valid_from, recorded_at, position,
+  revision`). `Position` (`u64`, global) and `Revision` (`i64`, per-stream, `NO_STREAM
+  = -1`); `ExpectedRevision` (`Any | NoStream | Exact(Revision)`) and `Filter`
   (`stream_prefix`) accompany it.
-- **Graph Node / Edge:** §5.2 (Node `id, kind, attrs`; Edge carries the bi-temporal
-  `valid_from: i64 / valid_to: Option<i64>` + `source: Position` provenance).
-- **RunState / Unit:** §4.2 (the projected ledger; Unit = `id, spec_criterion, status, attempts, commit`).
+- **Graph Node / Edge:** §5.2 (Node `id, kind, attrs`; Edge `from, to, rel` over the
+  full vocabulary + the bi-temporal `valid_from: i64 / valid_to: Option<i64>` +
+  `source: Position` provenance).
+- **RunState / Unit:** §4.2 (the projected ledger; RunState = `units, spec_defect`;
+  Unit = `id, spec_criterion, depends_on, status, worktree, branch, evidence, attempts,
+  commit`; Status spans Pending → … → Integrated plus Failed / Escalated).
 - **AgentDef:** §3.1 frontmatter (`id, model, tools, isolation, recurse, prompt`).
-- **Workflow:** §3.2 (`name, gates{}, stages{needs, agent(s), strategy, partition, gates, adjudicator, autonomy, on_pass, …}`).
-- **Gate:** `{id, run, kind: Core|Elevated|Deferred, autonomy: Manual|AutoNotify|Silent, history:[{pass}]}`.
+- **Workflow:** §3.2 (`name, defaults{autonomy, grounder, budget, partition}, gates{},
+  stages{needs, agent(s), strategy, partition, gates, adjudicator, autonomy, produces,
+  coverage, on_pass}`).
+- **Gate (config):** `{run, kind}` in the YAML library; the conductor's runtime `Gate`
+  adds `id`, `autonomy: Manual|AutoNotify|Silent`, and `history:[{pass}]` for the ratchet.
 
 ---
 
@@ -615,7 +686,7 @@ github.com/virtual-velocitation/rigger
 │   ├── main.rs                  the CLI binary (run/serve/graph/validate/init/setup/prime)
 │   ├── conductor.rs             the DAG executor + run loop; the AgentDriver port
 │   ├── eventstore/
-│   │   ├── mod.rs               the EventStore trait + Event/Position/Filter/Subscription
+│   │   ├── mod.rs               the EventStore trait + Event/Position/Revision/Filter/Subscription
 │   │   ├── sqlite.rs            default adapter (embedded, bundled rusqlite)
 │   │   ├── kurrentdb.rs         server adapter (behind the `kurrentdb` feature)
 │   │   ├── namespace.rs         per-project segregation decorator (Namespaced)
@@ -659,7 +730,7 @@ modules from the `rigger` crate directly.
 
 ## 11. What carries over vs. what's new
 
-| tank_game module **[AS-BUILT]** | Rigger **[TARGET]** | Change |
+| tank_game module **(prior art)** | Rigger **[AS-BUILT]** | Change |
 |---|---|---|
 | `ledger.mjs` | `conductor` + event projection | ledger becomes a projection of the log |
 | `conductor.mjs` (hardcoded pipeline) | `conductor` executing the workflow DAG | pipeline becomes declared YAML |
@@ -739,7 +810,9 @@ modules from the `rigger` crate directly.
 
 ## 13. Phased delivery roadmap
 
-Each phase lands independently and is demoable. **Task 0 = ratify the records.**
+This was the delivery order; **all phases have landed** (the "done when" criteria are
+met in the current tree). It is retained as the historical plan and the ratification
+note. **Task 0 = ratify the records.**
 
 - **Phase 0: Repo + records.** Create the public `github.com/virtual-velocitation/rigger`
   repo; `cargo init` the crate; move this blueprint to `docs/architecture.md`; **ratify
@@ -777,5 +850,8 @@ KurrentDB's model (`github.com/kurrent-io/KurrentDB`) is the trait blueprint for
 
 ---
 
-*End of reference architecture. This is a PROPOSAL: nothing here is ratified until Phase 0,
-and the rigger repo does not yet exist. Review gate next; see the hand-off.*
+*End of reference architecture. The harness described here is **built** - the crate, the
+two event-store backends, the bi-temporal context graph, the conductor and its rails, both
+agent drivers, and the golden-apple example all exist under `src/` and `examples/`. The §12
+ADR-0001 + glossary records remain governance PROPOSALS until ratified; the architecture
+itself is as-built.*

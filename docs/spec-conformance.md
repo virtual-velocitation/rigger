@@ -70,4 +70,4 @@ against the code. Phases are in dependency order; each lands CI-green.
 - [x] `examples/golden-apple/` worked example (§10, §11)
 
 ## Phase 7 - Docs
-- [ ] Re-sweep `docs/architecture.md` UP to the implemented spec (not down to old code)
+- [x] Re-sweep `docs/architecture.md` UP to the implemented spec (not down to old code)
