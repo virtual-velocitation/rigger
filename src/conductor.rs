@@ -165,6 +165,15 @@ impl PriorFailure {
 
 /// Per-spawn options.
 pub struct SpawnOpts {
+    /// The agent's PERSONA - its role instructions, the markdown body of its
+    /// `.rigger/agents/<id>.md` definition (`AgentDef::prompt`). It belongs as the
+    /// agent's SYSTEM prompt, distinct from the grounded task `prompt`. The conductor
+    /// is the SINGLE place that sets it (from `agent_def.prompt`), so BOTH drivers
+    /// consume the same persona source and cannot diverge: the cli driver passes it as
+    /// `--system-prompt`, the workflow driver carries it to the shim which passes it to
+    /// the Agent SDK `query()` as `options.systemPrompt`. Empty when the agent declared
+    /// no body.
+    pub system_prompt: String,
     /// The working directory the agent runs in: an isolated worktree, or "" for
     /// the current dir.
     pub dir: String,
@@ -724,6 +733,7 @@ impl RunCtx<'_> {
                     agent_def,
                     &prompt,
                     &SpawnOpts {
+                        system_prompt: agent_def.prompt.clone(),
                         dir: dir.to_string(),
                         isolation: wt.is_some(),
                         parallel: false,
@@ -978,6 +988,7 @@ impl RunCtx<'_> {
                 agent_def,
                 &prompt,
                 &SpawnOpts {
+                    system_prompt: agent_def.prompt.clone(),
                     dir: String::new(),
                     isolation: false,
                     parallel: true,
@@ -1019,6 +1030,7 @@ impl RunCtx<'_> {
                 agent_def,
                 &prompt,
                 &SpawnOpts {
+                    system_prompt: agent_def.prompt.clone(),
                     dir: String::new(),
                     isolation: false,
                     parallel: false,
@@ -1065,6 +1077,7 @@ impl RunCtx<'_> {
                 agent_def,
                 &prompt,
                 &SpawnOpts {
+                    system_prompt: agent_def.prompt.clone(),
                     dir: String::new(),
                     isolation: false,
                     parallel: false,
@@ -1724,6 +1737,10 @@ mod tests {
         last_prompt: Mutex<String>,
         /// Per-agent (isolation, parallel) the conductor passed at each spawn.
         opts_by_agent: Mutex<HashMap<String, (bool, bool)>>,
+        /// The persona (system prompt) the conductor threaded into SpawnOpts for each
+        /// agent at spawn time - used to assert every driver path receives the agent's
+        /// role, not just the cli path's own arg-building.
+        system_prompt_by_agent: Mutex<HashMap<String, String>>,
         /// Every prompt each agent was spawned with, in order, keyed by agent id.
         /// Used to assert the cross-tier findings block (item 1) and the prior-failure
         /// block on a retry (items 3 + 5) reached the right agent's prompt.
@@ -1743,6 +1760,7 @@ mod tests {
                 fail_spawn: false,
                 last_prompt: Mutex::new(String::new()),
                 opts_by_agent: Mutex::new(HashMap::new()),
+                system_prompt_by_agent: Mutex::new(HashMap::new()),
                 prompts_by_agent: Mutex::new(HashMap::new()),
                 call_order: Mutex::new(Vec::new()),
             }
@@ -1756,6 +1774,16 @@ mod tests {
                 .get(agent_id)
                 .cloned()
                 .unwrap_or_default()
+        }
+
+        /// The persona (system prompt) the conductor threaded to the driver for the
+        /// named agent, or None if it was never spawned.
+        fn system_prompt_for(&self, agent_id: &str) -> Option<String> {
+            self.system_prompt_by_agent
+                .lock()
+                .unwrap()
+                .get(agent_id)
+                .cloned()
         }
     }
     impl AgentDriver for Stub {
@@ -1771,6 +1799,10 @@ mod tests {
                 .lock()
                 .unwrap()
                 .insert(a.id.clone(), (opts.isolation, opts.parallel));
+            self.system_prompt_by_agent
+                .lock()
+                .unwrap()
+                .insert(a.id.clone(), opts.system_prompt.clone());
             self.prompts_by_agent
                 .lock()
                 .unwrap()
@@ -1804,6 +1836,17 @@ mod tests {
     fn agent(id: &str) -> AgentDef {
         AgentDef {
             id: id.to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// An agent with a persona (the markdown body of its definition) - its role
+    /// instructions, which the conductor must thread to the driver as the system
+    /// prompt.
+    fn agent_with_prompt(id: &str, prompt: &str) -> AgentDef {
+        AgentDef {
+            id: id.to_string(),
+            prompt: prompt.to_string(),
             ..Default::default()
         }
     }
@@ -2553,6 +2596,124 @@ mod tests {
                     && String::from_utf8_lossy(&e.data).contains("\"status\":\"reviewed\"")
             }),
             "an approved unit must be marked reviewed before it integrates"
+        );
+    }
+
+    #[test]
+    fn the_conductor_threads_each_agents_persona_to_the_driver() {
+        // The agent's PERSONA (its role - the markdown body of its definition) must be
+        // threaded to the driver as the system prompt on EVERY spawn path, not just the
+        // implementer: the rust-engineer, the lenses, the adversary, AND the adjudicator
+        // each receive THEIR OWN role. This is the single persona source both drivers
+        // consume, so a workflow agent gets its role exactly as the cli path does.
+        let mut cfg = Config::default();
+        cfg.agents.insert(
+            "worker".into(),
+            agent_with_prompt("worker", "You are the rust engineer. Implement findings."),
+        );
+        cfg.agents.insert(
+            "lensA".into(),
+            agent_with_prompt("lensA", "You are the architecture lens."),
+        );
+        cfg.agents.insert(
+            "lensB".into(),
+            agent_with_prompt("lensB", "You are the technical lens."),
+        );
+        cfg.agents.insert(
+            "adversary".into(),
+            agent_with_prompt(
+                "adversary",
+                "You are the adversary. Prove the lenses wrong.",
+            ),
+        );
+        cfg.agents.insert(
+            "adj".into(),
+            agent_with_prompt("adj", "You are the adjudicator. Render the verdict."),
+        );
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.defaults.review = config::ReviewPanel {
+            lenses: vec!["lensA".into(), "lensB".into()],
+            adversary: "adversary".into(),
+            adjudicator: "adj".into(),
+        };
+        cfg.workflow.stages.insert(
+            "implement".into(),
+            Stage {
+                name: "implement".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            output: r#"{"verdict":"approve"}"#.into(),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+
+        // Every agent the conductor spawned received ITS OWN persona as the system
+        // prompt - the implementer and all three review tiers.
+        for (id, persona) in [
+            ("worker", "You are the rust engineer. Implement findings."),
+            ("lensA", "You are the architecture lens."),
+            ("lensB", "You are the technical lens."),
+            (
+                "adversary",
+                "You are the adversary. Prove the lenses wrong.",
+            ),
+            ("adj", "You are the adjudicator. Render the verdict."),
+        ] {
+            assert_eq!(
+                driver.system_prompt_for(id).as_deref(),
+                Some(persona),
+                "agent {id:?} must be spawned with its own persona as the system prompt"
+            );
+        }
+    }
+
+    #[test]
+    fn an_agent_with_no_persona_threads_an_empty_system_prompt() {
+        // An agent that declares no body threads an empty system prompt - the persona
+        // source is the agent's prompt, which is empty here, so nothing is fabricated.
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent("a")); // no prompt body
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "a".into(),
+                gates: vec!["ok".into()],
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+        assert_eq!(
+            driver.system_prompt_for("a").as_deref(),
+            Some(""),
+            "an agent with no body threads an empty (not fabricated) system prompt"
         );
     }
 

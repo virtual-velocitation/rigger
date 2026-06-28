@@ -208,6 +208,10 @@ export async function runWorkflow(client, runAgent, opts = {}) {
     try {
       output = await runAgent({
         prompt,
+        // The agent's persona (its role) - the conductor's single persona source,
+        // threaded through SpawnRequest.system_prompt - is passed to query() as the
+        // system prompt, so a workflow agent gets its role exactly as the cli path does.
+        systemPrompt: next.system_prompt || undefined,
         model: next.model || undefined,
         tools: next.tools || [],
         dir: next.dir || undefined,
@@ -229,9 +233,9 @@ export async function runWorkflow(client, runAgent, opts = {}) {
 
 // runAgentViaSdk is the real runAgent: it runs one agent via the Agent SDK's
 // query(), giving it the in-process proxy server (so its rigger_emit/rigger_peers
-// reach the shared connection) plus the spawn's model, allowed tools, and dir. It
-// returns the agent's final result text.
-export async function runAgentViaSdk({ prompt, model, tools, dir, proxyServer }) {
+// reach the shared connection) plus the spawn's persona (its role, as the system
+// prompt), model, allowed tools, and dir. It returns the agent's final result text.
+export async function runAgentViaSdk({ prompt, systemPrompt, model, tools, dir, proxyServer }) {
   // The agent always gets the two rigger tools (namespaced mcp__rigger__*) on top
   // of whatever the spawn allows, so it can always emit/peer through the proxy.
   const allowedTools = [
@@ -246,6 +250,10 @@ export async function runAgentViaSdk({ prompt, model, tools, dir, proxyServer })
     // spawn's tool list already excludes Agent/Task, and we never add them.
     permissionMode: 'bypassPermissions',
   }
+  // The persona is the agent's ROLE: pass it as query()'s custom systemPrompt (a
+  // plain string => "use a custom system prompt"), the same role the cli path passes
+  // via `--system-prompt`. Omitted when empty so the agent keeps the default prompt.
+  if (systemPrompt) options.systemPrompt = systemPrompt
   if (model) options.model = model
   if (dir) options.cwd = dir
 
