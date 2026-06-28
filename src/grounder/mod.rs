@@ -35,6 +35,30 @@ impl Grounder for Nop {
     }
 }
 
+/// Select a grounder by the configured `defaults.grounder` name, rooted at `root`
+/// (§3.2, §5.4, R4). This is the feature-independent part of the choice:
+/// `"nop"` -> [`Nop`]; `"grep"` or empty (the default) -> [`Grep`]. The semantic
+/// names (`"vector"` / `"turbovec"`) resolve to the turbovec engine only when the
+/// `turbovec` feature is built; this function therefore falls back to grep for
+/// them with a stderr note, and `src/main.rs` overrides that path when the feature
+/// is on. An unknown name also falls back to grep with a note.
+pub fn grounder_for(name: &str, root: &str) -> Box<dyn Grounder> {
+    match name.to_lowercase().as_str() {
+        "nop" => Box::new(Nop),
+        "grep" | "" => Box::new(Grep { root: root.into() }),
+        "vector" | "turbovec" => {
+            eprintln!(
+                "rigger: grounder {name:?} needs the turbovec feature (not built); falling back to grep"
+            );
+            Box::new(Grep { root: root.into() })
+        }
+        other => {
+            eprintln!("rigger: unknown grounder {other:?}; falling back to grep");
+            Box::new(Grep { root: root.into() })
+        }
+    }
+}
+
 /// Grep is the self-contained literal grounder: a case-insensitive substring
 /// search over the tree, skipping VCS and build dirs.
 pub struct Grep {
@@ -127,5 +151,30 @@ mod tests {
         let refs = g.ground("apply_damage", 5);
         assert!(refs.iter().any(|r| r.text.contains("apply_damage")));
         assert!(g.ground("apply_damage", 0).is_empty());
+    }
+
+    #[test]
+    fn grounder_for_selects_by_name() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("combat.rs"),
+            "fn apply_damage() {}\nfn render() {}\n",
+        )
+        .unwrap();
+        let root = dir.path().to_string_lossy().into_owned();
+
+        // nop grounds nothing.
+        assert!(grounder_for("nop", &root)
+            .ground("apply_damage", 5)
+            .is_empty());
+
+        // grep and the empty default both ground for real.
+        for name in ["grep", ""] {
+            let refs = grounder_for(name, &root).ground("apply_damage", 5);
+            assert!(
+                refs.iter().any(|r| r.text.contains("apply_damage")),
+                "grounder {name:?} should find the line"
+            );
+        }
     }
 }
