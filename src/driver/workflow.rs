@@ -21,6 +21,13 @@ use crate::config::AgentDef;
 pub struct SpawnRequest {
     pub id: String,
     pub prompt: String,
+    /// The agent's PERSONA - its role instructions (`AgentDef::prompt`), threaded
+    /// from the conductor's single persona source (`SpawnOpts::system_prompt`). The
+    /// shim passes it to the Agent SDK `query()` as `options.systemPrompt`, so a
+    /// workflow agent gets its role exactly as a cli agent does (cli passes the same
+    /// persona via `--system-prompt`). Omitted from the wire when empty.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub system_prompt: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub model: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -142,6 +149,10 @@ impl AgentDriver for Driver {
             let req = SpawnRequest {
                 id: id.clone(),
                 prompt: prompt.to_string(),
+                // The persona (role) the conductor threaded in via SpawnOpts; the shim
+                // passes it to query() as the system prompt, so a workflow agent gets
+                // its role exactly as the cli path does.
+                system_prompt: opts.system_prompt.clone(),
                 model: agent.model.clone(),
                 // recurse: false strips any fan-out (Agent/Task) tool so the agent
                 // cannot spawn sub-agents - runaway-proof by construction (§3.1, §6).
@@ -183,6 +194,7 @@ mod tests {
                 },
                 "do it",
                 &SpawnOpts {
+                    system_prompt: "You are the rust engineer. Implement findings.".into(),
                     dir: String::new(),
                     isolation: false,
                     parallel: false,
@@ -205,6 +217,13 @@ mod tests {
         };
         assert_eq!(req.prompt, "do it");
         assert_eq!(req.model, "sonnet");
+        // The persona (the agent's role) threaded through SpawnOpts reaches the spawn
+        // request, so the shim can pass it to query() as the system prompt - a workflow
+        // agent gets its role exactly as the cli path does.
+        assert_eq!(
+            req.system_prompt, "You are the rust engineer. Implement findings.",
+            "the spawn request must carry the agent persona (role) to the shim"
+        );
         assert_eq!(
             req.blast_radius,
             ["a.rs"],
@@ -260,6 +279,7 @@ mod tests {
                 },
                 "do it",
                 &SpawnOpts {
+                    system_prompt: String::new(),
                     dir: String::new(),
                     isolation: false,
                     parallel: false,
@@ -311,6 +331,7 @@ mod tests {
                 },
                 "do it",
                 &SpawnOpts {
+                    system_prompt: String::new(),
                     dir: String::new(),
                     isolation: true,
                     parallel: false,
