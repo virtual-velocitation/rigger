@@ -739,10 +739,13 @@ test:  { run: \"echo test ok; true\",  kind: core }\n  \
 lint:  { run: \"echo lint ok; true\",  kind: elevated }\n\
 \n\
 stages:\n  \
+# The conductor creates one baseline implement unit per acceptance criterion (the\n  \
+# deterministic decomposition); this planner REFINES that baseline via UnitProposed.\n  \
+# A produces stage decomposes the whole spec, so it has no single coverage criterion\n  \
+# - it grounds on the spec's acceptance criteria, not a `coverage` label.\n  \
 plan:\n    \
 agent: planner\n    \
-produces: dag           # decompose the spec into a unit DAG at runtime\n    \
-coverage: \"the spec is decomposed into units\"\n\
+produces: dag           # refine the spec's unit DAG at runtime\n\
 \n  \
 # Each unit implements, three-tier-reviews ITSELF (via defaults.review), and\n  \
 # integrates in one lifecycle. A reject or a gate failure feeds back into that\n  \
