@@ -78,6 +78,10 @@ pub struct RunState {
     /// Whether the run flagged a spec defect (an uncovered criterion, §4.4). Folded
     /// from the conductor's SpecDefect event; gates `fully_done`.
     pub spec_defect: bool,
+    /// Whether a deferred gate failed at the run's phase boundary. Folded from the
+    /// conductor's DeferredGateFailed event; gates both `done` and `fully_done` so a
+    /// deferred failure can never be reported as a finished run.
+    pub deferred_gate_failed: bool,
 }
 
 // Run-event types the conductor emits (folded here into run state).
@@ -89,6 +93,12 @@ pub const TYPE_UNIT_INTEGRATED: &str = "UnitIntegrated";
 /// The conductor's SpecDefect event (kept in sync with `conductor::TYPE_SPEC_DEFECT`):
 /// an uncovered criterion the run flagged rather than deviating around (§4.4).
 pub const TYPE_SPEC_DEFECT: &str = "SpecDefect";
+/// The conductor's DeferredGateFailed event (kept in sync with
+/// `conductor::TYPE_DEFERRED_GATE_FAILED`): a deferred gate that failed when it ran
+/// at the run's phase boundary. A deferred failure is surfaced truthfully - it gates
+/// both `done` and `fully_done` so the run never reports finished with a red
+/// phase-boundary gate.
+pub const TYPE_DEFERRED_GATE_FAILED: &str = "DeferredGateFailed";
 
 #[derive(Deserialize)]
 struct UnitStarted {
@@ -184,16 +194,24 @@ impl RunState {
             TYPE_SPEC_DEFECT => {
                 self.spec_defect = true;
             }
+            TYPE_DEFERRED_GATE_FAILED => {
+                self.deferred_gate_failed = true;
+            }
             _ => {}
         }
         Ok(())
     }
 
-    /// Done reports whether the run is complete: at least one unit, all integrated.
-    /// (Coverage and gate-green are enforced by the conductor's coverage gate and
-    /// per-unit gates; a unit reaches Integrated only after its gates pass.)
+    /// Done reports whether the run is complete: at least one unit, all integrated,
+    /// and no deferred gate failed at the phase boundary. (Coverage and inline
+    /// gate-green are enforced by the conductor's coverage gate and per-unit gates; a
+    /// unit reaches Integrated only after its inline gates pass. A deferred gate runs
+    /// ONCE at end-of-run, after every unit integrated, so its failure is folded in
+    /// here rather than at any single unit.)
     pub fn done(&self) -> bool {
-        !self.units.is_empty() && self.units.values().all(|u| u.status == Status::Integrated)
+        !self.deferred_gate_failed
+            && !self.units.is_empty()
+            && self.units.values().all(|u| u.status == Status::Integrated)
     }
 
     /// The full "done" predicate (§4.1, R6): every criterion covered + every unit
@@ -213,7 +231,7 @@ impl RunState {
     /// defect was flagged and every unit integrated. With no criteria there is nothing
     /// to converge against, so this defers to the plain `done` predicate.
     pub fn fully_done(&self, criteria: &[String]) -> bool {
-        if self.spec_defect {
+        if self.spec_defect || self.deferred_gate_failed {
             return false;
         }
         if criteria.is_empty() {
@@ -332,5 +350,31 @@ mod tests {
         .unwrap();
         assert!(defect.spec_defect);
         assert!(!defect.fully_done(&criteria));
+    }
+
+    #[test]
+    fn a_failing_deferred_gate_gates_done_and_fully_done() {
+        // A deferred gate that failed at the phase boundary must gate BOTH `done` and
+        // `fully_done`, even when every unit integrated - a deferred failure is never
+        // reported as a finished run.
+        let criteria = vec!["crit".into()];
+        let r = project(&[
+            ev(TYPE_UNIT_STARTED, r#"{"id":"u","spec_criterion":"crit"}"#),
+            ev(TYPE_UNIT_INTEGRATED, r#"{"id":"u","commit":"abc"}"#),
+            ev(TYPE_DEFERRED_GATE_FAILED, r#"{"gate":"itest"}"#),
+        ])
+        .unwrap();
+        assert!(r.deferred_gate_failed);
+        // Every unit integrated, yet the run is not done because a deferred gate failed.
+        assert!(r.units.values().all(|u| u.status == Status::Integrated));
+        assert!(!r.done(), "a failing deferred gate must gate `done`");
+        assert!(
+            !r.fully_done(&criteria),
+            "a failing deferred gate must gate `fully_done` with criteria"
+        );
+        assert!(
+            !r.fully_done(&[]),
+            "a failing deferred gate must gate `fully_done` with no criteria"
+        );
     }
 }
