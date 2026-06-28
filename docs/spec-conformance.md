@@ -25,7 +25,7 @@ against the code. Phases are in dependency order; each lands CI-green.
 - [x] Supersession invalidates the superseded decision's governing edges (§7)
 - [x] `Resolve` + alias table (AliasDefined) that collapses synonyms in the fold (§5.2)
 - [x] `alias_unresolved` event + node-marked-for-merge, never silently dropped (§8)
-- [~] `GATED_BY` produced in the live run - fold ready; conductor `GateVerdict` to carry `artifact` (Phase 3)
+- [x] `GATED_BY` produced in the live run - conductor `GateVerdict` carries `artifact` after integrate (§7)
 
 ## Phase 3 - Conductor, ledger, rails
 - [x] Resume-by-replay: `run()` folds existing state, skips integrated units (§4.2, §8)
@@ -45,14 +45,14 @@ against the code. Phases are in dependency order; each lands CI-green.
 - [x] coverage gate not silently disabled by a `produces` stage (§3.2)
 
 ## Phase 4 - Config + driver
-- [ ] `isolation: none|worktree` honored per agent (§3.1, §6)
-- [ ] `recurse: false` strips fan-out capability (§3.1, §6)
+- [x] `isolation: none|worktree` honored per agent (§3.1, §6)
+- [x] `recurse: false` strips fan-out capability (§3.1, §6)
 - [ ] `strategy: fan-out` drives fan-out (§3.2)
 - [ ] `partition: by-blast-radius` + a real disjoint partitioner (§3.2, §8)
-- [ ] stage `autonomy` override honored (§3.2)
-- [ ] `on_pass: merge` honored (§3.2)
-- [ ] `SpawnOpts` gains `isolation` + `parallel` (§6)
-- [ ] bounded fan-out pool, default 4 (§6)
+- [x] stage `autonomy` override honored (§3.2)
+- [x] `on_pass: merge` honored (§3.2)
+- [x] `SpawnOpts` gains `isolation` + `parallel` (§6)
+- [x] bounded fan-out pool, default 4 (§6)
 - [ ] gate compact summary = verdict + <=5 failing lines, not a byte-tail (§3.3)
 - [ ] grounder selected by config (`defaults.grounder`), `nop` reachable (§3.2, §5.4, R4)
 - [ ] `rigger_emit` sets meta/actor/valid_from (§6)
