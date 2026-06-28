@@ -29,13 +29,17 @@ impl Worktree {
     }
 
     /// The paths an agent created or modified in the worktree.
+    ///
+    /// Uses `git status --porcelain -z`: NUL-delimited records, which suppresses
+    /// the C-quoting that the plain `--porcelain` form applies to paths with
+    /// spaces or other special characters. Each record is `XY <path>` where `XY`
+    /// is the two-character status and a single space precedes the path. For a
+    /// rename or copy (an `R` or `C` in either status column) the `-z` format
+    /// splits the entry across two NUL-separated fields - the NEW path first,
+    /// then the original - so we keep the new path and skip the original field.
     pub fn changed_files(&self) -> Result<Vec<String>, Error> {
-        let out = git(&self.dir, &["status", "--porcelain"])?;
-        Ok(out
-            .lines()
-            .filter(|l| l.len() > 3)
-            .map(|l| l[3..].trim().to_string())
-            .collect())
+        let out = git(&self.dir, &["status", "--porcelain", "-z"])?;
+        Ok(parse_status_z(&out))
     }
 
     /// Commit the agent's changes and merge the branch into the base, returning
@@ -58,6 +62,34 @@ impl Worktree {
         git(&self.repo, &["worktree", "remove", "--force", &self.dir])?;
         Ok(())
     }
+}
+
+/// Parse the output of `git status --porcelain -z` into the list of changed
+/// destination paths. Records are NUL-terminated; a rename/copy record is
+/// followed by an extra NUL-terminated field holding the original path, which we
+/// consume and discard (we want the new path only).
+fn parse_status_z(out: &str) -> Vec<String> {
+    let mut fields = out.split('\0').filter(|f| !f.is_empty());
+    let mut paths = Vec::new();
+    while let Some(record) = fields.next() {
+        // Each record is `XY <path>`: a two-char status, a space, then the path.
+        if record.len() < 4 {
+            continue;
+        }
+        let status = &record[..2];
+        let path = &record[3..];
+        // A rename (`R`) or copy (`C`) in either column carries the original path
+        // in the next NUL-separated field; skip it so it is not reported.
+        if status.starts_with('R')
+            || status.starts_with('C')
+            || status[1..].starts_with('R')
+            || status[1..].starts_with('C')
+        {
+            fields.next();
+        }
+        paths.push(path.to_string());
+    }
+    paths
 }
 
 fn git(dir: &str, args: &[&str]) -> Result<String, Error> {
@@ -117,6 +149,49 @@ mod tests {
             repo.path().join("feature.txt").exists(),
             "the agent's work must be merged into the repo"
         );
+        wt.remove().unwrap();
+    }
+
+    #[test]
+    fn changed_files_reports_only_the_rename_destination() {
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let wt_path = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wt = Worktree::create(&repo_path, wt_path.to_str().unwrap(), "rigger/rename").unwrap();
+
+        // Commit an original file, then rename it (git stages the rename via `mv`)
+        // so git reports it as `R` rather than an add+delete pair.
+        std::fs::write(wt_path.join("orig.txt"), "content\n").unwrap();
+        run_git(wt_path.to_str().unwrap(), &["add", "-A"]).unwrap();
+        run_git(
+            wt_path.to_str().unwrap(),
+            &["commit", "-q", "-m", "add orig"],
+        )
+        .unwrap();
+        run_git(
+            wt_path.to_str().unwrap(),
+            &["mv", "orig.txt", "renamed.txt"],
+        )
+        .unwrap();
+
+        // The destination path only - never the bogus `orig.txt -> renamed.txt`
+        // string the plain --porcelain form would have yielded, and never the
+        // original `orig.txt`.
+        assert_eq!(wt.changed_files().unwrap(), ["renamed.txt"]);
+        wt.remove().unwrap();
+    }
+
+    #[test]
+    fn changed_files_unquotes_paths_with_spaces() {
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let wt_path = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wt = Worktree::create(&repo_path, wt_path.to_str().unwrap(), "rigger/spaces").unwrap();
+
+        // The plain --porcelain form C-quotes this to `"a file.txt"`; the -z form
+        // must hand back the real, unquoted path.
+        std::fs::write(wt_path.join("a file.txt"), "work\n").unwrap();
+        assert_eq!(wt.changed_files().unwrap(), ["a file.txt"]);
         wt.remove().unwrap();
     }
 }
