@@ -30,13 +30,19 @@ stages:
     gates: [build, test]    # red -> green enforced around each change
     coverage: "each unit is implemented and its build + test gates pass"
 
+  # Three-tier review. TIER 1: the expert lenses review the diff in parallel and
+  # emit findings. TIER 2: the adversary reviews THE LENSES' findings and tries to
+  # prove them wrong (higher bar; refutes overreach; not a parallel lens). TIER 3:
+  # the adjudicator is the neutral final judge - it weighs the lenses against the
+  # adversary, is design-strict, and its verdict GATES integration.
   review:
     needs: [implement]
     strategy: fan-out
-    agents: [reviewer.architecture, reviewer.technical, reviewer.game-design]
-    adjudicator: devils-advocate   # adversarial pass; its verdict gates the stage
+    agents: [reviewer.architecture, reviewer.technical, reviewer.game-design]  # tier 1: lenses
+    adversary: adversary           # tier 2: refutes the lenses
+    adjudicator: devils-advocate   # tier 3: neutral judge; verdict gates the stage
     autonomy: manual               # a human signs off before integration
-    coverage: "the change survives multi-lens adversarial review"
+    coverage: "the change survives three-tier adversarial review"
 
   integrate:
     needs: [review]

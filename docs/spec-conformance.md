@@ -32,7 +32,7 @@ against the code. Phases are in dependency order; each lands CI-green.
 - [x] `Unit` gains `depends_on`, `worktree`, `branch`, `evidence`; full `Status` set (§4.2)
 - [x] scope-creep guard: refuse a criterion-less proposed unit + emit `scope_creep` (§8)
 - [x] autonomy promotion is proposed, not auto-applied (§4.3)
-- [x] Adjudicator verdict gates the stage (§3.2)
+- [x] Three-tier review: lenses -> adversary (refutes the lenses) -> adjudicator; the neutral adjudicator's verdict gates the stage (§3.2)
 - [x] loop-ready gate: block when the spec has no enumerable criteria (§8)
 - [x] `remediate` re-grounds between attempts (build_prompt grounds each retry) (§4.4)
 - [x] mid-spawn crash routes to remediate, not abort-the-run (§8)

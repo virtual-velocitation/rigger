@@ -209,8 +209,10 @@ rigger run [spec] [opts]    run the workflow (opts below)\n  \
 rigger serve [opts]         run as an MCP server (= run --driver workflow)\n  \
 rigger graph --around <id>  print the context subgraph around a node\n  \
 rigger validate             load and validate the workflow + agents\n  \
-rigger init                 scaffold .rigger/ (workflow.yml + an agents/ folder)\n  \
-rigger setup                init, then install a Claude Code SessionStart hook\n  \
+rigger init                 set up a project: scaffold .rigger/ (workflow.yml +\n                              \
+an agents/ folder) and install the Claude Code\n                              \
+SessionStart hook (it runs `rigger prime`)\n  \
+rigger setup                alias for `rigger init` (kept for compatibility)\n  \
 rigger prime                print recent decisions (what the hook runs)\n\n\
 run/serve options:\n  \
 --driver <cli|workflow>          cli (default): standalone claude subprocess;\n                                   \
@@ -384,33 +386,49 @@ fn cmd_validate() -> Res {
     Ok(())
 }
 
-fn cmd_init() -> Res {
-    let agents_dir = Path::new(RIGGER_DIR).join("agents");
+/// The full project setup, rooted at `root` so it is testable against a temp dir
+/// without touching the process-wide current directory (`set_current_dir` is not
+/// test-safe). It does two things, both idempotent:
+///   1. scaffolds `<root>/.rigger/` - `workflow.yml` plus the `agents/` folder -
+///      from the scaffold constants, keeping any file that already exists;
+///   2. installs the Claude Code SessionStart hook into `<root>/.claude/settings.json`,
+///      merging into (never clobbering) whatever settings are already there.
+fn init_project(root: &Path) -> Res {
+    // 1. Scaffold .rigger/.
+    let rigger_dir = root.join(RIGGER_DIR);
+    let agents_dir = rigger_dir.join("agents");
     std::fs::create_dir_all(&agents_dir)?;
-    write_if_absent(
-        &Path::new(RIGGER_DIR).join("workflow.yml"),
-        SCAFFOLD_WORKFLOW,
-    );
+    write_if_absent(&rigger_dir.join("workflow.yml"), SCAFFOLD_WORKFLOW);
     for (file, content) in SCAFFOLD_AGENTS {
         write_if_absent(&agents_dir.join(file), content);
     }
+
+    // 2. Install the SessionStart hook, merging into any existing settings.
+    let claude_dir = root.join(".claude");
+    std::fs::create_dir_all(&claude_dir)?;
+    let settings_path = claude_dir.join("settings.json");
+    let existing = std::fs::read(&settings_path).unwrap_or_default();
+    let merged = hooks::install_session_start(&existing, "rigger prime")?;
+    std::fs::write(&settings_path, merged)?;
+    Ok(())
+}
+
+fn cmd_init() -> Res {
+    init_project(Path::new("."))?;
     let names: Vec<&str> = SCAFFOLD_AGENTS.iter().map(|(f, _)| *f).collect();
     println!(
-        "scaffolded .rigger/workflow.yml and .rigger/agents/{{{}}}",
+        "scaffolded .rigger/workflow.yml and .rigger/agents/{{{}}} and installed a Claude Code \
+         SessionStart hook in .claude/settings.json (it runs `rigger prime`)",
         names.join(", ")
     );
     Ok(())
 }
 
+/// `rigger setup` is now a thin alias for `rigger init` - kept so existing muscle
+/// memory and scripts keep working - since `init` already does the full setup
+/// (scaffold + hook).
 fn cmd_setup() -> Res {
-    cmd_init()?;
-    std::fs::create_dir_all(".claude")?;
-    let settings_path = Path::new(".claude").join("settings.json");
-    let existing = std::fs::read(&settings_path).unwrap_or_default();
-    let merged = hooks::install_session_start(&existing, "rigger prime")?;
-    std::fs::write(&settings_path, merged)?;
-    println!("installed a SessionStart hook in .claude/settings.json (it runs `rigger prime`)");
-    Ok(())
+    cmd_init()
 }
 
 fn cmd_prime() -> Res {
@@ -500,9 +518,9 @@ fn write_if_absent(path: &Path, content: &str) {
 /// The scaffolded workflow (§3.2): a worked plan -> implement -> review ->
 /// integrate pipeline that demonstrates the documented shape - a `defaults:` block
 /// (autonomy + grounder), a reusable `gates:` library, and stages exercising
-/// `needs`, `agent`/`agents`, `strategy`, `gates`, `adjudicator`, `autonomy`,
-/// `produces`, `coverage`, and `on_pass`. It loads through `config::load` against
-/// the agents scaffolded alongside it.
+/// `needs`, `agent`/`agents`, `strategy`, `gates`, `adversary`, `adjudicator`,
+/// `autonomy`, `produces`, `coverage`, and `on_pass`. It loads through
+/// `config::load` against the agents scaffolded alongside it.
 const SCAFFOLD_WORKFLOW: &str =
     "# Scaffolded by `rigger init`. A worked plan -> implement -> review -> integrate\n\
 # pipeline showing the full DAG shape. Replace the gate commands with your own.\n\
@@ -531,13 +549,14 @@ partition: by-blast-radius\n    \
 gates: [build, test]    # red -> green enforced around the change\n    \
 coverage: \"each unit is implemented and its gates pass\"\n\
 \n  \
-review:\n    \
+review:                   # three-tier: lenses -> adversary -> adjudicator\n    \
 needs: [implement]\n    \
 strategy: fan-out\n    \
-agents: [reviewer.architecture, reviewer.technical]   # the lenses\n    \
-adjudicator: devils-advocate   # adversarial pass; its verdict gates the stage\n    \
+agents: [reviewer.architecture, reviewer.technical]   # tier 1: the expert lenses\n    \
+adversary: adversary           # tier 2: reviews the lenses and refutes them\n    \
+adjudicator: devils-advocate   # tier 3: neutral judge; its verdict gates the stage\n    \
 autonomy: manual               # pause for a human before integrating\n    \
-coverage: \"the change passes adversarial review\"\n\
+coverage: \"the change passes three-tier adversarial review\"\n\
 \n  \
 integrate:\n    \
 needs: [review]\n    \
@@ -597,6 +616,20 @@ You review a diff for correctness, error-handling, and idiomatic defects ONLY.\n
 Output the REVIEW schema: {verdict, issues:[{title,file_line,reason}]}.\n",
     ),
     (
+        "adversary.md",
+        "---\n\
+id: adversary\n\
+model: opus\n\
+tools: [Read, Grep, Glob, Bash]\n\
+isolation: none\n\
+---\n\
+You are the adversary (tier 2). You run AFTER the lenses and review THEIR findings\n\
+AND the diff, trying to PROVE THE LENSES WRONG: hold them to a higher bar, surface\n\
+the substantive issues they all missed, and refute lens overreach. You review the\n\
+reviews - not a parallel lens - and you do NOT render the final verdict. Default to\n\
+skepticism; cite file:line. Record findings with rigger_emit.\n",
+    ),
+    (
         "devils-advocate.md",
         "---\n\
 id: devils-advocate\n\
@@ -604,9 +637,12 @@ model: opus\n\
 tools: [Read, Grep, Glob, Bash]\n\
 isolation: none\n\
 ---\n\
-You are the adversarial adjudicator. Hold the diff AND the lens reviews to a\n\
-higher bar; surface the substantive issues the lenses missed. Approve only when\n\
-nothing remains. End with {\"verdict\":\"approve|reject\"}.\n",
+You are the adjudicator (tier 3), the neutral final judge. Weigh the expert lenses\n\
+against the adversary and decide who wins. Be neutral in tone but EXTREMELY strict\n\
+on design / architecture / ADR adherence: any deviation or cut corner is a reject,\n\
+no matter which side flagged it. When you reject, say exactly what must change. End\n\
+with a single JSON line {\"verdict\":\"approve\"} or {\"verdict\":\"reject\"} - reject\n\
+blocks integration no matter what the static gates say.\n",
     ),
     (
         "integrator.md",
@@ -643,24 +679,29 @@ mod tests {
         let cfg = config::load(dir.path().to_str().unwrap())
             .expect("the scaffolded config must load and validate");
 
-        // Six agents: planner, implementer, two reviewer lenses, the adjudicator,
-        // the integrator.
-        assert_eq!(cfg.agents.len(), 6, "scaffold agent count");
+        // Seven agents: planner, implementer, two reviewer lenses, the adversary,
+        // the adjudicator, the integrator.
+        assert_eq!(cfg.agents.len(), 7, "scaffold agent count");
         // Four stages: plan -> implement -> review -> integrate.
         assert_eq!(cfg.workflow.stages.len(), 4, "scaffold stage count");
         // Three gates in the reusable library.
         assert_eq!(cfg.workflow.gates.len(), 3, "scaffold gate count");
 
-        // The scaffold exercises the full shape: a producer, a fan-out lens set, an
-        // adjudicator, a manual-autonomy stage, and an on_pass: merge.
+        // The scaffold exercises the full shape: a producer, a fan-out lens set, the
+        // three-tier review (lenses -> adversary -> adjudicator), a manual-autonomy
+        // stage, and an on_pass: merge.
         let plan = &cfg.workflow.stages["plan"];
         assert_eq!(plan.produces, "dag");
         let implement = &cfg.workflow.stages["implement"];
         assert_eq!(implement.strategy, "fan-out");
         assert_eq!(implement.needs, ["plan"]);
         let review = &cfg.workflow.stages["review"];
-        assert_eq!(review.agents.len(), 2);
-        assert_eq!(review.adjudicator, "devils-advocate");
+        assert_eq!(review.agents.len(), 2, "tier 1: the expert lenses");
+        assert_eq!(review.adversary, "adversary", "tier 2: refutes the lenses");
+        assert_eq!(
+            review.adjudicator, "devils-advocate",
+            "tier 3: the neutral adjudicator gates"
+        );
         assert_eq!(review.autonomy, "manual");
         let integrate = &cfg.workflow.stages["integrate"];
         assert_eq!(integrate.on_pass, "merge");
