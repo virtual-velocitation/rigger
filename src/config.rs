@@ -142,6 +142,15 @@ pub struct Stage {
     pub coverage: String,
     #[serde(default)]
     pub on_pass: String,
+    /// Set by the conductor (never authored, hence `serde(skip)`) on the deterministic
+    /// per-criterion BASELINE units it synthesizes from the fan-out implement template.
+    /// It marks a stage as the conductor's fallback decomposition for one criterion, so
+    /// `harvest_proposed` can let a planner-proposed unit that cites the SAME criterion
+    /// SUPERSEDE (remove) it - one unit per criterion, never baseline + refinement both
+    /// doing the same work. False for every authored stage, the planner, the template,
+    /// and every planner-proposed unit.
+    #[serde(skip)]
+    pub baseline: bool,
 }
 
 impl AgentDef {
