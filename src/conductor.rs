@@ -334,6 +334,26 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         }
     }
 
+    // Resume-safe dedup (the duplication fix, order-independent): fold any
+    // ALREADY-EMITTED UnitProposed events from a PRIOR window and apply the
+    // planner-supersedes-baseline dedup BEFORE the first wave can schedule anything.
+    //
+    // On a RESUME run the `plan` stage is already integrated (seeded into `integrated`
+    // above), so its baselines are immediately ready - and `run_wave` would otherwise
+    // run them in the FIRST iteration, BEFORE the bottom-of-loop `harvest_proposed`
+    // folds the prior planner's proposals and supersedes the matching baselines. That
+    // races a baseline to run as a DUPLICATE alongside the planner's unit for the same
+    // criterion. Harvesting here, before any `run_wave`, makes the supersede hold on
+    // resume regardless of scheduling order: a baseline whose criterion a prior
+    // planner unit already cited is removed before it can be scheduled.
+    //
+    // On a FRESH run there are no UnitProposed events yet, so this is a no-op the first
+    // time (the planner has not run); its proposals are harvested by the per-iteration
+    // `harvest_proposed` below exactly as before. The `integrated`/`terminal` guards in
+    // `harvest_proposed` keep a baseline that already started/integrated in a prior
+    // window from being yanked out from under its own work.
+    ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)?;
+
     // Coverage gate (§3.2, §8). A planner (`produces`) stage DEFERS coverage to
     // after planning: it has no units yet, so we run the planning wave + harvest
     // the proposed units FIRST, then check coverage against the extended DAG.
@@ -3111,6 +3131,139 @@ mod tests {
             serving.len(),
             2,
             "the criterion is served by the two split units only; got: {serving:?}"
+        );
+    }
+
+    #[test]
+    fn resume_dedups_baselines_before_running_them() {
+        // The resume ordering bug (the order-independent supersede fix): on a RESUME
+        // run the `plan` stage is ALREADY integrated, so its per-criterion baselines are
+        // immediately ready and the FIRST wave would run them - BEFORE the bottom-of-loop
+        // harvest folds the prior window's planner proposals and supersedes the matching
+        // baselines. The bug ran criterion A's baseline as a DUPLICATE alongside the
+        // planner's unit for A. The fix harvests the already-emitted UnitProposed events
+        // BEFORE any wave, so the supersede holds on resume: A's baseline never runs while
+        // B's (which no planner unit covers) still does.
+        let crit_a = "criterion A: the metrics module is implemented";
+        let crit_b = "criterion B: the stats endpoint is implemented";
+        let cfg = supersede_cfg();
+        let st = Store::open(":memory:").unwrap();
+
+        // Seed the log as a PRIOR window left it: the planner ran, integrated, and
+        // proposed one unit citing criterion A verbatim - exactly A's baseline. On
+        // resume the planner does NOT run again (`plan` is terminal), so the only source
+        // of A's supersede is folding this already-emitted UnitProposed before the wave.
+        seed_events(
+            &st,
+            &[
+                Event::new(
+                    ledger::TYPE_UNIT_STARTED,
+                    serde_json::to_vec(&json!({"id": "plan", "agent": "planner"})).unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_INTEGRATED,
+                    serde_json::to_vec(&json!({"id": "plan", "commit": "deadbeef"})).unwrap(),
+                ),
+                Event::new(
+                    TYPE_UNIT_PROPOSED,
+                    serde_json::to_vec(&json!({
+                        "id": "planner-unit-a",
+                        "agent": "worker",
+                        "criterion": crit_a,
+                        "needs": ["plan"],
+                        "gates": ["ok"],
+                    }))
+                    .unwrap(),
+                ),
+            ],
+        );
+
+        // The planner emits NOTHING this run - it already ran in the prior window. The
+        // ONLY UnitProposed in play is the seeded one, so a correct resume must fold it
+        // before the first wave.
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: vec![crit_a.to_string(), crit_b.to_string()],
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        // Criterion A's BASELINE is superseded before it could be scheduled: it never
+        // started its implementer (no UnitStarted for it). Asserted on the raw log so a
+        // SPAWN is what we measure, not just the final projection.
+        let a_baseline = baseline_id(1, crit_a);
+        assert!(
+            !rs.units.contains_key(&a_baseline),
+            "criterion A's baseline {a_baseline:?} must be superseded on resume, not run; units present: {:?}",
+            rs.units.keys().collect::<Vec<_>>()
+        );
+        let started_ids: Vec<String> = st
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap()
+            .iter()
+            .filter(|e| e.type_ == ledger::TYPE_UNIT_STARTED)
+            .map(|e| {
+                serde_json::from_slice::<Value>(&e.data)
+                    .unwrap()
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string()
+            })
+            .collect();
+        assert!(
+            !started_ids.contains(&a_baseline),
+            "criterion A's baseline {a_baseline:?} must NEVER start its implementer on resume; started: {started_ids:?}"
+        );
+
+        // The planner's unit for A is the one that ran and integrated A.
+        assert_eq!(
+            rs.units["planner-unit-a"].status,
+            ledger::Status::Integrated,
+            "the planner's unit for criterion A must run and integrate on resume"
+        );
+
+        // Criterion B has no planner unit, so ITS baseline survives and runs - the dedup
+        // is targeted, not a blanket suppression of every baseline on resume.
+        let b_baseline = baseline_id(2, crit_b);
+        assert_eq!(
+            rs.units[&b_baseline].status,
+            ledger::Status::Integrated,
+            "criterion B's baseline {b_baseline:?} must still run on resume (no planner unit covers B)"
+        );
+
+        // The implementer (`worker`) is spawned for EXACTLY two units - planner-A and
+        // baseline-B - never three. A third worker spawn is the duplicate baseline-A
+        // running, which is the bug. This reads the Stub's recorded spawns directly:
+        // each implement unit spawns its implementer exactly once on the passing path
+        // (gate `ok` is `true`, no review tier is configured in `supersede_cfg`).
+        let worker_spawns = driver
+            .call_order
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|id| *id == "worker")
+            .count();
+        assert_eq!(
+            worker_spawns, 2,
+            "exactly two implementer spawns on resume (planner-A + baseline-B); a third is the \
+             duplicate baseline-A the resume bug ran"
+        );
+
+        // And exactly one unit served criterion A - the planner's - never the baseline too.
+        let serving_a = rs
+            .units
+            .values()
+            .filter(|u| u.spec_criterion == crit_a)
+            .count();
+        assert_eq!(
+            serving_a, 1,
+            "criterion A must be served by exactly one unit on resume, not the baseline too"
         );
     }
 
