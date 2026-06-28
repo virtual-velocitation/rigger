@@ -22,8 +22,20 @@ use std::time::{Duration, SystemTime};
 
 use thiserror::Error;
 
-/// Position is an event's place in the global $all order: 1-based, store-assigned,
-/// only ever increasing.
+/// Position is an event's place in the global $all order: store-assigned and only
+/// ever increasing. It is a single opaque ordering value: callers compare and
+/// checkpoint it, never decompose it.
+///
+/// SQLite assigns it directly as the 1-based row position. KurrentDB's native
+/// `$all` position is a `(commit, prepare)` pair; the adapter exposes the
+/// **commit position** as this `Position` and reconstructs the pair as
+/// `(commit, commit)` when resuming a read or subscription. That round-trips
+/// faithfully because KurrentDB orders and seeks `$all` by commit position, and
+/// every record Rigger writes is a single-event append whose own commit and
+/// prepare positions coincide (the prepare half of a *start* position only
+/// disambiguates records that share a commit, which Rigger never produces). A
+/// position returned from `read_all`/`subscribe_all` therefore resolves back to
+/// the same logical location when fed into the next resume.
 pub type Position = u64;
 
 /// Revision is an event's place within its own stream: 0-based, so the first event
@@ -181,6 +193,30 @@ impl Drop for Subscription {
 
 /// EventStore is the append-only, bi-temporal log port (KurrentDB-shaped).
 /// Implementations are safe to share across threads.
+///
+/// # The `from` boundary convention
+///
+/// Every read and subscription takes a `from` cursor. The boundary is the same
+/// for the read and the subscription that share a scope, so a catch-up
+/// subscription and a read from the same `from` replay exactly the same set (no
+/// dropped or duplicated boundary event):
+///
+/// - **Stream-scoped** ([`read_stream`](EventStore::read_stream),
+///   [`subscribe_stream`](EventStore::subscribe_stream)): `from` is a per-stream
+///   revision and is **inclusive**. `from == 0` includes revision 0 (the first
+///   event); resuming from the revision of the last event you saw re-delivers
+///   that event.
+/// - **`$all`-scoped** ([`read_all`](EventStore::read_all),
+///   [`subscribe_all`](EventStore::subscribe_all)): `from` is a global
+///   [`Position`] and is **exclusive**. `from == 0` includes every event;
+///   resuming from the position of the last event you processed delivers only
+///   what came after it - the natural checkpoint shape (store the last handled
+///   position, resume from it, never see it twice).
+///
+/// Adapters must honor this regardless of the backend's native boundary.
+/// KurrentDB's `read_*`-from-a-position is inclusive while its
+/// `subscribe_*`-from-a-position is exclusive; its adapter normalizes both onto
+/// the convention above.
 pub trait EventStore: Send + Sync {
     /// Append events to the end of a stream under an optimistic-concurrency
     /// expectation, returning the global position of the last event written. A
@@ -193,7 +229,9 @@ pub trait EventStore: Send + Sync {
         events: &[Event],
     ) -> Result<Position, Error>;
 
-    /// Read one stream's events from a per-stream revision, in a direction.
+    /// Read one stream's events from a per-stream revision (**inclusive**), in a
+    /// direction. Backward reads return the same set as a forward read from
+    /// `from`, reversed (direction controls order, not the boundary).
     fn read_stream(
         &self,
         stream: &str,
@@ -201,7 +239,9 @@ pub trait EventStore: Send + Sync {
         dir: Direction,
     ) -> Result<Vec<Event>, Error>;
 
-    /// Read the global log from a global position, in a direction, filtered.
+    /// Read the global log from a global position (**exclusive**), in a
+    /// direction, filtered. Backward reads return the same set as a forward read
+    /// from `from`, reversed (direction controls order, not the boundary).
     fn read_all(
         &self,
         from: Position,
@@ -209,11 +249,13 @@ pub trait EventStore: Send + Sync {
         filter: &Filter,
     ) -> Result<Vec<Event>, Error>;
 
-    /// Open a catch-up subscription over the global log from a position: it
-    /// replays the matching events in order, then delivers new ones live.
+    /// Open a catch-up subscription over the global log from a position
+    /// (**exclusive**): it replays the matching events after `from` in order,
+    /// then delivers new ones live.
     fn subscribe_all(&self, from: Position, filter: &Filter) -> Result<Subscription, Error>;
 
-    /// Open a catch-up subscription over one stream from a revision: it replays
-    /// that stream's events from `from`, then delivers new ones live.
+    /// Open a catch-up subscription over one stream from a revision
+    /// (**inclusive**): it replays that stream's events from `from` onward, then
+    /// delivers new ones live.
     fn subscribe_stream(&self, stream: &str, from: Revision) -> Result<Subscription, Error>;
 }

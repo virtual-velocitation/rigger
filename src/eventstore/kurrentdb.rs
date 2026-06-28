@@ -6,6 +6,15 @@
 //! KurrentDB owns the event id and recorded time; Rigger's `meta` and bi-temporal
 //! `valid_from` ride in the event's custom metadata (an envelope), and the
 //! per-stream `revision` maps to KurrentDB's event number.
+//!
+//! ## Boundary normalization
+//!
+//! The [`EventStore`] trait fixes the `from` boundary convention (see its doc):
+//! stream-scoped reads/subscriptions are inclusive of `from`, `$all`-scoped ones
+//! are exclusive. KurrentDB's native boundaries differ from that and from each
+//! other - a `read_*` from a position is inclusive while a `subscribe_*` from a
+//! position is exclusive - so this adapter normalizes both onto the trait
+//! convention rather than leaking KurrentDB's raw semantics.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -14,8 +23,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use kurrentdb::{
-    AppendToStreamOptions, Client, EventData, Position as KdbPosition, ReadAllOptions,
-    ReadStreamOptions, RecordedEvent, ResolvedEvent, StreamPosition, StreamState,
+    AppendToStreamOptions, Client, CurrentRevision, EventData, Position as KdbPosition,
+    ReadAllOptions, ReadStreamOptions, RecordedEvent, ResolvedEvent, StreamPosition, StreamState,
     SubscribeToAllOptions, SubscribeToStreamOptions, SubscriptionFilter,
 };
 use serde::{Deserialize, Serialize};
@@ -66,24 +75,6 @@ impl Store {
             .map_err(|e| Error::Backend(format!("kurrentdb: connect: {e}")))?;
         Ok(store)
     }
-
-    /// The stream's current last revision, or NO_STREAM if it does not exist.
-    fn current_revision(&self, stream: &str) -> Revision {
-        let opts = ReadStreamOptions::default()
-            .position(StreamPosition::End)
-            .backwards();
-        self.rt.block_on(async {
-            match self.client.read_stream(stream, &opts).await {
-                Ok(mut rs) => match rs.next().await {
-                    Ok(Some(ev)) => original(&ev)
-                        .map(|r| r.revision as Revision)
-                        .unwrap_or(NO_STREAM),
-                    _ => NO_STREAM,
-                },
-                Err(_) => NO_STREAM,
-            }
-        })
-    }
 }
 
 fn to_nanos(t: SystemTime) -> i64 {
@@ -96,6 +87,16 @@ fn from_nanos(n: i64) -> SystemTime {
     UNIX_EPOCH + Duration::from_nanos(n.max(0) as u64)
 }
 
+/// Map the server's authoritative `CurrentRevision` (from a conflict payload)
+/// onto Rigger's [`Revision`]: an existing stream's last event number, or
+/// [`NO_STREAM`] for a stream that does not exist.
+fn current_revision_to_actual(current: CurrentRevision) -> Revision {
+    match current {
+        CurrentRevision::Current(n) => n as Revision,
+        CurrentRevision::NoStream => NO_STREAM,
+    }
+}
+
 fn to_stream_state(e: ExpectedRevision) -> StreamState {
     match e {
         ExpectedRevision::Any => StreamState::Any,
@@ -104,6 +105,11 @@ fn to_stream_state(e: ExpectedRevision) -> StreamState {
     }
 }
 
+/// Start position for a `$all` read from `from`. KurrentDB's `$all` position is a
+/// `(commit, prepare)` pair; Rigger's [`Position`] carries the commit half (see
+/// the [`Position`] doc for why that round-trips), so we rebuild the pair as
+/// `(from, from)`. KurrentDB's read-from-position is *inclusive*, so callers that
+/// need the trait's exclusive `$all` boundary drop the boundary event afterward.
 fn all_position(from: Position) -> StreamPosition<KdbPosition> {
     if from == 0 {
         StreamPosition::Start
@@ -115,11 +121,26 @@ fn all_position(from: Position) -> StreamPosition<KdbPosition> {
     }
 }
 
+/// Start position for an *inclusive*-`from` stream read: KurrentDB's
+/// read-from-position is inclusive, so this points right at `from`.
 fn stream_position(from: Revision) -> StreamPosition<u64> {
     if from <= 0 {
         StreamPosition::Start
     } else {
         StreamPosition::Position(from as u64)
+    }
+}
+
+/// Start position for an *inclusive*-`from` stream subscription. KurrentDB's
+/// subscribe-from-position is *exclusive* (it resumes after the checkpoint), so
+/// to include `from` we anchor one revision earlier. This makes a catch-up
+/// subscription replay the same boundary event a `read_stream(.., from, ..)`
+/// returns, per the trait's inclusive stream-scope convention.
+fn stream_subscribe_position(from: Revision) -> StreamPosition<u64> {
+    if from <= 0 {
+        StreamPosition::Start
+    } else {
+        StreamPosition::Position((from - 1) as u64)
     }
 }
 
@@ -190,10 +211,14 @@ impl EventStore for Store {
             .block_on(self.client.append_to_stream(stream, &opts, data))
         {
             Ok(w) => Ok(w.position.commit as Position),
-            Err(kurrentdb::Error::WrongExpectedVersion { .. }) => Err(Error::Conflict {
+            // The server already reports the stream's authoritative current
+            // revision in the conflict payload; use it directly rather than
+            // racing a second network read that could observe a newer (or, on a
+            // delete, vanished) revision than the one the append conflicted with.
+            Err(kurrentdb::Error::WrongExpectedVersion { current, .. }) => Err(Error::Conflict {
                 stream: stream.to_string(),
                 expected,
-                actual: self.current_revision(stream),
+                actual: current_revision_to_actual(current),
             }),
             Err(e) => Err(Error::Backend(format!("kurrentdb: append: {e}"))),
         }
@@ -205,15 +230,15 @@ impl EventStore for Store {
         from: Revision,
         dir: Direction,
     ) -> Result<Vec<Event>, Error> {
-        let opts = match dir {
-            Direction::Forward => ReadStreamOptions::default()
-                .position(stream_position(from))
-                .forwards(),
-            Direction::Backward => ReadStreamOptions::default()
-                .position(StreamPosition::End)
-                .backwards(),
-        };
-        self.rt.block_on(async {
+        // `from` is an inclusive lower bound on revision and the direction only
+        // controls order (matching the SQLite sibling and the trait convention),
+        // so a backward read is the forward set reversed. Reading forward from
+        // `from` and reversing honors `from` in both directions; KurrentDB's
+        // native `.backwards()` from End would discard `from` entirely.
+        let opts = ReadStreamOptions::default()
+            .position(stream_position(from))
+            .forwards();
+        let mut out = self.rt.block_on(async {
             let mut rs = match self.client.read_stream(stream, &opts).await {
                 Ok(rs) => rs,
                 Err(kurrentdb::Error::ResourceNotFound) => return Ok(Vec::new()),
@@ -236,8 +261,12 @@ impl EventStore for Store {
                     Err(e) => return Err(Error::Backend(format!("kurrentdb: read stream: {e}"))),
                 }
             }
-            Ok(out)
-        })
+            Ok::<_, Error>(out)
+        })?;
+        if matches!(dir, Direction::Backward) {
+            out.reverse();
+        }
+        Ok(out)
     }
 
     fn read_all(
@@ -246,15 +275,17 @@ impl EventStore for Store {
         dir: Direction,
         filter: &Filter,
     ) -> Result<Vec<Event>, Error> {
-        let opts = match dir {
-            Direction::Forward => ReadAllOptions::default()
-                .position(all_position(from))
-                .forwards(),
-            Direction::Backward => ReadAllOptions::default()
-                .position(StreamPosition::End)
-                .backwards(),
-        };
-        self.rt.block_on(async {
+        // `$all` `from` is an exclusive lower bound on position and the direction
+        // only controls order, so a backward read is the forward set reversed.
+        // KurrentDB's read-from-position is *inclusive*, so we start the read at
+        // `from` and drop the boundary event (`position > from`) to honor the
+        // trait's exclusive `$all` convention. Reading forward and reversing
+        // honors `from` in both directions; KurrentDB's native `.backwards()`
+        // from End would discard `from`.
+        let opts = ReadAllOptions::default()
+            .position(all_position(from))
+            .forwards();
+        let mut out = self.rt.block_on(async {
             let mut rs = self
                 .client
                 .read_all(&opts)
@@ -266,7 +297,9 @@ impl EventStore for Store {
                     Ok(Some(ev)) => {
                         if let Some(rec) = original(&ev) {
                             if let Some(e) = to_event(rec, filter) {
-                                out.push(e);
+                                if from == 0 || e.position > from {
+                                    out.push(e);
+                                }
                             }
                         }
                     }
@@ -274,8 +307,12 @@ impl EventStore for Store {
                     Err(e) => return Err(Error::Backend(format!("kurrentdb: read all: {e}"))),
                 }
             }
-            Ok(out)
-        })
+            Ok::<_, Error>(out)
+        })?;
+        if matches!(dir, Direction::Backward) {
+            out.reverse();
+        }
+        Ok(out)
     }
 
     fn subscribe_all(&self, from: Position, filter: &Filter) -> Result<Subscription, Error> {
@@ -291,6 +328,10 @@ impl EventStore for Store {
                 None => return,
             };
             rt.block_on(async {
+                // KurrentDB's subscribe-from-position is *exclusive*, which is
+                // already the trait's `$all` convention - no boundary adjustment
+                // needed. So `subscribe_all(p)` and `read_all(p, ..)` from the
+                // same `p` replay the identical set (events after `p`).
                 let opts = SubscribeToAllOptions::default()
                     .position(all_position(from))
                     .filter(all_filter(&filter));
@@ -314,7 +355,13 @@ impl EventStore for Store {
                 None => return,
             };
             rt.block_on(async {
-                let opts = SubscribeToStreamOptions::default().start_from(stream_position(from));
+                // Anchor one revision before `from` because KurrentDB's
+                // subscribe-from-position is exclusive but the trait's
+                // stream-scope convention is inclusive - so the subscription
+                // replays the same boundary event `read_stream(.., from, ..)`
+                // returns.
+                let opts =
+                    SubscribeToStreamOptions::default().start_from(stream_subscribe_position(from));
                 let mut sub = client.subscribe_to_stream(stream.as_str(), &opts).await;
                 forward_loop(&mut sub, &stop_t, &tx, &err_t, &Filter::default()).await;
             });
