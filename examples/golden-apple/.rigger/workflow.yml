@@ -1,0 +1,46 @@
+# examples/golden-apple - the worked example the architecture references (§10, §11).
+#
+# This is the tank_game dev-loop, expressed as Rigger CONTENT: every project
+# specific thing (cargo, the review lenses, the e7 lexical gate) is config here,
+# and Rigger itself ships knowing none of it. Run it from this directory with
+# `rigger run <spec>`; the gate commands are real cargo invocations.
+name: golden-apple
+
+defaults:
+  autonomy: auto_notify     # manual | auto_notify | silent
+  grounder: grep            # grep (default) | turbovec (needs the cargo feature)
+
+gates:                      # the project's verification library, referenced by name
+  build: { run: "cargo build --workspace",                 kind: core }
+  test:  { run: "cargo test --workspace",                  kind: core }
+  lint:  { run: "cargo clippy --all-targets -- -D warnings", kind: elevated }
+  fmt:   { run: "cargo fmt --check",                       kind: elevated }
+
+stages:
+  plan:
+    agent: planner
+    produces: dag           # decompose the spec into a unit DAG at runtime
+    coverage: "the spec is decomposed into criterion-bearing units"
+
+  implement:
+    needs: [plan]
+    agent: implementer
+    strategy: fan-out       # one implementer per ready unit, in isolated worktrees
+    partition: by-blast-radius
+    gates: [build, test]    # red -> green enforced around each change
+    coverage: "each unit is implemented and its build + test gates pass"
+
+  review:
+    needs: [implement]
+    strategy: fan-out
+    agents: [reviewer.architecture, reviewer.technical, reviewer.game-design]
+    adjudicator: devils-advocate   # adversarial pass; its verdict gates the stage
+    autonomy: manual               # a human signs off before integration
+    coverage: "the change survives multi-lens adversarial review"
+
+  integrate:
+    needs: [review]
+    agent: integrator
+    gates: [build, test, lint, fmt]
+    on_pass: merge          # rebase, re-gate, land, reindex, record
+    coverage: "the change lands on a fully green workspace"
