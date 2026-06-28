@@ -388,6 +388,34 @@ mod tests {
     }
 
     #[test]
+    fn golden_apple_example_loads() {
+        // The worked example the architecture references (§10, §11) must load and
+        // validate into a real DAG, so it never rots. The path is relative to the
+        // crate root (cargo runs tests there).
+        let cfg =
+            load("examples/golden-apple").expect("the golden-apple example must load and validate");
+        // The full lens set + planner + implementer + adjudicator + integrator.
+        assert_eq!(cfg.agents.len(), 7, "golden-apple agent count");
+        assert_eq!(cfg.workflow.stages.len(), 4, "golden-apple stage count");
+        assert_eq!(cfg.workflow.gates.len(), 4, "golden-apple gate count");
+        // The shape: a producer, a worktree-isolated non-recursive implementer, a
+        // three-lens review with an adjudicator, and an on_pass: merge integrate.
+        assert_eq!(cfg.workflow.stages["plan"].produces, "dag");
+        let implement = &cfg.workflow.stages["implement"];
+        assert_eq!(implement.strategy, "fan-out");
+        let impl_agent = &cfg.agents[&implement.agent];
+        assert!(impl_agent.isolated(), "the implementer runs in a worktree");
+        assert!(
+            !impl_agent.recurse,
+            "the implementer must not be able to fan out"
+        );
+        let review = &cfg.workflow.stages["review"];
+        assert_eq!(review.agents.len(), 3);
+        assert_eq!(review.adjudicator, "devils-advocate");
+        assert_eq!(cfg.workflow.stages["integrate"].on_pass, "merge");
+    }
+
+    #[test]
     fn validate_catches_cycle() {
         let mut cfg = Config::default();
         cfg.agents.insert(

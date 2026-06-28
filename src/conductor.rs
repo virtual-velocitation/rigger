@@ -1384,6 +1384,75 @@ mod tests {
     }
 
     #[test]
+    fn planner_proposed_unit_with_a_coverage_criterion_runs_and_integrates() {
+        // The living-DAG / spawnUnit mechanic (§3.2, §8): a `produces: dag` planner
+        // stage emits a UnitProposed carrying its own `coverage` criterion; the
+        // conductor harvests it into the run DAG, and because it covers a real spec
+        // criterion it passes the post-plan coverage gate, then runs and integrates.
+        let mut cfg = Config::default();
+        cfg.agents.insert("planner".into(), agent("planner"));
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "plan".into(),
+            Stage {
+                name: "plan".into(),
+                agent: "planner".into(),
+                produces: "dag".into(),
+                coverage: "the spec is decomposed".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            emits: vec![(
+                TYPE_UNIT_PROPOSED.to_string(),
+                json!({
+                    "id": "impl-feature",
+                    "agent": "worker",
+                    "needs": ["plan"],
+                    "coverage": "the feature is implemented",
+                    "gates": ["ok"],
+                }),
+            )],
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            // Both criteria must be covered: the planner's own, and the proposed
+            // unit's. The coverage gate (deferred until after planning) only passes
+            // because the harvested unit closes the second one.
+            criteria: vec![
+                "the spec is decomposed".into(),
+                "the feature is implemented".into(),
+            ],
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs.units["impl-feature"].status,
+            ledger::Status::Integrated,
+            "the planner-proposed unit must run and integrate as part of the extended DAG"
+        );
+        // The proposal really extended the DAG: the unit was started and integrated,
+        // and it carried its coverage criterion into the run.
+        let events = st
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        assert!(
+            events.iter().any(|e| {
+                e.type_ == ledger::TYPE_UNIT_STARTED
+                    && String::from_utf8_lossy(&e.data).contains("impl-feature")
+            }),
+            "the harvested unit must be started by the conductor"
+        );
+    }
+
+    #[test]
     fn ratchet_promotes_a_reliable_gate() {
         let mut cfg = Config::default();
         cfg.agents.insert("a".into(), agent("a"));

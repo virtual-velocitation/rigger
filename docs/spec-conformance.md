@@ -62,12 +62,12 @@ against the code. Phases are in dependency order; each lands CI-green.
 - [x] mid-run injection: surface peer decisions at the next tool boundary (§5.3)
 
 ## Phase 6 - CLI + composition
-- [ ] `rigger run --driver <cli|workflow>` flag (§10)
-- [ ] `rigger run --eventstore <sqlite|kurrentdb>` flag, KurrentDB wired (§10)
-- [ ] namespace decorator wired (default to project identity) (§5.1.1, R9)
-- [ ] living-DAG / `spawnUnit`: a `produces` stage extends the run DAG (§3.2, §8)
-- [ ] `rigger init` scaffold shows the full DAG shape (§3.2)
-- [ ] `examples/golden-apple/` worked example (§10, §11)
+- [x] `rigger run --driver <cli|workflow>` flag (§10)
+- [x] `rigger run --eventstore <sqlite|kurrentdb>` flag, KurrentDB wired (§10)
+- [x] namespace decorator wired (default to project identity) (§5.1.1, R9)
+- [x] living-DAG / `spawnUnit`: a `produces` stage extends the run DAG (§3.2, §8)
+- [x] `rigger init` scaffold shows the full DAG shape (§3.2)
+- [x] `examples/golden-apple/` worked example (§10, §11)
 
 ## Phase 7 - Docs
 - [ ] Re-sweep `docs/architecture.md` UP to the implemented spec (not down to old code)
