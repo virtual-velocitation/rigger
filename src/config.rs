@@ -83,6 +83,36 @@ pub struct Stage {
     pub on_pass: String,
 }
 
+impl AgentDef {
+    /// Whether this agent runs in an isolated git worktree when a repo is set:
+    /// `isolation: none` opts out (run in the current dir even with a repo);
+    /// empty or `worktree` opts in (§3.1, §6).
+    pub fn isolated(&self) -> bool {
+        !self.isolation.eq_ignore_ascii_case("none")
+    }
+
+    /// The tools this agent is actually granted. When `recurse` is false (the
+    /// runaway-proof default), any fan-out capability - an "Agent" or "Task" tool,
+    /// case-insensitive - is stripped, so the agent cannot spawn sub-agents (§3.1,
+    /// §6). When `recurse` is true the declared tools pass through unchanged.
+    pub fn allowed_tools(&self) -> Vec<String> {
+        if self.recurse {
+            return self.tools.clone();
+        }
+        self.tools
+            .iter()
+            .filter(|t| !is_fan_out_tool(t))
+            .cloned()
+            .collect()
+    }
+}
+
+/// Whether a tool name grants fan-out (the ability to spawn sub-agents), matched
+/// case-insensitively against the canonical spawn tools.
+fn is_fan_out_tool(tool: &str) -> bool {
+    tool.eq_ignore_ascii_case("Agent") || tool.eq_ignore_ascii_case("Task")
+}
+
 impl Stage {
     /// Every agent a stage references (the worker, the fan-out lens set, the adjudicator).
     pub fn agent_ids(&self) -> Vec<String> {
@@ -285,6 +315,49 @@ mod tests {
     #[test]
     fn rejects_missing_frontmatter() {
         assert!(parse_agent(b"no frontmatter here").is_err());
+    }
+
+    #[test]
+    fn recurse_false_strips_fan_out_tools() {
+        let a = AgentDef {
+            id: "impl".into(),
+            tools: vec!["Read".into(), "Agent".into()],
+            recurse: false,
+            ..Default::default()
+        };
+        assert_eq!(a.allowed_tools(), ["Read"]);
+    }
+
+    #[test]
+    fn recurse_true_keeps_fan_out_tools() {
+        let a = AgentDef {
+            id: "lead".into(),
+            tools: vec!["Read".into(), "Agent".into()],
+            recurse: true,
+            ..Default::default()
+        };
+        assert_eq!(a.allowed_tools(), ["Read", "Agent"]);
+    }
+
+    #[test]
+    fn isolation_none_opts_out_of_worktrees() {
+        let none = AgentDef {
+            id: "rev".into(),
+            isolation: "none".into(),
+            ..Default::default()
+        };
+        assert!(!none.isolated());
+        let wt = AgentDef {
+            id: "impl".into(),
+            isolation: "worktree".into(),
+            ..Default::default()
+        };
+        assert!(wt.isolated());
+        let unset = AgentDef {
+            id: "bare".into(),
+            ..Default::default()
+        };
+        assert!(unset.isolated());
     }
 
     #[test]

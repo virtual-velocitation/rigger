@@ -103,7 +103,9 @@ impl AgentDriver for Driver {
                 id: id.clone(),
                 prompt: prompt.to_string(),
                 model: agent.model.clone(),
-                tools: agent.tools.clone(),
+                // recurse: false strips any fan-out (Agent/Task) tool so the agent
+                // cannot spawn sub-agents - runaway-proof by construction (§3.1, §6).
+                tools: agent.allowed_tools(),
                 dir: opts.dir.clone(),
             };
             inner.pending.insert(id.clone(), Call { req, tx });
@@ -137,7 +139,11 @@ mod tests {
                     ..Default::default()
                 },
                 "do it",
-                &SpawnOpts { dir: String::new() },
+                &SpawnOpts {
+                    dir: String::new(),
+                    isolation: false,
+                    parallel: false,
+                },
                 &emit,
             )
         });
@@ -159,5 +165,42 @@ mod tests {
         driver.result(&req.id, "done".into(), String::new());
         let res = handle.join().unwrap().unwrap();
         assert_eq!(res.output, "done");
+    }
+
+    #[test]
+    fn recurse_false_strips_fan_out_from_the_spawn_request() {
+        let driver = Arc::new(Driver::new());
+        let d2 = driver.clone();
+        let handle = std::thread::spawn(move || {
+            let emit = |_: &str, _: Value| Ok(());
+            d2.spawn(
+                &AgentDef {
+                    id: "impl".into(),
+                    tools: vec!["Read".into(), "Agent".into()],
+                    recurse: false,
+                    ..Default::default()
+                },
+                "do it",
+                &SpawnOpts {
+                    dir: String::new(),
+                    isolation: true,
+                    parallel: false,
+                },
+                &emit,
+            )
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let req = loop {
+            if let Some(r) = driver.next() {
+                break r;
+            }
+            assert!(Instant::now() < deadline, "rigger_next never returned");
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        assert_eq!(req.tools, ["Read"]);
+        assert!(!req.tools.contains(&"Agent".to_string()));
+        driver.result(&req.id, "done".into(), String::new());
+        handle.join().unwrap().unwrap();
     }
 }

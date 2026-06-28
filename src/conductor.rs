@@ -23,6 +23,11 @@ use crate::worktree::Worktree;
 /// The run's event stream name.
 pub const STREAM: &str = "run";
 
+/// The bounded fan-out pool size (§6): at most this many agents run concurrently
+/// in a wave or a fan-out stage. Items beyond the cap wait for a slot - all still
+/// complete, just never more than MAX_CONCURRENCY at once.
+pub const MAX_CONCURRENCY: usize = 4;
+
 /// The event a planning stage's agent emits to add a unit to the run DAG at
 /// runtime (the living-DAG / spawnUnit mechanic).
 pub const TYPE_UNIT_PROPOSED: &str = "UnitProposed";
@@ -68,7 +73,15 @@ pub struct AgentResult {
 
 /// Per-spawn options.
 pub struct SpawnOpts {
+    /// The working directory the agent runs in: an isolated worktree, or "" for
+    /// the current dir.
     pub dir: String,
+    /// Whether this spawn runs in an isolated git worktree (§6). False when the
+    /// agent runs in the current dir (no repo, or `isolation: none`).
+    pub isolation: bool,
+    /// Whether this spawn is one of several running concurrently in a fan-out
+    /// stage (§6). False for a single-worker stage.
+    pub parallel: bool,
 }
 
 /// AgentDriver spawns an agent to completion. The agent records events it emits
@@ -268,20 +281,27 @@ impl RunCtx<'_> {
         integrated: &mut HashSet<String>,
         terminal: &mut HashSet<String>,
     ) -> Result<(), Error> {
-        let results: Vec<(String, Result<bool, Error>)> = std::thread::scope(|s| {
-            let handles: Vec<_> = ready
-                .iter()
-                .map(|name| {
-                    let name = name.clone();
-                    let st = stages[&name].clone();
-                    s.spawn(move || {
-                        let r = self.start_and_run_stage(&name, &st);
-                        (name, r)
+        // Bounded fan-out pool (§6): run the ready stages in chunks of at most
+        // MAX_CONCURRENCY, each chunk a scoped thread group. Every stage still
+        // runs; never more than MAX_CONCURRENCY at once.
+        let mut results: Vec<(String, Result<bool, Error>)> = Vec::with_capacity(ready.len());
+        for chunk in ready.chunks(MAX_CONCURRENCY) {
+            let chunk_results: Vec<(String, Result<bool, Error>)> = std::thread::scope(|s| {
+                let handles: Vec<_> = chunk
+                    .iter()
+                    .map(|name| {
+                        let name = name.clone();
+                        let st = stages[&name].clone();
+                        s.spawn(move || {
+                            let r = self.start_and_run_stage(&name, &st);
+                            (name, r)
+                        })
                     })
-                })
-                .collect();
-            handles.into_iter().map(|h| h.join().unwrap()).collect()
-        });
+                    .collect();
+                handles.into_iter().map(|h| h.join().unwrap()).collect()
+            });
+            results.extend(chunk_results);
+        }
         let mut first_err = None;
         for (name, r) in results {
             terminal.insert(name.clone());
@@ -385,6 +405,8 @@ impl RunCtx<'_> {
                     &prompt,
                     &SpawnOpts {
                         dir: dir.to_string(),
+                        isolation: wt.is_some(),
+                        parallel: false,
                     },
                     &emit,
                 ) {
@@ -405,7 +427,13 @@ impl RunCtx<'_> {
                     ledger::TYPE_UNIT_STATUS,
                     json!({"id": st.name, "status": "verified"}),
                 )?;
-                let commit = self.integrate_and_emit(wt, &st.agent, &st.name)?;
+                // on_pass governs integration (§3.2): empty or `merge` lands the
+                // work; any other value (e.g. `none`) runs the gates but never
+                // integrates - the verified work stays un-merged.
+                if !integrates(st) {
+                    return Ok(false);
+                }
+                let commit = self.integrate_and_emit(wt, &st.agent, &st.name, &st.gates)?;
                 self.emit(
                     ledger::TYPE_UNIT_INTEGRATED,
                     json!({"id": st.name, "commit": commit}),
@@ -455,6 +483,11 @@ impl RunCtx<'_> {
             };
 
             if approved && self.run_gates(st, "")? {
+                // on_pass governs integration (§3.2): any value other than empty /
+                // `merge` runs the gates but does not mark the stage integrated.
+                if !integrates(st) {
+                    return Ok(false);
+                }
                 self.emit(
                     ledger::TYPE_UNIT_INTEGRATED,
                     json!({"id": st.name, "commit": ""}),
@@ -495,13 +528,20 @@ impl RunCtx<'_> {
                 }
             }
         }
-        let results: Vec<Result<(), Error>> = std::thread::scope(|s| {
-            let handles: Vec<_> = jobs
-                .iter()
-                .map(|(a, wt)| s.spawn(move || self.run_agent_in_worktree(st, a, wt.as_ref())))
-                .collect();
-            handles.into_iter().map(|h| h.join().unwrap()).collect()
-        });
+        // Bounded fan-out pool (§6): run the agents in chunks of at most
+        // MAX_CONCURRENCY, each chunk a scoped thread group. Every agent still
+        // runs; never more than MAX_CONCURRENCY at once.
+        let mut results: Vec<Result<(), Error>> = Vec::with_capacity(jobs.len());
+        for chunk in jobs.chunks(MAX_CONCURRENCY) {
+            let chunk_results: Vec<Result<(), Error>> = std::thread::scope(|s| {
+                let handles: Vec<_> = chunk
+                    .iter()
+                    .map(|(a, wt)| s.spawn(move || self.run_agent_in_worktree(st, a, wt.as_ref())))
+                    .collect();
+                handles.into_iter().map(|h| h.join().unwrap()).collect()
+            });
+            results.extend(chunk_results);
+        }
         remove_all(&jobs);
         for r in results {
             r?;
@@ -527,10 +567,19 @@ impl RunCtx<'_> {
         self.spawns.fetch_add(1, Ordering::Relaxed);
         self.deps
             .driver
-            .spawn(agent_def, &prompt, &SpawnOpts { dir }, &emit)
+            .spawn(
+                agent_def,
+                &prompt,
+                &SpawnOpts {
+                    dir,
+                    isolation: wt.is_some(),
+                    parallel: true,
+                },
+                &emit,
+            )
             .map_err(|e| Error(format!("stage {:?} agent {:?}: {}", st.name, agent_id, e.0)))?;
         let unit = format!("{}/{}", st.name, agent_id);
-        self.integrate_and_emit(wt, agent_id, &unit)?;
+        self.integrate_and_emit(wt, agent_id, &unit, &st.gates)?;
         Ok(())
     }
 
@@ -549,7 +598,16 @@ impl RunCtx<'_> {
         let result = self
             .deps
             .driver
-            .spawn(agent_def, &prompt, &SpawnOpts { dir: String::new() }, &emit)
+            .spawn(
+                agent_def,
+                &prompt,
+                &SpawnOpts {
+                    dir: String::new(),
+                    isolation: false,
+                    parallel: false,
+                },
+                &emit,
+            )
             .map_err(|e| {
                 Error(format!(
                     "stage {:?} adjudicator {:?}: {}",
@@ -581,7 +639,7 @@ impl RunCtx<'_> {
                 contextgraph::TYPE_GATE_VERDICT,
                 json!({"gate": gid, "pass": res.pass}),
             )?;
-            let (promoted, demoted, autonomy) = self.record_gate(gid, res.pass);
+            let (promoted, demoted, autonomy) = self.record_gate(gid, res.pass, &st.autonomy);
             if promoted {
                 self.emit(
                     TYPE_GATE_PROMOTED,
@@ -600,9 +658,22 @@ impl RunCtx<'_> {
         Ok(all_pass)
     }
 
-    fn record_gate(&self, gid: &str, pass: bool) -> (bool, bool, gate::Autonomy) {
+    /// Record a gate's run on the ratchet, seeding a newly-tracked gate's starting
+    /// autonomy from the stage override (`stage_autonomy`, when non-empty) and
+    /// otherwise from `defaults.autonomy` (§3.2, §4.3).
+    fn record_gate(
+        &self,
+        gid: &str,
+        pass: bool,
+        stage_autonomy: &str,
+    ) -> (bool, bool, gate::Autonomy) {
         let mut tracker = self.gate_tracker.lock().unwrap();
-        let autonomy = gate::Autonomy::parse(&self.cfg.workflow.defaults.autonomy);
+        let raw = if stage_autonomy.is_empty() {
+            &self.cfg.workflow.defaults.autonomy
+        } else {
+            stage_autonomy
+        };
+        let autonomy = gate::Autonomy::parse(raw);
         let g = tracker.entry(gid.to_string()).or_insert_with(|| Gate {
             id: gid.to_string(),
             run: String::new(),
@@ -632,6 +703,7 @@ impl RunCtx<'_> {
         wt: Option<&Worktree>,
         agent_id: &str,
         unit_name: &str,
+        gates: &[String],
     ) -> Result<String, Error> {
         let wt = match wt {
             Some(w) => w,
@@ -646,6 +718,20 @@ impl RunCtx<'_> {
                 contextgraph::TYPE_FILE_TOUCHED,
                 json!({"path": f, "by": agent_id}),
             )?;
+        }
+        // GATED_BY (§7): record which gates govern each artifact this unit changed.
+        // The changed-file list must be captured BEFORE integrate commits it (after
+        // the commit the worktree is clean), so emit here while `files` is in scope.
+        // Each (file, gate) GateVerdict carries the artifact, which the projector
+        // folds into GATED_BY(artifact -> gate) - the edge a real run otherwise
+        // never produced (Phase 2 carryover).
+        for f in &files {
+            for gid in gates {
+                self.emit(
+                    contextgraph::TYPE_GATE_VERDICT,
+                    json!({"gate": gid, "pass": true, "artifact": f}),
+                )?;
+            }
         }
         let _lock = self.integrate_mu.lock().unwrap();
         let commit = wt.integrate(&format!("rigger: integrate {unit_name}"))?;
@@ -718,8 +804,24 @@ impl RunCtx<'_> {
         );
     }
 
+    /// Whether the named agent runs in an isolated worktree (its `isolation` is
+    /// not `none`). An unknown agent defaults to isolated, matching the prior
+    /// repo-only behavior.
+    fn agent_isolated(&self, agent_id: &str) -> bool {
+        self.cfg
+            .agents
+            .get(agent_id)
+            .map(|a| a.isolated())
+            .unwrap_or(true)
+    }
+
     fn stage_worktree(&self, st: &Stage) -> Result<Option<Worktree>, Error> {
         if self.deps.repo.is_empty() || st.agent.is_empty() {
+            return Ok(None);
+        }
+        // An agent declaring `isolation: none` runs in the current dir, no
+        // worktree, even when a repo is set (§3.1, §6).
+        if !self.agent_isolated(&st.agent) {
             return Ok(None);
         }
         let uid = uuid::Uuid::new_v4().to_string();
@@ -735,6 +837,11 @@ impl RunCtx<'_> {
 
     fn agent_worktree(&self, st: &Stage, agent_id: &str) -> Result<Option<Worktree>, Error> {
         if self.deps.repo.is_empty() {
+            return Ok(None);
+        }
+        // An agent declaring `isolation: none` runs in the current dir, no
+        // worktree, even when a repo is set (§3.1, §6).
+        if !self.agent_isolated(agent_id) {
             return Ok(None);
         }
         let uid = uuid::Uuid::new_v4().to_string();
@@ -839,6 +946,13 @@ fn write_nodes(b: &mut String, g: &Graph, kind: &str, header: &str) {
     if !first {
         b.push('\n');
     }
+}
+
+/// Whether a stage integrates its work when its gates pass (§3.2). `on_pass` is
+/// empty (the default - integrate) or `merge`; any other value (e.g. `none`) runs
+/// the gates but lands nothing.
+fn integrates(st: &Stage) -> bool {
+    st.on_pass.is_empty() || st.on_pass.eq_ignore_ascii_case("merge")
 }
 
 /// Whether a stage carries an LLM judge, i.e. a real verifier and not a mechanical
@@ -954,6 +1068,8 @@ mod tests {
         output: String,
         fail_spawn: bool,
         last_prompt: Mutex<String>,
+        /// Per-agent (isolation, parallel) the conductor passed at each spawn.
+        opts_by_agent: Mutex<HashMap<String, (bool, bool)>>,
     }
     impl Stub {
         fn new() -> Self {
@@ -963,18 +1079,23 @@ mod tests {
                 output: String::new(),
                 fail_spawn: false,
                 last_prompt: Mutex::new(String::new()),
+                opts_by_agent: Mutex::new(HashMap::new()),
             }
         }
     }
     impl AgentDriver for Stub {
         fn spawn(
             &self,
-            _a: &AgentDef,
+            a: &AgentDef,
             prompt: &str,
             opts: &SpawnOpts,
             emit: &dyn Fn(&str, Value) -> Result<(), Error>,
         ) -> Result<AgentResult, Error> {
             *self.last_prompt.lock().unwrap() = prompt.to_string();
+            self.opts_by_agent
+                .lock()
+                .unwrap()
+                .insert(a.id.clone(), (opts.isolation, opts.parallel));
             if self.fail_spawn {
                 return Err(Error("simulated mid-spawn crash".into()));
             }
@@ -1738,6 +1859,269 @@ mod tests {
         assert!(
             events.iter().any(|e| e.type_ == TYPE_MANUAL_REVIEW),
             "a manual stage must emit ManualReview"
+        );
+    }
+
+    #[test]
+    fn isolation_none_agent_gets_no_worktree_even_with_a_repo() {
+        // An agent declaring `isolation: none` runs in the current dir (no
+        // worktree) even when a repo is configured (§3.1, §6). The Stub records the
+        // SpawnOpts the conductor passed; isolation must be false.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert(
+            "rev".into(),
+            AgentDef {
+                id: "rev".into(),
+                isolation: "none".into(),
+                ..Default::default()
+            },
+        );
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "rev".into(),
+                gates: vec!["ok".into()],
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path,
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+        let opts = driver.opts_by_agent.lock().unwrap();
+        let (isolation, _parallel) = opts.get("rev").copied().unwrap();
+        assert!(
+            !isolation,
+            "an `isolation: none` agent must run with no worktree even with a repo"
+        );
+    }
+
+    #[test]
+    fn spawn_opts_isolation_is_set_for_a_worktree_agent() {
+        // An isolated (default) agent in a repo runs in a worktree, so SpawnOpts
+        // carries isolation = true (§6).
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent("a"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "a".into(),
+                gates: vec!["ok".into()],
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path,
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+        let opts = driver.opts_by_agent.lock().unwrap();
+        let (isolation, parallel) = opts.get("a").copied().unwrap();
+        assert!(isolation, "a worktree-isolated agent must report isolation");
+        assert!(!parallel, "a single-worker stage is not parallel");
+    }
+
+    #[test]
+    fn stage_autonomy_override_seeds_the_gate() {
+        // A stage with `autonomy: silent` seeds its gate's ratchet at Silent, so the
+        // gate runs unattended; the default (manual) would pause. We assert via the
+        // emitted GateVerdict (the stage integrates rather than pausing) and the gate
+        // tracker's seeded autonomy (§3.2). A default-autonomy run would still
+        // integrate too, so the discriminating check is the seeded autonomy below.
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent("a"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.defaults.autonomy = "manual".into();
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "a".into(),
+                gates: vec!["ok".into()],
+                autonomy: "silent".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let ctx = RunCtx {
+            cfg: &cfg,
+            deps: &Deps {
+                store: &st,
+                driver: &driver,
+                gates: &ExecRunner,
+                repo: String::new(),
+                grounder: None,
+                graph: None,
+                criteria: Vec::new(),
+            },
+            gate_tracker: Mutex::new(HashMap::new()),
+            integrate_mu: Mutex::new(()),
+            spawns: AtomicU32::new(0),
+        };
+        ctx.record_gate("ok", true, "silent");
+        let seeded = ctx.gate_tracker.lock().unwrap().get("ok").unwrap().autonomy;
+        assert_eq!(
+            seeded,
+            gate::Autonomy::Silent,
+            "the stage `autonomy: silent` override must seed the gate at Silent, not the manual default"
+        );
+    }
+
+    #[test]
+    fn on_pass_none_runs_gates_but_does_not_integrate() {
+        // A stage with `on_pass: none` and passing gates verifies but never
+        // integrates: no commit, not Integrated (§3.2).
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent("a"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "a".into(),
+                gates: vec!["ok".into()],
+                on_pass: "none".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            write_file: Some("work.rs".into()),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path,
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_ne!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "an `on_pass: none` stage must not integrate even when its gates pass"
+        );
+        let events = st
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.type_ == ledger::TYPE_UNIT_INTEGRATED),
+            "an `on_pass: none` stage must emit no UnitIntegrated"
+        );
+    }
+
+    #[test]
+    fn bounded_pool_completes_every_stage_under_the_cap() {
+        // Six independent stages exceed MAX_CONCURRENCY (4); the bounded pool runs
+        // them in chunks, and all six must still integrate (§6).
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent("a"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        for n in 0..6 {
+            let name = format!("s{n}");
+            cfg.workflow.stages.insert(
+                name.clone(),
+                Stage {
+                    name,
+                    agent: "a".into(),
+                    gates: vec!["ok".into()],
+                    ..Default::default()
+                },
+            );
+        }
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        for n in 0..6 {
+            assert_eq!(
+                rs.units[&format!("s{n}")].status,
+                ledger::Status::Integrated,
+                "every stage must integrate even when the wave exceeds the pool cap"
+            );
+        }
+    }
+
+    #[test]
+    fn live_run_produces_a_gated_by_edge() {
+        // After a stage with a gate touches a file and integrates, the graph must
+        // carry GATED_BY(file -> gate): the conductor emits a GateVerdict carrying
+        // the artifact, which the projector folds (§7, Phase 2 carryover).
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let graph = crate::contextgraph::sqlite::Projector::open(":memory:").unwrap();
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent("a"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "a".into(),
+                gates: vec!["ok".into()],
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            write_file: Some("touched.rs".into()),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path,
+            grounder: None,
+            graph: Some(&graph),
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+        let g = graph.subgraph(&["touched.rs".to_string()], 2).unwrap();
+        assert!(
+            g.edges.iter().any(|e| e.rel == contextgraph::REL_GATED_BY
+                && e.from == "touched.rs"
+                && e.to == "ok"),
+            "the live run must fold GATED_BY(touched.rs -> ok) after the stage integrates"
         );
     }
 
