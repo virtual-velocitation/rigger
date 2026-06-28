@@ -5,7 +5,19 @@
 
 use std::process::Command;
 
-/// Kind classifies a gate's authority lifecycle.
+/// Kind classifies a gate's authority lifecycle - how far up the autonomy
+/// ratchet it is allowed to travel.
+///
+/// - `Core` gates ratchet normally: a reliable one can be promoted all the way
+///   to `Silent`, integrating unattended.
+/// - `Elevated` gates carry a higher safety bar: they may earn `AutoNotify` but
+///   can **never become silent**. The ceiling is enforced in
+///   [`next_autonomy`] (which caps an elevated promotion at `AutoNotify`) and in
+///   [`propose_promotion`] (which stops proposing once an elevated gate has
+///   reached its `AutoNotify` ceiling), so a graduated elevated gate always
+///   surfaces a notification a human can veto - it never auto-passes silently.
+/// - `Deferred` gates are held until a phase boundary rather than run inline; see
+///   [`Kind::runs_inline`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Core,
@@ -20,6 +32,22 @@ impl Kind {
             "deferred" => Kind::Deferred,
             _ => Kind::Core,
         }
+    }
+
+    /// The highest autonomy this kind of gate is allowed to ratchet to. `Core`
+    /// and `Deferred` gates may reach `Silent`; an `Elevated` gate tops out at
+    /// `AutoNotify` so its verdicts always surface for a human to veto.
+    pub fn ceiling(&self) -> Autonomy {
+        match self {
+            Kind::Elevated => Autonomy::AutoNotify,
+            Kind::Core | Kind::Deferred => Autonomy::Silent,
+        }
+    }
+
+    /// Whether a gate of this kind runs inline with its stage. `Deferred` gates
+    /// are held until a phase boundary instead of running in-line.
+    pub fn runs_inline(&self) -> bool {
+        !matches!(self, Kind::Deferred)
     }
 }
 
@@ -49,6 +77,16 @@ impl Autonomy {
             Autonomy::Manual => "manual",
             Autonomy::AutoNotify => "auto_notify",
             Autonomy::Silent => "silent",
+        }
+    }
+
+    /// Position on the ratchet, ascending from least to most autonomous. Used to
+    /// compare an autonomy against a [`Kind::ceiling`].
+    fn rank(&self) -> u8 {
+        match self {
+            Autonomy::Manual => 0,
+            Autonomy::AutoNotify => 1,
+            Autonomy::Silent => 2,
         }
     }
 }
@@ -102,9 +140,13 @@ pub fn decide(g: &Gate) -> Action {
 }
 
 /// ProposePromotion reports whether a gate has earned a promotion: the last
-/// PROMOTE_THRESHOLD runs all passed, and it is not already Silent.
+/// PROMOTE_THRESHOLD runs all passed, and it has not already reached its kind's
+/// autonomy ceiling. A `Core` gate's ceiling is `Silent`; an `Elevated` gate's
+/// ceiling is `AutoNotify`, so a reliable elevated gate stops being proposed for
+/// promotion once it reaches `AutoNotify` - it can never be proposed for
+/// `Silent`.
 pub fn propose_promotion(g: &Gate) -> bool {
-    if g.autonomy == Autonomy::Silent || g.history.len() < PROMOTE_THRESHOLD {
+    if g.autonomy.rank() >= g.kind.ceiling().rank() || g.history.len() < PROMOTE_THRESHOLD {
         return false;
     }
     g.history[g.history.len() - PROMOTE_THRESHOLD..]
@@ -112,11 +154,19 @@ pub fn propose_promotion(g: &Gate) -> bool {
         .all(|h| h.pass)
 }
 
-/// NextAutonomy returns the autonomy one notch up the ratchet, capping at Silent.
-pub fn next_autonomy(a: Autonomy) -> Autonomy {
-    match a {
+/// NextAutonomy returns the autonomy one notch up the ratchet for a gate, capping
+/// at the gate's kind ceiling: `Silent` for a `Core`/`Deferred` gate, but only
+/// `AutoNotify` for an `Elevated` gate (which can never become silent).
+pub fn next_autonomy(g: &Gate) -> Autonomy {
+    let stepped = match g.autonomy {
         Autonomy::Manual => Autonomy::AutoNotify,
         _ => Autonomy::Silent,
+    };
+    let ceiling = g.kind.ceiling();
+    if stepped.rank() > ceiling.rank() {
+        ceiling
+    } else {
+        stepped
     }
 }
 
@@ -216,10 +266,14 @@ mod tests {
     use super::*;
 
     fn gate(autonomy: Autonomy, passes: usize) -> Gate {
+        gate_with_kind(Kind::Core, autonomy, passes)
+    }
+
+    fn gate_with_kind(kind: Kind, autonomy: Autonomy, passes: usize) -> Gate {
         Gate {
             id: "g".into(),
             run: String::new(),
-            kind: Kind::Core,
+            kind,
             autonomy,
             history: (0..passes).map(|_| HistoryEntry { pass: true }).collect(),
         }
@@ -230,6 +284,37 @@ mod tests {
         assert!(propose_promotion(&gate(Autonomy::Manual, 3)));
         assert!(!propose_promotion(&gate(Autonomy::Manual, 2)));
         assert!(!propose_promotion(&gate(Autonomy::Silent, 3)));
+    }
+
+    #[test]
+    fn elevated_gate_can_never_become_silent() {
+        // A Core gate at AutoNotify ratchets up to Silent.
+        let core = gate_with_kind(Kind::Core, Autonomy::AutoNotify, 3);
+        assert!(
+            propose_promotion(&core),
+            "a reliable Core gate at auto_notify is still proposable"
+        );
+        assert_eq!(next_autonomy(&core), Autonomy::Silent);
+
+        // An Elevated gate at AutoNotify has reached its ceiling: it is NOT
+        // proposed for promotion, and even if one were forced the next step caps
+        // at AutoNotify, never Silent.
+        let elevated_top = gate_with_kind(Kind::Elevated, Autonomy::AutoNotify, 3);
+        assert!(
+            !propose_promotion(&elevated_top),
+            "an elevated gate at its auto_notify ceiling must not be proposed for silent"
+        );
+        assert_eq!(
+            next_autonomy(&elevated_top),
+            Autonomy::AutoNotify,
+            "an elevated promotion can never step to silent"
+        );
+
+        // From Manual, a reliable Elevated gate still earns AutoNotify - the
+        // ceiling stops it at notify, it does not freeze it at manual.
+        let elevated_from_manual = gate_with_kind(Kind::Elevated, Autonomy::Manual, 3);
+        assert!(propose_promotion(&elevated_from_manual));
+        assert_eq!(next_autonomy(&elevated_from_manual), Autonomy::AutoNotify);
     }
 
     #[test]

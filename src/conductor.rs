@@ -1112,10 +1112,11 @@ impl RunCtx<'_> {
                 .get(gid)
                 .cloned()
                 .unwrap_or_default();
+            let kind = gate::Kind::parse(&gc.kind);
             let g = Gate {
                 id: gid.clone(),
                 run: gc.run,
-                kind: gate::Kind::parse(&gc.kind),
+                kind,
                 autonomy: gate::Autonomy::Manual,
                 history: Vec::new(),
             };
@@ -1127,7 +1128,7 @@ impl RunCtx<'_> {
                 contextgraph::TYPE_GATE_VERDICT,
                 json!({"gate": gid, "pass": res.pass, "evidence": res.evidence}),
             )?;
-            let (promoted, demoted, autonomy) = self.record_gate(gid, res.pass, &st.autonomy);
+            let (promoted, demoted, autonomy) = self.record_gate(gid, kind, res.pass, &st.autonomy);
             if promoted {
                 self.emit(
                     TYPE_GATE_PROMOTED,
@@ -1155,6 +1156,7 @@ impl RunCtx<'_> {
     fn record_gate(
         &self,
         gid: &str,
+        kind: gate::Kind,
         pass: bool,
         stage_autonomy: &str,
     ) -> (bool, bool, gate::Autonomy) {
@@ -1165,10 +1167,13 @@ impl RunCtx<'_> {
             stage_autonomy
         };
         let autonomy = gate::Autonomy::parse(raw);
+        // Carry the gate's real Kind onto the tracked gate so the ratchet honors
+        // its ceiling: an Elevated gate can be promoted to AutoNotify but never
+        // proposed for Silent (it always surfaces a notification a human can veto).
         let g = tracker.entry(gid.to_string()).or_insert_with(|| Gate {
             id: gid.to_string(),
             run: String::new(),
-            kind: gate::Kind::Core,
+            kind,
             autonomy,
             history: Vec::new(),
         });
@@ -1181,8 +1186,9 @@ impl RunCtx<'_> {
         }
         if gate::propose_promotion(g) {
             // Promotion is PROPOSED, never auto-applied (§4.3): surface it but keep
-            // the gate at its current autonomy until a human approves.
-            let proposed = gate::next_autonomy(g.autonomy);
+            // the gate at its current autonomy until a human approves. The proposed
+            // step is capped at the gate kind's ceiling.
+            let proposed = gate::next_autonomy(g);
             g.history.clear();
             return (true, false, proposed);
         }
@@ -2001,6 +2007,70 @@ mod tests {
         assert!(
             promoted,
             "a gate that passed PROMOTE_THRESHOLD times should be promoted"
+        );
+    }
+
+    #[test]
+    fn elevated_gate_is_never_promoted_to_silent() {
+        // Under a real run a gate seeds at the default auto_notify autonomy (a
+        // manual gate would pause the stage instead of running). From there a
+        // reliable Core gate is promoted to `silent`, but an Elevated gate is
+        // capped at auto_notify and must NEVER be proposed for silent. Run both
+        // through the identical three-clean-passes ratchet and contrast.
+        let promotions_for = |kind: &str| -> Vec<String> {
+            let mut cfg = Config::default();
+            cfg.agents.insert("a".into(), agent("a"));
+            let mut g = gate_def("true");
+            g.kind = kind.to_string();
+            cfg.workflow.gates.insert("ok".into(), g);
+            let mut prev: Option<&str> = None;
+            for name in ["s1", "s2", "s3", "s4"] {
+                cfg.workflow.stages.insert(
+                    name.into(),
+                    Stage {
+                        name: name.into(),
+                        agent: "a".into(),
+                        needs: prev.map(|n| vec![n.to_string()]).unwrap_or_default(),
+                        gates: vec!["ok".into()],
+                        ..Default::default()
+                    },
+                );
+                prev = Some(name);
+            }
+            let st = Store::open(":memory:").unwrap();
+            let driver = Stub::new();
+            let deps = Deps {
+                store: &st,
+                driver: &driver,
+                gates: &ExecRunner,
+                repo: String::new(),
+                grounder: None,
+                graph: None,
+                criteria: Vec::new(),
+            };
+            run(&cfg, &deps).unwrap();
+            st.read_all(0, Direction::Forward, &Filter::default())
+                .unwrap()
+                .iter()
+                .filter(|e| e.type_ == TYPE_GATE_PROMOTED)
+                .map(|e| String::from_utf8_lossy(&e.data).into_owned())
+                .collect()
+        };
+
+        // The Core gate, seeded at auto_notify, is promoted to silent: this is
+        // the baseline the elevated gate must NOT reach.
+        let core = promotions_for("core");
+        assert!(
+            core.iter().any(|p| p.contains("silent")),
+            "a reliable Core gate must be promoted to silent (baseline): {core:?}"
+        );
+
+        // The Elevated gate, under the very same ratchet, is never promoted to
+        // silent - its auto_notify ceiling holds.
+        let elevated = promotions_for("elevated");
+        assert!(
+            elevated.iter().all(|p| !p.contains("silent")),
+            "an elevated gate must NEVER be promoted to silent: {elevated:?}"
         );
     }
 
@@ -3085,7 +3155,7 @@ mod tests {
             spawns: AtomicU32::new(0),
             budget_broke: std::sync::atomic::AtomicBool::new(false),
         };
-        ctx.record_gate("ok", true, "silent");
+        ctx.record_gate("ok", gate::Kind::Core, true, "silent");
         let seeded = ctx.gate_tracker.lock().unwrap().get("ok").unwrap().autonomy;
         assert_eq!(
             seeded,
