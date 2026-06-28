@@ -515,20 +515,28 @@ fn write_if_absent(path: &Path, content: &str) {
     }
 }
 
-/// The scaffolded workflow (§3.2): a worked plan -> implement -> review ->
-/// integrate pipeline that demonstrates the documented shape - a `defaults:` block
-/// (autonomy + grounder), a reusable `gates:` library, and stages exercising
-/// `needs`, `agent`/`agents`, `strategy`, `gates`, `adversary`, `adjudicator`,
-/// `autonomy`, `produces`, `coverage`, and `on_pass`. It loads through
-/// `config::load` against the agents scaffolded alongside it.
+/// The scaffolded workflow (§3.2): a worked plan -> implement pipeline where the
+/// review is PER UNIT. It demonstrates the documented shape - a `defaults:` block
+/// (autonomy + grounder + the three-tier `review` panel), a reusable `gates:`
+/// library, and an implement stage that runs each unit's complete lifecycle
+/// (implement -> gates -> three-tier review of THIS unit -> integrate). It loads
+/// through `config::load` against the agents scaffolded alongside it.
 const SCAFFOLD_WORKFLOW: &str =
-    "# Scaffolded by `rigger init`. A worked plan -> implement -> review -> integrate\n\
-# pipeline showing the full DAG shape. Replace the gate commands with your own.\n\
+    "# Scaffolded by `rigger init`. A worked plan -> implement pipeline where the\n\
+# review is PER UNIT: each unit implements, three-tier-reviews ITSELF (lenses ->\n\
+# adversary -> adjudicator via defaults.review), and integrates in one lifecycle.\n\
+# Replace the gate commands with your own.\n\
 name: example\n\
 \n\
 defaults:\n  \
 autonomy: auto_notify   # manual | auto_notify | silent\n  \
-grounder: grep          # grep (default) | turbovec (needs the cargo feature)\n\
+grounder: grep          # grep (default) | turbovec (needs the cargo feature)\n  \
+# The three-tier review panel applied to EVERY implementer unit. Declared once\n  \
+# here, inherited by the implement stage and every planner-proposed unit.\n  \
+review:\n    \
+lenses: [reviewer.architecture, reviewer.technical]   # tier 1: the expert lenses\n    \
+adversary: adversary           # tier 2: reviews the lenses and refutes them\n    \
+adjudicator: devils-advocate   # tier 3: neutral judge; its verdict gates the unit\n\
 \n\
 gates:                    # a reusable library of commands, referenced by name\n  \
 build: { run: \"echo build ok; true\", kind: core }\n  \
@@ -541,29 +549,17 @@ agent: planner\n    \
 produces: dag           # decompose the spec into a unit DAG at runtime\n    \
 coverage: \"the spec is decomposed into units\"\n\
 \n  \
+# Each unit implements, three-tier-reviews ITSELF (via defaults.review), and\n  \
+# integrates in one lifecycle. A reject or a gate failure feeds back into that\n  \
+# same unit's remediation loop; it does NOT integrate until approved + green.\n  \
 implement:\n    \
 needs: [plan]\n    \
 agent: implementer\n    \
 strategy: fan-out       # one worker per ready unit, in isolated worktrees\n    \
 partition: by-blast-radius\n    \
-gates: [build, test]    # red -> green enforced around the change\n    \
-coverage: \"each unit is implemented and its gates pass\"\n\
-\n  \
-review:                   # three-tier: lenses -> adversary -> adjudicator\n    \
-needs: [implement]\n    \
-strategy: fan-out\n    \
-agents: [reviewer.architecture, reviewer.technical]   # tier 1: the expert lenses\n    \
-adversary: adversary           # tier 2: reviews the lenses and refutes them\n    \
-adjudicator: devils-advocate   # tier 3: neutral judge; its verdict gates the stage\n    \
-autonomy: manual               # pause for a human before integrating\n    \
-coverage: \"the change passes three-tier adversarial review\"\n\
-\n  \
-integrate:\n    \
-needs: [review]\n    \
-agent: integrator\n    \
-gates: [build, test, lint]\n    \
-on_pass: merge          # land + reindex + record\n    \
-coverage: \"the change is integrated on a green build\"\n";
+gates: [build, test, lint]  # red -> green enforced around the change\n    \
+on_pass: merge          # land + reindex + record, per unit, once reviewed\n    \
+coverage: \"each unit is implemented, reviews itself, and integrates green\"\n";
 
 /// The agents the scaffolded workflow references, each a markdown-with-frontmatter
 /// definition `config::load` parses. Filenames are arbitrary; the `id` is what the
@@ -644,18 +640,6 @@ no matter which side flagged it. When you reject, say exactly what must change. 
 with a single JSON line {\"verdict\":\"approve\"} or {\"verdict\":\"reject\"} - reject\n\
 blocks integration no matter what the static gates say.\n",
     ),
-    (
-        "integrator.md",
-        "---\n\
-id: integrator\n\
-model: sonnet\n\
-tools: [Read, Bash]\n\
-isolation: worktree\n\
-recurse: false\n\
----\n\
-You land the reviewed change: rebase on the latest base, re-run the gates, and\n\
-merge only on a fully green build. Report the integrating commit.\n",
-    ),
 ];
 
 #[cfg(test)]
@@ -679,32 +663,30 @@ mod tests {
         let cfg = config::load(dir.path().to_str().unwrap())
             .expect("the scaffolded config must load and validate");
 
-        // Seven agents: planner, implementer, two reviewer lenses, the adversary,
-        // the adjudicator, the integrator.
-        assert_eq!(cfg.agents.len(), 7, "scaffold agent count");
-        // Four stages: plan -> implement -> review -> integrate.
-        assert_eq!(cfg.workflow.stages.len(), 4, "scaffold stage count");
+        // Six agents: planner, implementer, two reviewer lenses, the adversary, the
+        // adjudicator. Integration is folded into the unit lifecycle (no integrator).
+        assert_eq!(cfg.agents.len(), 6, "scaffold agent count");
+        // Two stages: plan -> implement (each unit reviews itself and integrates).
+        assert_eq!(cfg.workflow.stages.len(), 2, "scaffold stage count");
         // Three gates in the reusable library.
         assert_eq!(cfg.workflow.gates.len(), 3, "scaffold gate count");
 
-        // The scaffold exercises the full shape: a producer, a fan-out lens set, the
-        // three-tier review (lenses -> adversary -> adjudicator), a manual-autonomy
-        // stage, and an on_pass: merge.
+        // The scaffold exercises the per-unit shape: a producer, a fan-out implement
+        // stage that integrates on_pass: merge, and a three-tier review panel
+        // (lenses -> adversary -> adjudicator) declared once on defaults.review.
         let plan = &cfg.workflow.stages["plan"];
         assert_eq!(plan.produces, "dag");
         let implement = &cfg.workflow.stages["implement"];
         assert_eq!(implement.strategy, "fan-out");
         assert_eq!(implement.needs, ["plan"]);
-        let review = &cfg.workflow.stages["review"];
-        assert_eq!(review.agents.len(), 2, "tier 1: the expert lenses");
+        assert_eq!(implement.on_pass, "merge");
+        let review = &cfg.workflow.defaults.review;
+        assert_eq!(review.lenses.len(), 2, "tier 1: the expert lenses");
         assert_eq!(review.adversary, "adversary", "tier 2: refutes the lenses");
         assert_eq!(
             review.adjudicator, "devils-advocate",
             "tier 3: the neutral adjudicator gates"
         );
-        assert_eq!(review.autonomy, "manual");
-        let integrate = &cfg.workflow.stages["integrate"];
-        assert_eq!(integrate.on_pass, "merge");
         assert_eq!(cfg.workflow.defaults.grounder, "grep");
     }
 

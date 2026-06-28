@@ -12,11 +12,32 @@
 # records each decision live to the shared event log (so the next stage and any
 # concurrent agent see it), and must pass machine-verifiable gates. Failures
 # escalate or are bounded-retried - never silently dropped.
+#
+# The review is PER UNIT, not a downstream stage. Each implementer unit runs its
+# OWN lifecycle - ground -> implement (red/green TDD in a worktree) -> the unit's
+# gates -> three-tier review OF THIS UNIT (lenses -> adversary -> adjudicator) ->
+# integrate - and a reject or a gate failure feeds back into that same unit's
+# remediation loop. `defaults.review` declares the panel once; every unit (the
+# `implement` stage and every planner-proposed unit) inherits it.
 name: rigger-self-hosted
 
 defaults:
   autonomy: auto_notify     # manual | auto_notify | silent
   grounder: grep            # grep (default, dependency-free) | turbovec (needs the cargo feature)
+
+  # The three-tier review panel applied to EVERY implementer unit (§3.2). TIER 1:
+  # the expert lenses (architecture + sdet) review the unit's diff in parallel.
+  # TIER 2: the adversary reviews THE LENSES' findings and tries to prove them
+  # wrong - higher bar, surfaces what they all missed, refutes overreach (it
+  # reviews the reviews; it is not a parallel lens). TIER 3: the adjudicator is the
+  # neutral final judge - it weighs the lenses against the adversary, is EXTREMELY
+  # strict on design/architecture adherence, and its approve/reject verdict GATES
+  # the unit's integration. Declared once; inherited by the implement stage and
+  # every planner-proposed unit.
+  review:
+    lenses: [architecture-reviewer, sdet]   # tier 1: the expert lenses
+    adversary: adversary                    # tier 2: refutes the lenses
+    adjudicator: adjudicator                # tier 3: neutral judge; verdict gates
 
 gates:                      # the project's verification library, referenced by name
   fmt:    { run: "cargo fmt --check",                        kind: core }
@@ -32,38 +53,21 @@ stages:
     produces: dag           # decompose the spec into a unit DAG at runtime
     coverage: required
 
-  # 2. Implement in parallel: one Rust implementer per ready unit, each in an
-  #    isolated worktree, partitioned by blast-radius so the waves stay disjoint.
-  #    red -> green is enforced around each change before the gates run.
+  # 2. Implement, review, and integrate PER UNIT. One Rust implementer per ready
+  #    unit, each in an isolated worktree, partitioned by blast-radius so the waves
+  #    stay disjoint. Each unit's complete lifecycle runs inside this one stage:
+  #    red -> green is enforced around the change, the full cargo gate set
+  #    (fmt + clippy + build + test) must pass, THEN the unit reviews ITSELF through
+  #    `defaults.review`'s three tiers, and only on adjudicator-approve + green gates
+  #    does it integrate (on_pass: merge). A reject or a gate failure feeds back into
+  #    this same unit's remediation loop (re-ground, re-implement with the feedback)
+  #    and escalates after the retry bound - it does NOT integrate. Every
+  #    planner-proposed unit inherits the same per-unit review via defaults.review.
   implement:
     needs: [plan]
     agent: rust-engineer
     strategy: fan-out
     partition: by-blast-radius
-    gates: [fmt, build, test]
-    coverage: "each unit is implemented and its fmt + build + test gates pass"
-
-  # 3. Three-tier review. TIER 1: the expert lenses (architecture + sdet) review
-  #    the diff in parallel and emit findings. TIER 2: the adversary then reviews
-  #    THE LENSES' findings and tries to prove them wrong - it holds them to a
-  #    higher bar, surfaces what they all missed, and refutes overreach (it reviews
-  #    the reviews; it is not a parallel lens). TIER 3: the adjudicator is the
-  #    neutral final judge - it weighs the lenses against the adversary, is
-  #    EXTREMELY strict on design/architecture adherence, and its approve/reject
-  #    verdict GATES integration. A human signs off too (autonomy: manual).
-  review:
-    needs: [implement]
-    strategy: fan-out
-    agents: [architecture-reviewer, sdet]   # tier 1: the expert lenses
-    adversary: adversary                    # tier 2: refutes the lenses
-    adjudicator: adjudicator                # tier 3: neutral judge; verdict gates
-    autonomy: manual
-    coverage: "the change survives three-tier adversarial review"
-
-  # 4. Land the reviewed change on a fully green workspace: rebase, re-gate with
-  #    the full cargo set, merge, reindex, record.
-  integrate:
-    needs: [review]
     gates: [fmt, clippy, build, test]
     on_pass: merge
-    coverage: "the change lands on a fully green workspace"
+    coverage: "each unit is implemented, three-tier-reviews itself, and integrates on a green workspace"
