@@ -730,6 +730,12 @@ grounder: grep          # grep (default) | turbovec (needs the cargo feature)\n 
 # run may make. At the cap the breaker emits BudgetExhausted and aborts the run,\n  \
 # so a runaway can never spawn unboundedly. NON-ZERO on purpose - 0 = unlimited.\n  \
 budget: 60\n  \
+# The remediation depth: how many attempts a failed unit gets before it escalates\n  \
+# to a human. This is the REFINEMENT-depth knob, not a review-rigor one - raise it\n  \
+# to give a subtle unit room to CONVERGE under the full strict review instead of\n  \
+# escalating prematurely. It loosens the depth limit, never the review bar. Absent\n  \
+# falls back to 3 (the historical default); bounded by `budget` above.\n  \
+max_retries: 3\n  \
 # The three-tier review panel applied to EVERY implementer unit. Declared once\n  \
 # here, inherited by the implement stage and every planner-proposed unit.\n  \
 review:\n    \
