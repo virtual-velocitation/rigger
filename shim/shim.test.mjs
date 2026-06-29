@@ -23,7 +23,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 
-import { runWorkflow, unwrap, renderPeers, buildProxyServer } from './shim.mjs'
+import { runWorkflow, unwrap, renderPeers, buildProxyServer, buildAgentOptions } from './shim.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const MOCK = join(here, 'mock-rigger-server.mjs')
@@ -218,4 +218,67 @@ test('buildProxyServer exposes exactly rigger_emit and rigger_peers', async () =
 
   const names = tools.map((t) => t.name).sort()
   assert.deepEqual(names, ['rigger_emit', 'rigger_peers'], 'the proxy exposes exactly the two rigger tools')
+})
+
+test('buildAgentOptions sets the Agent SDK cwd to the spawn worktree dir', () => {
+  // The worktree-isolation invariant on the shim side: the agent's working directory
+  // (Agent SDK `options.cwd`) MUST be the spawn's `dir` - its isolated worktree - so
+  // the agent's relative-path tool calls resolve inside the worktree, never the shim's
+  // own cwd (= the main repo checkout for `rigger workflow`). A spawn that carried its
+  // worktree dir must NOT run the agent in the repo root.
+  const dir = '/tmp/rigger-wt-unit-1-abcd1234'
+  const proxyServer = { instance: {} }
+  const options = buildAgentOptions({
+    systemPrompt: 'You are the rust engineer.',
+    model: 'sonnet',
+    tools: ['Read', 'Edit'],
+    dir,
+    proxyServer,
+  })
+  assert.equal(options.cwd, dir, 'the agent runs IN its worktree (cwd === the spawn dir), not the main repo')
+  assert.equal(options.permissionMode, 'bypassPermissions')
+  // The rigger proxy tools are always granted on top of the spawn tools.
+  assert.ok(options.allowedTools.includes('mcp__rigger__rigger_emit'))
+  assert.ok(options.allowedTools.includes('mcp__rigger__rigger_peers'))
+})
+
+test('buildAgentOptions omits cwd only when no worktree dir is given (repo-less run)', () => {
+  // An empty `dir` means a genuinely repo-less run - there is no main checkout to
+  // protect, so the agent runs in the project cwd (cwd omitted => SDK default). The
+  // conductor never hands a writing agent an empty dir when a repo is configured, so
+  // this branch is reachable ONLY when there is nothing to corrupt.
+  const optsNoDir = buildAgentOptions({ dir: '', proxyServer: { instance: {} } })
+  assert.equal('cwd' in optsNoDir, false, 'no dir => no cwd override (repo-less run only)')
+  const optsUndef = buildAgentOptions({ proxyServer: { instance: {} } })
+  assert.equal('cwd' in optsUndef, false, 'an undefined dir likewise sets no cwd')
+})
+
+test('the loop threads the spawn worktree dir to the agent runner', async () => {
+  // End-to-end through runWorkflow: the spawn the mock hands out carries a `dir`, and
+  // the loop MUST pass it to the agent runner so the agent runs in that worktree. This
+  // closes the path conductor.dir -> SpawnRequest.dir -> next.dir -> runAgent({dir}).
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [MOCK],
+    env: { ...process.env, RIGGER_MOCK_DIR: '/tmp/rigger-wt-unit-1-deadbeef' },
+    stderr: 'inherit',
+  })
+  const client = new Client({ name: 'rigger-shim-test', version: '0.0.0' }, { capabilities: {} })
+  await client.connect(transport)
+
+  const seenDirs = []
+  const stubAgent = async ({ dir }) => {
+    seenDirs.push(dir)
+    return 'done'
+  }
+  const drove = await runWorkflow(client, stubAgent)
+  await client.close()
+  await transport.close()
+
+  assert.equal(drove, 1, 'the loop drove the one spawn')
+  assert.equal(
+    seenDirs[0],
+    '/tmp/rigger-wt-unit-1-deadbeef',
+    'the spawn worktree dir reached the agent runner, so the agent runs in its worktree',
+  )
 })

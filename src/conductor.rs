@@ -477,6 +477,24 @@ struct RunCtx<'a> {
     prior_attempts: HashMap<String, u32>,
 }
 
+#[cfg(test)]
+impl<'a> RunCtx<'a> {
+    /// A bare RunCtx for unit-testing pure helpers (e.g. the cwd-isolation guard) that
+    /// only read `cfg`/`deps` - no prior log, no spawns. Not for driving a run.
+    fn for_test(cfg: &'a Config, deps: &'a Deps<'a>) -> Self {
+        RunCtx {
+            cfg,
+            deps,
+            gate_tracker: Mutex::new(HashMap::new()),
+            integrate_mu: Mutex::new(()),
+            spawns: AtomicU32::new(0),
+            budget_broke: std::sync::atomic::AtomicBool::new(false),
+            prior_status: HashMap::new(),
+            prior_attempts: HashMap::new(),
+        }
+    }
+}
+
 impl RunCtx<'_> {
     fn emit(&self, type_: &str, payload: Value) -> Result<(), Error> {
         self.emit_with_actor("", type_, payload)
@@ -807,6 +825,73 @@ impl RunCtx<'_> {
         }
     }
 
+    /// The cwd-isolation invariant for EVERY spawned agent (the worktree-isolation
+    /// fix): an agent NEVER runs in the live main-repo checkout. A spawn's `dir`
+    /// becomes the agent's working directory (the cli driver's `current_dir`, the
+    /// Agent SDK's `cwd`); an EMPTY `dir` makes the agent inherit the driver's own
+    /// cwd, which - for `rigger workflow`, run from the repo root - IS the main
+    /// checkout. With `bypassPermissions` on, the agent can then edit the live repo,
+    /// so the implementer's edits (and any reviewer that writes via Bash/Edit) land
+    /// in the checkout the gates and review never look at, and the unit can never
+    /// converge. This guard makes that impossible BY CONSTRUCTION: whenever a repo is
+    /// configured, every lifecycle spawn must carry a non-empty `dir` that is a
+    /// worktree, never the repo toplevel itself. (A repo-less run has no checkout to
+    /// corrupt, so an empty `dir` - the project cwd - is allowed there.)
+    fn assert_isolated_cwd(&self, role: &str, agent_id: &str, dir: &str) -> Result<(), Error> {
+        if self.deps.repo.is_empty() {
+            // No repo => no main checkout to protect; the project cwd is the workspace.
+            return Ok(());
+        }
+        if dir.is_empty() {
+            return Err(Error(format!(
+                "{role} {agent_id:?} would run in the main repo checkout (empty cwd \
+                 inherits the driver's cwd = the repo root); a worktree dir is required"
+            )));
+        }
+        if same_path(dir, &self.deps.repo) {
+            return Err(Error(format!(
+                "{role} {agent_id:?} would run directly in the main repo checkout \
+                 ({dir:?}); a worktree dir distinct from the repo root is required"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Build a REVIEWER's spawn options. A reviewer writes no code to integrate, but
+    /// it still has tools that touch the filesystem (every review agent has `Bash`;
+    /// the sdet lens has `Edit`/`Write`), so it must NOT run in the live main checkout
+    /// either - a `sed -i`, an `Edit`, a stray `git checkout` would corrupt the very
+    /// repo the run integrates into. The faithful, read-only-intent cwd is the code
+    /// the reviewer is judging: the UNIT'S worktree (where the implementer committed
+    /// the diff under review). So a reviewer runs IN that worktree - it reads the
+    /// unit's actual code, and any accidental write lands in the throwaway worktree,
+    /// never the main repo. `assert_isolated_cwd` enforces the dir is a real worktree.
+    fn reviewer_spawn_opts(
+        &self,
+        role: &str,
+        agent_id: &str,
+        dir: &str,
+        parallel: bool,
+        st: &Stage,
+    ) -> Result<SpawnOpts, Error> {
+        self.assert_isolated_cwd(role, agent_id, dir)?;
+        let agent_def = self.cfg.agents.get(agent_id).ok_or_else(|| {
+            Error(format!(
+                "stage {:?} references unknown {role} {agent_id:?}",
+                st.name
+            ))
+        })?;
+        Ok(SpawnOpts {
+            system_prompt: self.build_system_prompt(agent_def),
+            dir: dir.to_string(),
+            // A reviewer runs in the unit's existing worktree; it does not own a
+            // fresh isolated worktree of its own (it must not get its writes merged).
+            isolation: false,
+            parallel,
+            blast_radius: self.grounded_seed(st),
+        })
+    }
+
     /// Run the three-tier review of THIS unit's diff and return the outcome (whether
     /// it is approved, plus the adjudicator's verdict reasoning) (§3.2). The three
     /// tiers communicate THROUGH THE CONTEXT GRAPH - the system's actual cross-agent
@@ -822,11 +907,14 @@ impl RunCtx<'_> {
     /// the static gates said. So the three tiers inform each other via the graph
     /// (concurrent lenses see each other live via the side-car), never running
     /// mutually blind and never via spliced prompts. The lenses/adversary/adjudicator
-    /// review the unit (they produce no code), so they run with no worktree of their
-    /// own. After the adjudicator approves, the unit is marked `reviewed` and its
-    /// evidence carries the verdict reason (item 4). An empty panel runs no review and
-    /// approves trivially (the historical behavior).
-    fn review_unit(&self, st: &Stage) -> Result<ReviewOutcome, Error> {
+    /// review the unit (they produce no code), so they DON'T own a fresh worktree -
+    /// but they still run IN the unit's worktree (`dir`), reading the actual code
+    /// under review, never in the live main checkout where a stray Bash/Edit would
+    /// corrupt the repo (the worktree-isolation fix). After the adjudicator approves,
+    /// the unit is marked `reviewed` and its evidence carries the verdict reason
+    /// (item 4). An empty panel runs no review and approves trivially (the historical
+    /// behavior).
+    fn review_unit(&self, st: &Stage, dir: &str) -> Result<ReviewOutcome, Error> {
         let panel = self.effective_review_panel(st);
         if panel.is_empty() {
             return Ok(ReviewOutcome::approved(String::new()));
@@ -837,19 +925,19 @@ impl RunCtx<'_> {
         // TIER 1: the lenses emit their findings to the graph (REVIEW_PROTOCOL); the
         // projector folds them ABOUT the unit's files live.
         if !lenses.is_empty() {
-            self.run_review_agents_concurrently(st, &lenses)?;
+            self.run_review_agents_concurrently(st, &lenses, dir)?;
         }
         // TIER 2: the adversary grounds AFTER the lenses, so `graph_context` surfaces
         // their findings; it tries to prove them wrong and emits its own findings.
         if !adversary.is_empty() {
-            self.run_adversary(st, &adversary)?;
+            self.run_adversary(st, &adversary, dir)?;
         }
         if adjudicator.is_empty() {
             return Ok(ReviewOutcome::approved(String::new()));
         }
         // TIER 3: the adjudicator grounds last, reads the lenses' and adversary's
         // findings from the graph, and renders the gating verdict.
-        let (approved, reason) = self.run_adjudicator(st, &adjudicator)?;
+        let (approved, reason) = self.run_adjudicator(st, &adjudicator, dir)?;
         if approved {
             // The adjudicator's verdict reason is folded into the unit's `reviewed`
             // evidence (item 4).
@@ -956,18 +1044,35 @@ impl RunCtx<'_> {
                 }
                 let prompt = self.build_prompt_with_failure(st, &prior);
                 let emit = |t: &str, v: Value| self.emit_with_actor(&st.agent, t, v);
-                match self.deps.driver.spawn(
-                    agent_def,
-                    &prompt,
-                    &SpawnOpts {
-                        system_prompt: self.build_system_prompt(agent_def),
-                        dir: dir.to_string(),
-                        isolation: wt.is_some(),
-                        parallel: false,
-                        blast_radius: self.grounded_seed(st),
-                    },
-                    &emit,
-                ) {
+                // cwd-isolation invariant (the worktree-isolation fix): an implementer
+                // that is SUPPOSED to be isolated must never run in the live main
+                // checkout. When the agent declared isolation (the default) and a repo is
+                // configured, it must have a worktree dir (distinct from the repo root);
+                // an empty/repo-root dir there would let its edits and remediation fixes
+                // land in the checkout the gates and review never inspect, so the unit
+                // could never converge - the exact bug this guard closes. An agent that
+                // DELIBERATELY opted out (`isolation: none`) runs in the project cwd by
+                // design (§3.1, §6), so it is exempt. A guard failure is a spawn error
+                // (remediate, do not abort) - the discipline a mid-spawn crash gets.
+                let isolation_check = if self.agent_isolated(&st.agent) {
+                    self.assert_isolated_cwd("implementer", &st.agent, dir)
+                } else {
+                    Ok(())
+                };
+                match isolation_check.and_then(|()| {
+                    self.deps.driver.spawn(
+                        agent_def,
+                        &prompt,
+                        &SpawnOpts {
+                            system_prompt: self.build_system_prompt(agent_def),
+                            dir: dir.to_string(),
+                            isolation: wt.is_some(),
+                            parallel: false,
+                            blast_radius: self.grounded_seed(st),
+                        },
+                        &emit,
+                    )
+                }) {
                     Ok(_) => {
                         // The green status records that the implementer produced a
                         // diff (item 4): the per-unit evidence names the agent that
@@ -1039,7 +1144,7 @@ impl RunCtx<'_> {
                             "evidence": verified_evidence(&st.gates),
                         }),
                     )?;
-                    let review = self.review_unit(st)?;
+                    let review = self.review_unit(st, dir)?;
                     if review.approved {
                         // on_pass governs integration (§3.2): empty or `merge` lands
                         // the work; any other value (e.g. `none`) runs the gates but
@@ -1112,6 +1217,36 @@ impl RunCtx<'_> {
     }
 
     fn run_fan_out_stage(&self, st: &Stage) -> Result<bool, Error> {
+        // A standalone review stage produces no code, so it has no UNIT worktree - but
+        // its reviewers must STILL not run in the live main checkout (a stray Bash/Edit
+        // would corrupt the repo the run integrates into). So we mint a throwaway
+        // read-only worktree of the base HEAD and run every reviewer IN it: they see
+        // the integrated code under review, and any accidental write lands in the
+        // throwaway, never the main repo. A repo-less run has no checkout to protect,
+        // so `dir` stays empty there (the project cwd, guarded by `assert_isolated_cwd`
+        // which is a no-op when no repo is configured). The worktree is torn down on
+        // every exit path here, including the early-return ones inside the loop.
+        let review_wt = self.review_only_worktree(st)?;
+        let dir = review_wt
+            .as_ref()
+            .map(|w| w.dir.clone())
+            .unwrap_or_default();
+        let result = self.run_fan_out_review_loop(st, &dir);
+        if let Some(w) = &review_wt {
+            // A read-only review worktree carries no work to checkpoint, so the
+            // transient dir AND its throwaway branch are both removed unconditionally.
+            let _ = w.remove();
+            let _ = Worktree::delete_branch(&self.deps.repo, &w.branch);
+        }
+        result
+    }
+
+    /// The standalone-review-stage loop, factored out of [`Self::run_fan_out_stage`]
+    /// so the throwaway review worktree it runs in is torn down on EVERY exit path -
+    /// the `?` early-returns here are caught by the wrapper, which always cleans up.
+    /// `dir` is the read-only review worktree the reviewers run in (empty only on a
+    /// repo-less run, where there is no main checkout to protect).
+    fn run_fan_out_review_loop(&self, st: &Stage, dir: &str) -> Result<bool, Error> {
         // The fan-out lens set is `agents` when populated; a `strategy: fan-out`
         // stage that names a single `agent` (and no `agents`) runs that one agent as
         // its lone lens on the parallel path, so `strategy` is honored even without an
@@ -1130,9 +1265,9 @@ impl RunCtx<'_> {
             // and the adversary's findings from the graph, and its verdict gates the
             // stage. So the three tiers inform each other via the graph, not via the
             // conductor splicing one agent's stdout into another's prompt.
-            self.run_review_agents_concurrently(st, &lenses)?;
+            self.run_review_agents_concurrently(st, &lenses, dir)?;
             if !st.adversary.is_empty() {
-                self.run_adversary(st, &st.adversary)?;
+                self.run_adversary(st, &st.adversary, dir)?;
             }
             // The neutral adjudicator's verdict gates the stage (§3.2), fail-closed:
             // it approves ONLY on an explicit `approve`, blocking integration
@@ -1140,10 +1275,10 @@ impl RunCtx<'_> {
             let (approved, reason) = if st.adjudicator.is_empty() {
                 (true, String::new())
             } else {
-                self.run_adjudicator(st, &st.adjudicator)?
+                self.run_adjudicator(st, &st.adjudicator, dir)?
             };
 
-            let gates_pass = approved && self.run_gates(st, "")?.pass;
+            let gates_pass = approved && self.run_gates(st, dir)?.pass;
             if gates_pass {
                 // on_pass governs integration (§3.2): any value other than empty /
                 // `merge` runs the gates but does not mark the stage integrated.
@@ -1204,12 +1339,14 @@ impl RunCtx<'_> {
     /// REVIEW_PROTOCOL), so the later tiers and concurrent lenses retrieve them via
     /// grounding + the side-car rather than via the conductor splicing one lens's
     /// stdout into another agent's prompt. The lenses produce no code to integrate, so
-    /// they spawn with NO worktree and never integrate (item 6: a reviewing lens must
-    /// not get its writes merged into the base repo).
+    /// they own NO worktree of their own and never integrate (item 6: a reviewing lens
+    /// must not get its writes merged into the base repo) - they run IN the unit's
+    /// worktree (`dir`), reading the code under review, never the live main checkout.
     fn run_review_agents_concurrently(
         &self,
         st: &Stage,
         agent_ids: &[String],
+        dir: &str,
     ) -> Result<(), Error> {
         // Bounded fan-out pool (§6): run the lenses in chunks of at most
         // MAX_CONCURRENCY, each chunk a scoped thread group. Every lens still runs;
@@ -1218,7 +1355,7 @@ impl RunCtx<'_> {
             let chunk_results: Vec<Result<(), Error>> = std::thread::scope(|s| {
                 let handles: Vec<_> = chunk
                     .iter()
-                    .map(|a| s.spawn(move || self.run_lens(st, a)))
+                    .map(|a| s.spawn(move || self.run_lens(st, a, dir)))
                     .collect();
                 handles.into_iter().map(|h| h.join().unwrap()).collect()
             });
@@ -1229,14 +1366,18 @@ impl RunCtx<'_> {
         Ok(())
     }
 
-    /// Run a single review lens. A lens reviews - it writes no code - so it spawns
-    /// with NO worktree and its output is never integrated (item 6). It is prompted
-    /// with the grounded base prompt plus the REVIEW_PROTOCOL, so it EMITS each
-    /// finding it raises to the shared context graph (the cross-agent memory), where
-    /// the adversary, the adjudicator, and its fellow lenses retrieve it. Its stdout
-    /// is no longer captured to thread into another agent's prompt - the graph is the
-    /// channel. Budget-refused spawns (item 9) surface as an error so the run halts.
-    fn run_lens(&self, st: &Stage, agent_id: &str) -> Result<(), Error> {
+    /// Run a single review lens. A lens reviews - it writes no code - so it owns NO
+    /// worktree and its output is never integrated (item 6); it runs IN the unit's
+    /// worktree (`dir`) so it reads the actual code under review and any stray write
+    /// (every lens has Bash; the sdet lens has Edit/Write) lands in the throwaway
+    /// worktree, never the live main checkout. It is prompted with the grounded base
+    /// prompt plus the REVIEW_PROTOCOL, so it EMITS each finding it raises to the
+    /// shared context graph (the cross-agent memory), where the adversary, the
+    /// adjudicator, and its fellow lenses retrieve it. Its stdout is no longer captured
+    /// to thread into another agent's prompt - the graph is the channel. Budget-refused
+    /// spawns (item 9) surface as an error so the run halts.
+    fn run_lens(&self, st: &Stage, agent_id: &str, dir: &str) -> Result<(), Error> {
+        let opts = self.reviewer_spawn_opts("lens", agent_id, dir, true, st)?;
         let agent_def = self.cfg.agents.get(agent_id).ok_or_else(|| {
             Error(format!(
                 "stage {:?} references unknown agent {:?}",
@@ -1253,18 +1394,7 @@ impl RunCtx<'_> {
         let emit = |t: &str, v: Value| self.emit_with_actor(agent_id, t, v);
         self.deps
             .driver
-            .spawn(
-                agent_def,
-                &prompt,
-                &SpawnOpts {
-                    system_prompt: self.build_system_prompt(agent_def),
-                    dir: String::new(),
-                    isolation: false,
-                    parallel: true,
-                    blast_radius: self.grounded_seed(st),
-                },
-                &emit,
-            )
+            .spawn(agent_def, &prompt, &opts, &emit)
             .map_err(|e| Error(format!("stage {:?} agent {:?}: {}", st.name, agent_id, e.0)))?;
         Ok(())
     }
@@ -1275,10 +1405,12 @@ impl RunCtx<'_> {
     /// prompt (via `graph_context`) surfaces them - it retrieves the lenses' findings
     /// through the graph, not from a hand-threaded block. It then EMITS its own
     /// findings (the REVIEW_PROTOCOL) so the adjudicator reads them the same way. Like
-    /// the adjudicator it reviews - it produces no code to integrate, so it spawns
-    /// with no worktree - and unlike the adjudicator its output does NOT gate the
-    /// stage; it informs the adjudicator's judgment via the graph.
-    fn run_adversary(&self, st: &Stage, adv_id: &str) -> Result<(), Error> {
+    /// the adjudicator it reviews - it produces no code to integrate, so it owns no
+    /// worktree of its own; it runs IN the unit's worktree (`dir`), never the live
+    /// main checkout - and unlike the adjudicator its output does NOT gate the stage;
+    /// it informs the adjudicator's judgment via the graph.
+    fn run_adversary(&self, st: &Stage, adv_id: &str, dir: &str) -> Result<(), Error> {
+        let opts = self.reviewer_spawn_opts("adversary", adv_id, dir, false, st)?;
         let agent_def = self.cfg.agents.get(adv_id).ok_or_else(|| {
             Error(format!(
                 "stage {:?} references unknown adversary {:?}",
@@ -1295,18 +1427,7 @@ impl RunCtx<'_> {
         let emit = |t: &str, v: Value| self.emit_with_actor(adv_id, t, v);
         self.deps
             .driver
-            .spawn(
-                agent_def,
-                &prompt,
-                &SpawnOpts {
-                    system_prompt: self.build_system_prompt(agent_def),
-                    dir: String::new(),
-                    isolation: false,
-                    parallel: false,
-                    blast_radius: self.grounded_seed(st),
-                },
-                &emit,
-            )
+            .spawn(agent_def, &prompt, &opts, &emit)
             .map_err(|e| {
                 Error(format!(
                     "stage {:?} adversary {:?}: {}",
@@ -1324,7 +1445,13 @@ impl RunCtx<'_> {
     /// block. The reviewer produces no code to integrate. The returned output is the
     /// verdict reason: it is folded into the unit's `reviewed` evidence on approval
     /// (item 4) and into the next attempt's prompt on a reject (item 5).
-    fn run_adjudicator(&self, st: &Stage, adj_id: &str) -> Result<(bool, String), Error> {
+    fn run_adjudicator(
+        &self,
+        st: &Stage,
+        adj_id: &str,
+        dir: &str,
+    ) -> Result<(bool, String), Error> {
+        let opts = self.reviewer_spawn_opts("adjudicator", adj_id, dir, false, st)?;
         let agent_def = self.cfg.agents.get(adj_id).ok_or_else(|| {
             Error(format!(
                 "stage {:?} references unknown adjudicator {:?}",
@@ -1342,18 +1469,7 @@ impl RunCtx<'_> {
         let result = self
             .deps
             .driver
-            .spawn(
-                agent_def,
-                &prompt,
-                &SpawnOpts {
-                    system_prompt: self.build_system_prompt(agent_def),
-                    dir: String::new(),
-                    isolation: false,
-                    parallel: false,
-                    blast_radius: self.grounded_seed(st),
-                },
-                &emit,
-            )
+            .spawn(agent_def, &prompt, &opts, &emit)
             .map_err(|e| {
                 Error(format!(
                     "stage {:?} adjudicator {:?}: {}",
@@ -1903,6 +2019,36 @@ impl RunCtx<'_> {
         Ok(Some(wt))
     }
 
+    /// A throwaway read-only worktree of the base HEAD for a STANDALONE review stage
+    /// (one that integrates no code and so has no unit worktree). Its reviewers run IN
+    /// it - reading the integrated code under review - so they never run in the live
+    /// main checkout (where a stray Bash/Edit would corrupt the repo). Unlike the unit
+    /// worktree, this carries NO durable checkpoint: it is created off a fresh,
+    /// run-unique throwaway branch and removed (dir + branch) when the stage ends. A
+    /// repo-less run has no checkout to protect, so it returns None (reviewers run in
+    /// the project cwd, which is the workspace; `assert_isolated_cwd` is a no-op there).
+    fn review_only_worktree(&self, st: &Stage) -> Result<Option<Worktree>, Error> {
+        if self.deps.repo.is_empty() {
+            return Ok(None);
+        }
+        let uuid = uuid::Uuid::new_v4().to_string();
+        let dir = std::env::temp_dir().join(format!(
+            "rigger-review-{}-{}",
+            sanitize_for_path(&st.name),
+            &uuid[..8]
+        ));
+        // A run-unique throwaway branch (NOT the deterministic unit branch): this
+        // worktree is read-only scaffolding, never a checkpoint, so its branch must
+        // not collide with - or survive as - a unit's durable branch.
+        let branch = format!(
+            "rigger/review/{}-{}",
+            sanitize_for_path(&st.name),
+            &uuid[..8]
+        );
+        let wt = Worktree::create(&self.deps.repo, dir.to_str().unwrap_or_default(), &branch)?;
+        Ok(Some(wt))
+    }
+
     fn harvest_proposed(
         &self,
         stages: &mut BTreeMap<String, Stage>,
@@ -2163,6 +2309,18 @@ fn write_findings(b: &mut String, g: &Graph) {
 /// id with spaces or other ref-illegal characters still yields a valid, stable branch.
 fn unit_branch(unit_id: &str) -> String {
     format!("rigger/u/{}", sanitize_for_path(unit_id))
+}
+
+/// Whether two filesystem paths name the same location. Used by the cwd-isolation
+/// guard to refuse spawning an agent directly in the main repo checkout. Compares
+/// the canonicalized paths when both resolve (so `.`, `..`, symlinks, and a trailing
+/// slash do not let an alias of the repo root slip past); falls back to a trimmed
+/// byte comparison when a path does not yet exist on disk (canonicalize would error).
+fn same_path(a: &str, b: &str) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(ca), Ok(cb)) => ca == cb,
+        _ => a.trim_end_matches('/') == b.trim_end_matches('/'),
+    }
 }
 
 /// Map an arbitrary unit id to a stable token safe for a git ref component and a
@@ -2485,6 +2643,10 @@ mod tests {
         last_prompt: Mutex<String>,
         /// Per-agent (isolation, parallel) the conductor passed at each spawn.
         opts_by_agent: Mutex<HashMap<String, (bool, bool)>>,
+        /// Every working dir (SpawnOpts.dir = the agent's cwd) each agent was spawned
+        /// with, in order, keyed by agent id. Used to prove the worktree-isolation
+        /// invariant: every spawn's cwd is its worktree, never empty / the repo root.
+        dirs_by_agent: Mutex<HashMap<String, Vec<String>>>,
         /// The persona (system prompt) the conductor threaded into SpawnOpts for each
         /// agent at spawn time - used to assert every driver path receives the agent's
         /// role, not just the cli path's own arg-building.
@@ -2508,6 +2670,7 @@ mod tests {
                 fail_spawn: false,
                 last_prompt: Mutex::new(String::new()),
                 opts_by_agent: Mutex::new(HashMap::new()),
+                dirs_by_agent: Mutex::new(HashMap::new()),
                 system_prompt_by_agent: Mutex::new(HashMap::new()),
                 prompts_by_agent: Mutex::new(HashMap::new()),
                 call_order: Mutex::new(Vec::new()),
@@ -2517,6 +2680,16 @@ mod tests {
         /// Every prompt the named agent was spawned with, in spawn order.
         fn prompts_for(&self, agent_id: &str) -> Vec<String> {
             self.prompts_by_agent
+                .lock()
+                .unwrap()
+                .get(agent_id)
+                .cloned()
+                .unwrap_or_default()
+        }
+
+        /// Every working dir (cwd) the named agent was spawned with, in spawn order.
+        fn dirs_for(&self, agent_id: &str) -> Vec<String> {
+            self.dirs_by_agent
                 .lock()
                 .unwrap()
                 .get(agent_id)
@@ -2557,6 +2730,12 @@ mod tests {
                 .lock()
                 .unwrap()
                 .insert(a.id.clone(), (opts.isolation, opts.parallel));
+            self.dirs_by_agent
+                .lock()
+                .unwrap()
+                .entry(a.id.clone())
+                .or_default()
+                .push(opts.dir.clone());
             self.system_prompt_by_agent
                 .lock()
                 .unwrap()
@@ -4589,6 +4768,147 @@ mod tests {
                     && String::from_utf8_lossy(&e.data).contains("\"status\":\"reviewed\"")
             }),
             "an approved unit must be marked reviewed before it integrates"
+        );
+    }
+
+    #[test]
+    fn every_spawn_runs_in_a_worktree_never_the_main_repo_checkout() {
+        // The worktree-isolation invariant (the headline fix): with a repo configured,
+        // EVERY spawned agent in a unit's lifecycle - the implementer AND all three
+        // review tiers - must run with its cwd (SpawnOpts.dir) set to the unit's
+        // throwaway worktree, NEVER empty (which inherits the driver's cwd = the live
+        // main checkout) and NEVER the repo root itself. This is what stops the
+        // implementer's edits / remediation fixes - and any reviewer's stray Bash/Edit -
+        // from landing in the checkout the gates and review never inspect.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lensA".into(), agent("lensA"));
+        cfg.agents.insert("lensB".into(), agent("lensB"));
+        cfg.agents.insert("adversary".into(), agent("adversary"));
+        cfg.agents.insert("adj".into(), agent("adj"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.defaults.review = config::ReviewPanel {
+            lenses: vec!["lensA".into(), "lensB".into()],
+            adversary: "adversary".into(),
+            adjudicator: "adj".into(),
+        };
+        cfg.workflow.stages.insert(
+            "implement".into(),
+            Stage {
+                name: "implement".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            output: r#"{"verdict":"approve"}"#.into(),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+
+        // The canonical repo root, so a worktree dir under it is still rejected if it
+        // resolves to the root (it never should - worktrees live in temp_dir()).
+        let canon_repo = std::fs::canonicalize(&repo_path)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or(repo_path.clone());
+        for agent_id in ["worker", "lensA", "lensB", "adversary", "adj"] {
+            let dirs = driver.dirs_for(agent_id);
+            assert!(
+                !dirs.is_empty(),
+                "{agent_id} must have been spawned at least once"
+            );
+            for dir in &dirs {
+                assert!(
+                    !dir.is_empty(),
+                    "{agent_id} ran with an EMPTY cwd - it would inherit the driver's \
+                     cwd = the main repo checkout (the isolation bug)"
+                );
+                assert!(
+                    !same_path(dir, &repo_path) && !same_path(dir, &canon_repo),
+                    "{agent_id} ran directly in the main repo checkout ({dir:?}); \
+                     it must run in its worktree"
+                );
+                // The cwd is a rigger worktree under the temp dir, not the repo tree.
+                let name = std::path::Path::new(dir)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or_default();
+                assert!(
+                    name.starts_with("rigger-wt-") || name.starts_with("rigger-review-"),
+                    "{agent_id}'s cwd must be a rigger worktree, got {dir:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn assert_isolated_cwd_refuses_empty_or_repo_root_with_a_repo() {
+        // The guard that makes "run in the main repo" structurally impossible: with a
+        // repo configured, an empty cwd (inherits the driver's cwd = the repo) and the
+        // repo root itself are both refused; only a distinct worktree dir is allowed. A
+        // repo-less run has no checkout to protect, so an empty cwd is fine there.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let cfg = Config::default();
+
+        // With a repo set.
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let c = RunCtx::for_test(&cfg, &deps);
+        assert!(
+            c.assert_isolated_cwd("implementer", "x", "").is_err(),
+            "an empty cwd with a repo configured must be refused (it is the main checkout)"
+        );
+        assert!(
+            c.assert_isolated_cwd("implementer", "x", &repo_path)
+                .is_err(),
+            "the repo root itself must be refused as a cwd"
+        );
+        assert!(
+            c.assert_isolated_cwd("lens", "x", "/tmp/rigger-wt-unit-abcd1234")
+                .is_ok(),
+            "a distinct worktree dir is the only allowed cwd"
+        );
+
+        // Repo-less: no checkout to protect, so an empty cwd is allowed.
+        let st2 = Store::open(":memory:").unwrap();
+        let driver2 = Stub::new();
+        let deps2 = Deps {
+            store: &st2,
+            driver: &driver2,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let c2 = RunCtx::for_test(&cfg, &deps2);
+        assert!(
+            c2.assert_isolated_cwd("implementer", "x", "").is_ok(),
+            "a repo-less run has no main checkout to protect; an empty cwd is fine"
         );
     }
 
