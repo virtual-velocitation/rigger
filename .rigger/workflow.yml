@@ -33,6 +33,16 @@ defaults:
   # spec; never set it back to 0 for an unattended run.
   budget: 60
 
+  # The remediation depth (§4.4): how many attempts a failed unit gets before it
+  # escalates to a human. This is the REFINEMENT-depth knob, NOT a review-rigor
+  # knob - it gives a subtle unit room to CONVERGE under the full strict review
+  # instead of escalating prematurely. Raise it when a unit's defects are genuine
+  # but DIMINISHING across iterations (the lenses go clean, only the adversary's
+  # deep findings remain) and the default 3 is too few to converge; it loosens the
+  # depth limit, never the review bar. Absent falls back to 3 (the historical
+  # default). Bounded by `budget` above, so it can never spin unboundedly.
+  max_retries: 6
+
   # The three-tier review panel applied to EVERY implementer unit (§3.2). TIER 1:
   # the expert lenses (architecture + sdet) review the unit's diff in parallel.
   # TIER 2: the adversary reviews THE LENSES' findings and tries to prove them

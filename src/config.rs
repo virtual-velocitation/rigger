@@ -95,6 +95,14 @@ pub struct Defaults {
     /// agent spawns a run may perform. 0 (the default) means unlimited.
     #[serde(default)]
     pub budget: u32,
+    /// The remediation depth: how many attempts a failed unit gets before it
+    /// escalates to a human (§4.4). This is the refinement-depth knob, NOT a
+    /// review-rigor knob - it gives a subtle unit room to converge under the full
+    /// strict review instead of escalating prematurely. Absent (`0`) falls back to
+    /// `safety::MAX_RETRIES` (3), the exact historical bound, so an un-set workflow
+    /// is byte-for-byte back-compatible.
+    #[serde(default)]
+    pub max_retries: u32,
     /// The default partition strategy applied to every wave (§3.2, §8); a stage's
     /// own `partition` overrides it. `by-blast-radius` makes each wave's ready
     /// stages disjoint by blast-radius before they run; empty (the default) leaves
@@ -526,6 +534,25 @@ agent: worker\n";
             id: id.to_string(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn max_retries_parses_from_defaults_and_defaults_to_zero_when_absent() {
+        // The remediation-depth knob parses from `defaults.max_retries` and is 0 when
+        // omitted - the sentinel the conductor reads as "fall back to the historical
+        // default of 3", so an un-set workflow is exactly back-compatible.
+        let present: Workflow =
+            serde_yaml::from_str("name: w\ndefaults:\n  max_retries: 6\n").unwrap();
+        assert_eq!(
+            present.defaults.max_retries, 6,
+            "an explicit defaults.max_retries must parse through"
+        );
+
+        let absent: Workflow = serde_yaml::from_str("name: w\ndefaults:\n  budget: 60\n").unwrap();
+        assert_eq!(
+            absent.defaults.max_retries, 0,
+            "an absent defaults.max_retries must default to 0 (the fall-back-to-3 sentinel)"
+        );
     }
 
     #[test]
