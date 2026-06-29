@@ -317,7 +317,7 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     // A unit that FAILED in a prior window (but did not escalate) carries its folded
     // attempt count here, so a resumed run CONTINUES its bounded remediation from that
     // count rather than restarting at 0 - attempts accumulate across windows and the
-    // unit escalates at MAX_RETRIES TOTAL, not per-window forever.
+    // unit escalates at the configured `max_retries` bound TOTAL, not per-window forever.
     let prior_attempts: HashMap<String, u32> = prior
         .units
         .values()
@@ -469,8 +469,8 @@ struct RunCtx<'a> {
     /// mid-remediation `Failed` unit). A unit that FAILED but did not yet ESCALATE
     /// across one window must continue its bounded remediation from the recorded
     /// count - NOT restart at 0 - so attempts ACCUMULATE across windows and the unit
-    /// escalates at `MAX_RETRIES` TOTAL, instead of doing a fresh MAX_RETRIES every
-    /// window forever. `run_single_stage` seeds its `attempts` loop variable from this
+    /// escalates at the configured `max_retries` bound TOTAL, instead of doing a fresh
+    /// `max_retries` every window forever. `run_single_stage` seeds its `attempts` loop variable from this
     /// map (keyed by unit id); a unit absent from it starts at 0 (a fresh unit, or one
     /// that never failed). Integrated/escalated units are terminal and skipped before
     /// the lifecycle, so their presence here is harmless.
@@ -517,6 +517,21 @@ impl RunCtx<'_> {
             let _ = g.apply(&ev);
         }
         Ok(())
+    }
+
+    /// The configured remediation depth: how many attempts a failed unit gets
+    /// before escalation (§4.4). Comes from `defaults.max_retries`; absent (`0`)
+    /// falls back to `safety::MAX_RETRIES` (3), the exact historical bound, so an
+    /// un-set workflow escalates exactly as before. A higher value gives a subtle
+    /// unit room to converge under the full strict review - it loosens the depth
+    /// limit, never the review bar.
+    fn max_retries(&self) -> u32 {
+        let configured = self.cfg.workflow.defaults.max_retries;
+        if configured == 0 {
+            safety::MAX_RETRIES
+        } else {
+            configured
+        }
     }
 
     /// Whether the spawn budget circuit-breaker has tripped (§4.4, §8): a positive
@@ -993,8 +1008,9 @@ impl RunCtx<'_> {
         // Resume of a mid-remediation unit: seed the attempt counter from the prior
         // window's folded `UnitFailed attempts:N` so bounded remediation CONTINUES from
         // where it stopped instead of restarting at 0. A unit that failed twice across a
-        // prior window resumes at 2, makes its 3rd (final) attempt this window, and
-        // ESCALATES at MAX_RETRIES TOTAL - not a fresh MAX_RETRIES every window forever.
+        // prior window resumes at 2, makes its 3rd (final) attempt this window (under the
+        // default bound), and ESCALATES at the configured `max_retries` bound TOTAL - not
+        // a fresh `max_retries` every window forever.
         // A unit with no prior failure (fresh, or never failed) starts at 0, unchanged.
         let mut attempts = self.prior_attempts.get(&st.name).copied().unwrap_or(0);
         // The last attempt's concrete failure, threaded into the NEXT attempt's
@@ -1181,7 +1197,7 @@ impl RunCtx<'_> {
                 }
             }
 
-            let rem = safety::remediate(attempts, safety::MAX_RETRIES);
+            let rem = safety::remediate(attempts, self.max_retries());
             attempts = rem.attempts;
             self.emit(
                 ledger::TYPE_UNIT_FAILED,
@@ -1306,7 +1322,7 @@ impl RunCtx<'_> {
                 return Ok(true);
             }
 
-            let rem = safety::remediate(attempts, safety::MAX_RETRIES);
+            let rem = safety::remediate(attempts, self.max_retries());
             attempts = rem.attempts;
             self.emit(
                 ledger::TYPE_UNIT_FAILED,
@@ -5432,6 +5448,171 @@ mod tests {
             rs.units["implement"].attempts,
             safety::MAX_RETRIES,
             "the final attempts count must reach the bound"
+        );
+    }
+
+    #[test]
+    fn a_higher_max_retries_gives_more_attempts_before_escalation() {
+        // The remediation depth is configurable via `defaults.max_retries`: it is the
+        // REFINEMENT-depth knob, not a review-rigor knob. A subtle unit that the full
+        // strict review keeps rejecting must be able to be given MORE attempts to
+        // converge before escalation, WITHOUT weakening any review. We drive a
+        // perpetually-rejecting adjudicator (so the unit can only ever escalate) and
+        // assert the unit gets EXACTLY `max_retries` worker spawns before it escalates -
+        // a higher value buys more attempts, a lower value escalates earlier, and the
+        // review path is identical in every case.
+
+        // Build a config whose only knob that varies is `defaults.max_retries`, run it
+        // against an always-rejecting adjudicator, and return (worker spawns, final
+        // status, final attempts). The review panel (lenses + adversary + adjudicator)
+        // and gates are byte-identical across every bound, so this isolates the depth.
+        fn escalation_run(max_retries: u32) -> (u32, ledger::Status, u32) {
+            let mut cfg = Config::default();
+            cfg.agents.insert("worker".into(), agent("worker"));
+            cfg.agents.insert("lens".into(), agent("lens"));
+            cfg.agents.insert("adversary".into(), agent("adversary"));
+            cfg.agents.insert("adj".into(), agent("adj"));
+            cfg.workflow.gates.insert("ok".into(), gate_def("true")); // static gates pass
+            cfg.workflow.defaults.review = config::ReviewPanel {
+                lenses: vec!["lens".into()],
+                adversary: "adversary".into(),
+                adjudicator: "adj".into(),
+            };
+            cfg.workflow.defaults.max_retries = max_retries;
+            cfg.workflow.stages.insert(
+                "implement".into(),
+                Stage {
+                    name: "implement".into(),
+                    agent: "worker".into(),
+                    gates: vec!["ok".into()],
+                    on_pass: "merge".into(),
+                    ..Default::default()
+                },
+            );
+            let st = Store::open(":memory:").unwrap();
+            let driver = Stub {
+                output: r#"{"verdict":"reject","issues":[]}"#.into(),
+                ..Stub::new()
+            };
+            let deps = Deps {
+                store: &st,
+                driver: &driver,
+                gates: &ExecRunner,
+                repo: String::new(),
+                grounder: None,
+                graph: None,
+                criteria: Vec::new(),
+            };
+            let rs = run(&cfg, &deps).unwrap();
+            let order = driver.call_order.lock().unwrap().clone();
+            let worker_spawns = order.iter().filter(|a| *a == "worker").count() as u32;
+            (
+                worker_spawns,
+                rs.units["implement"].status,
+                rs.units["implement"].attempts,
+            )
+        }
+
+        // A higher bound (6) gives the unit SIX attempts to converge before escalating -
+        // exactly six worker spawns, not three.
+        let (spawns, status, attempts) = escalation_run(6);
+        assert_eq!(
+            status,
+            ledger::Status::Escalated,
+            "a perpetually-rejecting adjudicator still escalates - the knob loosens depth, never the bar"
+        );
+        assert_eq!(
+            spawns, 6,
+            "max_retries: 6 must give the unit SIX attempts before escalation, not the default three; spawns were {spawns}"
+        );
+        assert_eq!(
+            attempts, 6,
+            "the final folded attempt count must equal the configured bound"
+        );
+
+        // A low bound (2) escalates EARLY - exactly two attempts, fewer than the default
+        // three. The same review path, a shallower depth.
+        let (spawns_low, status_low, attempts_low) = escalation_run(2);
+        assert_eq!(status_low, ledger::Status::Escalated);
+        assert_eq!(
+            spawns_low, 2,
+            "max_retries: 2 must escalate after only two attempts; spawns were {spawns_low}"
+        );
+        assert_eq!(
+            attempts_low, 2,
+            "the final attempt count tracks the low bound"
+        );
+
+        // And a higher bound genuinely buys more attempts than a lower one.
+        assert!(
+            spawns > spawns_low,
+            "a higher max_retries must give strictly more attempts before escalation than a lower one"
+        );
+    }
+
+    #[test]
+    fn an_absent_max_retries_preserves_the_default_bound_of_three() {
+        // Back-compat: a workflow that does NOT set `defaults.max_retries` (the field is
+        // 0) falls back to `safety::MAX_RETRIES` (3) exactly as before - the unit gets
+        // three attempts, byte-for-byte the historical behavior. This pins that the new
+        // knob is opt-in and changes nothing when absent.
+        assert_eq!(
+            safety::MAX_RETRIES,
+            3,
+            "the documented default remediation depth is 3"
+        );
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("adversary".into(), agent("adversary"));
+        cfg.agents.insert("adj".into(), agent("adj"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.defaults.review = config::ReviewPanel {
+            lenses: vec!["lens".into()],
+            adversary: "adversary".into(),
+            adjudicator: "adj".into(),
+        };
+        // NOTE: defaults.max_retries deliberately left unset (0 -> falls back to 3).
+        assert_eq!(
+            cfg.workflow.defaults.max_retries, 0,
+            "this test exercises the absent (unset) case"
+        );
+        cfg.workflow.stages.insert(
+            "implement".into(),
+            Stage {
+                name: "implement".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            output: r#"{"verdict":"reject","issues":[]}"#.into(),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        let order = driver.call_order.lock().unwrap().clone();
+        let worker_spawns = order.iter().filter(|a| *a == "worker").count() as u32;
+        assert_eq!(
+            rs.units["implement"].status,
+            ledger::Status::Escalated,
+            "an unset max_retries must escalate exactly as before"
+        );
+        assert_eq!(
+            worker_spawns,
+            safety::MAX_RETRIES,
+            "an absent max_retries must give exactly the historical three attempts; spawns were {worker_spawns}"
         );
     }
 
