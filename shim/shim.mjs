@@ -231,11 +231,18 @@ export async function runWorkflow(client, runAgent, opts = {}) {
   return drove
 }
 
-// runAgentViaSdk is the real runAgent: it runs one agent via the Agent SDK's
-// query(), giving it the in-process proxy server (so its rigger_emit/rigger_peers
-// reach the shared connection) plus the spawn's persona (its role, as the system
-// prompt), model, allowed tools, and dir. It returns the agent's final result text.
-export async function runAgentViaSdk({ prompt, systemPrompt, model, tools, dir, proxyServer }) {
+// buildAgentOptions builds the Agent SDK query() options for one spawn. It is a
+// PURE function (no I/O) so the worktree-isolation invariant is machine-verifiable:
+// the agent's WORKING DIRECTORY is the spawn's `dir` (its isolated worktree), set as
+// `options.cwd`. The SDK's cwd "Defaults to process.cwd()" (sdk.d.ts) - which, for
+// `rigger workflow` run from the repo root, IS the live main checkout - so a spawn
+// that failed to carry its worktree dir would run the agent in the main repo and let
+// the implementer's edits (or a reviewer's stray Bash/Edit) corrupt it. The conductor
+// guarantees every lifecycle spawn carries a worktree `dir`; this function threads it
+// to `cwd` so relative-path tool calls resolve INSIDE the worktree, never the repo
+// root. (`dir` is empty only on a genuinely repo-less run, where there is no main
+// checkout to protect and the project cwd is the intended workspace.)
+export function buildAgentOptions({ systemPrompt, model, tools, dir, proxyServer }) {
   // The agent always gets the two rigger tools (namespaced mcp__rigger__*) on top
   // of whatever the spawn allows, so it can always emit/peer through the proxy.
   const allowedTools = [
@@ -255,7 +262,20 @@ export async function runAgentViaSdk({ prompt, systemPrompt, model, tools, dir, 
   // via `--system-prompt`. Omitted when empty so the agent keeps the default prompt.
   if (systemPrompt) options.systemPrompt = systemPrompt
   if (model) options.model = model
+  // The agent's working directory is its isolated worktree. Set it explicitly so the
+  // SDK does NOT fall back to process.cwd() (the main repo checkout). Left unset only
+  // when `dir` is empty (a repo-less run with no checkout to corrupt).
   if (dir) options.cwd = dir
+  return options
+}
+
+// runAgentViaSdk is the real runAgent: it runs one agent via the Agent SDK's
+// query(), giving it the in-process proxy server (so its rigger_emit/rigger_peers
+// reach the shared connection) plus the spawn's persona (its role, as the system
+// prompt), model, allowed tools, and dir (its worktree, as cwd). It returns the
+// agent's final result text.
+export async function runAgentViaSdk({ prompt, systemPrompt, model, tools, dir, proxyServer }) {
+  const options = buildAgentOptions({ systemPrompt, model, tools, dir, proxyServer })
 
   let result = ''
   for await (const message of query({ prompt, options })) {

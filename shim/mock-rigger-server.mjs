@@ -34,7 +34,9 @@ const SPAWN = {
   system_prompt: 'You are the rust engineer. Implement the unit.',
   model: 'sonnet',
   tools: ['Read'],
-  dir: '',
+  // The unit's worktree dir (the agent's cwd). Defaults to '' (a repo-less run); a
+  // test can set RIGGER_MOCK_DIR to assert the worktree dir is threaded to the agent.
+  dir: process.env.RIGGER_MOCK_DIR || '',
   blast_radius: ['a.rs'],
 }
 let spawnHandedOut = false
