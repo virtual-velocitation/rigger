@@ -115,6 +115,33 @@ impl ReviewOutcome {
     }
 }
 
+/// The proof, carried into [`RunCtx::integrate_and_emit`], that a unit's three-tier
+/// review EXPLICITLY APPROVED it (and its gates passed) - the ONLY thing that may
+/// merge a unit onto the integration branch.
+///
+/// This is the fail-closed guard at the merge seam. Integration must run ONLY on an
+/// explicit `approve`; on a review reject, on escalation, and on a gate failure
+/// NOTHING merges and the unit's work stays on its own branch (`rigger/u/<id>`) for a
+/// human. Before, that invariant lived ONLY in where `integrate_and_emit` was CALLED
+/// (inside an `if review.approved` arm) - implicit, and a refactor that moved or added
+/// a call site could silently merge rejected/escalated code, which is exactly the
+/// real-run bug (an escalated unit's `feat(...)` commit landed on the run branch and
+/// broke the suite). Making the approval an explicit, unforgeable VALUE the caller must
+/// hand to `integrate_and_emit` converts the invariant from "trust the call site" into
+/// a precondition the merge seam itself enforces: there is no way to construct one
+/// except [`Self::approved`], so no path can merge without a real approve in hand.
+#[derive(Clone, Copy)]
+struct IntegrationApproval(());
+
+impl IntegrationApproval {
+    /// The unit's review explicitly APPROVED it and its gates passed - the work may
+    /// merge. The ONLY constructor, so an `IntegrationApproval` value cannot exist
+    /// without a real approve, and no rejected/escalated path can fabricate one.
+    fn approved() -> Self {
+        IntegrationApproval(())
+    }
+}
+
 /// The specifics of a unit's previous failed attempt, threaded into the next
 /// attempt's prompt (spec 02, targeted remediation). Empty on the first attempt.
 #[derive(Default)]
@@ -858,7 +885,16 @@ impl RunCtx<'_> {
             if !integrates(st) {
                 return Ok(false);
             }
-            let commit = self.integrate_and_emit(wt, &st.agent, &st.name, &st.gates)?;
+            // The prior window recorded `reviewed` - which is emitted ONLY on an
+            // explicit adjudicator approve (`review_unit` / the fan-out review stage) -
+            // so this resumed merge carries a real approval.
+            let commit = self.integrate_and_emit(
+                wt,
+                &st.agent,
+                &st.name,
+                &st.gates,
+                IntegrationApproval::approved(),
+            )?;
             self.emit(
                 ledger::TYPE_UNIT_INTEGRATED,
                 json!({"id": st.name, "commit": commit}),
@@ -1012,7 +1048,17 @@ impl RunCtx<'_> {
                         if !integrates(st) {
                             return Ok(false);
                         }
-                        let commit = self.integrate_and_emit(wt, &st.agent, &st.name, &st.gates)?;
+                        // The gates passed AND the review explicitly approved: the only
+                        // path that mints an `IntegrationApproval`, so the only path that
+                        // can merge. The reject branch below has no approval to hand to
+                        // `integrate_and_emit`, so it cannot land the unit's code.
+                        let commit = self.integrate_and_emit(
+                            wt,
+                            &st.agent,
+                            &st.name,
+                            &st.gates,
+                            IntegrationApproval::approved(),
+                        )?;
                         self.emit(
                             ledger::TYPE_UNIT_INTEGRATED,
                             json!({"id": st.name, "commit": commit}),
@@ -1526,6 +1572,12 @@ impl RunCtx<'_> {
         agent_id: &str,
         unit_name: &str,
         gates: &[String],
+        // The fail-closed merge guard: an `IntegrationApproval` exists ONLY when the
+        // unit's review EXPLICITLY APPROVED it (and its gates passed). Taking it by
+        // value here makes "approved" a precondition of the merge seam itself, not an
+        // implicit property of the call site - a rejected or escalated unit can never
+        // call this, because it has no approval to hand over.
+        _approval: IntegrationApproval,
     ) -> Result<String, Error> {
         let wt = match wt {
             Some(w) => w,
@@ -6855,6 +6907,109 @@ mod tests {
         assert!(
             repo.path().join("feature.rs").exists(),
             "the committed, gated artifact must merge into the base repo"
+        );
+    }
+
+    #[test]
+    fn an_escalated_unit_does_not_integrate_its_code() {
+        // The SAFETY invariant: a unit whose three-tier review REJECTED it (here the
+        // adjudicator always rejects, so it fails 3 times and ESCALATES) must NOT have
+        // its code merged onto the integration branch. Escalation means "the adversarial
+        // review refused this; hand it to a human" - the work-in-progress STAYS on the
+        // unit's own branch (`rigger/u/<id>`), and NOTHING fast-forwards / merges onto
+        // the integration branch. A real run hit exactly this: a feat(...) commit landed
+        // on the run branch even though the unit escalated, and the merged-but-rejected
+        // code broke the suite.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+
+        // The integration branch HEAD BEFORE the run - it must be byte-for-byte
+        // unchanged after an escalation (nothing merged).
+        let head_before = git_head(&repo_path);
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                review: crate::config::ReviewPanel {
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let st = Store::open(":memory:").unwrap();
+        // The implementer writes a file each attempt (the diff the review then judges);
+        // the gates pass (`true`), so review IS reached - and the adjudicator ALWAYS
+        // rejects, so the unit retries to the bound and escalates.
+        let driver = Stub {
+            write_file: Some("feature.rs".into()),
+            output_by_agent: HashMap::from([(
+                "judge".to_string(),
+                r#"{"verdict":"reject","reason":"adversarial review refuses this"}"#.to_string(),
+            )]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        // (c) The unit reaches the terminal ESCALATED state - the review refused it to
+        // the bound and it was handed to a human.
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Escalated,
+            "an always-rejected unit must escalate, not integrate"
+        );
+
+        // (a) No UnitIntegrated event for the escalated unit - it never landed.
+        let events = st
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        let integrated = events.iter().any(|e| {
+            e.type_ == ledger::TYPE_UNIT_INTEGRATED
+                && serde_json::from_slice::<Value>(&e.data)
+                    .ok()
+                    .and_then(|v| v.get("id").and_then(|x| x.as_str()).map(str::to_string))
+                    .as_deref()
+                    == Some("s")
+        });
+        assert!(
+            !integrated,
+            "an escalated unit must emit NO UnitIntegrated event - its code did not land"
+        );
+
+        // (b) The integration branch HEAD is UNCHANGED - the rejected code is NOT merged.
+        // The unit's feat/work commit stays on `rigger/u/s` for a human, never on base.
+        assert_eq!(
+            git_head(&repo_path),
+            head_before,
+            "the integration branch HEAD must be UNCHANGED - nothing merges on escalation"
+        );
+        assert!(
+            !repo.path().join("feature.rs").exists(),
+            "the rejected artifact must NOT land in the base repo - it stays on the unit branch"
+        );
+
+        // The unit's durable checkpoint branch survives with its work, for the human.
+        assert!(
+            crate::worktree::Worktree::branch_has_work(&repo_path, &unit_branch("s")),
+            "the escalated unit's work must remain on its own branch for a human to inspect"
         );
     }
 }
