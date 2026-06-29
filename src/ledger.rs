@@ -10,8 +10,10 @@ use serde::Deserialize;
 use crate::eventstore::Event;
 
 /// Status of a unit of work, over its lifecycle
-/// pending -> grounding -> red -> green -> verified -> reviewed -> integrated,
-/// or the terminal failed / escalated.
+/// pending -> grounding -> red -> green -> verified -> reviewed -> integrated.
+/// `failed` is TRANSIENT (the unit is mid-remediation and retries / resumes); the
+/// terminal states are `integrated` (it landed) and `escalated` (it gave up at the
+/// remediation bound).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
     Pending,
@@ -240,11 +242,19 @@ impl RunState {
         !self.units.is_empty() && self.units.values().all(|u| u.status == Status::Integrated)
     }
 
-    /// Whether a unit has reached a terminal state (integrated, failed, escalated).
+    /// Whether a unit has reached a terminal state (integrated or escalated).
+    ///
+    /// `Failed` is deliberately NOT terminal. A `Failed` unit has exhausted ONE
+    /// remediation attempt but has NOT yet hit `MAX_RETRIES` (which would have folded
+    /// to `Escalated`): it is mid-remediation, not done. A window that ends with the
+    /// unit `Failed` must let the next window RESUME and continue remediating from the
+    /// recorded attempt count - not seed it into `terminal` and skip it forever. Only
+    /// `Integrated` (it landed) and `Escalated` (it gave up at the bound, which is
+    /// final) are truly terminal; both halt the unit for good.
     pub fn is_terminal(&self, id: &str) -> bool {
         matches!(
             self.units.get(id).map(|u| u.status),
-            Some(Status::Integrated) | Some(Status::Failed) | Some(Status::Escalated)
+            Some(Status::Integrated) | Some(Status::Escalated)
         )
     }
 
@@ -319,6 +329,28 @@ mod tests {
         assert_eq!(r.units["u"].status, Status::Escalated);
         assert!(!r.done());
         assert!(r.is_terminal("u"));
+    }
+
+    #[test]
+    fn a_failed_unit_is_not_terminal() {
+        // A unit that FAILED a review/gate but has NOT yet escalated (attempts < the
+        // bound) is mid-remediation, not done. It must NOT be treated as terminal -
+        // otherwise resume seeds it into `terminal` and skips it forever, and it never
+        // finishes its remediation across windows.
+        let r = project(&[ev(TYPE_UNIT_FAILED, r#"{"id":"u","attempts":1}"#)]).unwrap();
+        assert_eq!(r.units["u"].status, Status::Failed);
+        assert_eq!(r.units["u"].attempts, 1);
+        assert!(
+            !r.is_terminal("u"),
+            "a Failed-but-not-escalated unit is transient (mid-remediation), not terminal"
+        );
+        // The folded attempt count is preserved so resume can continue remediating from
+        // it rather than restarting the counter.
+        assert!(
+            !r.done(),
+            "a Failed unit is not Integrated, so the run is not done"
+        );
+        assert!(!r.is_integrated("u"));
     }
 
     #[test]
