@@ -287,6 +287,16 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         .values()
         .map(|u| (u.id.clone(), u.status))
         .collect();
+    // A unit that FAILED in a prior window (but did not escalate) carries its folded
+    // attempt count here, so a resumed run CONTINUES its bounded remediation from that
+    // count rather than restarting at 0 - attempts accumulate across windows and the
+    // unit escalates at MAX_RETRIES TOTAL, not per-window forever.
+    let prior_attempts: HashMap<String, u32> = prior
+        .units
+        .values()
+        .filter(|u| u.attempts > 0)
+        .map(|u| (u.id.clone(), u.attempts))
+        .collect();
     let ctx = RunCtx {
         cfg,
         deps,
@@ -295,6 +305,7 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         spawns: AtomicU32::new(0),
         budget_broke: std::sync::atomic::AtomicBool::new(false),
         prior_status,
+        prior_attempts,
     };
 
     let mut stages = cfg.workflow.stages.clone();
@@ -427,6 +438,16 @@ struct RunCtx<'a> {
     /// the full lifecycle. Integrated/terminal units are skipped before they ever
     /// reach the lifecycle, so their presence here is harmless.
     prior_status: HashMap<String, ledger::Status>,
+    /// Each unit's folded remediation attempt count from the prior log (resume of a
+    /// mid-remediation `Failed` unit). A unit that FAILED but did not yet ESCALATE
+    /// across one window must continue its bounded remediation from the recorded
+    /// count - NOT restart at 0 - so attempts ACCUMULATE across windows and the unit
+    /// escalates at `MAX_RETRIES` TOTAL, instead of doing a fresh MAX_RETRIES every
+    /// window forever. `run_single_stage` seeds its `attempts` loop variable from this
+    /// map (keyed by unit id); a unit absent from it starts at 0 (a fresh unit, or one
+    /// that never failed). Integrated/escalated units are terminal and skipped before
+    /// the lifecycle, so their presence here is harmless.
+    prior_attempts: HashMap<String, u32>,
 }
 
 impl RunCtx<'_> {
@@ -845,7 +866,13 @@ impl RunCtx<'_> {
             return Ok(true);
         }
 
-        let mut attempts = 0u32;
+        // Resume of a mid-remediation unit: seed the attempt counter from the prior
+        // window's folded `UnitFailed attempts:N` so bounded remediation CONTINUES from
+        // where it stopped instead of restarting at 0. A unit that failed twice across a
+        // prior window resumes at 2, makes its 3rd (final) attempt this window, and
+        // ESCALATES at MAX_RETRIES TOTAL - not a fresh MAX_RETRIES every window forever.
+        // A unit with no prior failure (fresh, or never failed) starts at 0, unchanged.
+        let mut attempts = self.prior_attempts.get(&st.name).copied().unwrap_or(0);
         // The last attempt's concrete failure, threaded into the NEXT attempt's
         // prompt (item 3 + 5 / spec 02). Empty on the first attempt, so that prompt
         // is unchanged.
@@ -3801,6 +3828,321 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_unit_is_not_terminal_and_resumes() {
+        // A unit that FAILED a review/gate in a prior window but did NOT yet escalate
+        // (attempts:1 of MAX_RETRIES) is mid-remediation, not terminal. A resumed run
+        // must NOT skip it - it re-runs the unit, reusing its deterministic branch (the
+        // rejected code persists) and continuing its remediation. Here the resumed
+        // attempt is approved, so the unit finishes; the point is it RAN at all rather
+        // than being seeded into `terminal` and skipped forever.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+
+        // The prior window implemented unit `s`, committed it on the deterministic
+        // branch, but its review/gate FAILED once (UnitFailed attempts:1) - it is
+        // mid-remediation, not escalated.
+        commit_on_unit_branch(&repo_path, "s", "feature.rs", "fn feature() {}\n");
+
+        let st = Store::open(":memory:").unwrap();
+        seed_events(
+            &st,
+            &[
+                Event::new(
+                    ledger::TYPE_UNIT_STARTED,
+                    serde_json::to_vec(
+                        &json!({"id": "s", "agent": "worker", "branch": unit_branch("s")}),
+                    )
+                    .unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_FAILED,
+                    serde_json::to_vec(&json!({"id": "s", "attempts": 1})).unwrap(),
+                ),
+            ],
+        );
+
+        // The folded prior state proves the unit is NOT terminal (the regression this
+        // fix closes): a Failed-but-not-escalated unit must be eligible to resume.
+        let prior = ledger::project(
+            &st.read_all(0, Direction::Forward, &Filter::default())
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(prior.units["s"].status, ledger::Status::Failed);
+        assert_eq!(prior.units["s"].attempts, 1);
+        assert!(
+            !prior.is_terminal("s"),
+            "a Failed-but-not-escalated unit must not be terminal - else resume skips it forever"
+        );
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                review: crate::config::ReviewPanel {
+                    lenses: vec!["lens".into()],
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        // The resumed attempt's review is approved, so the unit integrates this window.
+        let driver = Stub {
+            write_file: Some("feature.rs".into()),
+            output_by_agent: HashMap::from([(
+                "judge".to_string(),
+                r#"{"verdict":"approve"}"#.to_string(),
+            )]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path,
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        // The unit RAN on resume - it was not skipped as terminal. A Failed unit's
+        // recorded status falls to the Fresh resume-phase, so it re-implements (the
+        // worker spawns) to address the recorded findings, reusing its branch.
+        assert!(
+            driver.spawned("worker"),
+            "a Failed-but-not-escalated unit must resume and re-run, not be skipped as terminal"
+        );
+        assert!(
+            crate::worktree::Worktree::branch_has_work(&deps.repo, &unit_branch("s"))
+                || repo.path().join("feature.rs").exists(),
+            "the resumed unit reuses its deterministic branch - the prior rejected code persists"
+        );
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "the resumed unit must be able to finish its remediation, not stay stuck"
+        );
+        assert!(
+            repo.path().join("feature.rs").exists(),
+            "the prior window's committed file (reused from the branch) lands on integrate"
+        );
+    }
+
+    #[test]
+    fn remediation_attempts_accumulate_across_resume_and_escalate_at_the_bound() {
+        // Attempts ACCUMULATE across windows: a unit that already failed twice in a
+        // prior window (UnitFailed attempts:2) resumes, makes EXACTLY ONE more attempt
+        // (the 3rd), and ESCALATES at MAX_RETRIES TOTAL - it does NOT do a fresh
+        // MAX_RETRIES on top of the prior 2. The attempt counter is threaded through
+        // resume so the bound counts across windows, not per-window forever.
+        assert_eq!(
+            safety::MAX_RETRIES,
+            3,
+            "this test assumes the default bound of 3 (2 prior + 1 resumed = escalate)"
+        );
+
+        let st = Store::open(":memory:").unwrap();
+        // Prior window: the unit already failed twice (attempts:2), one short of the
+        // bound. The next failure must escalate.
+        seed_events(
+            &st,
+            &[
+                Event::new(
+                    ledger::TYPE_UNIT_STARTED,
+                    serde_json::to_vec(&json!({"id": "implement", "agent": "worker"})).unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_FAILED,
+                    serde_json::to_vec(&json!({"id": "implement", "attempts": 2})).unwrap(),
+                ),
+            ],
+        );
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("adversary".into(), agent("adversary"));
+        cfg.agents.insert("adj".into(), agent("adj"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true")); // static gates pass
+        cfg.workflow.defaults.review = config::ReviewPanel {
+            lenses: vec!["lens".into()],
+            adversary: "adversary".into(),
+            adjudicator: "adj".into(),
+        };
+        cfg.workflow.stages.insert(
+            "implement".into(),
+            Stage {
+                name: "implement".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+
+        // The adjudicator always rejects, so the resumed attempt can only fail again -
+        // and with attempts already at 2, that next failure must escalate.
+        let driver = Stub {
+            output: r#"{"verdict":"reject","issues":[]}"#.into(),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        // The unit escalated this window (not churned, not skipped).
+        assert_eq!(
+            rs.units["implement"].status,
+            ledger::Status::Escalated,
+            "with 2 prior attempts, the resumed unit must escalate on its next failure"
+        );
+
+        // EXACTLY ONE more attempt ran this window: one worker spawn, NOT a fresh
+        // MAX_RETRIES (3) on top of the prior 2. The attempt counter resumed at 2.
+        let order = driver.call_order.lock().unwrap().clone();
+        let worker_spawns = order.iter().filter(|a| *a == "worker").count();
+        assert_eq!(
+            worker_spawns, 1,
+            "the resumed unit must do ONLY the final (3rd) attempt, not a fresh batch; spawns were {order:?}"
+        );
+
+        let events = st
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        // Exactly one UnitEscalated, and it is final.
+        let escalations = events
+            .iter()
+            .filter(|e| e.type_ == ledger::TYPE_UNIT_ESCALATED)
+            .count();
+        assert_eq!(
+            escalations, 1,
+            "the unit escalates exactly once at the bound"
+        );
+        // The escalation lesson records the attempt count at MAX_RETRIES (3 total),
+        // not 5 (2 prior + a fresh 3): the bound counted across windows.
+        let escalated_at_bound = events.iter().any(|e| {
+            e.type_ == contextgraph::TYPE_LESSON_LEARNED
+                && String::from_utf8_lossy(&e.data)
+                    .contains(&format!("escalated after {} attempts", safety::MAX_RETRIES))
+        });
+        assert!(
+            escalated_at_bound,
+            "escalation must record MAX_RETRIES total attempts, proving the count accumulated across the resume"
+        );
+        // The final folded attempt count is the bound, not the bound-plus-the-prior.
+        assert_eq!(
+            rs.units["implement"].attempts,
+            safety::MAX_RETRIES,
+            "the final attempts must reach the bound exactly - the prior count carried over, it did not reset"
+        );
+    }
+
+    #[test]
+    fn an_escalated_unit_stays_terminal_on_resume() {
+        // Escalation is FINAL: a unit that genuinely reached MAX_RETRIES and escalated
+        // stays terminal and is skipped on resume - no re-run, no fresh attempts.
+        let st = Store::open(":memory:").unwrap();
+        seed_events(
+            &st,
+            &[
+                Event::new(
+                    ledger::TYPE_UNIT_STARTED,
+                    serde_json::to_vec(&json!({"id": "s", "agent": "worker"})).unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_FAILED,
+                    serde_json::to_vec(&json!({"id": "s", "attempts": 3})).unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_ESCALATED,
+                    serde_json::to_vec(&json!({"id": "s"})).unwrap(),
+                ),
+            ],
+        );
+
+        // The prior state confirms the escalated unit IS terminal.
+        let prior = ledger::project(
+            &st.read_all(0, Direction::Forward, &Filter::default())
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(prior.units["s"].status, ledger::Status::Escalated);
+        assert!(
+            prior.is_terminal("s"),
+            "an escalated unit must be terminal - escalation is final"
+        );
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        assert!(
+            !driver.spawned("worker"),
+            "an escalated unit must be skipped on resume - escalation is final, no re-run"
+        );
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Escalated,
+            "an escalated unit stays escalated across resume"
+        );
+        // No second UnitStarted for the skipped unit.
+        let events = st
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        let starts = events
+            .iter()
+            .filter(|e| {
+                e.type_ == ledger::TYPE_UNIT_STARTED
+                    && String::from_utf8_lossy(&e.data).contains("\"id\":\"s\"")
+            })
+            .count();
+        assert_eq!(
+            starts, 1,
+            "the escalated unit must not be restarted on resume"
+        );
+    }
+
+    #[test]
     fn a_fresh_unit_with_no_branch_runs_the_full_lifecycle() {
         // The no-prior-branch path is unchanged: a unit with no deterministic branch
         // (a first run) implements, gates, reviews, and integrates - the implementer
@@ -5188,6 +5530,7 @@ mod tests {
             spawns: AtomicU32::new(0),
             budget_broke: std::sync::atomic::AtomicBool::new(false),
             prior_status: HashMap::new(),
+            prior_attempts: HashMap::new(),
         };
         ctx.record_gate("ok", gate::Kind::Core, true, "silent");
         let seeded = ctx.gate_tracker.lock().unwrap().get("ok").unwrap().autonomy;
