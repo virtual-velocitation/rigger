@@ -40,10 +40,14 @@ uuid = { version = "1", features = ["v4"] }
 thiserror = "2"
 turbovec = { git = "https://github.com/RyanCodrai/turbovec", optional = true }
 fastembed = { version = "4", optional = true }
-# Pinned to the exact version fastembed 4.9 resolves, with no default features:
-# we want only the execution-provider type definitions (CUDA/CPU EPs), not to
-# manage the ONNX Runtime binaries - fastembed's `ort-download-binaries` does that.
-ort = { version = "=2.0.0-rc.9", default-features = false, optional = true }
+# Pinned to the exact ONNX Runtime version fastembed 4.9 resolves. The `cuda` feature
+# makes ort-sys download the GPU-enabled ONNX Runtime (CUDA + TensorRT providers);
+# `copy-dylibs` places libonnxruntime.so next to the binary so it is found on any box.
+# It runs on CPU everywhere (CI, a machine without the CUDA libs) and engages the CUDA
+# provider lazily when the system CUDA 12 runtime + cuDNN 9 are present (a
+# `cuda-runtime-12-x` + `cudnn9-cuda-12` apt install, like OpenBLAS). EP order is
+# [CUDA, CPU] with a silent fallback - GPU when available, CPU otherwise. No pip.
+ort = { version = "=2.0.0-rc.9", default-features = false, features = ["cuda", "download-binaries", "copy-dylibs"], optional = true }
 kurrentdb = { version = "1.2", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "time"], optional = true }
 testcontainers = { version = "0.27", optional = true }
