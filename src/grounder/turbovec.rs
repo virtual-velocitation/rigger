@@ -15,15 +15,20 @@
 //!    See [`select_execution_providers`] for the one fastembed/ort limitation we
 //!    hit (the shipped ONNX Runtime binaries are CPU-only) and how we handle it.
 //!
-//! 2. **A persisted, incrementally-updated index.** The embeddings + the
-//!    id->(file, line, snippet) map + a per-file content hash are persisted under
-//!    `<root>/.rigger/grounding/`. On construction we LOAD that store if it is
-//!    present and consistent with the tree, else build it once and SAVE it - so a
-//!    `rigger ground` call no longer re-embeds the whole repo every time.
+//! 2. **A persisted, auto-freshened, incrementally-updated index.** The embeddings +
+//!    the id->(file, line, snippet) map + a per-file content hash are persisted under
+//!    `<root>/.rigger/grounding/`. On construction we LOAD that store if present; if it
+//!    has drifted from the tree we freshen it incrementally rather than rebuilding, and
+//!    only a true cold start (no store) pays the whole-repo embed.
 //!    [`Turbovec::reindex`] re-embeds ONLY the files it is given (drops their old
 //!    chunks, embeds the new ones, persists) - an incremental delta, not a full
 //!    rebuild. The workflow calls `rigger reindex <changed files>` after each unit
-//!    lands, so the review tier and the next unit ground on the just-integrated code.
+//!    lands to PRE-WARM the index; but the actual freshness GUARANTEE lives in
+//!    `ground` itself: every query first runs `freshen`, which diffs the tree against
+//!    the persisted per-file hashes and incrementally re-embeds only changed/new files
+//!    (dropping deleted ones). So a RAG query reflects the latest code even if an
+//!    explicit reindex was missed - and on an unchanged tree `freshen` is a cheap
+//!    hash-walk no-op (no embedding, no persist).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -69,6 +74,19 @@ pub struct Turbovec {
 struct State {
     index: IdMapIndex,
     meta: Meta,
+}
+
+/// The result of attempting to load a persisted store on construction. Distinguishes
+/// "no usable store" (a cold start -> full build) from "store loaded", and for the
+/// latter whether it already matched the tree or has drifted and needs an incremental
+/// freshen. Collapsing absent and drifted (as the old `bool` did) would force a full
+/// rebuild on any drift; keeping them apart lets a drifted store be freshened in place.
+enum LoadOutcome {
+    /// No store, or one too corrupt to reuse: build the index from scratch once.
+    Absent,
+    /// A store was loaded into memory; `matched` is whether it already describes the
+    /// current tree (`true`) or has drifted and must be incrementally freshened (`false`).
+    Loaded { matched: bool },
 }
 
 /// The persisted sidecar: everything turbovec's `.tvim` does NOT hold. `refs` maps
@@ -138,57 +156,147 @@ impl Turbovec {
             }),
         };
 
-        // Reuse a persisted store when it loads cleanly and matches the tree; only
-        // a full rebuild (the first run, or an inconsistent / corrupt store) pays
-        // the whole-repo embed cost.
-        if tv.load_persisted().unwrap_or(false) {
-            eprintln!(
-                "turbovec: loaded persisted index ({} chunks) from {}",
-                tv.state.lock().unwrap().index.len(),
-                tv.store_dir.display()
-            );
-        } else {
-            tv.build_from_tree()?;
-            tv.persist()?;
-            eprintln!(
-                "turbovec: built and persisted index ({} chunks) to {}",
-                tv.state.lock().unwrap().index.len(),
-                tv.store_dir.display()
-            );
+        // Three cases on construction:
+        //  - a persisted store that already matches the tree: load it, done (no embed).
+        //  - a persisted store that has drifted from the tree: load it, then INCREMENTALLY
+        //    freshen only the changed/new/deleted files (re-embed the diff, not the whole
+        //    repo). This replaces the old "any drift -> full rebuild" behaviour.
+        //  - no persisted store at all (cold start): a one-time full build of the tree.
+        match tv.load_persisted_any()? {
+            LoadOutcome::Loaded { matched } => {
+                if !matched {
+                    // The store loaded but the tree drifted; bring it current incrementally.
+                    tv.freshen()?;
+                }
+                eprintln!(
+                    "turbovec: loaded persisted index ({} chunks) from {}{}",
+                    tv.state.lock().unwrap().index.len(),
+                    tv.store_dir.display(),
+                    if matched {
+                        ""
+                    } else {
+                        " (incrementally freshened)"
+                    }
+                );
+            }
+            LoadOutcome::Absent => {
+                tv.build_from_tree()?;
+                tv.persist()?;
+                eprintln!(
+                    "turbovec: built and persisted index ({} chunks) to {}",
+                    tv.state.lock().unwrap().index.len(),
+                    tv.store_dir.display()
+                );
+            }
         }
         Ok(tv)
     }
 
-    /// Load the persisted index + metadata from `.rigger/grounding/` IF it is
-    /// present and consistent with the current tree. Returns `Ok(true)` when the
-    /// load succeeded and the store may be reused as-is, `Ok(false)` when there is
-    /// no store (or it is inconsistent and must be rebuilt). A consistent store is
-    /// one whose set of files and per-file content hashes exactly match the tree -
-    /// otherwise a file changed (or was added/removed) while no process was running
-    /// to `reindex` it, and the safe move is a full rebuild.
-    fn load_persisted(&self) -> Result<bool, String> {
+    /// Load the persisted index + metadata from `.rigger/grounding/` if a usable
+    /// store is on disk, reporting whether it already matches the tree.
+    ///
+    /// - [`LoadOutcome::Absent`] - there is no store, or it is corrupt / unreadable
+    ///   (a corrupt store cannot be freshened incrementally, so it is treated as a
+    ///   cold start: a full rebuild). The in-memory state is left empty.
+    /// - [`LoadOutcome::Loaded { matched: true }`] - the store loaded AND its file
+    ///   set + per-file content hashes exactly match the tree; it is reusable as-is.
+    /// - [`LoadOutcome::Loaded { matched: false }`] - the store loaded but the tree
+    ///   has drifted (an edit / add / delete happened with no process around to
+    ///   reindex). The loaded state IS installed so the caller can [`Self::freshen`]
+    ///   it incrementally - re-embedding only the diff rather than the whole repo.
+    fn load_persisted_any(&self) -> Result<LoadOutcome, String> {
         let index_path = self.store_dir.join(INDEX_FILE);
         let meta_path = self.store_dir.join(META_FILE);
         if !index_path.exists() || !meta_path.exists() {
-            return Ok(false);
+            return Ok(LoadOutcome::Absent);
         }
         let index = match IdMapIndex::load(&index_path) {
             Ok(i) => i,
-            Err(_) => return Ok(false), // corrupt / wrong-version -> rebuild
+            Err(_) => return Ok(LoadOutcome::Absent), // corrupt / wrong-version -> rebuild
         };
         let meta_bytes =
             std::fs::read(&meta_path).map_err(|e| format!("turbovec: read meta: {e}"))?;
         let meta: Meta = match serde_json::from_slice(&meta_bytes) {
             Ok(m) => m,
-            Err(_) => return Ok(false), // unreadable meta -> rebuild
+            Err(_) => return Ok(LoadOutcome::Absent), // unreadable meta -> rebuild
         };
-        if !self.tree_matches(&meta) {
-            return Ok(false);
-        }
+        let matched = self.tree_matches(&meta);
+        // Install the loaded state either way: when it matches it is used as-is, and
+        // when it has drifted it is the BASE that `freshen` updates incrementally
+        // (drop deleted files' chunks, re-embed changed/new files) - never a full rebuild.
         let mut state = self.state.lock().unwrap();
         state.index = index;
         state.meta = meta;
-        Ok(true)
+        Ok(LoadOutcome::Loaded { matched })
+    }
+
+    /// Bring the in-memory + persisted index up to date with the current source tree,
+    /// INCREMENTALLY: diff the tree against the persisted per-file hashes and touch only
+    /// what changed. This is the freshness guarantee - called at the start of every
+    /// [`Grounder::ground`] so any RAG query reflects the latest code, and on
+    /// construction when a persisted store has drifted.
+    ///
+    /// The diff, vs. the persisted `meta.files`:
+    /// - CHANGED (file present in both, content hash differs) and NEW (on disk, absent
+    ///   from meta) files are fed to the existing incremental reindex path: drop the old
+    ///   chunks (a no-op for a new file), re-embed the current content under fresh ids,
+    ///   insert. Only these files are embedded.
+    /// - DELETED (in meta, gone from the tree) files have their chunks dropped.
+    ///
+    /// The COMMON case is no change: the walk hashes each file, finds every hash equal
+    /// and no additions/deletions, and returns WITHOUT embedding or persisting anything -
+    /// the cost is just the hash walk. We persist once, and only when something actually
+    /// changed, so a steady-state `ground` does no write either.
+    fn freshen(&self) -> Result<(), String> {
+        // 1. Snapshot the tree as (rel path -> content), the same file set the index covers.
+        let mut on_disk = Vec::new();
+        collect_files(Path::new(&self.root), &self.root, &mut on_disk);
+
+        // 2. Diff against the persisted per-file hashes WITHOUT holding the lock across
+        //    embedding. Take a brief lock only to read meta, then release it.
+        let mut changed_or_new: Vec<(String, String)> = Vec::new();
+        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let deleted: Vec<String>;
+        {
+            let state = self.state.lock().unwrap();
+            for (rel, content) in &on_disk {
+                seen.insert(rel.as_str());
+                match state.meta.files.get(rel) {
+                    // Unchanged: same content hash -> skip (no embed).
+                    Some(entry) if entry.hash == hash_content(content) => {}
+                    // Changed or new: queue for an incremental re-embed.
+                    _ => changed_or_new.push((rel.clone(), content.clone())),
+                }
+            }
+            // In meta but no longer on disk -> deleted; queue its chunks for removal.
+            deleted = state
+                .meta
+                .files
+                .keys()
+                .filter(|f| !seen.contains(f.as_str()))
+                .cloned()
+                .collect();
+        }
+
+        // 3. Nothing differs -> cheap no-op: no embedding, no persist. This is the
+        //    steady-state path a `ground` on an unchanged tree takes.
+        if changed_or_new.is_empty() && deleted.is_empty() {
+            return Ok(());
+        }
+
+        // 4. Apply the delta, reusing the same internals `reindex` uses. `drop_file`
+        //    and `index_file_content` each take the lock internally, so embedding (the
+        //    slow part) runs unlocked.
+        for rel in &deleted {
+            self.drop_file(rel);
+        }
+        for (rel, content) in &changed_or_new {
+            self.drop_file(rel); // no-op for a brand-new file; clears old chunks for a changed one
+            self.index_file_content(rel, content)?;
+        }
+
+        // 5. Persist the updated index + metadata once.
+        self.persist()
     }
 
     /// Whether the persisted `meta` still describes the on-disk tree: the same set
@@ -314,6 +422,17 @@ impl Grounder for Turbovec {
     fn ground(&self, query: &str, k: usize) -> Vec<Ref> {
         if query.is_empty() || k == 0 {
             return Vec::new();
+        }
+        // Freshness guarantee: before answering ANY query, bring the index current with
+        // the tree, INCREMENTALLY - re-embed only files that changed/were added since the
+        // last index, drop deleted ones. On the common no-change tree this is just a hash
+        // walk (no embedding, no persist). So every RAG result reflects the latest code,
+        // whether or not an explicit `reindex` was run. We freshen BEFORE locking below;
+        // `freshen` does its own internal locking, so there is no nested lock.
+        if let Err(e) = self.freshen() {
+            // A freshen failure must not silently serve stale results; surface it but
+            // still answer from whatever the index currently holds.
+            eprintln!("turbovec: freshen before ground failed: {e}");
         }
         let qv = match self.embed_query(query) {
             Some(v) => v,
@@ -706,5 +825,167 @@ mod tests {
     fn content_hash_is_stable_and_distinguishes() {
         assert_eq!(hash_content("hello world"), hash_content("hello world"));
         assert_ne!(hash_content("hello world"), hash_content("hello worlds"));
+    }
+
+    /// The chunk ids a file currently owns in the index, read from the metadata.
+    /// Sorted so two snapshots compare by value regardless of insertion order.
+    fn file_ids(tv: &Turbovec, rel: &str) -> Vec<u64> {
+        let state = tv.state.lock().unwrap();
+        let mut ids = state
+            .meta
+            .files
+            .get(rel)
+            .map(|e| e.ids.clone())
+            .unwrap_or_default();
+        ids.sort_unstable();
+        ids
+    }
+
+    /// The monotonic id allocator. It advances by exactly one per chunk EMBEDDED, and
+    /// never for an unchanged file, so comparing it across a `ground` is a precise
+    /// "did any embedding happen" probe: equal next_id <=> no chunk was (re-)embedded.
+    fn next_id(tv: &Turbovec) -> u64 {
+        tv.state.lock().unwrap().meta.next_id
+    }
+
+    /// (a) GUARANTEE: a `ground` AFTER an edit reflects the edit, with NO explicit
+    /// reindex call. We write a distinctive new term into a file and immediately
+    /// `ground` for it; the auto-freshen at the start of `ground` re-embeds the edited
+    /// file, so it is the top hit - the freshness lives in the grounder, not the caller.
+    #[test]
+    fn ground_auto_freshens_after_an_edit_without_explicit_reindex() {
+        let dir = tiny_repo();
+        let root = dir.path().to_str().unwrap();
+        let tv = Turbovec::new(root).unwrap();
+
+        // A term absent from the original corpus.
+        let term = "how does the quantum flux capacitor stabilize the warp core";
+
+        // The change lands on disk - but we deliberately do NOT call reindex.
+        std::fs::write(
+            dir.path().join("render.rs"),
+            "fn draw_sprite(sprite: &Sprite, x: f32, y: f32) {\n    // upload to the gpu\n}\n\
+             fn stabilize_flux_capacitor(core: &mut WarpCore) {\n    core.quantum_flux = core.stabilize();\n}\n",
+        )
+        .unwrap();
+
+        // Grounding alone must reflect the edit: the auto-freshen re-embeds render.rs.
+        let hit = tv.ground(term, 1);
+        assert_eq!(
+            hit.first().map(|r| r.file.as_str()),
+            Some("render.rs"),
+            "ground must auto-freshen the edited file and rank it top WITHOUT an explicit reindex"
+        );
+    }
+
+    /// (b) INCREMENTAL, not a full rebuild: editing one file and grounding re-embeds
+    /// ONLY that file. We capture the UNCHANGED file's chunk ids before the edit and
+    /// assert they are byte-for-byte preserved after grounding, while the edited file's
+    /// ids change. Preserved ids prove the unchanged file was never dropped+re-embedded.
+    #[test]
+    fn auto_freshen_is_incremental_not_a_full_rebuild() {
+        let dir = tiny_repo();
+        let root = dir.path().to_str().unwrap();
+        let tv = Turbovec::new(root).unwrap();
+
+        // Snapshot ids of BOTH files from the freshly built index.
+        let combat_ids_before = file_ids(&tv, "combat.rs");
+        let render_ids_before = file_ids(&tv, "render.rs");
+        assert!(!combat_ids_before.is_empty() && !render_ids_before.is_empty());
+
+        // Edit ONLY render.rs.
+        std::fs::write(
+            dir.path().join("render.rs"),
+            "fn draw_sprite(sprite: &Sprite, x: f32, y: f32) {\n    // upload to the gpu\n}\n\
+             fn blit_overlay(layer: &Layer) {\n    layer.compose();\n}\n",
+        )
+        .unwrap();
+
+        // A ground triggers the incremental freshen.
+        let _ = tv.ground("compose an overlay layer", 1);
+
+        // combat.rs was untouched: its chunk ids are exactly preserved - it was NOT
+        // re-embedded (a re-embed would mint fresh, higher ids).
+        let combat_ids_after = file_ids(&tv, "combat.rs");
+        assert_eq!(
+            combat_ids_before, combat_ids_after,
+            "the unchanged file's chunk ids must be preserved - it must NOT be re-embedded"
+        );
+
+        // render.rs WAS edited: its old chunks were dropped and new ones minted, so its
+        // id set changed (and the new ids are all freshly allocated, i.e. higher).
+        let render_ids_after = file_ids(&tv, "render.rs");
+        assert_ne!(
+            render_ids_before, render_ids_after,
+            "the edited file's chunk ids must change - only it is re-embedded"
+        );
+        assert!(
+            render_ids_after.iter().min().unwrap() > render_ids_before.iter().max().unwrap(),
+            "the edited file's new chunk ids must be freshly allocated (monotonic), proving a \
+             targeted re-embed of just that file, not a whole-index rebuild"
+        );
+    }
+
+    /// (c) A `ground` reflects a DELETION: removing a file makes its unique term
+    /// unfindable, because the auto-freshen drops a vanished file's chunks.
+    #[test]
+    fn ground_drops_a_deleted_files_content() {
+        let dir = tiny_repo();
+        let root = dir.path().to_str().unwrap();
+        let tv = Turbovec::new(root).unwrap();
+
+        // draw_sprite (unique to render.rs) is findable while the file exists.
+        let before = tv.ground("draw a sprite onto the screen", 1);
+        assert_eq!(
+            before.first().map(|r| r.file.as_str()),
+            Some("render.rs"),
+            "the rendering term should ground to render.rs while it exists"
+        );
+
+        // Delete render.rs - no explicit reindex.
+        std::fs::remove_file(dir.path().join("render.rs")).unwrap();
+
+        // The next ground auto-freshens, dropping render.rs's chunks; combat.rs is all
+        // that is left, so the rendering term can no longer ground to render.rs.
+        let after = tv.ground("draw a sprite onto the screen", 1);
+        assert!(
+            after.iter().all(|r| r.file != "render.rs"),
+            "a deleted file's content must be gone from grounding results after auto-freshen"
+        );
+        // The deleted file is also gone from the metadata's file set.
+        assert!(
+            !tv.state
+                .lock()
+                .unwrap()
+                .meta
+                .files
+                .contains_key("render.rs"),
+            "the deleted file must be removed from the index metadata"
+        );
+    }
+
+    /// (d) FAST no-op: a second ground on an UNCHANGED tree does no embedding work. The
+    /// monotonic id allocator does not advance across the second ground, proving freshen
+    /// hit the cheap hash-walk path (no chunk re-embedded, nothing persisted).
+    #[test]
+    fn unchanged_tree_grounds_without_re_embedding() {
+        let dir = tiny_repo();
+        let root = dir.path().to_str().unwrap();
+        let tv = Turbovec::new(root).unwrap();
+
+        // First ground freshens (tree already matches the just-built index, so even this
+        // is a no-op) and records the id high-water mark.
+        let _ = tv.ground("how is damage dealt to an enemy", 1);
+        let next_before = next_id(&tv);
+
+        // A second ground on the SAME, unchanged tree must embed nothing new.
+        let _ = tv.ground("how is damage dealt to an enemy", 1);
+        let next_after = next_id(&tv);
+
+        assert_eq!(
+            next_before, next_after,
+            "grounding an unchanged tree must allocate no new chunk ids - freshen took the \
+             cheap hash-walk no-op path with no re-embedding"
+        );
     }
 }
