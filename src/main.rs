@@ -42,6 +42,23 @@ const SHIM_FILES: &[(&str, &str)] = &[
     ("package-lock.json", SHIM_PACKAGE_LOCK_JSON),
 ];
 
+/// The native Claude Code workflow, embedded in the binary so `rigger setup` can
+/// install it into a project without the user cloning the repo. A saved Claude Code
+/// workflow is a single self-contained `.js` file: Claude Code auto-discovers any
+/// `.js` under `<project>/.claude/workflows/`, so writing this there makes the
+/// `/rigger <spec>` workflow runnable immediately, with no registration step. The
+/// workflow drives its agents through the Workflow tool and grounds / persists their
+/// reasoning via `rigger ground`, `rigger emit`, and `rigger peers`.
+const RIGGER_WORKFLOW: &str = include_str!("../workflows/rigger.js");
+
+/// Where the native `/rigger` workflow is installed, relative to the project root:
+/// `<root>/.claude/workflows/rigger.js`. Claude Code auto-discovers `.js` files in
+/// this directory, so the workflow is runnable as `/rigger <spec>` the moment it is
+/// written - no registration. Rooted at `root` so it is testable against a temp dir.
+fn workflow_path(root: &Path) -> std::path::PathBuf {
+    root.join(".claude").join("workflows").join("rigger.js")
+}
+
 type Res = Result<(), Box<dyn std::error::Error>>;
 
 /// Which agent driver a `run` uses (§10): `cli` is the standalone `claude`
@@ -244,9 +261,11 @@ rigger validate             load and validate the workflow + agents\n  \
 rigger init                 set up a project: scaffold .rigger/ (workflow.yml +\n                              \
 an agents/ folder) and install the Claude Code\n                              \
 SessionStart hook (it runs `rigger prime`)\n  \
-rigger setup                full setup: everything `init` does, PLUS provision the\n                              \
-JS driver (write .rigger/shim/ + run npm install) so\n                              \
-`rigger workflow` is zero-setup\n  \
+rigger setup                full setup: everything `init` does, PLUS install the\n                              \
+native /rigger Claude Code workflow (.claude/workflows/\n                              \
+rigger.js) and provision the JS driver (.rigger/shim/ +\n                              \
+npm install). After it: run `/rigger <spec>` in Claude\n                              \
+Code (primary), or `rigger workflow` as a fallback\n  \
 rigger prime                print recent decisions (what the hook runs)\n\n\
 run/serve options:\n  \
 --driver <cli|workflow>          cli (default): standalone claude subprocess;\n                                   \
@@ -702,6 +721,23 @@ fn shim_dir(root: &Path) -> std::path::PathBuf {
     root.join(RIGGER_DIR).join("shim")
 }
 
+/// Install the native `/rigger` Claude Code workflow at
+/// `<root>/.claude/workflows/rigger.js`, returning that path. Creates the
+/// `.claude/workflows/` directory if absent and always (re)writes the file from the
+/// embedded [`RIGGER_WORKFLOW`], so a `rigger setup` after a `rigger` upgrade
+/// refreshes the workflow to match the binary - the workflow and the conductor /
+/// CLI it drives stay the same build. Claude Code auto-discovers `.js` here, so the
+/// user can run `/rigger <spec>` immediately, with no registration. Rooted at `root`
+/// so it is testable against a temp dir.
+fn install_workflow(root: &Path) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+    let path = workflow_path(root);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&path, RIGGER_WORKFLOW)?;
+    Ok(path)
+}
+
 /// Provision the per-project JS driver under `<root>/.rigger/shim/`: write the three
 /// embedded runtime files (`shim.mjs`, `package.json`, `package-lock.json`) and
 /// install their npm dependencies so `node_modules` is ready and `rigger workflow`
@@ -768,12 +804,16 @@ fn run_npm_install(dir: &Path) -> Res {
 }
 
 /// `rigger setup` is the FULL project setup: it does everything `rigger init` does
-/// (scaffold `.rigger/` + install the Claude Code hook) AND provisions the JS driver
-/// (writes the embedded shim runtime into `.rigger/shim/` and runs `npm install`), so
-/// `rigger workflow` works with zero manual setup afterward.
+/// (scaffold `.rigger/` + install the Claude Code hook), installs the native
+/// `/rigger` Claude Code workflow at `.claude/workflows/rigger.js`, AND provisions
+/// the JS driver (writes the embedded shim runtime into `.rigger/shim/` and runs `npm
+/// install`). After it runs the user can drive the loop with the native workflow
+/// (`/rigger <spec>`) with zero manual setup; the standalone `rigger workflow` shim
+/// remains as a fallback.
 fn cmd_setup() -> Res {
     let root = Path::new(".");
     init_project(root)?;
+    install_workflow(root)?;
     provision_shim(root)?;
     let names: Vec<&str> = SCAFFOLD_AGENTS.iter().map(|(f, _)| *f).collect();
     println!(
@@ -781,6 +821,10 @@ fn cmd_setup() -> Res {
          SessionStart hook in .claude/settings.json, and provisioned the JS driver in \
          .rigger/shim/ (wrote shim.mjs + package.json + package-lock.json and ran npm install)",
         names.join(", ")
+    );
+    println!(
+        "installed the /rigger workflow (.claude/workflows/rigger.js) - run it with: /rigger \
+         <spec-path>"
     );
     Ok(())
 }
@@ -1178,6 +1222,50 @@ mod tests {
         assert!(
             SHIM_MJS.contains("rigger") && SHIM_MJS.contains("query"),
             "the embedded shim.mjs must be the real JS driver"
+        );
+    }
+
+    /// `rigger setup` must install the native `/rigger` Claude Code workflow at
+    /// `.claude/workflows/rigger.js` with content byte-identical to the embedded
+    /// `RIGGER_WORKFLOW`, and re-running setup must overwrite it cleanly (so a
+    /// `rigger` upgrade refreshes the workflow to match the binary). The npm-install
+    /// step is exercised separately, so this test does not depend on npm.
+    #[test]
+    fn setup_installs_the_native_rigger_workflow() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = install_workflow(dir.path()).expect("installing writes the workflow file");
+        assert_eq!(path, workflow_path(dir.path()));
+        assert_eq!(
+            path,
+            dir.path()
+                .join(".claude")
+                .join("workflows")
+                .join("rigger.js"),
+            "the workflow must be installed at .claude/workflows/rigger.js"
+        );
+
+        let on_disk = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            on_disk, RIGGER_WORKFLOW,
+            "the installed workflow must be byte-identical to the embedded RIGGER_WORKFLOW"
+        );
+
+        // The embedded workflow is the real driver, not a stub: it exports `meta` and
+        // drives agents via the workflow runtime.
+        assert!(
+            RIGGER_WORKFLOW.contains("export const meta") && RIGGER_WORKFLOW.contains("agent("),
+            "the embedded workflow must be the real native /rigger workflow"
+        );
+
+        // Re-running setup overwrites cleanly: pre-seed stale content, reinstall, and
+        // confirm the embedded content wins (not appended, not left stale).
+        std::fs::write(&path, "// stale - from an older rigger build\n").unwrap();
+        let again = install_workflow(dir.path()).expect("re-install must succeed");
+        assert_eq!(again, path);
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            after, RIGGER_WORKFLOW,
+            "re-running setup must overwrite the workflow with the embedded content"
         );
     }
 

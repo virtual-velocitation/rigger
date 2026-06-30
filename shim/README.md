@@ -1,5 +1,17 @@
 # Workflow driver - the standalone Node MCP-client + Agent-SDK driver
 
+> This standalone shim is the **fallback** path, for driving the loop from the
+> command line outside an interactive Claude Code session. The **primary** way to
+> run the loop is the native Claude Code workflow that `rigger setup` installs at
+> `.claude/workflows/rigger.js` - run it with `/rigger <spec>`. That native
+> workflow takes a different tack than this shim: rather than orchestrating the
+> Rust conductor over MCP, it drives the agents directly through Claude Code's
+> Workflow tool, and each agent grounds itself and reads/writes the shared context
+> graph by shelling out to the `rigger ground` / `rigger emit` / `rigger peers`
+> CLI subcommands (no MCP tools needed - which is what lets it be a Workflow
+> script; see "Why this is a standalone Node program" below for why the shim
+> itself cannot be).
+
 The agent driver for the `workflow` path. The Rust conductor stays the
 orchestrator; a standalone **Node program** (`shim.mjs`) connects to it over
 **MCP**, pulls each queued agent spawn, runs that agent via the **Claude Agent
