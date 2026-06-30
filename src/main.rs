@@ -523,19 +523,17 @@ fn cmd_graph(args: &[String]) -> Res {
 /// implement -> review loop's first-pass yield, per-gate remediation (pass/fail)
 /// counts, escalation rate, and review approve/reject counts.
 ///
-/// Composition mirrors `run_cli` (decision `d-stats-namespace`): open the embedded
-/// `.rigger/events.db` via [`Store`], wrap it in the per-project [`Namespaced`]
-/// decorator, read the conductor's run stream ([`conductor::STREAM`]) forward - the
-/// same stream and boundary the conductor itself replays its run state from - and
-/// fold it through the pure [`metrics::project`] read-model.
+/// Composition mirrors `run_cli` (decision `d-stats-namespace`): resolve this project's
+/// identity and `.rigger/events.db` path, then delegate to [`stats_lines`], which opens
+/// the db via [`Store`], wraps it in the per-project [`Namespaced`] decorator, reads the
+/// conductor's run stream ([`conductor::STREAM`]) forward - the same stream and boundary
+/// the conductor itself replays its run state from - and folds it through the pure
+/// [`metrics::project`] read-model.
 ///
-/// Two edges yield the same clear "no runs yet" message instead of an empty table
-/// or a panic (decision `d-stats-absent-guard`):
-///   1. **absent db** - a project that has never run has no `events.db`. We guard
-///      BEFORE [`Store::open`] because opening creates the file, which would mask a
-///      never-run project as an empty one. This mirrors [`cmd_prime`]'s guard.
-///   2. **empty run stream** - the db exists (some other command created it) but the
-///      `run` stream has no events yet.
+/// Both no-run edges (absent db, empty namespaced run stream) come back from
+/// [`stats_lines`] as `None` and print the same clear "no runs yet" message instead of
+/// an empty table or a panic (decision `d-stats-absent-guard`); see that function for
+/// the per-edge rationale.
 ///
 /// `rigger stats` takes no arguments; any extra argument is a clear error.
 fn cmd_stats(args: &[String]) -> Res {
@@ -543,33 +541,60 @@ fn cmd_stats(args: &[String]) -> Res {
         return Err(format!("stats: expected no arguments, got {}", args.len()).into());
     }
 
-    // Guard the absent db BEFORE opening: Store::open (Connection::open) would create
-    // an empty events.db, masking a never-run project as a zeroed run. Mirror
-    // cmd_prime so a fresh project gets a clear message, not a misleading empty table.
-    let path = db_path("events.db");
-    if !Path::new(&path).exists() {
-        println!("{NO_RUNS_MESSAGE}");
-        return Ok(());
-    }
-
-    let backend = Store::open(&path)?;
-    let store = Namespaced::new(&backend, &project_identity());
-    // The conductor projects its run state from STREAM read forward from revision 0
-    // (inclusive); read the same stream the same way so the metrics fold sees exactly
-    // the run the conductor drove.
-    let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
-    if events.is_empty() {
-        // The db exists but this project's run stream is empty (e.g. another command
-        // created the file). Same clear message as the absent-db edge.
-        println!("{NO_RUNS_MESSAGE}");
-        return Ok(());
-    }
-
-    let metrics = metrics::project(&events);
-    for line in format_stats(&metrics) {
-        println!("{line}");
+    // Resolve the project identity and db path the same way every CLI command does,
+    // then delegate the namespace-scoped read + no-runs decision to `stats_lines`. This
+    // wrapper owns only the I/O boundary (which file, which project, and the printing);
+    // the read-model edges live in the testable seam below.
+    match stats_lines(&db_path("events.db"), &project_identity())? {
+        Some(lines) => {
+            for line in lines {
+                println!("{line}");
+            }
+        }
+        // No run to report on - absent db (never-run project) or an empty namespaced
+        // run stream. One clear message for both edges.
+        None => println!("{NO_RUNS_MESSAGE}"),
     }
     Ok(())
+}
+
+/// The pure read-model core of `rigger stats`: open the embedded `events.db` at `path`,
+/// read `project`'s `run` stream through the per-project [`Namespaced`] decorator, and
+/// fold it into the printable metric lines - returning `None` for the two "no runs yet"
+/// edges so [`cmd_stats`] prints one clear message for both (decision `d-stats-read-seam`).
+///
+/// Split out from [`cmd_stats`] so the namespace-scoped read and its empty/absent edges
+/// are unit-testable against any backing file and project name, without depending on the
+/// process cwd or a real git repo for identity (which `project_identity` derives).
+///
+/// `None` is returned for two edges (decision `d-stats-absent-guard`):
+///   1. **absent db** - a project that has never run has no `events.db`. We guard BEFORE
+///      [`Store::open`], which (via `Connection::open`) would create the file and mask a
+///      never-run project as an empty one. This mirrors [`cmd_prime`]'s absent-db guard.
+///   2. **empty run stream** - the db exists (some other command, or another project
+///      sharing the backend, created it) but *this* project's namespaced `run` stream
+///      holds no events. The [`Namespaced`] read scopes to `proj-<project>-run`, so an
+///      event another project wrote, or one this project wrote to a different stream,
+///      does not leak into the count.
+fn stats_lines(
+    path: &str,
+    project: &str,
+) -> Result<Option<Vec<String>>, Box<dyn std::error::Error>> {
+    if !Path::new(path).exists() {
+        return Ok(None);
+    }
+
+    let backend = Store::open(path)?;
+    let store = Namespaced::new(&backend, project);
+    // The conductor projects its run state from STREAM read forward from revision 0
+    // (inclusive); read the same stream the same way so the metrics fold sees exactly
+    // the run the conductor drove, scoped to this project's namespace.
+    let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+    if events.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(format_stats(&metrics::project(&events))))
 }
 
 /// The message printed when there is no run to report on - either the project has
@@ -1569,5 +1594,130 @@ mod tests {
     fn no_runs_message_points_at_rigger_run() {
         assert!(NO_RUNS_MESSAGE.contains("rigger run"), "{NO_RUNS_MESSAGE}");
         assert!(NO_RUNS_MESSAGE.contains("no runs"), "{NO_RUNS_MESSAGE}");
+    }
+
+    /// Append `events` to `project`'s namespaced `run` stream in the sqlite db at
+    /// `path` - the exact stream and namespace the conductor writes its run to, so a
+    /// `stats_lines` read sees them exactly as it would a real run. Returns nothing;
+    /// the db file now exists with the events committed.
+    fn seed_run(path: &str, project: &str, events: &[rigger::eventstore::Event]) {
+        use rigger::eventstore::ExpectedRevision;
+        let backend = Store::open(path).expect("open sqlite backend");
+        let store = Namespaced::new(&backend, project);
+        store
+            .append(conductor::STREAM, ExpectedRevision::Any, events)
+            .expect("append run events");
+    }
+
+    /// `stats_lines` against an absent `events.db` returns `None` (the "no runs yet"
+    /// signal) and - critically - does NOT create the file. Opening would create it
+    /// and mask a never-run project as an empty one, so the guard must precede the open.
+    #[test]
+    fn stats_lines_absent_db_returns_none_and_creates_no_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let path_str = path.to_str().unwrap();
+
+        let out = stats_lines(path_str, "proj-x").expect("absent db is not an error");
+        assert!(out.is_none(), "an absent db must read as no runs (None)");
+        assert!(
+            !path.exists(),
+            "stats_lines must not create events.db when it is absent"
+        );
+    }
+
+    /// `stats_lines` against an existing db whose namespaced `run` stream is empty
+    /// returns `None`. This is the db-exists-but-no-run edge: another command (or
+    /// another project sharing the backend) created the file, but this project has no
+    /// run. It must read as "no runs yet", not a zeroed/empty table.
+    #[test]
+    fn stats_lines_existing_db_with_empty_run_stream_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let path_str = path.to_str().unwrap();
+
+        // Create the db file via the real store path, but leave "proj-me"'s run stream
+        // empty (append zero events still opens/creates the backing file).
+        seed_run(path_str, "proj-me", &[]);
+        assert!(path.exists(), "the db file must exist for this edge");
+
+        let out = stats_lines(path_str, "proj-me").expect("empty run stream is not an error");
+        assert!(
+            out.is_none(),
+            "an existing db with an empty run stream must read as no runs (None)"
+        );
+    }
+
+    /// The read is scoped to the per-project namespace: a run that ANOTHER project
+    /// wrote to the SAME shared backend must not leak into this project's stats. With
+    /// the backend holding `proj-other`'s run, `proj-me`'s `stats_lines` still reads
+    /// `None` - proving the [`Namespaced`] decorator (`proj-<project>-run`) is on the
+    /// read path, not just the write path.
+    #[test]
+    fn stats_lines_does_not_read_another_projects_namespaced_run() {
+        use rigger::eventstore::Event;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let path_str = path.to_str().unwrap();
+
+        // proj-other has a real run in the shared backend.
+        seed_run(
+            path_str,
+            "proj-other",
+            &[Event::new("UnitStarted", b"{}".to_vec())],
+        );
+
+        // proj-me, reading the same file, sees its OWN (empty) namespace - no runs.
+        let mine = stats_lines(path_str, "proj-me").expect("read is not an error");
+        assert!(
+            mine.is_none(),
+            "stats must be namespace-scoped: another project's run must not leak in"
+        );
+
+        // Sanity: the other project's run IS visible to it, so the data really is there
+        // and the None above is the namespace boundary, not a read failure.
+        let theirs = stats_lines(path_str, "proj-other").expect("read is not an error");
+        assert!(
+            theirs.is_some(),
+            "the project that owns the run must see its stats"
+        );
+    }
+
+    /// A populated namespaced run reads back through `stats_lines` as the rendered
+    /// metric lines - the positive case that pins the read-fold-format path end to end
+    /// against a real on-disk db (not just the pure formatter), and that the events the
+    /// fold sees came back through the namespace with their clean stream name.
+    #[test]
+    fn stats_lines_existing_run_renders_metric_lines() {
+        use rigger::eventstore::Event;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let path_str = path.to_str().unwrap();
+
+        seed_run(
+            path_str,
+            "proj-me",
+            &[
+                Event::new("UnitStarted", br#"{"id":"u1"}"#.to_vec()),
+                Event::new("UnitIntegrated", br#"{"id":"u1"}"#.to_vec()),
+            ],
+        );
+
+        let lines = stats_lines(path_str, "proj-me")
+            .expect("read is not an error")
+            .expect("a populated run must render lines, not None");
+        let out = lines.join("\n");
+        assert!(
+            out.contains("run stats:"),
+            "a populated run must render the stats header:\n{out}"
+        );
+        assert!(
+            out.contains("first-pass yield"),
+            "a populated run must render the first-pass yield metric:\n{out}"
+        );
+        assert!(
+            out != NO_RUNS_MESSAGE,
+            "a populated run must not print the no-runs message"
+        );
     }
 }
