@@ -240,47 +240,9 @@ impl<'a> Server<'a> {
     }
 
     fn tool_emit(&self, args: &Value) -> Result<Value, ToolError> {
-        let typ = args
-            .get("type")
-            .and_then(Value::as_str)
-            .ok_or("rigger_emit: missing type")?;
-        let data = args.get("data").cloned().unwrap_or_else(|| json!({}));
-        let bytes = serde_json::to_vec(&data).map_err(|e| e.to_string())?;
-
-        // The actor metadata stamps the DECIDED edge; valid_from sets the
-        // bi-temporal validity (§6). Both are optional builder overrides.
-        let mut event = Event::new(typ, bytes);
-        if let Some(meta) = args.get("meta").and_then(Value::as_object) {
-            for (k, v) in meta {
-                let v = v
-                    .as_str()
-                    .ok_or_else(|| format!("rigger_emit: meta value for {k:?} must be a string"))?;
-                event = event.with_meta(k, v);
-            }
-        }
-        if let Some(vf) = args.get("valid_from") {
-            event = event.with_valid_from(parse_valid_from(vf)?);
-        }
-
-        let pos = self
-            .store
-            .append(
-                &self.stream,
-                ExpectedRevision::Any,
-                std::slice::from_ref(&event),
-            )
-            .map_err(|e| e.to_string())?;
-        // Fold the appended event into the live graph (when wired), so a ReviewFinding
-        // or DecisionMade an agent emits becomes retrievable through `graph_context` by
-        // the agents that ground afterwards - the graph is the cross-agent memory the
-        // review tiers communicate through. Best-effort: a fold failure must not fail
-        // the emit, which already landed durably in the log.
-        if let Some(g) = self.graph {
-            let mut folded = event;
-            folded.position = pos;
-            let _ = g.apply(&folded);
-        }
-        Ok(json!({}))
+        emit_event(self.store, &self.stream, self.graph, args)
+            .map(|_| json!({}))
+            .map_err(ToolError::internal)
     }
 
     /// List peers' decisions AND review findings, optionally scoped to a blast-radius
@@ -299,20 +261,81 @@ impl<'a> Server<'a> {
                     .collect()
             })
             .unwrap_or_default();
-        let decisions: Vec<Value> = self
-            .peers
-            .decisions_for(&files)
-            .iter()
-            .map(|d| json!({"id": d.id, "summary": d.summary, "governs": d.governs}))
-            .collect();
-        let findings: Vec<Value> = self
-            .peers
-            .findings_for(&files)
-            .iter()
-            .map(|f| json!({"id": f.id, "by": f.by, "summary": f.summary, "about": f.about}))
-            .collect();
-        json!({"decisions": decisions, "findings": findings})
+        peers_json(self.peers, &files)
     }
+}
+
+/// The shared core of `rigger_emit` (the MCP tool) and `rigger emit` (the CLI):
+/// append `{type, data}` (plus optional `meta`/`valid_from`) to the event store on
+/// `stream` AND fold it into the live context graph, EXACTLY as the MCP tool does.
+/// Both paths call this so the CLI and the MCP surface stay byte-for-byte identical.
+///
+/// `args` is the same JSON-shaped object the MCP tool receives:
+/// `{"type": <string>, "data": <object>, "meta": {<string>: <string>}?,
+/// "valid_from": <int|rfc3339-string>?}`. The CLI builds the same shape from its
+/// positional `<type>` + `<json-object>`.
+///
+/// Returns the appended event's [`Position`], so a caller can report it.
+pub fn emit_event(
+    store: &dyn EventStore,
+    stream: &str,
+    graph: Option<&dyn Projection>,
+    args: &Value,
+) -> Result<crate::eventstore::Position, String> {
+    let typ = args
+        .get("type")
+        .and_then(Value::as_str)
+        .ok_or("rigger_emit: missing type")?;
+    let data = args.get("data").cloned().unwrap_or_else(|| json!({}));
+    let bytes = serde_json::to_vec(&data).map_err(|e| e.to_string())?;
+
+    // The actor metadata stamps the DECIDED edge; valid_from sets the
+    // bi-temporal validity (§6). Both are optional builder overrides.
+    let mut event = Event::new(typ, bytes);
+    if let Some(meta) = args.get("meta").and_then(Value::as_object) {
+        for (k, v) in meta {
+            let v = v
+                .as_str()
+                .ok_or_else(|| format!("rigger_emit: meta value for {k:?} must be a string"))?;
+            event = event.with_meta(k, v);
+        }
+    }
+    if let Some(vf) = args.get("valid_from") {
+        event = event.with_valid_from(parse_valid_from(vf)?);
+    }
+
+    let pos = store
+        .append(stream, ExpectedRevision::Any, std::slice::from_ref(&event))
+        .map_err(|e| e.to_string())?;
+    // Fold the appended event into the live graph (when wired), so a ReviewFinding
+    // or DecisionMade an agent emits becomes retrievable through `graph_context` by
+    // the agents that ground afterwards - the graph is the cross-agent memory the
+    // review tiers communicate through. Best-effort: a fold failure must not fail
+    // the emit, which already landed durably in the log.
+    if let Some(g) = graph {
+        let mut folded = event;
+        folded.position = pos;
+        let _ = g.apply(&folded);
+    }
+    Ok(pos)
+}
+
+/// The shared core of `rigger_peers` (the MCP tool) and `rigger peers` (the CLI):
+/// the peers' decisions AND review findings, scoped to `files` (empty = all),
+/// EXACTLY as the MCP tool returns them - `{"decisions": [...], "findings": [...]}`.
+/// Both paths call this so the CLI and the MCP surface stay identical.
+pub fn peers_json(peers: &Sidecar, files: &[String]) -> Value {
+    let decisions: Vec<Value> = peers
+        .decisions_for(files)
+        .iter()
+        .map(|d| json!({"id": d.id, "summary": d.summary, "governs": d.governs}))
+        .collect();
+    let findings: Vec<Value> = peers
+        .findings_for(files)
+        .iter()
+        .map(|f| json!({"id": f.id, "by": f.by, "summary": f.summary, "about": f.about}))
+        .collect();
+    json!({"decisions": decisions, "findings": findings})
 }
 
 /// Parse a `valid_from` argument into a [`SystemTime`]: a JSON integer of unix
@@ -463,6 +486,88 @@ mod tests {
         let resp: Value = serde_json::from_str(String::from_utf8(output).unwrap().trim()).unwrap();
         assert_eq!(resp["id"], 1);
         assert!(resp.get("result").is_some());
+    }
+
+    /// The shared `emit_event` core (which the CLI `rigger emit` calls directly)
+    /// must produce the SAME stored event the MCP `rigger_emit` tool produces from
+    /// the same `{type, data}` args - the guarantee that the two surfaces stay
+    /// identical because they share one core.
+    #[test]
+    fn emit_event_core_matches_the_mcp_tool() {
+        let args = json!({"type": "DecisionMade", "data": {"id": "d1", "summary": "x"}});
+
+        // The CLI path: call the shared core directly.
+        let cli_store = Store::open(":memory:").unwrap();
+        emit_event(&cli_store, "run", None, &args).expect("the core must append");
+
+        // The MCP path: drive the same args through the server's rigger_emit tool.
+        let mcp_store = Store::open(":memory:").unwrap();
+        let driver = Driver::new();
+        let peers = Sidecar::start(&mcp_store, 0, Filter::default()).unwrap();
+        let server = Server::new(&driver, &mcp_store, "run", &peers);
+        let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_emit","arguments":{"type":"DecisionMade","data":{"id":"d1","summary":"x"}}}}"#;
+        server.run(Cursor::new(input), &mut Vec::new()).unwrap();
+
+        // Both stores hold one DecisionMade on `run` with byte-identical data.
+        let cli = cli_store
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        let mcp = mcp_store
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        assert_eq!(cli.len(), 1, "the core appended exactly one event");
+        assert_eq!(mcp.len(), 1, "the tool appended exactly one event");
+        assert_eq!(cli[0].type_, mcp[0].type_, "same event type");
+        assert_eq!(cli[0].stream, mcp[0].stream, "same stream");
+        assert_eq!(cli[0].data, mcp[0].data, "same payload bytes");
+    }
+
+    /// The shared `peers_json` core (which the CLI `rigger peers` renders from) must
+    /// produce the SAME structured value the MCP `rigger_peers` tool returns - both
+    /// scope decisions and findings to the files arg through the one core.
+    #[test]
+    fn peers_json_core_matches_the_mcp_tool() {
+        use std::time::Instant;
+
+        let store = Store::open(":memory:").unwrap();
+        for (id, governs) in [("da", "a.rs"), ("db", "b.rs")] {
+            let data = serde_json::to_vec(&json!({
+                "id": id, "summary": "x", "governs": [governs],
+            }))
+            .unwrap();
+            store
+                .append(
+                    "run",
+                    ExpectedRevision::Any,
+                    &[Event::new(crate::contextgraph::TYPE_DECISION_MADE, data)],
+                )
+                .unwrap();
+        }
+        let driver = Driver::new();
+        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while peers.decisions().len() < 2 {
+            assert!(Instant::now() < deadline, "side-car never caught up");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        // The CLI path: render through the shared core, scoped to a.rs.
+        let core = peers_json(&peers, &["a.rs".to_string()]);
+
+        // The MCP path: the same scope through the rigger_peers tool.
+        let server = Server::new(&driver, &store, "run", &peers);
+        let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_peers","arguments":{"files":["a.rs"]}}}"#;
+        let mut output = Vec::new();
+        server.run(Cursor::new(input), &mut output).unwrap();
+        let resp: Value = serde_json::from_str(String::from_utf8(output).unwrap().trim()).unwrap();
+        let tool = &resp["result"]["structuredContent"];
+
+        assert_eq!(
+            &core, tool,
+            "the shared peers_json core and the MCP tool must return the same value"
+        );
+        assert_eq!(core["decisions"].as_array().unwrap().len(), 1);
+        assert_eq!(core["decisions"][0]["id"], "da");
     }
 
     #[test]
