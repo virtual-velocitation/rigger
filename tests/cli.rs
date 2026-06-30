@@ -192,6 +192,84 @@ fn ground_returns_references_from_the_repo() {
     );
 }
 
+/// `rigger reindex <file>` requires at least one file and is a clear error otherwise:
+/// a workflow agent calling it with no files must get a non-zero exit, not a silent
+/// no-op. (This holds for every grounder, so it needs no model and runs in both lanes.)
+#[test]
+fn reindex_requires_at_least_one_file() {
+    let dir = temp_project();
+    let root = dir.path();
+    // The grep grounder's reindex is a no-op, but the CLI still enforces the arg
+    // contract before dispatching, so this is deterministic and offline.
+    write_grounder_workflow(root, "grep");
+
+    let (_out, err, ok) = run_rigger(root, &["reindex"]);
+    assert!(!ok, "reindex with no files must be a non-zero exit");
+    assert!(
+        err.contains("expected at least one file"),
+        "the error must explain that a file is required; got: {err:?}"
+    );
+}
+
+/// `rigger reindex <file>` against the turbovec grounder UPDATES the persisted
+/// grounding store incrementally: a term written into a file AFTER the index is first
+/// built becomes findable via `rigger ground` once that file is reindexed - the CLI
+/// surface the workflow calls after each unit lands. Gated to the turbovec lane (it
+/// downloads the embedding model on first use, exactly like the grounder's own unit
+/// test); the fixture is a single tiny file so the embed stays bounded.
+#[cfg(feature = "turbovec")]
+#[test]
+fn reindex_cli_updates_the_persisted_turbovec_store() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_grounder_workflow(root, "turbovec");
+    std::fs::write(
+        root.join("combat.rs"),
+        "fn apply_damage(target: &mut Entity, amount: f32) {\n    target.health -= amount;\n}\n",
+    )
+    .unwrap();
+
+    // First ground builds + persists the store (cold path). The persisted store dir
+    // appears under .rigger/grounding/.
+    let (_out, err, ok) = run_rigger(root, &["ground", "how is damage dealt", "1"]);
+    assert!(ok, "the initial ground must build the index; stderr: {err}");
+    assert!(
+        root.join(".rigger")
+            .join("grounding")
+            .join("index.tvim")
+            .exists(),
+        "grounding the repo must persist the turbovec index to .rigger/grounding/"
+    );
+
+    // The change lands: combat.rs gains a teleport function (a term absent before).
+    std::fs::write(
+        root.join("combat.rs"),
+        "fn apply_damage(target: &mut Entity, amount: f32) {\n    target.health -= amount;\n}\n\
+         fn teleport_player(player: &mut Player, dest: Tile) {\n    player.position = dest;\n}\n",
+    )
+    .unwrap();
+
+    // Reindex ONLY that file via the CLI - the incremental update the workflow runs.
+    let (out, err, ok) = run_rigger(root, &["reindex", "combat.rs"]);
+    assert!(ok, "reindex must succeed; stderr: {err}");
+    assert!(
+        out.contains("reindexed 1 file") && out.contains("combat.rs"),
+        "reindex prints a confirmation naming the file; got: {out:?}"
+    );
+
+    // The just-landed term is now findable through the SAME store a later ground uses
+    // - the reindex updated the persisted index, not just an in-process copy.
+    let (out, err, ok) = run_rigger(
+        root,
+        &["ground", "teleport the player across the dungeon", "1"],
+    );
+    assert!(ok, "ground after reindex must succeed; stderr: {err}");
+    assert!(
+        out.lines().next().map(|l| l.starts_with("combat.rs:")).unwrap_or(false),
+        "after the reindex CLI updates the store, the new term must ground to combat.rs; got: {out:?}"
+    );
+}
+
 /// Bad input to `rigger emit` is a clear error on stderr and a non-zero exit, never
 /// a silent success - a workflow agent must be able to tell a malformed emit failed.
 #[test]

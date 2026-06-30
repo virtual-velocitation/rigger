@@ -3420,6 +3420,7 @@ version = "0.1.0"
 dependencies = [
  "fastembed",
  "kurrentdb",
+ "ort",
  "rusqlite",
  "serde",
  "serde_json",

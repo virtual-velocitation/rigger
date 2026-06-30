@@ -216,6 +216,7 @@ fn main() {
         "workflow" => cmd_workflow(&args[2..]),
         "graph" => cmd_graph(&args[2..]),
         "ground" => cmd_ground(&args[2..]),
+        "reindex" => cmd_reindex(&args[2..]),
         "emit" => cmd_emit(&args[2..]),
         "peers" => cmd_peers(&args[2..]),
         "validate" => cmd_validate(),
@@ -251,6 +252,9 @@ rigger serve [opts]         run as an MCP server the driver connects to\n  \
 rigger graph --around <id>  print the context subgraph around a node\n  \
 rigger ground <query> [k]   print up to k (default 8) repo references the project's\n                              \
 configured grounder finds for <query>, as `file:line: text`\n  \
+rigger reindex <file>...    incrementally re-embed the named files in the project's\n                              \
+persisted grounding index (the grounder's reindex), so a\n                              \
+later `rigger ground` reflects just-landed changes\n  \
 rigger emit <type> <json>   append {{type, data:<json>}} to the event store and fold\n                              \
 it into the context graph (the CLI form of rigger_emit)\n  \
 rigger peers [file ...]     print peer decisions and findings from the context\n                              \
@@ -546,6 +550,37 @@ fn cmd_ground(args: &[String]) -> Res {
     for r in grounder.ground(query, k) {
         println!("{}:{}: {}", r.file, r.line, r.text);
     }
+    Ok(())
+}
+
+/// `rigger reindex <file>...` - incrementally re-embed the named files in the
+/// project's persisted grounding index. It resolves the SAME grounder the
+/// `run`/`serve`/`ground` paths build from `defaults.grounder` (via
+/// [`select_grounder`], rooted at `.`) and calls [`Grounder::reindex`] on the
+/// changed files, so the turbovec grounder drops each file's old chunks, re-embeds
+/// its current content, and persists the delta to `.rigger/grounding/` - a later
+/// `rigger ground` (and the review tier the workflow runs after a unit lands) then
+/// reflects the just-integrated code WITHOUT re-embedding the whole repo. For the
+/// grep / nop grounders `reindex` is a no-op (they re-read the tree each call), so
+/// this command is harmless there. Files are repo-relative, matching how the
+/// grounder records and grounds them. At least one file is required.
+fn cmd_reindex(args: &[String]) -> Res {
+    if args.is_empty() {
+        return Err("reindex: expected at least one file: rigger reindex <file>...".into());
+    }
+    // Same selection path as `cmd_ground`: honor `defaults.grounder` when a config
+    // is present, else the unset default (turbovec). The grounder is rooted at `.`,
+    // so the persisted store it loads/updates is this project's `.rigger/grounding/`.
+    let name = config::load(".")
+        .map(|cfg| cfg.workflow.defaults.grounder)
+        .unwrap_or_default();
+    let grounder = select_grounder(&name)?;
+    grounder.reindex(".", args);
+    println!(
+        "reindexed {} file(s) in the grounding index: {}",
+        args.len(),
+        args.join(", ")
+    );
     Ok(())
 }
 
