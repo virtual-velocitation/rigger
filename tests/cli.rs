@@ -126,19 +126,41 @@ fn emit_review_finding_shows_in_peers() {
     );
 }
 
+/// Write a minimal `.rigger/workflow.yml` into `root` pinning `defaults.grounder` to
+/// the given name. Tests that exercise the LITERAL grep grounder pin `grep`
+/// explicitly: turbovec is the default grounder now, so an unconfigured project would
+/// resolve to the semantic engine (which embeds via a downloaded model and does not
+/// have grep's exact-line / no-match-empty / k-cap contract). Pinning grep keeps the
+/// test deterministic, offline, and focused on the literal grounder's behavior.
+fn write_grounder_workflow(root: &Path, grounder: &str) {
+    let rigger = root.join(".rigger");
+    // The agents/ dir must exist for `config::load` to succeed; without it the load
+    // fails and `cmd_ground` falls back to the UNSET grounder (which resolves to
+    // turbovec), so the pinned `grounder` would never take effect.
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        format!("name: t\ndefaults:\n  grounder: {grounder}\n"),
+    )
+    .unwrap();
+}
+
 /// `rigger ground "<query>"` returns repo references (`file:line: <text>`) from the
-/// project's configured grounder over a small temp repo.
+/// project's configured grounder over a small temp repo. This pins the LITERAL grep
+/// grounder (its exact-line / empty-on-no-match / k-cap contract); turbovec, the
+/// default grounder, is exercised by its own unit test (which downloads the model).
 #[test]
 fn ground_returns_references_from_the_repo() {
     let dir = temp_project();
     let root = dir.path();
+    write_grounder_workflow(root, "grep");
     std::fs::write(
         root.join("combat.rs"),
         "fn apply_damage() {}\nfn render() {}\n",
     )
     .unwrap();
 
-    // The scaffolded default grounder is grep; a query that matches a line returns it.
+    // The configured grounder is grep; a query that matches a line returns it.
     let (out, err, ok) = run_rigger(root, &["ground", "apply_damage"]);
     assert!(ok, "ground must succeed; stderr: {err}");
     assert!(

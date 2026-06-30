@@ -15,8 +15,6 @@ use rigger::driver::cli;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::{sqlite::Store, Direction, EventStore, Filter};
 use rigger::gate::ExecRunner;
-#[cfg(feature = "turbovec")]
-use rigger::grounder::Grep;
 use rigger::grounder::Grounder;
 use rigger::ledger::RunState;
 use rigger::sidecar::{PeerDecision, Sidecar};
@@ -309,7 +307,7 @@ fn run_cli(parsed: &RunArgs) -> Res {
     let store = Namespaced::new(backend.as_ref(), &project_identity());
     let graph = Projector::open(&db_path("graph.db"))?;
     let driver = cli::Driver::default();
-    let grounder = select_grounder(&cfg.workflow.defaults.grounder);
+    let grounder = select_grounder(&cfg.workflow.defaults.grounder)?;
     let deps = Deps {
         store: &store,
         driver: &driver,
@@ -337,7 +335,7 @@ fn run_workflow(parsed: &RunArgs) -> Res {
     let store = Namespaced::new(backend.as_ref(), &project_identity());
     let graph = Projector::open(&db_path("graph.db"))?;
     let driver = rigger::driver::workflow::Driver::new();
-    let grounder = select_grounder(&cfg.workflow.defaults.grounder);
+    let grounder = select_grounder(&cfg.workflow.defaults.grounder)?;
     let peers = rigger::sidecar::Sidecar::start(&store, 0, Filter::default())?;
 
     // The conductor orchestrates in the background; this thread serves the MCP
@@ -544,7 +542,7 @@ fn cmd_ground(args: &[String]) -> Res {
     let name = config::load(".")
         .map(|cfg| cfg.workflow.defaults.grounder)
         .unwrap_or_default();
-    let grounder = select_grounder(&name);
+    let grounder = select_grounder(&name)?;
     for r in grounder.ground(query, k) {
         println!("{}:{}: {}", r.file, r.line, r.text);
     }
@@ -857,28 +855,33 @@ fn cmd_prime() -> Res {
     Ok(())
 }
 
-/// Build the grounder named by `defaults.grounder` (§3.2, §5.4, R4): `nop` and
-/// `grep` (and the empty default) resolve via `grounder::grounder_for`; the
-/// semantic names (`vector`/`turbovec`) resolve to the real turbovec engine only
-/// when compiled with `-F turbovec`, falling back to grep with a note if its model
-/// is unavailable. Anything else falls back to grep via `grounder_for`.
+/// Build the grounder named by `defaults.grounder` (§3.2, §5.4, R4). Turbovec is the
+/// DEFAULT grounder: the turbovec names (`vector`/`turbovec`) AND an UNSET / empty
+/// `defaults.grounder` resolve to the real semantic engine. `grep` and `nop` resolve
+/// via `grounder::grounder_for` and are reachable ONLY when named explicitly.
+///
+/// When the binary is built WITHOUT the `turbovec` feature, resolving to turbovec is
+/// a LOUD error (a clear message + non-zero exit), never a silent degrade to grep -
+/// that silent degrade is exactly what hid turbovec being absent for a whole session.
+/// Grep runs ONLY when the user writes `grounder: grep`.
 #[cfg(feature = "turbovec")]
-fn select_grounder(name: &str) -> Box<dyn Grounder> {
-    match name.to_lowercase().as_str() {
-        "vector" | "turbovec" => match rigger::grounder::turbovec::Turbovec::new(".") {
-            Ok(tv) => Box::new(tv),
-            Err(e) => {
-                eprintln!("rigger: turbovec unavailable ({e}); falling back to grep");
-                Box::new(Grep { root: ".".into() })
-            }
-        },
-        other => rigger::grounder::grounder_for(other, "."),
+fn select_grounder(name: &str) -> Result<Box<dyn Grounder>, Box<dyn std::error::Error>> {
+    if rigger::grounder::resolves_to_turbovec(name) {
+        // Building the index can fail for a real, distinct reason (e.g. the embedding
+        // model cannot be loaded); that is its OWN loud error, not a grep fallback.
+        let tv = rigger::grounder::turbovec::Turbovec::new(".")
+            .map_err(|e| format!("turbovec grounder unavailable: {e}"))?;
+        return Ok(Box::new(tv));
     }
+    Ok(rigger::grounder::grounder_for(name, ".")?)
 }
 
 #[cfg(not(feature = "turbovec"))]
-fn select_grounder(name: &str) -> Box<dyn Grounder> {
-    rigger::grounder::grounder_for(name, ".")
+fn select_grounder(name: &str) -> Result<Box<dyn Grounder>, Box<dyn std::error::Error>> {
+    // No turbovec feature compiled in: `grounder_for` returns the loud
+    // "built without the turbovec feature" error for the default / turbovec names,
+    // and resolves grep / nop normally. We never silently degrade to grep.
+    Ok(rigger::grounder::grounder_for(name, ".")?)
 }
 
 fn git_repo() -> String {
@@ -928,7 +931,7 @@ name: example\n\
 \n\
 defaults:\n  \
 autonomy: auto_notify   # manual | auto_notify | silent\n  \
-grounder: grep          # grep (default) | turbovec (needs the cargo feature)\n  \
+grounder: turbovec      # turbovec (default; the real semantic grounder) | grep | nop\n  \
 # The spawn-budget circuit-breaker: the hard cap on agent spawns one unattended\n  \
 # run may make. At the cap the breaker emits BudgetExhausted and aborts the run,\n  \
 # so a runaway can never spawn unboundedly. NON-ZERO on purpose - 0 = unlimited.\n  \
@@ -1098,7 +1101,9 @@ mod tests {
             review.adjudicator, "devils-advocate",
             "tier 3: the neutral adjudicator gates"
         );
-        assert_eq!(cfg.workflow.defaults.grounder, "grep");
+        // The scaffold sets turbovec EXPLICITLY (visible, not implicit) - it is the
+        // default grounder and the default cargo feature.
+        assert_eq!(cfg.workflow.defaults.grounder, "turbovec");
         // FIX 3: the scaffold ships a NON-ZERO spawn budget so an unattended `rigger
         // run` cannot spawn unboundedly - 0 would be unlimited.
         assert!(
@@ -1180,6 +1185,49 @@ mod tests {
                 "the error must name the missing feature; got: {e}"
             ),
         }
+    }
+
+    /// With the turbovec feature compiled OUT, selecting the DEFAULT grounder (an
+    /// unset name) or an explicit turbovec/vector name FAILS LOUDLY - a clear error
+    /// naming turbovec, the missing feature, and the explicit grep opt-out - and never
+    /// silently degrades to grep. This is the regression guard for the silent degrade
+    /// that hid turbovec being absent for a whole session.
+    #[cfg(not(feature = "turbovec"))]
+    #[test]
+    fn select_grounder_fails_loudly_without_the_turbovec_feature() {
+        for name in ["", "turbovec", "vector"] {
+            let err = select_grounder(name)
+                .err()
+                .unwrap_or_else(|| panic!("{name:?} must fail loudly without the feature"));
+            let msg = err.to_string();
+            assert!(
+                msg.contains("turbovec") && msg.contains("feature") && msg.contains("grep"),
+                "the loud error must name turbovec, the feature, and the grep opt-out; got: {msg}"
+            );
+        }
+        // grep and nop are the explicit-only opt-outs and still resolve fine.
+        assert!(select_grounder("grep").is_ok());
+        assert!(select_grounder("nop").is_ok());
+        // An unknown name is a hard error too, not a silent grep fallback.
+        assert!(select_grounder("bogus").is_err());
+    }
+
+    /// With the turbovec feature compiled IN, grep is still reachable when named
+    /// EXPLICITLY (the deliberate literal-grounder opt-out), and an unknown name is a
+    /// hard error rather than a silent grep fallback. (The turbovec / default path is
+    /// exercised by the grounder's own model-loading test, which downloads weights.)
+    #[cfg(feature = "turbovec")]
+    #[test]
+    fn select_grounder_with_feature_resolves_grep_explicitly_and_rejects_unknown() {
+        assert!(
+            select_grounder("grep").is_ok(),
+            "explicit grep must resolve even with the turbovec feature on"
+        );
+        assert!(select_grounder("nop").is_ok());
+        assert!(
+            select_grounder("bogus-grounder").is_err(),
+            "an unknown grounder name must be a hard error, not a silent grep fallback"
+        );
     }
 
     #[test]

@@ -15,9 +15,12 @@ name = "rigger"
 path = "src/main.rs"
 
 [features]
-# The real turbovec engine (semantic vector grounding) + fastembed. Opt-in: it
-# pulls the ONNX runtime and downloads an embedding model, so the default build
-# stays light and the grounder falls back to grep.
+# Turbovec (semantic vector grounding) is ON BY DEFAULT: it is the real grounder
+# the loop is meant to run, so a plain `cargo build` / `cargo install` ships it.
+# It pulls the ONNX runtime + fastembed and downloads an embedding model on first
+# use, so `--no-default-features` is the deliberate light opt-out (grep-only).
+default = ["turbovec"]
+# The real turbovec engine (semantic vector grounding) + fastembed.
 turbovec = ["dep:turbovec", "dep:fastembed"]
 # The KurrentDB EventStore adapter (the trait's server-backed implementation). It
 # pulls the async gRPC client + a tokio runtime; testcontainers drives its
