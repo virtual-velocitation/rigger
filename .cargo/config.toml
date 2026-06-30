@@ -1,0 +1,8 @@
+# Bound peak build memory. The `turbovec` feature pulls heavy transitive crates
+# (the ONNX runtime, fastembed, image codecs such as rav1e/ravif); with the
+# default one-rustc-per-core (32 on this box) a build can spike tens of GB at
+# once and OOM a loaded workstation. Capping parallel codegen jobs keeps peak
+# memory bounded while staying reasonably fast. Raise it if you have headroom;
+# lower it (e.g. 4) if the machine is heavily loaded.
+[build]
+jobs = 8
