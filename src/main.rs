@@ -19,8 +19,8 @@ use rigger::gate::ExecRunner;
 use rigger::grounder::Grep;
 use rigger::grounder::Grounder;
 use rigger::ledger::RunState;
-use rigger::sidecar::PeerDecision;
-use rigger::{hooks, spec};
+use rigger::sidecar::{PeerDecision, Sidecar};
+use rigger::{hooks, mcpserver, spec};
 
 const RIGGER_DIR: &str = ".rigger";
 
@@ -200,6 +200,9 @@ fn main() {
         "serve" => cmd_serve(&args[2..]),
         "workflow" => cmd_workflow(&args[2..]),
         "graph" => cmd_graph(&args[2..]),
+        "ground" => cmd_ground(&args[2..]),
+        "emit" => cmd_emit(&args[2..]),
+        "peers" => cmd_peers(&args[2..]),
         "validate" => cmd_validate(),
         "init" => cmd_init(),
         "setup" => cmd_setup(),
@@ -231,6 +234,12 @@ SDK, and drives the loop (one command; run `rigger\n                            
 setup` first - it provisions the driver in .rigger/shim/)\n  \
 rigger serve [opts]         run as an MCP server the driver connects to\n  \
 rigger graph --around <id>  print the context subgraph around a node\n  \
+rigger ground <query> [k]   print up to k (default 8) repo references the project's\n                              \
+configured grounder finds for <query>, as `file:line: text`\n  \
+rigger emit <type> <json>   append {{type, data:<json>}} to the event store and fold\n                              \
+it into the context graph (the CLI form of rigger_emit)\n  \
+rigger peers [file ...]     print peer decisions and findings from the context\n                              \
+graph, scoped to the given files (the CLI form of rigger_peers)\n  \
 rigger validate             load and validate the workflow + agents\n  \
 rigger init                 set up a project: scaffold .rigger/ (workflow.yml +\n                              \
 an agents/ folder) and install the Claude Code\n                              \
@@ -484,6 +493,156 @@ fn cmd_graph(args: &[String]) -> Res {
         println!("  (nothing found; has `rigger run` been run yet?)");
     }
     Ok(())
+}
+
+/// `rigger ground "<query>" [<k>]` - run the project's configured grounder (the
+/// same one the `run`/`serve` paths build from `defaults.grounder` via
+/// [`select_grounder`]) over the repo and print up to `k` (default 8) relevant
+/// references, one per line as `file:line: <text>`. Empty output when nothing is
+/// relevant. This is the CLI surface a native-workflow agent (which has Bash, not
+/// the MCP grounding tool) uses to ground.
+fn cmd_ground(args: &[String]) -> Res {
+    let query = args
+        .first()
+        .ok_or("ground: expected a query: rigger ground \"<query>\" [<k>]")?;
+    let k: usize = match args.get(1) {
+        Some(s) => s
+            .parse()
+            .map_err(|_| format!("ground: <k> must be a non-negative integer, got {s:?}"))?,
+        None => 8,
+    };
+    if args.len() > 2 {
+        return Err(format!(
+            "ground: expected at most a query and k, got {} arguments",
+            args.len()
+        )
+        .into());
+    }
+    // Honor the project's configured `defaults.grounder` when a config is present;
+    // a project with no `.rigger/workflow.yml` yet falls back to the default grounder
+    // (the empty name -> grep, the scaffold default), so an agent can ground before a
+    // workflow is authored rather than hitting a config error.
+    let name = config::load(".")
+        .map(|cfg| cfg.workflow.defaults.grounder)
+        .unwrap_or_default();
+    let grounder = select_grounder(&name);
+    for r in grounder.ground(query, k) {
+        println!("{}:{}: {}", r.file, r.line, r.text);
+    }
+    Ok(())
+}
+
+/// `rigger emit <type> '<json-object>'` - append an event `{type: <type>, data:
+/// <parsed json>}` to the project's event store AND fold it into the context graph,
+/// EXACTLY as the MCP `rigger_emit` tool does (both call [`mcpserver::emit_event`]).
+/// The store and graph are opened the way `serve` opens them - the namespaced
+/// per-project event store and the `graph.db` projector on the `conductor::STREAM`.
+/// A bad / non-object JSON payload is a clear error to stderr with a non-zero exit.
+fn cmd_emit(args: &[String]) -> Res {
+    let typ = args
+        .first()
+        .ok_or("emit: expected a type: rigger emit <type> '<json-object>'")?;
+    let json_arg = args
+        .get(1)
+        .ok_or("emit: expected a JSON object: rigger emit <type> '<json-object>'")?;
+    if args.len() > 2 {
+        return Err(format!(
+            "emit: expected a type and a single JSON object, got {} arguments",
+            args.len()
+        )
+        .into());
+    }
+    let data: serde_json::Value = serde_json::from_str(json_arg)
+        .map_err(|e| format!("emit: <json-object> is not valid JSON: {e}"))?;
+    if !data.is_object() {
+        return Err(format!(
+            "emit: <json-object> must be a JSON object, got {}",
+            json_type_name(&data)
+        )
+        .into());
+    }
+
+    std::fs::create_dir_all(RIGGER_DIR)?;
+    let backend = Store::open(&db_path("events.db"))?;
+    let store = Namespaced::new(&backend, &project_identity());
+    let graph = Projector::open(&db_path("graph.db"))?;
+
+    // Same args shape the MCP tool receives, so emit_event - the shared core both
+    // surfaces call - behaves identically here and over MCP.
+    let tool_args = serde_json::json!({ "type": typ, "data": data });
+    let pos = mcpserver::emit_event(&store, conductor::STREAM, Some(&graph), &tool_args)?;
+    println!("emitted {typ} (position {pos}) and folded it into the context graph");
+    Ok(())
+}
+
+/// `rigger peers [<file> ...]` - print the peer decisions and review findings from
+/// the context graph scoped to the given files (or all if none), EXACTLY as the MCP
+/// `rigger_peers` tool does (both render through [`mcpserver::peers_json`]). The
+/// store is opened the way `serve` opens it; a side-car replays the `conductor::STREAM`
+/// backlog and this command waits for it to catch up before rendering one readable
+/// line per decision / finding.
+fn cmd_peers(args: &[String]) -> Res {
+    let files: Vec<String> = args.to_vec();
+
+    std::fs::create_dir_all(RIGGER_DIR)?;
+    let backend = Store::open(&db_path("events.db"))?;
+    let store = Namespaced::new(&backend, &project_identity());
+
+    // The side-car replays the whole backlog from position 0; wait until it has
+    // drained every event currently in the store before reading, so a one-shot CLI
+    // call sees the full picture (the long-running serve path catches up live).
+    let peers = Sidecar::start(&store, 0, Filter::default())?;
+    let total = store
+        .read_all(0, Direction::Forward, &Filter::default())?
+        .len();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while peers.len() < total && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    let result = mcpserver::peers_json(&peers, &files);
+    let decisions = result["decisions"].as_array().cloned().unwrap_or_default();
+    let findings = result["findings"].as_array().cloned().unwrap_or_default();
+    for d in &decisions {
+        let id = d["id"].as_str().unwrap_or_default();
+        let summary = d["summary"].as_str().unwrap_or_default();
+        let governs = json_str_array(&d["governs"]);
+        println!("decision {id} | {summary} | governs: {governs}");
+    }
+    for f in &findings {
+        let id = f["id"].as_str().unwrap_or_default();
+        let by = f["by"].as_str().unwrap_or_default();
+        let summary = f["summary"].as_str().unwrap_or_default();
+        let about = json_str_array(&f["about"]);
+        println!("finding {id} | by {by} | {summary} | about: {about}");
+    }
+    Ok(())
+}
+
+/// Join a JSON array of strings into a comma-separated list for a `rigger peers`
+/// line (the `governs` / `about` files). A non-array or empty value renders as `-`.
+fn json_str_array(v: &serde_json::Value) -> String {
+    match v.as_array() {
+        Some(a) if !a.is_empty() => a
+            .iter()
+            .filter_map(|x| x.as_str())
+            .collect::<Vec<_>>()
+            .join(", "),
+        _ => "-".to_string(),
+    }
+}
+
+/// A human-readable name for a JSON value's type, for the `rigger emit` error that
+/// rejects a non-object payload.
+fn json_type_name(v: &serde_json::Value) -> &'static str {
+    match v {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "a boolean",
+        serde_json::Value::Number(_) => "a number",
+        serde_json::Value::String(_) => "a string",
+        serde_json::Value::Array(_) => "an array",
+        serde_json::Value::Object(_) => "an object",
+    }
 }
 
 fn cmd_validate() -> Res {
