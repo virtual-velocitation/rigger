@@ -23,7 +23,18 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 
-import { runWorkflow, unwrap, renderPeers, buildProxyServer, buildAgentOptions } from './shim.mjs'
+import {
+  runWorkflow,
+  unwrap,
+  renderPeers,
+  buildProxyServer,
+  buildAgentOptions,
+  isUsageLimitError,
+  parseResetTime,
+  computeRetryDelayMs,
+  withLimitResume,
+  DEFAULT_RETRY_INTERVAL_MS,
+} from './shim.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const MOCK = join(here, 'mock-rigger-server.mjs')
@@ -281,4 +292,224 @@ test('the loop threads the spawn worktree dir to the agent runner', async () => 
     '/tmp/rigger-wt-unit-1-deadbeef',
     'the spawn worktree dir reached the agent runner, so the agent runs in its worktree',
   )
+})
+
+// ---------------------------------------------------------------------------
+// Usage-limit pause-and-resume.
+
+test('isUsageLimitError recognizes the limit wordings, not real failures', () => {
+  assert.equal(isUsageLimitError("You've hit your weekly limit · resets 5am (America/Chicago)"), true)
+  assert.equal(isUsageLimitError('Claude AI usage limit reached'), true)
+  assert.equal(isUsageLimitError("You've hit your 5-hour limit, resets at 11pm (PST)"), true)
+  assert.equal(isUsageLimitError('rate limited; try again later'), true)
+  // A genuine stage failure must NOT be treated as a limit (it should fail the spawn).
+  assert.equal(isUsageLimitError('agent run failed (error_max_turns)'), false)
+  assert.equal(isUsageLimitError('compile error: mismatched types'), false)
+  assert.equal(isUsageLimitError(''), false)
+  assert.equal(isUsageLimitError(undefined), false)
+})
+
+test('parseResetTime("5am (America/Chicago)") -> the next future 5am Chicago instant', () => {
+  // Anchor "now" at a fixed instant: 2026-06-23 12:00:00 UTC (= 07:00 CDT, Chicago is
+  // UTC-5 in June). The next 5am Chicago is therefore TOMORROW 5am CDT = 10:00 UTC the
+  // following day, since 5am today already passed.
+  const nowMs = Date.UTC(2026, 5, 23, 12, 0, 0)
+  const reset = parseResetTime("You've hit your weekly limit · resets 5am (America/Chicago)", nowMs)
+  assert.ok(reset instanceof Date, 'a parseable message yields a Date')
+  assert.ok(reset.getTime() > nowMs, 'the reset is in the future')
+
+  // The reset, read back IN Chicago, must be exactly 05:00 local.
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Chicago',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  })
+  const parts = {}
+  for (const p of fmt.formatToParts(reset)) parts[p.type] = p.value
+  const hour = parts.hour === '24' ? '00' : parts.hour
+  assert.equal(hour, '05', 'the reset is at 5am Chicago local time')
+  assert.equal(parts.minute, '00', 'on the hour')
+
+  // June Chicago is CDT (UTC-5), so 5am CDT == 10:00 UTC, and it is tomorrow.
+  assert.equal(reset.getTime(), Date.UTC(2026, 5, 24, 10, 0, 0), 'next 5am CDT is tomorrow 10:00 UTC')
+})
+
+test('parseResetTime handles minutes, pm, and an abbreviated zone; null when unparseable', () => {
+  const nowMs = Date.UTC(2026, 5, 23, 12, 0, 0)
+  const r = parseResetTime('resets at 11:30pm (PST)', nowMs)
+  assert.ok(r instanceof Date && r.getTime() > nowMs)
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Los_Angeles',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  })
+  const parts = {}
+  for (const p of fmt.formatToParts(r)) parts[p.type] = p.value
+  assert.equal(parts.hour, '23', '11:30pm -> 23:xx local')
+  assert.equal(parts.minute, '30')
+
+  // No reset time present -> null (caller falls back to a fixed interval).
+  assert.equal(parseResetTime('You have hit your weekly limit', nowMs), null)
+  assert.equal(parseResetTime('totally unrelated message', nowMs), null)
+})
+
+test('computeRetryDelayMs: parsed reset -> wait to reset (+buffer); unparseable -> fixed interval', () => {
+  const nowMs = Date.UTC(2026, 5, 23, 12, 0, 0)
+  // Parseable: 5am Chicago tomorrow = 2026-06-24 10:00 UTC. Wait = that - now + 5s buffer.
+  const parsed = computeRetryDelayMs("resets 5am (America/Chicago)", nowMs, { bufferMs: 5000 })
+  const expected = Date.UTC(2026, 5, 24, 10, 0, 0) - nowMs + 5000
+  assert.equal(parsed, expected, 'the wait spans now -> reset plus the buffer')
+
+  // Unparseable: fall back to the fixed interval.
+  const fallback = computeRetryDelayMs('weekly limit reached, no time given', nowMs, {
+    intervalMs: DEFAULT_RETRY_INTERVAL_MS,
+  })
+  assert.equal(fallback, DEFAULT_RETRY_INTERVAL_MS, 'no reset time -> fixed interval')
+
+  // A far-future parse is capped (never an absurd single sleep).
+  const capped = computeRetryDelayMs("resets 5am (America/Chicago)", nowMs, { maxWaitMs: 60_000 })
+  assert.equal(capped, 60_000, 'the wait is clamped to maxWaitMs')
+})
+
+test('withLimitResume: limit error once (parseable) -> parses, waits via the injected clock, retries to success', async () => {
+  // The fake agent returns a usage-limit error on its FIRST call (a parseable reset
+  // time) then succeeds on the SECOND - exactly a real run that died on a limit.
+  let calls = 0
+  const fakeAgent = async (spawn) => {
+    calls += 1
+    if (calls === 1) {
+      throw new Error("agent run failed (error): Claude AI usage limit reached · resets 5am (America/Chicago)")
+    }
+    return `done for ${spawn.id}`
+  }
+
+  // Injected clock: starts at a fixed instant and JUMPS to the sleep target instantly,
+  // so the test does not actually sleep. We record what we waited for to assert on it.
+  let clockMs = Date.UTC(2026, 5, 23, 12, 0, 0)
+  const sleeps = []
+  const now = () => clockMs
+  const sleepUntil = async (targetMs, currentMs) => {
+    sleeps.push({ targetMs, currentMs })
+    clockMs = targetMs // advance the virtual clock; no real wait
+  }
+
+  const resumable = withLimitResume(fakeAgent, { now, sleepUntil })
+  const out = await resumable({ id: '1' })
+
+  assert.equal(out, 'done for 1', 'the spawn eventually succeeds after the limit clears')
+  assert.equal(calls, 2, 'the agent was retried exactly once after the limit hit')
+  assert.equal(sleeps.length, 1, 'it paused exactly once')
+
+  // It WAITED until the parsed reset: 5am Chicago tomorrow (10:00 UTC 2026-06-24),
+  // plus the default 5s buffer - proving it parsed the reset time, not a fixed interval.
+  const expectedTarget = Date.UTC(2026, 5, 24, 10, 0, 0) + 5000
+  assert.equal(sleeps[0].targetMs, expectedTarget, 'it waited until the parsed reset time (+buffer)')
+  assert.equal(sleeps[0].currentMs, Date.UTC(2026, 5, 23, 12, 0, 0), 'it measured the wait from the limit-hit instant')
+})
+
+test('withLimitResume: unparseable limit message -> fixed-interval wait, still retries to success', async () => {
+  let calls = 0
+  const fakeAgent = async () => {
+    calls += 1
+    if (calls === 1) throw new Error('agent run failed (error): weekly limit reached') // no reset time
+    return 'recovered'
+  }
+
+  let clockMs = 1_000_000
+  const sleeps = []
+  const resumable = withLimitResume(fakeAgent, {
+    now: () => clockMs,
+    sleepUntil: async (targetMs) => {
+      sleeps.push(targetMs)
+      clockMs = targetMs
+    },
+    intervalMs: 900_000, // explicit fixed fallback
+  })
+
+  const out = await resumable({ id: '7' })
+  assert.equal(out, 'recovered', 'an unparseable limit message still pauses-and-resumes to success')
+  assert.equal(calls, 2)
+  assert.equal(sleeps.length, 1)
+  assert.equal(sleeps[0], 1_000_000 + 900_000, 'it waited the fixed interval (no parseable reset)')
+})
+
+test('withLimitResume: a non-limit error is re-thrown immediately (real failure, not paused)', async () => {
+  let calls = 0
+  let slept = false
+  const fakeAgent = async () => {
+    calls += 1
+    throw new Error('agent run failed (error_max_turns): the agent gave up')
+  }
+  const resumable = withLimitResume(fakeAgent, {
+    now: () => 0,
+    sleepUntil: async () => {
+      slept = true
+    },
+  })
+  await assert.rejects(() => resumable({ id: '1' }), /error_max_turns/, 'a real failure surfaces unchanged')
+  assert.equal(calls, 1, 'a non-limit error is NOT retried')
+  assert.equal(slept, false, 'and the loop does not pause on a real failure')
+})
+
+test('withLimitResume: caps retries so a never-clearing limit cannot loop forever', async () => {
+  let calls = 0
+  const fakeAgent = async () => {
+    calls += 1
+    throw new Error('Claude AI usage limit reached') // never recovers
+  }
+  let clockMs = 0
+  const resumable = withLimitResume(fakeAgent, {
+    now: () => clockMs,
+    sleepUntil: async (t) => {
+      clockMs = t
+    },
+    maxRetries: 3,
+    intervalMs: 1000,
+  })
+  await assert.rejects(() => resumable({ id: '1' }), /not cleared after 3 retries/, 'it gives up after the cap')
+  // 1 initial attempt + 3 retries = 4 calls.
+  assert.equal(calls, 4, 'it tried the initial run plus exactly maxRetries retries')
+})
+
+test('the loop drives a limit-then-success spawn end-to-end (withLimitResume around runWorkflow)', async () => {
+  // Prove the wrapper composes with runWorkflow against the real mock conductor: the
+  // agent hits the limit once, the wrapper waits (instant, injected clock) and retries,
+  // and the loop reports the eventual SUCCESS via rigger_result - never an error.
+  const recordPath = join(mkdtempSync(join(tmpdir(), 'rigger-shim-test-')), 'record.jsonl')
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [MOCK],
+    env: { ...process.env, RIGGER_MOCK_RECORD: recordPath },
+    stderr: 'inherit',
+  })
+  const client = new Client({ name: 'rigger-shim-test', version: '0.0.0' }, { capabilities: {} })
+  await client.connect(transport)
+
+  let calls = 0
+  const flakyAgent = async () => {
+    calls += 1
+    if (calls === 1) throw new Error("Claude AI usage limit reached · resets 5am (America/Chicago)")
+    return 'unit done after the limit cleared'
+  }
+  let clockMs = Date.UTC(2026, 5, 23, 12, 0, 0)
+  const resumable = withLimitResume(flakyAgent, {
+    now: () => clockMs,
+    sleepUntil: async (t) => {
+      clockMs = t
+    },
+  })
+
+  const drove = await runWorkflow(client, resumable)
+  await client.close()
+  await transport.close()
+
+  assert.equal(drove, 1, 'the loop drove the one spawn')
+  assert.equal(calls, 2, 'the agent ran twice: limit hit, then success on resume')
+  const records = readRecords(recordPath)
+  const result = records.find((r) => r.tool === 'rigger_result')
+  assert.ok(result, 'a result was reported')
+  assert.equal(result.args.output, 'unit done after the limit cleared', 'the SUCCESS output was reported, post-resume')
+  assert.ok(!result.args.error, 'the limit was NOT surfaced as a stage failure')
 })
