@@ -55,12 +55,22 @@ The loop itself is the part that has already been proven. It came out of a real 
 cargo install --git https://github.com/virtual-velocitation/rigger
 
 cd your-project
-rigger init                    # scaffold a workflow file and an agents folder
-rigger run specs/feature.md    # run the loop on a spec
+rigger setup                   # scaffold config + hook, install the native /rigger
+                               #   workflow, and provision the JS driver (npm install)
+```
+
+Then drive the loop from inside Claude Code:
+
+```
+/rigger specs/feature.md       # run the loop on a spec - no hand-editing, it just works
 rigger graph --around path/to/file
 ```
 
-By default this uses the local SQLite store, the grep grounder, and the `claude` CLI agent driver, so there is nothing else to stand up. For semantic grounding, install OpenBLAS and build with `--features turbovec` (it pulls the ONNX runtime and downloads an embedding model). `rigger serve` runs the MCP bridge for the in-Claude-Code workflow driver.
+`rigger setup` installs the native Claude Code workflow at `.claude/workflows/rigger.js`, which Claude Code auto-discovers - so `/rigger <spec>` is runnable immediately, with nothing else to wire up. That workflow is the primary driver: it decomposes the spec into a unit DAG and, per unit, implements -> runs the cargo gates -> three-tier adversarial review -> integrates, with bounded remediation. Its agents ground themselves with `rigger ground` and read/write the shared context graph through `rigger emit` and `rigger peers`, so no agent works blind.
+
+`rigger setup` also provisions the standalone JS driver in `.rigger/shim/`, so `rigger workflow specs/feature.md` runs the same loop from the command line as a fallback - useful outside an interactive Claude Code session. The lower-level pieces are still there too: `rigger init` does config-only setup, `rigger run specs/feature.md` is the standalone CLI driver, and `rigger serve` runs the MCP bridge.
+
+By default this uses the local SQLite store, the grep grounder, and the `claude` CLI agent driver, so there is nothing else to stand up. For semantic grounding, install OpenBLAS and build with `--features turbovec` (it pulls the ONNX runtime and downloads an embedding model).
 
 ## Where this is going
 
