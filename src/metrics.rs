@@ -400,6 +400,70 @@ mod tests {
     }
 
     #[test]
+    fn folds_a_synthetic_slice_into_a_fully_asserted_metrics_value() {
+        // Spec/01 line 34: the projection is covered by a unit test that folds a
+        // synthetic event slice and asserts EACH metric value. Where
+        // `projects_every_metric_from_a_synthetic_run` checks fields piecemeal, this
+        // test exercises ALL metrics at once - both review outcomes (approve AND
+        // reject), two gates each with pass+fail, a clean first pass and a failed
+        // one, and an escalation - then asserts the WHOLE `Metrics` value via a
+        // single `Eq` against a fully-constructed expected struct. A field added to
+        // `Metrics` later cannot silently escape this assertion the way it could a
+        // set of per-field asserts.
+        let events = vec![
+            // `clean`: per-unit review approve, zero failures => first-pass clean.
+            started("clean", "impl"),
+            verdict("build", true),
+            verdict("clippy", true),
+            status("clean", "verified"),
+            status("clean", "reviewed"),
+            integrated("clean"),
+            artifact_verdict("build", "src/clean.rs"), // GATED_BY bookkeeping - excluded
+            // `reject`: per-unit review reject (verified then UnitFailed), retries,
+            // then integrates - failed once so NOT a clean first pass.
+            started("reject", "impl"),
+            verdict("build", true),
+            verdict("clippy", false),
+            status("reject", "verified"),
+            failed("reject"), // review reject (armed by `verified`)
+            verdict("clippy", true),
+            status("reject", "verified"),
+            status("reject", "reviewed"),
+            integrated("reject"),
+            // `esc`: a named unit that fails and escalates - no review activity, so
+            // its UnitFailed is a remediation, not a review reject.
+            started("esc", "impl"),
+            verdict("build", false),
+            failed("esc"),
+            escalated("esc"),
+        ];
+
+        let mut gates = BTreeMap::new();
+        // build: clean(pass) + reject(pass) + esc(fail) = 2 pass / 1 fail. The
+        // artifact-tagged build verdict is excluded.
+        gates.insert("build".to_string(), GateCounts { pass: 2, fail: 1 });
+        // clippy: clean(pass) + reject(fail) + reject(pass) = 2 pass / 1 fail.
+        gates.insert("clippy".to_string(), GateCounts { pass: 2, fail: 1 });
+        let expected = Metrics {
+            units_started: 3,
+            first_pass_clean: 1, // only `clean`
+            gates,
+            units_escalated: 1, // `esc`
+            review_approve: 2,  // `clean` + `reject` (the retry approved)
+            review_reject: 1,   // `reject`'s verified-then-UnitFailed
+        };
+
+        let m = project(&events);
+        // The whole value in one assertion - every metric, exactly.
+        assert_eq!(m, expected);
+        // Derived ratios over the same fold (never NaN; guarded denominators).
+        assert_eq!(m.first_pass_yield(), 1.0 / 3.0);
+        assert_eq!(m.escalation_rate(), 1.0 / 3.0);
+        assert_eq!(m.gates["build"].total(), 3);
+        assert_eq!(m.gates["clippy"].total(), 3);
+    }
+
+    #[test]
     fn counts_review_rejects_on_both_per_unit_and_fan_out_paths() {
         // Per-unit reject: `verified` arms, then UnitFailed-while-armed = reject.
         // Fan-out reject: empty-agent UnitStarted, then a bare UnitFailed = reject.
