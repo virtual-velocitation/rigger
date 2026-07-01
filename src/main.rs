@@ -17,6 +17,7 @@ use rigger::eventstore::{sqlite::Store, Direction, EventStore, Filter};
 use rigger::gate::ExecRunner;
 use rigger::grounder::Grounder;
 use rigger::ledger::RunState;
+use rigger::metrics::{self, Metrics};
 use rigger::sidecar::{PeerDecision, Sidecar};
 use rigger::{hooks, mcpserver, spec};
 
@@ -228,6 +229,7 @@ fn main() {
         "serve" => cmd_serve(&args[2..]),
         "workflow" => cmd_workflow(&args[2..]),
         "graph" => cmd_graph(&args[2..]),
+        "stats" => cmd_stats(&args[2..]),
         "ground" => cmd_ground(&args[2..]),
         "reindex" => cmd_reindex(&args[2..]),
         "emit" => cmd_emit(&args[2..]),
@@ -263,6 +265,9 @@ SDK, and drives the loop (one command; run `rigger\n                            
 setup` first - it provisions the driver in .rigger/shim/)\n  \
 rigger serve [opts]         run as an MCP server the driver connects to\n  \
 rigger graph --around <id>  print the context subgraph around a node\n  \
+rigger stats                print the run's operator metrics: first-pass yield,\n                              \
+per-gate remediation counts, escalation rate, and\n                              \
+review approve/reject counts\n  \
 rigger ground <query> [k]   print up to k (default 8) repo references the project's\n                              \
 configured grounder finds for <query>, as `file:line: text`\n  \
 rigger reindex <file>...    incrementally re-embed the named files in the project's\n                              \
@@ -527,6 +532,136 @@ fn cmd_graph(args: &[String]) -> Res {
         println!("  (nothing found; has `rigger run` been run yet?)");
     }
     Ok(())
+}
+
+/// `rigger stats` - print the operator metrics for the current project's run: the
+/// implement -> review loop's first-pass yield, per-gate remediation (pass/fail)
+/// counts, escalation rate, and review approve/reject counts.
+///
+/// Composition mirrors `run_cli` (decision `d-stats-namespace`): resolve this project's
+/// identity and `.rigger/events.db` path, then delegate to [`stats_lines`], which opens
+/// the db via [`Store`], wraps it in the per-project [`Namespaced`] decorator, reads the
+/// conductor's run stream ([`conductor::STREAM`]) forward - the same stream and boundary
+/// the conductor itself replays its run state from - and folds it through the pure
+/// [`metrics::project`] read-model.
+///
+/// Both no-run edges (absent db, empty namespaced run stream) come back from
+/// [`stats_lines`] as `None` and print the same clear "no runs yet" message instead of
+/// an empty table or a panic (decision `d-stats-absent-guard`); see that function for
+/// the per-edge rationale.
+///
+/// `rigger stats` takes no arguments; any extra argument is a clear error.
+fn cmd_stats(args: &[String]) -> Res {
+    if !args.is_empty() {
+        return Err(format!("stats: expected no arguments, got {}", args.len()).into());
+    }
+
+    // Resolve the project identity and db path the same way every CLI command does,
+    // then delegate the namespace-scoped read + no-runs decision to `stats_lines`. This
+    // wrapper owns only the I/O boundary (which file, which project, and the printing);
+    // the read-model edges live in the testable seam below.
+    match stats_lines(&db_path("events.db"), &project_identity())? {
+        Some(lines) => {
+            for line in lines {
+                println!("{line}");
+            }
+        }
+        // No run to report on - absent db (never-run project) or an empty namespaced
+        // run stream. One clear message for both edges.
+        None => println!("{NO_RUNS_MESSAGE}"),
+    }
+    Ok(())
+}
+
+/// The pure read-model core of `rigger stats`: open the embedded `events.db` at `path`,
+/// read `project`'s `run` stream through the per-project [`Namespaced`] decorator, and
+/// fold it into the printable metric lines - returning `None` for the two "no runs yet"
+/// edges so [`cmd_stats`] prints one clear message for both (decision `d-stats-read-seam`).
+///
+/// Split out from [`cmd_stats`] so the namespace-scoped read and its empty/absent edges
+/// are unit-testable against any backing file and project name, without depending on the
+/// process cwd or a real git repo for identity (which `project_identity` derives).
+///
+/// `None` is returned for two edges (decision `d-stats-absent-guard`):
+///   1. **absent db** - a project that has never run has no `events.db`. We guard BEFORE
+///      [`Store::open`], which (via `Connection::open`) would create the file and mask a
+///      never-run project as an empty one. This mirrors [`cmd_prime`]'s absent-db guard.
+///   2. **empty run stream** - the db exists (some other command, or another project
+///      sharing the backend, created it) but *this* project's namespaced `run` stream
+///      holds no events. The [`Namespaced`] read scopes to `proj-<project>-run`, so an
+///      event another project wrote, or one this project wrote to a different stream,
+///      does not leak into the count.
+fn stats_lines(
+    path: &str,
+    project: &str,
+) -> Result<Option<Vec<String>>, Box<dyn std::error::Error>> {
+    if !Path::new(path).exists() {
+        return Ok(None);
+    }
+
+    let backend = Store::open(path)?;
+    let store = Namespaced::new(&backend, project);
+    // The conductor projects its run state from STREAM read forward from revision 0
+    // (inclusive); read the same stream the same way so the metrics fold sees exactly
+    // the run the conductor drove, scoped to this project's namespace.
+    let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+    if events.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(format_stats(&metrics::project(&events))))
+}
+
+/// The message printed when there is no run to report on - either the project has
+/// never run (no `events.db`) or its run stream is empty. Single-sourced so both
+/// edges in [`cmd_stats`] stay in lock-step.
+const NO_RUNS_MESSAGE: &str =
+    "# Rigger: no runs recorded yet (run `rigger run` to start a run, then `rigger stats`).";
+
+/// Render a [`Metrics`] value into the lines `rigger stats` prints, one metric group
+/// per line. Split from [`cmd_stats`] (which does the I/O) so the formatting is a
+/// pure function of the metrics and can be asserted in a unit test without touching
+/// the filesystem.
+///
+/// The output reports the four required metrics:
+///   - **first-pass yield** as a percentage with the clean/started fraction;
+///   - **per-gate remediation counts** - one line per gate, `pass`/`fail`/`total`,
+///     where `fail` is the remediation signal (sorted by gate id, stable);
+///   - **escalation rate** as a percentage with the escalated/started fraction;
+///   - **review approve/reject** counts.
+fn format_stats(m: &Metrics) -> Vec<String> {
+    let mut lines = Vec::new();
+    lines.push("run stats:".to_string());
+    lines.push(format!(
+        "  first-pass yield   {:.1}% ({}/{} units clean on the first pass)",
+        m.first_pass_yield() * 100.0,
+        m.first_pass_clean,
+        m.units_started,
+    ));
+    lines.push(format!(
+        "  escalation rate    {:.1}% ({}/{} units escalated to a human)",
+        m.escalation_rate() * 100.0,
+        m.units_escalated,
+        m.units_started,
+    ));
+    lines.push(format!(
+        "  review             {} approved / {} rejected",
+        m.review_approve, m.review_reject,
+    ));
+    if m.gates.is_empty() {
+        lines.push("  gates              (no gate runs recorded)".to_string());
+    } else {
+        lines.push("  per-gate runs (fail = remediation):".to_string());
+        for (gate, counts) in &m.gates {
+            lines.push(format!(
+                "    {gate:<16} {} pass / {} fail / {} total",
+                counts.pass,
+                counts.fail,
+                counts.total(),
+            ));
+        }
+    }
+    lines
 }
 
 /// `rigger ground "<query>" [<k>]` - run the project's configured grounder (the
@@ -1461,5 +1596,252 @@ mod tests {
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false)
+    }
+
+    use rigger::metrics::GateCounts;
+    use std::collections::BTreeMap;
+
+    /// `format_stats` must surface ALL FOUR required metrics - first-pass yield,
+    /// per-gate remediation (pass/fail) counts, escalation rate, and review
+    /// approve/reject - from a fully-populated `Metrics` value. This pins the CLI
+    /// contract for `rigger stats` (the spec's "stats prints the four metrics")
+    /// without touching the filesystem.
+    #[test]
+    fn format_stats_prints_all_four_metrics() {
+        let mut gates = BTreeMap::new();
+        gates.insert("build".to_string(), GateCounts { pass: 4, fail: 1 });
+        gates.insert("clippy".to_string(), GateCounts { pass: 3, fail: 2 });
+        let m = Metrics {
+            units_started: 4,
+            first_pass_clean: 3,
+            gates,
+            units_escalated: 1,
+            review_approve: 5,
+            review_reject: 2,
+        };
+        let out = format_stats(&m).join("\n");
+
+        // 1. First-pass yield: 3/4 = 75.0%, with the fraction shown.
+        assert!(
+            out.contains("first-pass yield   75.0% (3/4 units clean on the first pass)"),
+            "first-pass yield line missing/wrong:\n{out}"
+        );
+        // 2. Escalation rate: 1/4 = 25.0%, with the fraction shown.
+        assert!(
+            out.contains("escalation rate    25.0% (1/4 units escalated to a human)"),
+            "escalation rate line missing/wrong:\n{out}"
+        );
+        // 3. Review approve/reject counts.
+        assert!(
+            out.contains("review             5 approved / 2 rejected"),
+            "review approve/reject line missing/wrong:\n{out}"
+        );
+        // 4. Per-gate remediation counts: one line per gate (fail = remediation),
+        // sorted by gate id (build before clippy).
+        assert!(
+            out.contains("build            4 pass / 1 fail / 5 total"),
+            "build gate line missing/wrong:\n{out}"
+        );
+        assert!(
+            out.contains("clippy           3 pass / 2 fail / 5 total"),
+            "clippy gate line missing/wrong:\n{out}"
+        );
+        let build_at = out.find("build ").expect("build gate present");
+        let clippy_at = out.find("clippy ").expect("clippy gate present");
+        assert!(build_at < clippy_at, "gates must be sorted by id:\n{out}");
+    }
+
+    /// A zeroed `Metrics` (the shape `project(&[])` returns) must render guarded,
+    /// NaN-free output: 0.0% rates and a "no gate runs" line, never `NaN%` from a
+    /// divide-by-zero or an empty/blank gates section.
+    #[test]
+    fn format_stats_handles_zeroed_metrics_without_nan() {
+        let out = format_stats(&Metrics::default()).join("\n");
+        assert!(out.contains("first-pass yield   0.0%"), "{out}");
+        assert!(out.contains("escalation rate    0.0%"), "{out}");
+        assert!(
+            out.contains("review             0 approved / 0 rejected"),
+            "{out}"
+        );
+        assert!(
+            out.contains("gates              (no gate runs recorded)"),
+            "a run with no gate runs must say so, not print a blank section:\n{out}"
+        );
+        assert!(
+            !out.to_lowercase().contains("nan"),
+            "rates must be guarded, never NaN:\n{out}"
+        );
+    }
+
+    /// `cmd_stats` rejects any positional argument with a clear error (it takes none),
+    /// mirroring the strict-arity errors the other CLI commands raise.
+    #[test]
+    fn cmd_stats_rejects_extra_arguments() {
+        let err = cmd_stats(&["unexpected".to_string()]).expect_err("stats takes no arguments");
+        assert!(
+            err.to_string().contains("stats: expected no arguments"),
+            "the error must explain stats takes no arguments; got: {err}"
+        );
+    }
+
+    /// On an absent `events.db` (a project that has never run) `cmd_stats` must print
+    /// the clear "no runs yet" message and succeed, NOT create the db or panic. Run in
+    /// a temp dir so the real project's `.rigger/` is untouched.
+    #[test]
+    fn cmd_stats_on_a_never_run_project_says_no_runs_and_creates_no_db() {
+        let dir = tempfile::tempdir().unwrap();
+        let prev = std::env::current_dir().unwrap();
+        // current_dir is process-global; serialize against the other cwd-sensitive
+        // path via a guard that always restores it even on a failed assertion.
+        struct Restore(std::path::PathBuf);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                let _ = std::env::set_current_dir(&self.0);
+            }
+        }
+        let _restore = Restore(prev);
+        std::env::set_current_dir(dir.path()).unwrap();
+
+        cmd_stats(&[]).expect("stats on a never-run project must succeed");
+
+        // The absent-db guard must run BEFORE Store::open, so no events.db is created.
+        assert!(
+            !dir.path().join(RIGGER_DIR).join("events.db").exists(),
+            "stats on a never-run project must not create events.db"
+        );
+    }
+
+    /// The no-runs message single-sourced for both the absent-db and empty-stream
+    /// edges must actually point the user at `rigger run` - a pinned, greppable
+    /// contract so the two edges can never drift apart or lose the next-step hint.
+    #[test]
+    fn no_runs_message_points_at_rigger_run() {
+        assert!(NO_RUNS_MESSAGE.contains("rigger run"), "{NO_RUNS_MESSAGE}");
+        assert!(NO_RUNS_MESSAGE.contains("no runs"), "{NO_RUNS_MESSAGE}");
+    }
+
+    /// Append `events` to `project`'s namespaced `run` stream in the sqlite db at
+    /// `path` - the exact stream and namespace the conductor writes its run to, so a
+    /// `stats_lines` read sees them exactly as it would a real run. Returns nothing;
+    /// the db file now exists with the events committed.
+    fn seed_run(path: &str, project: &str, events: &[rigger::eventstore::Event]) {
+        use rigger::eventstore::ExpectedRevision;
+        let backend = Store::open(path).expect("open sqlite backend");
+        let store = Namespaced::new(&backend, project);
+        store
+            .append(conductor::STREAM, ExpectedRevision::Any, events)
+            .expect("append run events");
+    }
+
+    /// `stats_lines` against an absent `events.db` returns `None` (the "no runs yet"
+    /// signal) and - critically - does NOT create the file. Opening would create it
+    /// and mask a never-run project as an empty one, so the guard must precede the open.
+    #[test]
+    fn stats_lines_absent_db_returns_none_and_creates_no_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let path_str = path.to_str().unwrap();
+
+        let out = stats_lines(path_str, "proj-x").expect("absent db is not an error");
+        assert!(out.is_none(), "an absent db must read as no runs (None)");
+        assert!(
+            !path.exists(),
+            "stats_lines must not create events.db when it is absent"
+        );
+    }
+
+    /// `stats_lines` against an existing db whose namespaced `run` stream is empty
+    /// returns `None`. This is the db-exists-but-no-run edge: another command (or
+    /// another project sharing the backend) created the file, but this project has no
+    /// run. It must read as "no runs yet", not a zeroed/empty table.
+    #[test]
+    fn stats_lines_existing_db_with_empty_run_stream_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let path_str = path.to_str().unwrap();
+
+        // Create the db file via the real store path, but leave "proj-me"'s run stream
+        // empty (append zero events still opens/creates the backing file).
+        seed_run(path_str, "proj-me", &[]);
+        assert!(path.exists(), "the db file must exist for this edge");
+
+        let out = stats_lines(path_str, "proj-me").expect("empty run stream is not an error");
+        assert!(
+            out.is_none(),
+            "an existing db with an empty run stream must read as no runs (None)"
+        );
+    }
+
+    /// The read is scoped to the per-project namespace: a run that ANOTHER project
+    /// wrote to the SAME shared backend must not leak into this project's stats. With
+    /// the backend holding `proj-other`'s run, `proj-me`'s `stats_lines` still reads
+    /// `None` - proving the [`Namespaced`] decorator (`proj-<project>-run`) is on the
+    /// read path, not just the write path.
+    #[test]
+    fn stats_lines_does_not_read_another_projects_namespaced_run() {
+        use rigger::eventstore::Event;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let path_str = path.to_str().unwrap();
+
+        // proj-other has a real run in the shared backend.
+        seed_run(
+            path_str,
+            "proj-other",
+            &[Event::new("UnitStarted", b"{}".to_vec())],
+        );
+
+        // proj-me, reading the same file, sees its OWN (empty) namespace - no runs.
+        let mine = stats_lines(path_str, "proj-me").expect("read is not an error");
+        assert!(
+            mine.is_none(),
+            "stats must be namespace-scoped: another project's run must not leak in"
+        );
+
+        // Sanity: the other project's run IS visible to it, so the data really is there
+        // and the None above is the namespace boundary, not a read failure.
+        let theirs = stats_lines(path_str, "proj-other").expect("read is not an error");
+        assert!(
+            theirs.is_some(),
+            "the project that owns the run must see its stats"
+        );
+    }
+
+    /// A populated namespaced run reads back through `stats_lines` as the rendered
+    /// metric lines - the positive case that pins the read-fold-format path end to end
+    /// against a real on-disk db (not just the pure formatter), and that the events the
+    /// fold sees came back through the namespace with their clean stream name.
+    #[test]
+    fn stats_lines_existing_run_renders_metric_lines() {
+        use rigger::eventstore::Event;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let path_str = path.to_str().unwrap();
+
+        seed_run(
+            path_str,
+            "proj-me",
+            &[
+                Event::new("UnitStarted", br#"{"id":"u1"}"#.to_vec()),
+                Event::new("UnitIntegrated", br#"{"id":"u1"}"#.to_vec()),
+            ],
+        );
+
+        let lines = stats_lines(path_str, "proj-me")
+            .expect("read is not an error")
+            .expect("a populated run must render lines, not None");
+        let out = lines.join("\n");
+        assert!(
+            out.contains("run stats:"),
+            "a populated run must render the stats header:\n{out}"
+        );
+        assert!(
+            out.contains("first-pass yield"),
+            "a populated run must render the first-pass yield metric:\n{out}"
+        );
+        assert!(
+            out != NO_RUNS_MESSAGE,
+            "a populated run must not print the no-runs message"
+        );
     }
 }
