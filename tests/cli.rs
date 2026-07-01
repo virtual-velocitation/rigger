@@ -407,7 +407,7 @@ fn ground_degrades_gracefully_when_the_ort_dylib_is_unresolvable() {
 ///
 /// This is the path the old `libc::_exit(0)` dodge left exposed: it skipped the crashing
 /// teardown only on the SUCCESS exit, so an error return still ran the racy `atexit`
-/// destructors. The real fix (`ort_teardown::release_ort_runtime`, called on BOTH paths
+/// destructors. The mitigation (`ort_teardown::release_ort_runtime`, called on BOTH paths
 /// before `process::exit`) must make this path exit cleanly too.
 ///
 /// We force the error deterministically: an EMPTY `.rigger/grounding/` dir at mode 000.
@@ -538,5 +538,101 @@ fn emit_rejects_bad_json_with_a_nonzero_exit() {
     assert!(
         err.contains("expected a JSON object"),
         "the error must explain the missing argument; got: {err:?}"
+    );
+}
+
+/// The `main.rs` source text, read at test time from the crate manifest dir. `main.rs` is
+/// a BINARY, not part of the `rigger` library, so its comments are not reachable through
+/// the crate API - we assert on the file's bytes instead. `CARGO_MANIFEST_DIR` is stable
+/// for both `cargo test` and the integration-test binary, so this resolves regardless of
+/// the process cwd.
+fn main_rs_source() -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("main.rs");
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+}
+
+/// Spec AC (u3-honest-doc): `src/main.rs`'s exit path must be HONESTLY documented -
+/// whatever mitigation remains has to state what it does AND what it does not cover, with
+/// NO overstated "removes the buggy code path entirely" framing.
+///
+/// The `ort_teardown::release_ort_runtime` mitigation deprives the upstream teardown bug
+/// (pykeio/ort#564, still open) of its race; it does not delete the buggy ORT code, and
+/// its guarantee is conditional on two invariants (drop-the-session-first, and the leaked
+/// `G_ENV` static). This test locks in that the exit-path comment keeps saying so, so a
+/// later edit cannot quietly regress the comment back into an absolute "this removes the
+/// bug" claim that the behavior does not actually back.
+///
+/// It is a source-text assertion (not a behavior test - that is
+/// `error_after_embed_exits_cleanly_without_a_teardown_abort`): the deliverable here is the
+/// honesty of the DOCUMENTATION, and the guard has to be the words themselves.
+#[test]
+fn main_exit_path_is_honestly_documented() {
+    let src = main_rs_source();
+
+    // Isolate the exit-path teardown comment block: from the `release_ort_runtime` call's
+    // documenting comment up to the call itself. Asserting on this slice (not the whole
+    // file) keeps the test pointed at the exit path and immune to unrelated edits.
+    let call = "rigger::ort_teardown::release_ort_runtime();";
+    let call_at = src
+        .find(call)
+        .expect("main.rs must still call ort_teardown::release_ort_runtime() on the exit path");
+    let block_start = src[..call_at]
+        .rfind("// Tear the ONNX Runtime / CUDA runtime down EXPLICITLY")
+        .expect("the exit-path teardown comment block must precede the release call");
+    let block = &src[block_start..call_at];
+
+    // 1. It must NOT overstate. The spec calls out the exact anti-pattern: a claim that the
+    //    buggy path is gone. The comment may only use that phrase to DISCLAIM it (". . . NOT
+    //    a claim that the buggy path has been removed"), so we reject the bare positive
+    //    forms, not every occurrence of the words.
+    for overstated in [
+        "removes the buggy code path entirely",
+        "removes the buggy path entirely",
+        "eliminates the bug entirely",
+        "the real fix for the intermittent teardown heap corruption",
+    ] {
+        assert!(
+            !block.contains(overstated),
+            "the exit-path comment overstates the fix ({overstated:?}); it must describe a \
+             scoped mitigation of a live upstream bug, not claim the buggy path is gone"
+        );
+    }
+
+    // 2. It must state what the mitigation does NOT cover / that the guarantee is bounded.
+    //    An honest comment names the residual: the upstream bug is still open and the buggy
+    //    code still ships; the win is depriving it of the race, not deleting it.
+    assert!(
+        block.contains("DOES *NOT*") || block.contains("does not remove"),
+        "the exit-path comment must state what the mitigation does NOT cover, not just what \
+         it fixes"
+    );
+    assert!(
+        block.contains("remains open")
+            || block.contains("still ships")
+            || block.contains("live upstream bug"),
+        "the exit-path comment must be honest that the upstream bug is not fixed by us - it \
+         still exists; we only deprive it of the race"
+    );
+
+    // 3. It must state the coverage it DOES have (both exit paths + the no-session no-op) so
+    //    "honest" cuts both ways: it neither overstates the fix nor undersells its real scope.
+    assert!(
+        block.contains("BOTH the success and the error path"),
+        "the exit-path comment must state it covers BOTH exit paths (the win over the old \
+         `_exit(0)` dodge)"
+    );
+    assert!(
+        block.contains("no-op on any run that never built a GPU/CPU session"),
+        "the exit-path comment must state it is a no-op when no session was built"
+    );
+
+    // 4. It must point the reader at the module that carries the full soundness argument and
+    //    the invariants the conditional guarantee rests on, so the honesty is anchored to the
+    //    evidence rather than free-floating.
+    assert!(
+        block.contains("ort_teardown"),
+        "the exit-path comment must reference `ort_teardown` for the full rationale / invariants"
     );
 }
