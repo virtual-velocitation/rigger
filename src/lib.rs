@@ -25,5 +25,6 @@ pub mod ort_runtime;
 pub mod ort_teardown;
 pub mod safety;
 pub mod sidecar;
+pub mod spawn;
 pub mod spec;
 pub mod worktree;
