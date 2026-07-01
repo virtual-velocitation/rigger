@@ -10,8 +10,10 @@ jobs:
   # job builds + tests the real semantic grounder. Turbovec pulls the ONNX runtime
   # and needs OpenBLAS, installed before any cargo step; CARGO_BUILD_JOBS / the
   # committed .cargo/config.toml (jobs = 8) keep peak build memory bounded. The
-  # turbovec model-loading test downloads ~130 MB of weights, so it is left to local
-  # runs (every other test runs here).
+  # turbovec model tests DO run here: `cargo test` below downloads the ~130 MB of
+  # embedding weights on first use and runs them on CPU (no GPU in CI). They are
+  # serialized cross-binary via serial_test's file lock (the `turbovec_model` key), so
+  # even though CI has no CUDA session to corrupt, no two model constructions overlap.
   build-test:
     runs-on: ubuntu-latest
     env:

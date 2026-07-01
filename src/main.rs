@@ -567,16 +567,18 @@ fn cmd_ground(args: &[String]) -> Res {
 }
 
 /// `rigger reindex <file>...` - incrementally re-embed the named files in the
-/// project's persisted grounding index. It resolves the SAME grounder the
-/// `run`/`serve`/`ground` paths build from `defaults.grounder` (via
-/// [`select_grounder`], rooted at `.`) and calls [`Grounder::reindex`] on the
-/// changed files, so the turbovec grounder drops each file's old chunks, re-embeds
-/// its current content, and persists the delta to `.rigger/grounding/` - a later
-/// `rigger ground` (and the review tier the workflow runs after a unit lands) then
-/// reflects the just-integrated code WITHOUT re-embedding the whole repo. For the
-/// grep / nop grounders `reindex` is a no-op (they re-read the tree each call), so
-/// this command is harmless there. Files are repo-relative, matching how the
-/// grounder records and grounds them. At least one file is required.
+/// project's persisted grounding index. It resolves the grounder from
+/// `defaults.grounder` via [`select_reindex_grounder`] (rooted at `.`) - which, unlike
+/// [`select_grounder`], loads the turbovec store WITHOUT freshening the whole tree, so
+/// the named files are re-embedded exactly ONCE here rather than once by a load-time
+/// freshen and again by the reindex. It then calls [`Grounder::reindex`] on the changed
+/// files, so the turbovec grounder drops each file's old chunks, re-embeds its current
+/// content, and persists the delta to `.rigger/grounding/` - a later `rigger ground`
+/// (and the review tier the workflow runs after a unit lands) then reflects the
+/// just-integrated code WITHOUT re-embedding the whole repo. For the grep / nop
+/// grounders `reindex` is a no-op (they re-read the tree each call), so this command is
+/// harmless there. Files are repo-relative, matching how the grounder records and
+/// grounds them. At least one file is required.
 fn cmd_reindex(args: &[String]) -> Res {
     if args.is_empty() {
         return Err("reindex: expected at least one file: rigger reindex <file>...".into());
@@ -587,7 +589,10 @@ fn cmd_reindex(args: &[String]) -> Res {
     let name = config::load(".")
         .map(|cfg| cfg.workflow.defaults.grounder)
         .unwrap_or_default();
-    let grounder = select_grounder(&name)?;
+    // Use the reindex-specific constructor: it loads the persisted store WITHOUT a
+    // whole-tree freshen, so `reindex` re-embeds ONLY the named files - never those
+    // files twice (once by a load-time freshen, once by the reindex below).
+    let grounder = select_reindex_grounder(&name)?;
     grounder.reindex(".", args);
     println!(
         "reindexed {} file(s) in the grounding index: {}",
@@ -917,6 +922,8 @@ fn select_grounder(name: &str) -> Result<Box<dyn Grounder>, Box<dyn std::error::
     if rigger::grounder::resolves_to_turbovec(name) {
         // Building the index can fail for a real, distinct reason (e.g. the embedding
         // model cannot be loaded); that is its OWN loud error, not a grep fallback.
+        // `new` freshens any tree drift on load, which is what the grounding-read paths
+        // (`ground`/`run`/`serve`) want.
         let tv = rigger::grounder::turbovec::Turbovec::new(".")
             .map_err(|e| format!("turbovec grounder unavailable: {e}"))?;
         return Ok(Box::new(tv));
@@ -929,6 +936,27 @@ fn select_grounder(name: &str) -> Result<Box<dyn Grounder>, Box<dyn std::error::
     // No turbovec feature compiled in: `grounder_for` returns the loud
     // "built without the turbovec feature" error for the default / turbovec names,
     // and resolves grep / nop normally. We never silently degrade to grep.
+    Ok(rigger::grounder::grounder_for(name, ".")?)
+}
+
+/// The grounder for `rigger reindex`, which differs from [`select_grounder`] ONLY for
+/// turbovec: it constructs via `Turbovec::new_for_reindex`, which loads the persisted
+/// store WITHOUT freshening tree drift. `reindex` then re-embeds exactly the named
+/// files; using the freshening `new` here would re-embed every drifted file on load and
+/// then the named files AGAIN - a double-embed. grep / nop have no index, so their
+/// `reindex` is a no-op and this resolves identically to [`select_grounder`].
+#[cfg(feature = "turbovec")]
+fn select_reindex_grounder(name: &str) -> Result<Box<dyn Grounder>, Box<dyn std::error::Error>> {
+    if rigger::grounder::resolves_to_turbovec(name) {
+        let tv = rigger::grounder::turbovec::Turbovec::new_for_reindex(".")
+            .map_err(|e| format!("turbovec grounder unavailable: {e}"))?;
+        return Ok(Box::new(tv));
+    }
+    Ok(rigger::grounder::grounder_for(name, ".")?)
+}
+
+#[cfg(not(feature = "turbovec"))]
+fn select_reindex_grounder(name: &str) -> Result<Box<dyn Grounder>, Box<dyn std::error::Error>> {
     Ok(rigger::grounder::grounder_for(name, ".")?)
 }
 

@@ -13,6 +13,8 @@ export const meta = {
 // args: a spec path string, or { repo, spec, maxRetries }.
 // rigger's shared context store lives in <repo>/.rigger - every `rigger ...` command and the
 // run-branch git run in REPO; code edits, cargo gates, and the per-unit commit run in the worktree.
+// The grounding index is reindexed only AFTER a unit merges into REPO (in the Integrate step),
+// never from the pre-merge worktree, so it never embeds stale (unmerged) code.
 let A = args
 if (typeof A === 'string') {
   try {
@@ -55,7 +57,7 @@ async function buildUnit(unit) {
   let prior = ''
   for (let a = 1; a <= MAX; a++) {
     const impl = await agent(
-      `You are the rigger IMPLEMENTER (an expert Rust engineer) for repo ${REPO}. RULES: run every \`rigger ...\` command and the run-branch git from ${REPO} (the shared context store is ${REPO}/.rigger); do your code edits, cargo, and the unit commit inside the worktree ${WT}. Set up your worktree: if attempt ${a} is 1, \`git -C ${REPO} worktree add ${WT} -B ${BR} ${RUN}\`; otherwise reuse ${WT}. Ground: \`cd ${REPO} && rigger ground "${unit.criterion}" && rigger peers ${files}\` (do not silently contradict peers' decisions). ${a === 1 ? `Record the start: \`cd ${REPO} && rigger emit UnitStarted '{"id":"${unit.id}"}'\`.` : ''} Implement the unit FULLY, with tests, in ${WT}: "${unit.criterion}". ${prior} Record each significant design decision the moment you make it: \`cd ${REPO} && rigger emit DecisionMade '{"id":"<short>","summary":"<one line>","governs":["<file>"]}'\`. Then \`cd ${WT} && cargo fmt && git add -A && git commit -m "${unit.id} a${a}"\`. The change for this unit has now LANDED, so reindex the files you changed into the shared grounding index BEFORE review - this re-embeds just the changed files so the review tier and the next unit ground on the just-landed code, not the pre-change tree: \`cd ${REPO} && rigger reindex ${files || '<the repo-relative files you changed>'}\` (it updates ${REPO}/.rigger/grounding incrementally; it is a no-op for the grep/nop grounders). Idiomatic Rust, no placeholders, no TODO stubs. Return a one-line summary and the files you changed.`,
+      `You are the rigger IMPLEMENTER (an expert Rust engineer) for repo ${REPO}. RULES: run every \`rigger ...\` command and the run-branch git from ${REPO} (the shared context store is ${REPO}/.rigger); do your code edits, cargo, and the unit commit inside the worktree ${WT}. Set up your worktree: if attempt ${a} is 1, \`git -C ${REPO} worktree add ${WT} -B ${BR} ${RUN}\`; otherwise reuse ${WT}. Ground: \`cd ${REPO} && rigger ground "${unit.criterion}" && rigger peers ${files}\` (do not silently contradict peers' decisions). ${a === 1 ? `Record the start: \`cd ${REPO} && rigger emit UnitStarted '{"id":"${unit.id}"}'\`.` : ''} Implement the unit FULLY, with tests, in ${WT}: "${unit.criterion}". ${prior} Record each significant design decision the moment you make it: \`cd ${REPO} && rigger emit DecisionMade '{"id":"<short>","summary":"<one line>","governs":["<file>"]}'\`. Then \`cd ${WT} && cargo fmt && git add -A && git commit -m "${unit.id} a${a}"\`. The change now lives on branch ${BR} in the worktree ${WT}, NOT yet in ${REPO} (which is still on ${RUN}), so do NOT reindex here - reindexing ${REPO} now would embed the pre-merge (stale) tree. The shared grounding index is refreshed AFTER the merge lands, in the Integrate step below. Idiomatic Rust, no placeholders, no TODO stubs. Return a one-line summary and the files you changed.`,
       { phase: 'Build', model: 'opus', schema: IMPL, label: `impl:${unit.id} a${a}` },
     )
     const gate = await agent(
@@ -88,7 +90,7 @@ async function buildUnit(unit) {
     )
     if (verdict.approved) {
       await agent(
-        `Integrate unit ${unit.id}: \`git -C ${REPO} checkout ${RUN} && git -C ${REPO} merge --no-ff ${BR} -m "integrate ${unit.id}" && git -C ${REPO} worktree remove --force ${WT}\`, then record it: \`cd ${REPO} && rigger emit UnitIntegrated '{"id":"${unit.id}"}'\`. Confirm ${RUN} now contains the unit and still builds.`,
+        `Integrate unit ${unit.id}: \`git -C ${REPO} checkout ${RUN} && git -C ${REPO} merge --no-ff ${BR} -m "integrate ${unit.id}" && git -C ${REPO} worktree remove --force ${WT}\`. The unit's code is now MERGED into ${REPO} on ${RUN}, so pre-warm the shared grounding index against the just-integrated (not pre-merge) tree - this re-embeds only the changed files so the next unit and its review tier ground on the accepted code: \`cd ${REPO} && rigger reindex ${files || '<the repo-relative files this unit changed>'}\` (incremental; a no-op for the grep/nop grounders, and the next \`ground\` auto-freshens anything it misses). Then record it: \`cd ${REPO} && rigger emit UnitIntegrated '{"id":"${unit.id}"}'\`. Confirm ${RUN} now contains the unit and still builds.`,
         { phase: 'Integrate', model: 'sonnet', label: `integrate:${unit.id}` },
       )
       log(`${unit.id} INTEGRATED on attempt ${a}`)

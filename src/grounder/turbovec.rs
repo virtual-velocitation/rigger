@@ -12,8 +12,8 @@
 //!    compiled in, no GPU on the box), *silently falls back* to the next provider
 //!    and ultimately to CPU. We hand it `[CUDA, CPU]`, so it is GPU-accelerated
 //!    where possible and robust-on-CPU everywhere, and we log which one we got.
-//!    See [`select_execution_providers`] for the one fastembed/ort limitation we
-//!    hit (the shipped ONNX Runtime binaries are CPU-only) and how we handle it.
+//!    See [`select_execution_providers`] for how the `-F cuda` ort build + the
+//!    `ORT_DYLIB_PATH` runtime discovery make the GPU path real, and how it degrades.
 //!
 //! 2. **A persisted, auto-freshened, incrementally-updated index.** The embeddings +
 //!    the id->(file, line, snippet) map + a per-file content hash are persisted under
@@ -31,6 +31,9 @@
 //!    hash-walk no-op (no embedding, no persist).
 
 use std::collections::HashMap;
+use std::fs::File;
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -66,6 +69,20 @@ const EMBED_BATCH_SIZE: usize = 32;
 const GROUNDING_DIR: &str = ".rigger/grounding";
 const INDEX_FILE: &str = "index.tvim";
 const META_FILE: &str = "meta.json";
+/// The cross-process advisory lock file under the store dir. `flock(2)` on this file
+/// serializes the load+persist critical section across separate `rigger` processes
+/// (a workflow's `parallel()` lenses, a `rigger reindex`), so no process ever reads a
+/// half-written store or an index/meta pair that disagree. It holds no data; its only
+/// purpose is to be the flock target.
+const LOCK_FILE: &str = "store.lock";
+
+/// Serializes embedding-model CONSTRUCTION across the whole process. `ort`, built with
+/// `load-dynamic`, lazily reads `ORT_DYLIB_PATH` on the FIRST session load and is not
+/// safe to construct concurrently on a CUDA box (concurrent session creation corrupts
+/// the heap). Every `Turbovec::new` takes this lock across BOTH `ensure_dylib_path`'s
+/// env write AND `TextEmbedding::try_new`, so the env mutation can never race ort's
+/// lazy env read on another thread, and two sessions are never built at once.
+static CONSTRUCT_MU: Mutex<()> = Mutex::new(());
 
 /// Turbovec grounds semantically: it embeds the codebase into a quantized vector
 /// index and returns the chunks nearest a query. The index + its id->Ref map are
@@ -76,7 +93,20 @@ pub struct Turbovec {
     model: TextEmbedding,
     root: String,
     store_dir: PathBuf,
+    /// The in-memory index+meta, and the single mutation authority over it. EVERY
+    /// mutation (build, freshen, reindex, drop, persist) runs while THIS lock is held
+    /// for the whole critical section - the internal helpers take `&mut State`, they
+    /// never re-lock - so two freshens / reindexes can never interleave a diff against
+    /// an apply. A `ground`'s search takes the same lock, so it also serializes.
     state: Mutex<State>,
+    /// Serializes every call into `model.embed()` - the one shared `ort` session's
+    /// `Session::run`. Concurrent `Session::run` on a single CUDA session corrupts the
+    /// heap, so this is the process-wide "at most one embed at a time" authority: query
+    /// embeds (`embed_query`) and content embeds (`index_file_content`) BOTH take it,
+    /// held across the whole `embed` call. It is a separate lock from `state` so a query
+    /// embed (which is not under the state lock) still cannot run concurrently with a
+    /// freshen's content embed.
+    embed_mu: Mutex<()>,
 }
 
 /// The mutable index state, behind one lock: the quantized index and the sidecar
@@ -99,6 +129,17 @@ enum LoadOutcome {
     /// A store was loaded into memory; `matched` is whether it already describes the
     /// current tree (`true`) or has drifted and must be incrementally freshened (`false`).
     Loaded { matched: bool },
+}
+
+/// What construction does with a persisted store that LOADED but has drifted from the
+/// tree. `new` (the grounding-read path) wants the index current, so it freshens the
+/// whole diff; `new_for_reindex` leaves it as-loaded and lets `reindex` re-embed only
+/// the files it is explicitly given, so those files are never double-embedded.
+enum OnDrift {
+    /// Incrementally freshen the whole diff now (the `ground`/`run`/`serve` path).
+    Freshen,
+    /// Leave the loaded store as-is; the caller re-embeds only its named files.
+    LeaveStale,
 }
 
 /// The persisted sidecar: everything turbovec's `.tvim` does NOT hold. `refs` maps
@@ -146,32 +187,64 @@ struct FileEntry {
 impl Turbovec {
     /// Build (or load) the index over `root`, downloading the embedding model on
     /// first use. If a consistent persisted store exists under
-    /// `<root>/.rigger/grounding/`, it is loaded and the whole-repo embed is
-    /// skipped; otherwise the tree is embedded once and the store is written.
+    /// `<root>/.rigger/grounding/`, it is loaded (and freshened in place if the tree
+    /// drifted) and the whole-repo embed is skipped; otherwise the tree is embedded
+    /// once and the store is written. This is the grounding-read entry point
+    /// (`ground`/`serve`/`run`): it wants the index fully current, so on drift it
+    /// freshens the whole diff.
     pub fn new(root: &str) -> Result<Self, String> {
-        // Point `ort` (built with `load-dynamic`) at a discovered `libonnxruntime.so`
-        // BEFORE the fastembed/`ort` model below first loads the runtime. `main` also
-        // calls this, but tests and any other caller that constructs the grounder
-        // directly never run `main`, so without this they hit
-        // `libonnxruntime.so: cannot open shared object file` in a clean env (e.g. CI).
-        // Doing it here makes construction self-sufficient. Guarded by `Once` so repeat
-        // constructions pay nothing, and `ensure_dylib_path` itself no-ops when
-        // `ORT_DYLIB_PATH` is already set - so an explicit env choice is never overridden.
-        //
-        // SAFETY: `ensure_dylib_path` mutates a process env var and requires no other
-        // thread be reading the environment concurrently. `Once::call_once` runs the
-        // closure exactly once and serializes callers, and env reads by `ort` happen
-        // only when the model is loaded just below (after this returns), so there is no
-        // concurrent env reader at the point of mutation.
-        static ENSURE_DYLIB: std::sync::Once = std::sync::Once::new();
-        ENSURE_DYLIB.call_once(|| unsafe { crate::ort_runtime::ensure_dylib_path() });
+        Self::construct(root, OnDrift::Freshen)
+    }
 
-        let model = TextEmbedding::try_new(
-            InitOptions::new(EmbeddingModel::BGESmallENV15)
-                .with_show_download_progress(false)
-                .with_execution_providers(select_execution_providers()),
-        )
-        .map_err(|e| format!("turbovec: load model: {e}"))?;
+    /// Construct for `rigger reindex`: load the persisted store as-is and do NOT
+    /// freshen the whole tree's drift. The caller (`reindex`) re-embeds exactly the
+    /// named files, so a preceding full freshen would DOUBLE-EMBED them (and re-embed
+    /// every other drifted file the reindex was never asked to touch). Files not named
+    /// stay as the loaded store has them; the next `ground` auto-freshens any remaining
+    /// drift. A cold start (no store) still builds the tree once - there is nothing to
+    /// load, and the build already indexes the named files correctly, making the
+    /// subsequent reindex of them a cheap, correct re-embed of just those.
+    pub fn new_for_reindex(root: &str) -> Result<Self, String> {
+        Self::construct(root, OnDrift::LeaveStale)
+    }
+
+    /// Shared construction: build the model (serialized process-wide) then load-or-build
+    /// the store. `on_drift` selects whether a loaded-but-drifted store is freshened now
+    /// (`new`) or left as-loaded (`new_for_reindex`, which re-embeds only named files).
+    fn construct(root: &str, on_drift: OnDrift) -> Result<Self, String> {
+        // Serialize model CONSTRUCTION across the whole process. Two concerns fold into
+        // one lock (see CONSTRUCT_MU): (1) `ensure_dylib_path` mutates the `ORT_DYLIB_PATH`
+        // process env var and `ort` lazily READS it when it first loads the runtime, so
+        // the write must not race a concurrent ort env read on another thread; (2) building
+        // two `ort`/CUDA sessions at once corrupts the heap. Holding CONSTRUCT_MU across
+        // BOTH the env write AND `TextEmbedding::try_new` closes both races: at most one
+        // thread is in this block, so no other thread is loading a session (and thus
+        // reading the env) while we write it, and no two sessions are built concurrently.
+        let model = {
+            let _construct = CONSTRUCT_MU.lock().unwrap();
+            // Point `ort` (built with `load-dynamic`) at a discovered `libonnxruntime.so`
+            // BEFORE the fastembed/`ort` model below first loads the runtime. `main` also
+            // calls this, but tests and any other caller that constructs the grounder
+            // directly never run `main`, so without this they hit
+            // `libonnxruntime.so: cannot open shared object file` in a clean env (e.g. CI).
+            // `ensure_dylib_path` no-ops when `ORT_DYLIB_PATH` is already set, so an
+            // explicit env choice is never overridden; it is idempotent, so calling it
+            // under the lock on every construction is cheap and correct.
+            //
+            // SAFETY: `ensure_dylib_path` mutates a process env var and requires no other
+            // thread read the environment concurrently. CONSTRUCT_MU is held across this
+            // write AND the `TextEmbedding::try_new` below (the only place `ort` reads the
+            // env), and every other construction path also holds it, so no concurrent env
+            // reader exists at the point of mutation.
+            unsafe { crate::ort_runtime::ensure_dylib_path() };
+
+            TextEmbedding::try_new(
+                InitOptions::new(EmbeddingModel::BGESmallENV15)
+                    .with_show_download_progress(false)
+                    .with_execution_providers(select_execution_providers()),
+            )
+            .map_err(|e| format!("turbovec: load model: {e}"))?
+        };
 
         let store_dir = Path::new(root).join(GROUNDING_DIR);
         let tv = Turbovec {
@@ -183,41 +256,51 @@ impl Turbovec {
                     .map_err(|e| format!("turbovec: new index: {e}"))?,
                 meta: Meta::default(),
             }),
+            embed_mu: Mutex::new(()),
         };
 
-        // Three cases on construction:
+        // Load-or-build runs under a SINGLE state-lock hold and, inside it, a
+        // cross-process file lock (see `with_store_lock`) around the load+persist so a
+        // separate `rigger` process never observes a half-written or mismatched store.
+        // Three cases:
         //  - a persisted store that already matches the tree: load it, done (no embed).
-        //  - a persisted store that has drifted from the tree: load it, then INCREMENTALLY
-        //    freshen only the changed/new/deleted files (re-embed the diff, not the whole
-        //    repo). This replaces the old "any drift -> full rebuild" behaviour.
+        //  - a persisted store that has drifted from the tree: load it, then either
+        //    INCREMENTALLY freshen the whole diff (`OnDrift::Freshen`) or leave it as
+        //    loaded (`OnDrift::LeaveStale`, so reindex re-embeds only its named files).
         //  - no persisted store at all (cold start): a one-time full build of the tree.
-        match tv.load_persisted_any()? {
-            LoadOutcome::Loaded { matched } => {
-                if !matched {
-                    // The store loaded but the tree drifted; bring it current incrementally.
-                    tv.freshen()?;
-                }
-                eprintln!(
-                    "turbovec: loaded persisted index ({} chunks) from {}{}",
-                    tv.state.lock().unwrap().index.len(),
-                    tv.store_dir.display(),
-                    if matched {
-                        ""
-                    } else {
-                        " (incrementally freshened)"
+        let mut state = tv.state.lock().unwrap();
+        tv.with_store_lock(|| {
+            match tv.load_persisted_any(&mut state)? {
+                LoadOutcome::Loaded { matched } => {
+                    let freshened = !matched && matches!(on_drift, OnDrift::Freshen);
+                    if freshened {
+                        // The store loaded but the tree drifted; bring it current incrementally.
+                        tv.freshen_locked(&mut state)?;
                     }
-                );
+                    eprintln!(
+                        "turbovec: loaded persisted index ({} chunks) from {}{}",
+                        state.index.len(),
+                        tv.store_dir.display(),
+                        if freshened {
+                            " (incrementally freshened)"
+                        } else {
+                            ""
+                        }
+                    );
+                }
+                LoadOutcome::Absent => {
+                    tv.build_from_tree(&mut state)?;
+                    tv.persist_locked(&state)?;
+                    eprintln!(
+                        "turbovec: built and persisted index ({} chunks) to {}",
+                        state.index.len(),
+                        tv.store_dir.display()
+                    );
+                }
             }
-            LoadOutcome::Absent => {
-                tv.build_from_tree()?;
-                tv.persist()?;
-                eprintln!(
-                    "turbovec: built and persisted index ({} chunks) to {}",
-                    tv.state.lock().unwrap().index.len(),
-                    tv.store_dir.display()
-                );
-            }
-        }
+            Ok(())
+        })?;
+        drop(state);
         Ok(tv)
     }
 
@@ -233,7 +316,11 @@ impl Turbovec {
     ///   has drifted (an edit / add / delete happened with no process around to
     ///   reindex). The loaded state IS installed so the caller can [`Self::freshen`]
     ///   it incrementally - re-embedding only the diff rather than the whole repo.
-    fn load_persisted_any(&self) -> Result<LoadOutcome, String> {
+    ///
+    /// Called with the `state` lock already held (by the caller) and inside the
+    /// cross-process store lock, so the on-disk load is atomic against any concurrent
+    /// writer.
+    fn load_persisted_any(&self, state: &mut State) -> Result<LoadOutcome, String> {
         let index_path = self.store_dir.join(INDEX_FILE);
         let meta_path = self.store_dir.join(META_FILE);
         if !index_path.exists() || !meta_path.exists() {
@@ -253,7 +340,6 @@ impl Turbovec {
         // Install the loaded state either way: when it matches it is used as-is, and
         // when it has drifted it is the BASE that `freshen` updates incrementally
         // (drop deleted files' chunks, re-embed changed/new files) - never a full rebuild.
-        let mut state = self.state.lock().unwrap();
         state.index = index;
         state.meta = meta;
         Ok(LoadOutcome::Loaded { matched })
@@ -277,35 +363,51 @@ impl Turbovec {
     /// the cost is just the hash walk. We persist once, and only when something actually
     /// changed, so a steady-state `ground` does no write either.
     fn freshen(&self) -> Result<(), String> {
+        // ONE `state` lock across the ENTIRE freshen (diff + apply + persist) - the
+        // single mutation authority. Two concurrent freshens cannot interleave a diff
+        // against an apply: the second blocks on `state` until the first has finished and
+        // persisted, then re-diffs the now-current tree (a cheap no-op if nothing else
+        // changed). The cross-process store lock, taken here around the whole critical
+        // section, extends that guarantee to separate `rigger` processes. Both locks are
+        // taken by this entry point and passed DOWN to `freshen_locked` (which never
+        // re-locks), so there is never a nested `flock` on the same store from one thread.
+        let mut state = self.state.lock().unwrap();
+        self.with_store_lock(|| self.freshen_locked(&mut state))
+    }
+
+    /// The freshen body, run with BOTH the `state` lock and the cross-process store lock
+    /// already held by the caller (`freshen`, or `construct` on a drifted load) for the
+    /// whole critical section. It never acquires either lock itself - so a caller that
+    /// already holds the store lock (like `construct`) does not deadlock on a nested
+    /// `flock`. Diffs the tree against the persisted per-file hashes, applies the
+    /// changed/new/deleted delta, and persists once - atomically w.r.t. any other
+    /// in-process mutation (the caller holds `state`) and any separate process (the
+    /// caller holds the store lock).
+    fn freshen_locked(&self, state: &mut State) -> Result<(), String> {
         // 1. Snapshot the tree as (rel path -> content), the same file set the index covers.
         let mut on_disk = Vec::new();
         collect_files(Path::new(&self.root), &self.root, &mut on_disk);
 
-        // 2. Diff against the persisted per-file hashes WITHOUT holding the lock across
-        //    embedding. Take a brief lock only to read meta, then release it.
+        // 2. Diff against the persisted per-file hashes (under the held lock).
         let mut changed_or_new: Vec<(String, String)> = Vec::new();
         let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
-        let deleted: Vec<String>;
-        {
-            let state = self.state.lock().unwrap();
-            for (rel, content) in &on_disk {
-                seen.insert(rel.as_str());
-                match state.meta.files.get(rel) {
-                    // Unchanged: same content hash -> skip (no embed).
-                    Some(entry) if entry.hash == hash_content(content) => {}
-                    // Changed or new: queue for an incremental re-embed.
-                    _ => changed_or_new.push((rel.clone(), content.clone())),
-                }
+        for (rel, content) in &on_disk {
+            seen.insert(rel.as_str());
+            match state.meta.files.get(rel) {
+                // Unchanged: same content hash -> skip (no embed).
+                Some(entry) if entry.hash == hash_content(content) => {}
+                // Changed or new: queue for an incremental re-embed.
+                _ => changed_or_new.push((rel.clone(), content.clone())),
             }
-            // In meta but no longer on disk -> deleted; queue its chunks for removal.
-            deleted = state
-                .meta
-                .files
-                .keys()
-                .filter(|f| !seen.contains(f.as_str()))
-                .cloned()
-                .collect();
         }
+        // In meta but no longer on disk -> deleted; queue its chunks for removal.
+        let deleted: Vec<String> = state
+            .meta
+            .files
+            .keys()
+            .filter(|f| !seen.contains(f.as_str()))
+            .cloned()
+            .collect();
 
         // 3. Nothing differs -> cheap no-op: no embedding, no persist. This is the
         //    steady-state path a `ground` on an unchanged tree takes.
@@ -313,19 +415,20 @@ impl Turbovec {
             return Ok(());
         }
 
-        // 4. Apply the delta, reusing the same internals `reindex` uses. `drop_file`
-        //    and `index_file_content` each take the lock internally, so embedding (the
-        //    slow part) runs unlocked.
+        // 4. Apply the delta, then persist. The caller already holds the store lock, so a
+        //    concurrent reader in another process never sees a half-applied store.
+        //    `drop_file`/`index_file_content` mutate the held `state` directly (they do
+        //    NOT re-lock); the slow embed inside `index_file_content` is serialized on
+        //    `embed_mu`, not `state`, so it never runs concurrently with another embed.
         for rel in &deleted {
-            self.drop_file(rel);
+            drop_file(state, rel);
         }
         for (rel, content) in &changed_or_new {
-            self.drop_file(rel); // no-op for a brand-new file; clears old chunks for a changed one
-            self.index_file_content(rel, content)?;
+            drop_file(state, rel); // no-op for a brand-new file; clears a changed one's old chunks
+            self.index_file_content(state, rel, content)?;
         }
-
-        // 5. Persist the updated index + metadata once.
-        self.persist()
+        // 5. Persist the updated index + metadata once, atomically.
+        self.persist_locked(state)
     }
 
     /// Whether the persisted `meta` still describes the on-disk tree: the same set
@@ -350,19 +453,16 @@ impl Turbovec {
     /// Embed the whole tree once into a fresh index + metadata. Used on a cold
     /// start (no store) or when the persisted store is inconsistent. Replaces the
     /// in-memory state wholesale; the caller persists it.
-    fn build_from_tree(&self) -> Result<(), String> {
+    fn build_from_tree(&self, state: &mut State) -> Result<(), String> {
         let mut on_disk = Vec::new();
         collect_files(Path::new(&self.root), &self.root, &mut on_disk);
         // Reset to an empty index/meta so a rebuild after an inconsistent load does
         // not accumulate on top of stale state.
-        {
-            let mut state = self.state.lock().unwrap();
-            state.index = IdMapIndex::new(EMBED_DIM, BIT_WIDTH)
-                .map_err(|e| format!("turbovec: new index: {e}"))?;
-            state.meta = Meta::default();
-        }
+        state.index = IdMapIndex::new(EMBED_DIM, BIT_WIDTH)
+            .map_err(|e| format!("turbovec: new index: {e}"))?;
+        state.meta = Meta::default();
         for (rel, content) in on_disk {
-            self.index_file_content(&rel, &content)?;
+            self.index_file_content(state, &rel, &content)?;
         }
         Ok(())
     }
@@ -372,11 +472,15 @@ impl Turbovec {
     /// chunks (if any) must already have been removed by the caller - this only
     /// adds. Returns without embedding when the file has no non-blank chunks (the
     /// file is recorded with an empty id set so it still counts toward consistency).
-    fn index_file_content(&self, rel: &str, content: &str) -> Result<(), String> {
+    fn index_file_content(
+        &self,
+        state: &mut State,
+        rel: &str,
+        content: &str,
+    ) -> Result<(), String> {
         let (texts, refs) = chunk_content(rel, content);
         let hash = hash_content(content);
         if texts.is_empty() {
-            let mut state = self.state.lock().unwrap();
             state.meta.files.insert(
                 rel.to_string(),
                 FileEntry {
@@ -389,13 +493,10 @@ impl Turbovec {
         // Bound the batch so a single GPU forward pass's attention tensor stays small
         // enough for the CUDA arena (see EMBED_BATCH_SIZE) - an unbounded batch crashed
         // the GPU embed with a multi-GB single allocation. On CPU this is just more,
-        // smaller batches.
-        let embeddings = self
-            .model
-            .embed(texts, Some(EMBED_BATCH_SIZE))
-            .map_err(|e| format!("turbovec: embed: {e}"))?;
+        // smaller batches. Routed through `embed_locked` so this `Session::run` is
+        // serialized against every other embed on the shared ort session.
+        let embeddings = self.embed_locked(texts, Some(EMBED_BATCH_SIZE))?;
 
-        let mut state = self.state.lock().unwrap();
         let mut flat = Vec::with_capacity(embeddings.len() * EMBED_DIM);
         let mut ids = Vec::with_capacity(embeddings.len());
         for (emb, r) in embeddings.iter().zip(refs) {
@@ -416,38 +517,193 @@ impl Turbovec {
         Ok(())
     }
 
-    /// Drop a file's existing chunks from BOTH the index and the metadata, so a
-    /// re-index of that file starts clean. A file not previously indexed is a no-op.
-    fn drop_file(&self, rel: &str) {
-        let mut state = self.state.lock().unwrap();
-        if let Some(entry) = state.meta.files.remove(rel) {
-            for id in entry.ids {
-                state.index.remove(id);
-                state.meta.refs.remove(&id);
-            }
-        }
-    }
-
-    /// Persist the index (`index.tvim`) and the metadata (`meta.json`) to
-    /// `.rigger/grounding/`, creating the directory if needed. Both are written so a
-    /// later construction can reload them and skip the whole-repo embed.
-    fn persist(&self) -> Result<(), String> {
+    /// Persist the index (`index.tvim`) and the metadata (`meta.json`) ATOMICALLY to
+    /// `.rigger/grounding/`. Called with the `state` lock held AND inside the
+    /// cross-process store lock (`with_store_lock`), so no other thread or process
+    /// mutates the store while we write it.
+    ///
+    /// Both files are written to a temp path in the SAME directory and then `rename`d
+    /// into place - an atomic replace on the same filesystem - so a concurrent reader
+    /// (a separate `rigger` process's `parallel()` lens / `rigger reindex`, or an
+    /// in-process load) never observes a truncated index nor a fresh index against
+    /// stale meta: it sees either the whole old pair or the whole new pair. `index.tvim`
+    /// is written last-then-renamed after `meta.json` so the two are swapped in as a
+    /// pair while the flock is held (the store lock is what makes the pair-swap
+    /// observably atomic to other processes).
+    fn persist_locked(&self, state: &State) -> Result<(), String> {
         std::fs::create_dir_all(&self.store_dir)
             .map_err(|e| format!("turbovec: create {}: {e}", self.store_dir.display()))?;
-        let state = self.state.lock().unwrap();
-        state
-            .index
-            .write(self.store_dir.join(INDEX_FILE))
-            .map_err(|e| format!("turbovec: write index: {e}"))?;
-        let bytes = serde_json::to_vec(&state.meta)
+
+        // Serialize meta to bytes first, so a serialization failure aborts BEFORE we
+        // touch either on-disk file (no partial write). The index has no in-memory
+        // serialize (`IdMapIndex::write` only writes to a path), so we write it to a
+        // sibling temp file and rename.
+        let meta_bytes = serde_json::to_vec(&state.meta)
             .map_err(|e| format!("turbovec: serialize meta: {e}"))?;
-        std::fs::write(self.store_dir.join(META_FILE), bytes)
-            .map_err(|e| format!("turbovec: write meta: {e}"))?;
+
+        // Write meta then index, each temp-then-rename so a reader never sees a
+        // truncated file. Do meta first: if we crash between the two renames, a reader
+        // would see new meta + old index, and the load path treats a meta whose ids are
+        // absent from the index as drift and re-freshens - self-healing - whereas new
+        // index + old meta could surface a vector with no ref. (The flock makes this
+        // window invisible to other processes; the ordering only matters for a hard
+        // crash mid-persist.)
+        write_bytes_atomic(&self.store_dir.join(META_FILE), &meta_bytes)?;
+        write_index_atomic(&self.store_dir.join(INDEX_FILE), &state.index)?;
         Ok(())
     }
 
+    /// Embed via the one shared `ort` session, serialized on `embed_mu` so at most one
+    /// `Session::run` is in flight process-wide. Concurrent `Session::run` on a single
+    /// CUDA session corrupts the heap, so EVERY embed - query and content - funnels
+    /// through here.
+    fn embed_locked(
+        &self,
+        texts: Vec<String>,
+        batch: Option<usize>,
+    ) -> Result<Vec<Vec<f32>>, String> {
+        let _embed = self.embed_mu.lock().unwrap();
+        self.model
+            .embed(texts, batch)
+            .map_err(|e| format!("turbovec: embed: {e}"))
+    }
+
     fn embed_query(&self, query: &str) -> Option<Vec<f32>> {
-        self.model.embed(vec![query], None).ok()?.into_iter().next()
+        self.embed_locked(vec![query.to_string()], None)
+            .ok()?
+            .into_iter()
+            .next()
+    }
+
+    /// Run `f` while holding the store's cross-process advisory lock (`flock(2)` on
+    /// `<store>/store.lock`). This serializes the load+persist critical section across
+    /// SEPARATE `rigger` processes - a workflow's `parallel()` lenses, a `rigger
+    /// reindex`, another in-flight freshen - so none ever reads a half-written or
+    /// index/meta-mismatched store. The lock is advisory (all our writers take it) and
+    /// released when the returned guard drops, even on an early `?` return or a panic.
+    /// The store dir is created first so the lock file has a home.
+    fn with_store_lock<T>(&self, f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+        std::fs::create_dir_all(&self.store_dir)
+            .map_err(|e| format!("turbovec: create {}: {e}", self.store_dir.display()))?;
+        let _guard = StoreLock::acquire(&self.store_dir.join(LOCK_FILE))?;
+        f()
+    }
+}
+
+/// Drop a file's existing chunks from BOTH the index and the metadata, so a re-index
+/// of that file starts clean. A file not previously indexed is a no-op. A free
+/// function taking `&mut State` (not a `&self` method that re-locks) so the caller's
+/// single held lock covers the whole critical section - see the `state` field doc.
+fn drop_file(state: &mut State, rel: &str) {
+    if let Some(entry) = state.meta.files.remove(rel) {
+        for id in entry.ids {
+            state.index.remove(id);
+            state.meta.refs.remove(&id);
+        }
+    }
+}
+
+/// The sibling temp path for an atomic write of `path`: same directory (so `rename`
+/// is a same-filesystem atomic replace), the target's name plus this pid (so two
+/// processes' temps never collide, though the flock already serializes writers).
+fn temp_sibling(path: &Path) -> Result<PathBuf, String> {
+    let dir = path
+        .parent()
+        .ok_or_else(|| format!("turbovec: {} has no parent dir", path.display()))?;
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| format!("turbovec: {} has no file name", path.display()))?;
+    Ok(dir.join(format!(".{file_name}.{}.tmp", std::process::id())))
+}
+
+/// Write `bytes` to `path` atomically: write to a sibling temp file, fsync it, then
+/// `rename` it over `path`. `rename(2)` within one directory is atomic, so a
+/// concurrent reader sees either the whole old file or the whole new one, never a
+/// truncated write in progress.
+fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let tmp = temp_sibling(path)?;
+    {
+        let mut f = std::fs::File::create(&tmp)
+            .map_err(|e| format!("turbovec: create temp {}: {e}", tmp.display()))?;
+        use std::io::Write;
+        f.write_all(bytes)
+            .map_err(|e| format!("turbovec: write temp {}: {e}", tmp.display()))?;
+        // fsync so the bytes hit disk before the rename publishes the file; otherwise a
+        // crash right after the rename could leave the new name pointing at empty data.
+        f.sync_all()
+            .map_err(|e| format!("turbovec: fsync temp {}: {e}", tmp.display()))?;
+    }
+    finish_rename(&tmp, path)
+}
+
+/// Write the turbovec `index` to `path` atomically. `IdMapIndex::write` only writes to
+/// a path (no in-memory serialize), so it writes to a sibling temp file which is then
+/// `rename`d over `path` - so a reader never observes the truncating write in progress.
+fn write_index_atomic(path: &Path, index: &IdMapIndex) -> Result<(), String> {
+    let tmp = temp_sibling(path)?;
+    index
+        .write(&tmp)
+        .map_err(|e| format!("turbovec: write index temp {}: {e}", tmp.display()))?;
+    finish_rename(&tmp, path)
+}
+
+/// Rename `tmp` over `path`, cleaning up the temp on failure so the store dir is not
+/// littered with a stale `.tmp`.
+fn finish_rename(tmp: &Path, path: &Path) -> Result<(), String> {
+    std::fs::rename(tmp, path).map_err(|e| {
+        let _ = std::fs::remove_file(tmp);
+        format!(
+            "turbovec: rename {} -> {}: {e}",
+            tmp.display(),
+            path.display()
+        )
+    })
+}
+
+/// An `flock(2)` advisory lock held for the lifetime of the value: `acquire` opens
+/// (creating if absent) the lock file and takes an EXCLUSIVE, BLOCKING lock; `Drop`
+/// releases it (closing the fd drops the lock too, but we unlock explicitly for
+/// clarity). Exclusive+blocking means a second acquirer (in this process or another)
+/// waits until the first releases, so the load+persist critical section is serialized
+/// cross-process, not just cross-thread.
+struct StoreLock {
+    file: File,
+}
+
+impl StoreLock {
+    fn acquire(path: &Path) -> Result<Self, String> {
+        // 0o644: the lock file is world-readable, owner-writable - it carries no data,
+        // only the flock. `create(true)` makes the first acquirer materialize it.
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o644)
+            .open(path)
+            .map_err(|e| format!("turbovec: open lock {}: {e}", path.display()))?;
+        // SAFETY: `flock` is a plain libc call on a valid fd we own for the lifetime of
+        // `file`. LOCK_EX blocks until the exclusive lock is granted; the fd stays open
+        // (held by `self.file`) until `Drop`, so the lock is held for exactly the guard's
+        // lifetime.
+        let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+        if rc != 0 {
+            return Err(format!(
+                "turbovec: flock {}: {}",
+                path.display(),
+                std::io::Error::last_os_error()
+            ));
+        }
+        Ok(StoreLock { file })
+    }
+}
+
+impl Drop for StoreLock {
+    fn drop(&mut self) {
+        // SAFETY: same fd, still open (owned by `self.file` until this Drop completes).
+        // Best-effort: closing the fd right after would release the lock anyway.
+        unsafe { libc::flock(self.file.as_raw_fd(), libc::LOCK_UN) };
     }
 }
 
@@ -460,13 +716,16 @@ impl Grounder for Turbovec {
         // the tree, INCREMENTALLY - re-embed only files that changed/were added since the
         // last index, drop deleted ones. On the common no-change tree this is just a hash
         // walk (no embedding, no persist). So every RAG result reflects the latest code,
-        // whether or not an explicit `reindex` was run. We freshen BEFORE locking below;
-        // `freshen` does its own internal locking, so there is no nested lock.
+        // whether or not an explicit `reindex` was run. `freshen` takes and releases the
+        // state lock itself (holding it across the whole diff+apply+persist), so there is
+        // no nested lock with the search below.
         if let Err(e) = self.freshen() {
             // A freshen failure must not silently serve stale results; surface it but
             // still answer from whatever the index currently holds.
             eprintln!("turbovec: freshen before ground failed: {e}");
         }
+        // The query embed goes through the shared session's serialization (`embed_mu`),
+        // so it can never run concurrently with a content embed on another thread.
         let qv = match self.embed_query(query) {
             Some(v) => v,
             None => return Vec::new(),
@@ -490,19 +749,27 @@ impl Grounder for Turbovec {
         if files.is_empty() {
             return;
         }
-        for f in files {
-            self.drop_file(f);
-            let path = Path::new(src_dir).join(f);
-            // The file still exists: re-embed its current content under new ids. If
-            // it was deleted (or is unreadable), its chunks were already dropped
-            // above and there is nothing to re-add.
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                if let Err(e) = self.index_file_content(f, &content) {
-                    eprintln!("turbovec: reindex {f}: {e}");
+        // ONE state-lock hold across the whole reindex (drop + re-embed + persist) - the
+        // single mutation authority - and, inside it, the cross-process store lock around
+        // the apply+persist, so two reindexes / a concurrent freshen never interleave and
+        // a separate `rigger` process never reads a half-applied store.
+        let mut state = self.state.lock().unwrap();
+        let result = self.with_store_lock(|| {
+            for f in files {
+                drop_file(&mut state, f);
+                let path = Path::new(src_dir).join(f);
+                // The file still exists: re-embed its current content under new ids. If
+                // it was deleted (or is unreadable), its chunks were already dropped
+                // above and there is nothing to re-add.
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    if let Err(e) = self.index_file_content(&mut state, f, &content) {
+                        eprintln!("turbovec: reindex {f}: {e}");
+                    }
                 }
             }
-        }
-        if let Err(e) = self.persist() {
+            self.persist_locked(&state)
+        });
+        if let Err(e) = result {
             eprintln!("turbovec: reindex persist: {e}");
         }
     }
@@ -514,20 +781,17 @@ impl Grounder for Turbovec {
 /// framework registers each in turn and, on ANY registration failure, *silently
 /// falls back* to the next provider (and finally to CPU) rather than erroring - the
 /// dispatch's default is `fail_silently`. So on a CUDA box the model runs on the
-/// GPU; on a box with no GPU / no CUDA runtime - or, as below, an ORT build without
-/// the CUDA EP compiled in - the CUDA registration fails harmlessly and CPU is used.
-/// This never panics for want of a GPU.
+/// GPU; on a box with no GPU / no CUDA runtime the CUDA registration fails harmlessly
+/// and CPU is used. This never panics for want of a GPU.
 ///
-/// fastembed/ort LIMITATION worth stating plainly: the ONNX Runtime that fastembed
-/// downloads via its default `ort-download-binaries` feature is the **CPU-only**
-/// build, and fastembed does NOT enable `ort/cuda`. So with the dependency tree as
-/// it ships today, the CUDA EP's Cargo feature is not compiled in and registration
-/// fails with "...its corresponding Cargo feature is not enabled" - meaning GPU
-/// acceleration requires either a CUDA-enabled ORT (e.g. building `ort` with
-/// `-F cuda` against a CUDA toolkit, or `load-dynamic` against a GPU ORT .so) on the
-/// host. The selection code is written so that the DAY such a runtime is present,
-/// the GPU is used with no code change; until then we run correctly on CPU. We probe
-/// `is_available()` only to LOG which provider actually backs this session.
+/// This crate builds `ort` with `-F cuda,download-binaries,load-dynamic` (see
+/// `Cargo.toml`), so the CUDA EP's Cargo feature IS compiled in and `ort-sys`
+/// downloads the CUDA-enabled ONNX Runtime into its dfbin cache. `src/ort_runtime.rs`
+/// points `ORT_DYLIB_PATH` at that runtime so `ort` `dlopen`s it. The upshot: on a box
+/// with a CUDA runtime + a GPU the CUDA EP registers and embedding runs on the GPU;
+/// where CUDA is absent (no GPU, no CUDA libs, a runtime that lacks the provider) the
+/// registration fails silently and we run correctly on CPU - no code change either way.
+/// We probe `is_available()` only to LOG which provider actually backs this session.
 fn select_execution_providers() -> Vec<ExecutionProviderDispatch> {
     let cuda = CUDAExecutionProvider::default();
     // `is_available()` reports whether the loaded ONNX Runtime was COMPILED with
@@ -632,6 +896,17 @@ fn first_non_blank(lines: &[&str]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::file_serial;
+
+    // Every test that builds a `Turbovec` model is `#[file_serial(turbovec_model)]`: on
+    // a CUDA box, constructing two ort/CUDA sessions concurrently (as `cargo test`'s
+    // default thread-per-test would) corrupts the heap. The grounder itself serializes
+    // construction WITHIN a process (CONSTRUCT_MU), but `cargo test` runs each test in
+    // its own thread AND runs separate test binaries (this lib, `tests/cli.rs`) as
+    // parallel processes. `file_serial` uses a FILESYSTEM lock, so the serialization
+    // holds across both threads and binaries - no two model constructions ever overlap.
+    // Tests that build no model (e.g. `content_hash_is_stable_and_distinguishes`) stay
+    // parallel.
 
     /// Keep the test corpus TINY (a few small files): the embedding step is bounded
     /// in memory and time, so the suite never blows up the box.
@@ -655,6 +930,7 @@ mod tests {
     /// entry), and the model still constructs and embeds. This is the graceful-
     /// degradation guarantee - "attempt the GPU EP, fall back to CPU, never crash".
     #[test]
+    #[file_serial(turbovec_model)]
     fn ep_selection_falls_back_to_cpu_without_a_gpu() {
         // Selection itself is infallible and always offers CPU as the final option.
         let eps = select_execution_providers();
@@ -678,6 +954,7 @@ mod tests {
 
     // Downloads the embedding model on first run; gated behind the turbovec feature.
     #[test]
+    #[file_serial(turbovec_model)]
     fn grounds_semantically() {
         let dir = tiny_repo();
         let tv = Turbovec::new(dir.path().to_str().unwrap()).unwrap();
@@ -693,6 +970,7 @@ mod tests {
     /// second construction over the same tree LOADS it (no rebuild) and grounds
     /// identically - the save->load round-trip the incremental story rests on.
     #[test]
+    #[file_serial(turbovec_model)]
     fn persisted_index_round_trips_save_then_load() {
         let dir = tiny_repo();
         let root = dir.path().to_str().unwrap();
@@ -744,6 +1022,7 @@ mod tests {
     /// index was built becomes findable once that one file is reindexed, without
     /// rebuilding the whole index. This is the "changes land before review" guarantee.
     #[test]
+    #[file_serial(turbovec_model)]
     fn reindex_makes_a_new_term_findable_incrementally() {
         let dir = tiny_repo();
         let root = dir.path().to_str().unwrap();
@@ -788,6 +1067,7 @@ mod tests {
     /// reindexed to NEW content, and only the new content is findable; a removed
     /// file's chunks disappear from the index entirely.
     #[test]
+    #[file_serial(turbovec_model)]
     fn reindex_replaces_old_chunks_and_drops_deleted_files() {
         let dir = tiny_repo();
         let root = dir.path().to_str().unwrap();
@@ -886,6 +1166,7 @@ mod tests {
     /// `ground` for it; the auto-freshen at the start of `ground` re-embeds the edited
     /// file, so it is the top hit - the freshness lives in the grounder, not the caller.
     #[test]
+    #[file_serial(turbovec_model)]
     fn ground_auto_freshens_after_an_edit_without_explicit_reindex() {
         let dir = tiny_repo();
         let root = dir.path().to_str().unwrap();
@@ -916,6 +1197,7 @@ mod tests {
     /// assert they are byte-for-byte preserved after grounding, while the edited file's
     /// ids change. Preserved ids prove the unchanged file was never dropped+re-embedded.
     #[test]
+    #[file_serial(turbovec_model)]
     fn auto_freshen_is_incremental_not_a_full_rebuild() {
         let dir = tiny_repo();
         let root = dir.path().to_str().unwrap();
@@ -962,6 +1244,7 @@ mod tests {
     /// (c) A `ground` reflects a DELETION: removing a file makes its unique term
     /// unfindable, because the auto-freshen drops a vanished file's chunks.
     #[test]
+    #[file_serial(turbovec_model)]
     fn ground_drops_a_deleted_files_content() {
         let dir = tiny_repo();
         let root = dir.path().to_str().unwrap();
@@ -1001,6 +1284,7 @@ mod tests {
     /// monotonic id allocator does not advance across the second ground, proving freshen
     /// hit the cheap hash-walk path (no chunk re-embedded, nothing persisted).
     #[test]
+    #[file_serial(turbovec_model)]
     fn unchanged_tree_grounds_without_re_embedding() {
         let dir = tiny_repo();
         let root = dir.path().to_str().unwrap();
@@ -1020,5 +1304,130 @@ mod tests {
             "grounding an unchanged tree must allocate no new chunk ids - freshen took the \
              cheap hash-walk no-op path with no re-embedding"
         );
+    }
+
+    /// Assert the in-memory store is internally CONSISTENT: the id-space is coherent
+    /// across the three tables that must never drift - `index` (id -> vector),
+    /// `meta.refs` (id -> Ref), and `meta.files` (file -> its chunk ids). A concurrency
+    /// bug (an interleaved diff/apply, or a torn write reloaded) would surface as a
+    /// dangling id here.
+    fn assert_store_consistent(tv: &Turbovec) {
+        let state = tv.state.lock().unwrap();
+        // Every id a file claims must have a ref, and no ref may be orphaned: the set of
+        // ids across all files must EQUAL the set of ref keys.
+        let file_ids: std::collections::HashSet<u64> = state
+            .meta
+            .files
+            .values()
+            .flat_map(|e| e.ids.iter().copied())
+            .collect();
+        let ref_ids: std::collections::HashSet<u64> = state.meta.refs.keys().copied().collect();
+        assert_eq!(
+            file_ids, ref_ids,
+            "every file-claimed chunk id must have exactly one ref and vice versa - a \
+             mismatch means an interleaved mutation left the store inconsistent"
+        );
+        // The index holds exactly as many vectors as there are refs: no vector without a
+        // ref (would surface a hit that maps to nothing) and no ref without a vector.
+        assert_eq!(
+            state.index.len(),
+            state.meta.refs.len(),
+            "the vector index and the ref map must have the same cardinality - a \
+             mismatch means a torn persist or interleaved apply desynced them"
+        );
+        // next_id is a strict high-water mark: every allocated id is below it.
+        assert!(
+            file_ids.iter().all(|&id| id < state.meta.next_id),
+            "every allocated id must be below next_id (the monotonic allocator)"
+        );
+    }
+
+    /// CONCURRENCY GUARANTEE (the fix for the shared-ORT-session + freshen-TOCTOU +
+    /// non-atomic-persist blockers): many threads hammering ONE shared `Turbovec` with
+    /// interleaved `ground` (which auto-freshens + query-embeds) and `reindex` (which
+    /// drops + content-embeds + persists) must NOT corrupt the store. If embedding were
+    /// not serialized on the one ort session this would heap-corrupt / crash on a CUDA
+    /// box; if freshen's diff/apply were not under one lock, or persist were not atomic,
+    /// the store would end internally inconsistent. We assert it survives and stays
+    /// consistent, and that a fresh construction reloads the persisted store cleanly.
+    #[test]
+    #[file_serial(turbovec_model)]
+    fn concurrent_ground_and_reindex_keep_the_store_consistent() {
+        use std::sync::Arc;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap().to_string();
+        // A handful of small files so each embed stays bounded but there is real work
+        // to interleave across threads.
+        for i in 0..4 {
+            std::fs::write(
+                dir.path().join(format!("mod{i}.rs")),
+                format!(
+                    "fn feature_{i}(x: u32) -> u32 {{\n    x.wrapping_mul({i} + 1)\n}}\n\
+                     fn helper_{i}() {{\n    // module {i} helper\n}}\n"
+                ),
+            )
+            .unwrap();
+        }
+
+        let tv = Arc::new(Turbovec::new(&root).unwrap());
+        assert_store_consistent(&tv);
+
+        // Share the dir path + root across threads by Arc so each worker can rewrite
+        // files and reindex against the same store.
+        let dir_path = Arc::new(dir.path().to_path_buf());
+        let root = Arc::new(root);
+
+        // Spawn several threads: some ground repeatedly (auto-freshen + query embed),
+        // some reindex a rotating file (drop + content embed + atomic persist). All
+        // share the ONE `Turbovec` (its one ort session, one state lock, one embed lock)
+        // exactly as the review lenses do on the `rigger run` path.
+        let mut handles = Vec::new();
+        for t in 0..4 {
+            let tv = Arc::clone(&tv);
+            let dir_path = Arc::clone(&dir_path);
+            let root = Arc::clone(&root);
+            handles.push(std::thread::spawn(move || {
+                for r in 0..3 {
+                    // Ground - this runs freshen (diff+apply+persist under one lock) then
+                    // a query embed (serialized on embed_mu), concurrently with peers.
+                    let _ = tv.ground("wrapping multiply feature helper", 2);
+                    // Reindex a file after rewriting it, so a content embed + atomic
+                    // persist races the other threads' grounds and reindexes.
+                    let f = format!("mod{}.rs", (t + r) % 4);
+                    std::fs::write(
+                        dir_path.join(&f),
+                        format!(
+                            "fn feature_{t}_{r}(x: u32) -> u32 {{\n    x.wrapping_add({t} + {r})\n}}\n"
+                        ),
+                    )
+                    .unwrap();
+                    tv.reindex(&root, &[f]);
+                }
+            }));
+        }
+        for h in handles {
+            // A panic in a worker (e.g. a poisoned lock from a corrupted session) fails
+            // the test loudly here.
+            h.join().expect("a concurrent worker must not panic");
+        }
+
+        // The store survived the concurrent hammering internally consistent.
+        assert_store_consistent(&tv);
+        // A ground still returns coherent, in-tree results (no dangling ref, no crash).
+        let hits = tv.ground("wrapping multiply feature helper", 4);
+        for r in &hits {
+            assert!(
+                dir_path.join(&r.file).exists(),
+                "every grounded ref must point at a file still on disk; got {r:?}"
+            );
+        }
+
+        // The persisted store is not torn: a fresh construction reloads it cleanly and is
+        // itself consistent - proving the atomic persist + store lock left a coherent pair
+        // on disk, not a truncated index or an index/meta mismatch.
+        drop(tv);
+        let reloaded = Turbovec::new(root.as_str()).unwrap();
+        assert_store_consistent(&reloaded);
     }
 }

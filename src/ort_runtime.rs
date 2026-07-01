@@ -62,9 +62,14 @@ const TARGET_TRIPLE: &str = "x86_64-unknown-linux-gnu";
 /// as-is and the normal `ort` path applies.
 ///
 /// # Safety
-/// Mutates a process env var. The caller MUST invoke this before any other thread
-/// reads the environment; `main` calls it as its very first statement, before any
-/// thread is spawned, which satisfies that.
+/// Mutates a process env var (`ORT_DYLIB_PATH`), which `ort` READS lazily when it
+/// first loads the runtime. The caller MUST guarantee no other thread reads the
+/// environment concurrently with this write - in particular, no other thread may be
+/// constructing an `ort` session. Two call sites satisfy that: `main` calls it as its
+/// very first statement, before any thread is spawned; and `Turbovec::construct` calls
+/// it while holding the process-wide `CONSTRUCT_MU`, which every model construction
+/// also holds, so no concurrent session load (and thus no concurrent env read) can race
+/// the write.
 pub unsafe fn ensure_dylib_path() {
     // (a) The user/CI already chose a runtime: never override it.
     if std::env::var_os(ORT_DYLIB_PATH).is_some() {

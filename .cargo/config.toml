@@ -4,5 +4,11 @@
 # once and OOM a loaded workstation. Capping parallel codegen jobs keeps peak
 # memory bounded while staying reasonably fast. Raise it if you have headroom;
 # lower it (e.g. 4) if the machine is heavily loaded.
+#
+# NOTE: this is ADVISORY and workspace-wide - it also throttles the light
+# `--no-default-features` (grep-only) lane, which has no heavy deps and could build
+# faster at a higher job count. The cap is kept global for simplicity and because the
+# turbovec lane is the memory-sensitive one; a caller who only builds the grep lane can
+# override with `CARGO_BUILD_JOBS=<n>` (env wins over this file) for more parallelism.
 [build]
 jobs = 8

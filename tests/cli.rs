@@ -217,8 +217,13 @@ fn reindex_requires_at_least_one_file() {
 /// surface the workflow calls after each unit lands. Gated to the turbovec lane (it
 /// downloads the embedding model on first use, exactly like the grounder's own unit
 /// test); the fixture is a single tiny file so the embed stays bounded.
+/// Serialized cross-binary against the lib's model tests: this spawns a `rigger`
+/// subprocess that builds an ort/CUDA session, and `serial_test`'s filesystem-lock
+/// `file_serial` (same `turbovec_model` key the lib tests use) ensures no other model
+/// construction - here or in the lib-test binary - runs concurrently on a GPU box.
 #[cfg(feature = "turbovec")]
 #[test]
+#[serial_test::file_serial(turbovec_model)]
 fn reindex_cli_updates_the_persisted_turbovec_store() {
     let dir = temp_project();
     let root = dir.path();
