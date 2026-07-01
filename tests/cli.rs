@@ -444,6 +444,28 @@ fn error_after_embed_exits_cleanly_without_a_teardown_abort() {
     std::fs::create_dir_all(&grounding).unwrap();
     std::fs::set_permissions(&grounding, std::fs::Permissions::from_mode(0o000)).unwrap();
 
+    // The whole test hinges on the mode-000 dir being genuinely UNWRITABLE by the child,
+    // so its post-embed store-lock open fails with EACCES. Under root - or any principal
+    // with CAP_DAC_OVERRIDE, common in CI containers - the kernel BYPASSES the mode bits,
+    // so the child would write the store, ground succeeds, and the run exits 0. That is
+    // not a teardown regression, but the `exit 1` assertion below would still fire and
+    // report a misleading failure. Probe the actual enforcement with the same operation
+    // the child does (create a file inside the dir); if WE can create it, the injection
+    // cannot force the error, so skip cleanly rather than assert against a no-op fixture.
+    // A filesystem probe (not a bare euid==0 check) is used deliberately: it also covers
+    // the CAP_DAC_OVERRIDE-without-uid-0 and permissive-filesystem cases a euid test misses.
+    let probe = grounding.join(".perm_probe");
+    if std::fs::File::create(&probe).is_ok() {
+        let _ = std::fs::remove_file(&probe);
+        let _ = std::fs::set_permissions(&grounding, std::fs::Permissions::from_mode(0o755));
+        eprintln!(
+            "skipping error_after_embed_exits_cleanly_without_a_teardown_abort: the mode-000 \
+             grounding dir is writable by this principal (root / CAP_DAC_OVERRIDE), so the \
+             post-embed persist failure cannot be injected here"
+        );
+        return;
+    }
+
     let outcome = run_rigger_env(root, &["ground", "how is damage dealt", "1"], &[]);
 
     // Restore permissions so the TempDir can be cleaned up on drop (a mode-000 subdir
