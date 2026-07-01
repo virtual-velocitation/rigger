@@ -185,14 +185,14 @@ fn grep_only_lane_runs_the_full_gate_battery() {
 /// The `install-nolock` job must run `cargo install --path .` WITHOUT `--locked` and then
 /// execute the resulting binary. That job is the regression guard for dependency skew on a
 /// FRESH resolve (`cargo install` without `--locked` ignores Cargo.lock and re-resolves to
-/// the newest versions the manifest constraints allow — exactly how an end user installs,
+/// the newest versions the manifest constraints allow - exactly how an end user installs,
 /// and where a transitive crate like `ort-sys` can skew forward past the `ort` it must
 /// match). `Cargo.toml` pins `ort-sys = "=2.0.0-rc.9"` to keep that resolve coherent; this
 /// test ensures the CI job that PROVES the pin holds cannot be quietly deleted or have its
 /// teeth pulled by someone adding `--locked` (which would make the install pass by reusing
 /// the committed lockfile, defeating the entire point of the guard). Like the rest of this
 /// file it parses the committed workflow rather than the running config, so it fails at
-/// `cargo test` time — in the very build-test lane above — if the guard erodes.
+/// `cargo test` time - in the very build-test lane above - if the guard erodes.
 #[test]
 fn install_nolock_job_runs_a_fresh_unlocked_install_and_executes_the_binary() {
     let wf = workflow_yaml();
@@ -200,7 +200,7 @@ fn install_nolock_job_runs_a_fresh_unlocked_install_and_executes_the_binary() {
 
     // The load-bearing command: a path install that re-resolves from scratch. Anchored to
     // FORBID `--locked`, because a `--locked` install reuses Cargo.lock and would never
-    // exercise a fresh resolution — the exact thing this job exists to test.
+    // exercise a fresh resolution - the exact thing this job exists to test.
     assert_lane_command(
         &script,
         &["cargo install", "--path", "."],

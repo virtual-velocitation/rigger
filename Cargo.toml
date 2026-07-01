@@ -56,12 +56,12 @@ fastembed = { version = "4", optional = true }
 # fallback - GPU when available, CPU otherwise. No pip, no Python, no wheels.
 ort = { version = "=2.0.0-rc.9", default-features = false, features = ["cuda", "download-binaries", "load-dynamic"], optional = true }
 # Pin ort-sys to the EXACT version `ort =2.0.0-rc.9` was written against. `ort` only
-# requires `ort-sys = "2.0.0-rc.9"`, which — under Cargo's pre-release semver — matches
+# requires `ort-sys = "2.0.0-rc.9"`, which - under Cargo's pre-release semver - matches
 # any `2.0.0-rc.N` with N >= 9 (rc.10, rc.11, rc.12, ...). Without `--locked`, a fresh
 # resolve skews ort-sys FORWARD to the newest rc while ort stays pinned at rc.9; rc.10+
 # regenerated the OrtApi bindings so the fn-pointer fields are non-null `fn` instead of
 # `Option<fn>`, and rc.9's `ortsys!` macro calls `.unwrap_or_else()`/`.expect()` on them
-# — 267 compile errors, so `cargo install --path .` fails WITHOUT `--locked`. Pinning
+# - 267 compile errors, so `cargo install --path .` fails WITHOUT `--locked`. Pinning
 # ort-sys as a direct `=` dep forces the fresh resolution back to the matching rc.9, so
 # `cargo install` (no `--locked`) resolves and compiles cleanly. Feature-gated with `ort`.
 ort-sys = { version = "=2.0.0-rc.9", default-features = false, optional = true }
