@@ -135,8 +135,8 @@ pub struct Turbovec {
 struct State {
     index: IdMapIndex,
     meta: Meta,
-    /// The (mtime, size) of the two on-disk store files as of the last time THIS
-    /// in-memory state was synced with disk - refreshed whenever the store is loaded
+    /// The (inode, mtime, size) fingerprint of the two on-disk store files as of the
+    /// last time THIS in-memory state was synced with disk - refreshed whenever the store is loaded
     /// (`load_persisted_any` / `reload_persisted_locked`) or persisted
     /// (`persist_locked`). `freshen_locked` compares it against a fresh `stat` to
     /// decide whether an external process wrote the store since we last synced; if it
@@ -145,33 +145,42 @@ struct State {
     stamp: Option<StoreStamp>,
 }
 
-/// A cheap staleness fingerprint of the two on-disk store files: each file's
-/// modification time and size. `freshen_locked` `stat`s the index + meta and compares
+/// A cheap staleness fingerprint of the two on-disk store files: each file's inode,
+/// modification time, and size. `freshen_locked` `stat`s the index + meta and compares
 /// the result against the [`State::stamp`] cached on the last sync - a mismatch means
 /// an EXTERNAL process (a separate `rigger reindex`) rewrote the store, so the
 /// expensive `reload_persisted_locked` must run; an exact match means nothing changed,
 /// so the reload is skipped. Two `stat`s are orders of magnitude cheaper than the full
 /// `IdMapIndex::load` + meta deserialize + consistency scan the reload performs.
 ///
-/// mtime + size (not a content hash) is the right oracle here: any write through our
-/// atomic `rename` publishes a fresh inode whose mtime advances, and every store write
-/// goes through `persist_locked`, so a real external write always moves at least the
-/// mtime. The pathological "rewritten within the same mtime granularity AND identical
-/// size" case would be judged unchanged, but the store lock serializes all writers and
-/// the very next differing write re-syncs, so it self-heals; for the hot no-op path
-/// (nothing written) the stamp is exactly equal and the gate correctly skips.
+/// The INODE is the PRIMARY external-write signal; mtime + size are secondary. Every
+/// external persist goes through `persist_locked`, which writes to a temp file and
+/// `rename`s it into place - an atomic replace that installs a file with a NEW inode.
+/// So any real external write necessarily moves the inode, and comparing the inode
+/// (alongside mtime + size) closes the pathological "rewritten within the same coarse
+/// mtime granularity AND identical byte size" collision that a bare (mtime, size)
+/// fingerprint could FALSE-SKIP: even a same-mtime/same-size rewrite lands on a
+/// different inode, so the gate still detects it and reloads. mtime + size remain in
+/// the comparison as cheap secondary corroboration (they come from the same `stat`).
+/// The inode is read from the SAME `metadata()` call as mtime + size, so the gate is
+/// still a single cheap `stat` - no extra syscall, no file read. For the hot no-op path
+/// (nothing written) all three fields are exactly equal and the gate correctly skips.
 #[derive(Clone, PartialEq, Eq)]
 struct StoreStamp {
     index: FileStamp,
     meta: FileStamp,
 }
 
-/// One file's (mtime, size) fingerprint. `None`-free: a file that cannot be `stat`ed
-/// (absent, or a transient error) is represented by the caller as an absent
-/// [`StoreStamp`], never a partial one, so a half-present pair never compares equal to
-/// a fully-present one.
+/// One file's (inode, mtime, size) fingerprint. The inode is the PRIMARY external-write
+/// signal: `persist_locked`'s temp-file-then-`rename` installs a fresh inode on every
+/// external write, so a same-mtime/same-size rewrite still moves the inode and is
+/// detected; mtime + size are secondary corroboration. All three come from one
+/// `metadata()` call. `None`-free: a file that cannot be `stat`ed (absent, or a
+/// transient error) is represented by the caller as an absent [`StoreStamp`], never a
+/// partial one, so a half-present pair never compares equal to a fully-present one.
 #[derive(Clone, PartialEq, Eq)]
 struct FileStamp {
+    ino: u64,
     mtime: std::time::SystemTime,
     size: u64,
 }
@@ -190,8 +199,14 @@ impl StoreStamp {
 
 impl FileStamp {
     fn of(path: &Path) -> Option<FileStamp> {
+        // A single `stat`: the inode (`ino()`), mtime, and size all come off this one
+        // `Metadata`, so adding the inode costs no extra syscall. The inode is the
+        // primary "was this file rewritten" signal - `persist_locked`'s rename installs
+        // a fresh inode on every external write (see `FileStamp` / `StoreStamp` docs).
+        use std::os::unix::fs::MetadataExt;
         let md = std::fs::metadata(path).ok()?;
         Some(FileStamp {
+            ino: md.ino(),
             mtime: md.modified().ok()?,
             size: md.len(),
         })
@@ -602,8 +617,10 @@ impl Turbovec {
         //    full `IdMapIndex::load` (the whole `.tvim`) + meta deserialize + consistency
         //    scan. On the common no-change no-op path nothing external wrote, so that work
         //    is pure waste. We `stat` the two store files (two syscalls) and reload ONLY
-        //    when their (mtime, size) differs from the fingerprint we cached on our last
-        //    sync - i.e. an external process wrote since. If the stamp is unchanged, our
+        //    when their (inode, mtime, size) differs from the fingerprint we cached on our
+        //    last sync - i.e. an external process wrote since. An external persist's
+        //    temp-file-then-rename installs a NEW inode, so even a same-mtime/same-size
+        //    rewrite moves the fingerprint and is caught. If the stamp is unchanged, our
         //    in-memory state already mirrors disk and we SKIP the reload.
         //
         //    This is a PRE-CHECK in front of the existing reload, NOT a deferral past the
@@ -709,6 +726,15 @@ impl Turbovec {
     /// chunks (if any) must already have been removed by the caller - this only
     /// adds. Returns without embedding when the file has no non-blank chunks (the
     /// file is recorded with an empty id set so it still counts toward consistency).
+    ///
+    /// ATOMIC w.r.t. `state.meta`: the add-to-index happens FIRST, and NOTHING in
+    /// `state.meta` (`refs`, `files`, `next_id`) is touched until that add succeeds.
+    /// The chunk ids are allocated from a LOCAL counter seeded at `state.meta.next_id`
+    /// and the `(id, StoredRef)` pairs + flat floats are accumulated in LOCALS, so if
+    /// `add_with_ids` returns `Err` we `?` out having mutated NOTHING - no orphan ref
+    /// stranded in `meta.refs` (which no `FileEntry.ids` would list, so `drop_file`
+    /// could never reclaim it), no leaked `next_id`, no partial `FileEntry`. On success
+    /// we commit all three together, mirroring exactly the vectors the index accepted.
     fn index_file_content(
         &self,
         state: &mut State,
@@ -734,23 +760,38 @@ impl Turbovec {
         // serialized against every other embed on the shared ort session.
         let embeddings = self.embed_locked(texts, Some(EMBED_BATCH_SIZE))?;
 
+        // Stage everything in LOCALS, touching NOTHING in `state.meta`. Ids come from a
+        // local counter seeded at (but not yet written back to) `state.meta.next_id`, so
+        // an add failure below leaves `next_id` - and every other field of `meta` -
+        // byte-for-byte unchanged.
         let mut flat = Vec::with_capacity(embeddings.len() * EMBED_DIM);
         let mut ids = Vec::with_capacity(embeddings.len());
+        let mut pending_refs: Vec<(u64, StoredRef)> = Vec::with_capacity(embeddings.len());
+        let mut next_id = state.meta.next_id;
         for (emb, r) in embeddings.iter().zip(refs) {
-            let id = state.meta.next_id;
-            state.meta.next_id += 1;
+            let id = next_id;
+            next_id += 1;
             flat.extend_from_slice(emb);
             ids.push(id);
-            state.meta.refs.insert(id, r);
+            pending_refs.push((id, r));
         }
+        // Add to the index FIRST. Only if this succeeds do we commit to `state.meta`;
+        // on failure we `?` out with `state.meta` (refs, files, next_id) untouched, so
+        // no ref is ever stranded without a `FileEntry` to reclaim it via `drop_file`.
         state
             .index
             .add_with_ids(&flat, &ids)
             .map_err(|e| format!("turbovec: add: {e}"))?;
+        // The add landed: commit refs, the file entry, and the id high-water mark
+        // together, so `state.meta` reflects exactly the vectors the index now holds.
+        for (id, r) in pending_refs {
+            state.meta.refs.insert(id, r);
+        }
         state
             .meta
             .files
             .insert(rel.to_string(), FileEntry { hash, ids });
+        state.meta.next_id = next_id;
         Ok(())
     }
 
@@ -768,8 +809,9 @@ impl Turbovec {
     /// pair while the flock is held (the store lock is what makes the pair-swap
     /// observably atomic to other processes).
     ///
-    /// After the write lands, refreshes `state.stamp` to the (mtime, size) of the files
-    /// we just wrote, so `freshen_locked`'s staleness gate treats OUR OWN persist as
+    /// After the write lands, refreshes `state.stamp` to the (inode, mtime, size) of the
+    /// files we just wrote (the rename installed fresh inodes), so `freshen_locked`'s
+    /// staleness gate treats OUR OWN persist as
     /// "already synced" - a subsequent `ground` on a still-unchanged tree then skips the
     /// reload rather than spuriously reloading the store we just wrote.
     fn persist_locked(&self, state: &mut State) -> Result<(), String> {
@@ -2277,5 +2319,130 @@ mod tests {
             check_index_meta_consistent(&index2, &good).is_err(),
             "a surplus vector with no ref must be rejected (cardinality mismatch)"
         );
+    }
+
+    /// ORPHAN-REF LEAK FIX (`index_file_content` atomicity): after a normal index the
+    /// in-memory `meta.refs` must mirror the index EXACTLY (same live id count) and hold
+    /// NO orphan - every ref id must be listed by some `FileEntry.ids`. And when the
+    /// index add FAILS, `meta` (refs, files, next_id) must be byte-for-byte unchanged, so
+    /// a failed add can never strand a ref that `drop_file` (which only reclaims ids under
+    /// a `FileEntry`) could never reach. The failure is forced with NO production-only
+    /// seam: we rewind the TEST instance's `meta.next_id` so the next allocation collides
+    /// with ids already in the index, making `add_with_ids` return `IdAlreadyPresent`.
+    #[test]
+    #[file_serial(turbovec_model)]
+    fn index_file_content_is_atomic_no_orphan_refs_on_add_failure() {
+        let dir = tiny_repo();
+        let root = dir.path().to_str().unwrap();
+        let tv = Turbovec::new(root).unwrap();
+
+        // (A) After a normal build the store is orphan-free and cardinality-matched:
+        //     refs.len() == the index's live id count, and every ref id is claimed by
+        //     some file's `ids` (no ref absent from every `FileEntry.ids`).
+        {
+            let state = tv.state.lock().unwrap();
+            assert_eq!(
+                state.meta.refs.len(),
+                state.index.len(),
+                "meta.refs must have exactly one entry per live vector id in the index"
+            );
+            let file_ids: std::collections::HashSet<u64> = state
+                .meta
+                .files
+                .values()
+                .flat_map(|e| e.ids.iter().copied())
+                .collect();
+            for id in state.meta.refs.keys() {
+                assert!(
+                    file_ids.contains(id),
+                    "meta.refs id {id} is an ORPHAN - it is listed by no FileEntry.ids, so \
+                     drop_file could never reclaim it"
+                );
+            }
+            assert!(
+                !state.meta.refs.is_empty(),
+                "the tiny repo must have produced at least one indexed chunk"
+            );
+        }
+
+        // (B) Force an `add_with_ids` failure WITHOUT any production seam, then assert
+        //     `meta` is untouched. `add_with_ids` rejects an id already present in the
+        //     index (`IdAlreadyPresent`); `index_file_content` allocates its chunk ids
+        //     from a LOCAL counter seeded at `state.meta.next_id`. Rewinding next_id to 0
+        //     (ids the freshly-built index already holds) makes that add fail. Snapshot
+        //     `meta` before the call and assert it is byte-for-byte unchanged after.
+        let (refs_before, files_before, next_id_before, index_len_before) = {
+            let mut state = tv.state.lock().unwrap();
+            // Rewind the allocator so the next add collides with existing ids.
+            state.meta.next_id = 0;
+            let refs: std::collections::BTreeMap<u64, (String, u32, String)> = state
+                .meta
+                .refs
+                .iter()
+                .map(|(&id, r)| (id, (r.file.clone(), r.line, r.text.clone())))
+                .collect();
+            let files: std::collections::BTreeMap<String, (u64, Vec<u64>)> = state
+                .meta
+                .files
+                .iter()
+                .map(|(f, e)| (f.clone(), (e.hash, e.ids.clone())))
+                .collect();
+            (refs, files, state.meta.next_id, state.index.len())
+        };
+
+        // Attempt to index a NEW file. Its chunks embed fine, but the add allocates ids
+        // starting at 0 - already in the index - so `add_with_ids` returns Err and
+        // `index_file_content` `?`s out having touched NOTHING in `meta`.
+        let result = {
+            let mut state = tv.state.lock().unwrap();
+            tv.index_file_content(
+                &mut state,
+                "atomicity_probe.rs",
+                "fn probe_atomicity(store: &mut Store) {\n    store.commit();\n}\n",
+            )
+        };
+        assert!(
+            result.is_err(),
+            "seeding next_id to collide with existing ids must make add_with_ids fail"
+        );
+
+        // `meta` (refs, files, next_id) is byte-for-byte unchanged - no orphan ref, no
+        // leaked id, no partial FileEntry - and the index gained no vector.
+        {
+            let state = tv.state.lock().unwrap();
+            let refs_after: std::collections::BTreeMap<u64, (String, u32, String)> = state
+                .meta
+                .refs
+                .iter()
+                .map(|(&id, r)| (id, (r.file.clone(), r.line, r.text.clone())))
+                .collect();
+            let files_after: std::collections::BTreeMap<String, (u64, Vec<u64>)> = state
+                .meta
+                .files
+                .iter()
+                .map(|(f, e)| (f.clone(), (e.hash, e.ids.clone())))
+                .collect();
+            assert_eq!(
+                refs_after, refs_before,
+                "a failed add must leave meta.refs untouched - no orphan ref stranded"
+            );
+            assert_eq!(
+                files_after, files_before,
+                "a failed add must leave meta.files untouched - no partial FileEntry"
+            );
+            assert_eq!(
+                state.meta.next_id, next_id_before,
+                "a failed add must not advance next_id - no id leaked"
+            );
+            assert!(
+                !state.meta.files.contains_key("atomicity_probe.rs"),
+                "the file whose add failed must not appear in meta.files"
+            );
+            assert_eq!(
+                state.index.len(),
+                index_len_before,
+                "a failed add must leave the index unchanged"
+            );
+        }
     }
 }
