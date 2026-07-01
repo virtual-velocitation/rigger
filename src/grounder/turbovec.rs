@@ -120,6 +120,12 @@ pub struct Turbovec {
     /// embed (which is not under the state lock) still cannot run concurrently with a
     /// freshen's content embed.
     embed_mu: Mutex<()>,
+    /// How many times `reload_persisted_locked` has actually run its expensive on-disk
+    /// reload (full `IdMapIndex::load` + meta deserialize + consistency scan). The
+    /// staleness gate in `freshen_locked` skips the reload when the on-disk stamp is
+    /// unchanged, so on the hot no-change `ground` path this counter does NOT advance -
+    /// which is exactly the property the perf-regression test observes.
+    reload_count: std::sync::atomic::AtomicU64,
 }
 
 /// The mutable index state, behind one lock: the quantized index and the sidecar
@@ -129,6 +135,67 @@ pub struct Turbovec {
 struct State {
     index: IdMapIndex,
     meta: Meta,
+    /// The (mtime, size) of the two on-disk store files as of the last time THIS
+    /// in-memory state was synced with disk - refreshed whenever the store is loaded
+    /// (`load_persisted_any` / `reload_persisted_locked`) or persisted
+    /// (`persist_locked`). `freshen_locked` compares it against a fresh `stat` to
+    /// decide whether an external process wrote the store since we last synced; if it
+    /// is UNCHANGED, the reload is skipped (our in-memory state is already current).
+    /// `None` before the first sync (nothing on disk / never loaded).
+    stamp: Option<StoreStamp>,
+}
+
+/// A cheap staleness fingerprint of the two on-disk store files: each file's
+/// modification time and size. `freshen_locked` `stat`s the index + meta and compares
+/// the result against the [`State::stamp`] cached on the last sync - a mismatch means
+/// an EXTERNAL process (a separate `rigger reindex`) rewrote the store, so the
+/// expensive `reload_persisted_locked` must run; an exact match means nothing changed,
+/// so the reload is skipped. Two `stat`s are orders of magnitude cheaper than the full
+/// `IdMapIndex::load` + meta deserialize + consistency scan the reload performs.
+///
+/// mtime + size (not a content hash) is the right oracle here: any write through our
+/// atomic `rename` publishes a fresh inode whose mtime advances, and every store write
+/// goes through `persist_locked`, so a real external write always moves at least the
+/// mtime. The pathological "rewritten within the same mtime granularity AND identical
+/// size" case would be judged unchanged, but the store lock serializes all writers and
+/// the very next differing write re-syncs, so it self-heals; for the hot no-op path
+/// (nothing written) the stamp is exactly equal and the gate correctly skips.
+#[derive(Clone, PartialEq, Eq)]
+struct StoreStamp {
+    index: FileStamp,
+    meta: FileStamp,
+}
+
+/// One file's (mtime, size) fingerprint. `None`-free: a file that cannot be `stat`ed
+/// (absent, or a transient error) is represented by the caller as an absent
+/// [`StoreStamp`], never a partial one, so a half-present pair never compares equal to
+/// a fully-present one.
+#[derive(Clone, PartialEq, Eq)]
+struct FileStamp {
+    mtime: std::time::SystemTime,
+    size: u64,
+}
+
+impl StoreStamp {
+    /// `stat` the index + meta files and fingerprint them, or `None` if EITHER is
+    /// missing / unstattable (an incomplete store is never a valid "current" stamp -
+    /// treating it as absent forces the reload to run, which is the safe direction).
+    fn of(index_path: &Path, meta_path: &Path) -> Option<StoreStamp> {
+        Some(StoreStamp {
+            index: FileStamp::of(index_path)?,
+            meta: FileStamp::of(meta_path)?,
+        })
+    }
+}
+
+impl FileStamp {
+    fn of(path: &Path) -> Option<FileStamp> {
+        let md = std::fs::metadata(path).ok()?;
+        Some(FileStamp {
+            mtime: md.modified().ok()?,
+            size: md.len(),
+        })
+    }
 }
 
 /// The result of attempting to load a persisted store on construction. Distinguishes
@@ -303,8 +370,10 @@ impl Turbovec {
                 index: IdMapIndex::new(EMBED_DIM, BIT_WIDTH)
                     .map_err(|e| format!("turbovec: new index: {e}"))?,
                 meta: Meta::default(),
+                stamp: None,
             }),
             embed_mu: Mutex::new(()),
+            reload_count: std::sync::atomic::AtomicU64::new(0),
         };
 
         // Load-or-build runs under a SINGLE state-lock hold and, inside it, a
@@ -338,7 +407,7 @@ impl Turbovec {
                 }
                 LoadOutcome::Absent => {
                     tv.build_from_tree(&mut state)?;
-                    tv.persist_locked(&state)?;
+                    tv.persist_locked(&mut state)?;
                     eprintln!(
                         "turbovec: built and persisted index ({} chunks) to {}",
                         state.index.len(),
@@ -404,6 +473,9 @@ impl Turbovec {
         // (drop deleted files' chunks, re-embed changed/new files) - never a full rebuild.
         state.index = index;
         state.meta = meta;
+        // Record the on-disk fingerprint we just adopted, so `freshen_locked`'s
+        // staleness gate can later tell whether an EXTERNAL process has written since.
+        state.stamp = StoreStamp::of(&index_path, &meta_path);
         Ok(LoadOutcome::Loaded { matched })
     }
 
@@ -428,6 +500,11 @@ impl Turbovec {
     /// one), the in-memory state is left as-is: there is nothing safe to adopt, and the
     /// mutation + persist that follows writes a consistent pair from what we hold.
     fn reload_persisted_locked(&self, state: &mut State) -> Result<(), String> {
+        // Count every actual reload: the expensive on-disk read below is what the
+        // staleness gate in `freshen_locked` exists to AVOID on the hot no-change path,
+        // so this counter is the observable that proves the gate is skipping it.
+        self.reload_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let index_path = self.store_dir.join(INDEX_FILE);
         let meta_path = self.store_dir.join(META_FILE);
         if !index_path.exists() || !meta_path.exists() {
@@ -449,6 +526,9 @@ impl Turbovec {
         if check_index_meta_consistent(&index, &meta).is_ok() {
             state.index = index;
             state.meta = meta;
+            // Re-stamp to the fingerprint we just adopted, so the gate's NEXT check
+            // compares against the on-disk state we now mirror in memory.
+            state.stamp = StoreStamp::of(&index_path, &meta_path);
         }
         Ok(())
     }
@@ -497,8 +577,31 @@ impl Turbovec {
         //    snapshot a separate `rigger reindex` process may have moved past. Without
         //    this, a long-lived grounder (held for a whole `rigger run`) would diff the
         //    tree against its stale state and persist over the subprocess's write, losing
-        //    it. A no-op when nothing external changed (adopts the identical bytes).
-        self.reload_persisted_locked(state)?;
+        //    it.
+        //
+        //    GATED on a cheap staleness PRE-CHECK: `ground` is the HOT path (the MCP serve
+        //    loop grounds per request over one long-lived Turbovec), and the reload is a
+        //    full `IdMapIndex::load` (the whole `.tvim`) + meta deserialize + consistency
+        //    scan. On the common no-change no-op path nothing external wrote, so that work
+        //    is pure waste. We `stat` the two store files (two syscalls) and reload ONLY
+        //    when their (mtime, size) differs from the fingerprint we cached on our last
+        //    sync - i.e. an external process wrote since. If the stamp is unchanged, our
+        //    in-memory state already mirrors disk and we SKIP the reload.
+        //
+        //    This is a PRE-CHECK in front of the existing reload, NOT a deferral past the
+        //    diff: steps 1-2 below diff the tree against `state.meta`, so the reload must
+        //    PRECEDE the diff or an external reindex's refresh would be mis-classified as
+        //    a local change. The gate only elides the reload when disk has NOT moved, in
+        //    which case there is nothing to fold in and the diff is already correct.
+        let on_disk_stamp = StoreStamp::of(
+            &self.store_dir.join(INDEX_FILE),
+            &self.store_dir.join(META_FILE),
+        );
+        if on_disk_stamp.is_none() || on_disk_stamp != state.stamp {
+            // Either the store is incomplete/unstattable (reload will handle "nothing
+            // persisted" safely) or an external write moved the fingerprint - reload.
+            self.reload_persisted_locked(state)?;
+        }
 
         // 1. Snapshot the tree as (rel path -> content), the same file set the index covers.
         let mut on_disk = Vec::new();
@@ -646,7 +749,12 @@ impl Turbovec {
     /// is written last-then-renamed after `meta.json` so the two are swapped in as a
     /// pair while the flock is held (the store lock is what makes the pair-swap
     /// observably atomic to other processes).
-    fn persist_locked(&self, state: &State) -> Result<(), String> {
+    ///
+    /// After the write lands, refreshes `state.stamp` to the (mtime, size) of the files
+    /// we just wrote, so `freshen_locked`'s staleness gate treats OUR OWN persist as
+    /// "already synced" - a subsequent `ground` on a still-unchanged tree then skips the
+    /// reload rather than spuriously reloading the store we just wrote.
+    fn persist_locked(&self, state: &mut State) -> Result<(), String> {
         std::fs::create_dir_all(&self.store_dir)
             .map_err(|e| format!("turbovec: create {}: {e}", self.store_dir.display()))?;
 
@@ -665,8 +773,13 @@ impl Turbovec {
         // the index from the tree - so this ordering degrades to a rebuild, never to a
         // vector with no ref. (The flock makes this window invisible to other processes;
         // the ordering only matters for a hard crash mid-persist.)
-        write_bytes_atomic(&self.store_dir.join(META_FILE), &meta_bytes)?;
-        write_index_atomic(&self.store_dir.join(INDEX_FILE), &state.index)?;
+        let meta_path = self.store_dir.join(META_FILE);
+        let index_path = self.store_dir.join(INDEX_FILE);
+        write_bytes_atomic(&meta_path, &meta_bytes)?;
+        write_index_atomic(&index_path, &state.index)?;
+        // Cache the fingerprint of what we just wrote so the gate recognizes this state
+        // as current (see `State::stamp`) and does not reload our own write next time.
+        state.stamp = StoreStamp::of(&index_path, &meta_path);
         Ok(())
     }
 
@@ -953,7 +1066,7 @@ impl Grounder for Turbovec {
                     self.index_file_content(&mut state, f, &content)?;
                 }
             }
-            self.persist_locked(&state)
+            self.persist_locked(&mut state)
         });
         // Any failure in the reload/re-embed/persist critical section is surfaced here and
         // aborts BEFORE a partial (orphan-ref) state can be persisted - a failed add `?`s
@@ -1057,24 +1170,15 @@ fn collect_files_guarded(
         let name = name.to_string_lossy();
         if path.is_dir() {
             // Skip VCS / build / dependency / tooling dirs that hold no first-party
-            // source. `.fastembed_cache` is the ~128 MB embedding-model cache fastembed
-            // writes at the repo root (default, or at FASTEMBED_CACHE_DIR): indexing it
-            // would make every `freshen` hash 128 MB and a cold build EMBED the cache's
-            // own JSON blobs (they surfaced as grounding hits). `.github`/`.cargo`/`.claude`
-            // are non-code dotdirs (CI config, cargo config, agent config) that likewise
+            // source, from the SHARED `SKIP_DIRS` list in `super` (grep's walk consumes
+            // the same one, so the two grounders never diverge). `.fastembed_cache` is
+            // the ~128 MB embedding-model cache fastembed writes at the repo root
+            // (default, or at FASTEMBED_CACHE_DIR): indexing it would make every
+            // `freshen` hash 128 MB and a cold build EMBED the cache's own JSON blobs
+            // (they surfaced as grounding hits). `.github`/`.cargo`/`.claude` are
+            // non-code dotdirs (CI config, cargo config, agent config) that likewise
             // pollute the index without grounding value.
-            if !matches!(
-                name.as_ref(),
-                ".git"
-                    | ".rigger"
-                    | ".fastembed_cache"
-                    | ".github"
-                    | ".cargo"
-                    | ".claude"
-                    | "vendor"
-                    | "target"
-                    | "node_modules"
-            ) {
+            if !super::is_skipped_dir(&name) {
                 collect_files_guarded(&path, root, out, visited);
             }
         } else if let Ok(content) = std::fs::read_to_string(&path) {
@@ -1411,6 +1515,14 @@ mod tests {
     /// "did any embedding happen" probe: equal next_id <=> no chunk was (re-)embedded.
     fn next_id(tv: &Turbovec) -> u64 {
         tv.state.lock().unwrap().meta.next_id
+    }
+
+    /// How many times this instance has run the expensive on-disk reload. The staleness
+    /// gate in `freshen_locked` skips the reload when disk has not moved since our last
+    /// sync, so this counter is a precise "did we pay for a reload" probe: unchanged
+    /// across a `ground` <=> the gate took the cheap stat-only skip path.
+    fn reload_count(tv: &Turbovec) -> u64 {
+        tv.reload_count.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// (a) GUARANTEE: a `ground` AFTER an edit reflects the edit, with NO explicit
@@ -2067,6 +2179,80 @@ mod tests {
                 .files
                 .contains_key("external.rs"),
             "the external write must be present in the final on-disk store - not clobbered"
+        );
+    }
+
+    /// PERF REGRESSION FIX (staleness-gated reload): `freshen_locked` must NOT reload
+    /// the whole on-disk store on the hot no-change `ground` path, yet MUST still observe
+    /// an external process's write (the lost-update fix the unconditional reload added).
+    ///
+    /// Two `Turbovec` instances over ONE shared store, mirroring the long-lived MCP-serve
+    /// grounder (A) and a separate `rigger reindex` process (B):
+    ///  1. A grounds repeatedly on an UNCHANGED store - the cheap stat-only gate skips the
+    ///     expensive reload every time, so A's reload counter does not advance.
+    ///  2. B reindexes a NEW file externally, moving the on-disk fingerprint.
+    ///  3. A's next ground's gate sees the changed fingerprint, DOES reload, and A now
+    ///     observes B's file - the lost-update guarantee still holds.
+    #[test]
+    #[file_serial(turbovec_model)]
+    fn freshen_skips_reload_on_unchanged_store_but_observes_external_write() {
+        let dir = tiny_repo();
+        let root = dir.path().to_str().unwrap().to_string();
+
+        // Build + persist the shared store once so both instances load the same base.
+        {
+            let seed = Turbovec::new(&root).unwrap();
+            assert_store_consistent(&seed);
+        }
+
+        // Instance A: the long-lived grounder. Construction LOADS the matching store, so
+        // it has cached the on-disk fingerprint and has NOT reloaded (reload is a
+        // freshen-only, external-write path).
+        let a = Turbovec::new(&root).unwrap();
+        assert_eq!(
+            reload_count(&a),
+            0,
+            "construction loads via load_persisted_any, not the freshen reload path"
+        );
+
+        // (1) Ground A twice on the UNCHANGED store. The staleness gate stats the two
+        // store files, finds the fingerprint equal to what A cached on load, and SKIPS
+        // the reload each time - the counter must stay at 0.
+        let _ = a.ground("how is damage dealt to an enemy", 1);
+        let _ = a.ground("how is damage dealt to an enemy", 1);
+        assert_eq!(
+            reload_count(&a),
+            0,
+            "grounding an unchanged store must NOT reload - the gate takes the cheap \
+             stat-only skip path (this is the hot-path perf regression the fix targets)"
+        );
+
+        // (2) Instance B (a separate 'process') adds a NEW file and reindexes it into the
+        // shared store, rewriting index.tvim + meta.json - the on-disk fingerprint moves.
+        let unique_term = "how does the plasma conduit reroute reactor coolant";
+        std::fs::write(
+            dir.path().join("reactor.rs"),
+            "fn reroute_plasma_conduit(reactor: &mut Reactor) {\n    reactor.coolant = reactor.reroute();\n}\n",
+        )
+        .unwrap();
+        {
+            let b = Turbovec::new(&root).unwrap();
+            b.reindex(&root, &["reactor.rs".to_string()]);
+        }
+
+        // (3) A's next ground's gate sees the CHANGED fingerprint and reloads exactly
+        // once, folding in B's write - so the externally-added term is now groundable.
+        let before = reload_count(&a);
+        let hit = a.ground(unique_term, 1);
+        assert!(
+            reload_count(&a) > before,
+            "after an external write moves the on-disk fingerprint, the gate MUST reload \
+             (the lost-update fix still holds - the reload is gated, not removed)"
+        );
+        assert_eq!(
+            hit.first().map(|r| r.file.as_str()),
+            Some("reactor.rs"),
+            "A must observe B's externally-reindexed file after the gated reload"
         );
     }
 
