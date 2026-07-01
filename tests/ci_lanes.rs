@@ -92,7 +92,7 @@ fn assert_lane_command(script: &str, needles: &[&str], forbidden: Option<&str>, 
         .any(|line| line_has_all(line, needles) && forbidden.is_none_or(|bad| !line.contains(bad)));
     assert!(
         found,
-        "CI workflow (job build-test) must run {what}: no single `run:` line contained \
+        "CI workflow must run {what}: no single `run:` line contained \
          all of {needles:?}{}.\nScript was:\n{script}",
         match forbidden {
             Some(bad) => format!(" while NOT containing {bad:?}"),
@@ -179,5 +179,45 @@ fn grep_only_lane_runs_the_full_gate_battery() {
         &["cargo test", NO_DEFAULTS],
         None,
         "cargo test --no-default-features on the grep-only build",
+    );
+}
+
+/// The `install-nolock` job must run `cargo install --path .` WITHOUT `--locked` and then
+/// execute the resulting binary. That job is the regression guard for dependency skew on a
+/// FRESH resolve (`cargo install` without `--locked` ignores Cargo.lock and re-resolves to
+/// the newest versions the manifest constraints allow - exactly how an end user installs,
+/// and where a transitive crate like `ort-sys` can skew forward past the `ort` it must
+/// match). `Cargo.toml` pins `ort-sys = "=2.0.0-rc.9"` to keep that resolve coherent; this
+/// test ensures the CI job that PROVES the pin holds cannot be quietly deleted or have its
+/// teeth pulled by someone adding `--locked` (which would make the install pass by reusing
+/// the committed lockfile, defeating the entire point of the guard). Like the rest of this
+/// file it parses the committed workflow rather than the running config, so it fails at
+/// `cargo test` time - in the very build-test lane above - if the guard erodes.
+#[test]
+fn install_nolock_job_runs_a_fresh_unlocked_install_and_executes_the_binary() {
+    let wf = workflow_yaml();
+    let script = job_run_scripts(&wf, "install-nolock");
+
+    // The load-bearing command: a path install that re-resolves from scratch. Anchored to
+    // FORBID `--locked`, because a `--locked` install reuses Cargo.lock and would never
+    // exercise a fresh resolution - the exact thing this job exists to test.
+    assert_lane_command(
+        &script,
+        &["cargo install", "--path", "."],
+        Some("--locked"),
+        "cargo install --path . WITHOUT --locked (a --locked install would reuse Cargo.lock \
+         and never exercise a fresh resolution, defeating the dep-skew guard)",
+    );
+
+    // A clean resolve that yields a broken binary is still a regression, so the job must
+    // actually run the installed executable. It lives under the temp --root the install
+    // step wrote to; asserting the `bin/rigger` invocation keeps the "prove it runs" step
+    // from being dropped while the install step stays.
+    assert_lane_command(
+        &script,
+        &["/bin/rigger"],
+        None,
+        "execution of the freshly-installed rigger binary (so a clean resolve that produces \
+         a non-working binary still fails CI)",
     );
 }
