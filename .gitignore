@@ -11,6 +11,9 @@
 *.sqlite
 *.sqlite3
 .rigger/cache/
+# Persisted turbovec grounding index (embeddings + the id->Ref map): per-machine
+# derived data rebuilt from the tree, large + binary, never committed.
+.rigger/grounding/
 
 # Node deps for the workflow shim (shim/package-lock.json IS committed)
 shim/node_modules/

@@ -35,27 +35,53 @@ impl Grounder for Nop {
     }
 }
 
+/// Whether a configured grounder name resolves to the turbovec (semantic) engine:
+/// the explicit `"turbovec"` / `"vector"` aliases, OR an UNSET / empty name - because
+/// turbovec is the default grounder (§3.2, R4). Grep is reachable ONLY when the user
+/// writes `grounder: grep` explicitly; it is never the silent default.
+pub fn resolves_to_turbovec(name: &str) -> bool {
+    matches!(
+        name.trim().to_lowercase().as_str(),
+        "" | "turbovec" | "vector"
+    )
+}
+
+/// The loud error returned when the configured / default grounder is turbovec but
+/// this binary was built WITHOUT the `turbovec` feature. Selecting a grounder must
+/// NEVER silently degrade to grep - that is exactly what hid turbovec being absent
+/// for a whole session - so this is surfaced to the caller, which fails the process.
+pub fn turbovec_feature_missing_error(name: &str) -> String {
+    let shown = if name.trim().is_empty() {
+        "<unset, defaults to turbovec>".to_string()
+    } else {
+        format!("{name:?}")
+    };
+    format!(
+        "grounder {shown} is configured/default but this binary was built without the \
+         turbovec feature; rebuild with the default features (and install OpenBLAS), or \
+         set `defaults.grounder: grep` explicitly to use the literal grep grounder"
+    )
+}
+
 /// Select a grounder by the configured `defaults.grounder` name, rooted at `root`
-/// (§3.2, §5.4, R4). This is the feature-independent part of the choice:
-/// `"nop"` -> [`Nop`]; `"grep"` or empty (the default) -> [`Grep`]. The semantic
-/// names (`"vector"` / `"turbovec"`) resolve to the turbovec engine only when the
-/// `turbovec` feature is built; this function therefore falls back to grep for
-/// them with a stderr note, and `src/main.rs` overrides that path when the feature
-/// is on. An unknown name also falls back to grep with a note.
-pub fn grounder_for(name: &str, root: &str) -> Box<dyn Grounder> {
-    match name.to_lowercase().as_str() {
-        "nop" => Box::new(Nop),
-        "grep" | "" => Box::new(Grep { root: root.into() }),
-        "vector" | "turbovec" => {
-            eprintln!(
-                "rigger: grounder {name:?} needs the turbovec feature (not built); falling back to grep"
-            );
-            Box::new(Grep { root: root.into() })
-        }
-        other => {
-            eprintln!("rigger: unknown grounder {other:?}; falling back to grep");
-            Box::new(Grep { root: root.into() })
-        }
+/// (§3.2, §5.4, R4). This is the FEATURE-INDEPENDENT part of the choice and the
+/// grep-only build's resolver:
+/// - `"nop"` -> [`Nop`];
+/// - `"grep"` -> [`Grep`] (the literal grounder, reachable ONLY when named explicitly);
+/// - the turbovec names (`"turbovec"` / `"vector"`) AND the UNSET / empty default
+///   resolve to turbovec, which is the default grounder. When the `turbovec` feature
+///   is built, `src/main.rs::select_grounder` handles these names before delegating
+///   here; when it is NOT built, this function returns a LOUD error rather than
+///   silently degrading to grep.
+/// - any other (unknown) name is a hard error - never a silent grep fallback.
+pub fn grounder_for(name: &str, root: &str) -> Result<Box<dyn Grounder>, String> {
+    match name.trim().to_lowercase().as_str() {
+        "nop" => Ok(Box::new(Nop)),
+        "grep" => Ok(Box::new(Grep { root: root.into() })),
+        _ if resolves_to_turbovec(name) => Err(turbovec_feature_missing_error(name)),
+        other => Err(format!(
+            "unknown grounder {other:?}; valid names are turbovec (default), grep, nop"
+        )),
     }
 }
 
@@ -165,16 +191,56 @@ mod tests {
 
         // nop grounds nothing.
         assert!(grounder_for("nop", &root)
+            .expect("nop is always available")
             .ground("apply_damage", 5)
             .is_empty());
 
-        // grep and the empty default both ground for real.
-        for name in ["grep", ""] {
-            let refs = grounder_for(name, &root).ground("apply_damage", 5);
+        // grep grounds for real, but ONLY when named explicitly.
+        let refs = grounder_for("grep", &root)
+            .expect("grep is always available")
+            .ground("apply_damage", 5);
+        assert!(
+            refs.iter().any(|r| r.text.contains("apply_damage")),
+            "the explicit grep grounder should find the line"
+        );
+    }
+
+    #[test]
+    fn unset_and_turbovec_names_resolve_to_turbovec_not_grep() {
+        // The empty / unset default and the turbovec aliases all resolve to turbovec
+        // - grep is NEVER the silent default. In a grep-only build (this crate test
+        // runs without the turbovec feature in the lib's own context), grounder_for
+        // FAILS LOUDLY for them instead of degrading to grep.
+        for name in ["", "  ", "turbovec", "vector", "TurboVec", "VECTOR"] {
             assert!(
-                refs.iter().any(|r| r.text.contains("apply_damage")),
-                "grounder {name:?} should find the line"
+                resolves_to_turbovec(name),
+                "{name:?} must resolve to turbovec (the default grounder)"
             );
         }
+        // grep / nop are NOT turbovec; they are explicit-only opt-ins.
+        assert!(!resolves_to_turbovec("grep"));
+        assert!(!resolves_to_turbovec("nop"));
+    }
+
+    #[test]
+    fn grounder_for_fails_loudly_when_turbovec_is_unavailable() {
+        // grounder_for is the grep-only resolver: the unset default and the turbovec
+        // names must be a LOUD error here (the feature is not compiled into this
+        // resolver), never a silent grep. The message must name turbovec, the missing
+        // feature, and the explicit grep escape hatch.
+        for name in ["", "turbovec", "vector"] {
+            let err = grounder_for(name, "/tmp")
+                .err()
+                .unwrap_or_else(|| panic!("{name:?} must be a loud error without the feature"));
+            assert!(
+                err.contains("turbovec") && err.contains("feature") && err.contains("grep"),
+                "the loud error must name turbovec, the feature, and the grep opt-out; got: {err}"
+            );
+        }
+        // An unknown name is ALSO a hard error, not a silent grep fallback.
+        assert!(grounder_for("bogus-grounder", "/tmp").is_err());
+        // grep / nop still resolve fine.
+        assert!(grounder_for("grep", "/tmp").is_ok());
+        assert!(grounder_for("nop", "/tmp").is_ok());
     }
 }

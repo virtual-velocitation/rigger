@@ -6,14 +6,26 @@ on:
   pull_request:
 
 jobs:
+  # The default build now INCLUDES turbovec (it is a default cargo feature), so this
+  # job builds + tests the real semantic grounder. Turbovec pulls the ONNX runtime
+  # and needs OpenBLAS, installed before any cargo step; CARGO_BUILD_JOBS / the
+  # committed .cargo/config.toml (jobs = 8) keep peak build memory bounded. The
+  # turbovec model tests DO run here: `cargo test` below downloads the ~130 MB of
+  # embedding weights on first use and runs them on CPU (no GPU in CI). They are
+  # serialized cross-binary via serial_test's file lock (the `turbovec_model` key), so
+  # even though CI has no CUDA session to corrupt, no two model constructions overlap.
   build-test:
     runs-on: ubuntu-latest
+    env:
+      CARGO_BUILD_JOBS: 8
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+      - name: install OpenBLAS (turbovec is in the default build)
+        run: sudo apt-get update && sudo apt-get install -y libopenblas-dev
       - name: fmt
         run: cargo fmt --check
       - name: clippy
@@ -22,24 +34,13 @@ jobs:
         run: cargo build --verbose
       - name: test
         run: cargo test --verbose
-
-  # The opt-in turbovec feature (native turbovec + fastembed). It needs OpenBLAS
-  # and pulls the ONNX runtime, so it builds in its own job and the model-loading
-  # test is left to local runs (it would download ~130 MB of weights).
-  turbovec:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-      - uses: Swatinem/rust-cache@v2
-      - name: install OpenBLAS
-        run: sudo apt-get update && sudo apt-get install -y libopenblas-dev
-      - name: clippy
-        run: cargo clippy --features turbovec --lib --bins -- -D warnings
-      - name: build
-        run: cargo build --features turbovec
+      # The deliberate light opt-out: `--no-default-features` drops turbovec so the
+      # grep-only build (no ONNX/OpenBLAS) stays green. The loud "built without the
+      # turbovec feature" path is asserted by select_grounder's no-feature test here.
+      - name: build + test (grep-only, --no-default-features)
+        run: |
+          cargo build --no-default-features --verbose
+          cargo test --no-default-features --verbose
 
   # The KurrentDB EventStore adapter. Its contract test spins up a real KurrentDB
   # via testcontainers (the runner provides Docker), so it runs the same suite the
@@ -52,7 +53,10 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+      # Drop the default features so this DB-adapter job does not pull turbovec's
+      # ONNX runtime (and OpenBLAS) just to exercise the KurrentDB contract test;
+      # it stays focused and light.
       - name: clippy
-        run: cargo clippy --features kurrentdb --lib --tests -- -D warnings
+        run: cargo clippy --no-default-features --features kurrentdb --lib --tests -- -D warnings
       - name: contract test (KurrentDB via testcontainers)
-        run: cargo test --features kurrentdb eventstore::kurrentdb -- --test-threads=1
+        run: cargo test --no-default-features --features kurrentdb eventstore::kurrentdb -- --test-threads=1

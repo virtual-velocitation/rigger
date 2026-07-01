@@ -16,7 +16,7 @@ name: demo
 
 defaults:
   autonomy: auto_notify     # manual | auto_notify | silent
-  grounder: grep            # grep (default) | turbovec (needs the cargo feature)
+  grounder: turbovec        # turbovec (default; the real semantic grounder, a default cargo feature) | grep | nop
 
   # The spawn-budget circuit-breaker (§4.4, §8): the hard cap on agent spawns one
   # unattended run may make. At the cap the breaker emits BudgetExhausted and aborts,
