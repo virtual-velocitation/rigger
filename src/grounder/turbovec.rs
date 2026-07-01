@@ -14,6 +14,11 @@
 //!    where possible and robust-on-CPU everywhere, and we log which one we got.
 //!    See [`select_execution_providers`] for how the `-F cuda` ort build + the
 //!    `ORT_DYLIB_PATH` runtime discovery make the GPU path real, and how it degrades.
+//!    The one thing that is NOT a silent fallback is a wholly *missing* runtime dylib:
+//!    `ort` `panic!`s if it cannot `dlopen` `libonnxruntime.so`, so before touching any
+//!    `ort` API `construct` verifies `ort_runtime::dylib_is_resolvable()` and returns a
+//!    clear error rather than letting that panic escape (the cleared-cache-post-install
+//!    edge).
 //!
 //! 2. **A persisted, auto-freshened, incrementally-updated index.** The embeddings +
 //!    the id->(file, line, snippet) map + a per-file content hash are persisted under
@@ -80,8 +85,17 @@ const LOCK_FILE: &str = "store.lock";
 /// `load-dynamic`, lazily reads `ORT_DYLIB_PATH` on the FIRST session load and is not
 /// safe to construct concurrently on a CUDA box (concurrent session creation corrupts
 /// the heap). Every `Turbovec::new` takes this lock across BOTH `ensure_dylib_path`'s
-/// env write AND `TextEmbedding::try_new`, so the env mutation can never race ort's
-/// lazy env read on another thread, and two sessions are never built at once.
+/// env write AND `TextEmbedding::try_new`, so no two sessions are built at once and no
+/// OTHER GROUNDER-CONSTRUCTION thread reads the env while we mutate it.
+///
+/// What this lock does NOT and CANNOT guarantee: `std::env::set_var` mutates
+/// process-global state, and this mutex only excludes threads that ALSO take it - the
+/// grounder's own construction paths. It cannot bar an unrelated thread (a linked C
+/// library, an allocator, the runtime) from calling `getenv`/`std::env::var`
+/// concurrently; that residual is exactly why `ensure_dylib_path` is `unsafe` and why
+/// both its callers arrange to run before any such thread exists (`main` calls it as
+/// its first statement, pre-spawn) or with no other env reader plausibly live. The lock
+/// closes the in-crate race; the `unsafe` marks the process-global one the lock cannot.
 static CONSTRUCT_MU: Mutex<()> = Mutex::new(());
 
 /// Turbovec grounds semantically: it embeds the codebase into a quantized vector
@@ -231,12 +245,38 @@ impl Turbovec {
             // explicit env choice is never overridden; it is idempotent, so calling it
             // under the lock on every construction is cheap and correct.
             //
-            // SAFETY: `ensure_dylib_path` mutates a process env var and requires no other
-            // thread read the environment concurrently. CONSTRUCT_MU is held across this
-            // write AND the `TextEmbedding::try_new` below (the only place `ort` reads the
-            // env), and every other construction path also holds it, so no concurrent env
-            // reader exists at the point of mutation.
+            // SAFETY: `ensure_dylib_path` mutates the process env var `ORT_DYLIB_PATH`.
+            // CONSTRUCT_MU is held across this write AND the `TextEmbedding::try_new`
+            // below (where `ort` reads the env on its first session load), and every
+            // other GROUNDER-construction path also holds it - so no OTHER grounder
+            // construction, and thus no ort env read WE INITIATE, can race this write.
+            // The mutex cannot exclude an unrelated `getenv` from a linked C library or
+            // the runtime on some other thread; that residual process-global race is the
+            // reason the fn is `unsafe`, and it is minimized because construction happens
+            // early (in practice under `main`, which itself calls `ensure_dylib_path`
+            // pre-spawn) rather than eliminated by this lock alone.
             unsafe { crate::ort_runtime::ensure_dylib_path() };
+
+            // Confirm the ONNX Runtime dylib `ort` will `dlopen` is actually loadable
+            // BEFORE any `ort` API is touched. `ort`'s `lib_handle()` `dlopen` is
+            // `.unwrap_or_else(|e| panic!(...))`, reached transitively by both
+            // `select_execution_providers`' `is_available()` probe and
+            // `TextEmbedding::try_new`'s session load - so a missing runtime (the narrow
+            // cleared-cache-after-install edge) would UNWIND as a raw panic that
+            // `is_available().unwrap_or(false)` cannot catch. Failing here with a clear,
+            // actionable error degrades gracefully instead. `ensure_dylib_path` ran just
+            // above, so this probes exactly the path `ort` will use.
+            if !crate::ort_runtime::dylib_is_resolvable() {
+                return Err(
+                    "turbovec: the ONNX Runtime shared library (libonnxruntime.so) could not be \
+                     resolved for loading. It is normally downloaded into \
+                     ~/.cache/ort.pyke.io/dfbin/ by the build; if that cache was cleared after \
+                     install, rebuild (`cargo build`) to re-fetch it, set ORT_DYLIB_PATH to a \
+                     valid libonnxruntime.so, or select `defaults.grounder: grep` to run without \
+                     the semantic grounder"
+                        .to_string(),
+                );
+            }
 
             TextEmbedding::try_new(
                 InitOptions::new(EmbeddingModel::BGESmallENV15)
@@ -336,6 +376,20 @@ impl Turbovec {
             Ok(m) => m,
             Err(_) => return Ok(LoadOutcome::Absent), // unreadable meta -> rebuild
         };
+        // SELF-HEAL: the index and meta must be internally consistent - the two are
+        // persisted meta-then-index, so a hard crash BETWEEN the two renames can leave
+        // new meta against the old index (ids in meta that the index lacks, or a
+        // cardinality mismatch). A `freshen` would NOT repair that when the tree still
+        // matches (it finds no file diff and does nothing), so an inconsistent pair is
+        // treated like a corrupt store: `Absent`, forcing `construct` to rebuild the
+        // index from the tree. This is the reconciliation the persist ordering promises.
+        if let Err(reason) = check_index_meta_consistent(&index, &meta) {
+            eprintln!(
+                "turbovec: persisted store is internally inconsistent ({reason}); \
+                 self-healing by rebuilding the index from the tree"
+            );
+            return Ok(LoadOutcome::Absent);
+        }
         let matched = self.tree_matches(&meta);
         // Install the loaded state either way: when it matches it is used as-is, and
         // when it has drifted it is the BASE that `freshen` updates incrementally
@@ -343,6 +397,52 @@ impl Turbovec {
         state.index = index;
         state.meta = meta;
         Ok(LoadOutcome::Loaded { matched })
+    }
+
+    /// Reload the persisted store from disk into `state` at the START of a mutating op,
+    /// so the diff/apply that follows works from the LATEST on-disk base rather than a
+    /// possibly-stale in-memory snapshot.
+    ///
+    /// Why this is load-bearing: the conductor holds ONE long-lived `Turbovec` for a
+    /// whole `rigger run`, while the workflow's Integrate step runs `rigger reindex` as
+    /// a SEPARATE process against the same `.rigger/grounding` store. That subprocess
+    /// takes the flock, mutates the on-disk store, and releases it. The long-lived
+    /// instance's in-memory state is now BEHIND disk. Without this reload, its next
+    /// `freshen`/`reindex` would diff+apply against the stale snapshot and then
+    /// `persist` it - CLOBBERING the subprocess's write (a lost update). Reloading here,
+    /// under the flock the caller already holds, folds the external write into our base
+    /// before we touch it, so it survives.
+    ///
+    /// Called with BOTH the `state` lock and the cross-process store lock already held
+    /// (by `freshen`/`reindex`), so it NEVER re-locks - no nested `flock`, no deadlock.
+    /// If no store is on disk yet (nothing persisted), or the on-disk pair is internally
+    /// inconsistent (a torn write from a crashed writer - the flock rules out a live
+    /// one), the in-memory state is left as-is: there is nothing safe to adopt, and the
+    /// mutation + persist that follows writes a consistent pair from what we hold.
+    fn reload_persisted_locked(&self, state: &mut State) -> Result<(), String> {
+        let index_path = self.store_dir.join(INDEX_FILE);
+        let meta_path = self.store_dir.join(META_FILE);
+        if !index_path.exists() || !meta_path.exists() {
+            return Ok(()); // nothing persisted yet -> keep our in-memory base
+        }
+        let index = match IdMapIndex::load(&index_path) {
+            Ok(i) => i,
+            Err(_) => return Ok(()), // corrupt on disk -> do not adopt; persist heals it
+        };
+        let meta_bytes =
+            std::fs::read(&meta_path).map_err(|e| format!("turbovec: read meta: {e}"))?;
+        let meta: Meta = match serde_json::from_slice(&meta_bytes) {
+            Ok(m) => m,
+            Err(_) => return Ok(()), // unreadable meta -> keep in-memory base
+        };
+        // Only adopt an INTERNALLY CONSISTENT on-disk pair. An inconsistent one is a
+        // torn write; adopting it would just re-persist the inconsistency. Keeping our
+        // base lets the following persist overwrite it cleanly.
+        if check_index_meta_consistent(&index, &meta).is_ok() {
+            state.index = index;
+            state.meta = meta;
+        }
+        Ok(())
     }
 
     /// Bring the in-memory + persisted index up to date with the current source tree,
@@ -384,6 +484,14 @@ impl Turbovec {
     /// in-process mutation (the caller holds `state`) and any separate process (the
     /// caller holds the store lock).
     fn freshen_locked(&self, state: &mut State) -> Result<(), String> {
+        // 0. Reload the on-disk store into `state` FIRST, under the held flock, so the
+        //    diff below runs against the latest persisted base - not a stale in-memory
+        //    snapshot a separate `rigger reindex` process may have moved past. Without
+        //    this, a long-lived grounder (held for a whole `rigger run`) would diff the
+        //    tree against its stale state and persist over the subprocess's write, losing
+        //    it. A no-op when nothing external changed (adopts the identical bytes).
+        self.reload_persisted_locked(state)?;
+
         // 1. Snapshot the tree as (rel path -> content), the same file set the index covers.
         let mut on_disk = Vec::new();
         collect_files(Path::new(&self.root), &self.root, &mut on_disk);
@@ -543,11 +651,12 @@ impl Turbovec {
 
         // Write meta then index, each temp-then-rename so a reader never sees a
         // truncated file. Do meta first: if we crash between the two renames, a reader
-        // would see new meta + old index, and the load path treats a meta whose ids are
-        // absent from the index as drift and re-freshens - self-healing - whereas new
-        // index + old meta could surface a vector with no ref. (The flock makes this
-        // window invisible to other processes; the ordering only matters for a hard
-        // crash mid-persist.)
+        // would see new meta + old index, i.e. meta ids the old index lacks. The load
+        // path's `check_index_meta_consistent` catches exactly that (a meta ref id
+        // absent from the index, or a cardinality mismatch) and self-heals by rebuilding
+        // the index from the tree - so this ordering degrades to a rebuild, never to a
+        // vector with no ref. (The flock makes this window invisible to other processes;
+        // the ordering only matters for a hard crash mid-persist.)
         write_bytes_atomic(&self.store_dir.join(META_FILE), &meta_bytes)?;
         write_index_atomic(&self.store_dir.join(INDEX_FILE), &state.index)?;
         Ok(())
@@ -588,6 +697,44 @@ impl Turbovec {
         let _guard = StoreLock::acquire(&self.store_dir.join(LOCK_FILE))?;
         f()
     }
+}
+
+/// Whether a loaded `index`/`meta` pair is internally consistent - the invariant a
+/// clean persist upholds and a torn one (a crash between the meta and index renames)
+/// can break. `Err(reason)` names the first violation for the self-heal log:
+///   - every id `meta.refs` claims must be present in the index (a ref without a
+///     vector would surface a hit that maps to nothing, or - the torn-write case -
+///     a meta id the OLD index never had);
+///   - every id a file claims (`meta.files[*].ids`) must have a ref (else a file
+///     points at a chunk with no location);
+///   - the index and the ref map must have equal cardinality (a surplus vector would
+///     have no ref; a surplus ref, no vector).
+///
+/// A consistent pair passes all three; an inconsistent one is rebuilt from the tree.
+fn check_index_meta_consistent(index: &IdMapIndex, meta: &Meta) -> Result<(), String> {
+    // Every ref id must exist as a vector in the index.
+    for &id in meta.refs.keys() {
+        if !index.contains(id) {
+            return Err(format!("meta ref id {id} is absent from the index"));
+        }
+    }
+    // Every file-claimed id must have a ref (and thus, by the check above, a vector).
+    for (file, entry) in &meta.files {
+        for &id in &entry.ids {
+            if !meta.refs.contains_key(&id) {
+                return Err(format!("file {file:?} claims id {id} with no ref"));
+            }
+        }
+    }
+    // The vector count and the ref count must agree exactly.
+    if index.len() != meta.refs.len() {
+        return Err(format!(
+            "index holds {} vectors but meta has {} refs",
+            index.len(),
+            meta.refs.len()
+        ));
+    }
+    Ok(())
 }
 
 /// Drop a file's existing chunks from BOTH the index and the metadata, so a re-index
@@ -741,10 +888,12 @@ impl Grounder for Turbovec {
     }
 
     /// Re-index ONLY the given files after a unit integrates, so the next agent
-    /// grounds on the accepted code - an incremental delta, NOT a full rebuild. For
-    /// each file: drop its old chunks from the index + metadata, re-embed its
-    /// current content under fresh ids, insert them, then persist once. A file that
-    /// no longer exists on disk is dropped (its chunks removed) without re-adding.
+    /// grounds on the accepted code - an incremental delta, NOT a full rebuild. Under
+    /// the store flock it FIRST reloads the persisted base (so a concurrent external
+    /// write is folded in, not clobbered), then for each file: drop its old chunks from
+    /// the index + metadata, re-embed its current content under fresh ids, insert them,
+    /// then persist once. A file that no longer exists on disk is dropped (its chunks
+    /// removed) without re-adding.
     fn reindex(&self, src_dir: &str, files: &[String]) {
         if files.is_empty() {
             return;
@@ -755,6 +904,13 @@ impl Grounder for Turbovec {
         // a separate `rigger` process never reads a half-applied store.
         let mut state = self.state.lock().unwrap();
         let result = self.with_store_lock(|| {
+            // Reload the on-disk store into `state` FIRST, under the held flock, so the
+            // per-file drop+re-embed applies to the LATEST persisted base. A long-lived
+            // grounder's in-memory state can be behind disk (another `rigger` process
+            // reindexed while we held our instance); without this reload, persisting our
+            // stale base would clobber that write. Reloading folds it in so only THIS
+            // reindex's named files change and every other on-disk chunk survives.
+            self.reload_persisted_locked(&mut state)?;
             for f in files {
                 drop_file(&mut state, f);
                 let path = Path::new(src_dir).join(f);
@@ -781,8 +937,18 @@ impl Grounder for Turbovec {
 /// framework registers each in turn and, on ANY registration failure, *silently
 /// falls back* to the next provider (and finally to CPU) rather than erroring - the
 /// dispatch's default is `fail_silently`. So on a CUDA box the model runs on the
-/// GPU; on a box with no GPU / no CUDA runtime the CUDA registration fails harmlessly
-/// and CPU is used. This never panics for want of a GPU.
+/// GPU; on a box with no GPU (but a loadable runtime) the CUDA registration fails
+/// harmlessly and CPU is used. Registration never panics for want of a GPU.
+///
+/// The one case that IS a panic - not a want of GPU but a want of the *runtime dylib*
+/// itself - is handled earlier: `is_available()` reaches `ort`'s `lib_handle()`, whose
+/// `dlopen` `panic!`s if `libonnxruntime.so` cannot be loaded. So `Turbovec::construct`
+/// verifies `ort_runtime::dylib_is_resolvable()` and returns a clear error BEFORE
+/// calling this; and this function itself only probes `is_available()` when the dylib
+/// is resolvable, so the `unwrap_or(false)` here is a true belt-and-braces, not the
+/// primary guard. (`unwrap_or(false)` catches a benign `Err` - e.g. the runtime cannot
+/// enumerate providers - it does NOT catch the missing-dylib panic; that is why the
+/// resolvability check upstream is load-bearing.)
 ///
 /// This crate builds `ort` with `-F cuda,download-binaries,load-dynamic` (see
 /// `Cargo.toml`), so the CUDA EP's Cargo feature IS compiled in and `ort-sys`
@@ -794,10 +960,15 @@ impl Grounder for Turbovec {
 /// We probe `is_available()` only to LOG which provider actually backs this session.
 fn select_execution_providers() -> Vec<ExecutionProviderDispatch> {
     let cuda = CUDAExecutionProvider::default();
-    // `is_available()` reports whether the loaded ONNX Runtime was COMPILED with
-    // CUDA support. It can fail if the runtime cannot even be queried; treat any
-    // error as "not available" so a probe never crashes the grounder.
-    let cuda_available = cuda.is_available().unwrap_or(false);
+    // `is_available()` reports whether the loaded ONNX Runtime was COMPILED with CUDA
+    // support. It reaches `ort`'s `lib_handle()`, which `panic!`s if the runtime dylib
+    // cannot be `dlopen`ed - so probe it ONLY when the dylib is resolvable (the caller,
+    // `construct`, already guarantees this, but guarding here keeps this function safe
+    // to call directly, e.g. from tests). When it is NOT resolvable we cannot be GPU-
+    // backed anyway, so report CPU. A benign `Err` (runtime present but unqueryable)
+    // still degrades to `false` via `unwrap_or`.
+    let cuda_available =
+        crate::ort_runtime::dylib_is_resolvable() && cuda.is_available().unwrap_or(false);
     if cuda_available {
         eprintln!(
             "turbovec: CUDA execution provider available; embedding on GPU (CPU fallback armed)"
@@ -818,7 +989,34 @@ fn select_execution_providers() -> Vec<ExecutionProviderDispatch> {
 /// skipping VCS / build / dependency dirs and unreadable (binary) files. The single
 /// source of truth for "what the index covers", shared by the cold build and the
 /// load-time consistency check so the two never disagree about the file set.
+///
+/// A directory symlink is followed at most once per canonical target: `visited`
+/// tracks the canonicalized paths already descended into, so a symlink CYCLE
+/// (`a -> b`, `b -> a`, or a link back to an ancestor) cannot loop forever or blow the
+/// stack. A target we cannot canonicalize (a broken/dangling link) is simply not
+/// descended.
 fn collect_files(dir: &Path, root: &str, out: &mut Vec<(String, String)>) {
+    let mut visited = std::collections::HashSet::new();
+    collect_files_guarded(dir, root, out, &mut visited);
+}
+
+/// The recursion body of [`collect_files`], carrying the cycle-guard set. `visited`
+/// holds the canonical path of every directory already entered; a directory whose
+/// canonical form is already present is skipped, so a symlink cycle terminates.
+fn collect_files_guarded(
+    dir: &Path,
+    root: &str,
+    out: &mut Vec<(String, String)>,
+    visited: &mut std::collections::HashSet<PathBuf>,
+) {
+    // Canonicalize this dir and record it BEFORE descending. If canonicalization fails
+    // (permissions, a race) fall back to the literal path so a real dir is still read;
+    // if the canonical path was already visited, a symlink pointed us back into a
+    // subtree we are already walking - stop, or we would loop forever.
+    let canonical = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    if !visited.insert(canonical) {
+        return;
+    }
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return,
@@ -832,7 +1030,7 @@ fn collect_files(dir: &Path, root: &str, out: &mut Vec<(String, String)>) {
                 name.as_ref(),
                 ".git" | ".rigger" | "vendor" | "target" | "node_modules"
             ) {
-                collect_files(&path, root, out);
+                collect_files_guarded(&path, root, out, visited);
             }
         } else if let Ok(content) = std::fs::read_to_string(&path) {
             let rel = path
@@ -874,6 +1072,15 @@ fn chunk_content(rel: &str, content: &str) -> (Vec<String>, Vec<StoredRef>) {
 /// processes and machines. Uses a fixed-seed FNV-1a so the value persisted in
 /// `meta.json` compares equal on a later run (unlike `DefaultHasher`, whose seed is
 /// not guaranteed stable across builds).
+///
+/// Collision window: FNV-1a is a NON-cryptographic 64-bit hash used here only as a
+/// change ORACLE ("did this file's bytes change since we indexed it?"). Two DIFFERENT
+/// contents that hash equal (a ~1-in-2^64 accident, not adversarial input - these are
+/// source files, not attacker-chosen) would be judged "unchanged" and skip a
+/// re-embed, so grounding could serve the stale chunk for that one file until its next
+/// real edit shifts the hash. The blast radius is a single file's freshness, self-
+/// heals on the next edit, and the odds are negligible for a repo's file count, so a
+/// stronger/wider hash is not worth the cost; left as FNV-1a deliberately.
 fn hash_content(content: &str) -> u64 {
     const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
     const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
@@ -1435,5 +1642,388 @@ mod tests {
         drop(tv);
         let reloaded = Turbovec::new(root.as_str()).unwrap();
         assert_store_consistent(&reloaded);
+    }
+
+    /// FINDING #1 (graceful ORT-dylib degradation): when the ONNX Runtime dylib `ort`
+    /// would `dlopen` is UNRESOLVABLE, construction must return a clean `Err` - NOT
+    /// unwind through `ort`'s internal `lib_handle()` panic. We force the unresolvable
+    /// state by setting `ORT_DYLIB_PATH` to a path that does not exist: `ensure_dylib_path`
+    /// respects an already-set value (so it will not "rescue" us with a discovered
+    /// runtime), and the pre-flight `dylib_is_resolvable()` check then fails fast. The
+    /// error message must be actionable (name the runtime and a remedy). `file_serial`
+    /// on the model key so it never overlaps a real model construction that reads the
+    /// same env var.
+    #[test]
+    #[file_serial(turbovec_model)]
+    fn construct_errors_cleanly_when_the_ort_dylib_is_unresolvable() {
+        let dir = tiny_repo();
+        let root = dir.path().to_str().unwrap();
+
+        let bad = tempfile::tempdir().unwrap();
+        let missing = bad.path().join("libonnxruntime.so"); // never created
+        let prev = std::env::var_os("ORT_DYLIB_PATH");
+        // SAFETY: the test body is single-threaded and `file_serial` keeps concurrent
+        // model constructions (the only other env readers we spawn) out.
+        unsafe { std::env::set_var("ORT_DYLIB_PATH", &missing) };
+
+        // Construction returns a clean Err, does not panic. Catch any (unexpected) panic
+        // so a regression to the panicking path fails loudly as a test failure, not an
+        // abort, and we still restore the env below.
+        let outcome = std::panic::catch_unwind(|| Turbovec::new(root));
+
+        // Restore the env FIRST so a failed assertion does not leak the bad value into
+        // sibling tests.
+        // SAFETY: single-threaded, still inside the file_serial critical section.
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("ORT_DYLIB_PATH", v),
+                None => std::env::remove_var("ORT_DYLIB_PATH"),
+            }
+        }
+
+        let result = outcome.expect("construction must NOT panic when the ORT dylib is missing");
+        // `Turbovec` is not `Debug`, so match rather than `expect_err`.
+        let err = match result {
+            Ok(_) => panic!("an unresolvable ORT dylib must be a clean Err, not Ok"),
+            Err(e) => e,
+        };
+        assert!(
+            err.contains("libonnxruntime.so") && err.to_lowercase().contains("grep"),
+            "the error must name the runtime and an actionable remedy (grep opt-out); got: {err}"
+        );
+    }
+
+    /// FINDING #5 (symlink cycle guard): `collect_files` must terminate on a directory
+    /// symlink CYCLE rather than loop forever / blow the stack. We build a real cycle -
+    /// `sub/loop -> ..` (a link back to its own parent) - and assert the walk returns,
+    /// visits the real file exactly once, and does not duplicate it by re-entering
+    /// through the link. No model is built, so this stays parallel.
+    #[test]
+    fn collect_files_terminates_on_a_symlink_cycle() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("real.rs"), "fn only_once() {}\n").unwrap();
+        let sub = root.join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(sub.join("nested.rs"), "fn nested_once() {}\n").unwrap();
+        // A directory symlink pointing back up at the root: walking into `sub/loop`
+        // re-enters the whole tree, which without a guard recurses forever.
+        std::os::unix::fs::symlink(root, sub.join("loop")).unwrap();
+
+        // The guarded walk must RETURN (a hang here fails the test by timeout) ...
+        let mut out = Vec::new();
+        collect_files(root, root.to_str().unwrap(), &mut out);
+
+        // ... and visit each real file exactly once, never re-collecting it through the
+        // cycle. The canonical-path visited-set both bounds the recursion and dedupes.
+        let real_hits = out
+            .iter()
+            .filter(|(rel, _)| rel.ends_with("real.rs"))
+            .count();
+        let nested_hits = out
+            .iter()
+            .filter(|(rel, _)| rel.ends_with("nested.rs"))
+            .count();
+        assert_eq!(
+            real_hits, 1,
+            "the top-level file must be collected exactly once"
+        );
+        assert_eq!(
+            nested_hits, 1,
+            "the nested file must be collected exactly once, not re-entered via the cycle"
+        );
+    }
+
+    /// FINDING #3 (persist self-heal is REAL): a persisted store whose meta and index
+    /// DISAGREE - the torn-write shape a crash between the two renames leaves (new meta
+    /// referencing ids the OLD index lacks) - must be detected on load and self-healed
+    /// by rebuilding from the tree, yielding a consistent, groundable index. We build a
+    /// real store, then corrupt ONLY `meta.json` to add a phantom ref id absent from the
+    /// index, and assert the next construction reconciles it.
+    #[test]
+    #[file_serial(turbovec_model)]
+    fn load_self_heals_an_inconsistent_meta_index_pair() {
+        let dir = tiny_repo();
+        let root = dir.path().to_str().unwrap();
+
+        // Build + persist a real, consistent store.
+        {
+            let tv = Turbovec::new(root).unwrap();
+            assert_store_consistent(&tv);
+        }
+
+        // Corrupt meta.json: inject a phantom ref id the index does not contain, exactly
+        // the "meta ids absent from the index" inconsistency the self-heal must catch.
+        let meta_path = dir.path().join(GROUNDING_DIR).join(META_FILE);
+        let mut meta: Meta = serde_json::from_slice(&std::fs::read(&meta_path).unwrap()).unwrap();
+        let phantom_id = meta.next_id + 999;
+        meta.refs.insert(
+            phantom_id,
+            StoredRef {
+                file: "phantom.rs".to_string(),
+                line: 1,
+                text: "fn phantom() {}".to_string(),
+            },
+        );
+        // Sanity: this really is inconsistent now (meta has a ref the index lacks).
+        {
+            let index = IdMapIndex::load(dir.path().join(GROUNDING_DIR).join(INDEX_FILE)).unwrap();
+            assert!(
+                check_index_meta_consistent(&index, &meta).is_err(),
+                "the hand-corrupted pair must read as inconsistent"
+            );
+        }
+        std::fs::write(&meta_path, serde_json::to_vec(&meta).unwrap()).unwrap();
+
+        // The next construction must SELF-HEAL: rebuild from the tree into a consistent
+        // store (the phantom ref gone), and ground normally.
+        let healed = Turbovec::new(root).unwrap();
+        assert_store_consistent(&healed);
+        assert!(
+            !healed
+                .state
+                .lock()
+                .unwrap()
+                .meta
+                .refs
+                .contains_key(&phantom_id),
+            "the phantom ref must be gone after the self-heal rebuild"
+        );
+        assert!(
+            !healed
+                .ground("how is damage dealt to an enemy", 1)
+                .is_empty(),
+            "the self-healed index must still ground"
+        );
+    }
+
+    /// FINDING #2 + #4 (cross-instance/-process flock: no lost update, no torn pair).
+    /// TWO INDEPENDENT `Turbovec` instances over the SAME `.rigger/grounding` store -
+    /// each with its OWN in-memory state and its OWN flock fd, exactly as the long-lived
+    /// `rigger run` grounder and a separate `rigger reindex` process are - concurrently
+    /// reindex DIFFERENT files. Each `StoreLock::acquire` `open()`s the lock file for a
+    /// distinct open-file-description, so the two contend on the cross-process `flock`
+    /// even in one test process. The guarantee: because a mutating op RELOADS the
+    /// persisted base under the flock before applying, instance A's write of file X is
+    /// NOT clobbered by instance B's later write of file Y (the lost-update finding), and
+    /// no reader ever observes a torn index/meta pair.
+    #[test]
+    #[file_serial(turbovec_model)]
+    fn two_instances_reindex_the_same_store_without_lost_updates() {
+        use std::sync::Arc;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap().to_string();
+        // Distinct files so each instance owns its own edit target - a lost update shows
+        // up as one instance's file vanishing from the final store.
+        for i in 0..4 {
+            std::fs::write(
+                dir.path().join(format!("mod{i}.rs")),
+                format!("fn feature_{i}() {{\n    // module {i}\n}}\n"),
+            )
+            .unwrap();
+        }
+
+        // Build the store once so both instances load a shared, consistent base.
+        {
+            let tv = Turbovec::new(&root).unwrap();
+            assert_store_consistent(&tv);
+        }
+
+        // Two INDEPENDENT instances: separate objects, separate in-memory state, separate
+        // flock fds - the cross-process shape, in one process.
+        let a = Arc::new(Turbovec::new(&root).unwrap());
+        let b = Arc::new(Turbovec::new(&root).unwrap());
+        let dir_path = Arc::new(dir.path().to_path_buf());
+
+        // Each instance repeatedly edits + reindexes a DISTINCT file, racing the other.
+        // A drives mod0/mod1; B drives mod2/mod3. If reindex did not reload-under-flock,
+        // whichever instance persisted last would drop the other's chunks (its stale
+        // in-memory base has no knowledge of the peer's write).
+        let mut handles = Vec::new();
+        for (inst, files) in [
+            (Arc::clone(&a), ["mod0.rs", "mod1.rs"]),
+            (Arc::clone(&b), ["mod2.rs", "mod3.rs"]),
+        ] {
+            let dir_path = Arc::clone(&dir_path);
+            let root = root.clone();
+            handles.push(std::thread::spawn(move || {
+                for round in 0..3 {
+                    for f in files {
+                        std::fs::write(
+                            dir_path.join(f),
+                            format!("fn feature_{f}_{round}() {{\n    // edit {round}\n}}\n"),
+                        )
+                        .unwrap();
+                        inst.reindex(&root, &[f.to_string()]);
+                    }
+                }
+            }));
+        }
+        for h in handles {
+            h.join().expect("a concurrent instance must not panic");
+        }
+
+        // Neither instance is internally corrupt after the race.
+        assert_store_consistent(&a);
+        assert_store_consistent(&b);
+
+        // The DECISIVE lost-update check: a FRESH instance loads the final on-disk store
+        // and must see ALL FOUR files - if either instance had clobbered the other's
+        // write, one pair of files would be missing. The load itself asserts the on-disk
+        // pair is not torn (it would fail construction / consistency otherwise).
+        drop(a);
+        drop(b);
+        let reloaded = Turbovec::new(&root).unwrap();
+        assert_store_consistent(&reloaded);
+        let files = &reloaded.state.lock().unwrap().meta.files;
+        for i in 0..4 {
+            assert!(
+                files.contains_key(&format!("mod{i}.rs")),
+                "mod{i}.rs must survive in the final store - a missing file is a lost update \
+                 (one instance persisted its stale base over the other's write)"
+            );
+        }
+    }
+
+    /// FINDING #2 (direct lost-update reproduction): the precise sequence the review
+    /// flagged - a long-lived instance holds state, an EXTERNAL writer mutates the store,
+    /// then the long-lived instance mutates and persists. Its persist must NOT drop the
+    /// external write. We hold instance `long_lived`, have a SECOND instance reindex a
+    /// new file into the store (the "subprocess"), then have `long_lived` reindex a
+    /// DIFFERENT file. Without reload-under-flock, `long_lived`'s persist would overwrite
+    /// the store with its stale base and the external file would vanish.
+    #[test]
+    #[file_serial(turbovec_model)]
+    fn long_lived_instance_does_not_clobber_an_external_write() {
+        let dir = tiny_repo();
+        let root = dir.path().to_str().unwrap().to_string();
+
+        // The long-lived grounder, constructed and held (as the conductor holds it for a
+        // whole `rigger run`).
+        let long_lived = Turbovec::new(&root).unwrap();
+        assert!(long_lived
+            .state
+            .lock()
+            .unwrap()
+            .meta
+            .files
+            .contains_key("combat.rs"));
+
+        // An EXTERNAL writer (a separate instance == a separate process) adds a new file
+        // and reindexes it into the shared store, then goes away.
+        std::fs::write(
+            dir.path().join("external.rs"),
+            "fn added_by_the_subprocess() {}\n",
+        )
+        .unwrap();
+        {
+            let subprocess = Turbovec::new(&root).unwrap();
+            subprocess.reindex(&root, &["external.rs".to_string()]);
+        }
+
+        // Now the long-lived instance mutates a DIFFERENT file and persists. Its stale
+        // in-memory base predates external.rs; reload-under-flock must fold that in so the
+        // persist keeps it.
+        std::fs::write(
+            dir.path().join("combat.rs"),
+            "fn apply_damage() {}\nfn extra() {}\n",
+        )
+        .unwrap();
+        long_lived.reindex(&root, &["combat.rs".to_string()]);
+
+        // The external write survived the long-lived instance's persist, in memory ...
+        assert!(
+            long_lived
+                .state
+                .lock()
+                .unwrap()
+                .meta
+                .files
+                .contains_key("external.rs"),
+            "the external write must survive in the long-lived instance's state after its \
+             own reindex reloaded the store under the flock"
+        );
+        // ... and on disk (a fresh instance sees it).
+        drop(long_lived);
+        let reloaded = Turbovec::new(&root).unwrap();
+        assert_store_consistent(&reloaded);
+        assert!(
+            reloaded
+                .state
+                .lock()
+                .unwrap()
+                .meta
+                .files
+                .contains_key("external.rs"),
+            "the external write must be present in the final on-disk store - not clobbered"
+        );
+    }
+
+    /// FINDING #3 unit-level: `check_index_meta_consistent` accepts a coherent pair and
+    /// rejects each way it can be torn. No model built, so this stays parallel.
+    #[test]
+    fn check_index_meta_consistent_detects_each_inconsistency() {
+        // Build a `Meta` describing one chunk id 7 in file a.rs. `FileEntry`/`Meta` are
+        // not `Clone` (production types), so each case builds its own via this helper.
+        fn meta_for(ids: &[(u64, &str)], files: &[(&str, Vec<u64>)]) -> Meta {
+            let mut m = Meta {
+                next_id: 100,
+                ..Default::default()
+            };
+            for &(id, file) in ids {
+                m.refs.insert(
+                    id,
+                    StoredRef {
+                        file: file.into(),
+                        line: 1,
+                        text: String::new(),
+                    },
+                );
+            }
+            for (file, ids) in files {
+                m.files.insert(
+                    (*file).into(),
+                    FileEntry {
+                        hash: 0,
+                        ids: ids.clone(),
+                    },
+                );
+            }
+            m
+        }
+
+        // A tiny consistent pair: one vector at id 7, one matching ref, one file owning it.
+        let mut index = IdMapIndex::new(EMBED_DIM, BIT_WIDTH).unwrap();
+        let vec7 = vec![0.1f32; EMBED_DIM];
+        index.add_with_ids(&vec7, &[7]).unwrap();
+        let good = meta_for(&[(7, "a.rs")], &[("a.rs", vec![7])]);
+        assert!(
+            check_index_meta_consistent(&index, &good).is_ok(),
+            "a coherent index/meta pair must pass"
+        );
+
+        // Meta ref id absent from the index (the torn-write shape).
+        let torn = meta_for(&[(7, "a.rs"), (42, "ghost.rs")], &[("a.rs", vec![7])]);
+        assert!(
+            check_index_meta_consistent(&index, &torn).is_err(),
+            "a meta ref id the index lacks must be rejected"
+        );
+
+        // File claims an id with no ref.
+        let orphan = meta_for(&[(7, "a.rs")], &[("a.rs", vec![7]), ("b.rs", vec![99])]);
+        assert!(
+            check_index_meta_consistent(&index, &orphan).is_err(),
+            "a file-claimed id with no ref must be rejected"
+        );
+
+        // Cardinality mismatch: index has a vector the refs do not cover.
+        let mut index2 = IdMapIndex::new(EMBED_DIM, BIT_WIDTH).unwrap();
+        index2.add_with_ids(&vec7, &[7]).unwrap();
+        index2.add_with_ids(&vec![0.2f32; EMBED_DIM], &[8]).unwrap();
+        assert!(
+            check_index_meta_consistent(&index2, &good).is_err(),
+            "a surplus vector with no ref must be rejected (cardinality mismatch)"
+        );
     }
 }

@@ -18,12 +18,31 @@ jobs:
     runs-on: ubuntu-latest
     env:
       CARGO_BUILD_JOBS: 8
+      # Pin fastembed's model cache to a stable, absolute path (its default is a
+      # `.fastembed_cache` dir in the CWD) so the cache step below can key on it and
+      # restore the ~130 MB of embedding weights across runs.
+      FASTEMBED_CACHE_DIR: ${{ github.workspace }}/.fastembed_cache
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+      # Cache the ONNX Runtime dfbin download (ort-sys fetches the CUDA-enabled runtime
+      # into ~/.cache/ort.pyke.io on build) AND the fastembed embedding-model weights
+      # (downloaded on first `cargo test` model use into FASTEMBED_CACHE_DIR). Without
+      # this both are re-downloaded every run. The key is stable across source changes
+      # (the runtime + weights depend on the pinned ort/fastembed versions, not our
+      # code), with a restore fallback so a partial/renamed cache still warms the run.
+      - name: cache ONNX runtime + fastembed model
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/ort.pyke.io
+            ${{ github.workspace }}/.fastembed_cache
+          key: ort-fastembed-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ort-fastembed-${{ runner.os }}-
       - name: install OpenBLAS (turbovec is in the default build)
         run: sudo apt-get update && sudo apt-get install -y libopenblas-dev
       - name: fmt
