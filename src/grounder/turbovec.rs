@@ -672,9 +672,25 @@ impl Turbovec {
         batch: Option<usize>,
     ) -> Result<Vec<Vec<f32>>, String> {
         let _embed = self.embed_mu.lock().unwrap();
-        self.model
-            .embed(texts, batch)
-            .map_err(|e| format!("turbovec: embed: {e}"))
+        // fastembed's `embed(texts, Some(n))` rayon-parallelizes ACROSS the n-sized batches
+        // (`texts.par_chunks(n).map(|b| session.run(b))`), firing CONCURRENT `Session::run`
+        // on the single ort/CUDA session - which intermittently corrupts the heap
+        // ("corrupted double-linked list"). `embed_mu` serializes the whole call but NOT
+        // fastembed's internal parallelism, so a multi-batch content embed still races
+        // itself. Chunk here and run each chunk as its OWN one-batch embed
+        // (`Some(chunk.len())` makes `par_chunks` yield exactly one batch -> exactly one
+        // `Session::run`); the loop keeps runs strictly sequential under the lock, never
+        // more than one in flight, with peak memory bounded to a single batch.
+        let batch_size = batch.unwrap_or(EMBED_BATCH_SIZE).max(1);
+        let mut out = Vec::with_capacity(texts.len());
+        for chunk in texts.chunks(batch_size) {
+            let embs = self
+                .model
+                .embed(chunk.to_vec(), Some(chunk.len()))
+                .map_err(|e| format!("turbovec: embed: {e}"))?;
+            out.extend(embs);
+        }
+        Ok(out)
     }
 
     fn embed_query(&self, query: &str) -> Option<Vec<f32>> {
