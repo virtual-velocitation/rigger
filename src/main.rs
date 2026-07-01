@@ -205,6 +205,19 @@ fn project_identity() -> String {
 }
 
 fn main() {
+    // Point `ort` at a CUDA-enabled ONNX Runtime `.so` to `dlopen` (it is built with
+    // `load-dynamic`) BEFORE anything constructs a grounder, so the turbovec grounder
+    // embeds on the GPU with no user-set env - for both the standalone binary and a
+    // `cargo install`ed one. A no-op when the runtime is not found or the feature is
+    // off; see `rigger::ort_runtime` for the discovery order.
+    //
+    // SAFETY: this is the first statement in `main`, before any thread is spawned, so
+    // mutating the process environment here is sound (no concurrent env reader).
+    #[cfg(feature = "turbovec")]
+    unsafe {
+        rigger::ort_runtime::ensure_dylib_path();
+    }
+
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
         usage();

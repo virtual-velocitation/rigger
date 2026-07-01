@@ -45,6 +45,18 @@ const EMBED_DIM: usize = 384; // BGESmallENV15 is 384-dimensional (a multiple of
 const BIT_WIDTH: usize = 4;
 const CHUNK_LINES: usize = 40;
 
+/// How many chunks to embed per forward pass. fastembed's default (256) pads each
+/// batch to the longest chunk (up to the model's 512-token max) and materializes the
+/// attention-score tensor `[batch, heads, seq, seq]` - at `[256, 12, 512, 512]` f32
+/// that is ~3 GB in ONE allocation. On CPU that allocates fine; on the **CUDA EP**
+/// the BFC arena tries to serve it as a single block and FAILS (`Failed to allocate
+/// memory for requested buffer of size ...`), which aborts the GPU embed. A bounded
+/// batch keeps each GPU forward pass's attention tensor small (`[32, 12, 512, 512]`
+/// f32 ~= 384 MB), well within the card, so the embed runs on the GPU instead of
+/// crashing. It is harmless on CPU - just more, smaller batches. 32 is a safe default
+/// for a >=8 GB card; the 3090 (24 GB) has ample headroom.
+const EMBED_BATCH_SIZE: usize = 32;
+
 /// The persisted store lives under `<root>/.rigger/grounding/`: the quantized
 /// vector index (`index.tvim`, written by `IdMapIndex::write`) plus the sidecar
 /// metadata (`meta.json`) that maps each external vector id back to its
@@ -357,9 +369,13 @@ impl Turbovec {
             );
             return Ok(());
         }
+        // Bound the batch so a single GPU forward pass's attention tensor stays small
+        // enough for the CUDA arena (see EMBED_BATCH_SIZE) - an unbounded batch crashed
+        // the GPU embed with a multi-GB single allocation. On CPU this is just more,
+        // smaller batches.
         let embeddings = self
             .model
-            .embed(texts, None)
+            .embed(texts, Some(EMBED_BATCH_SIZE))
             .map_err(|e| format!("turbovec: embed: {e}"))?;
 
         let mut state = self.state.lock().unwrap();
