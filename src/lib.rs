@@ -21,6 +21,8 @@ pub mod metrics;
 /// `ort` is compiled in, hence gated on the `turbovec` feature.
 #[cfg(feature = "turbovec")]
 pub mod ort_runtime;
+#[cfg(feature = "turbovec")]
+pub mod ort_teardown;
 pub mod safety;
 pub mod sidecar;
 pub mod spec;

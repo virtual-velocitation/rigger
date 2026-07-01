@@ -399,6 +399,94 @@ fn ground_degrades_gracefully_when_the_ort_dylib_is_unresolvable() {
     );
 }
 
+/// The ERROR-AFTER-EMBED exit path is crash-free (spec AC for the teardown fix): a run
+/// that builds the GPU/CUDA embedding session and THEN fails - here, a persist that
+/// cannot write because the store dir is read-only - must exit with a clean non-zero
+/// code, NOT a SIGABRT from the ONNX Runtime / CUDA teardown heap corruption
+/// (upstream pykeio/ort#564).
+///
+/// This is the path the old `libc::_exit(0)` dodge left exposed: it skipped the crashing
+/// teardown only on the SUCCESS exit, so an error return still ran the racy `atexit`
+/// destructors. The real fix (`ort_teardown::release_ort_runtime`, called on BOTH paths
+/// before `process::exit`) must make this path exit cleanly too.
+///
+/// We force the error deterministically: an EMPTY `.rigger/grounding/` dir at mode 000.
+/// The cold `ground` still builds + runs the CUDA embed (proving the session was really
+/// created - see the "CUDA execution provider available" stderr the child prints), then
+/// the persist's store-lock open in that unwritable dir fails with EACCES, so `main`
+/// takes its Err exit AFTER the embed - exactly the error-after-embed shape. We assert
+/// the child was NOT killed by a signal and exited with a clean non-zero code.
+///
+/// Runs OUT OF PROCESS (like the degrade test) so the child owns its own ORT globals and
+/// CUDA teardown; serialized on the shared `turbovec_model` key so no other GPU session
+/// construction overlaps it cross-binary. Unix-only: it relies on POSIX dir permissions,
+/// and the turbovec/CUDA path this guards is Linux-only regardless.
+#[cfg(all(feature = "turbovec", unix))]
+#[test]
+#[serial_test::file_serial(turbovec_model)]
+fn error_after_embed_exits_cleanly_without_a_teardown_abort() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = temp_project();
+    let root = dir.path();
+    write_grounder_workflow(root, "turbovec");
+    std::fs::write(
+        root.join("combat.rs"),
+        "fn apply_damage(target: &mut Entity, amount: f32) {\n    target.health -= amount;\n}\n",
+    )
+    .unwrap();
+
+    // Pre-create an EMPTY grounding dir and lock it to mode 000. There is no persisted
+    // store to load, so the cold `ground` embeds the tree (building the CUDA session),
+    // then fails when it tries to open the store lock / write the index into this
+    // unwritable dir - an error that surfaces strictly AFTER the GPU embed.
+    let grounding = root.join(".rigger").join("grounding");
+    std::fs::create_dir_all(&grounding).unwrap();
+    std::fs::set_permissions(&grounding, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    let outcome = run_rigger_env(root, &["ground", "how is damage dealt", "1"], &[]);
+
+    // Restore permissions so the TempDir can be cleaned up on drop (a mode-000 subdir
+    // would otherwise make the recursive remove fail).
+    let _ = std::fs::set_permissions(&grounding, std::fs::Permissions::from_mode(0o755));
+
+    // 1. The GPU/CUDA session really was built before the failure - otherwise this test
+    //    would prove nothing about the TEARDOWN path. The grounder prints this line on
+    //    stderr the moment the CUDA EP is selected, before it embeds and then fails.
+    assert!(
+        outcome.stderr.contains("CUDA execution provider available")
+            || outcome.stderr.contains("embedding on"),
+        "the child must have built the embedding session before failing (else the teardown \
+         path is not exercised); stderr: {}",
+        outcome.stderr
+    );
+    // 2. NOT killed by a signal: SIGABRT (signal 6) is exactly the teardown heap-corruption
+    //    abort this fix eliminates, and it terminates the process with a signal and no code.
+    assert!(
+        outcome.signal.is_none(),
+        "the error-after-embed exit must not abort in ORT/CUDA teardown: the process was \
+         killed by signal {:?}; stderr: {}",
+        outcome.signal,
+        outcome.stderr
+    );
+    // 3. A CLEAN non-zero exit (the surfaced persist Err), specifically not 101 (panic).
+    assert_eq!(
+        outcome.code,
+        Some(1),
+        "the error-after-embed path must exit 1 cleanly (a surfaced Err), never a panic \
+         (101) or a teardown abort; got code {:?}, signal {:?}; stderr: {}",
+        outcome.code,
+        outcome.signal,
+        outcome.stderr
+    );
+    // 4. The failure was the post-embed persist, and it did not escape as a panic.
+    assert!(
+        !outcome.stderr.contains("panicked at"),
+        "the persist failure must surface as a clean Err, not an escaped panic; stderr: {}",
+        outcome.stderr
+    );
+}
+
 /// Bad input to `rigger emit` is a clear error on stderr and a non-zero exit, never
 /// a silent success - a workflow agent must be able to tell a malformed emit failed.
 #[test]
