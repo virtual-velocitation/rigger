@@ -126,19 +126,41 @@ fn emit_review_finding_shows_in_peers() {
     );
 }
 
+/// Write a minimal `.rigger/workflow.yml` into `root` pinning `defaults.grounder` to
+/// the given name. Tests that exercise the LITERAL grep grounder pin `grep`
+/// explicitly: turbovec is the default grounder now, so an unconfigured project would
+/// resolve to the semantic engine (which embeds via a downloaded model and does not
+/// have grep's exact-line / no-match-empty / k-cap contract). Pinning grep keeps the
+/// test deterministic, offline, and focused on the literal grounder's behavior.
+fn write_grounder_workflow(root: &Path, grounder: &str) {
+    let rigger = root.join(".rigger");
+    // The agents/ dir must exist for `config::load` to succeed; without it the load
+    // fails and `cmd_ground` falls back to the UNSET grounder (which resolves to
+    // turbovec), so the pinned `grounder` would never take effect.
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        format!("name: t\ndefaults:\n  grounder: {grounder}\n"),
+    )
+    .unwrap();
+}
+
 /// `rigger ground "<query>"` returns repo references (`file:line: <text>`) from the
-/// project's configured grounder over a small temp repo.
+/// project's configured grounder over a small temp repo. This pins the LITERAL grep
+/// grounder (its exact-line / empty-on-no-match / k-cap contract); turbovec, the
+/// default grounder, is exercised by its own unit test (which downloads the model).
 #[test]
 fn ground_returns_references_from_the_repo() {
     let dir = temp_project();
     let root = dir.path();
+    write_grounder_workflow(root, "grep");
     std::fs::write(
         root.join("combat.rs"),
         "fn apply_damage() {}\nfn render() {}\n",
     )
     .unwrap();
 
-    // The scaffolded default grounder is grep; a query that matches a line returns it.
+    // The configured grounder is grep; a query that matches a line returns it.
     let (out, err, ok) = run_rigger(root, &["ground", "apply_damage"]);
     assert!(ok, "ground must succeed; stderr: {err}");
     assert!(
@@ -167,6 +189,89 @@ fn ground_returns_references_from_the_repo() {
         out.lines().filter(|l| !l.is_empty()).count(),
         2,
         "ground <query> 2 must return at most two references; got: {out:?}"
+    );
+}
+
+/// `rigger reindex <file>` requires at least one file and is a clear error otherwise:
+/// a workflow agent calling it with no files must get a non-zero exit, not a silent
+/// no-op. (This holds for every grounder, so it needs no model and runs in both lanes.)
+#[test]
+fn reindex_requires_at_least_one_file() {
+    let dir = temp_project();
+    let root = dir.path();
+    // The grep grounder's reindex is a no-op, but the CLI still enforces the arg
+    // contract before dispatching, so this is deterministic and offline.
+    write_grounder_workflow(root, "grep");
+
+    let (_out, err, ok) = run_rigger(root, &["reindex"]);
+    assert!(!ok, "reindex with no files must be a non-zero exit");
+    assert!(
+        err.contains("expected at least one file"),
+        "the error must explain that a file is required; got: {err:?}"
+    );
+}
+
+/// `rigger reindex <file>` against the turbovec grounder UPDATES the persisted
+/// grounding store incrementally: a term written into a file AFTER the index is first
+/// built becomes findable via `rigger ground` once that file is reindexed - the CLI
+/// surface the workflow calls after each unit lands. Gated to the turbovec lane (it
+/// downloads the embedding model on first use, exactly like the grounder's own unit
+/// test); the fixture is a single tiny file so the embed stays bounded.
+/// Serialized cross-binary against the lib's model tests: this spawns a `rigger`
+/// subprocess that builds an ort/CUDA session, and `serial_test`'s filesystem-lock
+/// `file_serial` (same `turbovec_model` key the lib tests use) ensures no other model
+/// construction - here or in the lib-test binary - runs concurrently on a GPU box.
+#[cfg(feature = "turbovec")]
+#[test]
+#[serial_test::file_serial(turbovec_model)]
+fn reindex_cli_updates_the_persisted_turbovec_store() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_grounder_workflow(root, "turbovec");
+    std::fs::write(
+        root.join("combat.rs"),
+        "fn apply_damage(target: &mut Entity, amount: f32) {\n    target.health -= amount;\n}\n",
+    )
+    .unwrap();
+
+    // First ground builds + persists the store (cold path). The persisted store dir
+    // appears under .rigger/grounding/.
+    let (_out, err, ok) = run_rigger(root, &["ground", "how is damage dealt", "1"]);
+    assert!(ok, "the initial ground must build the index; stderr: {err}");
+    assert!(
+        root.join(".rigger")
+            .join("grounding")
+            .join("index.tvim")
+            .exists(),
+        "grounding the repo must persist the turbovec index to .rigger/grounding/"
+    );
+
+    // The change lands: combat.rs gains a teleport function (a term absent before).
+    std::fs::write(
+        root.join("combat.rs"),
+        "fn apply_damage(target: &mut Entity, amount: f32) {\n    target.health -= amount;\n}\n\
+         fn teleport_player(player: &mut Player, dest: Tile) {\n    player.position = dest;\n}\n",
+    )
+    .unwrap();
+
+    // Reindex ONLY that file via the CLI - the incremental update the workflow runs.
+    let (out, err, ok) = run_rigger(root, &["reindex", "combat.rs"]);
+    assert!(ok, "reindex must succeed; stderr: {err}");
+    assert!(
+        out.contains("reindexed 1 file") && out.contains("combat.rs"),
+        "reindex prints a confirmation naming the file; got: {out:?}"
+    );
+
+    // The just-landed term is now findable through the SAME store a later ground uses
+    // - the reindex updated the persisted index, not just an in-process copy.
+    let (out, err, ok) = run_rigger(
+        root,
+        &["ground", "teleport the player across the dungeon", "1"],
+    );
+    assert!(ok, "ground after reindex must succeed; stderr: {err}");
+    assert!(
+        out.lines().next().map(|l| l.starts_with("combat.rs:")).unwrap_or(false),
+        "after the reindex CLI updates the store, the new term must ground to combat.rs; got: {out:?}"
     );
 }
 
