@@ -6,7 +6,98 @@
 #[cfg(feature = "turbovec")]
 pub mod turbovec;
 
-use std::path::Path;
+use std::collections::HashSet;
+use std::ops::ControlFlow;
+use std::path::{Path, PathBuf};
+
+/// The single source of truth for which directories BOTH grounders skip: VCS / build /
+/// dependency dirs plus non-code tooling dotdirs that hold no first-party source.
+///
+/// This lives in `mod.rs` (ALWAYS compiled) rather than in the feature-gated
+/// `turbovec.rs`, so grep's `walk()` and turbovec's `collect_files` consume ONE list
+/// and can never drift. This change ADDS the model-cache + tooling-dotdir denies to BOTH
+/// walks: previously both shared the same narrower 5-entry list (`.git`, `.rigger`,
+/// `vendor`, `target`, `node_modules`), so NEITHER denied the ~128 MB `.fastembed_cache`
+/// model blobs - both grep (the `defaults.grounder: grep` fallback) and turbovec would
+/// index them.
+///
+/// - `.git` / `vendor` / `target` / `node_modules` - VCS + build + dependency trees.
+/// - `.rigger` - our own event store / grounding index / config, not source.
+/// - `.fastembed_cache` - the ~128 MB embedding-model cache fastembed writes at the
+///   repo root (default, or at `FASTEMBED_CACHE_DIR`); indexing it makes every walk
+///   hash 128 MB and surfaces the cache's JSON blobs as grounding hits.
+/// - `.github` / `.cargo` / `.claude` - non-code dotdirs (CI config, cargo config,
+///   agent config) that pollute the index without grounding value.
+pub(crate) const SKIP_DIRS: &[&str] = &[
+    ".git",
+    ".rigger",
+    ".fastembed_cache",
+    ".github",
+    ".cargo",
+    ".claude",
+    "vendor",
+    "target",
+    "node_modules",
+];
+
+/// Whether a directory named `name` is one BOTH grounders skip (see [`SKIP_DIRS`]).
+pub(crate) fn is_skipped_dir(name: &str) -> bool {
+    SKIP_DIRS.contains(&name)
+}
+
+/// The ONE guarded directory-walk skeleton BOTH grounders share: grep's `walk` (this
+/// module) and turbovec's `collect_files` (the `turbovec` feature). The two used to
+/// each reimplement the identical canonicalize + visited-canonical-path cycle guard +
+/// [`SKIP_DIRS`] check; they now differ ONLY in the per-file LEAF ACTION they pass as
+/// `on_file` - grep searches the file's lines, turbovec collects `(rel_path, content)`.
+/// Factoring the skeleton here (always compiled, in `mod.rs`) means the cycle guard and
+/// the skip-list can never drift between the two walks.
+///
+/// A directory symlink is descended at most once per canonical target: `visited` holds
+/// the canonicalized path of every directory already entered, so a symlink CYCLE
+/// (`a -> b`, `b -> a`, or a link back to an ancestor) terminates instead of looping
+/// forever / blowing the stack. A target that cannot be canonicalized (a broken link,
+/// a permissions race) falls back to the literal path so a real directory is still read.
+///
+/// `on_file` returns [`ControlFlow`]: `Break(())` stops the whole walk immediately
+/// (grep uses this to stop once it has collected its `k` hits), `Continue(())` walks on.
+/// The return value propagates up the recursion, so a `Break` unwinds the entire walk.
+pub(crate) fn walk_guarded<F>(
+    dir: &Path,
+    visited: &mut HashSet<PathBuf>,
+    on_file: &mut F,
+) -> ControlFlow<()>
+where
+    F: FnMut(&Path) -> ControlFlow<()>,
+{
+    // Canonicalize this dir and record it BEFORE descending. If canonicalization fails
+    // (permissions, a race) fall back to the literal path so a real dir is still read;
+    // if the canonical path was already visited, a symlink pointed us back into a
+    // subtree we are already walking - stop, or we would loop forever.
+    let canonical = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    if !visited.insert(canonical) {
+        return ControlFlow::Continue(());
+    }
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return ControlFlow::Continue(()),
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if path.is_dir() {
+            // Skip the shared VCS / build / dependency / tooling dirs (see `SKIP_DIRS`),
+            // the same set both grounders deny, so the two walks never diverge.
+            if !is_skipped_dir(&name) {
+                walk_guarded(&path, visited, on_file)?;
+            }
+        } else {
+            on_file(&path)?;
+        }
+    }
+    ControlFlow::Continue(())
+}
 
 /// A relevant location: a file, a line, and a snippet.
 #[derive(Clone, Debug)]
@@ -98,40 +189,24 @@ impl Grounder for Grep {
         }
         let needle = query.to_lowercase();
         let mut refs = Vec::new();
-        walk(Path::new(&self.root), &self.root, &needle, k, &mut refs);
-        refs
-    }
-}
-
-fn skip_dir(name: &str) -> bool {
-    matches!(
-        name,
-        ".git" | ".rigger" | "vendor" | "target" | "node_modules"
-    )
-}
-
-fn walk(dir: &Path, root: &str, needle: &str, k: usize, refs: &mut Vec<Ref>) {
-    if refs.len() >= k {
-        return;
-    }
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return,
-    };
-    for entry in entries.flatten() {
-        if refs.len() >= k {
-            return;
-        }
-        let path = entry.path();
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if path.is_dir() {
-            if !skip_dir(&name) {
-                walk(&path, root, needle, k, refs);
+        // Carry a canonical-path visited set so a directory symlink CYCLE (`a -> b`,
+        // `b -> a`, or a link back to an ancestor) terminates instead of looping
+        // forever / blowing the stack. The canonicalize + visited-set cycle guard and the
+        // SKIP_DIRS check live in the SHARED `walk_guarded` skeleton - the same one
+        // turbovec's `collect_files` uses - so the two walks can never drift; this walk's
+        // ONLY leaf action is to search each file's lines, stopping once it has `k` hits.
+        let mut visited = HashSet::new();
+        let _ = walk_guarded(Path::new(&self.root), &mut visited, &mut |path| {
+            search_file(path, &self.root, &needle, k, &mut refs);
+            // Stop the whole walk once we have collected the requested k hits - the
+            // early-out that keeps grep from scanning the rest of the tree once full.
+            if refs.len() >= k {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
             }
-        } else {
-            search_file(&path, root, needle, k, refs);
-        }
+        });
+        refs
     }
 }
 
@@ -177,6 +252,85 @@ mod tests {
         let refs = g.ground("apply_damage", 5);
         assert!(refs.iter().any(|r| r.text.contains("apply_damage")));
         assert!(g.ground("apply_damage", 0).is_empty());
+    }
+
+    /// The grep grounder's walk must SKIP the shared denied dirs - in particular
+    /// `.fastembed_cache` (the ~128 MB model cache): the documented
+    /// `defaults.grounder: grep` fallback must not index the model blobs. Before the
+    /// shared `SKIP_DIRS` list, grep's walk had a narrower 5-entry skip-list that let
+    /// the cache through. We seed a source file plus a match inside each denied dir and
+    /// assert the grep hits come ONLY from the source file.
+    #[test]
+    fn grep_walk_skips_the_shared_denied_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        // A genuine source file whose line MUST be found.
+        std::fs::write(root.join("lib.rs"), "fn find_me() {}\n").unwrap();
+        // A file inside each denied dir containing the SAME needle - it must NOT be
+        // walked. `.fastembed_cache` stands in for the model cache.
+        for denied in SKIP_DIRS {
+            let sub = root.join(denied);
+            std::fs::create_dir_all(&sub).unwrap();
+            std::fs::write(sub.join("blob.txt"), "fn find_me() {}\n").unwrap();
+        }
+
+        let g = Grep {
+            root: root.to_string_lossy().into_owned(),
+        };
+        // Ask for many hits so nothing is dropped by the k cap - if a denied dir were
+        // walked, its match would appear here.
+        let refs = g.ground("find_me", 100);
+        assert!(
+            !refs.is_empty(),
+            "the real source file's match must be found"
+        );
+        for r in &refs {
+            assert!(
+                !SKIP_DIRS.iter().any(|d| r.file.starts_with(d)),
+                "grep must not descend into a denied dir; leaked {r:?}"
+            );
+        }
+        // Exactly the one source file matched, once.
+        assert_eq!(
+            refs.iter().map(|r| r.file.as_str()).collect::<Vec<_>>(),
+            vec!["lib.rs"],
+            "only the first-party source file should match; got {refs:?}"
+        );
+    }
+
+    /// The grep grounder's walk must TERMINATE on a directory symlink CYCLE rather than
+    /// loop forever / blow the stack. We build a real cycle - `sub/loop -> root` (a link
+    /// back to an ancestor) - and assert the walk returns, finds the real match, and
+    /// does not re-enter through the link. A hang here fails the test by timeout.
+    #[test]
+    fn grep_walk_terminates_on_a_symlink_cycle() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("real.rs"), "fn only_once() {}\n").unwrap();
+        let sub = root.join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(sub.join("nested.rs"), "fn nested_once() {}\n").unwrap();
+        // A directory symlink pointing back up at the root: walking into `sub/loop`
+        // re-enters the whole tree, which without the cycle guard recurses forever.
+        std::os::unix::fs::symlink(root, sub.join("loop")).unwrap();
+
+        let g = Grep {
+            root: root.to_string_lossy().into_owned(),
+        };
+        // The walk must RETURN (a hang here fails the test by timeout) and find each
+        // real match exactly once, never re-collecting it through the cycle.
+        let only_once = g.ground("only_once", 100);
+        assert_eq!(
+            only_once.iter().filter(|r| r.file == "real.rs").count(),
+            1,
+            "the top-level match must be found exactly once, not re-entered via the cycle"
+        );
+        let nested = g.ground("nested_once", 100);
+        assert_eq!(
+            nested.iter().filter(|r| r.file == "sub/nested.rs").count(),
+            1,
+            "the nested match must be found exactly once, not re-entered via the cycle"
+        );
     }
 
     #[test]

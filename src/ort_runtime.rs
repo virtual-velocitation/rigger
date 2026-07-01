@@ -27,11 +27,19 @@
 //! ## Graceful fallback
 //!
 //! When no `libonnxruntime.so` is discovered (a box where `ort-sys` never downloaded
-//! one), [`discover_dylib`] returns `None`, [`ensure_dylib_path`] leaves the env
-//! untouched, and `ort`'s own default resolution takes over. And when the CUDA
-//! runtime loads but the box has no GPU, the grounder's `[CUDA, CPU]` EP list falls
-//! back to CPU. So this module only ever ADDS a way to find the runtime; it never
-//! breaks a working path.
+//! one), [`discover_dylib`] returns `None` and [`ensure_dylib_path`] leaves the env
+//! untouched, so `ort`'s own default resolution (the bare `libonnxruntime.so` name
+//! via the system loader) takes over. And when the CUDA runtime loads but the box has
+//! no GPU, the grounder's `[CUDA, CPU]` EP list falls back to CPU.
+//!
+//! This module only ever ADDS a way to *find* the runtime; it never breaks a working
+//! path. But finding one and being able to *load* it are different: if the discovery
+//! chain comes up empty AND the system loader also cannot resolve a bare
+//! `libonnxruntime.so`, then `ort`'s first use will `panic!` inside its
+//! `lib_handle()` (its `dlopen` is `.unwrap_or_else(|e| panic!(...))`). That panic is
+//! not catchable by `is_available().unwrap_or(false)`, so the grounder builds the model
+//! inside a `std::panic::catch_unwind` and turns that panic into a clear `Err` - the
+//! same load `ort` performs, so nothing can disagree with it. See `grounder::turbovec`.
 
 use std::path::{Path, PathBuf};
 
