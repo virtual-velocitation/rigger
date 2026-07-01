@@ -72,6 +72,8 @@ rigger graph --around path/to/file
 
 By default this uses the local SQLite store, the grep grounder, and the `claude` CLI agent driver, so there is nothing else to stand up. For semantic grounding, install OpenBLAS and build with `--features turbovec` (it pulls the ONNX runtime and downloads an embedding model).
 
+`cargo install` needs no `--locked`: the manifest constrains its dependencies tightly enough that a fresh resolution (which `cargo install` does by default, ignoring `Cargo.lock`) always picks compatible versions. In particular `ort-sys` is pinned to the exact release `ort` was built against, so a fresh resolve cannot skew the ONNX-runtime bindings out from under it. A CI job (`install-nolock`) runs `cargo install --path .` without `--locked` and executes the result on every change, so a future dependency skew is caught in CI rather than surfacing as a broken user install.
+
 ## Where this is going
 
 The full design, including the data model, the schemas, the failure-mode handling, and the phased build plan, is in [docs/architecture.md](docs/architecture.md). Read that if you want to understand exactly how it works or you intend to build it. This README is the why. That document is the how.

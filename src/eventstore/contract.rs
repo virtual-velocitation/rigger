@@ -2,6 +2,7 @@
 //! it, so the embedded SQLite store is a faithful proxy for the KurrentDB server.
 //! Both adapters' tests call `assert_contract`.
 
+use std::collections::HashSet;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use super::{Direction, Error, Event, EventStore, ExpectedRevision, Filter};
@@ -10,13 +11,17 @@ use super::{Direction, Error, Event, EventStore, ExpectedRevision, Filter};
 pub fn assert_contract(store: &dyn EventStore) {
     append_assigns_revisions(store);
     optimistic_concurrency_reports_actual(store);
+    exact_revision_concurrency_round_trips(store);
     meta_and_valid_from_round_trip(store);
     subscription_replays_then_goes_live(store);
     stream_subscription_replays_then_goes_live(store);
+    stream_subscription_from_nonzero_revision_skips_earlier(store);
     backward_stream_read_reverses_set(store);
     forward_stream_read_honors_nonzero_from(store);
     backward_all_read_reverses_set(store);
     all_position_round_trips_into_read_and_subscribe(store);
+    nonexistent_stream_reads_empty(store);
+    concurrent_appends_to_distinct_streams_get_distinct_positions(store);
 }
 
 fn append_assigns_revisions(store: &dyn EventStore) {
@@ -319,6 +324,216 @@ fn all_position_round_trips_into_read_and_subscribe(store: &dyn EventStore) {
         &sub,
         "P4",
         "a position-resumed subscription must still go live",
+    );
+}
+
+/// `ExpectedRevision::Exact` is the everyday optimistic-concurrency guard (append
+/// iff the stream is at the revision I last saw). A matching expectation must
+/// succeed and advance the stream; a stale one must conflict and report the
+/// stream's actual current revision - the same authoritative value `NoStream`
+/// conflicts carry. KurrentDB enforces this server-side via `StreamRevision`; the
+/// SQLite proxy must agree.
+fn exact_revision_concurrency_round_trips(store: &dyn EventStore) {
+    store
+        .append(
+            "c-exact",
+            ExpectedRevision::NoStream,
+            &[
+                Event::new("V0", b"0".to_vec()),
+                Event::new("V1", b"1".to_vec()),
+            ],
+        )
+        .unwrap();
+
+    // The stream is at revision 1; appending under `Exact(1)` must succeed.
+    store
+        .append(
+            "c-exact",
+            ExpectedRevision::Exact(1),
+            &[Event::new("V2", b"2".to_vec())],
+        )
+        .expect("Exact matching the stream's current revision must succeed");
+    let after = store.read_stream("c-exact", 0, Direction::Forward).unwrap();
+    let types: Vec<&str> = after.iter().map(|e| e.type_.as_str()).collect();
+    assert_eq!(
+        types,
+        ["V0", "V1", "V2"],
+        "a matching Exact append must advance the stream by exactly the new events"
+    );
+
+    // The stream is now at revision 2; a stale `Exact(1)` must conflict and
+    // report the actual current revision (2), never silently append.
+    match store.append(
+        "c-exact",
+        ExpectedRevision::Exact(1),
+        &[Event::new("V3", b"3".to_vec())],
+    ) {
+        Err(Error::Conflict { actual, .. }) => assert_eq!(
+            actual, 2,
+            "a stale Exact expectation must report the stream's actual current revision"
+        ),
+        other => panic!("expected a conflict carrying the actual revision, got {other:?}"),
+    }
+    // And the rejected append must not have leaked into the stream.
+    let unchanged = store.read_stream("c-exact", 0, Direction::Forward).unwrap();
+    assert_eq!(
+        unchanged.len(),
+        3,
+        "a conflicting Exact append must be fully rejected, writing nothing"
+    );
+}
+
+/// A stream catch-up subscription resumed FROM a nonzero revision replays only
+/// that revision onward (the stream-scope boundary is inclusive), never the
+/// earlier events - the checkpoint-resume shape a projection relies on. This is
+/// the stream-scoped analogue of the `$all` position round-trip, and the one that
+/// most stresses KurrentDB's exclusive-subscribe-then-anchor-back normalization.
+fn stream_subscription_from_nonzero_revision_skips_earlier(store: &dyn EventStore) {
+    store
+        .append(
+            "c-sub-from",
+            ExpectedRevision::Any,
+            &[
+                Event::new("R0", b"0".to_vec()),
+                Event::new("R1", b"1".to_vec()),
+                Event::new("R2", b"2".to_vec()),
+            ],
+        )
+        .unwrap();
+
+    // Resume from revision 1: the replay must begin at R1 (inclusive), never R0.
+    let sub = store.subscribe_stream("c-sub-from", 1).unwrap();
+    let replayed = collect_replay(&sub, 2);
+    assert_eq!(
+        replayed,
+        ["R1", "R2"],
+        "subscribe_stream from a nonzero revision must replay that revision onward (inclusive), skipping earlier events"
+    );
+
+    // It is still live: a newly appended event arrives after the replay.
+    store
+        .append(
+            "c-sub-from",
+            ExpectedRevision::Any,
+            &[Event::new("R3", b"3".to_vec())],
+        )
+        .unwrap();
+    drain_until(
+        &sub,
+        "R3",
+        "a revision-resumed stream subscription must still go live",
+    );
+}
+
+/// Reading a stream that was never appended to is a well-defined empty result -
+/// `Ok(vec![])`, not an error - in every direction, and likewise for a stream
+/// catch-up subscription over it (which simply has nothing to replay yet, then
+/// goes live once the stream is created). KurrentDB signals a missing stream with
+/// a `ResourceNotFound` error where SQLite just finds no rows; the adapters must
+/// normalize both to the same empty result so callers never special-case "does
+/// this stream exist yet".
+fn nonexistent_stream_reads_empty(store: &dyn EventStore) {
+    let forward = store
+        .read_stream("c-absent", 0, Direction::Forward)
+        .expect("reading a nonexistent stream must be Ok, not an error");
+    assert!(
+        forward.is_empty(),
+        "a nonexistent stream must read back as an empty set, got {forward:?}"
+    );
+    let backward = store
+        .read_stream("c-absent", 0, Direction::Backward)
+        .expect("reading a nonexistent stream backward must be Ok, not an error");
+    assert!(
+        backward.is_empty(),
+        "a nonexistent stream must read back empty in both directions"
+    );
+
+    // A catch-up subscription over a not-yet-existing stream is valid: it has
+    // nothing to replay, then goes live when the stream is first written.
+    let sub = store.subscribe_stream("c-absent", 0).unwrap();
+    assert!(
+        sub.try_recv().is_none(),
+        "a subscription over a nonexistent stream must have nothing to replay"
+    );
+    store
+        .append(
+            "c-absent",
+            ExpectedRevision::NoStream,
+            &[Event::new("BORN", b"b".to_vec())],
+        )
+        .unwrap();
+    drain_until(
+        &sub,
+        "BORN",
+        "a subscription opened before a stream exists must deliver its first event once created",
+    );
+}
+
+/// Concurrent appends to DIFFERENT streams must all succeed (no cross-stream
+/// contention - the optimistic-concurrency guard is per-stream) and each must be
+/// stamped a DISTINCT global `$all` position, so the global order stays a total
+/// order with no collisions under concurrency. This is what lets a single catch-up
+/// subscription over `$all` interleave independent streams without ever losing or
+/// double-counting an event. KurrentDB's `$all` commit positions are globally
+/// unique by construction; the SQLite proxy gets the same from its
+/// `AUTOINCREMENT` position under the serializing write lock.
+fn concurrent_appends_to_distinct_streams_get_distinct_positions(store: &dyn EventStore) {
+    const N: usize = 8;
+    let filter = Filter {
+        stream_prefix: Some("c-conc-".to_string()),
+    };
+
+    // Fan out N appends, one per distinct stream, from N threads at once. The
+    // store is Send + Sync, so a scoped borrow lets the threads share it without
+    // 'static bounds.
+    let positions: Vec<u64> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..N)
+            .map(|i| {
+                scope.spawn(move || {
+                    store
+                        .append(
+                            &format!("c-conc-{i}"),
+                            ExpectedRevision::NoStream,
+                            &[Event::new("C", vec![i as u8])],
+                        )
+                        .expect("concurrent appends to distinct streams must all succeed")
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+
+    // Every returned last-write position is distinct: no two independent appends
+    // collided on the global order.
+    let unique: HashSet<u64> = positions.iter().copied().collect();
+    assert_eq!(
+        unique.len(),
+        N,
+        "concurrent appends to distinct streams must each get a distinct global position, got {positions:?}"
+    );
+
+    // All N events are visible on a single `$all` read, in strictly increasing
+    // position order with no gaps in membership (each stream contributed exactly
+    // one) - the property a $all subscription depends on to interleave streams.
+    let all = store.read_all(0, Direction::Forward, &filter).unwrap();
+    assert_eq!(
+        all.len(),
+        N,
+        "all N concurrently-appended events must be visible on a single $all read"
+    );
+    let read_positions: Vec<u64> = all.iter().map(|e| e.position).collect();
+    let mut sorted = read_positions.clone();
+    sorted.sort_unstable();
+    sorted.dedup();
+    assert_eq!(
+        read_positions, sorted,
+        "$all must return the concurrent events in strictly increasing, collision-free position order"
+    );
+    let streams: HashSet<&str> = all.iter().map(|e| e.stream.as_str()).collect();
+    assert_eq!(
+        streams.len(),
+        N,
+        "each of the N distinct streams must contribute exactly one event to $all"
     );
 }
 

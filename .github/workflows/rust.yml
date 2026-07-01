@@ -68,6 +68,44 @@ jobs:
           cargo build --no-default-features --verbose
           cargo test --no-default-features --verbose
 
+  # Regression guard for dependency skew on a FRESH resolve. `cargo install` without
+  # `--locked` ignores the committed Cargo.lock and re-resolves every dependency to the
+  # newest version its constraints allow. That is how an end user installs (the README's
+  # `cargo install --git ...` carries no `--locked`), and it is exactly where a transitive
+  # crate can skew FORWARD past a pinned direct dep: `ort =2.0.0-rc.9` only requires
+  # `ort-sys = "2.0.0-rc.9"`, which under pre-release semver matches rc.10/rc.11/rc.12, and
+  # rc.10+ regenerated the OrtApi bindings incompatibly, breaking rc.9's `ortsys!` macro
+  # (267 compile errors). Cargo.toml now pins `ort-sys = "=2.0.0-rc.9"` so the fresh resolve
+  # stays coherent; this job proves it by actually running the no-`--locked` install into a
+  # throwaway --root and executing the resulting binary, so any future forward-skew of
+  # ort-sys (or any other transitive crate) fails CI here instead of only biting a user who
+  # runs `cargo install`. Turbovec is in the default build, so this needs OpenBLAS + the ort
+  # ONNX runtime, cached like the build-test job.
+  install-nolock:
+    runs-on: ubuntu-latest
+    env:
+      CARGO_BUILD_JOBS: 8
+      FASTEMBED_CACHE_DIR: ${{ github.workspace }}/.fastembed_cache
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "v1-rust-ort"
+          cache-directories: |
+            ~/.cache/ort.pyke.io
+            ${{ github.workspace }}/.fastembed_cache
+      - name: install OpenBLAS (turbovec is in the default build)
+        run: sudo apt-get update && sudo apt-get install -y libopenblas-dev
+      # No `--locked`: force a fresh resolution so a forward-skewed transitive dep is
+      # caught. `--root "$RUNNER_TEMP/rigger-install"` keeps the install out of the way.
+      - name: cargo install --path . WITHOUT --locked (fresh resolve)
+        run: cargo install --path . --force --root "$RUNNER_TEMP/rigger-install"
+      # Execute the freshly-installed binary: a clean resolve that produces a broken
+      # binary is still a failure, so prove it runs (prints usage, exits without a crash).
+      - name: run the installed binary
+        run: "$RUNNER_TEMP/rigger-install/bin/rigger --help"
+
   # The KurrentDB EventStore adapter. Its contract test spins up a real KurrentDB
   # via testcontainers (the runner provides Docker), so it runs the same suite the
   # SQLite store passes - proxy fidelity.
