@@ -41,6 +41,46 @@ fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
     )
 }
 
+/// The full exit disposition of a spawned `rigger`, richer than `run_rigger`'s bare
+/// `success` bool: the raw exit code (if the process exited normally) and the signal
+/// (if it was killed) - both needed to distinguish a CLEAN non-zero exit (a graceful
+/// `Err` surfaced by `main`, code 1) from an ABORT (SIGABRT kills the process with a
+/// signal and no exit code; a Rust panic that escapes `main` exits 101).
+///
+/// Gated to the `turbovec` feature: its ONLY consumer is the ORT-dylib degrade test,
+/// which is itself `#[cfg(feature = "turbovec")]`, so without the gate this is dead
+/// code in the `--no-default-features` lane (and `-D warnings` would reject it).
+#[cfg(feature = "turbovec")]
+struct RiggerOutcome {
+    stderr: String,
+    /// The process's exit code, or `None` if it was terminated by a signal.
+    code: Option<i32>,
+    /// The signal that killed the process, or `None` if it exited normally.
+    signal: Option<i32>,
+}
+
+/// Run `rigger <args...>` in `cwd` with the extra environment `envs` applied to the
+/// CHILD, capturing its full exit disposition. Used by the ORT-dylib degrade test,
+/// which must set `ORT_DYLIB_PATH` for the child ONLY (a fresh process, so `ort`'s
+/// process-global runtime `OnceLock` is uncached) and then inspect whether it exited
+/// cleanly or was aborted by a signal. Gated to `turbovec` for the same reason as
+/// [`RiggerOutcome`]: its only caller is the feature-gated degrade test.
+#[cfg(feature = "turbovec")]
+fn run_rigger_env(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> RiggerOutcome {
+    use std::os::unix::process::ExitStatusExt;
+    let mut cmd = Command::new(rigger_bin());
+    cmd.args(args).current_dir(cwd);
+    for (k, v) in envs {
+        cmd.env(k, v);
+    }
+    let out = cmd.output().expect("failed to spawn the rigger binary");
+    RiggerOutcome {
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        code: out.status.code(),
+        signal: out.status.signal(),
+    }
+}
+
 /// `rigger emit` appends + folds, and `rigger peers <file>` then shows the decision
 /// scoped to the file it governs - the round-trip a workflow agent makes to record a
 /// decision and have a peer read it back through the context graph.
@@ -272,6 +312,90 @@ fn reindex_cli_updates_the_persisted_turbovec_store() {
     assert!(
         out.lines().next().map(|l| l.starts_with("combat.rs:")).unwrap_or(false),
         "after the reindex CLI updates the store, the new term must ground to combat.rs; got: {out:?}"
+    );
+}
+
+/// FINDING #1 (graceful ORT-dylib degradation): when the ONNX Runtime dylib `ort`
+/// would `dlopen` cannot be loaded, grounder construction must DEGRADE GRACEFULLY - a
+/// clean non-zero exit whose stderr names the runtime and an actionable remedy, NEVER
+/// an unwind through `ort`'s internal `lib_handle()` panic that aborts the process.
+///
+/// This runs OUT OF PROCESS, spawning a fresh `rigger`, precisely because the check
+/// cannot live in the lib-test binary: `ort` caches the first `libonnxruntime.so` it
+/// dlopens in a process-global `OnceLock` that no env restore can undo, so an
+/// in-process test that pointed `ORT_DYLIB_PATH` at a bad path and won the model lock
+/// race POISONED that global and broke every later model-building test in the same
+/// binary with `cannot open shared object file`. A subprocess gets its OWN ort globals,
+/// so the bad path it loads dies with the child and cannot poison a sibling.
+///
+/// We pick the smallest grounder-constructing CLI path: `rigger ground "<q>" 1` with a
+/// turbovec-pinned workflow resolves through `select_grounder` to `Turbovec::new(".")`,
+/// which builds the model inside the `catch_unwind` under test. We set the CHILD's
+/// `ORT_DYLIB_PATH` to a nonexistent path (`ensure_dylib_path` respects an already-set
+/// value, so it will not "rescue" us with the discovered runtime), forcing the load to
+/// fail. The `catch_unwind` must turn that into a clean `Err` that `main` prints and
+/// exits 1 on - NOT a `panicked at` on stderr, NOT a signal death, NOT exit 101.
+/// Serialized on the same `turbovec_model` key as the other model tests so no GPU
+/// session construction overlaps this one cross-binary.
+#[cfg(feature = "turbovec")]
+#[test]
+#[serial_test::file_serial(turbovec_model)]
+fn ground_degrades_gracefully_when_the_ort_dylib_is_unresolvable() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_grounder_workflow(root, "turbovec");
+    std::fs::write(
+        root.join("combat.rs"),
+        "fn apply_damage(target: &mut Entity, amount: f32) {\n    target.health -= amount;\n}\n",
+    )
+    .unwrap();
+
+    // The child inherits a bad ORT_DYLIB_PATH: a path that does not exist, so `ort`'s
+    // `dlopen` fails. It is set on the CHILD only (a fresh process with an uncached ort
+    // runtime global), so the failing load poisons nothing outside this subprocess.
+    let outcome = run_rigger_env(
+        root,
+        &["ground", "how is damage dealt", "1"],
+        &[(
+            "ORT_DYLIB_PATH",
+            "/nonexistent/does-not-exist/libonnxruntime.so",
+        )],
+    );
+
+    // 1. NOT aborted by a signal (SIGABRT would kill the process with no exit code).
+    assert!(
+        outcome.signal.is_none(),
+        "grounder construction must not abort: the process was killed by signal {:?}; stderr: {}",
+        outcome.signal,
+        outcome.stderr
+    );
+    // 2. A CLEAN non-zero exit, and specifically NOT 101 (an escaped Rust panic's code).
+    assert_eq!(
+        outcome.code,
+        Some(1),
+        "an unresolvable ORT dylib must be a clean exit 1 (a surfaced Err), never a panic \
+         (101) or abort; got code {:?}, signal {:?}; stderr: {}",
+        outcome.code,
+        outcome.signal,
+        outcome.stderr
+    );
+    // 3. NO escaped panic on stderr - the failure was absorbed into a graceful Err, not
+    //    a panic that unwound out of `construct`'s `catch_unwind`.
+    assert!(
+        !outcome.stderr.contains("panicked at"),
+        "the ORT load failure must be a graceful Err, not an escaped panic; stderr: {}",
+        outcome.stderr
+    );
+    // 4. The actionable error names the ONNX Runtime, that it could not be resolved for
+    //    loading, and the grep opt-out remedy - the message `construct` returns.
+    let err = &outcome.stderr;
+    assert!(
+        err.contains("ONNX Runtime")
+            && err.contains("libonnxruntime.so")
+            && err.contains("could not be resolved")
+            && err.to_lowercase().contains("grep"),
+        "the degrade message must name the runtime, that it could not be resolved, and the \
+         grep opt-out remedy; got stderr: {err}"
     );
 }
 
