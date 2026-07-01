@@ -1,0 +1,3 @@
+# The driver test fixture is a POSIX shell script executed verbatim by the
+# spawn path; keep LF endings so it is never CRLF-normalized on checkout.
+tests/fixtures/fake-agent.sh text eol=lf

@@ -253,29 +253,17 @@ thinking out loud, not json\n\
         // <prompt>`) and prints two emit-protocol lines plus chatter. The driver
         // must shell out, capture stdout, and bridge BOTH emits through the
         // callback - proving the cli path records decisions and extends the DAG.
-        use std::io::Write;
-        use std::os::unix::fs::PermissionsExt;
+        //
+        // The agent binary is a checked-in executable fixture (never written at
+        // test time), so no concurrent test's fork+exec can inherit a write fd to
+        // it - which is what used to cause an intermittent ETXTBSY here under
+        // parallel test execution.
+        let bin = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/fake-agent.sh")
+            .to_string_lossy()
+            .into_owned();
 
-        let dir = tempfile::tempdir().unwrap();
-        let script_path = dir.path().join("fake-agent.sh");
-        let mut f = std::fs::File::create(&script_path).unwrap();
-        // `"$@"` is ignored; the script just emits. The final line is the agent's
-        // result JSON, which must NOT be bridged (it has no emit `type`).
-        writeln!(
-            f,
-            "#!/bin/sh\n\
-echo 'starting work, not json'\n\
-echo '{{\"type\":\"DecisionMade\",\"data\":{{\"id\":\"sd1\",\"summary\":\"from a real subprocess\"}}}}'\n\
-echo '{{\"type\":\"UnitProposed\",\"data\":{{\"id\":\"su1\",\"coverage\":\"c\"}}}}'\n\
-echo '{{\"id\":\"final\",\"pass\":true}}'"
-        )
-        .unwrap();
-        drop(f);
-        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
-
-        let driver = Driver {
-            bin: script_path.to_string_lossy().into_owned(),
-        };
+        let driver = Driver { bin };
         let calls = Mutex::new(Vec::new());
         let emit = |t: &str, v: Value| {
             calls.lock().unwrap().push((t.to_string(), v));

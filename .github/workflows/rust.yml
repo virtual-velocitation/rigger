@@ -18,6 +18,10 @@ jobs:
     runs-on: ubuntu-latest
     env:
       CARGO_BUILD_JOBS: 8
+      # Pin fastembed's model cache to a stable, absolute path (its default is a
+      # `.fastembed_cache` dir in the CWD) so the cache step below can key on it and
+      # restore the ~130 MB of embedding weights across runs.
+      FASTEMBED_CACHE_DIR: ${{ github.workspace }}/.fastembed_cache
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -32,9 +36,14 @@ jobs:
           # `libonnxruntime.so` and panics ("cannot open shared object file"), poisoning
           # CONSTRUCT_MU and cascading through every turbovec test. Cache the runtime
           # alongside the build so the two are restored coherently; the prefix-key bump forces
-          # one cold rebuild that repopulates both from scratch.
+          # one cold rebuild that repopulates both from scratch. The fastembed model weights
+          # (~130 MB, downloaded on first `cargo test` model use into FASTEMBED_CACHE_DIR,
+          # pinned below to a stable path) ride the SAME rust-cache so the whole ONNX/embed
+          # working set is restored coherently in one step - no separate, overlapping cache.
           prefix-key: "v1-rust-ort"
-          cache-directories: "~/.cache/ort.pyke.io"
+          cache-directories: |
+            ~/.cache/ort.pyke.io
+            ${{ github.workspace }}/.fastembed_cache
       - name: install OpenBLAS (turbovec is in the default build)
         run: sudo apt-get update && sudo apt-get install -y libopenblas-dev
       - name: fmt
