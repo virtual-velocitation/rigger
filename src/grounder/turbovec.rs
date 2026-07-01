@@ -345,7 +345,25 @@ impl Turbovec {
                 )
                 .map_err(|e| format!("turbovec: load model: {e}"))
             };
-            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(build)) {
+            // Silence the default panic hook for the duration of this EXPECTED, CAUGHT
+            // panic. `catch_unwind` absorbs the unwind, but the panic HOOK still runs
+            // first and would dump `ort`'s raw `lib_handle()` backtrace
+            // ("thread '..' panicked at .../ort/src/lib.rs: ... cannot open shared object
+            // file") to stderr - alarming noise ahead of the clean, actionable `Err` we
+            // return below. A graceful degrade should read as graceful, so we install a
+            // no-op hook, run the caught build, then restore the previous hook. Scoped as
+            // tightly as possible: only this one call, whose panic we already handle.
+            //
+            // SAFETY of touching the process-global hook here: we are inside CONSTRUCT_MU
+            // (held across this whole block), the only lock every grounder construction
+            // takes, so no other grounder build races this swap; and construction runs
+            // early (under `main`, pre-spawn - see `ensure_dylib_path`'s contract), so no
+            // unrelated thread's panic message is plausibly lost in this narrow window.
+            let prev_hook = std::panic::take_hook();
+            std::panic::set_hook(Box::new(|_| {}));
+            let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(build));
+            std::panic::set_hook(prev_hook);
+            match caught {
                 Ok(result) => result?,
                 Err(_) => {
                     return Err(
@@ -1801,80 +1819,18 @@ mod tests {
         assert_store_consistent(&reloaded);
     }
 
-    /// FINDING #1 (graceful ORT-dylib degradation): when the ONNX Runtime dylib `ort`
-    /// would `dlopen` cannot be loaded, construction must DEGRADE GRACEFULLY - it must
-    /// never unwind through `ort`'s internal `lib_handle()` panic and abort the process.
-    /// We force the unresolvable state by pointing `ORT_DYLIB_PATH` at a path that does
-    /// not exist (`ensure_dylib_path` respects an already-set value, so it will not
-    /// "rescue" us with a discovered runtime); `construct` builds the model inside a
-    /// `catch_unwind`, so ANY panic from the missing dylib is turned into a clean `Err`.
-    ///
-    /// The outcome is asserted ORDER-INDEPENDENTLY: `ort`'s runtime handle is a process-
-    /// global `OnceLock` (`G_ORT_LIB`) loaded exactly once on the FIRST construction and
-    /// cached forever, and `ORT_DYLIB_PATH` is likewise read once into `G_ORT_DYLIB_PATH`.
-    /// So whether this test observes the failing load depends on whether an EARLIER test
-    /// in this shared binary already loaded the runtime:
-    ///   - runtime not yet loaded here -> the bad path drives `dlopen` to fail; the
-    ///     `catch_unwind` yields a clean, actionable `Err` (names the runtime + a remedy);
-    ///   - runtime already cached by a prior construction -> `ort` reuses the good handle,
-    ///     ignores the late env change, and construction simply succeeds (`Ok`).
-    /// BOTH are graceful. The ONLY forbidden outcome - the regression this guards - is an
-    /// escaped panic / process abort. A separate resolvability probe (the retired gate)
-    /// could DISAGREE with `ort`'s cached global here and manufacture a spurious `Err`;
-    /// `catch_unwind` observes exactly the load `ort` performs, so it never can.
-    /// `file_serial` on the model key so it never overlaps a real construction that reads
-    /// the same env var.
-    #[test]
-    #[file_serial(turbovec_model)]
-    fn construct_degrades_gracefully_when_the_ort_dylib_is_unresolvable() {
-        let dir = tiny_repo();
-        let root = dir.path().to_str().unwrap();
-
-        let bad = tempfile::tempdir().unwrap();
-        let missing = bad.path().join("libonnxruntime.so"); // never created
-        let prev = std::env::var_os("ORT_DYLIB_PATH");
-        // SAFETY: the test body is single-threaded and `file_serial` keeps concurrent
-        // model constructions (the only other env readers we spawn) out.
-        unsafe { std::env::set_var("ORT_DYLIB_PATH", &missing) };
-
-        // Construction must not abort. Catch any escaped panic so a regression to the
-        // panicking path fails loudly as a test failure, not a process abort, and we
-        // still restore the env below.
-        let outcome = std::panic::catch_unwind(|| Turbovec::new(root));
-
-        // Restore the env FIRST so a failed assertion does not leak the bad value into
-        // sibling tests.
-        // SAFETY: single-threaded, still inside the file_serial critical section.
-        unsafe {
-            match prev {
-                Some(v) => std::env::set_var("ORT_DYLIB_PATH", v),
-                None => std::env::remove_var("ORT_DYLIB_PATH"),
-            }
-        }
-
-        // The load-bearing guarantee: NO escaped panic. `construct`'s `catch_unwind` must
-        // have absorbed any `ort` `lib_handle()` panic into a `Result`.
-        let result =
-            outcome.expect("construction must NOT panic/abort when the ORT dylib is missing");
-        // `Turbovec` is not `Debug`, so match rather than asserting on the `Result` directly.
-        // Either outcome is graceful (see the doc): an `Err` here means `ort` had not yet
-        // cached its runtime and the bad path drove a real load failure, in which case the
-        // message must be actionable; an `Ok` means a prior construction already cached a
-        // working handle that `ort` reused, ignoring the late env change.
-        match result {
-            Err(e) => assert!(
-                e.contains("libonnxruntime.so") && e.to_lowercase().contains("grep"),
-                "a load failure must name the runtime and an actionable remedy (grep opt-out); \
-                 got: {e}"
-            ),
-            Ok(_) => {
-                // Graceful: ort's process-global runtime handle was already loaded and
-                // cached by an earlier construction, so the late ORT_DYLIB_PATH change is
-                // moot and the model built normally. The invariant this test protects -
-                // no panic/abort - already held above.
-            }
-        }
-    }
+    // FINDING #1 (graceful ORT-dylib degradation) is verified OUT OF PROCESS in
+    // `tests/cli.rs::ground_degrades_gracefully_when_the_ort_dylib_is_unresolvable`,
+    // NOT here. The behavior is real - a missing/unresolvable `libonnxruntime.so` must
+    // make grounder construction return a clean `Err` (via `construct`'s `catch_unwind`)
+    // rather than aborting - but it CANNOT be tested in this shared lib-test binary: the
+    // test must point `ORT_DYLIB_PATH` at a bad path, and `ort` caches the FIRST dylib it
+    // dlopens in a process-global `OnceLock` (`G_ORT_DYLIB_PATH` / `G_ORT_LIB`) that no
+    // env restore can undo. If such an in-process test won the `file_serial(turbovec_model)`
+    // lock race and loaded ort first, it POISONED that global and every later model-building
+    // test in this binary failed with `cannot open shared object file`. Spawning a fresh
+    // `rigger` subprocess gives the degrade check its OWN ort globals, so it can never
+    // poison a sibling. See that CLI test for the assertion.
 
     /// FINDING #5 (symlink cycle guard): `collect_files` must terminate on a directory
     /// symlink CYCLE rather than loop forever / blow the stack. We build a real cycle -
