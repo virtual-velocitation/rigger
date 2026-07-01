@@ -372,9 +372,9 @@ impl Turbovec {
             // window - a real bug's message, silently lost. So instead of muting the hook,
             // we install a DISCRIMINATING one that FORWARDS every panic to the previous
             // hook EXCEPT ort's dylib-load panic, which alone it swallows. That panic is
-            // identified by its origin/payload (see `is_ort_dylib_load_panic`): its
-            // `location()` is inside the `ort` crate's source, or its payload is ort's
-            // "attempting to load the ONNX Runtime binary" message. Everything else keeps
+            // identified by its payload (see `is_ort_dylib_load_panic`): ort's exact
+            // "attempting to load the ONNX Runtime binary" load-failure message - so a
+            // genuine session-init panic from ort keeps its backtrace. Everything else keeps
             // its diagnostics. We restore the previous hook after the `catch_unwind`.
             //
             // SAFETY of touching the process-global hook here: we are inside CONSTRUCT_MU
@@ -934,33 +934,16 @@ impl Turbovec {
 ///
 /// ort's `lib_handle()` does `libloading::Library::new(..).unwrap_or_else(|e|
 /// panic!("An error occurred while attempting to load the ONNX Runtime binary at ..."))`
-/// when the runtime `.so` cannot be `dlopen`ed. We identify that panic two independent
-/// ways, either sufficing:
-///   - its `location()` file is inside the `ort` crate's own source (the path contains
-///     an `ort` path segment - `.../ort-<ver>/src/lib.rs`); or
-///   - its payload (a `&str`/`String`) is ort's load message ("attempting to load the
-///     ONNX Runtime binary").
-///
-/// A panic that matches NEITHER is unrelated (some other thread's real bug) and is
-/// forwarded, not swallowed.
+/// when the runtime `.so` cannot be `dlopen`ed. We key SOLELY on that message, NOT on the
+/// panic's ort-crate origin: an ort-origin panic can ALSO be a genuine session-init
+/// failure (a bad model, CUDA OOM, an internal assert inside `TextEmbedding::try_new`),
+/// whose backtrace we must NOT swallow. Only the missing-runtime load panic - the one the
+/// graceful degrade exists for - carries this exact message; anything else is forwarded.
 fn is_ort_dylib_load_panic(info: &std::panic::PanicHookInfo<'_>) -> bool {
-    // (1) Origin: the panic fired inside the `ort` crate's source file. `location()`'s
-    // file is the compile-time source path; the crate's files live under a path segment
-    // like `ort-2.0.0-rc.9/` (or a git/path checkout dir literally named `ort`). Match a
-    // path *component* equal to `ort` or beginning `ort-` so we do not false-match an
-    // unrelated file that merely contains the substring "ort" (e.g. `.../report.rs`).
-    if let Some(loc) = info.location() {
-        let file = loc.file();
-        let in_ort_crate = Path::new(file)
-            .components()
-            .filter_map(|c| c.as_os_str().to_str())
-            .any(|seg| seg == "ort" || seg.starts_with("ort-"));
-        if in_ort_crate {
-            return true;
-        }
-    }
-    // (2) Payload: ort's exact `lib_handle()` panic message. The payload is the panic's
-    // formatted argument, a `&str` for a `panic!("literal {}", ..)` at that site.
+    // ort's exact `lib_handle()` load-failure message. Keying on the payload (not the
+    // panic's ort-crate origin) keeps a genuine session-init failure's backtrace intact -
+    // we suppress ONLY the expected missing-dylib panic. The payload is a `&str` for the
+    // `panic!("literal {}", ..)` at that site (a `String` on some formatting paths).
     let payload = info.payload();
     let msg = payload
         .downcast_ref::<&str>()

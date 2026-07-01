@@ -15,9 +15,11 @@ use std::path::{Path, PathBuf};
 ///
 /// This lives in `mod.rs` (ALWAYS compiled) rather than in the feature-gated
 /// `turbovec.rs`, so grep's `walk()` and turbovec's `collect_files` consume ONE list
-/// and can never drift - previously grep's walk had a narrower 5-entry list, so the
-/// documented `defaults.grounder: grep` fallback would index the ~128 MB
-/// `.fastembed_cache` model blobs that turbovec's walk already denied.
+/// and can never drift. This change ADDS the model-cache + tooling-dotdir denies to BOTH
+/// walks: previously both shared the same narrower 5-entry list (`.git`, `.rigger`,
+/// `vendor`, `target`, `node_modules`), so NEITHER denied the ~128 MB `.fastembed_cache`
+/// model blobs - both grep (the `defaults.grounder: grep` fallback) and turbovec would
+/// index them.
 ///
 /// - `.git` / `vendor` / `target` / `node_modules` - VCS + build + dependency trees.
 /// - `.rigger` - our own event store / grounding index / config, not source.

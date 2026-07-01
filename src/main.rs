@@ -267,10 +267,13 @@ fn main() {
     // in the CUDA/ORT teardown itself: it is absent when the session is never built,
     // reproduces only as the process exits after a successful GPU embed, and is not
     // reachable from any execution-provider or session option we can set through fastembed.
-    // Skipping the teardown removes the buggy code path entirely: we flush our own buffered
-    // output first (so nothing is lost), then `_exit(0)`, which terminates immediately
-    // without invoking C/C++ static destructors or Rust drop glue. Verified to take the
-    // full suite to zero aborts across 14x runs where the default return path did not.
+    // Skipping the teardown avoids the buggy code path on this SUCCESS exit: we flush our
+    // own buffered output first (so nothing is lost), then `_exit(0)`, which terminates
+    // immediately without invoking C/C++ static destructors or Rust drop glue. (A rare
+    // error-AFTER-embed exit still returns Err and takes the normal `std::process::exit`
+    // below, which runs atexit - so that path is unchanged from before this fix, not a
+    // regression; the common success path is the one the suite hammered.) Verified to take
+    // the full suite to zero aborts across 14x runs where the default return path did not.
     //
     // Gated to `turbovec` because that is the only build that loads the crashing runtime;
     // the default-features build always has it, and the CPU-only `--no-default-features`
