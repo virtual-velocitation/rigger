@@ -66,6 +66,30 @@ Dogfooding. Rigger ran on its own spec; the run's telemetry (`rigger stats`, `ri
 
 **Fix shape.** Make the JS driver a thin client of the conductor instead of a reimplementation: it connects to `rigger serve` (the MCP bridge that already exists), pulls assignments via `rigger_next`, reports via `rigger_result`, and keeps only the Claude-Code-native concerns (spawning agents, progress display). One loop implementation, two faces. This is the recommended next loop run; closing it closes Gaps 1-3 in the same stroke.
 
+## Gap 8: agent-config improvements are stranded uncommitted in the working tree
+
+**Intent.** Agent definitions are config, versioned like everything else; improvements to them land through review like everything else.
+
+**Reality.** Two deliberate, design-aligned improvements sit as uncommitted modifications: `.rigger/agents/rust-engineer.md` promotes `model: sonnet` to `model: opus` (novel implementation belongs on the judgment tier), and `.rigger/agents/sdet.md` narrows `tools:` from write-capable to read-only `[Read, Grep, Glob, Bash]` (reviewers must not be able to edit their way past a finding). Made during the 2026-07-01 session, never committed - so the running fleet and the versioned fleet disagree, and a fresh clone gets the weaker config.
+
+**Fix shape.** Commit both via a small PR. Then close the class: the loop's setup/validate path should flag tracked `.rigger/` files with uncommitted modifications at run start, so config drift between "what runs" and "what is versioned" is surfaced, not discovered by accident.
+
+## Gap 9: `rigger setup` artifacts permanently dirty `git status`
+
+**Intent.** `rigger setup` makes a repo loop-ready in one command; re-running it is a no-op on an already-configured repo.
+
+**Reality.** Setup writes files git then reports as noise forever: scaffolded default agents (`implementer.md`, `devils-advocate.md`, `reviewer.architecture.md`, `reviewer.technical.md`) land untracked next to the repo's committed, customized agents - generic duplicates of specialized ones; `.claude/` (the installed workflow + a SessionStart hook in `settings.json`) and `.rigger/shim/` (including `node_modules/`) are neither tracked nor gitignored. Every setup leaves a permanently dirty status, which trains people to ignore `git status` - the opposite of what a gate-driven loop wants.
+
+**Fix shape.** Three parts: (a) setup does not scaffold a default agent when the workflow's referenced agents already exist (scaffolding is for empty repos); (b) machine-local installs (`.claude/`, `.rigger/shim/`) get `.gitignore` entries written by setup itself; (c) decide per repo whether the scaffolded agents are content (commit them) or artifacts (ignore them) - the current half-state is the only wrong answer. Kin to Gap 5 (setup drift-awareness); a single setup-hygiene unit can close both.
+
+## Gap 10: stale unknown-provenance branches accumulate
+
+**Intent.** The loop's branch lifecycle is self-cleaning: unit branches and the run branch are deleted once their content lands (PR #7's twelve `rigger/u/*` branches were pruned this way).
+
+**Reality.** Local branches `wf-run`, `wf/metrics-project`, and `work-limit-resume` predate the current branch discipline and carry no obvious mapping to a merged PR; they were left in place because their provenance could not be established during cleanup. Branches that outlive their run erode the "branch = in-flight work" signal the loop relies on.
+
+**Fix shape.** Byran disposition: inspect each (`git log main..<branch>`) and delete or PR what remains. Then close the class - the loop records branch creation in the event log, so a `rigger validate` (or `stats`) check can list local branches with no corresponding open unit and flag them as residue.
+
 ---
 
 ## Closed
