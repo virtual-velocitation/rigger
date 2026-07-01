@@ -360,24 +360,50 @@ impl Turbovec {
                 )
                 .map_err(|e| format!("turbovec: load model: {e}"))
             };
-            // Silence the default panic hook for the duration of this EXPECTED, CAUGHT
-            // panic. `catch_unwind` absorbs the unwind, but the panic HOOK still runs
+            // Silence ONLY ort's EXPECTED, CAUGHT dylib-load panic for the duration of
+            // this build. `catch_unwind` absorbs the unwind, but the panic HOOK still runs
             // first and would dump `ort`'s raw `lib_handle()` backtrace
             // ("thread '..' panicked at .../ort/src/lib.rs: ... cannot open shared object
             // file") to stderr - alarming noise ahead of the clean, actionable `Err` we
-            // return below. A graceful degrade should read as graceful, so we install a
-            // no-op hook, run the caught build, then restore the previous hook. Scoped as
-            // tightly as possible: only this one call, whose panic we already handle.
+            // return below. A graceful degrade should read as graceful.
+            //
+            // But a BLANKET no-op hook over this whole multi-second build would also
+            // swallow the diagnostic of any UNRELATED thread that happens to panic in this
+            // window - a real bug's message, silently lost. So instead of muting the hook,
+            // we install a DISCRIMINATING one that FORWARDS every panic to the previous
+            // hook EXCEPT ort's dylib-load panic, which alone it swallows. That panic is
+            // identified by its origin/payload (see `is_ort_dylib_load_panic`): its
+            // `location()` is inside the `ort` crate's source, or its payload is ort's
+            // "attempting to load the ONNX Runtime binary" message. Everything else keeps
+            // its diagnostics. We restore the previous hook after the `catch_unwind`.
             //
             // SAFETY of touching the process-global hook here: we are inside CONSTRUCT_MU
             // (held across this whole block), the only lock every grounder construction
             // takes, so no other grounder build races this swap; and construction runs
             // early (under `main`, pre-spawn - see `ensure_dylib_path`'s contract), so no
             // unrelated thread's panic message is plausibly lost in this narrow window.
-            let prev_hook = std::panic::take_hook();
-            std::panic::set_hook(Box::new(|_| {}));
+            let prev_hook = std::sync::Arc::new(std::panic::take_hook());
+            let hook_prev = std::sync::Arc::clone(&prev_hook);
+            std::panic::set_hook(Box::new(move |info| {
+                // Forward EVERYTHING to the previous hook except ort's own dylib-load
+                // panic (the graceful-degrade path we already handle below). That one, and
+                // only that one, is swallowed so its raw backtrace never reaches stderr.
+                if !is_ort_dylib_load_panic(info) {
+                    hook_prev(info);
+                }
+            }));
             let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(build));
-            std::panic::set_hook(prev_hook);
+            // Restore the previous hook. We `take_hook()` first to drop our forwarding
+            // closure (releasing its `Arc` clone), then reinstall the previous hook - it is
+            // recoverable from the `Arc` because this is now its sole strong reference.
+            let _ = std::panic::take_hook();
+            match std::sync::Arc::try_unwrap(prev_hook) {
+                Ok(hook) => std::panic::set_hook(hook),
+                // Unreachable in practice (the forwarding closure that held the other clone
+                // was just dropped by `take_hook`), but if a clone somehow outlived it, fall
+                // back to a forwarding box so the previous hook is still reinstalled.
+                Err(shared) => std::panic::set_hook(Box::new(move |info| shared(info))),
+            }
             match caught {
                 Ok(result) => result?,
                 Err(_) => {
@@ -533,11 +559,6 @@ impl Turbovec {
     /// one), the in-memory state is left as-is: there is nothing safe to adopt, and the
     /// mutation + persist that follows writes a consistent pair from what we hold.
     fn reload_persisted_locked(&self, state: &mut State) -> Result<(), String> {
-        // Count every actual reload: the expensive on-disk read below is what the
-        // staleness gate in `freshen_locked` exists to AVOID on the hot no-change path,
-        // so this counter is the observable that proves the gate is skipping it.
-        self.reload_count
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let index_path = self.store_dir.join(INDEX_FILE);
         let meta_path = self.store_dir.join(META_FILE);
         if !index_path.exists() || !meta_path.exists() {
@@ -557,6 +578,16 @@ impl Turbovec {
         // torn write; adopting it would just re-persist the inconsistency. Keeping our
         // base lets the following persist overwrite it cleanly.
         if check_index_meta_consistent(&index, &meta).is_ok() {
+            // Count the reload HERE - at the point a real on-disk reload (full
+            // `IdMapIndex::load` + meta deserialize + consistency scan + apply) actually
+            // lands - not at the top of the fn. The early returns above (nothing
+            // persisted, corrupt index, unreadable meta, or an inconsistent pair) do NOT
+            // adopt anything, so counting them would inflate the counter into "attempts"
+            // when its name/doc promise "actual reloads". The staleness gate in
+            // `freshen_locked` skips this whole fn on the hot no-change path, so this
+            // counter staying flat there is the observable that proves the gate skipped.
+            self.reload_count
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             state.index = index;
             state.meta = meta;
             // Re-stamp to the fingerprint we just adopted, so the gate's NEXT check
@@ -896,6 +927,48 @@ impl Turbovec {
     }
 }
 
+/// Whether a panic is ort's EXPECTED dylib-load failure - the ONE panic
+/// `construct`'s discriminating hook swallows, so its raw backtrace does not clutter
+/// stderr ahead of the clean `Err` we return. Every OTHER panic is forwarded to the
+/// previous hook and keeps its diagnostics.
+///
+/// ort's `lib_handle()` does `libloading::Library::new(..).unwrap_or_else(|e|
+/// panic!("An error occurred while attempting to load the ONNX Runtime binary at ..."))`
+/// when the runtime `.so` cannot be `dlopen`ed. We identify that panic two independent
+/// ways, either sufficing:
+///   - its `location()` file is inside the `ort` crate's own source (the path contains
+///     an `ort` path segment - `.../ort-<ver>/src/lib.rs`); or
+///   - its payload (a `&str`/`String`) is ort's load message ("attempting to load the
+///     ONNX Runtime binary").
+///
+/// A panic that matches NEITHER is unrelated (some other thread's real bug) and is
+/// forwarded, not swallowed.
+fn is_ort_dylib_load_panic(info: &std::panic::PanicHookInfo<'_>) -> bool {
+    // (1) Origin: the panic fired inside the `ort` crate's source file. `location()`'s
+    // file is the compile-time source path; the crate's files live under a path segment
+    // like `ort-2.0.0-rc.9/` (or a git/path checkout dir literally named `ort`). Match a
+    // path *component* equal to `ort` or beginning `ort-` so we do not false-match an
+    // unrelated file that merely contains the substring "ort" (e.g. `.../report.rs`).
+    if let Some(loc) = info.location() {
+        let file = loc.file();
+        let in_ort_crate = Path::new(file)
+            .components()
+            .filter_map(|c| c.as_os_str().to_str())
+            .any(|seg| seg == "ort" || seg.starts_with("ort-"));
+        if in_ort_crate {
+            return true;
+        }
+    }
+    // (2) Payload: ort's exact `lib_handle()` panic message. The payload is the panic's
+    // formatted argument, a `&str` for a `panic!("literal {}", ..)` at that site.
+    let payload = info.payload();
+    let msg = payload
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| payload.downcast_ref::<String>().map(String::as_str));
+    matches!(msg, Some(m) if m.contains("attempting to load the ONNX Runtime binary"))
+}
+
 /// Whether a loaded `index`/`meta` pair is internally consistent - the invariant a
 /// clean persist upholds and a torn one (a crash between the meta and index renames)
 /// can break. `Err(reason)` names the first violation for the self-heal log:
@@ -1116,22 +1189,35 @@ impl Grounder for Turbovec {
                 // above and there is nothing to re-add.
                 if let Ok(content) = std::fs::read_to_string(&path) {
                     // PROPAGATE the add error rather than swallowing it. `index_file_content`
-                    // inserts each chunk's ref into `meta.refs` BEFORE `index.add_with_ids`;
-                    // if that add fails, those refs are orphans (in `meta.refs`, in no
-                    // `FileEntry.ids`). Swallowing here and then persisting unconditionally
-                    // would write those orphan refs durably, drifting the index against the
-                    // meta. `?`-ing out skips the persist for this reindex, so a failed add
-                    // never persists an orphan ref - consistent with `index_file_content` /
-                    // `freshen`, which already `?` on add.
+                    // is ATOMIC w.r.t. `state.meta` (it stages the chunk ids + refs in
+                    // locals and commits them only AFTER `index.add_with_ids` succeeds), so
+                    // a failed add leaves `meta` untouched - no orphan ref. Even so, we must
+                    // still `?` out rather than swallow: `drop_file` above already mutated
+                    // `state` in memory (this file's old chunks are gone), so swallowing and
+                    // persisting would durably write that half-applied delta. `?`-ing out
+                    // skips the persist and, via the stamp invalidation below, forces the
+                    // next `freshen` to reload the clean persisted store - consistent with
+                    // `index_file_content` / `freshen`, which already `?` on add.
                     self.index_file_content(&mut state, f, &content)?;
                 }
             }
             self.persist_locked(&mut state)
         });
         // Any failure in the reload/re-embed/persist critical section is surfaced here and
-        // aborts BEFORE a partial (orphan-ref) state can be persisted - a failed add `?`s
-        // out above, so `persist_locked` never runs for it.
+        // aborts BEFORE the persist for this reindex runs (a failed add / persist `?`s out
+        // above). But a mid-batch failure leaves `state` DIVERGED from disk: `drop_file`
+        // already removed some files' chunks in memory, yet nothing was persisted, and
+        // `state.stamp` still equals disk (the reload at the top adopted it, or a prior
+        // persist set it). The next `ground`'s `freshen_locked` staleness gate would then
+        // see stamp == disk and SKIP the repairing reload, serving from the diverged
+        // in-memory state. INVALIDATE the stamp (to the `None` sentinel - it is
+        // `Option<StoreStamp>`, and `StoreStamp::of` never yields `None` for a present
+        // store, so `None` can never equal a real on-disk stamp) so the gate detects the
+        // mismatch and reloads the clean persisted store, discarding the divergence. The
+        // SUCCESS path does NOT reach here: `persist_locked` re-stamped to what it wrote,
+        // so a normal reindex leaves the stamp valid and forces no spurious next reload.
         if let Err(e) = result {
+            state.stamp = None;
             eprintln!("turbovec: reindex: {e}");
         }
     }
@@ -1193,63 +1279,30 @@ fn select_execution_providers() -> Vec<ExecutionProviderDispatch> {
 /// source of truth for "what the index covers", shared by the cold build and the
 /// load-time consistency check so the two never disagree about the file set.
 ///
-/// A directory symlink is followed at most once per canonical target: `visited`
-/// tracks the canonicalized paths already descended into, so a symlink CYCLE
-/// (`a -> b`, `b -> a`, or a link back to an ancestor) cannot loop forever or blow the
-/// stack. A target we cannot canonicalize (a broken/dangling link) is simply not
-/// descended.
+/// The canonicalize + visited-canonical-path cycle guard and the [`SKIP_DIRS`] skip
+/// live in the SHARED [`super::walk_guarded`] skeleton (the same one grep's walk uses),
+/// so the two grounders' traversals can never drift. This walk's ONLY leaf action is to
+/// read each file and, when it decodes as UTF-8 (skipping binary / unreadable files),
+/// push its `(repo-relative path, content)`. It always walks the whole tree (leaf
+/// action returns `Continue`); the shared skeleton's cycle guard makes a symlink loop
+/// terminate. `SKIP_DIRS` denies, among others, `.fastembed_cache` (the ~128 MB
+/// embedding-model cache) so `freshen` never hashes it and a cold build never embeds
+/// its JSON blobs, plus non-code dotdirs (`.github`/`.cargo`/`.claude`).
 fn collect_files(dir: &Path, root: &str, out: &mut Vec<(String, String)>) {
     let mut visited = std::collections::HashSet::new();
-    collect_files_guarded(dir, root, out, &mut visited);
-}
-
-/// The recursion body of [`collect_files`], carrying the cycle-guard set. `visited`
-/// holds the canonical path of every directory already entered; a directory whose
-/// canonical form is already present is skipped, so a symlink cycle terminates.
-fn collect_files_guarded(
-    dir: &Path,
-    root: &str,
-    out: &mut Vec<(String, String)>,
-    visited: &mut std::collections::HashSet<PathBuf>,
-) {
-    // Canonicalize this dir and record it BEFORE descending. If canonicalization fails
-    // (permissions, a race) fall back to the literal path so a real dir is still read;
-    // if the canonical path was already visited, a symlink pointed us back into a
-    // subtree we are already walking - stop, or we would loop forever.
-    let canonical = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
-    if !visited.insert(canonical) {
-        return;
-    }
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return,
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if path.is_dir() {
-            // Skip VCS / build / dependency / tooling dirs that hold no first-party
-            // source, from the SHARED `SKIP_DIRS` list in `super` (grep's walk consumes
-            // the same one, so the two grounders never diverge). `.fastembed_cache` is
-            // the ~128 MB embedding-model cache fastembed writes at the repo root
-            // (default, or at FASTEMBED_CACHE_DIR): indexing it would make every
-            // `freshen` hash 128 MB and a cold build EMBED the cache's own JSON blobs
-            // (they surfaced as grounding hits). `.github`/`.cargo`/`.claude` are
-            // non-code dotdirs (CI config, cargo config, agent config) that likewise
-            // pollute the index without grounding value.
-            if !super::is_skipped_dir(&name) {
-                collect_files_guarded(&path, root, out, visited);
-            }
-        } else if let Ok(content) = std::fs::read_to_string(&path) {
+    // The walk always runs to completion (the leaf action never `Break`s), so the
+    // `ControlFlow` result is `Continue` and discarded.
+    let _ = super::walk_guarded(dir, &mut visited, &mut |path| {
+        if let Ok(content) = std::fs::read_to_string(path) {
             let rel = path
                 .strip_prefix(root)
-                .unwrap_or(&path)
+                .unwrap_or(path)
                 .to_string_lossy()
                 .into_owned();
             out.push((rel, content));
         }
-    }
+        std::ops::ControlFlow::Continue(())
+    });
 }
 
 /// Chunk one file's content into fixed line windows, returning the embeddable text

@@ -7,6 +7,7 @@
 pub mod turbovec;
 
 use std::collections::HashSet;
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 
 /// The single source of truth for which directories BOTH grounders skip: VCS / build /
@@ -40,6 +41,60 @@ pub(crate) const SKIP_DIRS: &[&str] = &[
 /// Whether a directory named `name` is one BOTH grounders skip (see [`SKIP_DIRS`]).
 pub(crate) fn is_skipped_dir(name: &str) -> bool {
     SKIP_DIRS.contains(&name)
+}
+
+/// The ONE guarded directory-walk skeleton BOTH grounders share: grep's `walk` (this
+/// module) and turbovec's `collect_files` (the `turbovec` feature). The two used to
+/// each reimplement the identical canonicalize + visited-canonical-path cycle guard +
+/// [`SKIP_DIRS`] check; they now differ ONLY in the per-file LEAF ACTION they pass as
+/// `on_file` - grep searches the file's lines, turbovec collects `(rel_path, content)`.
+/// Factoring the skeleton here (always compiled, in `mod.rs`) means the cycle guard and
+/// the skip-list can never drift between the two walks.
+///
+/// A directory symlink is descended at most once per canonical target: `visited` holds
+/// the canonicalized path of every directory already entered, so a symlink CYCLE
+/// (`a -> b`, `b -> a`, or a link back to an ancestor) terminates instead of looping
+/// forever / blowing the stack. A target that cannot be canonicalized (a broken link,
+/// a permissions race) falls back to the literal path so a real directory is still read.
+///
+/// `on_file` returns [`ControlFlow`]: `Break(())` stops the whole walk immediately
+/// (grep uses this to stop once it has collected its `k` hits), `Continue(())` walks on.
+/// The return value propagates up the recursion, so a `Break` unwinds the entire walk.
+pub(crate) fn walk_guarded<F>(
+    dir: &Path,
+    visited: &mut HashSet<PathBuf>,
+    on_file: &mut F,
+) -> ControlFlow<()>
+where
+    F: FnMut(&Path) -> ControlFlow<()>,
+{
+    // Canonicalize this dir and record it BEFORE descending. If canonicalization fails
+    // (permissions, a race) fall back to the literal path so a real dir is still read;
+    // if the canonical path was already visited, a symlink pointed us back into a
+    // subtree we are already walking - stop, or we would loop forever.
+    let canonical = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    if !visited.insert(canonical) {
+        return ControlFlow::Continue(());
+    }
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return ControlFlow::Continue(()),
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if path.is_dir() {
+            // Skip the shared VCS / build / dependency / tooling dirs (see `SKIP_DIRS`),
+            // the same set both grounders deny, so the two walks never diverge.
+            if !is_skipped_dir(&name) {
+                walk_guarded(&path, visited, on_file)?;
+            }
+        } else {
+            on_file(&path)?;
+        }
+    }
+    ControlFlow::Continue(())
 }
 
 /// A relevant location: a file, a line, and a snippet.
@@ -134,59 +189,22 @@ impl Grounder for Grep {
         let mut refs = Vec::new();
         // Carry a canonical-path visited set so a directory symlink CYCLE (`a -> b`,
         // `b -> a`, or a link back to an ancestor) terminates instead of looping
-        // forever / blowing the stack - the same guard turbovec's `collect_files` uses.
+        // forever / blowing the stack. The canonicalize + visited-set cycle guard and the
+        // SKIP_DIRS check live in the SHARED `walk_guarded` skeleton - the same one
+        // turbovec's `collect_files` uses - so the two walks can never drift; this walk's
+        // ONLY leaf action is to search each file's lines, stopping once it has `k` hits.
         let mut visited = HashSet::new();
-        walk(
-            Path::new(&self.root),
-            &self.root,
-            &needle,
-            k,
-            &mut refs,
-            &mut visited,
-        );
-        refs
-    }
-}
-
-fn walk(
-    dir: &Path,
-    root: &str,
-    needle: &str,
-    k: usize,
-    refs: &mut Vec<Ref>,
-    visited: &mut HashSet<PathBuf>,
-) {
-    if refs.len() >= k {
-        return;
-    }
-    // Canonicalize this dir and record it BEFORE descending. If canonicalization fails
-    // (permissions, a race) fall back to the literal path so a real dir is still read;
-    // if the canonical path was already visited, a symlink pointed us back into a
-    // subtree we are already walking - stop, or we would loop forever.
-    let canonical = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
-    if !visited.insert(canonical) {
-        return;
-    }
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return,
-    };
-    for entry in entries.flatten() {
-        if refs.len() >= k {
-            return;
-        }
-        let path = entry.path();
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if path.is_dir() {
-            // Skip the shared VCS / build / dependency / tooling dirs (see `SKIP_DIRS`),
-            // the same set turbovec's walk denies, so the two grounders never diverge.
-            if !is_skipped_dir(&name) {
-                walk(&path, root, needle, k, refs, visited);
+        let _ = walk_guarded(Path::new(&self.root), &mut visited, &mut |path| {
+            search_file(path, &self.root, &needle, k, &mut refs);
+            // Stop the whole walk once we have collected the requested k hits - the
+            // early-out that keeps grep from scanning the rest of the tree once full.
+            if refs.len() >= k {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
             }
-        } else {
-            search_file(&path, root, needle, k, refs);
-        }
+        });
+        refs
     }
 }
 
