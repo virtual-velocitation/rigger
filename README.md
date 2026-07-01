@@ -75,3 +75,5 @@ By default this uses the local SQLite store, the grep grounder, and the `claude`
 ## Where this is going
 
 The full design, including the data model, the schemas, the failure-mode handling, and the phased build plan, is in [docs/architecture.md](docs/architecture.md). Read that if you want to understand exactly how it works or you intend to build it. This README is the why. That document is the how.
+
+To *use* Rigger - which SDLC stages to hand to agents, how to author agents and loops, how to wire tools into their hands, and the best practices learned running Rigger on itself - read [the handbook](docs/handbook/README.md).
