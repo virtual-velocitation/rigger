@@ -18,9 +18,9 @@ The corollary is where humans sit: at the points where the check itself is being
                                         human decides             decision -> event log
  Planning              AGENT            planner                   coverage gate (every
                                                                   criterion -> a unit)
- Implementation        AGENT            implementer /             red -> green TDD +
-                                        rust-engineer             the cargo gates
- Verification          MACHINE          gates (fmt, clippy,       exit codes
+ Implementation        AGENT            implementer (your         red -> green TDD +
+                                        language's engineer)      the project's gates
+ Verification          MACHINE          gates (format, lint,      exit codes
                                         build, test)
  Code review           AGENT            lenses -> adversary ->    adjudicator verdict
                                         adjudicator
@@ -55,7 +55,7 @@ What it *can* see is the shared memory: before writing code it grounds itself (`
 
 ### Verification: gates are the floor, not the review
 
-Gates are named shell commands (`cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo build`, `cargo test`) declared in the workflow YAML. They run *before* review, every time, and a red gate feeds straight back into the unit's remediation loop - a reviewer's time is never spent on code that does not compile.
+Gates are named shell commands - your formatter check, your linter at its strictest, your build, your test suite, in whatever toolchain the project uses - declared in the workflow YAML. They run *before* review, every time, and a red gate feeds straight back into the unit's remediation loop - a reviewer's time is never spent on code that does not build.
 
 Gates carry an autonomy level that ratchets: after enough clean passes a `manual` gate proposes its own promotion to `auto_notify`; any non-manual gate that fails demotes itself back to `manual`. A graduated gate can never become a silent hole.
 

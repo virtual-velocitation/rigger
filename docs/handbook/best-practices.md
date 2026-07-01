@@ -12,11 +12,11 @@ Everything below was learned running Rigger on itself - including the failures. 
 
 ## Verification
 
-**4. Gates before reviewers, always.** Machine checks are cheap and impartial; reviewer attention is the scarce resource. Nothing reaches review that has not passed fmt, lint, build, and test. A red gate is a remediation trigger, not a review topic.
+**4. Gates before reviewers, always.** Machine checks are cheap and impartial; reviewer attention is the scarce resource. Nothing reaches review that has not passed format, lint, build, and test. A red gate is a remediation trigger, not a review topic.
 
 **5. Gates mirror CI byte-for-byte.** Same commands, same toolchain versions, run locally in the loop before anything lands. CI's job is confirmation, never discovery. When CI catches something the gates missed, that is a gate defect - fix the gate library, not just the code.
 
-**6. Map every criterion to the check that can actually see it.** Gate suites have blind spots: a lock file hides fresh-resolve skew from every cargo gate; a JS artifact is invisible to `cargo test`; install flows, docs, and live-server behavior all live outside the default suite. For each criterion ask "which check proves this?" - and when the answer is "none of the existing ones", either add a gate or route explicit evidence to the adjudicator. A green gate on a criterion it cannot see is worse than no gate: it manufactures false confidence.
+**6. Map every criterion to the check that can actually see it.** Gate suites have blind spots: a dependency lock file hides fresh-resolve skew from every build gate that uses it; an artifact outside your main language is invisible to that language's test suite; install flows, docs, and live-server behavior all live outside the default suite. For each criterion ask "which check proves this?" - and when the answer is "none of the existing ones", either add a gate or route explicit evidence to the adjudicator. A green gate on a criterion it cannot see is worse than no gate: it manufactures false confidence.
 
 **7. Verify the criterion, not a proxy.** A grep for a path prefix "proves" decoupling that a re-export trivially defeats; a compile pass "proves" a deletion that was never committed; unit tests on hand-built fixtures "prove" interactive flows the production wire-up never triggers. When a check can be satisfied without the property holding, an agent under pressure will eventually satisfy it exactly that way - not from malice, from gradient. Test the real property.
 

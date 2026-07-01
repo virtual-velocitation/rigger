@@ -6,6 +6,8 @@ A loop is the machine that turns a spec into integrated code. You author one by 
 
 A spec is a Markdown file whose load-bearing content is its acceptance criteria: enumerable, machine-checkable "Done when" bullets. Everything else in the spec is context for the agents; the criteria are the contract.
 
+The excerpt below is from a real spec the Rigger repo ran on itself - Rigger is a Rust project, so its criteria name cargo commands. The *shape* is what to copy; substitute your own toolchain throughout.
+
 ```markdown
 # Spec: close three dogfood-surfaced gaps
 
@@ -29,14 +31,14 @@ Rules that make a spec loop-ready:
 1. **One criterion, one observable behavior.** A criterion an agent can partially satisfy is two criteria wearing one checkbox.
 2. **Name the verification, not just the state.** "Verify by actually running the install into a temp `--root`" beats "install works" - it tells the implementer what evidence to produce and the adjudicator what evidence to demand.
 3. **State the fallback if the ideal is impossible.** "If a clean fresh resolve is genuinely impossible, the fallback is BOTH: document it AND add a CI job that catches the regression." Without this, an agent that hits the wall either stalls or silently ships less.
-4. **Flag what the gates cannot see.** If a criterion's proof lies outside the gate set (a JS file `cargo test` never touches, an install flow the lock file hides), say so in the spec and instruct the adjudicator to demand explicit evidence. The gate suite verifies what it verifies - a green gate on an unverifiable criterion is a false positive factory.
+4. **Flag what the gates cannot see.** If a criterion's proof lies outside the gate set (an artifact in a language your test suite never compiles, an install flow the dependency lock file hides), say so in the spec and instruct the adjudicator to demand explicit evidence. The gate suite verifies what it verifies - a green gate on an unverifiable criterion is a false positive factory.
 5. **Global constraints ride along.** Style rules, CI invariants, attribution rules - state them once in the spec; every unit inherits them.
 
 The entry gate is real: `rigger run <spec>` refuses to start unless every acceptance criterion is covered by a stage. A spec with no enumerable criteria does not run - fix the spec.
 
 ## The workflow: `.rigger/workflow.yml`
 
-The workflow is a GitHub-Actions-style DAG declaring defaults, a gate library, and stages. The repo's own `.rigger/workflow.yml` is the canonical example - Rigger produces itself with it.
+The workflow is a GitHub-Actions-style DAG declaring defaults, a gate library, and stages. The example below is the Rigger repo's own `.rigger/workflow.yml` - Rigger produces itself with it, so the gates are cargo commands and the engineer is a Rust engineer. Nothing about the structure is Rust-specific: your gate library is whatever your CI runs (`npm test`, `pytest`, `go vet ./...`), and your engineer agent is whatever your stack needs.
 
 ```yaml
 name: rigger-self-hosted
@@ -104,7 +106,7 @@ Same loop, four entry points - pick by where you are sitting:
 |---|---|---|
 | Native Claude Code workflow | `/rigger specs/feature.md` | The primary driver. Installed by `rigger setup` at `.claude/workflows/rigger.js`; runs inside your Claude Code session, progress visible in `/workflows`. |
 | Standalone JS driver | `rigger workflow specs/feature.md` | Same loop from a plain terminal - no interactive session needed. Provisioned in `.rigger/shim/` by `rigger setup`. |
-| Standalone CLI driver | `rigger run specs/feature.md` | The lower-level Rust conductor driving the `claude` CLI directly. |
+| Standalone CLI driver | `rigger run specs/feature.md` | The lower-level conductor binary driving the `claude` CLI directly. |
 | MCP bridge | `rigger serve` | The conductor as an MCP server: an external harness pulls assignments and reports results over stdio. See [tools-and-context.md](tools-and-context.md#the-mcp-bridge). |
 
 Setup is two commands in any repo: `rigger init` (config-only: writes `.rigger/` with starter agents and workflow) or `rigger setup` (init plus installing the Claude Code workflow and the shim driver). `rigger validate` checks the whole configuration - agents referenced by stages exist, gates referenced by name are declared, the DAG is acyclic.

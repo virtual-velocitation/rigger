@@ -69,10 +69,10 @@ A gate is a shell command whose exit code is the verdict, declared once in the w
 
 ```yaml
 gates:
-  test: { run: "cargo test", kind: core }
+  test: { run: "npm test", kind: core }     # or cargo test, pytest, go test ./...
 ```
 
-Anything scriptable can gate: compilers, linters, test suites, contract suites against a real server, an install smoke (`cargo install --path . --root $(mktemp -d)`), a `node --check` on a JS artifact. Two rules:
+Anything scriptable can gate: compilers, linters, test suites, contract suites against a real server, an install smoke into a throwaway prefix, a syntax check on a script artifact - in any language, or several at once. Two rules:
 
 1. **Gates mirror CI exactly** - same commands, same versions. A gate/CI mismatch means the loop green-lights what CI rejects, and agents "fix" the wrong failure.
 2. **Know what the gates cannot see.** Every gate suite has a blind spot (a lock file masking fresh-resolve skew, non-compiled artifacts, behavior only a live server exercises). Name the blind spots in the spec and route their verification to the adjudicator as demanded evidence.

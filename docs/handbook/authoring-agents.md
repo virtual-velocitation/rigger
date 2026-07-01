@@ -35,7 +35,7 @@ The tier assignment is an economic decision with a quality floor. The pattern pr
 
 | Tier | Use for | Rigger examples |
 |---|---|---|
-| `opus` | Judgment: planning, adversarial review, adjudication, genuinely novel implementation | `planner`, `adversary`, `adjudicator`, `rust-engineer` |
+| `opus` | Judgment: planning, adversarial review, adjudication, genuinely novel implementation | `planner`, `adversary`, `adjudicator`, the senior-engineer role |
 | `sonnet` | Execution against an explicit spec: mechanical implementation, lens review with a rubric, integration | `implementer`, `reviewer.technical`, `scribe` |
 | `haiku` | Cheap single-purpose calls: escalation formatting, summaries | escalation notices |
 

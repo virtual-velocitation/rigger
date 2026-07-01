@@ -23,7 +23,7 @@ Rigger turns a spec into integrated code by running a team of agents over shared
 - **Spec** - a Markdown file with enumerable "Done when" acceptance criteria. The loop refuses to start unless every criterion is covered by a stage.
 - **Unit** - the smallest independently implementable, testable, reviewable piece of work. One unit maps to one acceptance criterion (or a planner-refined slice of one).
 - **Stage** - a node in the workflow DAG (`plan`, `implement`, ...). A `fan-out` stage spawns one agent per ready unit.
-- **Gate** - a named shell command whose exit code is the verdict (`cargo test`, `cargo clippy ...`). Gates are config, not code.
+- **Gate** - a named shell command whose exit code is the verdict (`npm test`, `go vet ./...`, `cargo test` - whatever your CI runs). Gates are config, not code.
 - **Review panel** - the three-tier check on every unit: expert lenses in parallel, then an adversary who reviews *the lenses*, then an adjudicator whose verdict gates integration.
 - **Ledger** - the run's durable state, itself a projection of the event log. A resumed run re-reads it; state never lives in a conversation.
 - **Context graph** - the bi-temporal projection of the event log: decisions, files, lessons, and their relationships, queryable by "what governs the files I am about to touch."
