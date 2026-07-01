@@ -15,8 +15,6 @@ use rigger::driver::cli;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::{sqlite::Store, Direction, EventStore, Filter};
 use rigger::gate::ExecRunner;
-#[cfg(feature = "turbovec")]
-use rigger::grounder::Grep;
 use rigger::grounder::Grounder;
 use rigger::ledger::RunState;
 use rigger::metrics::{self, Metrics};
@@ -208,6 +206,19 @@ fn project_identity() -> String {
 }
 
 fn main() {
+    // Point `ort` at a CUDA-enabled ONNX Runtime `.so` to `dlopen` (it is built with
+    // `load-dynamic`) BEFORE anything constructs a grounder, so the turbovec grounder
+    // embeds on the GPU with no user-set env - for both the standalone binary and a
+    // `cargo install`ed one. A no-op when the runtime is not found or the feature is
+    // off; see `rigger::ort_runtime` for the discovery order.
+    //
+    // SAFETY: this is the first statement in `main`, before any thread is spawned, so
+    // mutating the process environment here is sound (no concurrent env reader).
+    #[cfg(feature = "turbovec")]
+    unsafe {
+        rigger::ort_runtime::ensure_dylib_path();
+    }
+
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
         usage();
@@ -220,6 +231,7 @@ fn main() {
         "graph" => cmd_graph(&args[2..]),
         "stats" => cmd_stats(&args[2..]),
         "ground" => cmd_ground(&args[2..]),
+        "reindex" => cmd_reindex(&args[2..]),
         "emit" => cmd_emit(&args[2..]),
         "peers" => cmd_peers(&args[2..]),
         "validate" => cmd_validate(),
@@ -258,6 +270,9 @@ per-gate remediation counts, escalation rate, and\n                             
 review approve/reject counts\n  \
 rigger ground <query> [k]   print up to k (default 8) repo references the project's\n                              \
 configured grounder finds for <query>, as `file:line: text`\n  \
+rigger reindex <file>...    incrementally re-embed the named files in the project's\n                              \
+persisted grounding index (the grounder's reindex), so a\n                              \
+later `rigger ground` reflects just-landed changes\n  \
 rigger emit <type> <json>   append {{type, data:<json>}} to the event store and fold\n                              \
 it into the context graph (the CLI form of rigger_emit)\n  \
 rigger peers [file ...]     print peer decisions and findings from the context\n                              \
@@ -314,7 +329,7 @@ fn run_cli(parsed: &RunArgs) -> Res {
     let store = Namespaced::new(backend.as_ref(), &project_identity());
     let graph = Projector::open(&db_path("graph.db"))?;
     let driver = cli::Driver::default();
-    let grounder = select_grounder(&cfg.workflow.defaults.grounder);
+    let grounder = select_grounder(&cfg.workflow.defaults.grounder)?;
     let deps = Deps {
         store: &store,
         driver: &driver,
@@ -342,7 +357,7 @@ fn run_workflow(parsed: &RunArgs) -> Res {
     let store = Namespaced::new(backend.as_ref(), &project_identity());
     let graph = Projector::open(&db_path("graph.db"))?;
     let driver = rigger::driver::workflow::Driver::new();
-    let grounder = select_grounder(&cfg.workflow.defaults.grounder);
+    let grounder = select_grounder(&cfg.workflow.defaults.grounder)?;
     let peers = rigger::sidecar::Sidecar::start(&store, 0, Filter::default())?;
 
     // The conductor orchestrates in the background; this thread serves the MCP
@@ -679,10 +694,46 @@ fn cmd_ground(args: &[String]) -> Res {
     let name = config::load(".")
         .map(|cfg| cfg.workflow.defaults.grounder)
         .unwrap_or_default();
-    let grounder = select_grounder(&name);
+    let grounder = select_grounder(&name)?;
     for r in grounder.ground(query, k) {
         println!("{}:{}: {}", r.file, r.line, r.text);
     }
+    Ok(())
+}
+
+/// `rigger reindex <file>...` - incrementally re-embed the named files in the
+/// project's persisted grounding index. It resolves the grounder from
+/// `defaults.grounder` via [`select_reindex_grounder`] (rooted at `.`) - which, unlike
+/// [`select_grounder`], loads the turbovec store WITHOUT freshening the whole tree, so
+/// the named files are re-embedded exactly ONCE here rather than once by a load-time
+/// freshen and again by the reindex. It then calls [`Grounder::reindex`] on the changed
+/// files, so the turbovec grounder drops each file's old chunks, re-embeds its current
+/// content, and persists the delta to `.rigger/grounding/` - a later `rigger ground`
+/// (and the review tier the workflow runs after a unit lands) then reflects the
+/// just-integrated code WITHOUT re-embedding the whole repo. For the grep / nop
+/// grounders `reindex` is a no-op (they re-read the tree each call), so this command is
+/// harmless there. Files are repo-relative, matching how the grounder records and
+/// grounds them. At least one file is required.
+fn cmd_reindex(args: &[String]) -> Res {
+    if args.is_empty() {
+        return Err("reindex: expected at least one file: rigger reindex <file>...".into());
+    }
+    // Same selection path as `cmd_ground`: honor `defaults.grounder` when a config
+    // is present, else the unset default (turbovec). The grounder is rooted at `.`,
+    // so the persisted store it loads/updates is this project's `.rigger/grounding/`.
+    let name = config::load(".")
+        .map(|cfg| cfg.workflow.defaults.grounder)
+        .unwrap_or_default();
+    // Use the reindex-specific constructor: it loads the persisted store WITHOUT a
+    // whole-tree freshen, so `reindex` re-embeds ONLY the named files - never those
+    // files twice (once by a load-time freshen, once by the reindex below).
+    let grounder = select_reindex_grounder(&name)?;
+    grounder.reindex(".", args);
+    println!(
+        "reindexed {} file(s) in the grounding index: {}",
+        args.len(),
+        args.join(", ")
+    );
     Ok(())
 }
 
@@ -992,28 +1043,56 @@ fn cmd_prime() -> Res {
     Ok(())
 }
 
-/// Build the grounder named by `defaults.grounder` (§3.2, §5.4, R4): `nop` and
-/// `grep` (and the empty default) resolve via `grounder::grounder_for`; the
-/// semantic names (`vector`/`turbovec`) resolve to the real turbovec engine only
-/// when compiled with `-F turbovec`, falling back to grep with a note if its model
-/// is unavailable. Anything else falls back to grep via `grounder_for`.
+/// Build the grounder named by `defaults.grounder` (§3.2, §5.4, R4). Turbovec is the
+/// DEFAULT grounder: the turbovec names (`vector`/`turbovec`) AND an UNSET / empty
+/// `defaults.grounder` resolve to the real semantic engine. `grep` and `nop` resolve
+/// via `grounder::grounder_for` and are reachable ONLY when named explicitly.
+///
+/// When the binary is built WITHOUT the `turbovec` feature, resolving to turbovec is
+/// a LOUD error (a clear message + non-zero exit), never a silent degrade to grep -
+/// that silent degrade is exactly what hid turbovec being absent for a whole session.
+/// Grep runs ONLY when the user writes `grounder: grep`.
 #[cfg(feature = "turbovec")]
-fn select_grounder(name: &str) -> Box<dyn Grounder> {
-    match name.to_lowercase().as_str() {
-        "vector" | "turbovec" => match rigger::grounder::turbovec::Turbovec::new(".") {
-            Ok(tv) => Box::new(tv),
-            Err(e) => {
-                eprintln!("rigger: turbovec unavailable ({e}); falling back to grep");
-                Box::new(Grep { root: ".".into() })
-            }
-        },
-        other => rigger::grounder::grounder_for(other, "."),
+fn select_grounder(name: &str) -> Result<Box<dyn Grounder>, Box<dyn std::error::Error>> {
+    if rigger::grounder::resolves_to_turbovec(name) {
+        // Building the index can fail for a real, distinct reason (e.g. the embedding
+        // model cannot be loaded); that is its OWN loud error, not a grep fallback.
+        // `new` freshens any tree drift on load, which is what the grounding-read paths
+        // (`ground`/`run`/`serve`) want.
+        let tv = rigger::grounder::turbovec::Turbovec::new(".")
+            .map_err(|e| format!("turbovec grounder unavailable: {e}"))?;
+        return Ok(Box::new(tv));
     }
+    Ok(rigger::grounder::grounder_for(name, ".")?)
 }
 
 #[cfg(not(feature = "turbovec"))]
-fn select_grounder(name: &str) -> Box<dyn Grounder> {
-    rigger::grounder::grounder_for(name, ".")
+fn select_grounder(name: &str) -> Result<Box<dyn Grounder>, Box<dyn std::error::Error>> {
+    // No turbovec feature compiled in: `grounder_for` returns the loud
+    // "built without the turbovec feature" error for the default / turbovec names,
+    // and resolves grep / nop normally. We never silently degrade to grep.
+    Ok(rigger::grounder::grounder_for(name, ".")?)
+}
+
+/// The grounder for `rigger reindex`, which differs from [`select_grounder`] ONLY for
+/// turbovec: it constructs via `Turbovec::new_for_reindex`, which loads the persisted
+/// store WITHOUT freshening tree drift. `reindex` then re-embeds exactly the named
+/// files; using the freshening `new` here would re-embed every drifted file on load and
+/// then the named files AGAIN - a double-embed. grep / nop have no index, so their
+/// `reindex` is a no-op and this resolves identically to [`select_grounder`].
+#[cfg(feature = "turbovec")]
+fn select_reindex_grounder(name: &str) -> Result<Box<dyn Grounder>, Box<dyn std::error::Error>> {
+    if rigger::grounder::resolves_to_turbovec(name) {
+        let tv = rigger::grounder::turbovec::Turbovec::new_for_reindex(".")
+            .map_err(|e| format!("turbovec grounder unavailable: {e}"))?;
+        return Ok(Box::new(tv));
+    }
+    Ok(rigger::grounder::grounder_for(name, ".")?)
+}
+
+#[cfg(not(feature = "turbovec"))]
+fn select_reindex_grounder(name: &str) -> Result<Box<dyn Grounder>, Box<dyn std::error::Error>> {
+    Ok(rigger::grounder::grounder_for(name, ".")?)
 }
 
 fn git_repo() -> String {
@@ -1063,7 +1142,7 @@ name: example\n\
 \n\
 defaults:\n  \
 autonomy: auto_notify   # manual | auto_notify | silent\n  \
-grounder: grep          # grep (default) | turbovec (needs the cargo feature)\n  \
+grounder: turbovec      # turbovec (default; the real semantic grounder) | grep | nop\n  \
 # The spawn-budget circuit-breaker: the hard cap on agent spawns one unattended\n  \
 # run may make. At the cap the breaker emits BudgetExhausted and aborts the run,\n  \
 # so a runaway can never spawn unboundedly. NON-ZERO on purpose - 0 = unlimited.\n  \
@@ -1233,7 +1312,9 @@ mod tests {
             review.adjudicator, "devils-advocate",
             "tier 3: the neutral adjudicator gates"
         );
-        assert_eq!(cfg.workflow.defaults.grounder, "grep");
+        // The scaffold sets turbovec EXPLICITLY (visible, not implicit) - it is the
+        // default grounder and the default cargo feature.
+        assert_eq!(cfg.workflow.defaults.grounder, "turbovec");
         // FIX 3: the scaffold ships a NON-ZERO spawn budget so an unattended `rigger
         // run` cannot spawn unboundedly - 0 would be unlimited.
         assert!(
@@ -1315,6 +1396,49 @@ mod tests {
                 "the error must name the missing feature; got: {e}"
             ),
         }
+    }
+
+    /// With the turbovec feature compiled OUT, selecting the DEFAULT grounder (an
+    /// unset name) or an explicit turbovec/vector name FAILS LOUDLY - a clear error
+    /// naming turbovec, the missing feature, and the explicit grep opt-out - and never
+    /// silently degrades to grep. This is the regression guard for the silent degrade
+    /// that hid turbovec being absent for a whole session.
+    #[cfg(not(feature = "turbovec"))]
+    #[test]
+    fn select_grounder_fails_loudly_without_the_turbovec_feature() {
+        for name in ["", "turbovec", "vector"] {
+            let err = select_grounder(name)
+                .err()
+                .unwrap_or_else(|| panic!("{name:?} must fail loudly without the feature"));
+            let msg = err.to_string();
+            assert!(
+                msg.contains("turbovec") && msg.contains("feature") && msg.contains("grep"),
+                "the loud error must name turbovec, the feature, and the grep opt-out; got: {msg}"
+            );
+        }
+        // grep and nop are the explicit-only opt-outs and still resolve fine.
+        assert!(select_grounder("grep").is_ok());
+        assert!(select_grounder("nop").is_ok());
+        // An unknown name is a hard error too, not a silent grep fallback.
+        assert!(select_grounder("bogus").is_err());
+    }
+
+    /// With the turbovec feature compiled IN, grep is still reachable when named
+    /// EXPLICITLY (the deliberate literal-grounder opt-out), and an unknown name is a
+    /// hard error rather than a silent grep fallback. (The turbovec / default path is
+    /// exercised by the grounder's own model-loading test, which downloads weights.)
+    #[cfg(feature = "turbovec")]
+    #[test]
+    fn select_grounder_with_feature_resolves_grep_explicitly_and_rejects_unknown() {
+        assert!(
+            select_grounder("grep").is_ok(),
+            "explicit grep must resolve even with the turbovec feature on"
+        );
+        assert!(select_grounder("nop").is_ok());
+        assert!(
+            select_grounder("bogus-grounder").is_err(),
+            "an unknown grounder name must be a hard error, not a silent grep fallback"
+        );
     }
 
     #[test]

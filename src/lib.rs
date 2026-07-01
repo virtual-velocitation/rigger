@@ -16,6 +16,11 @@ pub mod hooks;
 pub mod ledger;
 pub mod mcpserver;
 pub mod metrics;
+/// Points `ort` at a CUDA-enabled ONNX Runtime `.so` to `dlopen` (`load-dynamic`), so
+/// the turbovec grounder embeds on the GPU with no user-set env. Only meaningful when
+/// `ort` is compiled in, hence gated on the `turbovec` feature.
+#[cfg(feature = "turbovec")]
+pub mod ort_runtime;
 pub mod safety;
 pub mod sidecar;
 pub mod spec;

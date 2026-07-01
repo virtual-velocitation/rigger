@@ -83,6 +83,14 @@ impl ReviewPanel {
 pub struct Defaults {
     #[serde(default)]
     pub autonomy: String,
+    /// Which grounder the loop uses (§3.2, §5.4, R4). UNSET / empty resolves to
+    /// `turbovec` (the real semantic grounder and the default cargo feature), NOT
+    /// grep - so a workflow that says nothing gets semantic grounding. `"turbovec"`
+    /// / `"vector"` select it explicitly; `"grep"` selects the literal substring
+    /// grounder (reachable only when configured by name); `"nop"` grounds nothing.
+    /// When the resolved grounder is turbovec but the binary was built WITHOUT the
+    /// `turbovec` feature, selection FAILS LOUDLY rather than silently degrading to
+    /// grep (see `grounder::grounder_for` / `main::select_grounder`).
     #[serde(default)]
     pub grounder: String,
     /// The three-tier review panel applied to every implementer unit (§3.2): each
