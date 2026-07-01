@@ -97,6 +97,23 @@ const LOCK_FILE: &str = "store.lock";
 /// closes the in-crate race; the `unsafe` marks the process-global one the lock cannot.
 static CONSTRUCT_MU: Mutex<()> = Mutex::new(());
 
+/// Set to `true` the first time a `TextEmbedding` model is successfully built, which is
+/// the ONLY moment `ort` loads its runtime dylib and commits its process-global
+/// environment. Read by [`ort_was_initialized`] so `main`'s teardown
+/// ([`crate::ort_teardown::release_ort_runtime`]) knows whether there is an ORT
+/// environment to release before process exit - and skips the release (a clean no-op)
+/// on any run that never built a GPU/CPU session (grep grounder, missing runtime, ...).
+/// Never reset: once ORT is loaded it stays loaded for the life of the process.
+static ORT_INITIALIZED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether a turbovec model was built in this process - i.e. whether `ort` loaded its
+/// runtime and committed an environment that must be released before exit. See
+/// [`ORT_INITIALIZED`]; `main` uses this to gate the ORT/CUDA teardown so it runs
+/// exactly on the runs that need it.
+pub fn ort_was_initialized() -> bool {
+    ORT_INITIALIZED.load(std::sync::atomic::Ordering::Acquire)
+}
+
 /// Turbovec grounds semantically: it embeds the codebase into a quantized vector
 /// index and returns the chunks nearest a query. The index + its id->Ref map are
 /// persisted under `.rigger/grounding/` and loaded on construction when present, so
@@ -419,6 +436,12 @@ impl Turbovec {
                 }
             }
         };
+
+        // The model built, which means `ort` loaded its runtime dylib and committed its
+        // process-global environment (`TextEmbedding::try_new` above is the only path that
+        // does so). Record it so `ort_teardown::release_ort_runtime` knows an ORT
+        // environment exists to release before process exit - see `ORT_INITIALIZED`.
+        ORT_INITIALIZED.store(true, std::sync::atomic::Ordering::Release);
 
         let store_dir = Path::new(root).join(GROUNDING_DIR);
         let tv = Turbovec {
