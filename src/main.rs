@@ -252,6 +252,40 @@ fn main() {
         eprintln!("rigger: {e}");
         std::process::exit(1);
     }
+
+    // Exit WITHOUT running static/global destructors. `rigger` is a one-shot CLI: by the
+    // time we get here the command has printed its output and persisted its files, so
+    // there is nothing left for teardown to do that the kernel will not do for free when
+    // the process dies (reclaim memory, close fds).
+    //
+    // Why this is not merely an optimization: with the `turbovec` feature the process has
+    // built an ONNX Runtime + CUDA embedding session, and tearing that session down at
+    // process exit intermittently corrupts the glibc heap ("corrupted double-linked list")
+    // and aborts with exit 101. It surfaced under the full turbovec test suite - which
+    // spawns many short-lived `rigger` CUDA subprocesses in sequence - at ~1-2 aborts per
+    // 14 runs, only on the GPU path (CI's CPU-only build never hit it). The corruption is
+    // in the CUDA/ORT teardown itself: it is absent when the session is never built,
+    // reproduces only as the process exits after a successful GPU embed, and is not
+    // reachable from any execution-provider or session option we can set through fastembed.
+    // Skipping the teardown removes the buggy code path entirely: we flush our own buffered
+    // output first (so nothing is lost), then `_exit(0)`, which terminates immediately
+    // without invoking C/C++ static destructors or Rust drop glue. Verified to take the
+    // full suite to zero aborts across 14x runs where the default return path did not.
+    //
+    // Gated to `turbovec` because that is the only build that loads the crashing runtime;
+    // the default-features build always has it, and the CPU-only `--no-default-features`
+    // build takes the ordinary return below (nothing to skip, and `libc` is not linked).
+    #[cfg(feature = "turbovec")]
+    {
+        use std::io::Write;
+        let _ = std::io::stdout().flush();
+        let _ = std::io::stderr().flush();
+        // SAFETY: `_exit` is async-signal-safe and simply terminates the process with the
+        // given status. We have already flushed the only buffered writers we own (Rust's
+        // line-buffered stdout/stderr); no other thread is producing output at this point
+        // (the command has returned), so nothing observable is lost by not unwinding.
+        unsafe { libc::_exit(0) };
+    }
 }
 
 fn usage() {
@@ -1330,6 +1364,13 @@ mod tests {
     /// budget (FIX 3): a shipped, unattended config must cap its own spawns. A 0
     /// (unlimited) budget here is what let a runaway loop churn for hours.
     #[test]
+    // Reads relative paths (`.`, `..`) so it depends on the process CWD. Another test
+    // (`cmd_stats_on_a_never_run_project...`) temporarily `set_current_dir`s to a temp
+    // dir; if that runs concurrently, `config::load(".")` here resolves `.` to that
+    // temp dir and fails ("read reviewer.architecture.md: No such file"). CWD is
+    // process-global, so a restore guard in the other test does not close the window -
+    // the two must be mutually exclusive. Both share the `cwd` serial key.
+    #[serial_test::serial(cwd)]
     fn shipped_workflows_carry_a_non_zero_spawn_budget() {
         for root in ["..", "../examples/demo", ".", "examples/demo"] {
             // The test runs from the crate root in CI and from the workspace root
@@ -1688,6 +1729,12 @@ mod tests {
     /// the clear "no runs yet" message and succeed, NOT create the db or panic. Run in
     /// a temp dir so the real project's `.rigger/` is untouched.
     #[test]
+    // Mutates the process-global CWD (`set_current_dir` below). Shares the `cwd` serial
+    // key with `shipped_workflows_carry_a_non_zero_spawn_budget` (which reads relative
+    // paths) so the two never run concurrently: the restore guard prevents LEAKING a
+    // changed CWD past this test, but only mutual exclusion prevents the other test from
+    // OBSERVING the changed CWD mid-window.
+    #[serial_test::serial(cwd)]
     fn cmd_stats_on_a_never_run_project_says_no_runs_and_creates_no_db() {
         let dir = tempfile::tempdir().unwrap();
         let prev = std::env::current_dir().unwrap();
