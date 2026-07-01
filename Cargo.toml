@@ -25,7 +25,7 @@ default = ["turbovec"]
 # reach its execution-provider types (CUDA/CPU), so the grounder can request a
 # GPU EP with a CPU fallback. fastembed's `ort-download-binaries` still provides
 # the runtime itself - we pin the SAME ort version and take no default features.
-turbovec = ["dep:turbovec", "dep:fastembed", "dep:ort", "dep:libc"]
+turbovec = ["dep:turbovec", "dep:fastembed", "dep:ort", "dep:ort-sys", "dep:libc"]
 # The KurrentDB EventStore adapter (the trait's server-backed implementation). It
 # pulls the async gRPC client + a tokio runtime; testcontainers drives its
 # contract test against a real KurrentDB.
@@ -55,6 +55,16 @@ fastembed = { version = "4", optional = true }
 # so no LD_LIBRARY_PATH manipulation is needed. EP order is [CUDA, CPU] with a silent
 # fallback - GPU when available, CPU otherwise. No pip, no Python, no wheels.
 ort = { version = "=2.0.0-rc.9", default-features = false, features = ["cuda", "download-binaries", "load-dynamic"], optional = true }
+# Pin ort-sys to the EXACT version `ort =2.0.0-rc.9` was written against. `ort` only
+# requires `ort-sys = "2.0.0-rc.9"`, which - under Cargo's pre-release semver - matches
+# any `2.0.0-rc.N` with N >= 9 (rc.10, rc.11, rc.12, ...). Without `--locked`, a fresh
+# resolve skews ort-sys FORWARD to the newest rc while ort stays pinned at rc.9; rc.10+
+# regenerated the OrtApi bindings so the fn-pointer fields are non-null `fn` instead of
+# `Option<fn>`, and rc.9's `ortsys!` macro calls `.unwrap_or_else()`/`.expect()` on them
+# - 267 compile errors, so `cargo install --path .` fails WITHOUT `--locked`. Pinning
+# ort-sys as a direct `=` dep forces the fresh resolution back to the matching rc.9, so
+# `cargo install` (no `--locked`) resolves and compiles cleanly. Feature-gated with `ort`.
+ort-sys = { version = "=2.0.0-rc.9", default-features = false, optional = true }
 # Raw `flock(2)` for the cross-process advisory lock the turbovec store takes around
 # its load+persist critical section, so a concurrent reader (another `rigger` process
 # - a `parallel()` lens, a `rigger reindex`) never observes a half-written or

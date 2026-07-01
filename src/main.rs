@@ -1576,6 +1576,142 @@ mod tests {
         );
     }
 
+    /// Extract the literal body of the `export const meta = { ... }` object from the
+    /// embedded workflow: from `export const meta` to the matching top-level `}`. Used to
+    /// assert the meta object stays a PURE LITERAL (the Workflow runtime extracts it
+    /// statically, so it cannot contain computed values or interpolation).
+    fn meta_object_body(src: &str) -> &str {
+        let start = src
+            .find("export const meta")
+            .expect("workflow must export const meta");
+        let open = start + src[start..].find('{').expect("meta must open a brace");
+        let mut depth = 0usize;
+        for (i, c) in src[open..].char_indices() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return &src[open..=open + i];
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("meta object literal is not brace-balanced");
+    }
+
+    /// Strip `//` line comments from JS source so assertions about the executable code
+    /// (e.g. "the global `phase('Build')` marker is gone") are not tripped by prose that
+    /// documents the removed construct. Only whole-line comments and end-of-line comments
+    /// are stripped; this is a test-only heuristic, not a JS parser, and the workflow's
+    /// comments never contain `//` inside a string literal on the same line.
+    fn strip_line_comments(src: &str) -> String {
+        src.lines()
+            .map(|line| match line.find("//") {
+                Some(i) => &line[..i],
+                None => line,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The workflow labels its progress phases PER UNIT so the `/workflows` display matches
+    /// per-unit execution (each unit runs its whole Build -> Review -> Integrate lifecycle
+    /// before the next starts) instead of implying a false global "all units Build, then all
+    /// Review" order. Because `meta` MUST be a pure literal (statically extracted by the
+    /// Workflow runtime, so no computed values / no interpolation) and unit ids are only
+    /// known at runtime, the per-unit labels live in the runtime `opts.phase` progress-group
+    /// strings inside `buildUnit`, while `meta.phases` keeps the fixed stage set. This test
+    /// pins all four facts so a future edit cannot silently regress any of them.
+    #[test]
+    fn workflow_labels_phases_per_unit_and_keeps_meta_a_pure_literal() {
+        let wf = RIGGER_WORKFLOW;
+        // Assertions about the executable code run against comment-stripped source so the
+        // workflow's own documentation prose (which references the removed marker) cannot
+        // trip them; assertions about the meta literal run against the raw object body.
+        let code = strip_line_comments(wf);
+
+        // 1. meta.phases keeps the FIXED stage set (Plan stays as is; Build/Review/Integrate
+        //    are the stable up-front stage names, not per-unit titles).
+        let meta = meta_object_body(wf);
+        for stage in ["Plan", "Build", "Review", "Integrate"] {
+            assert!(
+                meta.contains(&format!("title: '{stage}'")),
+                "meta.phases must declare the fixed stage '{stage}'"
+            );
+        }
+
+        // 2. meta stays a PURE LITERAL: no template-literal interpolation anywhere in the
+        //    object body. Per-unit unit ids (only known at runtime) must NOT leak into meta;
+        //    if they did, meta could no longer be statically extracted by the runtime.
+        assert!(
+            !meta.contains("${"),
+            "meta must be a pure literal - no `${{...}}` interpolation or computed values \
+             (found interpolation inside the meta object body): {meta}"
+        );
+        assert!(
+            !meta.contains("u<id>:'") && !meta.contains("`u"),
+            "meta.phases must not carry runtime per-unit phase titles - those belong in \
+             opts.phase inside buildUnit"
+        );
+
+        // 3. Per-unit progress groups are produced at runtime via a PH helper that suffixes
+        //    each fixed stage with the unit id, and every per-unit agent uses it.
+        assert!(
+            code.contains("const PH = (stage) => `u${unit.id}:${stage}`"),
+            "buildUnit must define the per-unit PH(stage) => `u<id>:<stage>` progress-group helper"
+        );
+        for stage in ["Build", "Review", "Integrate"] {
+            assert!(
+                code.contains(&format!("phase: PH('{stage}')")),
+                "the per-unit agents must label their progress group via PH('{stage}')"
+            );
+        }
+        // The bare stage strings must no longer appear as opts.phase for the per-unit agents.
+        for stage in ["Build", "Review", "Integrate"] {
+            assert!(
+                !code.contains(&format!("phase: '{stage}'")),
+                "no per-unit agent may use the bare global `phase: '{stage}'` - that would \
+                 collapse every unit into one global progress group and imply a false order"
+            );
+        }
+
+        // 4. Only Plan remains a genuine global phase marker; the global `phase('Build')`
+        //    marker is removed (its per-unit opts.phase strings replace it). Plan stays as is.
+        assert!(
+            code.contains("phase('Plan')"),
+            "the single global Plan pass must keep its phase('Plan') marker"
+        );
+        assert!(
+            !code.contains("phase('Build')"),
+            "the global phase('Build') marker must be removed - Build is per-unit now, driven \
+             by each unit's opts.phase, so a global marker would re-imply a false global order"
+        );
+        // Plan's own agents legitimately keep the literal `phase: 'Plan'` opts (Plan stays as is).
+        assert!(
+            code.contains("phase: 'Plan'"),
+            "the Plan-phase agents must keep their literal phase: 'Plan' opts"
+        );
+
+        // 5. The workflow still parses: run `node --check` when node is on PATH (never a
+        //    silent skip - assert the clear reason when it is not available).
+        let node = std::env::var("RIGGER_NODE").unwrap_or_else(|_| "node".to_string());
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        std::io::Write::write_all(&mut f, wf.as_bytes()).unwrap();
+        match Command::new(&node).arg("--check").arg(f.path()).output() {
+            Ok(out) => assert!(
+                out.status.success(),
+                "node --check must pass on the embedded workflow:\n{}",
+                String::from_utf8_lossy(&out.stderr)
+            ),
+            Err(e) => assert!(
+                e.kind() == std::io::ErrorKind::NotFound,
+                "node --check failed for a reason other than node being absent: {e}"
+            ),
+        }
+    }
+
     /// `rigger setup` runs npm install against the provisioned shim so `node_modules`
     /// is ready. When npm is available we run it FOR REAL against a temp dir and
     /// confirm `node_modules` appears; when npm is unavailable we assert the clear
