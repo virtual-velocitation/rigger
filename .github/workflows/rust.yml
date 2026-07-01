@@ -24,6 +24,17 @@ jobs:
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+        with:
+          # rust-cache restores the compiled `ort-sys` crate but NOT ort's downloaded ONNX
+          # runtime, which lives in ~/.cache/ort.pyke.io (outside the cargo dirs). On a WARM
+          # cache ort-sys is not rebuilt, so its build script never re-downloads the runtime,
+          # leaving that dir empty on the fresh runner -> ort falls back to the bare
+          # `libonnxruntime.so` and panics ("cannot open shared object file"), poisoning
+          # CONSTRUCT_MU and cascading through every turbovec test. Cache the runtime
+          # alongside the build so the two are restored coherently; the prefix-key bump forces
+          # one cold rebuild that repopulates both from scratch.
+          prefix-key: "v1-rust-ort"
+          cache-directories: "~/.cache/ort.pyke.io"
       - name: install OpenBLAS (turbovec is in the default build)
         run: sudo apt-get update && sudo apt-get install -y libopenblas-dev
       - name: fmt
