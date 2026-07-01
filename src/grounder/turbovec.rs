@@ -149,6 +149,23 @@ impl Turbovec {
     /// `<root>/.rigger/grounding/`, it is loaded and the whole-repo embed is
     /// skipped; otherwise the tree is embedded once and the store is written.
     pub fn new(root: &str) -> Result<Self, String> {
+        // Point `ort` (built with `load-dynamic`) at a discovered `libonnxruntime.so`
+        // BEFORE the fastembed/`ort` model below first loads the runtime. `main` also
+        // calls this, but tests and any other caller that constructs the grounder
+        // directly never run `main`, so without this they hit
+        // `libonnxruntime.so: cannot open shared object file` in a clean env (e.g. CI).
+        // Doing it here makes construction self-sufficient. Guarded by `Once` so repeat
+        // constructions pay nothing, and `ensure_dylib_path` itself no-ops when
+        // `ORT_DYLIB_PATH` is already set - so an explicit env choice is never overridden.
+        //
+        // SAFETY: `ensure_dylib_path` mutates a process env var and requires no other
+        // thread be reading the environment concurrently. `Once::call_once` runs the
+        // closure exactly once and serializes callers, and env reads by `ort` happen
+        // only when the model is loaded just below (after this returns), so there is no
+        // concurrent env reader at the point of mutation.
+        static ENSURE_DYLIB: std::sync::Once = std::sync::Once::new();
+        ENSURE_DYLIB.call_once(|| unsafe { crate::ort_runtime::ensure_dylib_path() });
+
         let model = TextEmbedding::try_new(
             InitOptions::new(EmbeddingModel::BGESmallENV15)
                 .with_show_download_progress(false)
