@@ -37,9 +37,9 @@
 //! chain comes up empty AND the system loader also cannot resolve a bare
 //! `libonnxruntime.so`, then `ort`'s first use will `panic!` inside its
 //! `lib_handle()` (its `dlopen` is `.unwrap_or_else(|e| panic!(...))`). That panic is
-//! not catchable by `is_available().unwrap_or(false)`, so the grounder probes
-//! [`dylib_is_resolvable`] BEFORE touching any `ort` API and fails with a clear error
-//! instead of letting the raw panic escape. See `grounder::turbovec`.
+//! not catchable by `is_available().unwrap_or(false)`, so the grounder builds the model
+//! inside a `std::panic::catch_unwind` and turns that panic into a clear `Err` - the
+//! same load `ort` performs, so nothing can disagree with it. See `grounder::turbovec`.
 
 use std::path::{Path, PathBuf};
 
@@ -153,83 +153,6 @@ fn newest_dylib_under(dfbin_triple: &Path) -> Option<PathBuf> {
     best.map(|(_, path)| path)
 }
 
-/// The exact `libonnxruntime.so` path `ort` (under `load-dynamic`) will try to
-/// `dlopen` on first use, mirroring `ort`'s own `dylib_path()` + `lib_handle()`
-/// resolution so a caller can check loadability WITHOUT tripping `ort`'s internal
-/// panic. Returns:
-///   - the `ORT_DYLIB_PATH` value when set and non-empty (absolute is used verbatim;
-///     a relative path is resolved against the executable's dir if that file exists,
-///     else left relative for the system loader) - this is `ort`'s rule exactly;
-///   - otherwise the bare default name `libonnxruntime.so`, likewise resolved against
-///     the exe dir when present, else left bare for the system loader.
-///
-/// This does NOT set the env var and never touches an `ort` API; it only computes the
-/// path so [`dylib_is_resolvable`] can probe it.
-fn ort_dylib_candidate() -> PathBuf {
-    // `ort`'s `dylib_path()`: honor a non-empty ORT_DYLIB_PATH, else the platform
-    // default. We only ship on x86_64 Linux, so the default is `libonnxruntime.so`.
-    let requested = match std::env::var(ORT_DYLIB_PATH) {
-        Ok(s) if !s.is_empty() => PathBuf::from(s),
-        _ => PathBuf::from("libonnxruntime.so"),
-    };
-    // `ort`'s `lib_handle()`: an absolute path is used as-is; a relative one is joined
-    // to the executable's dir when THAT file exists, otherwise left relative so the
-    // system loader (ldconfig search path) resolves it.
-    if requested.is_absolute() {
-        return requested;
-    }
-    if let Some(dir) = std::env::current_exe()
-        .ok()
-        .and_then(|e| e.parent().map(Path::to_path_buf))
-    {
-        let beside = dir.join(&requested);
-        if beside.exists() {
-            return beside;
-        }
-    }
-    requested
-}
-
-/// Whether the ONNX Runtime dylib `ort` would `dlopen` can actually be loaded.
-///
-/// `ort`'s `lib_handle()` is `libloading::Library::new(path).unwrap_or_else(|e|
-/// panic!(...))`, and `CUDAExecutionProvider::is_available()` reaches it, so a probe
-/// like `is_available().unwrap_or(false)` cannot catch a missing runtime - it PANICS.
-/// The grounder calls this first so it can degrade gracefully (a clear `Result::Err`)
-/// instead of unwinding through that panic.
-///
-/// The check mirrors `ort`'s resolution ([`ort_dylib_candidate`]) and then attempts a
-/// real `dlopen` of it via `libc`: an absolute/beside-exe path is opened by that path;
-/// a bare name goes through the system loader exactly as `ort`'s `dlopen` would. The
-/// handle is closed immediately - this only answers "would `ort`'s load succeed?",
-/// with no lasting effect on the process. `RTLD_LAZY` defers symbol binding, so a
-/// resolvable-but-quirky lib still counts as loadable (matching `ort`, which also just
-/// opens it). A NULL handle (any dlopen failure) means not resolvable.
-pub fn dylib_is_resolvable() -> bool {
-    let candidate = ort_dylib_candidate();
-    // If the candidate is an explicit path (absolute, or resolved beside the exe) it
-    // must exist to be openable; a bare name is left to the loader's search path.
-    if (candidate.is_absolute() || candidate.components().count() > 1) && !candidate.exists() {
-        return false;
-    }
-    let Ok(c_path) = std::ffi::CString::new(candidate.as_os_str().as_encoded_bytes()) else {
-        return false; // a path with an interior NUL can never be a real dylib path
-    };
-    // SAFETY: `dlopen`/`dlclose` are plain libc calls. `c_path` is a valid, NUL-
-    // terminated C string that outlives the `dlopen` call. On success we immediately
-    // `dlclose` the handle we opened, so this probe leaves no library mapped by us
-    // (the OS refcounts; `ort`'s later real load is unaffected). On failure `dlopen`
-    // returns NULL, which we report as "not resolvable".
-    unsafe {
-        let handle = libc::dlopen(c_path.as_ptr(), libc::RTLD_LAZY | libc::RTLD_LOCAL);
-        if handle.is_null() {
-            return false;
-        }
-        libc::dlclose(handle);
-    }
-    true
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -308,107 +231,5 @@ mod tests {
             newest_dylib_under(dir.path()).is_none(),
             "a hashed dir with no libonnxruntime.so must not be discovered"
         );
-    }
-
-    /// An absolute `ORT_DYLIB_PATH` that names a real, loadable shared object is
-    /// reported resolvable, mirroring `ort`'s `dlopen` of the same path - WITHOUT
-    /// tripping the panic `is_available()` would. We point it at a genuine system
-    /// `.so` (`libc` itself), so the probe's real `dlopen` succeeds. `serial` because
-    /// it mutates the process-wide `ORT_DYLIB_PATH` env var.
-    #[test]
-    #[serial_test::serial(ort_dylib_env)]
-    fn resolvable_when_env_points_at_a_real_shared_object() {
-        // A shared object every Linux box has and that `dlopen` can open by absolute
-        // path. Pick the first that exists so the test is host-robust.
-        let real_so = ["/lib/x86_64-linux-gnu/libc.so.6", "/usr/lib/libc.so.6"]
-            .into_iter()
-            .map(PathBuf::from)
-            .find(|p| p.exists());
-        let Some(real_so) = real_so else {
-            return; // no known libc path on this host; skip rather than false-fail
-        };
-        let prev = std::env::var_os(ORT_DYLIB_PATH);
-        // SAFETY: single-threaded test body; `#[serial]` keeps other env mutators out.
-        unsafe { std::env::set_var(ORT_DYLIB_PATH, &real_so) };
-        assert!(
-            dylib_is_resolvable(),
-            "an ORT_DYLIB_PATH pointing at a real, loadable .so must be resolvable"
-        );
-        // SAFETY: restore the prior value under the same serialized section.
-        unsafe {
-            match prev {
-                Some(v) => std::env::set_var(ORT_DYLIB_PATH, v),
-                None => std::env::remove_var(ORT_DYLIB_PATH),
-            }
-        }
-    }
-
-    /// An absolute `ORT_DYLIB_PATH` naming a file that does not exist is NOT
-    /// resolvable - the probe returns `false` (a clean bool) rather than letting a
-    /// later `ort` call panic on the missing dylib. This is the cleared-cache edge the
-    /// grounder must degrade on.
-    #[test]
-    #[serial_test::serial(ort_dylib_env)]
-    fn not_resolvable_when_env_points_at_a_missing_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let missing = dir.path().join("libonnxruntime.so"); // never created
-        let prev = std::env::var_os(ORT_DYLIB_PATH);
-        // SAFETY: single-threaded test body; `#[serial]` serializes env mutators.
-        unsafe { std::env::set_var(ORT_DYLIB_PATH, &missing) };
-        assert!(
-            !dylib_is_resolvable(),
-            "an ORT_DYLIB_PATH pointing at a non-existent file must be unresolvable, not panic"
-        );
-        // SAFETY: restore the prior value under the same serialized section.
-        unsafe {
-            match prev {
-                Some(v) => std::env::set_var(ORT_DYLIB_PATH, v),
-                None => std::env::remove_var(ORT_DYLIB_PATH),
-            }
-        }
-    }
-
-    /// The candidate path mirrors `ort`'s own resolution: a set, non-empty absolute
-    /// `ORT_DYLIB_PATH` is honored verbatim; unset falls back to the default name
-    /// `libonnxruntime.so` - resolved against the exe dir if that file exists (exactly
-    /// what `ort`'s `lib_handle` does), else left bare for the system loader.
-    #[test]
-    #[serial_test::serial(ort_dylib_env)]
-    fn candidate_mirrors_ort_resolution() {
-        let prev = std::env::var_os(ORT_DYLIB_PATH);
-        // An absolute env value is used verbatim.
-        // SAFETY: serialized env mutation in a single-threaded test.
-        unsafe { std::env::set_var(ORT_DYLIB_PATH, "/opt/ort/libonnxruntime.so") };
-        assert_eq!(
-            ort_dylib_candidate(),
-            PathBuf::from("/opt/ort/libonnxruntime.so"),
-            "an absolute ORT_DYLIB_PATH must be honored verbatim, like ort does"
-        );
-        // Unset: the candidate is the default name, EITHER left bare OR resolved to the
-        // exe-dir copy when one exists there (the test binary's deps/ dir may hold a real
-        // libonnxruntime.so). Both are `ort`'s exact resolution; the invariant is the
-        // FILE NAME, and that an explicit (multi-component) path only appears when it
-        // actually exists on disk.
-        // SAFETY: serialized env mutation in a single-threaded test.
-        unsafe { std::env::remove_var(ORT_DYLIB_PATH) };
-        let candidate = ort_dylib_candidate();
-        assert_eq!(
-            candidate.file_name().and_then(|n| n.to_str()),
-            Some("libonnxruntime.so"),
-            "the unset default must resolve to the libonnxruntime.so name"
-        );
-        let is_bare = candidate == Path::new("libonnxruntime.so");
-        assert!(
-            is_bare || (candidate.components().count() > 1 && candidate.exists()),
-            "unset must be the bare name, or an existing beside-exe path - never a \
-             non-existent explicit path; got {candidate:?}"
-        );
-        // SAFETY: restore prior value.
-        unsafe {
-            match prev {
-                Some(v) => std::env::set_var(ORT_DYLIB_PATH, v),
-                None => std::env::remove_var(ORT_DYLIB_PATH),
-            }
-        }
     }
 }

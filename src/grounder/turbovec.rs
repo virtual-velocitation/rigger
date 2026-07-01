@@ -15,10 +15,9 @@
 //!    See [`select_execution_providers`] for how the `-F cuda` ort build + the
 //!    `ORT_DYLIB_PATH` runtime discovery make the GPU path real, and how it degrades.
 //!    The one thing that is NOT a silent fallback is a wholly *missing* runtime dylib:
-//!    `ort` `panic!`s if it cannot `dlopen` `libonnxruntime.so`, so before touching any
-//!    `ort` API `construct` verifies `ort_runtime::dylib_is_resolvable()` and returns a
-//!    clear error rather than letting that panic escape (the cleared-cache-post-install
-//!    edge).
+//!    `ort` `panic!`s if it cannot `dlopen` `libonnxruntime.so`, so `construct` builds the
+//!    model inside a `std::panic::catch_unwind` and turns that panic into a clear `Err`
+//!    rather than letting it escape (the cleared-cache-post-install edge).
 //!
 //! 2. **A persisted, auto-freshened, incrementally-updated index.** The embeddings +
 //!    the id->(file, line, snippet) map + a per-file content hash are persisted under
@@ -257,33 +256,42 @@ impl Turbovec {
             // pre-spawn) rather than eliminated by this lock alone.
             unsafe { crate::ort_runtime::ensure_dylib_path() };
 
-            // Confirm the ONNX Runtime dylib `ort` will `dlopen` is actually loadable
-            // BEFORE any `ort` API is touched. `ort`'s `lib_handle()` `dlopen` is
-            // `.unwrap_or_else(|e| panic!(...))`, reached transitively by both
-            // `select_execution_providers`' `is_available()` probe and
-            // `TextEmbedding::try_new`'s session load - so a missing runtime (the narrow
-            // cleared-cache-after-install edge) would UNWIND as a raw panic that
-            // `is_available().unwrap_or(false)` cannot catch. Failing here with a clear,
-            // actionable error degrades gracefully instead. `ensure_dylib_path` ran just
-            // above, so this probes exactly the path `ort` will use.
-            if !crate::ort_runtime::dylib_is_resolvable() {
-                return Err(
-                    "turbovec: the ONNX Runtime shared library (libonnxruntime.so) could not be \
-                     resolved for loading. It is normally downloaded into \
-                     ~/.cache/ort.pyke.io/dfbin/ by the build; if that cache was cleared after \
-                     install, rebuild (`cargo build`) to re-fetch it, set ORT_DYLIB_PATH to a \
-                     valid libonnxruntime.so, or select `defaults.grounder: grep` to run without \
-                     the semantic grounder"
-                        .to_string(),
-                );
+            // Build the model, catching the one failure mode that is NOT a `Result::Err`:
+            // a wholly MISSING runtime dylib. Both `select_execution_providers`'
+            // `is_available()` probe and `TextEmbedding::try_new`'s session load reach
+            // `ort`'s `lib_handle()`, whose `dlopen` is `.unwrap_or_else(|e| panic!(...))`
+            // - so a runtime that cannot be `dlopen`ed (the narrow cleared-cache-after-
+            // install edge) UNWINDS as a raw panic that `try_new`'s `Result` and
+            // `is_available().unwrap_or(false)` both fail to catch. `catch_unwind` turns
+            // that panic into the SAME clean `Err(String)` we return for any other load
+            // failure, degrading gracefully instead of aborting - and, unlike a separate
+            // resolvability probe, it observes EXACTLY the load `ort` actually performs, so
+            // the two can never disagree. `AssertUnwindSafe` because we consume the closure
+            // once and discard everything it borrows on the panic path (nothing is left in a
+            // torn state to observe). `ensure_dylib_path` ran just above, so the load below
+            // targets the path `ort` will use.
+            let build = || {
+                TextEmbedding::try_new(
+                    InitOptions::new(EmbeddingModel::BGESmallENV15)
+                        .with_show_download_progress(false)
+                        .with_execution_providers(select_execution_providers()),
+                )
+                .map_err(|e| format!("turbovec: load model: {e}"))
+            };
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(build)) {
+                Ok(result) => result?,
+                Err(_) => {
+                    return Err(
+                        "turbovec: the ONNX Runtime shared library (libonnxruntime.so) could not \
+                         be resolved for loading. It is normally downloaded into \
+                         ~/.cache/ort.pyke.io/dfbin/ by the build; if that cache was cleared after \
+                         install, rebuild (`cargo build`) to re-fetch it, set ORT_DYLIB_PATH to a \
+                         valid libonnxruntime.so, or select `defaults.grounder: grep` to run \
+                         without the semantic grounder"
+                            .to_string(),
+                    );
+                }
             }
-
-            TextEmbedding::try_new(
-                InitOptions::new(EmbeddingModel::BGESmallENV15)
-                    .with_show_download_progress(false)
-                    .with_execution_providers(select_execution_providers()),
-            )
-            .map_err(|e| format!("turbovec: load model: {e}"))?
         };
 
         let store_dir = Path::new(root).join(GROUNDING_DIR);
@@ -934,15 +942,24 @@ impl Grounder for Turbovec {
                 // it was deleted (or is unreadable), its chunks were already dropped
                 // above and there is nothing to re-add.
                 if let Ok(content) = std::fs::read_to_string(&path) {
-                    if let Err(e) = self.index_file_content(&mut state, f, &content) {
-                        eprintln!("turbovec: reindex {f}: {e}");
-                    }
+                    // PROPAGATE the add error rather than swallowing it. `index_file_content`
+                    // inserts each chunk's ref into `meta.refs` BEFORE `index.add_with_ids`;
+                    // if that add fails, those refs are orphans (in `meta.refs`, in no
+                    // `FileEntry.ids`). Swallowing here and then persisting unconditionally
+                    // would write those orphan refs durably, drifting the index against the
+                    // meta. `?`-ing out skips the persist for this reindex, so a failed add
+                    // never persists an orphan ref - consistent with `index_file_content` /
+                    // `freshen`, which already `?` on add.
+                    self.index_file_content(&mut state, f, &content)?;
                 }
             }
             self.persist_locked(&state)
         });
+        // Any failure in the reload/re-embed/persist critical section is surfaced here and
+        // aborts BEFORE a partial (orphan-ref) state can be persisted - a failed add `?`s
+        // out above, so `persist_locked` never runs for it.
         if let Err(e) = result {
-            eprintln!("turbovec: reindex persist: {e}");
+            eprintln!("turbovec: reindex: {e}");
         }
     }
 }
@@ -957,14 +974,14 @@ impl Grounder for Turbovec {
 /// harmlessly and CPU is used. Registration never panics for want of a GPU.
 ///
 /// The one case that IS a panic - not a want of GPU but a want of the *runtime dylib*
-/// itself - is handled earlier: `is_available()` reaches `ort`'s `lib_handle()`, whose
-/// `dlopen` `panic!`s if `libonnxruntime.so` cannot be loaded. So `Turbovec::construct`
-/// verifies `ort_runtime::dylib_is_resolvable()` and returns a clear error BEFORE
-/// calling this; and this function itself only probes `is_available()` when the dylib
-/// is resolvable, so the `unwrap_or(false)` here is a true belt-and-braces, not the
-/// primary guard. (`unwrap_or(false)` catches a benign `Err` - e.g. the runtime cannot
-/// enumerate providers - it does NOT catch the missing-dylib panic; that is why the
-/// resolvability check upstream is load-bearing.)
+/// itself - is handled by the CALLER: `is_available()` reaches `ort`'s `lib_handle()`,
+/// whose `dlopen` `panic!`s if `libonnxruntime.so` cannot be loaded. `Turbovec::construct`
+/// invokes this function (and `TextEmbedding::try_new`) inside a `catch_unwind`, so that
+/// panic becomes a clean `Err` there rather than escaping. This function itself just
+/// probes `is_available()` to LOG the backing provider; the `unwrap_or(false)` catches a
+/// benign `Err` (runtime present but unqueryable), while the missing-dylib PANIC is left
+/// for the caller's `catch_unwind` to turn into a graceful error - a single guard that
+/// observes exactly the load `ort` performs, with no separate probe that could disagree.
 ///
 /// This crate builds `ort` with `-F cuda,download-binaries,load-dynamic` (see
 /// `Cargo.toml`), so the CUDA EP's Cargo feature IS compiled in and `ort-sys`
@@ -978,13 +995,10 @@ fn select_execution_providers() -> Vec<ExecutionProviderDispatch> {
     let cuda = CUDAExecutionProvider::default();
     // `is_available()` reports whether the loaded ONNX Runtime was COMPILED with CUDA
     // support. It reaches `ort`'s `lib_handle()`, which `panic!`s if the runtime dylib
-    // cannot be `dlopen`ed - so probe it ONLY when the dylib is resolvable (the caller,
-    // `construct`, already guarantees this, but guarding here keeps this function safe
-    // to call directly, e.g. from tests). When it is NOT resolvable we cannot be GPU-
-    // backed anyway, so report CPU. A benign `Err` (runtime present but unqueryable)
-    // still degrades to `false` via `unwrap_or`.
-    let cuda_available =
-        crate::ort_runtime::dylib_is_resolvable() && cuda.is_available().unwrap_or(false);
+    // cannot be `dlopen`ed; `construct` calls this function inside a `catch_unwind`, so
+    // that panic is caught there, not here. A benign `Err` (runtime present but
+    // unqueryable) degrades to `false` via `unwrap_or` and we report CPU.
+    let cuda_available = cuda.is_available().unwrap_or(false);
     if cuda_available {
         eprintln!(
             "turbovec: CUDA execution provider available; embedding on GPU (CPU fallback armed)"
@@ -1042,9 +1056,24 @@ fn collect_files_guarded(
         let name = entry.file_name();
         let name = name.to_string_lossy();
         if path.is_dir() {
+            // Skip VCS / build / dependency / tooling dirs that hold no first-party
+            // source. `.fastembed_cache` is the ~128 MB embedding-model cache fastembed
+            // writes at the repo root (default, or at FASTEMBED_CACHE_DIR): indexing it
+            // would make every `freshen` hash 128 MB and a cold build EMBED the cache's
+            // own JSON blobs (they surfaced as grounding hits). `.github`/`.cargo`/`.claude`
+            // are non-code dotdirs (CI config, cargo config, agent config) that likewise
+            // pollute the index without grounding value.
             if !matches!(
                 name.as_ref(),
-                ".git" | ".rigger" | "vendor" | "target" | "node_modules"
+                ".git"
+                    | ".rigger"
+                    | ".fastembed_cache"
+                    | ".github"
+                    | ".cargo"
+                    | ".claude"
+                    | "vendor"
+                    | "target"
+                    | "node_modules"
             ) {
                 collect_files_guarded(&path, root, out, visited);
             }
@@ -1661,17 +1690,31 @@ mod tests {
     }
 
     /// FINDING #1 (graceful ORT-dylib degradation): when the ONNX Runtime dylib `ort`
-    /// would `dlopen` is UNRESOLVABLE, construction must return a clean `Err` - NOT
-    /// unwind through `ort`'s internal `lib_handle()` panic. We force the unresolvable
-    /// state by setting `ORT_DYLIB_PATH` to a path that does not exist: `ensure_dylib_path`
-    /// respects an already-set value (so it will not "rescue" us with a discovered
-    /// runtime), and the pre-flight `dylib_is_resolvable()` check then fails fast. The
-    /// error message must be actionable (name the runtime and a remedy). `file_serial`
-    /// on the model key so it never overlaps a real model construction that reads the
-    /// same env var.
+    /// would `dlopen` cannot be loaded, construction must DEGRADE GRACEFULLY - it must
+    /// never unwind through `ort`'s internal `lib_handle()` panic and abort the process.
+    /// We force the unresolvable state by pointing `ORT_DYLIB_PATH` at a path that does
+    /// not exist (`ensure_dylib_path` respects an already-set value, so it will not
+    /// "rescue" us with a discovered runtime); `construct` builds the model inside a
+    /// `catch_unwind`, so ANY panic from the missing dylib is turned into a clean `Err`.
+    ///
+    /// The outcome is asserted ORDER-INDEPENDENTLY: `ort`'s runtime handle is a process-
+    /// global `OnceLock` (`G_ORT_LIB`) loaded exactly once on the FIRST construction and
+    /// cached forever, and `ORT_DYLIB_PATH` is likewise read once into `G_ORT_DYLIB_PATH`.
+    /// So whether this test observes the failing load depends on whether an EARLIER test
+    /// in this shared binary already loaded the runtime:
+    ///   - runtime not yet loaded here -> the bad path drives `dlopen` to fail; the
+    ///     `catch_unwind` yields a clean, actionable `Err` (names the runtime + a remedy);
+    ///   - runtime already cached by a prior construction -> `ort` reuses the good handle,
+    ///     ignores the late env change, and construction simply succeeds (`Ok`).
+    /// BOTH are graceful. The ONLY forbidden outcome - the regression this guards - is an
+    /// escaped panic / process abort. A separate resolvability probe (the retired gate)
+    /// could DISAGREE with `ort`'s cached global here and manufacture a spurious `Err`;
+    /// `catch_unwind` observes exactly the load `ort` performs, so it never can.
+    /// `file_serial` on the model key so it never overlaps a real construction that reads
+    /// the same env var.
     #[test]
     #[file_serial(turbovec_model)]
-    fn construct_errors_cleanly_when_the_ort_dylib_is_unresolvable() {
+    fn construct_degrades_gracefully_when_the_ort_dylib_is_unresolvable() {
         let dir = tiny_repo();
         let root = dir.path().to_str().unwrap();
 
@@ -1682,9 +1725,9 @@ mod tests {
         // model constructions (the only other env readers we spawn) out.
         unsafe { std::env::set_var("ORT_DYLIB_PATH", &missing) };
 
-        // Construction returns a clean Err, does not panic. Catch any (unexpected) panic
-        // so a regression to the panicking path fails loudly as a test failure, not an
-        // abort, and we still restore the env below.
+        // Construction must not abort. Catch any escaped panic so a regression to the
+        // panicking path fails loudly as a test failure, not a process abort, and we
+        // still restore the env below.
         let outcome = std::panic::catch_unwind(|| Turbovec::new(root));
 
         // Restore the env FIRST so a failed assertion does not leak the bad value into
@@ -1697,16 +1740,28 @@ mod tests {
             }
         }
 
-        let result = outcome.expect("construction must NOT panic when the ORT dylib is missing");
-        // `Turbovec` is not `Debug`, so match rather than `expect_err`.
-        let err = match result {
-            Ok(_) => panic!("an unresolvable ORT dylib must be a clean Err, not Ok"),
-            Err(e) => e,
-        };
-        assert!(
-            err.contains("libonnxruntime.so") && err.to_lowercase().contains("grep"),
-            "the error must name the runtime and an actionable remedy (grep opt-out); got: {err}"
-        );
+        // The load-bearing guarantee: NO escaped panic. `construct`'s `catch_unwind` must
+        // have absorbed any `ort` `lib_handle()` panic into a `Result`.
+        let result =
+            outcome.expect("construction must NOT panic/abort when the ORT dylib is missing");
+        // `Turbovec` is not `Debug`, so match rather than asserting on the `Result` directly.
+        // Either outcome is graceful (see the doc): an `Err` here means `ort` had not yet
+        // cached its runtime and the bad path drove a real load failure, in which case the
+        // message must be actionable; an `Ok` means a prior construction already cached a
+        // working handle that `ort` reused, ignoring the late env change.
+        match result {
+            Err(e) => assert!(
+                e.contains("libonnxruntime.so") && e.to_lowercase().contains("grep"),
+                "a load failure must name the runtime and an actionable remedy (grep opt-out); \
+                 got: {e}"
+            ),
+            Ok(_) => {
+                // Graceful: ort's process-global runtime handle was already loaded and
+                // cached by an earlier construction, so the late ORT_DYLIB_PATH change is
+                // moot and the model built normally. The invariant this test protects -
+                // no panic/abort - already held above.
+            }
+        }
     }
 
     /// FINDING #5 (symlink cycle guard): `collect_files` must terminate on a directory
@@ -1748,6 +1803,45 @@ mod tests {
             nested_hits, 1,
             "the nested file must be collected exactly once, not re-entered via the cycle"
         );
+    }
+
+    /// `.fastembed_cache` (the ~128 MB model cache fastembed writes at the repo root or
+    /// at FASTEMBED_CACHE_DIR) and the non-code tooling dotdirs (`.github`/`.cargo`/
+    /// `.claude`) must be OMITTED from the index: hashing/embedding the model cache made
+    /// every `freshen` hash 128 MB and a cold build embed the cache's JSON blobs (they
+    /// surfaced as grounding hits). We seed a repo with a first-party source file plus a
+    /// file inside each denied dir and assert only the source file is collected. No model
+    /// is built, so this stays parallel.
+    #[test]
+    fn collect_files_skips_the_model_cache_and_tooling_dotdirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        // A genuine source file that MUST be collected.
+        std::fs::write(root.join("lib.rs"), "fn real_code() {}\n").unwrap();
+        // A file inside each denied dir that must NOT be collected. `.fastembed_cache`
+        // stands in for the model cache; the others for CI/cargo/agent config.
+        for denied in [".fastembed_cache", ".github", ".cargo", ".claude"] {
+            let sub = root.join(denied);
+            std::fs::create_dir(&sub).unwrap();
+            std::fs::write(sub.join("blob.json"), "{\"weights\": \"...\"}\n").unwrap();
+        }
+
+        let mut out = Vec::new();
+        collect_files(root, root.to_str().unwrap(), &mut out);
+
+        // Exactly the source file is indexed; nothing from any denied dir leaks in.
+        assert_eq!(
+            out.iter().map(|(rel, _)| rel.as_str()).collect::<Vec<_>>(),
+            vec!["lib.rs"],
+            "only first-party source is indexed - the model cache and tooling dotdirs \
+             must be denied; got {out:?}"
+        );
+        for denied in [".fastembed_cache", ".github", ".cargo", ".claude"] {
+            assert!(
+                !out.iter().any(|(rel, _)| rel.starts_with(denied)),
+                "no file under {denied} may be collected"
+            );
+        }
     }
 
     /// FINDING #3 (persist self-heal is REAL): a persisted store whose meta and index
