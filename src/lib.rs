@@ -15,6 +15,7 @@ pub mod grounder;
 pub mod hooks;
 pub mod ledger;
 pub mod mcpserver;
+pub mod metrics;
 pub mod safety;
 pub mod sidecar;
 pub mod spec;
