@@ -399,6 +399,116 @@ fn ground_degrades_gracefully_when_the_ort_dylib_is_unresolvable() {
     );
 }
 
+/// The ERROR-AFTER-EMBED exit path is crash-free (spec AC for the teardown fix): a run
+/// that builds the GPU/CUDA embedding session and THEN fails - here, a persist that
+/// cannot write because the store dir is read-only - must exit with a clean non-zero
+/// code, NOT a SIGABRT from the ONNX Runtime / CUDA teardown heap corruption
+/// (upstream pykeio/ort#564).
+///
+/// This is the path the old `libc::_exit(0)` dodge left exposed: it skipped the crashing
+/// teardown only on the SUCCESS exit, so an error return still ran the racy `atexit`
+/// destructors. The mitigation (`ort_teardown::release_ort_runtime`, called on BOTH paths
+/// before `process::exit`) must make this path exit cleanly too.
+///
+/// We force the error deterministically: an EMPTY `.rigger/grounding/` dir at mode 000.
+/// The cold `ground` still builds + runs the CUDA embed (proving the session was really
+/// created - see the "CUDA execution provider available" stderr the child prints), then
+/// the persist's store-lock open in that unwritable dir fails with EACCES, so `main`
+/// takes its Err exit AFTER the embed - exactly the error-after-embed shape. We assert
+/// the child was NOT killed by a signal and exited with a clean non-zero code.
+///
+/// Runs OUT OF PROCESS (like the degrade test) so the child owns its own ORT globals and
+/// CUDA teardown; serialized on the shared `turbovec_model` key so no other GPU session
+/// construction overlaps it cross-binary. Unix-only: it relies on POSIX dir permissions,
+/// and the turbovec/CUDA path this guards is Linux-only regardless.
+#[cfg(all(feature = "turbovec", unix))]
+#[test]
+#[serial_test::file_serial(turbovec_model)]
+fn error_after_embed_exits_cleanly_without_a_teardown_abort() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = temp_project();
+    let root = dir.path();
+    write_grounder_workflow(root, "turbovec");
+    std::fs::write(
+        root.join("combat.rs"),
+        "fn apply_damage(target: &mut Entity, amount: f32) {\n    target.health -= amount;\n}\n",
+    )
+    .unwrap();
+
+    // Pre-create an EMPTY grounding dir and lock it to mode 000. There is no persisted
+    // store to load, so the cold `ground` embeds the tree (building the CUDA session),
+    // then fails when it tries to open the store lock / write the index into this
+    // unwritable dir - an error that surfaces strictly AFTER the GPU embed.
+    let grounding = root.join(".rigger").join("grounding");
+    std::fs::create_dir_all(&grounding).unwrap();
+    std::fs::set_permissions(&grounding, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    // The whole test hinges on the mode-000 dir being genuinely UNWRITABLE by the child,
+    // so its post-embed store-lock open fails with EACCES. Under root - or any principal
+    // with CAP_DAC_OVERRIDE, common in CI containers - the kernel BYPASSES the mode bits,
+    // so the child would write the store, ground succeeds, and the run exits 0. That is
+    // not a teardown regression, but the `exit 1` assertion below would still fire and
+    // report a misleading failure. Probe the actual enforcement with the same operation
+    // the child does (create a file inside the dir); if WE can create it, the injection
+    // cannot force the error, so skip cleanly rather than assert against a no-op fixture.
+    // A filesystem probe (not a bare euid==0 check) is used deliberately: it also covers
+    // the CAP_DAC_OVERRIDE-without-uid-0 and permissive-filesystem cases a euid test misses.
+    let probe = grounding.join(".perm_probe");
+    if std::fs::File::create(&probe).is_ok() {
+        let _ = std::fs::remove_file(&probe);
+        let _ = std::fs::set_permissions(&grounding, std::fs::Permissions::from_mode(0o755));
+        eprintln!(
+            "skipping error_after_embed_exits_cleanly_without_a_teardown_abort: the mode-000 \
+             grounding dir is writable by this principal (root / CAP_DAC_OVERRIDE), so the \
+             post-embed persist failure cannot be injected here"
+        );
+        return;
+    }
+
+    let outcome = run_rigger_env(root, &["ground", "how is damage dealt", "1"], &[]);
+
+    // Restore permissions so the TempDir can be cleaned up on drop (a mode-000 subdir
+    // would otherwise make the recursive remove fail).
+    let _ = std::fs::set_permissions(&grounding, std::fs::Permissions::from_mode(0o755));
+
+    // 1. The GPU/CUDA session really was built before the failure - otherwise this test
+    //    would prove nothing about the TEARDOWN path. The grounder prints this line on
+    //    stderr the moment the CUDA EP is selected, before it embeds and then fails.
+    assert!(
+        outcome.stderr.contains("CUDA execution provider available")
+            || outcome.stderr.contains("embedding on"),
+        "the child must have built the embedding session before failing (else the teardown \
+         path is not exercised); stderr: {}",
+        outcome.stderr
+    );
+    // 2. NOT killed by a signal: SIGABRT (signal 6) is exactly the teardown heap-corruption
+    //    abort this fix eliminates, and it terminates the process with a signal and no code.
+    assert!(
+        outcome.signal.is_none(),
+        "the error-after-embed exit must not abort in ORT/CUDA teardown: the process was \
+         killed by signal {:?}; stderr: {}",
+        outcome.signal,
+        outcome.stderr
+    );
+    // 3. A CLEAN non-zero exit (the surfaced persist Err), specifically not 101 (panic).
+    assert_eq!(
+        outcome.code,
+        Some(1),
+        "the error-after-embed path must exit 1 cleanly (a surfaced Err), never a panic \
+         (101) or a teardown abort; got code {:?}, signal {:?}; stderr: {}",
+        outcome.code,
+        outcome.signal,
+        outcome.stderr
+    );
+    // 4. The failure was the post-embed persist, and it did not escape as a panic.
+    assert!(
+        !outcome.stderr.contains("panicked at"),
+        "the persist failure must surface as a clean Err, not an escaped panic; stderr: {}",
+        outcome.stderr
+    );
+}
+
 /// Bad input to `rigger emit` is a clear error on stderr and a non-zero exit, never
 /// a silent success - a workflow agent must be able to tell a malformed emit failed.
 #[test]
@@ -428,5 +538,101 @@ fn emit_rejects_bad_json_with_a_nonzero_exit() {
     assert!(
         err.contains("expected a JSON object"),
         "the error must explain the missing argument; got: {err:?}"
+    );
+}
+
+/// The `main.rs` source text, read at test time from the crate manifest dir. `main.rs` is
+/// a BINARY, not part of the `rigger` library, so its comments are not reachable through
+/// the crate API - we assert on the file's bytes instead. `CARGO_MANIFEST_DIR` is stable
+/// for both `cargo test` and the integration-test binary, so this resolves regardless of
+/// the process cwd.
+fn main_rs_source() -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("main.rs");
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+}
+
+/// Spec AC (u3-honest-doc): `src/main.rs`'s exit path must be HONESTLY documented -
+/// whatever mitigation remains has to state what it does AND what it does not cover, with
+/// NO overstated "removes the buggy code path entirely" framing.
+///
+/// The `ort_teardown::release_ort_runtime` mitigation deprives the upstream teardown bug
+/// (pykeio/ort#564, still open) of its race; it does not delete the buggy ORT code, and
+/// its guarantee is conditional on two invariants (drop-the-session-first, and the leaked
+/// `G_ENV` static). This test locks in that the exit-path comment keeps saying so, so a
+/// later edit cannot quietly regress the comment back into an absolute "this removes the
+/// bug" claim that the behavior does not actually back.
+///
+/// It is a source-text assertion (not a behavior test - that is
+/// `error_after_embed_exits_cleanly_without_a_teardown_abort`): the deliverable here is the
+/// honesty of the DOCUMENTATION, and the guard has to be the words themselves.
+#[test]
+fn main_exit_path_is_honestly_documented() {
+    let src = main_rs_source();
+
+    // Isolate the exit-path teardown comment block: from the `release_ort_runtime` call's
+    // documenting comment up to the call itself. Asserting on this slice (not the whole
+    // file) keeps the test pointed at the exit path and immune to unrelated edits.
+    let call = "rigger::ort_teardown::release_ort_runtime();";
+    let call_at = src
+        .find(call)
+        .expect("main.rs must still call ort_teardown::release_ort_runtime() on the exit path");
+    let block_start = src[..call_at]
+        .rfind("// Tear the ONNX Runtime / CUDA runtime down EXPLICITLY")
+        .expect("the exit-path teardown comment block must precede the release call");
+    let block = &src[block_start..call_at];
+
+    // 1. It must NOT overstate. The spec calls out the exact anti-pattern: a claim that the
+    //    buggy path is gone. The comment may only use that phrase to DISCLAIM it (". . . NOT
+    //    a claim that the buggy path has been removed"), so we reject the bare positive
+    //    forms, not every occurrence of the words.
+    for overstated in [
+        "removes the buggy code path entirely",
+        "removes the buggy path entirely",
+        "eliminates the bug entirely",
+        "the real fix for the intermittent teardown heap corruption",
+    ] {
+        assert!(
+            !block.contains(overstated),
+            "the exit-path comment overstates the fix ({overstated:?}); it must describe a \
+             scoped mitigation of a live upstream bug, not claim the buggy path is gone"
+        );
+    }
+
+    // 2. It must state what the mitigation does NOT cover / that the guarantee is bounded.
+    //    An honest comment names the residual: the upstream bug is still open and the buggy
+    //    code still ships; the win is depriving it of the race, not deleting it.
+    assert!(
+        block.contains("DOES *NOT*") || block.contains("does not remove"),
+        "the exit-path comment must state what the mitigation does NOT cover, not just what \
+         it fixes"
+    );
+    assert!(
+        block.contains("remains open")
+            || block.contains("still ships")
+            || block.contains("live upstream bug"),
+        "the exit-path comment must be honest that the upstream bug is not fixed by us - it \
+         still exists; we only deprive it of the race"
+    );
+
+    // 3. It must state the coverage it DOES have (both exit paths + the no-session no-op) so
+    //    "honest" cuts both ways: it neither overstates the fix nor undersells its real scope.
+    assert!(
+        block.contains("BOTH the success and the error path"),
+        "the exit-path comment must state it covers BOTH exit paths (the win over the old \
+         `_exit(0)` dodge)"
+    );
+    assert!(
+        block.contains("no-op on any run that never built a GPU/CPU session"),
+        "the exit-path comment must state it is a no-op when no session was built"
+    );
+
+    // 4. It must point the reader at the module that carries the full soundness argument and
+    //    the invariants the conditional guarantee rests on, so the honesty is anchored to the
+    //    evidence rather than free-floating.
+    assert!(
+        block.contains("ort_teardown"),
+        "the exit-path comment must reference `ort_teardown` for the full rationale / invariants"
     );
 }

@@ -48,15 +48,21 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libopenblas-dev
       - name: fmt
         run: cargo fmt --check
-      - name: clippy
+      - name: clippy (turbovec, default features)
         run: cargo clippy --all-targets -- -D warnings
       - name: build
         run: cargo build --verbose
       - name: test
         run: cargo test --verbose
       # The deliberate light opt-out: `--no-default-features` drops turbovec so the
-      # grep-only build (no ONNX/OpenBLAS) stays green. The loud "built without the
-      # turbovec feature" path is asserted by select_grounder's no-feature test here.
+      # grep-only build (no ONNX/OpenBLAS) stays green. It gets the SAME gate battery
+      # as the turbovec lane - clippy `--all-targets -D warnings` then build + test -
+      # so a warning that only surfaces under the grep-only cfg (dead code behind the
+      # turbovec feature, an unused import in the fallback path) fails CI instead of
+      # silently rotting. The loud "built without the turbovec feature" path is asserted
+      # by select_grounder's no-feature test here.
+      - name: clippy (grep-only, --no-default-features)
+        run: cargo clippy --no-default-features --all-targets -- -D warnings
       - name: build + test (grep-only, --no-default-features)
         run: |
           cargo build --no-default-features --verbose
