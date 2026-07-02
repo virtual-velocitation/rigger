@@ -1,0 +1,47 @@
+# The `rigger workflow` driver's own test suite. `rigger workflow` execs the
+# standalone Node shim (shim/shim.mjs), so the shim has a Node test suite that the
+# Rust `cargo test` battery deliberately does NOT run: main.rs asserts on the shim
+# only as an embedded `include_str!` const (byte-identical provisioning), and those
+# assertions stay npm-free on purpose. That left the shim's real behavior - the MCP
+# handshake, the pull/report loop, structuredContent unwrapping, blast-radius peer
+# injection, the proxied rigger_emit path, and the slow-conductor-start poll - with
+# no automated gate: it passed locally but nothing enforced it on every push. This
+# job closes that gap so `rigger workflow` (the shim) passing its existing test
+# suite is a continuous CI guarantee, not a one-off local check - exactly the
+# "keep the least-traveled path from silently diverging" intent behind spec 04.
+#
+# The suite is hermetic: `node --test` drives the loop against the checked-in mock
+# servers (mock-rigger-server.mjs / mock-rigger-slow-start.mjs) over the real stdio
+# transport with a stubbed agent, so it needs no network at test time (see
+# shim/README.md "Validation"). The only network is `npm ci` installing the pinned
+# deps from the committed shim/package-lock.json.
+name: shim
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  shim-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: shim
+    steps:
+      - uses: actions/checkout@v4
+      # node >=18 per shim/package.json engines; pin an LTS major for reproducibility.
+      # The npm cache keys on shim/package-lock.json (the lockfile `npm ci` installs).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: shim/package-lock.json
+      # `npm ci` (not `install`) installs exactly the committed lockfile, so the CI
+      # gate exercises the same dependency set `rigger setup` provisions.
+      - name: install shim deps (locked)
+        run: npm ci
+      # `npm test` is `node --test`, which discovers shim.test.mjs (the *.test.mjs
+      # suite). The mock-*.mjs helpers are not test files, so they are not run as tests.
+      - name: shim test suite (node --test)
+        run: npm test
