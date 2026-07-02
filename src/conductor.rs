@@ -352,6 +352,44 @@ pub fn is_parked(e: &Error) -> bool {
     e.0.contains(PARKED_MARKER)
 }
 
+/// The sentinel a REVIEW-TIER spawn (lens/adversary/adjudicator) embeds in its refusal
+/// error when [`reserve_spawn`](RunCtx::reserve_spawn) denies it because the CUMULATIVE
+/// spawn budget is spent (§4.4, §8). Like [`PARKED_MARKER`] it uses control characters no
+/// real error text carries, so [`is_budget_refused`] recognizes it even after the review
+/// site or the wave collapse wraps the error with stage/agent context.
+///
+/// A budget-refused review spawn is NOT a stage failure - it is symmetric with the
+/// implementer's `Ok(false)` refusal in [`run_single_stage`](RunCtx::run_single_stage).
+/// The refusal already set `budget_broke` on the [`RunCtx`], so once this sentinel unwinds
+/// the unit CLEANLY (`run_wave` treats it as not-a-failure, mirroring a park), the run
+/// loop's mid-wave `budget_broke()` check trips the ONE breaker path
+/// ([`trip_budget_breaker`](RunCtx::trip_budget_breaker)): the run halts with a
+/// `BudgetExhausted` event, never a raw error. That is what makes a run exceeding
+/// `defaults.budget` at ANY spawn site - the implementer OR any review tier - abort
+/// identically (spec 04, criterion 5; findings budget-review-tier-no-exhausted,
+/// adv-confirm-review-tier-no-budgetexhausted, adv-budget-guard-cannot-assemble-reviewed-unit).
+const BUDGET_MARKER: &str = "\u{1}rigger:spawn-budget-exhausted\u{1}";
+
+/// Construct the budget-refusal signal a review-tier spawn returns when
+/// [`reserve_spawn`](RunCtx::reserve_spawn) denies it: `tier` names the refused review
+/// tier and `agent` the refused agent (for the audit trail), and the embedded
+/// [`BUDGET_MARKER`] lets [`is_budget_refused`] recognize it through the conductor's own
+/// `format!("... {}", e.0)` error wrapping. Only [`reserve_spawn`] returning `false`
+/// produces this - and it sets `budget_broke` before it does - so the sentinel and the
+/// breaker flag always travel together.
+fn budget_refused(stage: &str, tier: &str, agent: &str) -> Error {
+    Error(format!(
+        "{BUDGET_MARKER} stage {stage:?} {tier} {agent:?}: spawn budget exhausted"
+    ))
+}
+
+/// Whether `e` is a budget-refusal signal from a review-tier spawn (see
+/// [`budget_refused`]) rather than a real spawn failure. Robust to the review sites' own
+/// error wrapping, since the marker survives as a substring.
+fn is_budget_refused(e: &Error) -> bool {
+    e.0.contains(BUDGET_MARKER)
+}
+
 /// The conductor's injected ports.
 pub struct Deps<'a> {
     pub store: &'a dyn EventStore,
@@ -865,11 +903,24 @@ impl RunCtx<'_> {
     ///
     /// The `spawns > base_spawns` guard is what keeps a RESUME correct: a step whose
     /// ready frontier is entirely replays of already-recorded spawns has `spawns ==
-    /// base_spawns`, so the breaker does NOT abort it before it can replay and integrate
-    /// that already-paid work (a run that spent exactly its budget must still be able to
-    /// assemble its last parked unit). A genuinely new over-budget spawn is refused
-    /// mid-wave by [`reserve_spawn`](RunCtx::reserve_spawn), which trips the breaker
-    /// there - so the cap is still enforced, just at the spawn that actually exceeds it.
+    /// base_spawns`, so the breaker does NOT abort the step at its very first wave, before
+    /// it has run any agent - it is free to replay that already-paid work in-process. A
+    /// genuinely new over-budget spawn is refused mid-wave by
+    /// [`reserve_spawn`](RunCtx::reserve_spawn), which trips the breaker there - so the cap
+    /// is still enforced, just at the spawn that actually exceeds it.
+    ///
+    /// This guard is NOT a completion guarantee: assembling a REVIEWED unit needs NEW
+    /// lens/adversary/adjudicator spawns whose ids are not yet recorded, so once the
+    /// implementer replays free and the unit reaches `verified`, the first review-tier
+    /// spawn is a new spawn that `reserve_spawn` refuses at a spent budget. That refusal
+    /// now unwinds cleanly and trips the breaker (a `BudgetExhausted` event via
+    /// [`budget_refused`]/[`is_budget_refused`] + the mid-wave `budget_broke()` check),
+    /// exactly as the implementer's `Ok(false)` refusal does - so a run that exceeds
+    /// `defaults.budget` at ANY spawn site aborts with `BudgetExhausted` (criterion 5).
+    /// Completing such a unit requires the operator to raise `defaults.budget`; the count
+    /// binds across steps, so the resume then has room for the review spawns and finishes
+    /// integrating the unit (findings adv-budget-guard-cannot-assemble-reviewed-unit,
+    /// budget-review-tier-no-exhausted).
     fn budget_tripped(&self) -> bool {
         let budget = self.cfg.workflow.defaults.budget;
         let spawns = self.spawns.load(Ordering::SeqCst);
@@ -1035,6 +1086,23 @@ impl RunCtx<'_> {
                     Err(e) if is_parked(&e) => {
                         self.parked.store(true, Ordering::SeqCst);
                     }
+                    // A budget-refused review-tier spawn (lens/adversary/adjudicator) is
+                    // NOT a stage failure either: [`reserve_spawn`] already set
+                    // `budget_broke` before returning the refusal, so - exactly like the
+                    // implementer's `Ok(false)` refusal - we unwind the unit cleanly here
+                    // (no lesson, no first_err collapse) and let the run loop's mid-wave
+                    // `budget_broke()` check trip the ONE breaker path, which records
+                    // `BudgetExhausted` and halts. Without this branch a review-tier
+                    // refusal would collapse the wave to a raw error that propagates out of
+                    // `run` BEFORE the `budget_broke()` check, aborting with NO
+                    // `BudgetExhausted` event and asymmetric with the implementer path -
+                    // the exact defect the criterion 5 fold makes load-bearing once a
+                    // resume starts with the budget already spent on a recorded implementer
+                    // and then reaches its first review tier (findings
+                    // budget-review-tier-no-exhausted,
+                    // adv-confirm-review-tier-no-budgetexhausted,
+                    // adv-budget-guard-cannot-assemble-reviewed-unit).
+                    Err(e) if is_budget_refused(&e) => {}
                     Err(e) => {
                         // EVERY erroring stage leaves a record, not just the first
                         // (item 8): the wave collapses to a single returned error, so
@@ -1868,10 +1936,7 @@ impl RunCtx<'_> {
             ))
         })?;
         if !self.reserve_spawn(&id) {
-            return Err(Error(format!(
-                "stage {:?} lens {:?}: spawn budget exhausted",
-                st.name, agent_id
-            )));
+            return Err(budget_refused(&st.name, "lens", agent_id));
         }
         let prompt = self.build_review_prompt(st);
         let emit = |t: &str, v: Value| self.emit_with_actor(agent_id, t, v);
@@ -1908,10 +1973,7 @@ impl RunCtx<'_> {
             ))
         })?;
         if !self.reserve_spawn(&id) {
-            return Err(Error(format!(
-                "stage {:?} adversary {:?}: spawn budget exhausted",
-                st.name, adv_id
-            )));
+            return Err(budget_refused(&st.name, "adversary", adv_id));
         }
         let prompt = self.build_review_prompt(st);
         let emit = |t: &str, v: Value| self.emit_with_actor(adv_id, t, v);
@@ -1951,10 +2013,7 @@ impl RunCtx<'_> {
             ))
         })?;
         if !self.reserve_spawn(&id) {
-            return Err(Error(format!(
-                "stage {:?} adjudicator {:?}: spawn budget exhausted",
-                st.name, adj_id
-            )));
+            return Err(budget_refused(&st.name, "adjudicator", adj_id));
         }
         let prompt = self.build_prompt(st);
         let emit = |t: &str, v: Value| self.emit_with_actor(adj_id, t, v);
@@ -6399,6 +6458,79 @@ mod tests {
         assert!(
             c.budget_tripped(),
             "reaching the budget via a new spawn trips the pre-wave breaker"
+        );
+    }
+
+    #[test]
+    fn a_review_tier_budget_refusal_aborts_with_budgetexhausted_not_a_raw_error() {
+        // Criterion 5, the review-tier arm (findings budget-review-tier-no-exhausted,
+        // adv-confirm-review-tier-no-budgetexhausted): a run that exceeds `defaults.budget`
+        // at a REVIEW spawn must abort with BudgetExhausted, exactly like the implementer
+        // path - NOT propagate a raw error out of `run` before the breaker records it.
+        //
+        // Budget of 1: the implementer spawn consumes the whole budget, the unit reaches
+        // `verified` (empty gates pass), then the first review tier (the lens) is a NEW
+        // spawn `reserve_spawn` refuses. Before the fix that refusal returned a raw Err
+        // that `run_wave` collapsed and `run` propagated BEFORE the mid-wave budget_broke
+        // check, so the run aborted with a raw error and emitted no BudgetExhausted.
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.workflow.defaults.budget = 1;
+        cfg.workflow.defaults.review = config::ReviewPanel {
+            lenses: vec!["lens".into()],
+            ..Default::default()
+        };
+        cfg.workflow.stages.insert(
+            "u".into(),
+            Stage {
+                name: "u".into(),
+                agent: "worker".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+
+        // The run HALTS cleanly - the review-tier refusal must not surface as a run error.
+        run(&cfg, &deps).expect("a review-tier budget refusal halts the run, it does not error");
+
+        let events = st
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        assert!(
+            events.iter().any(|e| e.type_ == TYPE_BUDGET_EXHAUSTED),
+            "a review-tier budget refusal must emit BudgetExhausted, like the implementer path"
+        );
+        assert!(
+            events.iter().any(|e| e.type_ == TYPE_TASK_ABORTED),
+            "the breaker aborts the task on a review-tier refusal too"
+        );
+        // The implementer spent the budget and the unit reached `verified`; the lens was
+        // then REFUSED before it ever spawned - the review spawn was over budget.
+        assert!(
+            driver.spawned("worker"),
+            "the implementer runs (it is admitted under the budget)"
+        );
+        assert!(
+            !driver.spawned("lens"),
+            "the over-budget lens spawn is refused before it runs"
+        );
+        assert!(
+            events.iter().any(|e| {
+                e.type_ == ledger::TYPE_UNIT_STATUS
+                    && String::from_utf8_lossy(&e.data).contains("\"status\":\"verified\"")
+            }),
+            "the unit reaches verified before the review tier is refused"
         );
     }
 
