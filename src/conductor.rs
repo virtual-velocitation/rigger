@@ -18,7 +18,7 @@ use crate::gate::{self, Gate};
 use crate::grounder::Grounder;
 use crate::ledger::{self, RunState};
 use crate::safety;
-use crate::spawn::{lens_role, spawn_id, ROLE_ADJUDICATOR, ROLE_ADVERSARY, ROLE_IMPLEMENTER};
+use crate::spawn::{self, lens_role, spawn_id, ROLE_ADJUDICATOR, ROLE_ADVERSARY, ROLE_IMPLEMENTER};
 use crate::worktree::Worktree;
 
 /// The run's event stream name.
@@ -403,6 +403,20 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         .iter()
         .filter_map(|e| e.meta.get(META_REPLAY_KEY).cloned())
         .collect();
+    // Cross-step spawn budget (spec 04, criterion 5 / finding adv-budget-per-step-resets):
+    // the authoritative spawn count is DERIVED from the log, not an in-memory counter that
+    // resets every step process. Fold the DISTINCT spawn requests already recorded (keyed
+    // by deterministic id, so a re-parked id is not double-counted) into `base_spawns` and
+    // seed the running counter with it, so the breaker sees the run's WHOLE spawn history
+    // and `defaults.budget` binds no matter how many `rigger step` processes the run spans.
+    // Their ids seed `recorded_spawn_ids` so `reserve_spawn` can tell a REPLAY of an
+    // already-recorded spawn (admit free) from a genuinely new one, without re-reading the
+    // whole stream per spawn. The blocking drivers never park a request, so both are empty
+    // for them and their in-process spawns are the whole count - historical behavior,
+    // unchanged.
+    let recorded_spawns = spawn::recorded(&prior_events).map_err(|e| Error(e.to_string()))?;
+    let base_spawns = recorded_spawns.len() as u32;
+    let recorded_spawn_ids: HashSet<String> = recorded_spawns.into_keys().collect();
     // Gate-verdict replay cache (finding arch-gate-verdict-redundant-scan): seed the
     // key -> (pass, evidence) map ONCE here from the same prior log, so re-reaching an
     // already-run inline/deferred gate replays its verdict via an O(1) map lookup rather
@@ -446,7 +460,9 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         deps,
         gate_tracker: Mutex::new(HashMap::new()),
         integrate_mu: Mutex::new(()),
-        spawns: AtomicU32::new(0),
+        spawns: AtomicU32::new(base_spawns),
+        base_spawns,
+        recorded_spawn_ids,
         budget_broke: std::sync::atomic::AtomicBool::new(false),
         parked: std::sync::atomic::AtomicBool::new(false),
         manual_review: std::sync::atomic::AtomicBool::new(false),
@@ -596,9 +612,33 @@ struct RunCtx<'a> {
     deps: &'a Deps<'a>,
     gate_tracker: Mutex<HashMap<String, Gate>>,
     integrate_mu: Mutex<()>,
-    /// The number of real `driver.spawn(...)` calls this run has made, for the
-    /// budget circuit-breaker (§4.4, §8).
+    /// The CUMULATIVE spawn count for the budget circuit-breaker (§4.4, §8), across
+    /// every step process the run spans: `base_spawns` (the distinct spawn requests
+    /// already recorded in the log when this process started) plus the NEW spawns this
+    /// process admits. Seeded from the log rather than reset to 0 each process, so
+    /// `defaults.budget` binds across the many `rigger step` processes a stepwise run
+    /// spans (spec 04, criterion 5 / finding adv-budget-per-step-resets). A replayed
+    /// spawn (an id already recorded) never increments this - its budget was spent when
+    /// it was first parked. The blocking drivers never park, so `base_spawns` is 0 for
+    /// them and this counts their in-process spawns exactly as before.
     spawns: AtomicU32,
+    /// The spawn count already recorded in the log when this process started - the value
+    /// `spawns` is seeded to. The pre-wave breaker only halts a process that has itself
+    /// admitted a NEW spawn beyond budget (`spawns > base_spawns`), so a resume whose
+    /// ready frontier is entirely REPLAYS of already-recorded spawns is never aborted
+    /// before it can replay and integrate that already-paid work; a genuinely new
+    /// over-budget spawn is refused mid-wave by [`reserve_spawn`](RunCtx::reserve_spawn),
+    /// which trips the breaker there instead.
+    base_spawns: u32,
+    /// The deterministic ids of the spawn requests already recorded in the log when this
+    /// process started (the keys of [`spawn::recorded`]). Seeded ONCE at run start so
+    /// [`reserve_spawn`](RunCtx::reserve_spawn) can classify a spawn as a REPLAY (id
+    /// already recorded by an earlier step - admit free, its budget was already spent) or
+    /// a genuinely NEW spawn (count it against the cumulative budget) with an O(1) lookup,
+    /// rather than re-reading and re-folding the whole stream on every spawn. A spawn this
+    /// process parks is not added here: it is reached only once per process (a parked unit
+    /// unwinds and every spawn site has a distinct id), so the prior-only set is sufficient.
+    recorded_spawn_ids: HashSet<String>,
     /// Set the moment a spawn is REFUSED because the budget is spent (item 9): the
     /// breaker now trips at spawn granularity, mid-wave, not only at wave boundaries.
     /// The run loop checks this after each wave to record the breaker and stop.
@@ -671,12 +711,25 @@ impl<'a> RunCtx<'a> {
     /// A bare RunCtx for unit-testing pure helpers (e.g. the cwd-isolation guard) that
     /// only read `cfg`/`deps` - no prior log, no spawns. Not for driving a run.
     fn for_test(cfg: &'a Config, deps: &'a Deps<'a>) -> Self {
+        // Mirror `run`'s log-derived seeding so budget tests can pre-park spawn requests
+        // and see the breaker fold them from the store, exactly as a real step process
+        // would. An empty store seeds 0 - the historical value for the pure-helper tests.
+        let recorded_spawns = deps
+            .store
+            .read_stream(STREAM, 0, Direction::Forward)
+            .ok()
+            .and_then(|events| spawn::recorded(&events).ok())
+            .unwrap_or_default();
+        let base_spawns = recorded_spawns.len() as u32;
+        let recorded_spawn_ids: HashSet<String> = recorded_spawns.into_keys().collect();
         RunCtx {
             cfg,
             deps,
             gate_tracker: Mutex::new(HashMap::new()),
             integrate_mu: Mutex::new(()),
-            spawns: AtomicU32::new(0),
+            spawns: AtomicU32::new(base_spawns),
+            base_spawns,
+            recorded_spawn_ids,
             budget_broke: std::sync::atomic::AtomicBool::new(false),
             parked: std::sync::atomic::AtomicBool::new(false),
             manual_review: std::sync::atomic::AtomicBool::new(false),
@@ -806,26 +859,55 @@ impl RunCtx<'_> {
         }
     }
 
-    /// Whether the spawn budget circuit-breaker has tripped (§4.4, §8): a positive
-    /// `defaults.budget` and at least that many real spawns already made.
+    /// Whether the pre-wave spawn-budget breaker has tripped (§4.4, §8): a positive
+    /// `defaults.budget`, the CUMULATIVE spawn count (across steps) has reached it, AND
+    /// this process itself admitted a NEW spawn beyond `base_spawns`.
+    ///
+    /// The `spawns > base_spawns` guard is what keeps a RESUME correct: a step whose
+    /// ready frontier is entirely replays of already-recorded spawns has `spawns ==
+    /// base_spawns`, so the breaker does NOT abort it before it can replay and integrate
+    /// that already-paid work (a run that spent exactly its budget must still be able to
+    /// assemble its last parked unit). A genuinely new over-budget spawn is refused
+    /// mid-wave by [`reserve_spawn`](RunCtx::reserve_spawn), which trips the breaker
+    /// there - so the cap is still enforced, just at the spawn that actually exceeds it.
     fn budget_tripped(&self) -> bool {
         let budget = self.cfg.workflow.defaults.budget;
+        let spawns = self.spawns.load(Ordering::SeqCst);
         budget > 0
-            && safety::budget_exhausted(budget as i64, self.spawns.load(Ordering::Relaxed) as i64)
+            && spawns > self.base_spawns
+            && safety::budget_exhausted(budget as i64, spawns as i64)
     }
 
-    /// Atomically reserve one spawn against the budget at SPAWN granularity (item 9):
-    /// admit a spawn (incrementing the counter) only while the budget has room, so a
-    /// single wide wave that overruns the budget is stopped mid-wave rather than only
-    /// at the next wave boundary. Returns `true` when the spawn is admitted and
-    /// `false` when it is refused (the budget is spent); on refusal it sets
-    /// `budget_broke` so the run loop records the breaker and halts. A zero budget
-    /// means unlimited - every spawn is admitted. The `fetch_update` makes the
-    /// check-and-increment atomic, so concurrent lenses in one wave never overshoot.
-    fn reserve_spawn(&self) -> bool {
+    /// Whether `spawn_id` was already parked in the run log by an EARLIER step process -
+    /// i.e. this spawn is a REPLAY whose budget was spent when it was first parked. An
+    /// O(1) lookup into `recorded_spawn_ids`, seeded once at run start; the blocking
+    /// drivers never park, so this is always `false` for them and every one of their
+    /// spawns counts against the budget, unchanged.
+    fn spawn_is_recorded(&self, spawn_id: &str) -> bool {
+        self.recorded_spawn_ids.contains(spawn_id)
+    }
+
+    /// Atomically reserve one spawn against the CUMULATIVE budget at SPAWN granularity
+    /// (item 9), binding across step processes (spec 04, criterion 5). Returns `true`
+    /// when the spawn is admitted and `false` when it is refused (the budget is spent);
+    /// on refusal it sets `budget_broke` so the run loop records the breaker and halts.
+    ///
+    /// A spawn whose `spawn_id` is ALREADY recorded is a REPLAY: its budget was spent
+    /// when it was first parked (it is already folded into `base_spawns`), so it is
+    /// admitted WITHOUT counting again and can NEVER be refused - the already-paid work
+    /// must be free to replay and integrate on a resume. A genuinely NEW spawn is
+    /// reserved with a `fetch_update` on `spawns` (seeded to `base_spawns`): the
+    /// check-and-increment is atomic, so concurrent lenses in one wide wave never
+    /// overshoot, and the cap counts the run's WHOLE spawn history, not just this
+    /// process's. A zero budget means unlimited - every spawn is admitted (new spawns
+    /// still counted, so `spawns` stays an accurate cumulative total for reporting).
+    fn reserve_spawn(&self, spawn_id: &str) -> bool {
+        if self.spawn_is_recorded(spawn_id) {
+            return true;
+        }
         let budget = self.cfg.workflow.defaults.budget;
         if budget == 0 {
-            self.spawns.fetch_add(1, Ordering::Relaxed);
+            self.spawns.fetch_add(1, Ordering::SeqCst);
             return true;
         }
         let admitted = self
@@ -888,14 +970,15 @@ impl RunCtx<'_> {
         // The breaker halts the run with ready units still unscheduled (the wave loop
         // only reaches here while `ready_stages` is non-empty). Flag it so the phase
         // boundary treats the tree as NOT final and DEFERS the deferred gate - a resume
-        // with a fresh in-process budget will schedule the remaining work, and only the
-        // step that assembles the full tree records the whole-tree verdict.
+        // (once the operator raises `defaults.budget`, since the count now binds across
+        // steps) schedules the remaining work, and only the step that assembles the full
+        // tree records the whole-tree verdict.
         self.budget_halted.store(true, Ordering::SeqCst);
         self.emit(
             TYPE_BUDGET_EXHAUSTED,
             json!({
                 "budget": self.cfg.workflow.defaults.budget,
-                "spawns": self.spawns.load(Ordering::Relaxed),
+                "spawns": self.spawns.load(Ordering::SeqCst),
             }),
         )?;
         self.abort_task("spawn budget exhausted")
@@ -1396,8 +1479,11 @@ impl RunCtx<'_> {
                 })?;
                 // Budget breaker at spawn granularity (item 9): refuse this spawn if
                 // the budget is spent. A refused implementer spawn stops the unit
-                // (Ok(false), not escalated); the run loop records BudgetExhausted.
-                if !self.reserve_spawn() {
+                // (Ok(false), not escalated); the run loop records BudgetExhausted. The
+                // reservation is keyed by the spawn's deterministic id so a REPLAY of an
+                // already-recorded implementer (a resumed step) is admitted free.
+                let implementer_id = spawn_id(&st.name, ROLE_IMPLEMENTER, attempts);
+                if !self.reserve_spawn(&implementer_id) {
                     return Ok(false);
                 }
                 let prompt = self.build_prompt_with_failure(st, &prior);
@@ -1427,7 +1513,7 @@ impl RunCtx<'_> {
                             isolation: wt.is_some(),
                             parallel: false,
                             blast_radius: self.grounded_seed(st),
-                            id: spawn_id(&st.name, ROLE_IMPLEMENTER, attempts),
+                            id: implementer_id.clone(),
                             unit: st.name.clone(),
                             stage: st.name.clone(),
                         },
@@ -1781,7 +1867,7 @@ impl RunCtx<'_> {
                 st.name, agent_id
             ))
         })?;
-        if !self.reserve_spawn() {
+        if !self.reserve_spawn(&id) {
             return Err(Error(format!(
                 "stage {:?} lens {:?}: spawn budget exhausted",
                 st.name, agent_id
@@ -1821,7 +1907,7 @@ impl RunCtx<'_> {
                 st.name, adv_id
             ))
         })?;
-        if !self.reserve_spawn() {
+        if !self.reserve_spawn(&id) {
             return Err(Error(format!(
                 "stage {:?} adversary {:?}: spawn budget exhausted",
                 st.name, adv_id
@@ -1864,7 +1950,7 @@ impl RunCtx<'_> {
                 st.name, adj_id
             ))
         })?;
-        if !self.reserve_spawn() {
+        if !self.reserve_spawn(&id) {
             return Err(Error(format!(
                 "stage {:?} adjudicator {:?}: spawn budget exhausted",
                 st.name, adj_id
@@ -6202,6 +6288,121 @@ mod tests {
     }
 
     #[test]
+    fn the_spawn_budget_folds_from_recorded_spawn_requests_across_steps() {
+        // Criterion 5 / finding adv-budget-per-step-resets: the spawn count is DERIVED
+        // from the recorded spawn-request events, not a per-process in-memory counter
+        // that resets every `rigger step`. Two earlier steps parked two spawn requests;
+        // a fresh process building a new RunCtx folds them from the log, so with a budget
+        // of 2 it already sees the budget spent - even though its own counter started at
+        // zero.
+        let st = Store::open(":memory:").unwrap();
+        spawn::park(
+            &st,
+            &spawn::SpawnRequest::new("u1", "u1", ROLE_IMPLEMENTER, 0, "p"),
+        )
+        .unwrap();
+        spawn::park(
+            &st,
+            &spawn::SpawnRequest::new("u2", "u2", ROLE_IMPLEMENTER, 0, "p"),
+        )
+        .unwrap();
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent("a"));
+        cfg.workflow.defaults.budget = 2;
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let c = RunCtx::for_test(&cfg, &deps);
+
+        // The cumulative count was folded from the log, not reset to 0.
+        assert_eq!(
+            c.spawns.load(Ordering::SeqCst),
+            2,
+            "the spawn count seeds from spawn::recorded(log).len(), not 0"
+        );
+        // At-budget with only recorded spawns pending, the pre-wave breaker HOLDS: the
+        // already-paid work must still be free to replay and integrate on this step.
+        assert!(
+            !c.budget_tripped(),
+            "a resume whose frontier is entirely replays does not pre-wave-trip"
+        );
+
+        // A REPLAY of an already-recorded spawn is admitted for FREE (its budget was
+        // spent when it was first parked) and is never counted again.
+        assert!(
+            c.reserve_spawn(&spawn_id("u1", ROLE_IMPLEMENTER, 0)),
+            "a recorded spawn replays free, even at budget"
+        );
+        assert_eq!(
+            c.spawns.load(Ordering::SeqCst),
+            2,
+            "a replay does not re-spend the budget"
+        );
+
+        // A genuinely NEW spawn is refused: the log already holds `budget` spawns.
+        assert!(
+            !c.reserve_spawn(&spawn_id("u3", ROLE_IMPLEMENTER, 0)),
+            "a new spawn beyond the folded count is refused"
+        );
+        assert!(
+            c.budget_broke(),
+            "refusing a new over-budget spawn trips the breaker"
+        );
+    }
+
+    #[test]
+    fn the_pre_wave_breaker_trips_only_on_a_new_over_budget_spawn() {
+        // The pre-wave breaker must not abort a resume before it can replay its recorded
+        // work, but it MUST trip once this process admits a NEW spawn that reaches the
+        // budget (spawns > base_spawns). One spawn recorded, budget 2.
+        let st = Store::open(":memory:").unwrap();
+        spawn::park(
+            &st,
+            &spawn::SpawnRequest::new("u1", "u1", ROLE_IMPLEMENTER, 0, "p"),
+        )
+        .unwrap();
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent("a"));
+        cfg.workflow.defaults.budget = 2;
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let c = RunCtx::for_test(&cfg, &deps);
+
+        // Nothing new spent yet - the recorded frontier is free to replay.
+        assert!(
+            !c.budget_tripped(),
+            "one recorded spawn under a budget of 2 does not pre-wave-trip"
+        );
+        // Admit one NEW spawn: there is room, and it reaches the budget.
+        assert!(
+            c.reserve_spawn(&spawn_id("u2", ROLE_IMPLEMENTER, 0)),
+            "there is room for one new spawn"
+        );
+        // Now the pre-wave breaker trips: this process spent a new spawn to reach the cap.
+        assert!(
+            c.budget_tripped(),
+            "reaching the budget via a new spawn trips the pre-wave breaker"
+        );
+    }
+
+    #[test]
     fn coverage_gap_flags_a_spec_defect_and_errors() {
         let mut cfg = Config::default();
         cfg.agents.insert("a".into(), agent("a"));
@@ -6535,6 +6736,8 @@ mod tests {
             gate_tracker: Mutex::new(HashMap::new()),
             integrate_mu: Mutex::new(()),
             spawns: AtomicU32::new(0),
+            base_spawns: 0,
+            recorded_spawn_ids: HashSet::new(),
             budget_broke: std::sync::atomic::AtomicBool::new(false),
             parked: std::sync::atomic::AtomicBool::new(false),
             manual_review: std::sync::atomic::AtomicBool::new(false),

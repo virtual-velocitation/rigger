@@ -455,4 +455,122 @@ mod tests {
             "both disjoint units parked in the same step"
         );
     }
+
+    #[test]
+    fn the_budget_breaker_binds_across_step_processes() {
+        // spec 04, criterion 5 / finding adv-budget-per-step-resets: the spawn-budget
+        // breaker counts spawn requests from the LOG, so it binds across the separate
+        // processes a stepwise run spans. An earlier step already parked (and a courier
+        // answered) one spawn, spending a budget of 1. A FRESH process - its in-memory
+        // counter starting at zero - must still fold that spent spawn from the log and
+        // refuse the next unit's spawn, aborting with BudgetExhausted. If the count reset
+        // per process (the pre-fix bug), the new unit would park and the run would spawn
+        // unboundedly across steps.
+        let store = Store::open(":memory:").unwrap();
+        let prior = SpawnRequest::new("earlier", "earlier", ROLE_IMPLEMENTER, 0, "prior work");
+        spawn::park(&store, &prior).unwrap();
+        spawn::record_result(&store, &spawn::SpawnResult::ok(&prior.id, "done")).unwrap();
+
+        let mut cfg = config_with(vec![stage("u", "worker")]);
+        cfg.workflow.defaults.budget = 1;
+
+        let driver = ReplayDriver::new(&store);
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).expect("a tripped budget halts the run, it does not error");
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(
+            events
+                .iter()
+                .any(|e| e.type_ == crate::conductor::TYPE_BUDGET_EXHAUSTED),
+            "a fresh step folds the prior step's spawn from the log and trips the budget"
+        );
+        // The over-budget unit's spawn was REFUSED, never parked: the budget was already
+        // fully spent by the earlier step.
+        assert!(
+            !spawn::is_recorded(&events, &spawn_id("u", ROLE_IMPLEMENTER, 0)),
+            "the over-budget unit's spawn is refused, not parked"
+        );
+    }
+
+    #[test]
+    fn a_run_that_spends_its_whole_budget_still_replays_its_recorded_work() {
+        // The cross-step count must not ABORT a resume before it can assemble already-paid
+        // work: a run that spent exactly its budget of 1 (one parked, then answered,
+        // implementer) must still replay that recorded spawn on the next step and advance
+        // the unit - NOT trip a spurious BudgetExhausted because the recorded count equals
+        // the budget. This is the completion case the `spawns > base_spawns` pre-wave
+        // guard protects.
+        let store = Store::open(":memory:").unwrap();
+        let cfg = {
+            let mut c = config_with(vec![stage("u", "worker")]);
+            c.workflow.defaults.budget = 1;
+            c
+        };
+
+        // Step 1: the single unit's implementer parks (spending the whole budget of 1).
+        {
+            let driver = ReplayDriver::new(&store);
+            let deps = Deps {
+                store: &store,
+                driver: &driver,
+                gates: &ExecRunner,
+                repo: String::new(),
+                grounder: None,
+                graph: None,
+                criteria: Vec::new(),
+            };
+            run(&cfg, &deps).unwrap();
+        }
+        let id = spawn_id("u", ROLE_IMPLEMENTER, 0);
+        assert!(
+            spawn::is_recorded(
+                &store.read_stream(STREAM, 0, Direction::Forward).unwrap(),
+                &id
+            ),
+            "step 1 parked the implementer, spending the budget"
+        );
+        // A courier answers it.
+        spawn::record_result(&store, &spawn::SpawnResult::ok(&id, "implemented")).unwrap();
+
+        // Step 2: a fresh process whose folded count already equals the budget. The
+        // recorded spawn must still REPLAY (it is free) and the unit must advance to
+        // `verified` - the breaker must not abort this replay-only step.
+        {
+            let driver = ReplayDriver::new(&store);
+            let deps = Deps {
+                store: &store,
+                driver: &driver,
+                gates: &ExecRunner,
+                repo: String::new(),
+                grounder: None,
+                graph: None,
+                criteria: Vec::new(),
+            };
+            run(&cfg, &deps).unwrap();
+        }
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.type_ == crate::conductor::TYPE_BUDGET_EXHAUSTED),
+            "replaying a spawn already paid for must not trip the budget"
+        );
+        assert!(
+            events.iter().any(|e| {
+                e.type_ == crate::ledger::TYPE_UNIT_STATUS
+                    && String::from_utf8_lossy(&e.data).contains("\"status\":\"verified\"")
+            }),
+            "the recorded spawn replayed and the unit advanced past implement"
+        );
+    }
 }
