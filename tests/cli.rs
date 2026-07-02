@@ -65,16 +65,36 @@ fn git_out(cwd: &Path, args: &[&str]) -> Option<String> {
 
 /// Run `rigger <args...>` in `cwd` and return (stdout, stderr, success).
 fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
-    let out = Command::new(rigger_bin())
-        .args(args)
-        .current_dir(cwd)
-        .output()
-        .expect("failed to spawn the rigger binary");
+    run_rigger_envs(cwd, args, &[])
+}
+
+/// Run `rigger <args...>` in `cwd` with extra environment `envs` and return
+/// (stdout, stderr, success). Used by the `rigger validate` advisory tests to stub
+/// `RIGGER_NPM` (so `rigger setup` installs the workflow without a real npm).
+fn run_rigger_envs(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> (String, String, bool) {
+    let mut cmd = Command::new(rigger_bin());
+    cmd.args(args).current_dir(cwd);
+    for (k, v) in envs {
+        cmd.env(k, v);
+    }
+    let out = cmd.output().expect("failed to spawn the rigger binary");
     (
         String::from_utf8_lossy(&out.stdout).into_owned(),
         String::from_utf8_lossy(&out.stderr).into_owned(),
         out.status.success(),
     )
+}
+
+/// Run `git <args...>` in `cwd` and assert it succeeds (for seeding a repo state in a
+/// test - staging and committing scaffolded files so `.rigger/` is tracked+clean).
+fn git_ok(cwd: &Path, args: &[&str]) {
+    let ok = Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .status()
+        .expect("git must be runnable")
+        .success();
+    assert!(ok, "git {args:?} must succeed");
 }
 
 /// The full exit disposition of a spawned `rigger`, richer than `run_rigger`'s bare
@@ -1191,5 +1211,103 @@ fn a_step_driven_run_yields_nonempty_gate_and_review_sections_in_stats() {
     assert!(
         review_line.contains("1 approved"),
         "the review-verdict section must record the adjudicator's approve; got line: {review_line:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// `rigger validate` install-drift + uncommitted-.rigger advisories (spec 05:55)
+// ---------------------------------------------------------------------------
+
+/// Clause (a) of spec 05:55: `rigger validate` WARNS (on stderr, without failing) when
+/// the installed `.claude/workflows/rigger.js` has drifted from the binary's embedded
+/// copy, and stays SILENT when the two are identical. A stale installed workflow (e.g.
+/// after a `rigger` upgrade with no re-`setup`) is surfaced, not discovered by accident.
+#[test]
+fn validate_warns_when_the_installed_workflow_drifts_from_the_embedded_copy() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    // `rigger setup` scaffolds a valid config AND installs the workflow byte-identical
+    // to the embedded copy. Stub npm so the shim's install is a no-op.
+    let (_out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok, "rigger setup must succeed; stderr:\n{err}");
+
+    // Identical installed vs embedded -> validate is drift-SILENT and succeeds.
+    let (out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(
+        ok,
+        "validate must succeed on a clean project; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("config valid"),
+        "validate must still print its config summary; stdout:\n{out}"
+    );
+    assert!(
+        !err.to_lowercase().contains("drift"),
+        "validate must NOT warn about drift when the installed workflow matches the \
+         embedded copy; stderr:\n{err}"
+    );
+
+    // Drift the installed workflow, then validate must WARN on stderr but still exit 0.
+    let installed = root.join(".claude").join("workflows").join("rigger.js");
+    std::fs::write(&installed, "// drifted from the embedded workflow\n").unwrap();
+    let (_out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(
+        ok,
+        "validate must still succeed (exit 0) when it only WARNS about drift; stderr:\n{err}"
+    );
+    assert!(
+        err.to_lowercase().contains("drift") && err.contains(".claude/workflows/rigger.js"),
+        "validate must warn on stderr that the installed workflow drifted from the \
+         embedded copy, naming the workflow file; stderr:\n{err}"
+    );
+}
+
+/// Clause (b) of spec 05:55: `rigger validate` FLAGS tracked `.rigger/` files that carry
+/// uncommitted modifications (a stderr advisory, exit 0), and stays SILENT when the
+/// tracked `.rigger/` state is clean.
+#[test]
+fn validate_flags_tracked_rigger_files_with_uncommitted_modifications() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+
+    // Scaffold a valid config (npm-free) and commit it so `.rigger/` is tracked+clean.
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    git_ok(root, &["add", "-A"]);
+    git_ok(root, &["commit", "-q", "-m", "scaffold"]);
+
+    // Clean tracked `.rigger/` -> validate is SILENT on the uncommitted advisory.
+    let (out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(ok, "validate must succeed; stderr:\n{err}");
+    assert!(
+        out.contains("config valid"),
+        "validate must print its config summary; stdout:\n{out}"
+    );
+    assert!(
+        !err.contains(".rigger/workflow.yml"),
+        "validate must NOT flag a clean tracked `.rigger/` tree; stderr:\n{err}"
+    );
+
+    // Modify a TRACKED `.rigger/` file (a YAML comment keeps the config valid), leaving
+    // it uncommitted -> validate must FLAG it on stderr but still exit 0.
+    {
+        use std::io::Write;
+        let mut wf = std::fs::OpenOptions::new()
+            .append(true)
+            .open(root.join(".rigger").join("workflow.yml"))
+            .unwrap();
+        writeln!(wf, "# locally edited, not committed").unwrap();
+    }
+    let (_out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(
+        ok,
+        "validate must still succeed (exit 0) when it only FLAGS uncommitted `.rigger/` \
+         changes; stderr:\n{err}"
+    );
+    assert!(
+        err.contains(".rigger/workflow.yml") && err.to_lowercase().contains("uncommitted"),
+        "validate must flag the tracked-but-modified `.rigger/workflow.yml` on stderr; \
+         stderr:\n{err}"
     );
 }

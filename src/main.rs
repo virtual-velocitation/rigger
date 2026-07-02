@@ -1390,6 +1390,7 @@ fn cmd_result(args: &[String]) -> Res {
 }
 
 fn cmd_validate() -> Res {
+    let root = Path::new(".");
     let cfg = config::load(".")?;
     println!(
         "config valid: {} agents, {} stages, {} gates",
@@ -1397,7 +1398,100 @@ fn cmd_validate() -> Res {
         cfg.workflow.stages.len(),
         cfg.workflow.gates.len()
     );
+    // Non-fatal advisories (spec 05:55): surface config/install drift so it is seen,
+    // not discovered by accident. Each is a stderr warning that never changes the exit
+    // status - `rigger validate` still succeeds so long as the config itself is valid.
+    for advisory in validate_advisories(root) {
+        eprintln!("{advisory}");
+    }
     Ok(())
+}
+
+/// The non-fatal `rigger validate` advisories (spec 05:55), in report order:
+///   (a) the installed `/rigger` workflow has drifted from this binary's embedded copy;
+///   (b) tracked `.rigger/` files carry uncommitted modifications.
+/// Both are warnings only - they are collected here and printed to stderr by the caller
+/// without affecting the exit status. Rooted at `root` so the seam is testable against a
+/// temp dir without mutating the process-wide current directory.
+fn validate_advisories(root: &Path) -> Vec<String> {
+    let mut advisories = Vec::new();
+    if installed_workflow_drifted(root) {
+        advisories.push(format!(
+            "warning: the installed /rigger workflow ({}) has drifted from this rigger \
+             binary's embedded copy. Run `rigger setup` to refresh it so the workflow and \
+             the binary that drives it stay the same build.",
+            workflow_path(root).display()
+        ));
+    }
+    if let Some(dirty) = uncommitted_rigger_advisory(root) {
+        advisories.push(dirty);
+    }
+    advisories
+}
+
+/// Whether the `/rigger` workflow installed at `<root>/.claude/workflows/rigger.js` has
+/// DRIFTED from the embedded [`RIGGER_WORKFLOW`] this binary ships. `false` when the file
+/// is absent (nothing installed, so nothing to drift) or byte-identical to the embedded
+/// copy; `true` only when an installed file differs. This is the single source of truth
+/// for the "installed vs embedded workflow" comparison - it reuses the same
+/// [`workflow_path`] and [`RIGGER_WORKFLOW`] that [`install_workflow`] writes, so the
+/// drift check and the install can never disagree on what "the workflow" is.
+fn installed_workflow_drifted(root: &Path) -> bool {
+    match std::fs::read(workflow_path(root)) {
+        Ok(bytes) => bytes != RIGGER_WORKFLOW.as_bytes(),
+        Err(_) => false, // absent or unreadable: no installed workflow to surface drift for
+    }
+}
+
+/// Advisory naming the tracked `.rigger/` files that carry uncommitted modifications, or
+/// `None` when the tracked `.rigger/` tree is clean (or the project is not a git repo, or
+/// git is unavailable - in which case there is nothing to flag). Runs `git status
+/// --porcelain -- .rigger` rooted at `root` and folds its output through the pure
+/// [`dirty_tracked_paths`] seam.
+fn uncommitted_rigger_advisory(root: &Path) -> Option<String> {
+    let out = Command::new("git")
+        .args(["status", "--porcelain", "--", RIGGER_DIR])
+        .current_dir(root)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None; // not a git repo / git absent: nothing to flag
+    }
+    let porcelain = String::from_utf8_lossy(&out.stdout);
+    let dirty = dirty_tracked_paths(&porcelain);
+    if dirty.is_empty() {
+        return None;
+    }
+    let mut msg = String::from("warning: tracked .rigger/ files have uncommitted modifications:");
+    for path in &dirty {
+        msg.push_str("\n  - ");
+        msg.push_str(path);
+    }
+    msg.push_str("\nCommit or discard them so a run starts from a clean, reproducible state.");
+    Some(msg)
+}
+
+/// Given `git status --porcelain` output already scoped to `.rigger/`, return the paths
+/// of TRACKED files with uncommitted modifications. Untracked (`??`) and ignored (`!!`)
+/// entries are excluded - the criterion flags TRACKED files, and a machine-local
+/// untracked/ignored file (e.g. `.rigger/events.db`, `.rigger/shim/`) is not a drift the
+/// operator must commit. A porcelain line is `XY <path>` (two status columns, a space,
+/// then the path); rename entries (`R  old -> new`) are reported verbatim.
+fn dirty_tracked_paths(porcelain: &str) -> Vec<String> {
+    porcelain
+        .lines()
+        .filter_map(|line| {
+            // A well-formed porcelain line is at least "XY " followed by the path.
+            if line.len() < 4 {
+                return None;
+            }
+            let status = &line[..2];
+            if status == "??" || status == "!!" {
+                return None; // untracked or ignored: not a tracked modification
+            }
+            Some(line[3..].to_string())
+        })
+        .collect()
 }
 
 /// The full project setup, rooted at `root` so it is testable against a temp dir
@@ -1925,6 +2019,83 @@ blocks integration no matter what the static gates say.\n",
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- `rigger validate` advisories (spec 05:55): pure seams + drift compare ----
+
+    #[test]
+    fn dirty_tracked_paths_keeps_tracked_modifications_and_drops_untracked_and_ignored() {
+        // A mix of porcelain status codes scoped to `.rigger/`: modified-in-worktree,
+        // staged, added, deleted (all TRACKED), plus untracked (`??`) and ignored (`!!`).
+        let porcelain = " M .rigger/workflow.yml\n\
+                         M  .rigger/agents/sdet.md\n\
+                         A  .rigger/agents/new.md\n\
+                         D  .rigger/agents/gone.md\n\
+                         ?? .rigger/events.db\n\
+                         !! .rigger/shim/node_modules\n";
+        let dirty = dirty_tracked_paths(porcelain);
+        assert_eq!(
+            dirty,
+            vec![
+                ".rigger/workflow.yml".to_string(),
+                ".rigger/agents/sdet.md".to_string(),
+                ".rigger/agents/new.md".to_string(),
+                ".rigger/agents/gone.md".to_string(),
+            ],
+            "only TRACKED+modified paths are flagged; untracked `??` and ignored `!!` \
+             entries are excluded"
+        );
+    }
+
+    #[test]
+    fn dirty_tracked_paths_on_a_clean_tree_is_empty() {
+        assert!(dirty_tracked_paths("").is_empty());
+    }
+
+    #[test]
+    fn installed_workflow_drifted_is_false_when_absent_or_identical_and_true_on_drift() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        // Absent: nothing installed, so there is no drift to surface.
+        assert!(
+            !installed_workflow_drifted(root),
+            "an absent installed workflow is not drift"
+        );
+
+        // Identical to the embedded copy: not drift.
+        let path = workflow_path(root);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, RIGGER_WORKFLOW).unwrap();
+        assert!(
+            !installed_workflow_drifted(root),
+            "an installed workflow byte-identical to the embedded copy is not drift"
+        );
+
+        // Differs from the embedded copy: drift.
+        std::fs::write(&path, "// stale installed workflow\n").unwrap();
+        assert!(
+            installed_workflow_drifted(root),
+            "an installed workflow differing from the embedded copy IS drift"
+        );
+    }
+
+    #[test]
+    fn validate_advisories_warns_on_workflow_drift_naming_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let path = workflow_path(root);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "// drifted\n").unwrap();
+
+        let advisories = validate_advisories(root);
+        assert!(
+            advisories
+                .iter()
+                .any(|a| a.contains("drifted") && a.contains(".claude/workflows/rigger.js")),
+            "a drifted installed workflow yields a drift advisory naming the file; got: \
+             {advisories:?}"
+        );
+    }
 
     // ---- `rigger result`: argument parsing and outcome shaping (the stepwise CLI) ----
 
