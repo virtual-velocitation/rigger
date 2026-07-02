@@ -251,6 +251,7 @@ fn main() {
         "ground" => cmd_ground(&args[2..]),
         "reindex" => cmd_reindex(&args[2..]),
         "emit" => cmd_emit(&args[2..]),
+        "result" => cmd_result(&args[2..]),
         "peers" => cmd_peers(&args[2..]),
         "validate" => cmd_validate(),
         "init" => cmd_init(),
@@ -343,6 +344,10 @@ persisted grounding index (the grounder's reindex), so a\n                      
 later `rigger ground` reflects just-landed changes\n  \
 rigger emit <type> <json>   append {{type, data:<json>}} to the event store and fold\n                              \
 it into the context graph (the CLI form of rigger_emit)\n  \
+rigger result <id> [out]    record a parked spawn's outcome to the run log so the next\n                              \
+step advances past it: <out> (or stdin) is the agent's\n                              \
+output, or with --error its failure message; --meta <json>\n                              \
+attaches optional courier bookkeeping\n  \
 rigger peers [file ...]     print peer decisions and findings from the context\n                              \
 graph, scoped to the given files (the CLI form of rigger_peers)\n  \
 rigger validate             load and validate the workflow + agents\n  \
@@ -1170,6 +1175,171 @@ fn json_type_name(v: &serde_json::Value) -> &'static str {
     }
 }
 
+/// A parsed `rigger result` invocation (see [`cmd_result`]): the spawn `id`, the
+/// optional outcome `text` (`None` means "read it from stdin"), whether `--error`
+/// marks it a failure, and the optional `--meta` courier bookkeeping.
+struct ResultArgs {
+    id: String,
+    text: Option<String>,
+    is_error: bool,
+    meta: Option<serde_json::Value>,
+}
+
+/// Parse `rigger result <id> [<output>] [--error] [--meta '<json>']`.
+///
+/// `<id>` is the required deterministic spawn id (`{unit}/{role}#{attempt}`). The
+/// outcome payload is an OPTIONAL second positional; when omitted, [`cmd_result`]
+/// reads it from stdin (spec 04: "record a spawn's outcome (stdin or arg)"). `--error`
+/// is a bare flag that turns the payload into the failure message rather than the
+/// agent's output. `--meta` takes a JSON OBJECT (mirroring `rigger emit`'s payload
+/// contract) carrying courier bookkeeping (e.g. the resolved model id, spec 05).
+/// Unknown flags, a missing/empty id, a third positional, and a non-object/invalid
+/// `--meta` are all rejected with a clear message.
+fn parse_result_args(args: &[String]) -> Result<ResultArgs, Box<dyn std::error::Error>> {
+    let mut id: Option<String> = None;
+    let mut text: Option<String> = None;
+    let mut is_error = false;
+    let mut meta: Option<serde_json::Value> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--error" => is_error = true,
+            "--meta" => {
+                let raw = args.get(i + 1).ok_or(
+                    "result: --meta needs a JSON object: rigger result <id> --meta '<json>'",
+                )?;
+                let value: serde_json::Value = serde_json::from_str(raw)
+                    .map_err(|e| format!("result: --meta is not valid JSON: {e}"))?;
+                if !value.is_object() {
+                    return Err(format!(
+                        "result: --meta must be a JSON object, got {}",
+                        json_type_name(&value)
+                    )
+                    .into());
+                }
+                meta = Some(value);
+                i += 1;
+            }
+            flag if flag.starts_with("--") => {
+                return Err(format!("result: unknown flag {flag:?}").into());
+            }
+            positional => {
+                if id.is_none() {
+                    id = Some(positional.to_string());
+                } else if text.is_none() {
+                    text = Some(positional.to_string());
+                } else {
+                    return Err(format!(
+                        "result: unexpected extra argument {positional:?}; usage: rigger result <id> [<output>] [--error] [--meta '<json>']"
+                    )
+                    .into());
+                }
+            }
+        }
+        i += 1;
+    }
+    let id = id.ok_or(
+        "result: expected a spawn id: rigger result <id> [<output>] [--error] [--meta '<json>']",
+    )?;
+    if id.is_empty() {
+        return Err("result: the spawn id must not be empty".into());
+    }
+    Ok(ResultArgs {
+        id,
+        text,
+        is_error,
+        meta,
+    })
+}
+
+/// Build the [`spawn::SpawnResult`] a `rigger result` invocation records, from its
+/// parsed pieces and the already-resolved outcome `text` (positional arg or stdin).
+///
+/// Split from [`cmd_result`] (which does the stdin + store I/O) so the outcome-shaping
+/// rules are a pure, unit-testable function. `--error` needs a NON-EMPTY message: a
+/// blank error would leave [`spawn::SpawnResult::is_error`] false, so the replay driver
+/// would answer the spawn AS a success and silently swallow the failure the courier
+/// meant to record. A success may carry empty output (an agent that finished with no
+/// final message is a valid outcome).
+fn build_result(
+    id: &str,
+    text: &str,
+    is_error: bool,
+    meta: Option<serde_json::Value>,
+) -> Result<spawn::SpawnResult, Box<dyn std::error::Error>> {
+    let mut res = if is_error {
+        if text.trim().is_empty() {
+            return Err(format!(
+                "result: --error for {id:?} needs a non-empty message (a blank error would replay as a success)"
+            )
+            .into());
+        }
+        spawn::SpawnResult::failed(id, text)
+    } else {
+        spawn::SpawnResult::ok(id, text)
+    };
+    if let Some(m) = meta {
+        res = res.with_meta(m);
+    }
+    Ok(res)
+}
+
+/// Read the outcome payload from stdin when it was not given as an argument. A pipe /
+/// heredoc conventionally appends a trailing newline (e.g. `echo "$out" | rigger
+/// result ...`), so a SINGLE trailing `\n` (and a preceding `\r`) is stripped, leaving
+/// exactly the payload rather than the shell's line terminator. Reading from an
+/// interactive terminal with no argument would block forever, so that is a clear error
+/// instead.
+fn read_outcome_from_stdin() -> Result<String, Box<dyn std::error::Error>> {
+    use std::io::{IsTerminal, Read};
+    if std::io::stdin().is_terminal() {
+        return Err("result: no outcome given - pass it as an argument (rigger result <id> <output>) or pipe it on stdin".into());
+    }
+    let mut buf = String::new();
+    std::io::stdin().read_to_string(&mut buf)?;
+    if buf.ends_with('\n') {
+        buf.pop();
+        if buf.ends_with('\r') {
+            buf.pop();
+        }
+    }
+    Ok(buf)
+}
+
+/// `rigger result <id> [<output>] [--error] [--meta '<json>']` - record a parked
+/// spawn's OUTCOME to the run log, so the conductor's replay driver answers that spawn
+/// from the log instead of re-parking it and the next `rigger step` / `rigger run`
+/// advances past it (spec 04). The courier that ran the parked agent reports its final
+/// message as `<output>` (or on stdin); a worker that died is reported with `--error
+/// <message>`; `--meta` attaches optional bookkeeping (e.g. the resolved model id).
+///
+/// The [`spawn::SpawnResult`] is appended to the SAME per-project [`Namespaced`] `run`
+/// stream the conductor drives (identical composition to [`cmd_emit`] and the `run`
+/// path), so the write lands exactly where the replay driver reads. A recorded failure
+/// replays AS a failure - the conductor remediates it just as it would a live one.
+fn cmd_result(args: &[String]) -> Res {
+    let parsed = parse_result_args(args)?;
+    // The outcome text comes from the positional arg when given, else stdin. Resolving
+    // it here keeps `build_result` a pure function of already-resolved pieces.
+    let text = match parsed.text {
+        Some(t) => t,
+        None => read_outcome_from_stdin()?,
+    };
+    let res = build_result(&parsed.id, &text, parsed.is_error, parsed.meta)?;
+
+    std::fs::create_dir_all(RIGGER_DIR)?;
+    let backend = Store::open(&db_path("events.db"))?;
+    let store = Namespaced::new(&backend, &project_identity());
+    let pos = spawn::record_result(&store, &res)?;
+
+    if res.is_error() {
+        println!("recorded error result for {} (position {pos})", res.id);
+    } else {
+        println!("recorded result for {} (position {pos})", res.id);
+    }
+    Ok(())
+}
+
 fn cmd_validate() -> Res {
     let cfg = config::load(".")?;
     println!(
@@ -1590,6 +1760,216 @@ blocks integration no matter what the static gates say.\n",
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- `rigger result`: argument parsing and outcome shaping (the stepwise CLI) ----
+
+    #[test]
+    fn parse_result_takes_an_id_and_an_optional_output_arg() {
+        let a = parse_result_args(&["u/implementer#0".into(), "the diff".into()]).unwrap();
+        assert_eq!(a.id, "u/implementer#0");
+        assert_eq!(a.text.as_deref(), Some("the diff"));
+        assert!(!a.is_error);
+        assert!(a.meta.is_none());
+    }
+
+    #[test]
+    fn parse_result_with_no_output_defers_to_stdin() {
+        // Just an id -> text is None, so cmd_result reads the outcome from stdin.
+        let a = parse_result_args(&["u/implementer#0".into()]).unwrap();
+        assert_eq!(a.id, "u/implementer#0");
+        assert!(a.text.is_none());
+    }
+
+    #[test]
+    fn parse_result_error_flag_is_order_independent() {
+        // `--error` is a bare flag, so it composes with the output positional in either
+        // order: `<id> --error <msg>` and `<id> <msg> --error` both mean the same thing.
+        for args in [
+            vec![
+                "u/adjudicator#1".to_string(),
+                "--error".into(),
+                "boom".into(),
+            ],
+            vec![
+                "u/adjudicator#1".to_string(),
+                "boom".into(),
+                "--error".into(),
+            ],
+        ] {
+            let a = parse_result_args(&args).unwrap();
+            assert_eq!(a.id, "u/adjudicator#1");
+            assert_eq!(a.text.as_deref(), Some("boom"));
+            assert!(a.is_error);
+        }
+    }
+
+    #[test]
+    fn parse_result_meta_must_be_a_json_object() {
+        let a = parse_result_args(&[
+            "u/implementer#0".into(),
+            "out".into(),
+            "--meta".into(),
+            r#"{"resolved_model":"claude-x"}"#.into(),
+        ])
+        .unwrap();
+        assert_eq!(a.meta.unwrap()["resolved_model"], "claude-x");
+
+        // A non-object JSON --meta is rejected (mirrors `rigger emit`'s object contract).
+        assert!(
+            parse_result_args(&[
+                "u/implementer#0".into(),
+                "--meta".into(),
+                "\"just-a-string\"".into(),
+            ])
+            .is_err(),
+            "a non-object --meta is rejected"
+        );
+        // Invalid JSON is rejected.
+        assert!(
+            parse_result_args(&[
+                "u/implementer#0".into(),
+                "--meta".into(),
+                "{not json".into()
+            ])
+            .is_err(),
+            "malformed --meta json is rejected"
+        );
+        // --meta with no following value is rejected.
+        assert!(
+            parse_result_args(&["u/implementer#0".into(), "--meta".into()]).is_err(),
+            "--meta needs a value"
+        );
+    }
+
+    #[test]
+    fn parse_result_rejects_missing_id_extra_args_and_unknown_flags() {
+        assert!(parse_result_args(&[]).is_err(), "the id is required");
+        assert!(
+            parse_result_args(&["".into()]).is_err(),
+            "an empty id is rejected"
+        );
+        assert!(
+            parse_result_args(&["id".into(), "out".into(), "extra".into()]).is_err(),
+            "a third positional is rejected"
+        );
+        assert!(
+            parse_result_args(&["id".into(), "--bogus".into()]).is_err(),
+            "an unknown flag is rejected"
+        );
+    }
+
+    #[test]
+    fn build_result_shapes_success_and_failure() {
+        let ok = build_result("u/implementer#0", "the diff", false, None).unwrap();
+        assert!(!ok.is_error());
+        assert_eq!(ok.output, "the diff");
+
+        let failed = build_result("u/adjudicator#1", "crashed", true, None).unwrap();
+        assert!(failed.is_error());
+        assert_eq!(failed.error, "crashed");
+
+        // A success may legitimately carry empty output (an agent with no final message).
+        assert!(build_result("u/implementer#0", "", false, None)
+            .unwrap()
+            .output
+            .is_empty());
+    }
+
+    #[test]
+    fn build_result_rejects_a_blank_error_message() {
+        // A blank --error would leave is_error() false and replay AS a success, silently
+        // swallowing the failure the courier meant to record - so it is rejected.
+        assert!(build_result("u/adjudicator#1", "   ", true, None).is_err());
+        assert!(build_result("u/adjudicator#1", "", true, None).is_err());
+    }
+
+    #[test]
+    fn build_result_attaches_meta() {
+        let res = build_result(
+            "u/implementer#0",
+            "out",
+            false,
+            Some(serde_json::json!({"resolved_model": "claude-x"})),
+        )
+        .unwrap();
+        assert_eq!(res.meta["resolved_model"], "claude-x");
+    }
+
+    #[test]
+    fn a_recorded_result_lets_the_replay_driver_advance_past_the_spawn() {
+        // The acceptance shape for this unit: a result recorded through the SAME seam
+        // cmd_result uses (build_result -> spawn::record_result on the per-project
+        // namespaced run stream) flips a PARKED spawn to one the replay driver answers -
+        // i.e. the next step advances past it (spec 04, Done-when).
+        use rigger::conductor::{is_parked, AgentDriver, Error, SpawnOpts};
+        use rigger::config::AgentDef;
+        use rigger::driver::replay::ReplayDriver;
+
+        let backend = Store::open(":memory:").unwrap();
+        let store = Namespaced::new(&backend, "proj");
+        let id = spawn::spawn_id("u", spawn::ROLE_IMPLEMENTER, 0);
+
+        let driver = ReplayDriver::new(&store);
+        let agent = AgentDef::default();
+        let opts = SpawnOpts {
+            id: id.clone(),
+            unit: "u".into(),
+            stage: "u".into(),
+            ..Default::default()
+        };
+        let no_emit = |_: &str, _: serde_json::Value| -> Result<(), Error> { Ok(()) };
+
+        // Before any result is recorded, the frontier PARKS (it waits for the courier).
+        let parked = driver
+            .spawn(&agent, "do it", &opts, &no_emit)
+            .expect_err("an unrecorded spawn parks the frontier");
+        assert!(is_parked(&parked));
+
+        // `rigger result u/implementer#0 "the diff"` records the outcome through the seam.
+        let res = build_result(&id, "the diff", false, None).unwrap();
+        spawn::record_result(&store, &res).unwrap();
+
+        // Now the next step ADVANCES PAST it: the same spawn is answered from the log.
+        let answered = driver
+            .spawn(&agent, "do it", &opts, &no_emit)
+            .expect("a recorded result replays instead of re-parking");
+        assert_eq!(answered.output, "the diff");
+    }
+
+    #[test]
+    fn a_recorded_error_result_replays_as_a_failure_not_a_fake_success() {
+        // `rigger result <id> --error <msg>` must replay AS a failure so the conductor
+        // remediates it exactly as a live failure, never a fabricated success.
+        use rigger::conductor::{is_parked, AgentDriver, Error, SpawnOpts};
+        use rigger::config::AgentDef;
+        use rigger::driver::replay::ReplayDriver;
+
+        let backend = Store::open(":memory:").unwrap();
+        let store = Namespaced::new(&backend, "proj");
+        let id = spawn::spawn_id("u", spawn::ROLE_IMPLEMENTER, 0);
+
+        let res = build_result(&id, "worker died: non-zero exit", true, None).unwrap();
+        spawn::record_result(&store, &res).unwrap();
+
+        let driver = ReplayDriver::new(&store);
+        let agent = AgentDef::default();
+        let opts = SpawnOpts {
+            id: id.clone(),
+            unit: "u".into(),
+            stage: "u".into(),
+            ..Default::default()
+        };
+        let no_emit = |_: &str, _: serde_json::Value| -> Result<(), Error> { Ok(()) };
+
+        let err = driver
+            .spawn(&agent, "do it", &opts, &no_emit)
+            .expect_err("a recorded failure replays as an error");
+        assert_eq!(err.0, "worker died: non-zero exit");
+        assert!(
+            !is_parked(&err),
+            "a recorded failure is a real failure, not a park"
+        );
+    }
 
     /// Write the scaffold constants into a temp `.rigger/` (the same bytes
     /// `rigger init` emits) and load them through `config::load`: the scaffold must
