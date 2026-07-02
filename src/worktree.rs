@@ -16,6 +16,26 @@ pub struct Worktree {
     repo: String,
 }
 
+/// What [`Worktree::ensure_run_branch`] did, so the caller can tell the operator when
+/// the run branch was anchored somewhere OTHER than the base they asked for (a silent
+/// divergence otherwise).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunBranchSetup {
+    /// The run branch already existed; it was reused (checked out if it was not the
+    /// current branch) and NEVER reset, so the units prior steps integrated onto it are
+    /// preserved. `base` was NOT consulted - once the run branch exists, its own history
+    /// is the run's anchor, and re-anchoring it would discard integrated work.
+    Reused,
+    /// The run branch did not exist and was created anchored on the requested base ref,
+    /// then checked out.
+    CreatedFromBase,
+    /// The run branch did not exist AND the requested base did not resolve, so it was
+    /// created off the current HEAD instead, then checked out. Isolation is still
+    /// established (units branch off the run branch, not the operator's branch), but the
+    /// anchor is HEAD, not the base the caller asked for.
+    CreatedFromHead,
+}
+
 impl Worktree {
     /// Add a worktree at dir (which must not already exist), on `branch`.
     ///
@@ -86,35 +106,54 @@ impl Worktree {
         Ok(())
     }
 
-    /// Ensure the run branch `branch` is present in `repo`, anchored to `base`, and
-    /// checked out - the branch every unit worktree is created from (off HEAD) and
-    /// every integrate merges into. Idempotent, so it is safe to call at the top of
-    /// every `rigger step`:
+    /// Ensure the run branch `branch` is present in `repo` and CHECKED OUT - the branch
+    /// every unit worktree is created from (the conductor branches units off HEAD) and
+    /// every [`Self::integrate`] merges into (it merges into the repo's current branch).
+    /// Checking it out is therefore mandatory, not incidental: it is what makes the run
+    /// branch - not the operator's own branch - the isolation boundary the whole run
+    /// depends on. Idempotent, so it is safe to call at the top of every `rigger step`.
     ///
-    /// - `branch` already exists: REUSE it (check it out if it is not already the
-    ///   current branch); NEVER reset it, so the units a prior step integrated onto
-    ///   it are preserved. This is also how a later run builds on an earlier run's
-    ///   branch - point `base` at that branch on a fresh checkout and the run branch
-    ///   continues from it.
-    /// - `branch` absent and `base` resolves to a commit: create `branch` off `base`
-    ///   and check it out.
-    /// - `branch` absent and `base` does NOT resolve (a fresh repo with no such ref
-    ///   yet - e.g. the default `origin/main` before a first fetch): leave HEAD
-    ///   untouched and return Ok. A missing default base on a brand-new repo is
-    ///   normal, not an error; the driver's own setup step (or the first commit)
-    ///   establishes the run branch, and the conductor then branches units off
-    ///   whatever HEAD is.
-    pub fn ensure_run_branch(repo: &str, branch: &str, base: &str) -> Result<(), Error> {
+    /// Three cases, returning [`RunBranchSetup`] so the caller can report a divergence:
+    ///
+    /// - `branch` already exists: REUSE it - check it out if it is not the current
+    ///   branch, and NEVER reset it, so the units a prior step integrated onto it are
+    ///   preserved. `base` is NOT consulted here: once the run branch exists it is the
+    ///   run's durable anchor, and reusing it is exactly how a later step (or a fresh
+    ///   `rigger step` after an interruption) CONTINUES the accumulated run. Re-anchoring
+    ///   an existing run branch to a different base would orphan every integrated unit,
+    ///   so this method deliberately refuses to (`base` re-anchoring only happens on a
+    ///   run branch that does not exist yet). Returns [`RunBranchSetup::Reused`].
+    /// - `branch` absent and `base` resolves to a commit: create `branch` off `base` and
+    ///   check it out. Returns [`RunBranchSetup::CreatedFromBase`].
+    /// - `branch` absent and `base` does NOT resolve (e.g. the default `origin/main` on a
+    ///   repo with no remote, a `master`-default repo, or a pre-fetch clone): create
+    ///   `branch` off the current HEAD instead and check it out. This is NOT a no-op: on
+    ///   the native `rigger step` path there is no separate setup step (`cmd_step` IS the
+    ///   driver), so if this did nothing HEAD would stay on the operator's branch and the
+    ///   conductor would branch and merge machine-generated units directly onto it - the
+    ///   exact opposite of the isolation the run branch exists for. Creating off HEAD
+    ///   preserves isolation (it mirrors the JS driver's `|| git checkout -B <run>`
+    ///   fallback); the caller learns the base was unresolvable via
+    ///   [`RunBranchSetup::CreatedFromHead`] and can warn. (`checkout -B` with no
+    ///   start-point anchors on the current HEAD and also succeeds on an unborn HEAD.)
+    pub fn ensure_run_branch(
+        repo: &str,
+        branch: &str,
+        base: &str,
+    ) -> Result<RunBranchSetup, Error> {
         if branch_exists(repo, branch) {
             if current_branch(repo).as_deref() != Some(branch) {
                 git(repo, &["checkout", branch])?;
             }
-            return Ok(());
+            return Ok(RunBranchSetup::Reused);
         }
         if ref_resolves(repo, base) {
             git(repo, &["checkout", "-B", branch, base])?;
+            Ok(RunBranchSetup::CreatedFromBase)
+        } else {
+            git(repo, &["checkout", "-B", branch])?;
+            Ok(RunBranchSetup::CreatedFromHead)
         }
-        Ok(())
     }
 
     /// The paths an agent created or modified in the worktree.
@@ -269,7 +308,8 @@ fn branch_exists(repo: &str, branch: &str) -> bool {
 /// Whether `r` resolves to a commit in `repo` (a branch, tag, remote-tracking ref,
 /// or sha). Used by [`Worktree::ensure_run_branch`] to distinguish a base ref it can
 /// anchor the run branch to from a not-yet-present default (e.g. `origin/main` on a
-/// brand-new repo), which is a no-op rather than an error.
+/// repo with no remote), which triggers the create-off-HEAD fallback rather than an
+/// error.
 fn ref_resolves(repo: &str, r: &str) -> bool {
     run_git(
         repo,
@@ -500,17 +540,15 @@ mod tests {
     }
 
     #[test]
-    fn ensure_run_branch_creates_off_base_reuses_and_builds_on_a_prior_run() {
-        // The run-branch lifecycle `rigger step --base <ref>` drives: create the run
-        // branch off a base ref, REUSE it across steps without discarding integrated
-        // work, and let a later run build on an earlier run's branch by pointing base
-        // at it.
+    fn ensure_run_branch_creates_off_base_and_checks_it_out() {
+        // Absent run branch + a base that resolves: create the run branch off the base,
+        // check it out, and report CreatedFromBase.
         let repo = init_repo();
         let p = repo.path().to_str().unwrap().to_string();
         let default = current_branch(&p).expect("init_repo leaves a named branch checked out");
 
-        // Absent + base resolves: create the run branch off the base and check it out.
-        Worktree::ensure_run_branch(&p, "rigger-run", &default).unwrap();
+        let setup = Worktree::ensure_run_branch(&p, "rigger-run", &default).unwrap();
+        assert_eq!(setup, RunBranchSetup::CreatedFromBase);
         assert_eq!(
             current_branch(&p).as_deref(),
             Some("rigger-run"),
@@ -522,6 +560,19 @@ mod tests {
             run_git(&p, &["rev-parse", &default]).unwrap().trim(),
             "a freshly-created run branch starts at the base commit"
         );
+    }
+
+    #[test]
+    fn ensure_run_branch_reuses_and_never_resets_an_existing_run_branch() {
+        // An existing run branch is the run's durable anchor: a re-ensure REUSES it (and
+        // checks it back out if the operator switched away), NEVER resets it, so a prior
+        // step's integrated work survives and the run CONTINUES from it. This is the
+        // in-place mechanism by which a later step builds on the accumulated run - not a
+        // re-anchor to a new base (which would orphan the integrated units).
+        let repo = init_repo();
+        let p = repo.path().to_str().unwrap().to_string();
+        let default = current_branch(&p).expect("init_repo leaves a named branch checked out");
+        Worktree::ensure_run_branch(&p, "rigger-run", &default).unwrap();
 
         // A prior step integrates a unit onto the run branch.
         run_git(
@@ -534,10 +585,12 @@ mod tests {
             .trim()
             .to_string();
 
-        // Existing branch: REUSE it. Even called from another branch, it checks the run
-        // branch back out and must NOT reset it - the integrated commit survives.
+        // Re-ensure from another branch, even pointing base ELSEWHERE: it must reuse the
+        // existing run branch (report Reused), check it back out, and preserve the tip -
+        // base is deliberately ignored once the run branch exists.
         run_git(&p, &["checkout", "-q", &default]).unwrap();
-        Worktree::ensure_run_branch(&p, "rigger-run", &default).unwrap();
+        let setup = Worktree::ensure_run_branch(&p, "rigger-run", &default).unwrap();
+        assert_eq!(setup, RunBranchSetup::Reused);
         assert_eq!(
             current_branch(&p).as_deref(),
             Some("rigger-run"),
@@ -548,36 +601,39 @@ mod tests {
             integrated_tip,
             "reuse must NOT reset the run branch - a prior step's integration is preserved"
         );
-
-        // A LATER run builds on this run's branch: point base at it and the new run
-        // branch starts from the integrated tip.
-        Worktree::ensure_run_branch(&p, "rigger-run-2", "rigger-run").unwrap();
-        assert_eq!(
-            run_git(&p, &["rev-parse", "rigger-run-2"]).unwrap().trim(),
-            integrated_tip,
-            "a later run's branch built on an earlier run's branch inherits its work"
-        );
     }
 
     #[test]
-    fn ensure_run_branch_noops_when_base_absent_and_branch_missing() {
-        // A brand-new repo whose default base ref (e.g. origin/main) does not resolve
-        // yet: ensure_run_branch is a no-op, not an error - it neither creates the run
-        // branch nor moves HEAD, leaving setup to the caller / the first commit.
+    fn ensure_run_branch_creates_off_head_when_base_unresolvable() {
+        // BLOCKER regression: a repo whose base ref (e.g. the default origin/main) does
+        // NOT resolve - no remote, master-default, or pre-fetch. ensure_run_branch must
+        // NOT no-op (which would leave HEAD on the operator's branch and let the conductor
+        // branch/merge units directly onto it). It must create the run branch off the
+        // current HEAD, check it out, and report CreatedFromHead so isolation is always
+        // established on the native path.
         let repo = init_repo();
         let p = repo.path().to_str().unwrap().to_string();
-        let before = current_branch(&p);
+        let head_before = run_git(&p, &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
 
-        Worktree::ensure_run_branch(&p, "rigger-run", "origin/does-not-exist").unwrap();
+        let setup = Worktree::ensure_run_branch(&p, "rigger-run", "origin/does-not-exist").unwrap();
 
+        assert_eq!(setup, RunBranchSetup::CreatedFromHead);
         assert!(
-            !branch_exists(&p, "rigger-run"),
-            "an unresolvable base must not conjure a run branch"
+            branch_exists(&p, "rigger-run"),
+            "an unresolvable base must still create the run branch (off HEAD), not no-op"
         );
         assert_eq!(
-            current_branch(&p),
-            before,
-            "an unresolvable base must leave HEAD untouched"
+            current_branch(&p).as_deref(),
+            Some("rigger-run"),
+            "the HEAD-anchored run branch must be checked out so units branch off it"
+        );
+        assert_eq!(
+            run_git(&p, &["rev-parse", "rigger-run"]).unwrap().trim(),
+            head_before,
+            "the fallback run branch is anchored on the HEAD it was created from"
         );
     }
 

@@ -779,10 +779,9 @@ fn step_rejects_an_unknown_flag() {
     );
 }
 
-/// `rigger step --base <ref>` anchors the run branch: it creates the `rigger-run`
+/// `rigger step --base <ref>` anchors a NEW run branch: it creates the `rigger-run`
 /// branch off the base ref and checks it out (so the conductor branches every unit
-/// worktree off it), without disturbing the step's `{wave,done}` JSON. This is the
-/// mechanism by which a later run builds on an earlier run's branch.
+/// worktree off it), without disturbing the step's `{wave,done}` JSON on stdout.
 #[test]
 fn step_accepts_base_and_anchors_the_run_branch() {
     let dir = temp_git_project_with_commit();
@@ -827,5 +826,108 @@ fn step_rejects_base_without_a_value() {
     assert!(
         err.contains("--base expects a ref"),
         "the error must explain --base needs a ref; got: {err:?}"
+    );
+}
+
+/// BLOCKER regression: when the base ref does NOT resolve (a repo with no remote, a
+/// `master`-default repo, or a pre-fetch clone - the common default `origin/main` case),
+/// `rigger step` must still establish the run branch by creating it off HEAD and checking
+/// it out, never silently proceed on the operator's own branch (which would let the
+/// conductor branch and merge machine-generated units directly onto it). The step still
+/// prints its `{wave,done}` JSON on stdout, and warns on stderr that it fell back to HEAD.
+#[test]
+fn step_creates_run_branch_off_head_when_base_unresolvable() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+    let head_sha =
+        git_out(root, &["rev-parse", "HEAD"]).expect("the seeded repo has a HEAD commit");
+    let operator_branch = git_out(root, &["symbolic-ref", "--short", "-q", "HEAD"])
+        .expect("the seeded repo is on a named branch");
+
+    // The default-style base that does not exist here.
+    let (out, err, ok) = run_rigger(root, &["step", "--base", "origin/does-not-exist"]);
+    assert!(
+        ok,
+        "step must still succeed on an unresolvable base; stderr: {err}"
+    );
+
+    // The {wave,done} JSON is undisturbed on stdout.
+    let line = out.trim();
+    assert!(
+        line.matches(r#""id":"#).count() == 2 && line.contains(r#""done":false"#),
+        "the two-unit wave still parks despite the base fallback; got: {line:?}"
+    );
+
+    // The run branch was created off HEAD (not the operator's branch) and checked out.
+    assert_ne!(
+        operator_branch, "rigger-run",
+        "guard: seed is not already on the run branch"
+    );
+    assert_eq!(
+        git_out(root, &["symbolic-ref", "--short", "-q", "HEAD"]).as_deref(),
+        Some("rigger-run"),
+        "an unresolvable base must still create and check out the run branch, off HEAD"
+    );
+    assert_eq!(
+        git_out(root, &["rev-parse", "rigger-run"]).as_deref(),
+        Some(head_sha.as_str()),
+        "the fallback run branch is anchored on the HEAD it was created from"
+    );
+
+    // The fallback is announced, not silent.
+    assert!(
+        err.contains("did not resolve") && err.contains("HEAD"),
+        "stderr must announce the HEAD fallback; got: {err:?}"
+    );
+}
+
+/// An existing run branch is the run's durable anchor: a second `rigger step` REUSES it
+/// (never resets it), so an already-integrated commit on `rigger-run` survives, and an
+/// EXPLICIT `--base` that would re-anchor it is ignored - with a stderr advisory, never
+/// silently - because re-anchoring would orphan the integrated units.
+#[test]
+fn step_reuses_the_run_branch_and_warns_when_explicit_base_is_ignored() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+
+    // First step creates + checks out rigger-run.
+    let (_out, err, ok) = run_rigger(root, &["step", "--base", "HEAD"]);
+    assert!(ok, "the first step must succeed; stderr: {err}");
+    assert_eq!(
+        git_out(root, &["symbolic-ref", "--short", "-q", "HEAD"]).as_deref(),
+        Some("rigger-run"),
+    );
+
+    // Simulate a prior step integrating a unit onto the run branch.
+    assert!(
+        Command::new("git")
+            .args(["commit", "--allow-empty", "-q", "-m", "integrated unit"])
+            .current_dir(root)
+            .status()
+            .expect("git must run")
+            .success(),
+        "seeding an integrated commit must succeed"
+    );
+    let integrated_tip =
+        git_out(root, &["rev-parse", "rigger-run"]).expect("the run branch has a tip");
+
+    // A second step with an EXPLICIT base pointing elsewhere must reuse rigger-run,
+    // preserve the integrated tip, and warn that --base was not applied.
+    let (out, err, ok) = run_rigger(root, &["step", "--base", "origin/main"]);
+    assert!(ok, "the second step must succeed; stderr: {err}");
+    assert!(
+        out.trim().contains(r#""wave""#),
+        "the second step still prints its {{wave,done}} JSON; got: {out:?}"
+    );
+    assert_eq!(
+        git_out(root, &["rev-parse", "rigger-run"]).as_deref(),
+        Some(integrated_tip.as_str()),
+        "reuse must NOT reset the run branch - the integrated commit is preserved"
+    );
+    assert!(
+        err.contains("already exists and was reused") && err.contains("NOT applied"),
+        "an ignored explicit --base must be announced on stderr; got: {err:?}"
     );
 }

@@ -20,7 +20,7 @@ use rigger::grounder::Grounder;
 use rigger::ledger::RunState;
 use rigger::metrics::{self, Metrics};
 use rigger::sidecar::{PeerDecision, Sidecar};
-use rigger::worktree::Worktree;
+use rigger::worktree::{RunBranchSetup, Worktree};
 use rigger::{hooks, mcpserver, spawn, spec};
 
 const RIGGER_DIR: &str = ".rigger";
@@ -31,8 +31,12 @@ const RIGGER_DIR: &str = ".rigger";
 const RUN_BRANCH: &str = "rigger-run";
 
 /// The default ref the run branch is anchored to when `rigger step` (or the driver)
-/// is not given `--base`. A later run builds on an earlier run's branch by passing
-/// that branch as `--base <ref>` instead. Mirrored by the driver's own default.
+/// is not given `--base`, and ONLY when the run branch does not exist yet - once
+/// [`RUN_BRANCH`] exists it is reused as the run's anchor and the base is not consulted
+/// (see [`Worktree::ensure_run_branch`]). If this default does not resolve (a repo with
+/// no remote, a `master`-default repo, or a pre-fetch clone) the run branch is created
+/// off the current HEAD instead, so isolation is still established. Mirrored by the
+/// driver's own default.
 const DEFAULT_BASE_REF: &str = "origin/main";
 
 /// The JS-driver RUNTIME files, embedded in the binary so `rigger setup` can
@@ -315,8 +319,9 @@ usage:\n  \
 rigger run [spec] [opts]    run the workflow (opts below)\n  \
 rigger step [--spec <path>]      advance the run one frontier via the replay driver\n            \
 [--base <ref>]        and print the newly parked spawn wave + a done flag\n                              \
-as JSON. --base (default origin/main) anchors the run\n                              \
-branch, so a later run can build on an earlier one\n  \
+as JSON. --base (default origin/main) anchors a NEW run\n                              \
+branch; if it is unresolvable the branch is created off\n                              \
+HEAD. An existing run branch is reused, never reset\n  \
 rigger workflow [spec]      turn-key: launch the per-project Node driver, which\n                              \
 spawns `rigger serve`, runs each agent via the Agent\n                              \
 SDK, and drives the loop (one command; run `rigger\n                              \
@@ -394,23 +399,46 @@ fn cmd_run(args: &[String]) -> Res {
 /// grounder from `defaults.grounder`, the context-graph projector) so a step sees
 /// exactly the state a `rigger run` would.
 ///
-/// `--base <ref>` (default `origin/main`) anchors the run branch: before driving the
-/// conductor, a step ensures the [`RUN_BRANCH`] exists in the repo, created off
-/// `--base` if it does not yet exist (idempotent - an existing run branch is reused,
-/// never reset, so prior steps' integrations survive; see
-/// [`Worktree::ensure_run_branch`]). Pointing `--base` at an earlier run's branch is
-/// how a later run builds on it. A repo-less invocation skips this entirely.
+/// `--base <ref>` (default `origin/main`) anchors the run branch. Before driving the
+/// conductor - which branches every unit worktree off HEAD and merges every approved
+/// unit back into the current branch - the step ensures [`RUN_BRANCH`] exists AND is
+/// checked out, so that isolation boundary is the run branch and never the operator's
+/// own branch. On the native path `cmd_step` IS the driver (there is no separate setup
+/// step), so this cannot be skipped when the base is missing: if [`RUN_BRANCH`] does not
+/// exist yet it is created off `--base`, or off the current HEAD when `--base` does not
+/// resolve (a repo with no remote, a `master`-default repo, or a pre-fetch clone) - a
+/// fallback that keeps isolation and mirrors the JS driver. A step will therefore switch
+/// the repo's checkout to [`RUN_BRANCH`] as a deliberate side effect; if that checkout
+/// fails (e.g. a dirty tree, or the run branch is checked out in another worktree) the
+/// step aborts with a clear error BEFORE it prints any JSON - run-branch setup is a
+/// precondition, not something to proceed past.
+///
+/// An EXISTING run branch is reused, never reset (see [`Worktree::ensure_run_branch`]),
+/// so prior steps' integrations survive and the run continues from where it left off.
+/// Because of that, `--base` only takes effect when the run branch is first created;
+/// once [`RUN_BRANCH`] exists, an explicit `--base` is ignored (re-anchoring would orphan
+/// the integrated units), and the step says so on stderr rather than silently. A
+/// repo-less invocation skips run-branch setup entirely.
 fn cmd_step(args: &[String]) -> Res {
     let args = parse_step_args(args)?;
     let cfg = config::load(".")?;
     let criteria = load_criteria(args.spec.as_deref())?;
     std::fs::create_dir_all(RIGGER_DIR)?;
 
-    // Anchor the run branch off --base before the conductor branches any unit worktree
-    // off it. Guarded on a real repo so the repo-less unit-test path is untouched.
+    // Anchor + check out the run branch before the conductor branches any unit worktree
+    // off HEAD. Guarded on a real repo so the repo-less unit-test path is untouched. A
+    // failure here aborts the step (with a clear, actionable error) rather than driving
+    // the conductor on the wrong branch - isolation is a precondition, not best-effort.
     let repo = git_repo();
     if !repo.is_empty() {
-        Worktree::ensure_run_branch(&repo, RUN_BRANCH, &args.base)?;
+        let setup = Worktree::ensure_run_branch(&repo, RUN_BRANCH, &args.base).map_err(|e| {
+            format!(
+                "rigger step: could not prepare the run branch {RUN_BRANCH:?} (base {:?}): {e}. \
+                 The step did not run; resolve the git state (e.g. commit or stash a dirty tree) and retry.",
+                args.base
+            )
+        })?;
+        warn_on_run_branch_divergence(setup, &args);
     }
 
     let backend = Store::open(&db_path("events.db"))?;
@@ -452,6 +480,10 @@ struct StepArgs {
     spec: Option<String>,
     /// The ref the run branch is anchored to (`--base`, default [`DEFAULT_BASE_REF`]).
     base: String,
+    /// Whether `--base` was passed explicitly (vs. the default). Used to warn only when
+    /// an operator's EXPLICIT base is ignored because the run branch already exists -
+    /// the steady-state default reuse is silent, an explicit-but-ignored base is not.
+    base_explicit: bool,
 }
 
 /// Parse `rigger step`'s flags: an optional `--spec <path>` (the spec whose Done-when
@@ -493,8 +525,37 @@ fn parse_step_args(args: &[String]) -> Result<StepArgs, Box<dyn std::error::Erro
     }
     Ok(StepArgs {
         spec,
+        base_explicit: base.is_some(),
         base: base.unwrap_or_else(|| DEFAULT_BASE_REF.to_string()),
     })
+}
+
+/// Warn on stderr when the run branch was anchored somewhere OTHER than the base the
+/// operator asked for, so a divergence is never silent (the old behavior silently
+/// no-op'd an unresolvable base and silently ignored `--base` on every step after the
+/// first). The `{wave,done}` JSON still goes to stdout untouched; these are stderr
+/// advisories, not errors - isolation is intact in every case, only the anchor differs.
+fn warn_on_run_branch_divergence(setup: RunBranchSetup, args: &StepArgs) {
+    match setup {
+        RunBranchSetup::CreatedFromHead => eprintln!(
+            "rigger step: base {:?} did not resolve, so the run branch {RUN_BRANCH:?} was anchored \
+             on the current HEAD instead (unit isolation is intact, but not anchored on {:?}). \
+             Fetch the base or pass an existing ref as --base to anchor there.",
+            args.base, args.base
+        ),
+        // The run branch already exists and was reused. Reusing the default base every
+        // step is the expected steady state and stays silent; only an EXPLICIT --base
+        // that got ignored (because re-anchoring would orphan integrated work) is worth a
+        // word, so the operator is not left thinking their re-anchor took effect.
+        RunBranchSetup::Reused if args.base_explicit => eprintln!(
+            "rigger step: the run branch {RUN_BRANCH:?} already exists and was reused (its \
+             integrated work is preserved); --base {:?} was NOT applied. Re-anchoring an existing \
+             run branch would discard integrated units; to anchor a run on {:?}, start it on a \
+             repo without {RUN_BRANCH:?} (or delete that branch first).",
+            args.base, args.base
+        ),
+        RunBranchSetup::Reused | RunBranchSetup::CreatedFromBase => {}
+    }
 }
 
 /// The standalone CLI path: ground, spawn agents as `claude` subprocesses, drive
@@ -1579,20 +1640,31 @@ mod tests {
     fn parse_step_args_reads_spec_and_base_with_default() {
         let s = |a: &[&str]| parse_step_args(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
 
-        // Default base when --base is not given; no spec.
+        // Default base when --base is not given; no spec. The default is NOT flagged as
+        // explicit, so steady-state reuse stays silent.
         let a = s(&[]).unwrap();
         assert_eq!(a.base, DEFAULT_BASE_REF);
         assert_eq!(a.base, "origin/main");
         assert!(a.spec.is_none());
+        assert!(!a.base_explicit, "an unspecified --base is not explicit");
 
-        // --base overrides the default; --spec is read independently and order-free.
+        // --base overrides the default and is flagged explicit; --spec is read
+        // independently and order-free.
         let a = s(&["--base", "rigger-run-1"]).unwrap();
         assert_eq!(a.base, "rigger-run-1");
         assert!(a.spec.is_none());
+        assert!(a.base_explicit, "a given --base is explicit");
 
         let a = s(&["--spec", "specs/04.md", "--base", "origin/next"]).unwrap();
         assert_eq!(a.spec.as_deref(), Some("specs/04.md"));
         assert_eq!(a.base, "origin/next");
+        assert!(a.base_explicit);
+
+        // An explicit --base equal to the default is still explicit (so an ignored
+        // re-anchor to origin/main is reported, not swallowed as a default).
+        let a = s(&["--base", "origin/main"]).unwrap();
+        assert_eq!(a.base, "origin/main");
+        assert!(a.base_explicit);
 
         // Each flag requires its value; typos and positionals are hard errors.
         assert!(s(&["--base"]).is_err(), "--base without a value must error");

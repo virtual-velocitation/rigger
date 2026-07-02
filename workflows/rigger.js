@@ -24,8 +24,11 @@ export const meta = {
 // run-branch git run in REPO; code edits, cargo gates, and the per-unit commit run in the worktree.
 // The grounding index is reindexed only AFTER a unit merges into REPO (in the Integrate step),
 // never from the pre-merge worktree, so it never embeds stale (unmerged) code.
-// `base` (default origin/main) is the ref the run branch is created from, so a later run can
-// build on an earlier run's branch by passing that branch as base; it mirrors `rigger step --base`.
+// `base` (default origin/main) is the ref the run branch is created FROM when it does not exist
+// yet; if base is unresolvable the run branch is created off HEAD. An EXISTING run branch is
+// REUSED, never reset, so a re-invoked/resumed run continues from (builds on) its accumulated
+// work instead of orphaning already-integrated units. This mirrors `rigger step --base`
+// (Worktree::ensure_run_branch): same reuse-else-create-off-base-else-create-off-HEAD contract.
 let A = args
 if (typeof A === 'string') {
   try {
@@ -52,7 +55,7 @@ const VERDICT = { type: 'object', additionalProperties: false, required: ['appro
 
 phase('Plan')
 await agent(
-  `Prepare the rigger run branch in the repo ${REPO} (use Bash). Run: \`git -C ${REPO} fetch origin 2>/dev/null; git -C ${REPO} worktree prune; rm -rf /tmp/rigger-wf-*; git -C ${REPO} checkout -B ${RUN} ${BASE} 2>/dev/null || git -C ${REPO} checkout -B ${RUN}\`. This anchors the run branch on ${BASE} (a later run can build on an earlier run's branch by passing a different base). Confirm the branch is checked out and the working tree is clean.`,
+  `Prepare the rigger run branch in the repo ${REPO} (use Bash). Run: \`git -C ${REPO} fetch origin 2>/dev/null; git -C ${REPO} worktree prune; rm -rf /tmp/rigger-wf-*; if git -C ${REPO} rev-parse --verify --quiet refs/heads/${RUN}; then git -C ${REPO} checkout ${RUN}; else git -C ${REPO} checkout -B ${RUN} ${BASE} 2>/dev/null || git -C ${REPO} checkout -B ${RUN}; fi\`. This REUSES an existing ${RUN} branch (never resetting it, so a resumed run keeps its already-integrated units), and only when ${RUN} does not exist yet creates it off ${BASE} - falling back to the current HEAD if ${BASE} is unresolvable. Mirrors \`rigger step --base\` (Worktree::ensure_run_branch). Confirm the branch is checked out and the working tree is clean.`,
   { phase: 'Plan', model: 'sonnet', label: 'setup run branch' },
 )
 
