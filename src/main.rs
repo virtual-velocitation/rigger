@@ -205,8 +205,34 @@ fn open_kurrentdb(_conn: Option<&str>) -> Result<Box<dyn EventStore>, Box<dyn st
 /// The project identity that scopes the event streams and context graph (§5.1.1,
 /// R9): the basename of the git repo top-level, falling back to the current
 /// directory's name, falling back to "rigger". Never empty.
+///
+/// Anchored at the process cwd, which is correct for the RUN DRIVER (`run`/`step`/
+/// `serve`): it creates the store under the cwd's `.rigger/`, so the cwd's git
+/// top-level is the identity that scopes it. The store-opening COURIERS must NOT use
+/// this - a courier can run from a cwd that is not the store's owner (a nested git
+/// worktree) - so they bind identity to the RESOLVED store root instead, via
+/// [`StoreLocation::identity`] / [`project_identity_at`].
 fn project_identity() -> String {
-    let toplevel = git_repo();
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    project_identity_at(&cwd)
+}
+
+/// The project identity, anchored at an explicit `root` rather than the process cwd:
+/// the basename of the git top-level *containing `root`* (resolved with `git -C <root>`,
+/// so it is stable no matter which subdirectory the command ran from), falling back to
+/// `root`'s own basename, then to "rigger". Never empty.
+///
+/// Anchoring at an explicit root is load-bearing for the store-opening couriers. When a
+/// courier walks UP from a git-linked worktree nested inside the repo (the Gap-14 default
+/// scratch root `<repo>/.rigger/tmp/...`) to the repo's real store, `git rev-parse
+/// --show-toplevel` run from the cwd returns the LINKED-WORKTREE path, so the append would
+/// misfile under `proj-<worktree>-run` while the spawn the conductor is waiting on stays
+/// parked forever (spec 05's exact charter defect). Running git anchored at the resolved
+/// store root instead returns the repo root, so the write lands in the `proj-<repo>-run`
+/// stream the conductor reads - identical to the identity the conductor computed when it
+/// created that store from the same root.
+fn project_identity_at(root: &Path) -> String {
+    let toplevel = git_repo_at(root);
     let from_repo = Path::new(&toplevel)
         .file_name()
         .and_then(|n| n.to_str())
@@ -214,9 +240,9 @@ fn project_identity() -> String {
     if let Some(name) = from_repo {
         return name.to_string();
     }
-    std::env::current_dir()
-        .ok()
-        .and_then(|p| p.file_name().and_then(|n| n.to_str()).map(String::from))
+    root.file_name()
+        .and_then(|n| n.to_str())
+        .map(String::from)
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "rigger".to_string())
 }
@@ -396,24 +422,66 @@ fn find_store_dir_from(start: &Path) -> Option<PathBuf> {
     None
 }
 
-/// Resolve the `.rigger` store directory a store-opening COURIER command
-/// (`emit`/`result`/`peers`) must use, REFUSING rather than fabricating a fresh empty
-/// store when neither the current directory nor any ancestor holds one (spec 05,
-/// done-when: "store-opening commands refuse (or walk up) instead of fabricating a fresh
-/// `.rigger/events.db` when run from a cwd with no existing store").
+/// A resolved rigger store, as a store-opening COURIER (`emit`/`result`/`peers`/
+/// `reported`) must see it: the `.rigger` directory that actually holds the store (found
+/// by walking UP from the cwd, never fabricated), together with the identity that scopes
+/// its namespaced streams - bound to the store's OWNING ROOT, not the process cwd.
+///
+/// Binding identity to the owning root is the whole point of this type. Walking up already
+/// finds the real store file when a courier runs from a nested git worktree; but the
+/// STREAM the write lands in is chosen by the identity, and `project_identity()` reads the
+/// cwd's git top-level, which inside a git-linked worktree is the WORKTREE path (basename
+/// `rigger-wt-...`), not the repo. So a walked-up write would silently misfile under
+/// `proj-<worktree>-run` while the conductor keeps reading `proj-<repo>-run` - the spawn
+/// stays parked (spec 05's charter defect). [`identity`](Self::identity) anchors identity
+/// at the resolved root instead, so the write lands in the stream the conductor reads.
+struct StoreLocation {
+    /// The `.rigger` store directory (`<root>/.rigger`) resolved by walking up the cwd.
+    dir: PathBuf,
+}
+
+impl StoreLocation {
+    /// A store file path (`events.db` / `graph.db`) under the resolved `.rigger/`, as the
+    /// `&str` the sqlite `Store` / `Projector` opens.
+    fn file(&self, name: &str) -> String {
+        store_file(&self.dir, name)
+    }
+
+    /// The identity scoping this store's namespaced streams, bound to the store's OWNING
+    /// ROOT (the parent of the resolved `.rigger/`), NOT the process cwd - so a courier
+    /// walked up from a nested git worktree records into the same `proj-<repo>-run` stream
+    /// the conductor reads, never a `proj-<worktree>-run` misfile (spec 05).
+    fn identity(&self) -> String {
+        match self.dir.parent() {
+            Some(root) => project_identity_at(root),
+            // A `.rigger` with no parent is pathological (the resolved dir is always
+            // `<root>/.rigger` from an absolute cwd); fall back to the cwd-anchored identity.
+            None => project_identity(),
+        }
+    }
+}
+
+/// Resolve the `.rigger` store a store-opening COURIER command (`emit`/`result`/`peers`/
+/// `reported`) must use, REFUSING rather than fabricating a fresh empty store when neither
+/// the current directory nor any ancestor holds one (spec 05, done-when: "store-opening
+/// commands refuse (or walk up) instead of fabricating a fresh `.rigger/events.db` when run
+/// from a cwd with no existing store").
 ///
 /// The defect this closes: a courier run from the WRONG cwd - most plausibly a unit
 /// worktree, which carries the tracked `.rigger/workflow.yml` + agents but NOT the
 /// machine-local, gitignored `.rigger/events.db` - used to `create_dir_all(.rigger)` +
 /// `Store::open` a brand-new empty store there, record into that dead store, and print
 /// success while the real spawn stayed parked forever in the project's actual run stream.
-/// Walking up finds the real store when the cwd is a SUBDIRECTORY of the project root;
-/// refusing (when no ancestor has one) surfaces the wrong-cwd mistake instead of silently
-/// swallowing the write. The run driver (`run`/`step`/`serve`) is deliberately NOT routed
-/// through here: it legitimately BOOTSTRAPS the store on the first step of a fresh project.
-fn require_store_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
+/// Walking up finds the real store when the cwd is a SUBDIRECTORY (or a nested worktree) of
+/// the project root; refusing (when no ancestor has one) surfaces the wrong-cwd mistake
+/// instead of silently swallowing the write. The returned [`StoreLocation`] additionally
+/// binds identity to the resolved root, so a walked-up write lands in the stream the
+/// conductor reads (see [`StoreLocation::identity`]). The run driver (`run`/`step`/`serve`)
+/// is deliberately NOT routed through here: it legitimately BOOTSTRAPS the store on the
+/// first step of a fresh project.
+fn require_store_dir() -> Result<StoreLocation, Box<dyn std::error::Error>> {
     let cwd = std::env::current_dir()?;
-    find_store_dir_from(&cwd).ok_or_else(|| {
+    let dir = find_store_dir_from(&cwd).ok_or_else(|| -> Box<dyn std::error::Error> {
         format!(
             "no rigger store found: neither {} nor any parent directory has an initialized \
              {RIGGER_DIR}/events.db. This usually means the command ran from the wrong \
@@ -423,7 +491,8 @@ fn require_store_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
             cwd.display()
         )
         .into()
-    })
+    })?;
+    Ok(StoreLocation { dir })
 }
 
 /// The path to a database file (`events.db` / `graph.db`) inside a resolved store
@@ -618,41 +687,35 @@ fn cmd_step(args: &[String]) -> Res {
 /// is [`spawn::record_result_if_absent`]). This command is retained as a standalone check -
 /// e.g. an operator asking whether a spawn is answered - not as the courier's guard.
 ///
-/// Composition mirrors [`cmd_step`]/[`cmd_stats`]: the per-project namespaced sqlite run
-/// stream, read forward from revision 0 and projected through [`spawn::result_of`] - the
-/// exact stream, boundary, and projection the replay driver uses to decide answer-vs-park,
-/// so this check agrees with the conductor by construction. The namespace-scoped read and
-/// its absent/unreported edges live in the testable [`result_of_at`] seam.
-/// `rigger prompt <spawn-id>` - print the parked spawn's full prompt (persona + task)
-/// on stdout. The thin driver's waves are SLIM manifests (spawn-by-reference): a
-/// review-round prompt can run to hundreds of kilobytes, which cannot survive a
-/// model-relayed structured output verbatim, so the worker fetches its own prompt
-/// straight from the log. Same stream/namespace composition as `rigger reported`.
-fn cmd_prompt(args: &[String]) -> Res {
-    let id = match args {
-        [id] => id.as_str(),
-        _ => return Err("prompt: expected exactly one spawn id: rigger prompt <id>".into()),
-    };
-    let backend = Store::open(&db_path("events.db"))?;
-    let store = Namespaced::new(&backend, &project_identity());
-    let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
-    match spawn::prompt_for(&events, id).map_err(|e| e.to_string())? {
-        Some(p) => {
-            println!("{p}");
-            Ok(())
-        }
-        None => Err(format!("prompt: no spawn request recorded for {id:?}").into()),
-    }
-}
-
+/// Composition mirrors [`cmd_result`]: the store is RESOLVED by walking up to the owning
+/// root and scoped by that root's identity (via [`require_store_dir`]), the SAME per-project
+/// namespaced sqlite run stream the write half lands in - so the guard and the self-report
+/// can never disagree about which store/stream is authoritative (a cwd-relative or cwd-git-
+/// worktree read could see "not reported" off-root and clobber a real self-report). The
+/// stream is read forward from revision 0 and projected through [`spawn::result_of`] - the
+/// exact boundary and projection the replay driver uses to decide answer-vs-park, so this
+/// check agrees with the conductor by construction. The namespace-scoped read and its
+/// absent/unreported edges live in the testable [`result_of_at`] seam.
 fn cmd_reported(args: &[String]) -> Res {
     let id = match args {
         [id] => id.as_str(),
         _ => return Err("reported: expected exactly one spawn id: rigger reported <id>".into()),
     };
-    match result_of_at(&db_path("events.db"), &project_identity(), id)? {
-        // Already answered: print a one-line summary (id + ok/failed) and exit 0, so a caller
-        // scripting on this exit code can tell the spawn is answered.
+    // Resolve the store the SAME way `cmd_result` does - walk UP to the owning root and
+    // bind identity to THAT root - so the death-report guard reads the exact namespaced
+    // stream a self-report landed in. Reading a cwd-relative store (or the cwd's git-
+    // worktree identity) could see "not reported" off-root and clobber a real self-report
+    // with an `--error` (arch-reported-result-store-asym). When no store exists up-tree,
+    // nothing could have been reported: treat it as unreported (the guard proceeds), the
+    // same outcome as `result_of_at`'s absent-db edge, without fabricating a store.
+    let reported = match require_store_dir() {
+        Ok(loc) => result_of_at(&loc.file("events.db"), &loc.identity(), id)?,
+        Err(_) => None,
+    };
+    match reported {
+        // Already answered: print a one-line summary (for the courier's log) and exit 0, so
+        // the guard's `|| rigger result <id> --error` is SKIPPED and the existing result -
+        // the worker's own report - stands untouched.
         Some(res) => {
             println!(
                 "{} {}",
@@ -664,6 +727,40 @@ fn cmd_reported(args: &[String]) -> Res {
         // No result yet: exit non-zero (a clear error) so a caller can tell the spawn is still
         // unanswered.
         None => Err(format!("reported: spawn {id:?} has no recorded result yet").into()),
+    }
+}
+
+/// `rigger prompt <spawn-id>` - print the parked spawn's full prompt (persona + task)
+/// on stdout. The thin driver's waves are SLIM manifests (spawn-by-reference): a
+/// review-round prompt can run to hundreds of kilobytes, which cannot survive a
+/// model-relayed structured output verbatim, so the worker fetches its own prompt
+/// straight from the log.
+///
+/// A store-opening COURIER, invoked BY THE WORKER from inside its unit worktree, so it
+/// resolves the store the SAME way `cmd_reported`/`cmd_result` do - walk UP to the owning
+/// root and scope by that root's identity (via [`require_store_dir`] /
+/// [`StoreLocation::identity`]) - reading the `proj-<repo>-run` stream the conductor parked
+/// the spawn in. A cwd-relative `Store::open(&db_path("events.db"))` would instead FABRICATE
+/// a fresh empty `.rigger/events.db` inside the worktree (which carries the tracked
+/// `.rigger/` but never the gitignored store) and then report "no spawn request recorded"
+/// for every id, stranding the worker that ran it - the exact store-opening defect spec 05
+/// closes, and the reason this sibling of `cmd_reported` must not stay a parallel un-hardened
+/// store-opener.
+fn cmd_prompt(args: &[String]) -> Res {
+    let id = match args {
+        [id] => id.as_str(),
+        _ => return Err("prompt: expected exactly one spawn id: rigger prompt <id>".into()),
+    };
+    let loc = require_store_dir()?;
+    let backend = Store::open(&loc.file("events.db"))?;
+    let store = Namespaced::new(&backend, &loc.identity());
+    let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+    match spawn::prompt_for(&events, id).map_err(|e| e.to_string())? {
+        Some(p) => {
+            println!("{p}");
+            Ok(())
+        }
+        None => Err(format!("prompt: no spawn request recorded for {id:?}").into()),
     }
 }
 
@@ -1232,11 +1329,12 @@ fn cmd_emit(args: &[String]) -> Res {
     }
 
     // Resolve the EXISTING store (walk up; refuse if none) rather than fabricating one
-    // in the wrong cwd - see [`require_store_dir`].
-    let dir = require_store_dir()?;
-    let backend = Store::open(&store_file(&dir, "events.db"))?;
-    let store = Namespaced::new(&backend, &project_identity());
-    let graph = Projector::open(&store_file(&dir, "graph.db"))?;
+    // in the wrong cwd, and scope it by the RESOLVED root's identity (not the cwd's), so
+    // a walked-up write lands in the stream the conductor reads - see [`require_store_dir`].
+    let loc = require_store_dir()?;
+    let backend = Store::open(&loc.file("events.db"))?;
+    let store = Namespaced::new(&backend, &loc.identity());
+    let graph = Projector::open(&loc.file("graph.db"))?;
 
     // Same args shape the MCP tool receives, so emit_event - the shared core both
     // surfaces call - behaves identically here and over MCP.
@@ -1256,9 +1354,9 @@ fn cmd_emit(args: &[String]) -> Res {
 fn cmd_peers(args: &[String]) -> Res {
     let files: Vec<String> = args.to_vec();
 
-    let dir = require_store_dir()?;
-    let backend = Store::open(&store_file(&dir, "events.db"))?;
-    let store = Namespaced::new(&backend, &project_identity());
+    let loc = require_store_dir()?;
+    let backend = Store::open(&loc.file("events.db"))?;
+    let store = Namespaced::new(&backend, &loc.identity());
 
     // The side-car replays the whole backlog from position 0; wait until it has
     // drained every event currently in the store before reading, so a one-shot CLI
@@ -1489,11 +1587,13 @@ fn cmd_result(args: &[String]) -> Res {
     let res = build_result(&parsed.id, &text, parsed.is_error, parsed.meta)?;
 
     // Resolve the EXISTING store (walk up; refuse if none) rather than fabricating one
-    // in the wrong cwd - a courier run from a unit worktree would otherwise record into
-    // a fresh dead store while the real spawn stays parked (see [`require_store_dir`]).
-    let dir = require_store_dir()?;
-    let backend = Store::open(&store_file(&dir, "events.db"))?;
-    let store = Namespaced::new(&backend, &project_identity());
+    // in the wrong cwd, scoped by the RESOLVED root's identity: a courier run from a unit
+    // worktree would otherwise record into a fresh dead store (no store) or misfile under
+    // the worktree's own namespace (walked-up store) while the real spawn stays parked
+    // forever - both fixed here (see [`require_store_dir`] / [`StoreLocation::identity`]).
+    let loc = require_store_dir()?;
+    let backend = Store::open(&loc.file("events.db"))?;
+    let store = Namespaced::new(&backend, &loc.identity());
 
     // One cheap pre-write read of the run stream, to advise (on stderr) about an orphan
     // id or about superseding an existing result BEFORE the append. Advisory only: the
@@ -2422,7 +2522,20 @@ fn select_reindex_grounder(name: &str) -> Result<Box<dyn Grounder>, Box<dyn std:
 }
 
 fn git_repo() -> String {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    git_repo_at(&cwd)
+}
+
+/// The git top-level directory *containing `root`*, resolved with `git -C <root>` so the
+/// answer is anchored at `root` rather than the process cwd - empty when `root` is not in
+/// a git repo. Running git anchored at an explicit directory is what lets the couriers
+/// derive a store's identity from the RESOLVED store root (which git reports as the repo
+/// root) instead of the cwd (which, inside a git-linked worktree, git reports as the
+/// worktree path) - see [`project_identity_at`].
+fn git_repo_at(root: &Path) -> String {
     Command::new("git")
+        .arg("-C")
+        .arg(root)
         .args(["rev-parse", "--show-toplevel"])
         .output()
         .ok()

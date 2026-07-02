@@ -269,6 +269,32 @@ fn emit_refuses_to_fabricate_a_store_when_none_exists() {
     );
 }
 
+/// `rigger prompt` is a WORKER-INVOKED store-opening courier (a unit fetches its own slim
+/// spawn manifest from the log), so run from a storeless cwd it must REFUSE like `emit`/
+/// `result`/`reported`, never fabricate a fresh empty `.rigger/events.db` and then report
+/// "no spawn request recorded" for every id, stranding the worker. Guards the routing of
+/// `cmd_prompt` through [`require_store_dir`] against regressing to a cwd-relative
+/// `Store::open`.
+#[test]
+fn prompt_refuses_to_fabricate_a_store_when_none_exists() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["prompt", "u/implementer#0"]);
+    assert!(
+        !ok,
+        "prompt must refuse when there is no existing store; stderr: {err}"
+    );
+    assert!(
+        err.contains("no rigger store found") && err.contains("refusing to fabricate"),
+        "prompt must explain the refusal; got: {err:?}"
+    );
+    assert!(
+        !root.join(".rigger").join("events.db").exists(),
+        "prompt must NOT fabricate a store when it refuses"
+    );
+}
+
 /// The paradigm defect (adv-result-wrong-cwd-fabricates-store): `rigger result` run from
 /// a unit-worktree-shaped cwd - a tracked `.rigger/workflow.yml` but NO machine-local
 /// `.rigger/events.db` - must REFUSE instead of fabricating a fresh dead store and printing
@@ -319,7 +345,7 @@ fn result_walks_up_to_a_parent_store_from_a_subdirectory() {
     );
 
     // The result landed in the ROOT store (not a fabricated subdir one): `reported`,
-    // which reads the cwd-relative store, finds it from the root.
+    // which resolves the store the same walk-up way, finds it from the root.
     let (out, err, ok) = run_rigger(root, &["reported", "u/implementer#0"]);
     assert!(
         ok,
@@ -328,6 +354,69 @@ fn result_walks_up_to_a_parent_store_from_a_subdirectory() {
     assert!(
         out.contains("u/implementer#0") && out.contains("ok"),
         "reported must confirm the recorded result; got: {out:?}"
+    );
+}
+
+/// The PRIMARY named threat (adv-u9-walkup-namespace-misfile-default-layout): a courier run
+/// from a REAL git-linked worktree nested INSIDE the repo - the Gap-14 default scratch root
+/// `<repo>/.rigger/tmp/...`, where the conductor actually spawns units - must record into the
+/// SAME namespaced stream the conductor reads, not misfile it under `proj-<worktree>-run`
+/// while the spawn stays parked. Walking up alone is not enough: the walked-up write lands in
+/// the real store FILE, but the stream is chosen by the identity, and `git rev-parse
+/// --show-toplevel` from inside a linked worktree returns the WORKTREE path (basename
+/// `rigger-wt-x`), so a cwd-anchored identity misfiles the append. A plain subdir shares the
+/// git top-level and hides this; only a real linked worktree exposes the divergence. Proven
+/// end-to-end: `rigger result` from inside the worktree, then `rigger reported` FROM THE REPO
+/// ROOT must see the recorded result (it reads `proj-<repo>-run`, the conductor's stream).
+#[test]
+fn result_from_a_nested_git_worktree_records_into_the_repo_stream() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    // A prior run created the store the conductor reads (identity = the repo basename).
+    seed_store(root);
+
+    // A REAL git-linked worktree nested under the repo, exactly like the conductor's
+    // Gap-14 scratch root. `git worktree add` needs a committed HEAD, which
+    // `temp_git_project_with_commit` provides.
+    let wt = root.join(".rigger").join("tmp").join("rigger-wt-x");
+    std::fs::create_dir_all(wt.parent().unwrap()).unwrap();
+    let ok = Command::new("git")
+        .args(["worktree", "add", "-q"])
+        .arg(&wt)
+        .current_dir(root)
+        .status()
+        .expect("git must be runnable")
+        .success();
+    assert!(
+        ok,
+        "git worktree add must succeed for the nested-worktree test"
+    );
+
+    // Record a result from INSIDE the nested worktree.
+    let (_out, err, ok) = run_rigger(&wt, &["result", "u/implementer#0", "did the work"]);
+    assert!(
+        ok,
+        "result from inside a nested git worktree must succeed; stderr: {err}"
+    );
+    // It walked up to the repo store - it did NOT fabricate a store inside the worktree.
+    assert!(
+        !wt.join(".rigger").join("events.db").exists(),
+        "result must NOT fabricate a store inside the worktree; it walks up to the repo"
+    );
+
+    // The write landed in the stream the CONDUCTOR reads (identity = repo root, not the
+    // worktree), so `reported` FROM THE REPO ROOT sees it. Before the identity fix, the
+    // append misfiled under `proj-rigger-wt-x-run` and this read returned exit-non-zero
+    // "no recorded result yet" while the spawn stayed parked - the exact charter defect.
+    let (out, err, ok) = run_rigger(root, &["reported", "u/implementer#0"]);
+    assert!(
+        ok,
+        "the worktree's result must be readable from the repo root (the conductor's \
+         stream); stderr: {err}, stdout: {out}"
+    );
+    assert!(
+        out.contains("u/implementer#0") && out.contains("ok"),
+        "reported from the repo root must confirm the worktree's recorded result; got: {out:?}"
     );
 }
 
