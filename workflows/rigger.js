@@ -144,6 +144,7 @@ async function runWorker(req, fatal) {
     `  rigger result ${req.id} "<your result: a one-line summary, or your full verdict/findings>"\n` +
     `(pipe multi-line output via stdin instead, e.g. \`rigger result ${req.id}\` reading a heredoc). ` +
     `If you cannot complete the task, report the failure instead: \`rigger result ${req.id} --error "<why it failed>"\` (the message must be non-empty). ` +
+    `--error means YOU were unable to perform your task (blocked, crashed, missing tools) - NEVER a negative conclusion: a reviewer whose verdict is REJECT, or a gate that found failures, COMPLETED its task and reports that verdict/finding as its NORMAL result (an --error replays as a dead worker and aborts the run, not as your verdict). ` +
     `Reporting your result is mandatory - the run cannot advance past this spawn until you do.`
 
   try {
