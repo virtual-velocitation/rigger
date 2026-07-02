@@ -67,6 +67,18 @@ gates:                      # the project's verification library, referenced by 
   clippy: { run: "cargo clippy --all-targets -- -D warnings", kind: core }
   build:  { run: "cargo build",                              kind: core }
   test:   { run: "cargo test",                               kind: core }
+  # The style gate (Gap 4a): a mechanically-checkable style constraint becomes a
+  # gate rather than relying on ambient reviewer attention. It FAILS when the
+  # unit's OWN diff against the run base introduces an em dash (U+2014) in any
+  # added text - code, comments, docs, prompts - and PASSES on a clean diff. It
+  # runs in the unit worktree (cwd), so a three-dot diff from the run branch
+  # (`rigger-run`, with an origin/main / HEAD fallback) reports only THIS branch's
+  # changes, never the whole tree. The em dash byte pattern is generated at runtime
+  # via `printf` octal (portable to POSIX sh / dash and bash), so this gate command
+  # carries no literal em dash and therefore passes on its own diff.
+  style:
+    run: 'em=$(printf "\342\200\224"); base=$(git rev-parse --verify -q rigger-run || git rev-parse --verify -q origin/main || git rev-parse --verify -q HEAD); if git diff "$base"...HEAD | grep "^+" | grep -v "^+++ " | grep -qF "$em"; then echo "style gate FAILED: an em dash (U+2014) was introduced; use a hyphen"; exit 1; fi'
+    kind: core
 
 stages:
   # 1. Refine the spec's decomposition. The conductor itself creates one baseline
@@ -82,8 +94,8 @@ stages:
   # 2. Implement, review, and integrate PER UNIT. One Rust implementer per ready
   #    unit, each in an isolated worktree, partitioned by blast-radius so the waves
   #    stay disjoint. Each unit's complete lifecycle runs inside this one stage:
-  #    red -> green is enforced around the change, the full cargo gate set
-  #    (fmt + clippy + build + test) must pass, THEN the unit reviews ITSELF through
+  #    red -> green is enforced around the change, the full gate set
+  #    (fmt + clippy + build + test + style) must pass, THEN the unit reviews ITSELF through
   #    `defaults.review`'s three tiers, and only on adjudicator-approve + green gates
   #    does it integrate (on_pass: merge). A reject or a gate failure feeds back into
   #    this same unit's remediation loop (re-ground, re-implement with the feedback)
@@ -94,6 +106,6 @@ stages:
     agent: rust-engineer
     strategy: fan-out
     partition: by-blast-radius
-    gates: [fmt, clippy, build, test]
+    gates: [fmt, clippy, build, test, style]
     on_pass: merge
     coverage: "each unit is implemented, three-tier-reviews itself, and integrates on a green workspace"
