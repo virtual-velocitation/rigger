@@ -8,6 +8,8 @@
 use std::path::Path;
 use std::process::Command;
 
+use serde_yaml;
+
 use rigger::conductor::{self, Deps};
 use rigger::config;
 use rigger::contextgraph::{self, sqlite::Projector, Projection};
@@ -1352,33 +1354,144 @@ fn cmd_validate() -> Res {
 ///      from the scaffold constants, keeping any file that already exists;
 ///   2. installs the Claude Code SessionStart hook into `<root>/.claude/settings.json`,
 ///      merging into (never clobbering) whatever settings are already there.
-fn init_project(root: &Path) -> Res {
+/// Scaffolds a new project and returns the names of agents that were scaffolded.
+fn init_project(root: &Path) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     // 1. Scaffold .rigger/.
     let rigger_dir = root.join(RIGGER_DIR);
     let agents_dir = rigger_dir.join("agents");
     std::fs::create_dir_all(&agents_dir)?;
     write_if_absent(&rigger_dir.join("workflow.yml"), SCAFFOLD_WORKFLOW);
-    for (file, content) in SCAFFOLD_AGENTS {
+
+    // 2. Load the workflow to determine which agents are referenced, then only
+    // scaffold those agents. This allows setup to skip scaffolding when the
+    // workflow's referenced agents already exist (§05 setup hygiene).
+    let referenced_agents = get_referenced_agent_ids(root).unwrap_or_default();
+
+    // If the workflow references agents, scaffold only those. If it references
+    // nothing (should not happen with a valid workflow), scaffold all defaults
+    // for backward compatibility (empty repo case).
+    let agents_to_scaffold: Vec<(&str, &str)> = if referenced_agents.is_empty() {
+        SCAFFOLD_AGENTS.to_vec()
+    } else {
+        SCAFFOLD_AGENTS
+            .iter()
+            .filter(|(_, content)| {
+                // Extract the agent id from the YAML frontmatter (id: xxx)
+                if let Ok(def) = rigger::config::parse_agent(content.as_bytes()) {
+                    referenced_agents.contains(&def.id)
+                } else {
+                    // If we can't parse it, skip it to avoid scaffolding invalid agents
+                    false
+                }
+            })
+            .copied()
+            .collect()
+    };
+
+    let mut scaffolded_agents = Vec::new();
+    for (file, content) in &agents_to_scaffold {
         write_if_absent(&agents_dir.join(file), content);
+        scaffolded_agents.push(file.to_string());
     }
 
-    // 2. Install the SessionStart hook, merging into any existing settings.
+    // 3. Install the SessionStart hook, merging into any existing settings.
     let claude_dir = root.join(".claude");
     std::fs::create_dir_all(&claude_dir)?;
     let settings_path = claude_dir.join("settings.json");
     let existing = std::fs::read(&settings_path).unwrap_or_default();
     let merged = hooks::install_session_start(&existing, "rigger prime")?;
     std::fs::write(&settings_path, merged)?;
+
+    // 4. Write .gitignore entries for machine-local installs (.claude/ and .rigger/shim/)
+    // when they are not already ignored or tracked.
+    write_gitignore_entries(root, ".claude/")?;
+    write_gitignore_entries(root, ".rigger/shim/")?;
+
+    Ok(scaffolded_agents)
+}
+
+/// Write a .gitignore entry for the given pattern if it is not already ignored or tracked.
+fn write_gitignore_entries(root: &Path, pattern: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let gitignore_path = root.join(".gitignore");
+    let normalized_pattern = pattern.trim_end_matches('/');
+
+    // Check if already in .gitignore
+    let current = std::fs::read_to_string(&gitignore_path).unwrap_or_default();
+    if current.lines().any(|line| line.trim() == normalized_pattern) {
+        return Ok(()); // Already in .gitignore
+    }
+
+    // Check if the path is tracked in git (it should not be, as .claude/ and .rigger/shim/
+    // are machine-local and should never be committed). This is just a safety check.
+    let is_tracked = Command::new("git")
+        .args(["ls-files"])
+        .current_dir(root)
+        .output()
+        .ok()
+        .map(|output| {
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .any(|line| line.starts_with(&format!("{}/", normalized_pattern)))
+        })
+        .unwrap_or(false);
+
+    if is_tracked {
+        return Ok(()); // Path is tracked, don't ignore it
+    }
+
+    // Append to .gitignore
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&gitignore_path)?;
+
+    // Add a newline before the entry if the file is not empty and doesn't end with newline
+    if !current.is_empty() && !current.ends_with('\n') {
+        writeln!(file)?;
+    }
+
+    writeln!(file, "{}", normalized_pattern)?;
+
     Ok(())
 }
 
+/// Get all agent IDs referenced in the workflow at <root>/.rigger/workflow.yml.
+/// Returns an empty set if the workflow cannot be loaded or parsed.
+fn get_referenced_agent_ids(root: &Path) -> Result<std::collections::HashSet<String>, Box<dyn std::error::Error>> {
+    use std::collections::HashSet;
+
+    let workflow_path = root.join(RIGGER_DIR).join("workflow.yml");
+    if !workflow_path.exists() {
+        return Ok(HashSet::new());
+    }
+
+    let content = std::fs::read_to_string(&workflow_path)?;
+    let workflow: rigger::config::Workflow = serde_yaml::from_str(&content)?;
+
+    let mut ids = HashSet::new();
+
+    // Add agents from defaults.review
+    for agent_id in workflow.defaults.review.agent_ids() {
+        ids.insert(agent_id);
+    }
+
+    // Add agents from all stages
+    for stage in workflow.stages.values() {
+        for agent_id in stage.agent_ids() {
+            ids.insert(agent_id);
+        }
+    }
+
+    Ok(ids)
+}
+
 fn cmd_init() -> Res {
-    init_project(Path::new("."))?;
-    let names: Vec<&str> = SCAFFOLD_AGENTS.iter().map(|(f, _)| *f).collect();
+    let scaffolded_agents = init_project(Path::new("."))?;
     println!(
         "scaffolded .rigger/workflow.yml and .rigger/agents/{{{}}} and installed a Claude Code \
          SessionStart hook in .claude/settings.json (it runs `rigger prime`)",
-        names.join(", ")
+        scaffolded_agents.join(", ")
     );
     Ok(())
 }
@@ -1482,15 +1595,14 @@ fn run_npm_install(dir: &Path) -> Res {
 /// remains as a fallback.
 fn cmd_setup() -> Res {
     let root = Path::new(".");
-    init_project(root)?;
+    let scaffolded_agents = init_project(root)?;
     install_workflow(root)?;
     provision_shim(root)?;
-    let names: Vec<&str> = SCAFFOLD_AGENTS.iter().map(|(f, _)| *f).collect();
     println!(
         "scaffolded .rigger/workflow.yml and .rigger/agents/{{{}}}, installed a Claude Code \
          SessionStart hook in .claude/settings.json, and provisioned the JS driver in \
          .rigger/shim/ (wrote shim.mjs + package.json + package-lock.json and ran npm install)",
-        names.join(", ")
+        scaffolded_agents.join(", ")
     );
     println!(
         "installed the /rigger workflow (.claude/workflows/rigger.js) - run it with: /rigger \

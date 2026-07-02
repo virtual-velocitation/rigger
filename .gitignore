@@ -22,3 +22,5 @@ shim/node_modules/
 .DS_Store
 .idea/
 .vscode/
+.claude
+.rigger/shim
