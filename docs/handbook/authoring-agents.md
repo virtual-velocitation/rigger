@@ -70,6 +70,17 @@ A review panel needs *diverse lenses*, not redundant ones. Give each lens one la
 
 The adversary must stay strict to stay useful. Calibrate it in one direction only: it may refute a lens finding as overreach solely when the finding is out of lane, describes an unreachable state, or is factually wrong on cited evidence. "Minor" or "inconvenient" never qualify. A softened adversary is worse than none - it launders defects as reviewed.
 
+## Starting from an existing collection
+
+You do not have to write a fleet from scratch. [agency-agents](https://github.com/msitarzewski/agency-agents) (MIT) is a collection of 200+ specialized agent definitions - engineering, testing, security, design, and a dozen other divisions - in the same Markdown-with-YAML-frontmatter shape Rigger reads. To adopt one:
+
+1. Copy the `.md` file into `.rigger/agents/` and rename its identity field to Rigger's `id:` (lowercase, hyphenated, role-shaped).
+2. Decide the five frontmatter fields deliberately for YOUR loop: pick the `model` tier by the judgment the role needs (see "Model tiering" above), narrow `tools` to the minimum the role requires (reviewers get read-only), add `isolation: worktree` to anything that writes code in a fan-out, and leave `recurse` off for workers.
+3. Keep the body's role and workflow; strip platform-specific instructions that assume a particular editor or chat UI.
+4. `rigger validate` confirms the fleet loads; a workflow stage can then reference the agent by `id`.
+
+Treat imported prompts as first drafts: the checklist below applies to them the same as to agents you write yourself.
+
 ## Checklist for a new agent
 
 1. Write `.rigger/agents/<id>.md` with the five frontmatter fields decided deliberately (tier? tools? isolation? recursion?).
