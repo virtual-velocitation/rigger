@@ -295,11 +295,11 @@ panel is the unit's effective `review` (the stage's override, else `defaults.rev
 
 ```mermaid
 flowchart LR
-  S["spec"] --> RDY{loop-ready?\n(enumerable\nDone-when criteria)}
+  S["spec"] --> RDY{"loop-ready?\n(enumerable\nDone-when criteria)"}
   RDY -->|no| BLK1["block: ask for criteria"]
   RDY -->|yes| G["ground each unit (JIT)\nvector + context-graph subgraph"]
   G --> P["run the DAG stage-by-stage\n(needs = edges)"]
-  P --> COV{coverage gate\nevery criterion has a unit?}
+  P --> COV{"coverage gate\nevery criterion has a unit?"}
   COV -->|gap| BLK2["block: plan missed a requirement"]
   COV -->|ok| PAR["partition ready units\n(disjoint by blast-radius)"]
   PAR --> FAN["fan-out: AgentDriver per unit"]
@@ -312,7 +312,7 @@ flowchart LR
     REMED --> IMPL
   end
   FAN --> IMPL
-  INT --> CONV{converged?\nall criteria covered +\nall units integrated +\nall gates green}
+  INT --> CONV{"converged?\nall criteria covered +\nall units integrated +\nall gates green"}
   CONV -->|no| G
   CONV -->|yes| DONE["done (machine-verified)"]
 ```
