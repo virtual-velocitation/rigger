@@ -227,10 +227,14 @@ for (;;) {
       `You are a rigger COURIER. Advance the run one frontier and return the wave, verbatim. Run EXACTLY this, from ${REPO}, using Bash with the timeout parameter set to 600000 (a step runs cargo gates inline and can take many minutes; the default timeout kills it mid-work):\n` +
         `  cd ${REPO} && CARGO_TARGET_DIR=${REPO}/.rigger/tmp/cargo-target rigger step --spec ${SPEC}${BASEFLAG}\n` +
         `(the CARGO_TARGET_DIR prefix makes every gate share one build cache instead of cold-building per worktree - keep it exactly as written). ` +
-        `It prints ONE line of JSON on stdout: {"wave":[...],"done":<bool>}. Return that JSON object EXACTLY as printed - do not summarize it, drop fields, or run anything else. ` +
+        `It prints ONE line of JSON on stdout: {"wave":[...],"done":<bool>}. Return that JSON object EXACTLY as printed, INLINE and IN FULL, in your structured output - no matter how large it is. NEVER write it to a file, return a path, a reference, a summary, or a truncation: the driver can only read your returned JSON, so anything but the verbatim object (all wave items, all their fields) LOSES the wave and stalls the run. Do not drop fields or run anything else. ` +
         `If the Bash call TIMES OUT, re-run the exact same command - as many times as needed: the step's gate results are recorded durably as they complete, so every re-run resumes past the recorded ones and gets strictly further; return the JSON from the run that prints it. ` +
         `NEVER fabricate or guess the JSON: if you cannot obtain it after many re-runs, or the command prints no JSON / exits non-zero (not a timeout), return {"wave":[],"done":true,"error":"<the stderr / failure message, or 'step did not complete within my attempts'>"} so the loop stops cleanly and the error is visible.`,
-      { phase: 'Plan', model: 'haiku', schema: STEP, label: `step#${waves + 1}` },
+      // sonnet, not haiku: the courier's one job is a verbatim relay of a possibly
+      // large JSON object, and haiku demonstrably "helps" by externalizing big waves
+      // to a file reference - which loses the wave (the driver reads only the
+      // returned JSON) and stalls the run.
+      { phase: 'Plan', model: 'sonnet', schema: STEP, label: `step#${waves + 1}` },
     )
   } catch (e) {
     // The `rigger step` courier AGENT itself rejected (its own max turns / crash) - distinct
