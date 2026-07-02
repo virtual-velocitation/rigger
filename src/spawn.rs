@@ -15,7 +15,9 @@
 //! request is persisted to the run's event log as a [`TYPE_SPAWN_REQUESTED`] event
 //! (this module owns that serialization). The replay driver reads them back with
 //! [`recorded`] to answer already-recorded spawns from the log, and the spawn-budget
-//! breaker counts them - so both derive from the log rather than process memory.
+//! breaker counts those same DISTINCT requests (via [`recorded`], deduped by id - a
+//! re-parked id is never double-counted) - so both derive from the log rather than
+//! process memory, and the breaker binds across every step process the run spans.
 //!
 //! This is DISTINCT from `driver::workflow::SpawnRequest`, the in-process MCP
 //! driver's wire type: that path (the shim) keeps working unchanged, while this
