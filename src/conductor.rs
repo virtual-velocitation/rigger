@@ -18,6 +18,7 @@ use crate::gate::{self, Gate};
 use crate::grounder::Grounder;
 use crate::ledger::{self, RunState};
 use crate::safety;
+use crate::spawn::{lens_role, spawn_id, ROLE_ADJUDICATOR, ROLE_ADVERSARY, ROLE_IMPLEMENTER};
 use crate::worktree::Worktree;
 
 /// The run's event stream name.
@@ -79,6 +80,7 @@ impl From<serde_json::Error> for Error {
 }
 
 /// What an agent returns when it finishes.
+#[derive(Clone, Debug)]
 pub struct AgentResult {
     pub output: String,
 }
@@ -219,7 +221,20 @@ enum ResumePhase {
 }
 
 /// Per-spawn options.
+#[derive(Default)]
 pub struct SpawnOpts {
+    /// The spawn's DETERMINISTIC id (`{unit}/{role}#{attempt}`, see
+    /// [`spawn_id`](crate::spawn::spawn_id)). A stepwise/replay driver keys on it to
+    /// answer an already-recorded spawn from the log or to park an unrecorded one; the
+    /// blocking drivers (cli/workflow) ignore it. Empty for a caller that does not use
+    /// stepwise replay.
+    pub id: String,
+    /// The unit this spawn belongs to - the parked request's `unit` (and the display
+    /// label's unit half). Empty when the caller does not park.
+    pub unit: String,
+    /// The stage that produced this spawn - the parked request's `stage` (the thin
+    /// driver's per-unit `opts.phase` label half). Empty when the caller does not park.
+    pub stage: String,
     /// The agent's PERSONA - its role instructions, the markdown body of its
     /// `.rigger/agents/<id>.md` definition (`AgentDef::prompt`). It belongs as the
     /// agent's SYSTEM prompt, distinct from the grounded task `prompt`. The conductor
@@ -256,6 +271,38 @@ pub trait AgentDriver: Send + Sync {
         opts: &SpawnOpts,
         emit: &dyn Fn(&str, Value) -> Result<(), Error>,
     ) -> Result<AgentResult, Error>;
+}
+
+/// The sentinel a stepwise/replay [`AgentDriver`] embeds in its spawn error to signal
+/// that a spawn was PARKED - persisted to the log and awaiting an out-of-process
+/// result - rather than run to completion or genuinely failed. It uses control
+/// characters no real error text carries, so [`is_parked`] recognizes it even after
+/// the conductor wraps the driver error with stage/agent context (`format!("... {}",
+/// e.0)` keeps the marker as a substring).
+///
+/// Parking is part of the `AgentDriver` PORT contract, so it lives here beside the
+/// trait: the replay adapter constructs the signal via [`parked_spawn`] and the
+/// conductor recognizes it via [`is_parked`], and the use case never has to name the
+/// adapter to tell a park from a failure.
+const PARKED_MARKER: &str = "\u{1}rigger:spawn-parked\u{1}";
+
+/// Construct the PARK signal a stepwise driver returns for spawn `id`: it persisted the
+/// unrecorded spawn request and cannot answer it in-process. On this signal the
+/// conductor unwinds the unit CLEANLY - no `UnitFailed`, no remediation - and the step
+/// ends once every in-flight spawn is parked at the frontier; a later step, after the
+/// courier records the result, replays it. This is a normal failure, so a non-stepwise
+/// driver (which never parks) is entirely unaffected.
+pub fn parked_spawn(id: &str) -> Error {
+    Error(format!(
+        "{PARKED_MARKER} spawn {id:?} parked at the unrecorded frontier"
+    ))
+}
+
+/// Whether `e` is a driver PARK signal (see [`parked_spawn`]) rather than a real spawn
+/// failure. Robust to the conductor's own `format!("... {}", e.0)` wrapping at the
+/// review spawn sites, since the marker survives as a substring.
+pub fn is_parked(e: &Error) -> bool {
+    e.0.contains(PARKED_MARKER)
 }
 
 /// The conductor's injected ports.
@@ -640,6 +687,13 @@ impl RunCtx<'_> {
                         integrated.insert(name);
                     }
                     Ok(false) => {}
+                    // A PARKED unit (the stepwise/replay driver hit an unrecorded
+                    // frontier) is neither integrated nor failed: it left a
+                    // SpawnRequested for the courier and unwound cleanly. Record no
+                    // lesson and do not collapse the wave to an error - the run loop
+                    // finds no newly-ready units and returns, so the step process ends
+                    // once every in-flight spawn in the wave is parked.
+                    Err(e) if is_parked(&e) => {}
                     Err(e) => {
                         // EVERY erroring stage leaves a record, not just the first
                         // (item 8): the wave collapses to a single returned error, so
@@ -883,6 +937,7 @@ impl RunCtx<'_> {
     /// never the main repo. `assert_isolated_cwd` enforces the dir is a real worktree.
     fn reviewer_spawn_opts(
         &self,
+        id: &str,
         role: &str,
         agent_id: &str,
         dir: &str,
@@ -904,6 +959,12 @@ impl RunCtx<'_> {
             isolation: false,
             parallel,
             blast_radius: self.grounded_seed(st),
+            // The reviewer's deterministic spawn id (its tier's role token + this
+            // review's attempt), so a stepwise/replay driver answers or parks it the
+            // same way it does the implementer.
+            id: id.to_string(),
+            unit: st.name.clone(),
+            stage: st.name.clone(),
         })
     }
 
@@ -929,7 +990,7 @@ impl RunCtx<'_> {
     /// the unit is marked `reviewed` and its evidence carries the verdict reason
     /// (item 4). An empty panel runs no review and approves trivially (the historical
     /// behavior).
-    fn review_unit(&self, st: &Stage, dir: &str) -> Result<ReviewOutcome, Error> {
+    fn review_unit(&self, st: &Stage, dir: &str, attempt: u32) -> Result<ReviewOutcome, Error> {
         let panel = self.effective_review_panel(st);
         if panel.is_empty() {
             return Ok(ReviewOutcome::approved(String::new()));
@@ -940,19 +1001,19 @@ impl RunCtx<'_> {
         // TIER 1: the lenses emit their findings to the graph (REVIEW_PROTOCOL); the
         // projector folds them ABOUT the unit's files live.
         if !lenses.is_empty() {
-            self.run_review_agents_concurrently(st, &lenses, dir)?;
+            self.run_review_agents_concurrently(st, &lenses, dir, attempt)?;
         }
         // TIER 2: the adversary grounds AFTER the lenses, so `graph_context` surfaces
         // their findings; it tries to prove them wrong and emits its own findings.
         if !adversary.is_empty() {
-            self.run_adversary(st, &adversary, dir)?;
+            self.run_adversary(st, &adversary, dir, attempt)?;
         }
         if adjudicator.is_empty() {
             return Ok(ReviewOutcome::approved(String::new()));
         }
         // TIER 3: the adjudicator grounds last, reads the lenses' and adversary's
         // findings from the graph, and renders the gating verdict.
-        let (approved, reason) = self.run_adjudicator(st, &adjudicator, dir)?;
+        let (approved, reason) = self.run_adjudicator(st, &adjudicator, dir, attempt)?;
         if approved {
             // The adjudicator's verdict reason is folded into the unit's `reviewed`
             // evidence (item 4).
@@ -1085,6 +1146,9 @@ impl RunCtx<'_> {
                             isolation: wt.is_some(),
                             parallel: false,
                             blast_radius: self.grounded_seed(st),
+                            id: spawn_id(&st.name, ROLE_IMPLEMENTER, attempts),
+                            unit: st.name.clone(),
+                            stage: st.name.clone(),
                         },
                         &emit,
                     )
@@ -1100,6 +1164,11 @@ impl RunCtx<'_> {
                             json!({"id": st.name, "status": "green", "evidence": green}),
                         )?;
                     }
+                    // A PARKED spawn (the stepwise/replay driver reached an unrecorded
+                    // frontier) is NOT a failure: unwind this unit cleanly, with no
+                    // UnitFailed and no remediation, so the step ends once every
+                    // in-flight spawn is parked and a later step replays the result.
+                    Err(e) if is_parked(&e) => return Err(e),
                     // A mid-spawn crash (usage limit, non-zero exit) is remediated,
                     // not propagated: it must not abort the whole run (§8).
                     Err(e) => spawn_err = Some(format!("agent {:?}: {}", st.agent, e.0)),
@@ -1160,7 +1229,7 @@ impl RunCtx<'_> {
                             "evidence": verified_evidence(&st.gates),
                         }),
                     )?;
-                    let review = self.review_unit(st, dir)?;
+                    let review = self.review_unit(st, dir, attempts)?;
                     if review.approved {
                         // on_pass governs integration (§3.2): empty or `merge` lands
                         // the work; any other value (e.g. `none`) runs the gates but
@@ -1281,9 +1350,9 @@ impl RunCtx<'_> {
             // and the adversary's findings from the graph, and its verdict gates the
             // stage. So the three tiers inform each other via the graph, not via the
             // conductor splicing one agent's stdout into another's prompt.
-            self.run_review_agents_concurrently(st, &lenses, dir)?;
+            self.run_review_agents_concurrently(st, &lenses, dir, attempts)?;
             if !st.adversary.is_empty() {
-                self.run_adversary(st, &st.adversary, dir)?;
+                self.run_adversary(st, &st.adversary, dir, attempts)?;
             }
             // The neutral adjudicator's verdict gates the stage (§3.2), fail-closed:
             // it approves ONLY on an explicit `approve`, blocking integration
@@ -1291,7 +1360,7 @@ impl RunCtx<'_> {
             let (approved, reason) = if st.adjudicator.is_empty() {
                 (true, String::new())
             } else {
-                self.run_adjudicator(st, &st.adjudicator, dir)?
+                self.run_adjudicator(st, &st.adjudicator, dir, attempts)?
             };
 
             let gates_pass = approved && self.run_gates(st, dir)?.pass;
@@ -1363,6 +1432,7 @@ impl RunCtx<'_> {
         st: &Stage,
         agent_ids: &[String],
         dir: &str,
+        attempt: u32,
     ) -> Result<(), Error> {
         // Bounded fan-out pool (§6): run the lenses in chunks of at most
         // MAX_CONCURRENCY, each chunk a scoped thread group. Every lens still runs;
@@ -1371,7 +1441,7 @@ impl RunCtx<'_> {
             let chunk_results: Vec<Result<(), Error>> = std::thread::scope(|s| {
                 let handles: Vec<_> = chunk
                     .iter()
-                    .map(|a| s.spawn(move || self.run_lens(st, a, dir)))
+                    .map(|a| s.spawn(move || self.run_lens(st, a, dir, attempt)))
                     .collect();
                 handles.into_iter().map(|h| h.join().unwrap()).collect()
             });
@@ -1392,8 +1462,9 @@ impl RunCtx<'_> {
     /// adjudicator, and its fellow lenses retrieve it. Its stdout is no longer captured
     /// to thread into another agent's prompt - the graph is the channel. Budget-refused
     /// spawns (item 9) surface as an error so the run halts.
-    fn run_lens(&self, st: &Stage, agent_id: &str, dir: &str) -> Result<(), Error> {
-        let opts = self.reviewer_spawn_opts("lens", agent_id, dir, true, st)?;
+    fn run_lens(&self, st: &Stage, agent_id: &str, dir: &str, attempt: u32) -> Result<(), Error> {
+        let id = spawn_id(&st.name, &lens_role(agent_id), attempt);
+        let opts = self.reviewer_spawn_opts(&id, "lens", agent_id, dir, true, st)?;
         let agent_def = self.cfg.agents.get(agent_id).ok_or_else(|| {
             Error(format!(
                 "stage {:?} references unknown agent {:?}",
@@ -1425,8 +1496,15 @@ impl RunCtx<'_> {
     /// worktree of its own; it runs IN the unit's worktree (`dir`), never the live
     /// main checkout - and unlike the adjudicator its output does NOT gate the stage;
     /// it informs the adjudicator's judgment via the graph.
-    fn run_adversary(&self, st: &Stage, adv_id: &str, dir: &str) -> Result<(), Error> {
-        let opts = self.reviewer_spawn_opts("adversary", adv_id, dir, false, st)?;
+    fn run_adversary(
+        &self,
+        st: &Stage,
+        adv_id: &str,
+        dir: &str,
+        attempt: u32,
+    ) -> Result<(), Error> {
+        let id = spawn_id(&st.name, ROLE_ADVERSARY, attempt);
+        let opts = self.reviewer_spawn_opts(&id, "adversary", adv_id, dir, false, st)?;
         let agent_def = self.cfg.agents.get(adv_id).ok_or_else(|| {
             Error(format!(
                 "stage {:?} references unknown adversary {:?}",
@@ -1466,8 +1544,10 @@ impl RunCtx<'_> {
         st: &Stage,
         adj_id: &str,
         dir: &str,
+        attempt: u32,
     ) -> Result<(bool, String), Error> {
-        let opts = self.reviewer_spawn_opts("adjudicator", adj_id, dir, false, st)?;
+        let id = spawn_id(&st.name, ROLE_ADJUDICATOR, attempt);
+        let opts = self.reviewer_spawn_opts(&id, "adjudicator", adj_id, dir, false, st)?;
         let agent_def = self.cfg.agents.get(adj_id).ok_or_else(|| {
             Error(format!(
                 "stage {:?} references unknown adjudicator {:?}",

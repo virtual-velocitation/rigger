@@ -24,6 +24,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::conductor::STREAM;
 use crate::eventstore::{Error, Event, EventStore, ExpectedRevision, Position};
@@ -228,6 +229,118 @@ pub fn is_recorded(events: &[Event], id: &str) -> bool {
     })
 }
 
+/// The event type a recorded spawn RESULT is persisted as - the "result" half of the
+/// spawn-request/result pair whose request half is [`TYPE_SPAWN_REQUESTED`]. Like the
+/// request it is deliberately NOT one of the run-lifecycle events the ledger folds, so
+/// an unknown-event-ignoring projection (the ledger, the context graph) skips it and
+/// only [`result_of`] and the replay driver read it. `rigger result <id>` writes one;
+/// the replay driver answers an already-recorded spawn by returning the matching
+/// result instead of re-running the agent.
+pub const TYPE_SPAWN_RESULT: &str = "SpawnResult";
+
+/// A recorded spawn OUTCOME, keyed by the same deterministic [`spawn_id`] as its
+/// request. A successful run carries the agent's `output` and an empty `error`; a
+/// failed run (`rigger result --error`) carries the failure message in `error`, and
+/// the replay driver answers the spawn AS an error - so a step re-running the conductor
+/// over recorded history sees the identical failure it saw live. `meta` carries the
+/// optional `rigger result --meta <json>` courier bookkeeping.
+///
+/// Serializes with empty/null fields omitted, so a plain success result persists as
+/// just `{"id":..,"output":..}`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SpawnResult {
+    /// The deterministic id of the spawn this answers (see [`spawn_id`]).
+    pub id: String,
+    /// The agent's output (its final message). Empty on an error result.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub output: String,
+    /// The failure message when the spawn errored; empty on success. A non-empty
+    /// `error` makes the replay driver answer the spawn with a driver error, so a
+    /// recorded failure stays a failure across step processes.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub error: String,
+    /// Optional courier metadata (`rigger result --meta <json>`); null when unset and
+    /// then omitted from the wire.
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub meta: Value,
+}
+
+impl SpawnResult {
+    /// A SUCCESSFUL result: the agent finished and produced `output`.
+    pub fn ok(id: impl Into<String>, output: impl Into<String>) -> SpawnResult {
+        SpawnResult {
+            id: id.into(),
+            output: output.into(),
+            error: String::new(),
+            meta: Value::Null,
+        }
+    }
+
+    /// A FAILED result (`rigger result --error`): the spawn errored with `error`. The
+    /// replay driver answers a recorded failure with a driver error, never a fake
+    /// success.
+    pub fn failed(id: impl Into<String>, error: impl Into<String>) -> SpawnResult {
+        SpawnResult {
+            id: id.into(),
+            output: String::new(),
+            error: error.into(),
+            meta: Value::Null,
+        }
+    }
+
+    /// Builder: attach the optional courier metadata (`rigger result --meta <json>`).
+    pub fn with_meta(mut self, meta: Value) -> Self {
+        self.meta = meta;
+        self
+    }
+
+    /// Whether this result records a FAILURE (a non-empty `error`).
+    pub fn is_error(&self) -> bool {
+        !self.error.is_empty()
+    }
+
+    /// Serialize this result as its [`TYPE_SPAWN_RESULT`] event, ready to append.
+    pub fn to_event(&self) -> Result<Event, serde_json::Error> {
+        Ok(Event::new(TYPE_SPAWN_RESULT, serde_json::to_vec(self)?))
+    }
+
+    /// Recover a result from a [`TYPE_SPAWN_RESULT`] event body.
+    pub fn from_event(e: &Event) -> Result<SpawnResult, serde_json::Error> {
+        serde_json::from_slice(&e.data)
+    }
+}
+
+/// Persist a recorded spawn result to the run's event log as a [`TYPE_SPAWN_RESULT`]
+/// event, returning its global position. This is exactly what `rigger result <id>`
+/// does once a courier has run the parked agent: the outcome becomes a durable fact,
+/// so the next step process replays it instead of re-running the agent.
+pub fn record_result(store: &dyn EventStore, res: &SpawnResult) -> Result<Position, Error> {
+    let ev = res
+        .to_event()
+        .map_err(|e| Error::Backend(format!("serialize spawn result {}: {e}", res.id)))?;
+    store.append(STREAM, ExpectedRevision::Any, std::slice::from_ref(&ev))
+}
+
+/// The LATEST recorded result for `id`, or `None` if the spawn has no result yet (it is
+/// still parked at the frontier, awaiting a courier's `rigger result`). This is how the
+/// replay driver decides answer-vs-park: `Some` answers the spawn, `None` parks it.
+///
+/// Later results win, so a corrected re-record supersedes an earlier one. Non-result
+/// events (and malformed result bodies via the surfaced error) are handled just like
+/// [`recorded`], so the same run stream feeds this and the ledger/graph projections.
+pub fn result_of(events: &[Event], id: &str) -> Result<Option<SpawnResult>, serde_json::Error> {
+    let mut found = None;
+    for e in events {
+        if e.type_ == TYPE_SPAWN_RESULT {
+            let res = SpawnResult::from_event(e)?;
+            if res.id == id {
+                found = Some(res);
+            }
+        }
+    }
+    Ok(found)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -374,6 +487,82 @@ mod tests {
         assert_eq!(recorded.len(), 2);
         assert_eq!(recorded[&a.id].unit, "a");
         assert_eq!(recorded[&b.id].unit, "b");
+    }
+
+    #[test]
+    fn a_success_result_round_trips_and_omits_empty_fields() {
+        let res = SpawnResult::ok("u/implementer#0", "the agent's final message");
+        assert!(!res.is_error());
+
+        let json = serde_json::to_value(&res).unwrap();
+        let obj = json.as_object().unwrap();
+        assert!(obj.contains_key("id"));
+        assert!(obj.contains_key("output"));
+        assert!(!obj.contains_key("error"), "no error on a success result");
+        assert!(!obj.contains_key("meta"), "null meta is omitted");
+
+        let ev = res.to_event().unwrap();
+        assert_eq!(ev.type_, TYPE_SPAWN_RESULT);
+        assert_eq!(SpawnResult::from_event(&ev).unwrap(), res);
+    }
+
+    #[test]
+    fn an_error_result_carries_the_failure_and_optional_meta() {
+        let res = SpawnResult::failed("u/adjudicator#1", "agent crashed: non-zero exit")
+            .with_meta(serde_json::json!({"by": "courier"}));
+        assert!(res.is_error());
+        assert_eq!(res.error, "agent crashed: non-zero exit");
+        assert_eq!(res.meta, serde_json::json!({"by": "courier"}));
+
+        // The failure survives the event round-trip so a step replays it AS a failure.
+        let ev = res.to_event().unwrap();
+        assert_eq!(SpawnResult::from_event(&ev).unwrap(), res);
+    }
+
+    #[test]
+    fn recording_a_result_persists_it_and_result_of_reads_it_back() {
+        let store = Store::open(":memory:").unwrap();
+        // No result yet -> the spawn is still parked at the frontier.
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(result_of(&events, "u/implementer#0").unwrap().is_none());
+
+        record_result(&store, &SpawnResult::ok("u/implementer#0", "done")).unwrap();
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let got = result_of(&events, "u/implementer#0").unwrap().unwrap();
+        assert_eq!(got.output, "done");
+        // A different id has no result of its own.
+        assert!(result_of(&events, "u/implementer#1").unwrap().is_none());
+    }
+
+    #[test]
+    fn result_of_returns_the_latest_recorded_result_for_an_id() {
+        // A corrected re-record supersedes an earlier result (last write wins).
+        let store = Store::open(":memory:").unwrap();
+        record_result(&store, &SpawnResult::failed("u/implementer#0", "flaked")).unwrap();
+        record_result(&store, &SpawnResult::ok("u/implementer#0", "recovered")).unwrap();
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let got = result_of(&events, "u/implementer#0").unwrap().unwrap();
+        assert!(
+            !got.is_error(),
+            "the later success supersedes the earlier failure"
+        );
+        assert_eq!(got.output, "recovered");
+    }
+
+    #[test]
+    fn a_result_does_not_count_as_a_parked_request() {
+        // The request and result halves share the stream but are distinct facts: a
+        // result must not make `recorded`/`is_recorded` (which count REQUESTS) match.
+        let store = Store::open(":memory:").unwrap();
+        record_result(&store, &SpawnResult::ok("u/implementer#0", "done")).unwrap();
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(
+            recorded(&events).unwrap().is_empty(),
+            "a result is not a request"
+        );
+        assert!(!is_recorded(&events, "u/implementer#0"));
     }
 
     #[test]
