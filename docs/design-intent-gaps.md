@@ -100,6 +100,16 @@ Dogfooding. Rigger ran on its own spec; the run's telemetry (`rigger stats`, `ri
 
 **Fix shape.** Scope the fold: a `RunStarted` event carrying a run id, unit events stamped with it, and the conductor folding only the current run's slice (prior-run units visible as history, never as ready work). `rigger stats` gains a per-run view. The workaround until then: terminal-escalate stray units by hand at run start - exactly what should never require a human.
 
+## Gap 12: step replay is event-idempotent but not worktree-idempotent
+
+**Intent.** Any `rigger step` process resumes a run from the log alone; spec 04's idempotency criterion ("a step re-running the conductor over recorded history appends no duplicate events") was meant to make step processes disposable.
+
+**Reality.** Worktree side-effects escape that criterion. The conductor derives a fresh UUID-suffixed worktree dir per step process, so a later step's `Worktree::create` hits git's one-checkout-per-branch rule against the previous process's still-registered worktree and the step dies (`fatal: '<branch>' is already used by worktree at '/tmp/rigger-wt-...'`). The branch-is-the-checkpoint design is right (`Worktree::create` reuses an existing branch without reset); only the stale registration handling is missing.
+
+**Evidence.** Run `wf_74918c04-514` step 1 died on exactly this against wave 1's twelve worktrees. Operator workaround: `git worktree remove --force` the stale dirs (branches and their commits preserved), relaunch.
+
+**Fix shape.** On `Worktree::create`, if the branch is already checked out in a registered worktree, adopt that dir when it still exists (same process or not) or prune the stale registration and re-create. Deterministic (non-UUID) worktree paths would make the reuse trivial. Belongs beside Gap 11 in the next conductor-hardening unit.
+
 ---
 
 ## Closed
