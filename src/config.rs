@@ -263,8 +263,8 @@ pub fn load(dir: &str) -> Result<Config, Error> {
 }
 
 fn load_agents(dir: &Path) -> Result<BTreeMap<String, AgentDef>, Error> {
-    let mut agents = BTreeMap::new();
     let entries = std::fs::read_dir(dir).map_err(|e| err(format!("read agents dir: {e}")))?;
+    let mut parsed = Vec::new();
     for entry in entries {
         let path = entry.map_err(|e| err(e.to_string()))?.path();
         if path.extension().and_then(|x| x.to_str()) != Some("md") {
@@ -277,15 +277,31 @@ fn load_agents(dir: &Path) -> Result<BTreeMap<String, AgentDef>, Error> {
             .to_string();
         let b = std::fs::read(&path).map_err(|e| err(format!("read {name}: {e}")))?;
         let a = parse_agent(&b).map_err(|e| err(format!("{name}: {e}")))?;
+        parsed.push((name, a));
+    }
+    index_agents(parsed)
+}
+
+/// Index a set of `(name, AgentDef)` pairs by id, enforcing the fleet invariants the
+/// loader relies on: every agent has a non-empty id, and no two agents share one. This
+/// is the SINGLE definition of a valid agent identity, so a caller assembling a
+/// prospective fleet (e.g. `rigger setup --agents`) validates by the same rule [`load`]
+/// does rather than re-implementing (and drifting from) it. `name` is a filename, used
+/// only for error context.
+pub fn index_agents(
+    agents: impl IntoIterator<Item = (String, AgentDef)>,
+) -> Result<BTreeMap<String, AgentDef>, Error> {
+    let mut map = BTreeMap::new();
+    for (name, a) in agents {
         if a.id.is_empty() {
             return Err(err(format!("{name}: agent is missing an id")));
         }
-        if agents.contains_key(&a.id) {
+        if map.contains_key(&a.id) {
             return Err(err(format!("duplicate agent id {:?}", a.id)));
         }
-        agents.insert(a.id.clone(), a);
+        map.insert(a.id.clone(), a);
     }
-    Ok(agents)
+    Ok(map)
 }
 
 /// ParseAgent parses a markdown-with-YAML-frontmatter agent definition: the

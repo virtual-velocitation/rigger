@@ -1830,16 +1830,40 @@ fn import_agents(root: &Path, src: &Path) -> Result<ImportSummary, Box<dyn std::
     let dest = root.join(RIGGER_DIR).join("agents");
     std::fs::create_dir_all(&dest)?;
 
-    // Collect the source `.md` files and process them in a deterministic (sorted)
-    // order so the printed log and any first-error are stable across filesystems.
-    let mut md_files: Vec<std::path::PathBuf> = std::fs::read_dir(src)
+    // Collect the source `.md` files, SURFACING (never silently dropping) any directory
+    // entry that fails to stat - a collection with an unreadable file must fail the
+    // import loudly, not import a short count under a success message. Sorted so the log
+    // and any first-error are stable across filesystems.
+    let mut md_files: Vec<std::path::PathBuf> = Vec::new();
+    for entry in std::fs::read_dir(src)
         .map_err(|e| format!("setup --agents: cannot read {}: {e}", src.display()))?
-        .filter_map(|entry| entry.ok().map(|e| e.path()))
-        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("md"))
-        .collect();
+    {
+        let entry = entry.map_err(|e| {
+            format!(
+                "setup --agents: reading an entry under {}: {e}",
+                src.display()
+            )
+        })?;
+        let path = entry.path();
+        if path.extension().and_then(|x| x.to_str()) == Some("md") {
+            md_files.push(path);
+        }
+    }
     md_files.sort();
 
+    // The prospective fleet: the agents already on disk plus the ones this import would
+    // add. `rigger setup` scaffolds the default fleet before this runs, and a foreign
+    // collection can carry an id that collides with a scaffolded agent (or with another
+    // file in the same import) under a DIFFERENT filename - past the filename-only
+    // overwrite guard, but a duplicate id `config::load` rejects. We therefore validate
+    // the whole prospective fleet BEFORE writing anything (below), so a collision aborts
+    // the import atomically instead of leaving half the files on disk to brick every
+    // later load.
+    let mut fleet: Vec<(String, config::AgentDef)> = existing_agents(&dest)?;
+
+    // Pass 1: normalize, parse, and STAGE each file to write - writing nothing yet.
     let mut summary = ImportSummary::default();
+    let mut to_write: Vec<(String, String, String)> = Vec::new(); // (name, content, id)
     for path in md_files {
         let name = path
             .file_name()
@@ -1851,8 +1875,7 @@ fn import_agents(root: &Path, src: &Path) -> Result<ImportSummary, Box<dyn std::
                 )
             })?
             .to_string();
-        let out = dest.join(&name);
-        if out.exists() {
+        if dest.join(&name).exists() {
             println!("kept existing .rigger/agents/{name} (import never overwrites)");
             summary.skipped += 1;
             continue;
@@ -1861,28 +1884,64 @@ fn import_agents(root: &Path, src: &Path) -> Result<ImportSummary, Box<dyn std::
             .map_err(|e| format!("setup --agents: read {name}: {e}"))?;
         let normalized =
             normalize_identity(&raw).map_err(|e| format!("setup --agents: {name}: {e}"))?;
-        // Validate each file structurally as it is imported, so the error names the
-        // offending file (the same parse the loader uses); the whole-fleet referential
-        // check runs once at the end via config::load.
+        // Parse structurally as we stage, so a malformed file's error names it (the same
+        // parse the loader uses). The id invariant (non-blank, unique) is enforced once
+        // for the whole fleet by `config::index_agents` below - the SAME rule the loader
+        // applies, not a second copy of it.
         let parsed = config::parse_agent(normalized.as_bytes())
             .map_err(|e| format!("setup --agents: {name}: {e}"))?;
-        if parsed.id.trim().is_empty() {
-            return Err(format!("setup --agents: {name}: agent is missing an id").into());
-        }
-        std::fs::write(&out, normalized)
+        let id = parsed.id.clone();
+        fleet.push((name.clone(), parsed));
+        to_write.push((name, normalized, id));
+    }
+
+    // Validate the prospective fleet by the SAME rule `config::load` enforces - a
+    // non-blank, unique id per agent - before a single byte is written, so a blank or
+    // colliding id fails the import loudly and leaves `.rigger/agents/` untouched.
+    config::index_agents(fleet)?;
+
+    // Pass 2: every staged file validated - commit the writes.
+    for (name, content, id) in &to_write {
+        std::fs::write(dest.join(name), content)
             .map_err(|e| format!("setup --agents: write {name}: {e}"))?;
-        println!("imported .rigger/agents/{name} (id: {})", parsed.id);
+        println!("imported .rigger/agents/{name} (id: {id})");
         summary.imported += 1;
     }
 
-    // Run the SAME validation `rigger validate` applies over the resulting fleet, so an
-    // import that leaves the config referentially broken fails loudly.
+    // Full referential validation of the resulting project (workflow -> agent
+    // references, the review panel, gates) via the same load `rigger validate` runs.
     let root_str = root
         .to_str()
         .ok_or("setup --agents: project root path is not valid UTF-8")?;
     config::load(root_str)?;
 
     Ok(summary)
+}
+
+/// Parse the agent `.md` files already in `dir` into `(filename, AgentDef)` pairs, so an
+/// import can validate its additions against the fleet already on disk (id collisions in
+/// particular). A file that fails to parse is surfaced - the fleet is already broken, and
+/// the final `config::load` would reject it too.
+fn existing_agents(
+    dir: &Path,
+) -> Result<Vec<(String, config::AgentDef)>, Box<dyn std::error::Error>> {
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let path = entry?.path();
+        if path.extension().and_then(|x| x.to_str()) != Some("md") {
+            continue;
+        }
+        let name = path
+            .file_name()
+            .and_then(|x| x.to_str())
+            .unwrap_or("?")
+            .to_string();
+        let raw = std::fs::read(&path)?;
+        let a = config::parse_agent(&raw)
+            .map_err(|e| format!("setup --agents: existing agent {name}: {e}"))?;
+        out.push((name, a));
+    }
+    Ok(out)
 }
 
 /// Return `content` with the agent's identity frontmatter key normalized to Rigger's
@@ -2921,6 +2980,119 @@ mod tests {
         assert!(
             import_agents(root, &src).is_err(),
             "an agent file with no YAML frontmatter must fail the import validation"
+        );
+    }
+
+    /// Import is atomic on an id collision with an agent already on disk. A collection
+    /// file whose normalized id equals a scaffolded agent's - under a DIFFERENT filename,
+    /// so the filename-only overwrite guard does not catch it - is rejected BEFORE any
+    /// write, leaving `.rigger/agents/` untouched. Without this, the file is written and
+    /// the trailing whole-fleet load then fails on the duplicate id, bricking every later
+    /// `config::load`.
+    #[test]
+    fn import_agents_rejects_an_id_colliding_with_an_existing_agent() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        init_project(root).unwrap();
+
+        let src = root.join("collection");
+        std::fs::create_dir_all(&src).unwrap();
+        // A different filename, but its id collides with the scaffolded `planner`.
+        std::fs::write(
+            src.join("my-planner.md"),
+            "---\nid: planner\n---\nA colliding planner under a new filename.\n",
+        )
+        .unwrap();
+
+        assert!(
+            import_agents(root, &src).is_err(),
+            "an imported id that collides with an existing agent must fail the import"
+        );
+        assert!(
+            !root.join(".rigger/agents/my-planner.md").exists(),
+            "the colliding file must NOT be written - the import aborts atomically"
+        );
+    }
+
+    /// Import is atomic on a duplicate id WITHIN one import: two collection files that
+    /// normalize to the same id are rejected before either is written, so no half-import
+    /// is left behind.
+    #[test]
+    fn import_agents_rejects_a_duplicate_id_within_one_import() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        init_project(root).unwrap();
+
+        let src = root.join("collection");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("a-dup.md"), "---\nid: twin\n---\nFirst.\n").unwrap();
+        // `name:` normalizes to the same `id: twin`.
+        std::fs::write(src.join("b-dup.md"), "---\nname: twin\n---\nSecond.\n").unwrap();
+
+        assert!(
+            import_agents(root, &src).is_err(),
+            "two imported files sharing an id must fail the import"
+        );
+        assert!(
+            !root.join(".rigger/agents/a-dup.md").exists()
+                && !root.join(".rigger/agents/b-dup.md").exists(),
+            "neither file may be written when the batch has a duplicate id"
+        );
+    }
+
+    /// Import rejects an agent whose identity field is present but blank - the empty-id
+    /// arm - by the SAME rule `config::load` applies, and writes nothing. A `name:` with
+    /// an empty value normalizes to a blank `id:`.
+    #[test]
+    fn import_agents_rejects_an_agent_with_a_blank_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        init_project(root).unwrap();
+
+        let src = root.join("collection");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(
+            src.join("blank.md"),
+            "---\nname: \"\"\ndescription: has a blank identity\n---\nBody.\n",
+        )
+        .unwrap();
+
+        assert!(
+            import_agents(root, &src).is_err(),
+            "a blank id must fail the import (the same rule config::load enforces)"
+        );
+        assert!(
+            !root.join(".rigger/agents/blank.md").exists(),
+            "the blank-id file must NOT be written - the import aborts before writing"
+        );
+    }
+
+    /// Import runs the SAME whole-project validation `rigger validate` applies: a project
+    /// whose workflow references a missing agent fails the import even when the imported
+    /// file itself is well-formed. This drives the trailing `config::load` referential
+    /// check.
+    #[test]
+    fn import_agents_runs_full_validation_and_rejects_a_broken_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        init_project(root).unwrap();
+        // Break a workflow agent reference so the whole-project load fails referentially.
+        let wf_path = root.join(".rigger/workflow.yml");
+        let wf = std::fs::read_to_string(&wf_path).unwrap();
+        std::fs::write(&wf_path, wf.replace("agent: implementer", "agent: ghost")).unwrap();
+
+        let src = root.join("collection");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(
+            src.join("newcomer.md"),
+            "---\nid: newcomer\n---\nA well-formed new agent.\n",
+        )
+        .unwrap();
+
+        assert!(
+            import_agents(root, &src).is_err(),
+            "import must run the same validation `rigger validate` applies and reject a \
+             project whose workflow references a missing agent"
         );
     }
 
