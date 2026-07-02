@@ -326,9 +326,9 @@ as JSON. --base (default origin/main) anchors a NEW run\n                       
 branch; if it is unresolvable the branch is created off\n                              \
 HEAD. An existing run branch is reused, never reset\n  \
 rigger reported <id>        exit 0 iff spawn <id> already has a recorded result in\n                              \
-this project's run stream (else non-zero). The read half of\n                              \
-the thin driver's check-then-record death-report guard, so a\n                              \
-worker that self-reported is never clobbered by an --error\n  \
+this project's run stream (else non-zero). A read-only check\n                              \
+of whether a spawn reported yet; the death courier records\n                              \
+atomically instead via `rigger result --if-absent`\n  \
 rigger prompt <id>          print the parked spawn's full prompt (persona + task).\n                              \
 The step wave is a slim manifest; each worker fetches its\n                              \
 own prompt from the log by spawn id (spawn-by-reference)\n  \
@@ -349,9 +349,9 @@ later `rigger ground` reflects just-landed changes\n  \
 rigger emit <type> <json>   append {{type, data:<json>}} to the event store and fold\n                              \
 it into the context graph (the CLI form of rigger_emit)\n  \
 rigger result <id> [out]    record a parked spawn's outcome to the run log so the next\n                              \
-step advances past it: <out> (or stdin) is the agent's\n                              \
-output, or with --error its failure message; --meta <json>\n                              \
-attaches optional courier bookkeeping\n  \
+step advances past it: <out> (or stdin) is the agent's output\n                              \
+(with --error, its failure message); --if-absent records only\n                              \
+if the id has no result; --meta <json> adds bookkeeping\n  \
 rigger peers [file ...]     print peer decisions and findings from the context\n                              \
 graph, scoped to the given files (the CLI form of rigger_peers)\n  \
 rigger validate             load and validate the workflow + agents\n  \
@@ -513,18 +513,17 @@ fn cmd_step(args: &[String]) -> Res {
 /// `rigger reported <id>` - exit 0 iff spawn `<id>` already has a recorded result in this
 /// project's run stream, and non-zero (a clear error) when it does not.
 ///
-/// This is the READ half of the thin driver's check-then-record death-report guard
-/// (decision `thin-driver-death-guard`). When a worker's `agent()` rejects, the JS driver
-/// cannot tell from the rejection alone whether the worker died BEFORE self-reporting or
-/// AFTER (a worker - or a reviewer that already emitted an approve verdict - can report
-/// and then run on to max-turns / crash). Recording an `--error` on its behalf
-/// UNCONDITIONALLY would clobber a result that already exists, because [`spawn::result_of`]
-/// is last-write-wins: a genuinely successful/approved unit would be silently overwritten
-/// and force-failed on the next replay. So the driver's death courier runs
-/// `rigger reported <id> || rigger result <id> --error <why>`: this command answers the
-/// "does a result already exist?" check, and the `--error` is recorded ONLY when it does
-/// not - honoring the criterion's "dies WITHOUT reporting" clause while still guaranteeing
-/// every parked spawn ends with a result so the run can never hang.
+/// A read-only "has this spawn reported yet?" query - it never writes. It was originally
+/// the READ half of the driver's two-process check-then-record death-report guard
+/// (decision `thin-driver-death-guard`): the courier ran `rigger reported <id> || rigger
+/// result <id> --error <why>` so the `--error` landed ONLY when no result existed yet,
+/// because recording UNCONDITIONALLY would clobber a self-report ([`spawn::result_of`] is
+/// last-write-wins) and force-fail a genuinely successful/approved unit on the next replay.
+/// That read-then-write pair left a TOCTOU window (a self-report landing between the check
+/// and the record was still clobbered), so the death courier now records atomically via a
+/// single `rigger result <id> --if-absent --error <why>` instead (spec 05; the write path
+/// is [`spawn::record_result_if_absent`]). This command is retained as a standalone check -
+/// e.g. an operator asking whether a spawn is answered - not as the courier's guard.
 ///
 /// Composition mirrors [`cmd_step`]/[`cmd_stats`]: the per-project namespaced sqlite run
 /// stream, read forward from revision 0 and projected through [`spawn::result_of`] - the
@@ -559,9 +558,8 @@ fn cmd_reported(args: &[String]) -> Res {
         _ => return Err("reported: expected exactly one spawn id: rigger reported <id>".into()),
     };
     match result_of_at(&db_path("events.db"), &project_identity(), id)? {
-        // Already answered: print a one-line summary (for the courier's log) and exit 0, so
-        // the guard's `|| rigger result <id> --error` is SKIPPED and the existing result -
-        // the worker's own report - stands untouched.
+        // Already answered: print a one-line summary (id + ok/failed) and exit 0, so a caller
+        // scripting on this exit code can tell the spawn is answered.
         Some(res) => {
             println!(
                 "{} {}",
@@ -570,9 +568,8 @@ fn cmd_reported(args: &[String]) -> Res {
             );
             Ok(())
         }
-        // No result yet: exit non-zero (a clear error) so the guard proceeds to record the
-        // worker's failure on its behalf. This is the only branch that lets an `--error` be
-        // written, so a self-reported result is never overwritten.
+        // No result yet: exit non-zero (a clear error) so a caller can tell the spawn is still
+        // unanswered.
         None => Err(format!("reported: spawn {id:?} has no recorded result yet").into()),
     }
 }
@@ -1226,33 +1223,40 @@ fn json_type_name(v: &serde_json::Value) -> &'static str {
 
 /// A parsed `rigger result` invocation (see [`cmd_result`]): the spawn `id`, the
 /// optional outcome `text` (`None` means "read it from stdin"), whether `--error`
-/// marks it a failure, and the optional `--meta` courier bookkeeping.
+/// marks it a failure, whether `--if-absent` makes the record conditional, and the
+/// optional `--meta` courier bookkeeping.
 struct ResultArgs {
     id: String,
     text: Option<String>,
     is_error: bool,
+    if_absent: bool,
     meta: Option<serde_json::Value>,
 }
 
-/// Parse `rigger result <id> [<output>] [--error] [--meta '<json>']`.
+/// Parse `rigger result <id> [<output>] [--error] [--if-absent] [--meta '<json>']`.
 ///
 /// `<id>` is the required deterministic spawn id (`{unit}/{role}#{attempt}`). The
 /// outcome payload is an OPTIONAL second positional; when omitted, [`cmd_result`]
 /// reads it from stdin (spec 04: "record a spawn's outcome (stdin or arg)"). `--error`
 /// is a bare flag that turns the payload into the failure message rather than the
-/// agent's output. `--meta` takes a JSON OBJECT (mirroring `rigger emit`'s payload
-/// contract) carrying courier bookkeeping (e.g. the resolved model id, spec 05).
-/// Unknown flags, a missing/empty id, a third positional, and a non-object/invalid
-/// `--meta` are all rejected with a clear message.
+/// agent's output. `--if-absent` is a bare flag that makes the record CONDITIONAL: the
+/// outcome is written only when the spawn has no result yet, atomically and without
+/// clobbering an existing one (the thin driver's death courier uses it - spec 05).
+/// `--meta` takes a JSON OBJECT (mirroring `rigger emit`'s payload contract) carrying
+/// courier bookkeeping (e.g. the resolved model id, spec 05). Unknown flags, a
+/// missing/empty id, a third positional, and a non-object/invalid `--meta` are all
+/// rejected with a clear message.
 fn parse_result_args(args: &[String]) -> Result<ResultArgs, Box<dyn std::error::Error>> {
     let mut id: Option<String> = None;
     let mut text: Option<String> = None;
     let mut is_error = false;
+    let mut if_absent = false;
     let mut meta: Option<serde_json::Value> = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--error" => is_error = true,
+            "--if-absent" => if_absent = true,
             "--meta" => {
                 let raw = args.get(i + 1).ok_or(
                     "result: --meta needs a JSON object: rigger result <id> --meta '<json>'",
@@ -1297,6 +1301,7 @@ fn parse_result_args(args: &[String]) -> Result<ResultArgs, Box<dyn std::error::
         id,
         text,
         is_error,
+        if_absent,
         meta,
     })
 }
@@ -1355,12 +1360,19 @@ fn read_outcome_from_stdin() -> Result<String, Box<dyn std::error::Error>> {
     Ok(buf)
 }
 
-/// `rigger result <id> [<output>] [--error] [--meta '<json>']` - record a parked
-/// spawn's OUTCOME to the run log, so the conductor's replay driver answers that spawn
-/// from the log instead of re-parking it and the next `rigger step` / `rigger run`
+/// `rigger result <id> [<output>] [--error] [--if-absent] [--meta '<json>']` - record a
+/// parked spawn's OUTCOME to the run log, so the conductor's replay driver answers that
+/// spawn from the log instead of re-parking it and the next `rigger step` / `rigger run`
 /// advances past it (spec 04). The courier that ran the parked agent reports its final
 /// message as `<output>` (or on stdin); a worker that died is reported with `--error
 /// <message>`; `--meta` attaches optional bookkeeping (e.g. the resolved model id).
+///
+/// `--if-absent` makes the write CONDITIONAL and atomic: the outcome is recorded only
+/// when the spawn has no result yet, and an already-recorded result is left UNTOUCHED
+/// (still exit 0). The thin driver's death courier uses it to record a died-worker
+/// failure without clobbering a self-report that landed first - one atomic operation
+/// closing the TOCTOU window the old two-process `rigger reported <id> || rigger result
+/// <id> --error` guard left open (spec 05). See [`spawn::record_result_if_absent`].
 ///
 /// The [`spawn::SpawnResult`] is appended to the SAME per-project [`Namespaced`] `run`
 /// stream the conductor drives (identical composition to [`cmd_emit`] and the `run`
@@ -1379,12 +1391,26 @@ fn cmd_result(args: &[String]) -> Res {
     std::fs::create_dir_all(RIGGER_DIR)?;
     let backend = Store::open(&db_path("events.db"))?;
     let store = Namespaced::new(&backend, &project_identity());
-    let pos = spawn::record_result(&store, &res)?;
 
-    if res.is_error() {
-        println!("recorded error result for {} (position {pos})", res.id);
+    let kind = if res.is_error() {
+        "error result"
     } else {
-        println!("recorded result for {} (position {pos})", res.id);
+        "result"
+    };
+    if parsed.if_absent {
+        // Conditional atomic record: write only if the spawn is still unanswered, never
+        // overwriting an existing result. A no-op (a result already stood) is a success,
+        // so the courier's `|| ...`-free single command always exits 0.
+        match spawn::record_result_if_absent(&store, &res)? {
+            Some(pos) => println!("recorded {kind} for {} (position {pos})", res.id),
+            None => println!(
+                "{} already has a result; --if-absent left it untouched",
+                res.id
+            ),
+        }
+    } else {
+        let pos = spawn::record_result(&store, &res)?;
+        println!("recorded {kind} for {} (position {pos})", res.id);
     }
     Ok(())
 }
@@ -2140,6 +2166,36 @@ mod tests {
     }
 
     #[test]
+    fn parse_result_if_absent_is_off_by_default_and_a_bare_order_independent_flag() {
+        // Absent by default (the plain `rigger result` still records unconditionally).
+        let plain = parse_result_args(&["u/implementer#0".into(), "done".into()]).unwrap();
+        assert!(!plain.if_absent, "--if-absent defaults off");
+
+        // `--if-absent` is a bare flag that composes with `--error` and the output
+        // positional in any order (the death courier passes `<id> --if-absent --error <msg>`).
+        for args in [
+            vec![
+                "u/adjudicator#1".to_string(),
+                "--if-absent".into(),
+                "--error".into(),
+                "died".into(),
+            ],
+            vec![
+                "u/adjudicator#1".to_string(),
+                "died".into(),
+                "--error".into(),
+                "--if-absent".into(),
+            ],
+        ] {
+            let a = parse_result_args(&args).unwrap();
+            assert_eq!(a.id, "u/adjudicator#1");
+            assert_eq!(a.text.as_deref(), Some("died"));
+            assert!(a.is_error);
+            assert!(a.if_absent, "--if-absent must parse regardless of position");
+        }
+    }
+
+    #[test]
     fn parse_result_meta_must_be_a_json_object() {
         let a = parse_result_args(&[
             "u/implementer#0".into(),
@@ -2654,7 +2710,7 @@ mod tests {
     /// each frontier via `rigger step`, spawns the returned wave natively in parallel with a
     /// per-unit `opts.phase` label built from the wave item, lets each worker self-report via
     /// `rigger result`, records a dead worker's failure on its behalf via `rigger result
-    /// --error`, and loops until the step reports `done`. Because `meta` MUST be a pure literal
+    /// --if-absent --error`, and loops until the step reports `done`. Because `meta` MUST be a pure literal
     /// (statically extracted by the Workflow runtime - no computed values / no interpolation)
     /// and unit ids are only known at runtime, the per-unit labels live in the runtime
     /// `opts.phase` strings while `meta.phases` keeps the fixed stage set. This test pins the
@@ -2735,30 +2791,35 @@ mod tests {
         );
 
         // 6. Workers SELF-REPORT via `rigger result <id>`, and a worker that DIES without
-        //    reporting has its failure recorded on its behalf via `rigger result <id> --error`
-        //    from the `agent()`-rejected (catch) branch.
+        //    reporting has its failure recorded on its behalf via `rigger result <id>
+        //    --if-absent --error` from the `agent()`-rejected (catch) branch.
         assert!(
             code.contains("rigger result ${req.id}"),
             "each worker must be told to self-report its result via `rigger result <id>`"
-        );
-        assert!(
-            code.contains("rigger result ${req.id} --error"),
-            "a dead worker's failure must be recorded on its behalf via `rigger result <id> --error`"
         );
         assert!(
             code.contains("catch") && code.contains("report-death:"),
             "a worker that dies (its agent() rejects) must be caught and its failure couriered"
         );
 
-        // 6a. The death courier is GUARDED as check-then-record: it records `--error` ONLY when
-        //     the spawn has no result yet (`rigger reported <id> || rigger result <id> --error`),
-        //     so a worker that self-reported success/approve and THEN ran to max-turns is never
-        //     clobbered (`rigger result` / `spawn::result_of` is last-write-wins). This is the
-        //     primary correctness invariant the review rejected the unguarded version for.
+        // 6a. The death courier records the failure ATOMICALLY and CONDITIONALLY via a single
+        //     `rigger result <id> --if-absent --error <why>`: the `--error` lands ONLY when the
+        //     spawn has no result yet, and an existing result (a worker that self-reported
+        //     success/approve and THEN ran to max-turns) is left untouched. It replaces the old
+        //     two-process `rigger reported <id> || rigger result <id> --error` guard, whose
+        //     read-then-write gap could clobber a self-report landing between the check and the
+        //     record (`rigger result` / `spawn::result_of` are last-write-wins), force-failing an
+        //     approved unit on replay. One atomic op closes that TOCTOU window - the primary
+        //     correctness invariant the review rejected the unguarded version for.
         assert!(
-            code.contains("rigger reported ${req.id} || rigger result ${req.id} --error"),
-            "the death courier must be a guarded check-then-record (`rigger reported <id> || \
-             rigger result <id> --error`) so a self-reported result is never clobbered"
+            code.contains("rigger result ${req.id} --if-absent --error"),
+            "the death courier must record atomically via `rigger result <id> --if-absent --error` \
+             so a self-reported result is never clobbered"
+        );
+        assert!(
+            !code.contains("rigger reported ${req.id} ||"),
+            "the death courier must no longer use the two-process `rigger reported <id> || ...` \
+             check-then-record guard (the atomic `--if-absent` record supersedes it)"
         );
 
         // 6b. Both courier `agent()` calls (the death-report courier AND the top-level `rigger
@@ -3125,11 +3186,11 @@ mod tests {
         );
     }
 
-    /// `result_of_at` (the read half of the `rigger reported` death-report guard) treats an
-    /// absent `events.db` as UNREPORTED (`None`) and does NOT create the file: a never-run
-    /// project has no result for any spawn, and opening would create the db, masking the edge.
-    /// A `None` here makes `rigger reported` exit non-zero, so the driver's guarded
-    /// `rigger reported <id> || rigger result <id> --error` proceeds to record the failure.
+    /// `result_of_at` (the read behind `rigger reported`, and the same latest-result read
+    /// `spawn::record_result_if_absent` consults) treats an absent `events.db` as UNREPORTED
+    /// (`None`) and does NOT create the file: a never-run project has no result for any spawn,
+    /// and opening would create the db, masking the edge. A `None` here makes `rigger reported`
+    /// exit non-zero, correctly reporting the spawn as still unanswered.
     #[test]
     fn result_of_at_absent_db_reads_as_unreported_and_creates_no_file() {
         let dir = tempfile::tempdir().unwrap();
@@ -3171,8 +3232,9 @@ mod tests {
 
     /// A recorded self-report reads back as `Some` - the anti-clobber invariant the review
     /// rejected the unguarded death courier for. A worker that self-reported (success OR its own
-    /// failure) is ANSWERED, so `rigger reported` exits 0 and the guard's `|| rigger result
-    /// --error` is skipped: the worker's own result is never overwritten by a courier `--error`.
+    /// failure) is ANSWERED, so `rigger reported` exits 0 and the death courier's atomic
+    /// `rigger result <id> --if-absent --error` records nothing: the worker's own result is
+    /// never overwritten by a courier `--error`.
     #[test]
     fn result_of_at_reads_a_self_reported_result_so_it_is_not_clobbered() {
         let dir = tempfile::tempdir().unwrap();

@@ -15,13 +15,15 @@
 //   3. Lets each worker SELF-REPORT via `rigger result <id> ...`, which is exactly what
 //      the next `rigger step` replays past to advance the run. A worker that DIES without
 //      reporting (its `agent()` rejects: max turns, a crash) has its failure recorded on
-//      its behalf by a courier agent - but GUARDED as check-then-record: the courier runs
-//      `rigger reported <id> || rigger result <id> --error <why>`, so the `--error` is
-//      written ONLY when the spawn has no result yet. A worker (or a reviewer that already
-//      emitted an approve verdict) that self-reported and THEN ran on to max-turns must not
-//      have its result clobbered - `rigger result` is last-write-wins - so the guard honors
-//      the "dies WITHOUT reporting" clause while still guaranteeing every parked spawn ends
-//      with a result and the run can never hang.
+//      its behalf by a courier agent - but CONDITIONALLY and ATOMICALLY: the courier runs a
+//      single `rigger result <id> --if-absent --error <why>`, which writes the `--error`
+//      ONLY when the spawn has no result yet and leaves an existing result untouched. A
+//      worker (or a reviewer that already emitted an approve verdict) that self-reported and
+//      THEN ran on to max-turns must not have its result clobbered - `rigger result` is
+//      last-write-wins - so `--if-absent` honors the "dies WITHOUT reporting" clause in ONE
+//      atomic step (closing the read-then-write TOCTOU window a two-process `rigger reported
+//      <id> || rigger result <id> --error` guard would leave open) while still guaranteeing
+//      every parked spawn ends with a result and the run can never hang.
 //   4. LOOPS until a step reports `done`. Every anomalous exit - a courier agent that itself
 //      dies, `rigger step` failing, a failure that could not be recorded, or a stall - stops
 //      the loop LOUDLY (throws with a clear message) rather than aborting mid-agent or being
@@ -130,7 +132,8 @@ function phaseOf(req) {
 // (the native Workflow path has no MCP proxy, so the rigger_emit/rigger_peers the prompt
 // references are used as `rigger emit`/`rigger peers` CLI commands), and the self-report
 // contract. If the agent REJECTS, a death courier records the failure on its behalf - but
-// GUARDED (check-then-record) so it never overwrites a result the worker already reported.
+// ATOMICALLY via `rigger result --if-absent`, so it never overwrites a result the worker
+// already reported.
 //
 // `fatal` is a shared sink: if the death courier ITSELF dies, we can no longer guarantee a
 // result was recorded for this spawn, so we push it here and the loop stops loudly after the
@@ -163,11 +166,13 @@ async function runWorker(req, fatal) {
     // The worker's agent() REJECTED (max turns, a crash, an execution error). That rejection
     // does NOT prove it died before reporting - a worker (or a reviewer that already emitted
     // an approve verdict) can self-report and THEN run on to max-turns. So record its failure
-    // ON ITS BEHALF as CHECK-THEN-RECORD: `rigger reported <id>` exits 0 iff the spawn already
-    // has a result, so `... || rigger result <id> --error <why>` writes the failure ONLY when
-    // the worker truly died WITHOUT reporting. `rigger result` is last-write-wins, so an
-    // unconditional --error would CLOBBER a self-reported success/approve and force-fail an
-    // approved unit on the next replay - the guard prevents exactly that while still ensuring
+    // ON ITS BEHALF via a single ATOMIC `rigger result <id> --if-absent --error <why>`: the
+    // `--error` lands ONLY when the spawn has no result yet, leaving an existing result
+    // untouched. `rigger result` is last-write-wins, so an unconditional --error would CLOBBER
+    // a self-reported success/approve and force-fail an approved unit on the next replay;
+    // `--if-absent` prevents exactly that in ONE step - closing the read-then-write TOCTOU
+    // window a two-process `rigger reported <id> || rigger result <id> --error` guard leaves
+    // open (a self-report landing between the check and the record) - while still ensuring
     // every parked spawn ends with a result (the run can never hang).
     // The --error message must be non-empty (a blank error would replay AS a success). Neutralize
     // shell metacharacters (`"`, backtick, `$`, `\`) so it can never break out of - or trigger
@@ -181,9 +186,9 @@ async function runWorker(req, fatal) {
     log(`worker ${req.id} agent rejected: ${msg.slice(0, 80)} - recording its failure on its behalf IF it has not already reported`)
     try {
       await agent(
-        `You are a rigger COURIER. The worker for spawn ${req.id} died. Record its failure ON ITS BEHALF, but ONLY if it did not already self-report - a result the worker already recorded must NEVER be overwritten. Run EXACTLY this, from ${REPO}, using Bash (ONE command, keep the \`||\`):\n` +
-          `  cd ${REPO} && rigger reported ${req.id} || rigger result ${req.id} --error "worker ${req.id} died without reporting: ${msg}"\n` +
-          `\`rigger reported ${req.id}\` exits 0 when the spawn ALREADY has a result - then the \`||\` SKIPS the --error and nothing is overwritten. It exits non-zero only when there is no result yet, in which case the failure is recorded (the message is non-empty by construction). Confirm the whole command exited 0; report nothing else.`,
+        `You are a rigger COURIER. The worker for spawn ${req.id} died. Record its failure ON ITS BEHALF, but ONLY if it did not already self-report - a result the worker already recorded must NEVER be overwritten. Run EXACTLY this, from ${REPO}, using Bash (ONE command):\n` +
+          `  cd ${REPO} && rigger result ${req.id} --if-absent --error "worker ${req.id} died without reporting: ${msg}"\n` +
+          `\`--if-absent\` records the failure ATOMICALLY only when the spawn has no result yet; if the worker already reported, it writes nothing and still exits 0, so an existing result is never overwritten (the message is non-empty by construction). Confirm the command exited 0; report nothing else.`,
         { phase: ph, model: 'haiku', label: `report-death:${req.id}` },
       )
     } catch (ce) {

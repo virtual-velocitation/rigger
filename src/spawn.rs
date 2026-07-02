@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::conductor::STREAM;
-use crate::eventstore::{Error, Event, EventStore, ExpectedRevision, Position};
+use crate::eventstore::{Direction, Error, Event, EventStore, ExpectedRevision, Position};
 
 /// The event type a parked spawn request is persisted as - the "spawn-request" half
 /// of the spawn-request/result pair the spec permits as the only new vocabulary the
@@ -341,6 +341,59 @@ pub fn record_result(store: &dyn EventStore, res: &SpawnResult) -> Result<Positi
         .to_event()
         .map_err(|e| Error::Backend(format!("serialize spawn result {}: {e}", res.id)))?;
     store.append(STREAM, ExpectedRevision::Any, std::slice::from_ref(&ev))
+}
+
+/// Record `res` to the run's event log ONLY when the spawn has no result yet, as a
+/// single atomic compare-and-append that never clobbers a result already recorded - the
+/// write half of `rigger result --if-absent`. Returns `Some(position)` when it recorded,
+/// `None` when a result already existed (the idempotent no-op).
+///
+/// The thin driver's death courier calls this to record a died-worker failure IFF the
+/// worker did not already self-report. It supersedes the two-process `rigger reported
+/// <id> || rigger result <id> --error` guard, which reads in one process and writes in
+/// another and so leaves a TOCTOU window: a self-report (or a reviewer's already-emitted
+/// approve) landing between the read and the write is clobbered by the courier's
+/// `--error` - since [`record_result`]/[`result_of`] are last-write-wins - force-failing
+/// an approved unit on the next replay. Collapsing the check and the write into one
+/// atomic operation closes that window.
+///
+/// Atomicity rests on the store's optimistic concurrency (the port's only cross-backend
+/// primitive): read the stream, and if no [`TYPE_SPAWN_RESULT`] for `res.id` is present,
+/// append under an [`ExpectedRevision`] pinned to the revision just read. A concurrent
+/// append that landed after the read (the racing self-report, or any other writer) makes
+/// that expectation CONFLICT; we re-read and re-decide, so the write lands at most once
+/// and a self-report that won the race is honored (the re-check now sees it and returns
+/// `None`). Only a genuine [`Error::Conflict`] retries; any other backend error surfaces.
+pub fn record_result_if_absent(
+    store: &dyn EventStore,
+    res: &SpawnResult,
+) -> Result<Option<Position>, Error> {
+    let ev = res
+        .to_event()
+        .map_err(|e| Error::Backend(format!("serialize spawn result {}: {e}", res.id)))?;
+    loop {
+        let events = store.read_stream(STREAM, 0, Direction::Forward)?;
+        if result_of(&events, &res.id)
+            .map_err(|e| Error::Backend(format!("decode results for {}: {e}", res.id)))?
+            .is_some()
+        {
+            // A result already exists - leave it untouched (the no-op the courier wants).
+            return Ok(None);
+        }
+        // Pin the append to the exact revision we just read: any event appended since
+        // (Forward reads ascending, so `.last()` is the current head) fails the check.
+        let expected = match events.last() {
+            Some(e) => ExpectedRevision::Exact(e.revision),
+            None => ExpectedRevision::NoStream,
+        };
+        match store.append(STREAM, expected, std::slice::from_ref(&ev)) {
+            Ok(pos) => return Ok(Some(pos)),
+            // The stream moved under us; re-read and re-decide. If the racing writer
+            // recorded THIS id, the re-check returns `None` and nothing is clobbered.
+            Err(Error::Conflict { .. }) => continue,
+            Err(e) => return Err(e),
+        }
+    }
 }
 
 /// The LATEST recorded result for `id`, or `None` if the spawn has no result yet (it is
@@ -707,6 +760,57 @@ mod tests {
             "the later success supersedes the earlier failure"
         );
         assert_eq!(got.output, "recovered");
+    }
+
+    #[test]
+    fn record_result_if_absent_records_only_when_no_result_exists() {
+        // The write half of `rigger result --if-absent`: with no result yet it records,
+        // returning the new position, and `result_of` reads it back.
+        let store = Store::open(":memory:").unwrap();
+        let pos =
+            record_result_if_absent(&store, &SpawnResult::ok("u/implementer#0", "done")).unwrap();
+        assert!(pos.is_some(), "an absent result must be recorded");
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let got = result_of(&events, "u/implementer#0").unwrap().unwrap();
+        assert_eq!(got.output, "done");
+    }
+
+    #[test]
+    fn record_result_if_absent_is_a_noop_that_never_clobbers_an_existing_result() {
+        // The anti-clobber invariant the death courier relies on: once a worker has
+        // self-reported, a later `--if-absent` (the courier's died-worker `--error`)
+        // records NOTHING and leaves the self-report standing - the same guarantee the
+        // two-process `rigger reported <id> || rigger result <id> --error` guard gave,
+        // now in ONE atomic step so no self-report can land in the check-then-record gap.
+        let store = Store::open(":memory:").unwrap();
+        record_result(&store, &SpawnResult::ok("u/implementer#0", "self-reported")).unwrap();
+
+        let skipped = record_result_if_absent(
+            &store,
+            &SpawnResult::failed("u/implementer#0", "died without reporting"),
+        )
+        .unwrap();
+        assert!(
+            skipped.is_none(),
+            "an already-recorded result must not be re-recorded (return None)"
+        );
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let results = events
+            .iter()
+            .filter(|e| e.type_ == TYPE_SPAWN_RESULT)
+            .count();
+        assert_eq!(
+            results, 1,
+            "the `--if-absent` no-op must append no second result event"
+        );
+        let got = result_of(&events, "u/implementer#0").unwrap().unwrap();
+        assert!(
+            !got.is_error(),
+            "the self-reported success must stand un-clobbered"
+        );
+        assert_eq!(got.output, "self-reported");
     }
 
     #[test]
