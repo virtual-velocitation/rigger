@@ -7,35 +7,26 @@
 > orchestration core, the declarative config model (agent files + workflow YAML),
 > the event-sourced + context-graph memory layer, and the two pluggable seams
 > (event store, agent driver).
-> **Grounded against (2026-06-27):** a proven internal multi-agent dev-loop harness it
-> generalizes - its conductor, plan, ledger, gates, autonomy, safety, learn, coordinate
-> and semantic-retrieval modules, its fan-out / review workflow drivers, its
-> review-and-remediate flow, its semantic-retrieval tooling, its federation memory
-> scripts, its review-lens agent definitions, and the prior harness's development-loop
-> design spec. Plus the context-graph research corpus (Zep/Graphiti temporal KG, the
-> TrustGraph context-graph manifesto, GraphRAG-vs-vector findings) and KurrentDB's
-> event-sourcing model.
+> **Grounded against (2026-06-27):** the context-graph research corpus (Zep/Graphiti
+> temporal KG, the TrustGraph context-graph manifesto, GraphRAG-vs-vector findings)
+> and KurrentDB's event-sourcing model.
 >
-> **This is Rigger's canonical architecture doc.** It was drafted while building the
-> prior internal dev-loop it generalizes, then moved into this repo. The proposed
-> records in §12 (ADR-0001 + glossary) stay PROPOSALS until ratified at roadmap Phase 0;
-> they are not yet written into `docs/adr/`.
+> **This is Rigger's canonical architecture doc.** The proposed records in §12
+> (ADR-0001 + glossary) stay PROPOSALS until ratified at roadmap Phase 0; they are
+> not yet written into `docs/adr/`.
 
 ---
 
 ## How to read this
 
-Sections tagged **[AS-BUILT]** describe what the Rigger crate now implements. The
-design started as a generalization of a proven internal multi-agent dev-loop harness
-(the *prior art*); it has since been built out in full as the standalone,
-config-driven, language-agnostic product, so what was once a target is now code you
-can read under `src/`. The single sentence that relates them:
+Sections tagged **[AS-BUILT]** describe what the Rigger crate now implements: what a
+section specifies is code you can read under `src/`. The single sentence that frames
+the whole design:
 
-> **Rigger is the *machinery* of that prior dev-loop, with the inversion taken all the
-> way: every project-specific thing (a particular language, build tool, federation
-> memory system, project-specific gate, or codebase) becomes user-supplied *content*
-> (agent files, a workflow YAML, gate commands), and Rigger itself ships knowing none
-> of it.**
+> **Rigger is dev-loop *machinery* with the project cut out: every project-specific
+> thing (a particular language, build tool, memory system, gate, or codebase) is
+> user-supplied *content* (agent files, a workflow YAML, gate commands), and Rigger
+> itself ships knowing none of it.**
 
 The reader who wants the 5-minute version: §1 (what it is) → §2 (the picture) → §3
 (the declarative model) → §5 (the memory ∞). The reader reproducing it: read all of it.
@@ -68,26 +59,28 @@ next agent is never blind to what the last one decided.** It is the *producing* 
 - Opinionated about your gates. A gate is "a command that must exit 0" plus an autonomy
   level. `cargo test`, `go test`, `pytest`, `npm test`, a custom lint: all just YAML.
 
-### The inversion (why "no current config exists")
+### The machinery / content split (why "no current config exists")
 
 ```
-        prior dev-loop (prior art)                 Rigger (AS-BUILT)
+        what any dev loop contains                 where it lives in Rigger
    ┌─────────────────────────────────┐     ┌──────────────────────────────┐
    │ MACHINERY  (general)            │     │ MACHINERY  →  the Rigger crate │
    │  conductor · ledger · DAG ·     │ ══▶ │  (Rust: conductor, eventstore, │
    │  gates · autonomy · fan-out ·   │     │   contextgraph, drivers, …)    │
-   │  review · context-graph(new)    │     └──────────────────────────────┘
+   │  review · context-graph         │     └──────────────────────────────┘
    ├─────────────────────────────────┤     ┌──────────────────────────────┐
    │ CONTENT   (project-specific)    │ ══▶ │ CONTENT  →  YOUR repo's config │
-   │  project gates · federation     │     │  agents/*.md · .rigger/*.yml · │
+   │  project gates · project        │     │  agents/*.md · .rigger/*.yml · │
    │  memory · code corpus · review  │     │  gate commands · grounding src │
-   │  lenses · the spec              │     │  (the prior loop is one EXAMPLE)│
+   │  lenses · the spec              │     │  (this repo is one EXAMPLE)    │
    └─────────────────────────────────┘     └──────────────────────────────┘
 ```
 
-The prior harness already proved the machinery (it drove a large internal
-architecture inversion). Rigger is that machinery with the content cut out and
-replaced by a config surface.
+The split is the whole design: the loop's mechanics are generic and live in the
+crate; everything the loop must know about a particular project arrives as that
+project's configuration. Nothing in the crate names a language, a build tool, or
+a codebase - which is why a fresh checkout of Rigger contains no working config,
+only the machinery and a worked example.
 
 ---
 
@@ -151,8 +144,9 @@ Two file kinds, both in the *consuming* repo. Rigger reads them; it ships neithe
 
 ### 3.1 Agent definition files: `.rigger/agents/<id>.md`
 
-Markdown-with-YAML-frontmatter (the format the prior harness's review lenses already
-use, `.claude/agents/*.md`), so existing agent defs port verbatim.
+Markdown-with-YAML-frontmatter - the same shape as Claude Code subagent definitions
+(`.claude/agents/*.md`) - so an agent definition you already maintain for your
+harness drops in verbatim.
 
 ```markdown
 ---
@@ -184,9 +178,9 @@ references it by `id`.
 ### 3.2 The workflow YAML: `.rigger/workflow.yml`
 
 GitHub-Actions-shaped: a DAG of **stages**, each with `needs:` edges, each binding an
-**agent**, optional **gates**, and an **autonomy** level. *This* is the loop: the thing
-that is hardcoded as `ground→plan→red→green→verify→review→integrate` in the prior
-harness's conductor becomes data anyone can rewrite.
+**agent**, optional **gates**, and an **autonomy** level. *This* is the loop: the
+stage sequence an orchestrator would normally hardcode
+(`ground→plan→red→green→verify→review→integrate`) is data anyone can rewrite.
 
 ```yaml
 # .rigger/workflow.yml - a GitHub-Actions-style DAG for the producing loop
@@ -282,9 +276,9 @@ are all just entries in a project's `gates:` map. Rigger ships **zero** gates.
 
 ### 4.1 The pipeline, now *declared*
 
-The prior art hardcoded `Intake → Loop-readiness → Ground → Plan →
-Coverage → Partition → Fan-out → Verify+Review → Integrate → Converge`. Rigger's
-`conductor::run` (`src/conductor.rs`) executes whatever DAG the workflow YAML
+A fixed pipeline bakes one team's process into the tool - every consumer inherits
+stages they cannot reorder, drop, or extend. Rigger's
+`conductor::run` (`src/conductor.rs`) instead executes whatever DAG the workflow YAML
 declares: it topo-sorts the stages, runs the ready set wave by wave (independent
 stages concurrently), defers the coverage gate past a `produces` planner stage,
 trips the budget breaker before each wave, and projects the final `RunState`. The
@@ -328,10 +322,10 @@ integrated + every gate green. Never "looks done."
 
 ### 4.2 Durable state: the ledger *is* a projection of the event log
 
-The prior art kept a JSON ledger written solely by the Conductor; executors
-appended to a `.buffer` and the Conductor `drain()`d it (one-mutation-authority).
-Rigger keeps that one-writer discipline but makes the ledger a **projection of
-the event log** (§5): the run's state (units, lifecycle, attempts, the integrating
+A mutable state file invites two failure modes: concurrent writers race and corrupt
+it, and a crash loses everything since the last write. Rigger avoids both with a
+one-mutation-authority discipline (only the conductor writes run state) and by
+making the ledger a **projection of the event log** (§5): the run's state (units, lifecycle, attempts, the integrating
 commit, evidence) is *derived* by folding the run events, so a crashed/compacted run
 resumes by replaying. `conductor::run` folds the existing `run` stream up front and
 skips units already integrated. The Conductor is the sole writer of *projections*;
@@ -393,21 +387,27 @@ Per gate: `manual → auto_notify → silent` on N consecutive clean passes (pro
 auto-applied); any non-manual gate that **fails** auto-demotes to `manual`. Autonomy
 tracks demonstrated reliability: a graduated gate can never become a silent hole that
 auto-passes bad work. The async manual-gate queue lets *independent* units advance while
-one waits on a human. (Direct port of the prior harness's autonomy module.)
+one waits on a human.
 
 ### 4.4 Safety rails
 
 `checkBudget` (token/time circuit-breaker → pause), `remediate` (bounded retry with
 re-grounding → escalate after N), `flagSpecDefect` (halt + amend the spec, don't
 deviate), `abortTask` (discard un-integrated worktrees, keep integrated). Never silent,
-never infinite. (Port of the prior harness's safety module.)
+never infinite.
 
 ---
 
 ## 5. The memory layer: event source + context graph  **[AS-BUILT: the new heart]**
 
-This is what the prior harness does *not* have and what makes Rigger more than a
-port. The model, in one line: **agents append immutable events to a log; a projector
+Without a shared, persistent memory, a multi-agent loop fails in two characteristic
+ways. Concurrent agents contradict each other, because neither can see what a peer
+decided moments ago in the next worktree over - by the time the contradiction
+surfaces in review, both units are built. And every agent (and every run) starts
+amnesiac, because decisions, review findings, and hard-won lessons evaporate with
+the session that produced them - so the fleet re-litigates settled questions and
+repeats old mistakes. The memory layer exists to remove both failure modes, and it
+is the architectural heart of the crate. The model, in one line: **agents append immutable events to a log; a projector
 folds the log into a bi-temporal context graph; agents retrieve their connected subgraph
 and subscribe for in-flight decisions.**
 
@@ -811,27 +811,27 @@ modules from the `rigger` crate directly.
 
 ---
 
-## 11. What carries over vs. what's new
+## 11. The module map  **[AS-BUILT]**
 
-| prior-harness module **(prior art)** | Rigger **[AS-BUILT]** | Change |
+Where each responsibility lives, and the design move that keeps it project-agnostic:
+
+| crate module | responsibility | the design move |
 |---|---|---|
-| ledger module | `conductor` + event projection | ledger becomes a projection of the log |
-| conductor (hardcoded pipeline) | `conductor` executing the workflow DAG | pipeline becomes declared YAML |
-| plan module (DAG, coverage, partition) | `conductor` (same logic, Rust) | direct port |
-| gates module | `gate` + the YAML `gates:` library | gates become config |
-| autonomy / safety / learn modules | `gate` (ratchet) + `safety`, Rust | direct ports |
-| semantic-retrieval grounder + tooling | `grounder::turbovec` (turbovec feature) | generalized + pluggable |
-| federation memory scripts | the event log + context graph | replaced by event-sourced memory (the new core) |
-| fan-out / review workflow drivers | `driver/cli` (default) or `driver/workflow` | spawning becomes a pluggable seam |
-| review lenses, project gate, the spec | `examples/demo/` | demoted to a worked example |
-| (none) | **event store + bi-temporal context graph + (A) subscriptions** | **net-new** |
+| `conductor` | executes the workflow DAG: planning, waves, the per-unit lifecycle, remediation | the pipeline is declared in YAML, never hardcoded |
+| `ledger` | per-unit run state | a pure fold over the event log - never a second source of truth |
+| `gate` | the verification library + the per-gate autonomy ratchet | a gate is any command that must exit 0; rigor is config |
+| `safety` | spawn-budget circuit breaker, bounded retry, escalation | every bound is config (`defaults.budget`, `max_retries`), never a constant |
+| `grounder` | seeds each agent with exactly the code it needs | pluggable: `turbovec` (semantic, default feature), `grep`, `nop` |
+| `eventstore` + `contextgraph` | **the memory layer**: append-only event log projected into a bi-temporal context graph, with subscriptions for in-flight decisions | KurrentDB-shaped trait; the embedded SQLite backend is a faithful contract proxy, so the backend is a config flip |
+| `driver/` | spawns and awaits agents | a pluggable seam: `cli` (claude subprocess, default) or `workflow` (in-Claude-Code MCP bridge) |
+| `examples/demo/` | a complete worked config | the proof that the crate itself ships knowing no project |
 
 ---
 
 ## 12. Records to ratify during execution
 
-> These are **Rigger's** future records (created in the *rigger* repo at Phase 0), embedded
-> here as proposals. **Do not** write them into the prior harness's `adr/` or `ubiquitous-language.md`.
+> These are **Rigger's** future records (created in this repo at Phase 0), embedded
+> here as proposals; they are not yet ratified and live nowhere else.
 
 ### Proposed `rigger/docs/adr/0001-rigger-architecture.md`
 
@@ -840,8 +840,7 @@ modules from the `rigger` crate directly.
 
 - Status: Proposed
 - Context: We need a standalone, publishable harness that turns a spec into integrated
-  code via a fleet of AI agents, generalized from a proven internal dev-loop, owning none
-  of any consumer's project specifics.
+  code via a fleet of AI agents while owning none of any consumer's project specifics.
 - Decision: Rigger is governed by:
   - R1 CONFIG-OVER-CODE: agents are definition files; the flow is a workflow YAML (a DAG);
     gates are commands. Reconfiguring the loop never recompiles the binary.
@@ -926,9 +925,9 @@ note. **Task 0 = ratify the records.**
 
 ## 14. Glossary & cross-references
 
-See §12 for Rigger's own glossary. This blueprint inherits its discipline from a proven
-internal dev-loop design and the context-graph research (Zep/Graphiti, the TrustGraph
-context-graph manifesto, GraphRAG-vs-vector). KurrentDB's model
+See §12 for Rigger's own glossary. The blueprint's research grounding: the
+context-graph corpus (Zep/Graphiti, the TrustGraph context-graph manifesto,
+GraphRAG-vs-vector). KurrentDB's model
 (`github.com/kurrent-io/KurrentDB`) is the trait blueprint for `eventstore`.
 
 ---
