@@ -120,6 +120,16 @@ Dogfooding. Rigger ran on its own spec; the run's telemetry (`rigger stats`, `ri
 
 **Fix shape.** The breaker records `BudgetExhausted` (as documented) and `Step` gains a halt reason (`done` splits into `converged` vs `halted:<why>`); the thin driver stops loudly on a halt. Conductor-hardening family (Gaps 11-13).
 
+## Gap 14: worktree storage has no budget, no shared cache, and no lifecycle cleanup
+
+**Intent.** Worktrees are transient isolation; the branch is the checkpoint. Nothing durable or expensive should accumulate in them.
+
+**Reality.** Each worktree builds its own multi-gigabyte cargo `target/` (~5G for this crate) under `std::env::temp_dir()` - the OS partition - and three compounding leaks filled a 69G root disk to 97% mid-run: per-worktree targets for concurrent units, scratch repos (with their own `target/`s) leaked inside a worktree by the setup unit's own tests, and stale worktrees from runs weeks old that no lifecycle ever pruned (the conductor removes a worktree on integrate, but crashed processes, replaced duplicates, and abandoned runs leak theirs forever).
+
+**Evidence.** 2026-07-02: 15G across eleven `/tmp/rigger-wt-*` dirs, five of them from pre-campaign runs; operator cleanup by hand mid-run (the run had to be paused).
+
+**Fix shape.** Three parts: (a) a shared `CARGO_TARGET_DIR` per repo (cargo's own locking makes concurrent builds safe) or worktrees placed under the repo's partition, so builds stop multiplying on the OS disk; (b) unit gate/test scratch goes under the worktree's ignored paths and is bounded; (c) worktree lifecycle: the conductor prunes worktrees of TERMINAL units (integrated, escalated, or superseded) at every step start, not only on the integrate path. Conductor-hardening family (Gaps 11-14).
+
 ---
 
 ## Closed
