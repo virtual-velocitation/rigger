@@ -54,6 +54,21 @@ impl Worktree {
     /// it out instead.
     pub fn create(repo: &str, dir: &str, branch: &str) -> Result<Self, Error> {
         if branch_exists(repo, branch) {
+            // The branch may still be checked out in a PRIOR process's worktree (a
+            // killed or superseded `rigger step` - each process derives its own dir, and
+            // git refuses to check one branch out twice). The dir is transient and the
+            // branch is the checkpoint, so ADOPT the existing registration when its dir
+            // survives, and prune-then-recreate when it does not; never fail on it.
+            if let Some(existing) = registered_worktree_for(repo, branch) {
+                if std::path::Path::new(&existing).is_dir() {
+                    return Ok(Worktree {
+                        dir: existing,
+                        branch: branch.to_string(),
+                        repo: repo.to_string(),
+                    });
+                }
+                git(repo, &["worktree", "prune"])?;
+            }
             // Reuse the existing branch's committed work: check it out into the fresh
             // worktree dir, no `-b` (which would refuse, the ref already exists).
             git(repo, &["worktree", "add", dir, branch])?;
@@ -333,6 +348,24 @@ fn current_branch(repo: &str) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// The dir of the worktree that already has `branch` checked out, if any - parsed
+/// from `git worktree list --porcelain` (a `worktree <dir>` line followed by its
+/// `branch refs/heads/<name>` line). Registrations whose dirs were deleted out from
+/// under git still appear here; the caller decides adopt-vs-prune by checking the dir.
+fn registered_worktree_for(repo: &str, branch: &str) -> Option<String> {
+    let out = run_git(repo, &["worktree", "list", "--porcelain"]).ok()?;
+    let want = format!("branch refs/heads/{branch}");
+    let mut dir: Option<&str> = None;
+    for line in out.lines() {
+        if let Some(d) = line.strip_prefix("worktree ") {
+            dir = Some(d);
+        } else if line.trim() == want {
+            return dir.map(|d| d.to_string());
+        }
+    }
+    None
+}
+
 fn git(dir: &str, args: &[&str]) -> Result<String, Error> {
     run_git(dir, args).map_err(|out| Error(format!("git {}: {out}", args.join(" "))))
 }
@@ -537,6 +570,55 @@ mod tests {
             !Worktree::branch_has_work(&repo_path, branch),
             "delete_branch removes the checkpoint after it has served its purpose"
         );
+    }
+
+    #[test]
+    fn create_adopts_a_branch_still_checked_out_in_a_prior_processes_worktree() {
+        // Step-process disposability (Gap 12): a killed `rigger step` leaves its
+        // worktree REGISTERED with the branch checked out. A later process derives a
+        // DIFFERENT dir for the same branch; git refuses a second checkout, so
+        // `create` must ADOPT the surviving registration (returning ITS dir with the
+        // committed work present) instead of failing - and when the registered dir
+        // was deleted out from under git, it must prune and re-create.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let branch = "rigger/u/unit-adopt";
+
+        // Process 1: create, commit, and do NOT remove - the process "died".
+        let dir1 = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wt1 = Worktree::create(&repo_path, dir1.to_str().unwrap(), branch).unwrap();
+        std::fs::write(dir1.join("inflight.txt"), "wave-1 work\n").unwrap();
+        wt1.commit("rigger: in-flight work").unwrap();
+
+        // Process 2: same branch, different dir. Must ADOPT dir1, not fail.
+        let dir2 = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wt2 = Worktree::create(&repo_path, dir2.to_str().unwrap(), branch).unwrap();
+        assert_eq!(
+            wt2.dir,
+            dir1.to_str().unwrap(),
+            "create adopts the surviving registration's dir rather than colliding"
+        );
+        assert!(
+            std::path::Path::new(&wt2.dir).join("inflight.txt").exists(),
+            "the adopted worktree carries the in-flight committed work"
+        );
+
+        // Process 3: the registered dir vanishes without deregistration (a temp
+        // cleaner). create must prune the stale registration and re-create at the
+        // requested dir, with the branch's committed work checked out.
+        std::fs::remove_dir_all(&dir1).unwrap();
+        let dir3 = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wt3 = Worktree::create(&repo_path, dir3.to_str().unwrap(), branch).unwrap();
+        assert_eq!(
+            wt3.dir,
+            dir3.to_str().unwrap(),
+            "a stale registration is pruned and the requested dir is used"
+        );
+        assert!(
+            dir3.join("inflight.txt").exists(),
+            "the re-created worktree checks out the branch's committed work"
+        );
+        wt3.remove().unwrap();
     }
 
     #[test]

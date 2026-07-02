@@ -218,10 +218,11 @@ for (;;) {
   let step
   try {
     step = await agent(
-      `You are a rigger COURIER. Advance the run one frontier and return the wave, verbatim. Run EXACTLY this, from ${REPO}, using Bash:\n` +
+      `You are a rigger COURIER. Advance the run one frontier and return the wave, verbatim. Run EXACTLY this, from ${REPO}, using Bash with the timeout parameter set to 600000 (a step runs cargo gates inline and can take many minutes; the default timeout kills it mid-work):\n` +
         `  cd ${REPO} && rigger step --spec ${SPEC} --base ${BASE}\n` +
         `It prints ONE line of JSON on stdout: {"wave":[...],"done":<bool>}. Return that JSON object EXACTLY as printed - do not summarize it, drop fields, or run anything else. ` +
-        `If the command prints no JSON or exits non-zero, return {"wave":[],"done":true,"error":"<the stderr / failure message>"} so the loop stops cleanly and the error is visible.`,
+        `If the Bash call TIMES OUT, re-run the exact same command (up to 4 more times): the step's gate results are recorded durably as they complete, so each re-run resumes past the recorded ones and gets further; return the JSON from the run that prints it. ` +
+        `If the command prints no JSON or exits non-zero (not a timeout), return {"wave":[],"done":true,"error":"<the stderr / failure message>"} so the loop stops cleanly and the error is visible.`,
       { phase: 'Plan', model: 'haiku', schema: STEP, label: `step#${waves + 1}` },
     )
   } catch (e) {
