@@ -15,9 +15,17 @@
 //   3. Lets each worker SELF-REPORT via `rigger result <id> ...`, which is exactly what
 //      the next `rigger step` replays past to advance the run. A worker that DIES without
 //      reporting (its `agent()` rejects: max turns, a crash) has its failure recorded on
-//      its behalf by a courier agent running `rigger result <id> --error <why>`, so the
-//      conductor always sees a result for every parked spawn and the run can never hang.
-//   4. LOOPS until a step reports `done`.
+//      its behalf by a courier agent - but GUARDED as check-then-record: the courier runs
+//      `rigger reported <id> || rigger result <id> --error <why>`, so the `--error` is
+//      written ONLY when the spawn has no result yet. A worker (or a reviewer that already
+//      emitted an approve verdict) that self-reported and THEN ran on to max-turns must not
+//      have its result clobbered - `rigger result` is last-write-wins - so the guard honors
+//      the "dies WITHOUT reporting" clause while still guaranteeing every parked spawn ends
+//      with a result and the run can never hang.
+//   4. LOOPS until a step reports `done`. Every anomalous exit - a courier agent that itself
+//      dies, `rigger step` failing, a failure that could not be recorded, or a stall - stops
+//      the loop LOUDLY (throws with a clear message) rather than aborting mid-agent or being
+//      reported as a clean completion; only a real fixpoint resolves the workflow.
 //
 // rigger's shared context store lives in <repo>/.rigger; every `rigger ...` command runs
 // in REPO. Each worker does its code edits, cargo, and commit inside the isolated worktree
@@ -110,9 +118,13 @@ function phaseOf(req) {
 // req.prompt; the driver only frames it with the persona, the worktree, the rigger-CLI note
 // (the native Workflow path has no MCP proxy, so the rigger_emit/rigger_peers the prompt
 // references are used as `rigger emit`/`rigger peers` CLI commands), and the self-report
-// contract. If the agent REJECTS (died without reporting), a courier records the failure on
-// its behalf so the conductor's replay still sees a result for this spawn.
-async function runWorker(req) {
+// contract. If the agent REJECTS, a death courier records the failure on its behalf - but
+// GUARDED (check-then-record) so it never overwrites a result the worker already reported.
+//
+// `fatal` is a shared sink: if the death courier ITSELF dies, we can no longer guarantee a
+// result was recorded for this spawn, so we push it here and the loop stops loudly after the
+// wave drains rather than swallowing the failure (which would hang the run on resume).
+async function runWorker(req, fatal) {
   const ph = phaseOf(req)
   const persona = req.system_prompt ? `${req.system_prompt}\n\n---\n\n` : ''
   const workdir = req.dir
@@ -132,26 +144,42 @@ async function runWorker(req) {
   try {
     await agent(prompt, { phase: ph, model: req.model || undefined, label: req.id })
   } catch (e) {
-    // The worker died without self-reporting (max turns, a crash, an execution error). Record
-    // its failure ON ITS BEHALF via a courier so the conductor's replay driver sees a result
-    // for this parked spawn and the run advances (into remediation or escalation) instead of
-    // hanging forever waiting for a result that will never come. The --error message must be
-    // non-empty (a blank error would replay AS a success and silently swallow the failure).
-    // Neutralize shell metacharacters (`"`, backtick, `$`) so the message can never break out
-    // of - or trigger substitution inside - the double-quoted --error arg in the courier command.
+    // The worker's agent() REJECTED (max turns, a crash, an execution error). That rejection
+    // does NOT prove it died before reporting - a worker (or a reviewer that already emitted
+    // an approve verdict) can self-report and THEN run on to max-turns. So record its failure
+    // ON ITS BEHALF as CHECK-THEN-RECORD: `rigger reported <id>` exits 0 iff the spawn already
+    // has a result, so `... || rigger result <id> --error <why>` writes the failure ONLY when
+    // the worker truly died WITHOUT reporting. `rigger result` is last-write-wins, so an
+    // unconditional --error would CLOBBER a self-reported success/approve and force-fail an
+    // approved unit on the next replay - the guard prevents exactly that while still ensuring
+    // every parked spawn ends with a result (the run can never hang).
+    // The --error message must be non-empty (a blank error would replay AS a success). Neutralize
+    // shell metacharacters (`"`, backtick, `$`, `\`) so it can never break out of - or trigger
+    // substitution inside - the double-quoted --error arg in the courier command.
     const why = (e && e.message ? e.message : String(e))
       .replace(/["`$\\]/g, "'")
       .replace(/\s+/g, ' ')
       .trim()
       .slice(0, 400)
     const msg = why || 'the worker agent exited without producing a result'
-    log(`worker ${req.id} died without reporting: ${msg.slice(0, 80)} - recording its failure on its behalf`)
-    await agent(
-      `You are a rigger COURIER. The worker for spawn ${req.id} died without self-reporting its result, so record its failure on its behalf. Run EXACTLY this, from ${REPO}, using Bash:\n` +
-        `  cd ${REPO} && rigger result ${req.id} --error "worker ${req.id} died without reporting: ${msg}"\n` +
-        `The error message is non-empty by construction. Confirm the command exited 0; report nothing else.`,
-      { phase: ph, model: 'haiku', label: `report-death:${req.id}` },
-    )
+    log(`worker ${req.id} agent rejected: ${msg.slice(0, 80)} - recording its failure on its behalf IF it has not already reported`)
+    try {
+      await agent(
+        `You are a rigger COURIER. The worker for spawn ${req.id} died. Record its failure ON ITS BEHALF, but ONLY if it did not already self-report - a result the worker already recorded must NEVER be overwritten. Run EXACTLY this, from ${REPO}, using Bash (ONE command, keep the \`||\`):\n` +
+          `  cd ${REPO} && rigger reported ${req.id} || rigger result ${req.id} --error "worker ${req.id} died without reporting: ${msg}"\n` +
+          `\`rigger reported ${req.id}\` exits 0 when the spawn ALREADY has a result - then the \`||\` SKIPS the --error and nothing is overwritten. It exits non-zero only when there is no result yet, in which case the failure is recorded (the message is non-empty by construction). Confirm the whole command exited 0; report nothing else.`,
+        { phase: ph, model: 'haiku', label: `report-death:${req.id}` },
+      )
+    } catch (ce) {
+      // The death-report COURIER itself died (max turns / crash). We can no longer guarantee a
+      // result was recorded for ${req.id}, so the conductor's replay could hang on resume. Do
+      // NOT swallow it and do NOT re-throw (that would reject parallel() and abort sibling
+      // workers mid-wave); record it in the shared `fatal` sink so the loop stops LOUDLY once
+      // the wave has drained.
+      const cmsg = (ce && ce.message ? ce.message : String(ce)).replace(/\s+/g, ' ').trim().slice(0, 200)
+      log(`FATAL: the death-report courier for ${req.id} itself failed: ${cmsg} - the spawn may have no result`)
+      fatal.push(`${req.id}: ${cmsg}`)
+    }
   }
 }
 
@@ -165,35 +193,64 @@ phase('Plan')
 
 // The thin driver loop. Each iteration: courier one `rigger step`, spawn the wave it parked,
 // and stop when the conductor reports a fixpoint. Termination is guaranteed by the conductor
-// (its spawn-budget breaker and per-unit retry bound), so this loop needs no cap of its own;
-// the empty-wave-but-not-done guard below is a belt-and-braces stop for the anomalous case of
-// a worker that resolved without self-reporting (nothing new to park, yet not a fixpoint).
+// (its spawn-budget breaker and per-unit retry bound), so this loop needs no cap of its own.
+// Every non-fixpoint exit is an ANOMALY and stops the loop LOUDLY (`stop(...)` throws): a
+// stuck/failed run must never be reported as a clean completion, and a courier that itself
+// dies must be a controlled, visible stop - not an uncaught rejection that aborts the driver.
 let waves = 0
+
+// stop the driver LOUDLY: throw a clear, single Error so the anomalous exit surfaces as a
+// workflow failure with an actionable message (decision `thin-driver-loud-stops`), instead of
+// resolving as success (which would mask a hung/failed run) or aborting mid-agent uncaught.
+function stop(reason) {
+  log(`stopping the driver loop: ${reason}`)
+  throw new Error(`rigger driver stopped after ${waves} wave(s): ${reason}`)
+}
+
 for (;;) {
   // 1. Courier: advance the conductor one frontier and return the wave verbatim. `rigger step`
   //    sets up/reuses the run branch (via --base) before parking anything, then prints one line
   //    of JSON. On the FIRST step the run branch is anchored and the spec is decomposed; on
   //    later steps the conductor replays past the results workers reported and parks the next
-  //    frontier. If `rigger step` errors, the courier returns it in `error` (not a faked wave).
-  const step = await agent(
-    `You are a rigger COURIER. Advance the run one frontier and return the wave, verbatim. Run EXACTLY this, from ${REPO}, using Bash:\n` +
-      `  cd ${REPO} && rigger step --spec ${SPEC} --base ${BASE}\n` +
-      `It prints ONE line of JSON on stdout: {"wave":[...],"done":<bool>}. Return that JSON object EXACTLY as printed - do not summarize it, drop fields, or run anything else. ` +
-      `If the command prints no JSON or exits non-zero, return {"wave":[],"done":true,"error":"<the stderr / failure message>"} so the loop stops cleanly and the error is visible.`,
-    { phase: 'Plan', model: 'haiku', schema: STEP, label: `step#${waves + 1}` },
-  )
-
-  if (step.error) {
-    log(`rigger step failed: ${step.error} - stopping the driver loop`)
-    break
+  //    frontier. If `rigger step` errors, the courier returns it in `error` (not a faked wave);
+  //    if the COURIER AGENT itself dies (max turns / crash), agent() rejects and the try/catch
+  //    turns that into the same clean, loud stop instead of aborting the whole driver uncaught.
+  let step
+  try {
+    step = await agent(
+      `You are a rigger COURIER. Advance the run one frontier and return the wave, verbatim. Run EXACTLY this, from ${REPO}, using Bash:\n` +
+        `  cd ${REPO} && rigger step --spec ${SPEC} --base ${BASE}\n` +
+        `It prints ONE line of JSON on stdout: {"wave":[...],"done":<bool>}. Return that JSON object EXACTLY as printed - do not summarize it, drop fields, or run anything else. ` +
+        `If the command prints no JSON or exits non-zero, return {"wave":[],"done":true,"error":"<the stderr / failure message>"} so the loop stops cleanly and the error is visible.`,
+      { phase: 'Plan', model: 'haiku', schema: STEP, label: `step#${waves + 1}` },
+    )
+  } catch (e) {
+    // The `rigger step` courier AGENT itself rejected (its own max turns / crash) - distinct
+    // from `rigger step` failing, which the courier reports in `error`. Without this catch the
+    // rejection would abort the whole driver uncaught; instead stop cleanly and loudly.
+    stop(`the \`rigger step\` courier agent itself failed: ${e && e.message ? e.message : String(e)}`)
   }
 
-  // 2. Spawn the wave natively in parallel; each worker in its own per-unit progress group.
+  if (step.error) {
+    stop(`\`rigger step\` failed: ${step.error}`)
+  }
+
+  // 2. Spawn the wave natively in parallel; each worker in its own per-unit progress group. A
+  //    worker that dies has its failure recorded on its behalf inside runWorker; if that death
+  //    courier ITSELF dies, runWorker records it in `fatal` (it never re-throws, so parallel()
+  //    is not aborted mid-wave) and we stop loudly below.
+  const fatal = []
   const wave = step.wave || []
   if (wave.length > 0) {
     waves += 1
     log(`wave ${waves}: spawning ${wave.length} agent(s) in parallel: ${wave.map((r) => r.id).join(', ')}`)
-    await parallel(wave.map((req) => () => runWorker(req)))
+    await parallel(wave.map((req) => () => runWorker(req, fatal)))
+  }
+
+  // A death-report courier died, so a spawn may have no result and the conductor's replay could
+  // hang on resume. Stop LOUDLY rather than looping into an unrecoverable hang.
+  if (fatal.length > 0) {
+    stop(`the failure of ${fatal.length} worker(s) could not be recorded (their death-report couriers also died): ${fatal.join(' | ')}`)
   }
 
   // 3. Stop at the conductor's fixpoint (every parked spawn has a result and nothing new was
@@ -203,12 +260,12 @@ for (;;) {
     log(`run complete: the conductor reached a fixpoint after ${waves} wave(s)`)
     break
   }
-  // An empty wave that is NOT done means a prior worker resolved without self-reporting: the
-  // conductor has an unanswered spawn but there is nothing new for us to run, so stepping again
-  // would spin. Stop with a clear log rather than loop forever.
+  // An empty wave that is NOT done means a prior worker resolved WITHOUT self-reporting (its
+  // agent() neither errored nor recorded a result): the conductor has an unanswered spawn but
+  // there is nothing new for us to run, so stepping again would spin. This is an anomaly, not a
+  // completion - stop loudly rather than resolve as done or loop forever.
   if (wave.length === 0) {
-    log('rigger step parked no new wave yet is not done (a worker likely resolved without self-reporting); stopping to avoid a spin')
-    break
+    stop('`rigger step` parked no new wave yet is not done (a worker likely resolved without self-reporting)')
   }
 }
 

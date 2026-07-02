@@ -243,6 +243,7 @@ fn main() {
     let result = match args[1].as_str() {
         "run" => cmd_run(&args[2..]),
         "step" => cmd_step(&args[2..]),
+        "reported" => cmd_reported(&args[2..]),
         "serve" => cmd_serve(&args[2..]),
         "workflow" => cmd_workflow(&args[2..]),
         "graph" => cmd_graph(&args[2..]),
@@ -322,6 +323,10 @@ rigger step [--spec <path>]      advance the run one frontier via the replay dri
 as JSON. --base (default origin/main) anchors a NEW run\n                              \
 branch; if it is unresolvable the branch is created off\n                              \
 HEAD. An existing run branch is reused, never reset\n  \
+rigger reported <id>        exit 0 iff spawn <id> already has a recorded result in\n                              \
+this project's run stream (else non-zero). The read half of\n                              \
+the thin driver's check-then-record death-report guard, so a\n                              \
+worker that self-reported is never clobbered by an --error\n  \
 rigger workflow [spec]      turn-key: launch the per-project Node driver, which\n                              \
 spawns `rigger serve`, runs each agent via the Agent\n                              \
 SDK, and drives the loop (one command; run `rigger\n                              \
@@ -471,6 +476,78 @@ fn cmd_step(args: &[String]) -> Res {
     let step = spawn::step_result(&events, &before).map_err(|e| e.to_string())?;
     println!("{}", serde_json::to_string(&step)?);
     Ok(())
+}
+
+/// `rigger reported <id>` - exit 0 iff spawn `<id>` already has a recorded result in this
+/// project's run stream, and non-zero (a clear error) when it does not.
+///
+/// This is the READ half of the thin driver's check-then-record death-report guard
+/// (decision `thin-driver-death-guard`). When a worker's `agent()` rejects, the JS driver
+/// cannot tell from the rejection alone whether the worker died BEFORE self-reporting or
+/// AFTER (a worker - or a reviewer that already emitted an approve verdict - can report
+/// and then run on to max-turns / crash). Recording an `--error` on its behalf
+/// UNCONDITIONALLY would clobber a result that already exists, because [`spawn::result_of`]
+/// is last-write-wins: a genuinely successful/approved unit would be silently overwritten
+/// and force-failed on the next replay. So the driver's death courier runs
+/// `rigger reported <id> || rigger result <id> --error <why>`: this command answers the
+/// "does a result already exist?" check, and the `--error` is recorded ONLY when it does
+/// not - honoring the criterion's "dies WITHOUT reporting" clause while still guaranteeing
+/// every parked spawn ends with a result so the run can never hang.
+///
+/// Composition mirrors [`cmd_step`]/[`cmd_stats`]: the per-project namespaced sqlite run
+/// stream, read forward from revision 0 and projected through [`spawn::result_of`] - the
+/// exact stream, boundary, and projection the replay driver uses to decide answer-vs-park,
+/// so this check agrees with the conductor by construction. The namespace-scoped read and
+/// its absent/unreported edges live in the testable [`result_of_at`] seam.
+fn cmd_reported(args: &[String]) -> Res {
+    let id = match args {
+        [id] => id.as_str(),
+        _ => return Err("reported: expected exactly one spawn id: rigger reported <id>".into()),
+    };
+    match result_of_at(&db_path("events.db"), &project_identity(), id)? {
+        // Already answered: print a one-line summary (for the courier's log) and exit 0, so
+        // the guard's `|| rigger result <id> --error` is SKIPPED and the existing result -
+        // the worker's own report - stands untouched.
+        Some(res) => {
+            println!(
+                "{} {}",
+                res.id,
+                if res.is_error() { "failed" } else { "ok" }
+            );
+            Ok(())
+        }
+        // No result yet: exit non-zero (a clear error) so the guard proceeds to record the
+        // worker's failure on its behalf. This is the only branch that lets an `--error` be
+        // written, so a self-reported result is never overwritten.
+        None => Err(format!("reported: spawn {id:?} has no recorded result yet").into()),
+    }
+}
+
+/// The pure read-model core of `rigger reported`: open the embedded `events.db` at `path`,
+/// read `project`'s run stream through the per-project [`Namespaced`] decorator, and return
+/// the LATEST recorded result for `id` (or `None` when the spawn is still unreported).
+///
+/// Split from [`cmd_reported`] (which owns only the I/O boundary and the exit-code decision)
+/// so the namespace-scoped read and its absent-db / unreported edges are unit-testable
+/// against any backing file, project name, and id - without depending on the process cwd or
+/// a real git repo for identity (mirrors [`stats_lines`], decision `d-stats-read-seam`).
+///
+/// An absent `events.db` (a never-run project) reads as `None` - guarded BEFORE
+/// [`Store::open`], which would otherwise create the file - so the guard treats a spawn with
+/// no store exactly like a spawn with no result: unreported. The [`Namespaced`] read scopes
+/// to `proj-<project>-run`, so a result another project wrote never masks this one.
+fn result_of_at(
+    path: &str,
+    project: &str,
+    id: &str,
+) -> Result<Option<spawn::SpawnResult>, Box<dyn std::error::Error>> {
+    if !Path::new(path).exists() {
+        return Ok(None);
+    }
+    let backend = Store::open(path)?;
+    let store = Namespaced::new(&backend, project);
+    let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+    Ok(spawn::result_of(&events, id).map_err(|e| e.to_string())?)
 }
 
 /// The parsed flags of a `rigger step` invocation.
@@ -1957,6 +2034,40 @@ mod tests {
             "a worker that dies (its agent() rejects) must be caught and its failure couriered"
         );
 
+        // 6a. The death courier is GUARDED as check-then-record: it records `--error` ONLY when
+        //     the spawn has no result yet (`rigger reported <id> || rigger result <id> --error`),
+        //     so a worker that self-reported success/approve and THEN ran to max-turns is never
+        //     clobbered (`rigger result` / `spawn::result_of` is last-write-wins). This is the
+        //     primary correctness invariant the review rejected the unguarded version for.
+        assert!(
+            code.contains("rigger reported ${req.id} || rigger result ${req.id} --error"),
+            "the death courier must be a guarded check-then-record (`rigger reported <id> || \
+             rigger result <id> --error`) so a self-reported result is never clobbered"
+        );
+
+        // 6b. Both courier `agent()` calls (the death-report courier AND the top-level `rigger
+        //     step` courier) are wrapped so a courier that itself dies is a clean, loud stop
+        //     rather than an uncaught rejection that aborts the driver (or, for the death
+        //     courier, an abort that also leaves the spawn unreported and hangs the run). The
+        //     death courier's own failure is captured in the shared `fatal` sink, not re-thrown.
+        assert!(
+            code.contains("fatal.push("),
+            "a death-report courier that itself fails must be captured (in `fatal`), not swallowed \
+             or allowed to abort parallel() mid-wave"
+        );
+        assert!(
+            code.contains("courier agent itself failed"),
+            "the top-level `rigger step` courier agent() must be wrapped so its own death is a \
+             clean, loud stop, not an uncaught abort of the whole driver"
+        );
+
+        // 6c. Every anomalous (non-fixpoint) exit stops LOUDLY: `stop()` throws so a hung/failed
+        //     run surfaces as a workflow failure instead of resolving as a clean completion.
+        assert!(
+            code.contains("function stop(") && code.contains("throw new Error"),
+            "anomalous exits must stop loudly via a throwing `stop()`, never a silent success return"
+        );
+
         // 7. The workflow still parses: run `node --check` when node is on PATH (never a
         //    silent skip - assert the clear reason when it is not available).
         let node = std::env::var("RIGGER_NODE").unwrap_or_else(|_| "node".to_string());
@@ -2295,6 +2406,134 @@ mod tests {
         assert!(
             out != NO_RUNS_MESSAGE,
             "a populated run must not print the no-runs message"
+        );
+    }
+
+    /// `result_of_at` (the read half of the `rigger reported` death-report guard) treats an
+    /// absent `events.db` as UNREPORTED (`None`) and does NOT create the file: a never-run
+    /// project has no result for any spawn, and opening would create the db, masking the edge.
+    /// A `None` here makes `rigger reported` exit non-zero, so the driver's guarded
+    /// `rigger reported <id> || rigger result <id> --error` proceeds to record the failure.
+    #[test]
+    fn result_of_at_absent_db_reads_as_unreported_and_creates_no_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let path_str = path.to_str().unwrap();
+
+        let got = result_of_at(path_str, "proj-x", "u/impl#0").expect("absent db is not an error");
+        assert!(got.is_none(), "an absent db must read as unreported (None)");
+        assert!(
+            !path.exists(),
+            "result_of_at must not create events.db when it is absent"
+        );
+    }
+
+    /// A spawn with no recorded result reads as UNREPORTED (`None`) even when the db exists and
+    /// holds OTHER events (including other spawns' results): `result_of_at` matches on the exact
+    /// spawn id, so an unanswered spawn is correctly treated as still-parked.
+    #[test]
+    fn result_of_at_unrecorded_spawn_reads_as_unreported() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let path_str = path.to_str().unwrap();
+
+        // A different spawn HAS a result; the one we ask about does not.
+        seed_run(
+            path_str,
+            "proj-me",
+            &[spawn::SpawnResult::ok("u/other#0", "done")
+                .to_event()
+                .unwrap()],
+        );
+
+        let got = result_of_at(path_str, "proj-me", "u/impl#0").expect("read is not an error");
+        assert!(
+            got.is_none(),
+            "a spawn with no result of its own must read as unreported (None)"
+        );
+    }
+
+    /// A recorded self-report reads back as `Some` - the anti-clobber invariant the review
+    /// rejected the unguarded death courier for. A worker that self-reported (success OR its own
+    /// failure) is ANSWERED, so `rigger reported` exits 0 and the guard's `|| rigger result
+    /// --error` is skipped: the worker's own result is never overwritten by a courier `--error`.
+    #[test]
+    fn result_of_at_reads_a_self_reported_result_so_it_is_not_clobbered() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let path_str = path.to_str().unwrap();
+
+        seed_run(
+            path_str,
+            "proj-me",
+            &[
+                spawn::SpawnResult::ok("u/impl#0", "implemented and reported")
+                    .to_event()
+                    .unwrap(),
+            ],
+        );
+
+        let got = result_of_at(path_str, "proj-me", "u/impl#0")
+            .expect("read is not an error")
+            .expect("a recorded result must read back as Some, not None");
+        assert_eq!(got.id, "u/impl#0");
+        assert!(
+            !got.is_error(),
+            "a self-reported success must read back as a success (so the guard skips --error)"
+        );
+        assert_eq!(got.output, "implemented and reported");
+    }
+
+    /// The read is namespace-scoped: a result ANOTHER project wrote to the same shared backend
+    /// must not make this project's spawn look reported. Proves the [`Namespaced`] decorator is
+    /// on the guard's read path, so a spawn id colliding across projects cannot cross-answer.
+    #[test]
+    fn result_of_at_is_namespace_scoped() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let path_str = path.to_str().unwrap();
+
+        // proj-other recorded a result for an id that ALSO exists in proj-me's run.
+        seed_run(
+            path_str,
+            "proj-other",
+            &[spawn::SpawnResult::ok("u/impl#0", "theirs")
+                .to_event()
+                .unwrap()],
+        );
+
+        // proj-me, reading the same file, sees its OWN (empty) namespace: still unreported.
+        let mine = result_of_at(path_str, "proj-me", "u/impl#0").expect("read is not an error");
+        assert!(
+            mine.is_none(),
+            "another project's result must not leak in - the read must be namespace-scoped"
+        );
+
+        // Sanity: the owner DOES see it, so the None above is the namespace boundary, not a miss.
+        let theirs =
+            result_of_at(path_str, "proj-other", "u/impl#0").expect("read is not an error");
+        assert!(
+            theirs.is_some(),
+            "the project that owns the result must see it"
+        );
+    }
+
+    /// `cmd_reported` validates its arg count BEFORE any store I/O: exactly one spawn id is
+    /// required, so a typo (zero args, or extra args) is a clear error rather than a silent
+    /// read of the wrong thing. The single-id read path itself is covered by `result_of_at`
+    /// (the testable seam), which `cmd_reported` wraps for I/O + identity + the exit decision.
+    #[test]
+    fn cmd_reported_requires_exactly_one_id() {
+        let none = cmd_reported(&[]).expect_err("no id must be a clear error");
+        assert!(
+            none.to_string().contains("rigger reported <id>"),
+            "the no-id error must show the usage; got: {none}"
+        );
+        let extra = cmd_reported(&["a".to_string(), "b".to_string()])
+            .expect_err("extra args must be a clear error");
+        assert!(
+            extra.to_string().contains("rigger reported <id>"),
+            "the extra-args error must show the usage; got: {extra}"
         );
     }
 }
