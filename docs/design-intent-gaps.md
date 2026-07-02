@@ -110,6 +110,16 @@ Dogfooding. Rigger ran on its own spec; the run's telemetry (`rigger stats`, `ri
 
 **Fix shape.** On `Worktree::create`, if the branch is already checked out in a registered worktree, adopt that dir when it still exists (same process or not) or prune the stale registration and re-create. Deterministic (non-UUID) worktree paths would make the reuse trivial. Belongs beside Gap 11 in the next conductor-hardening unit.
 
+## Gap 13: a breaker halt is indistinguishable from convergence in the step output
+
+**Intent.** "When spawns reach it the breaker records `BudgetExhausted` and aborts the run" (`workflow.yml`) - a halted run is loudly halted.
+
+**Reality.** When the spawn count reaches `defaults.budget`, the step process parks nothing new and exits with every existing spawn answered - so `rigger step` prints `{"wave":[],"done":true}` and the thin driver (correctly, per its contract) reports a CLEAN COMPLETION. No `BudgetExhausted` event lands in the log. The spec-05 run halted at exactly 60/60 spawns with zero units integrated and the workflow said success; only `git log` and the spawn count revealed the truth.
+
+**Evidence.** Run `wf_7e202e7e-927`: `{"waves":8}` success result, ten unit branches unintegrated, `SELECT COUNT(*) ... type='SpawnRequested'` = 60 = `defaults.budget`.
+
+**Fix shape.** The breaker records `BudgetExhausted` (as documented) and `Step` gains a halt reason (`done` splits into `converged` vs `halted:<why>`); the thin driver stops loudly on a halt. Conductor-hardening family (Gaps 11-13).
+
 ---
 
 ## Closed

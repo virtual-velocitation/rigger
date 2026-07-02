@@ -31,7 +31,12 @@ defaults:
   # keeps rejecting) can never spawn unboundedly. NON-ZERO on purpose - 0 means
   # unlimited, which is what let a 5-hour churn run never trip. Raise it for a big
   # spec; never set it back to 0 for an unattended run.
-  budget: 60
+  # 2026-07-02: raised 60 -> 200 for the spec-05 campaign run. The count folds
+  # cumulatively from recorded SpawnRequested events (never resets per process), and
+  # 60 was consumed by one 12-implementer fan-out wave plus reviews, remediation,
+  # two zombie units (Gap 11), and several crashed-process retries. 200 bounds ten
+  # units' full review lifecycles; still a hard cap, never 0.
+  budget: 200
 
   # The remediation depth (§4.4): how many attempts a failed unit gets before it
   # escalates to a human. This is the REFINEMENT-depth knob, NOT a review-rigor
