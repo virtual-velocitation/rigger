@@ -128,7 +128,12 @@ Dogfooding. Rigger ran on its own spec; the run's telemetry (`rigger stats`, `ri
 
 **Evidence.** 2026-07-02: 15G across eleven `/tmp/rigger-wt-*` dirs, five of them from pre-campaign runs; operator cleanup by hand mid-run (the run had to be paused).
 
-**Fix shape.** Three parts: (a) a shared `CARGO_TARGET_DIR` per repo (cargo's own locking makes concurrent builds safe) or worktrees placed under the repo's partition, so builds stop multiplying on the OS disk; (b) unit gate/test scratch goes under the worktree's ignored paths and is bounded; (c) worktree lifecycle: the conductor prunes worktrees of TERMINAL units (integrated, escalated, or superseded) at every step start, not only on the integrate path. Conductor-hardening family (Gaps 11-14).
+**Fix shape** (Byran, 2026-07-02: a small OS partition with most disk on /home is a common layout; the scratch location must be configurable and MAINTAINED, not just relocated). Four parts:
+
+- (a) **Configurable scratch root, sane default.** Worktrees and all run scratch live under `<repo>/.rigger/tmp` by default - the repo's own partition (large by construction on the common layout), gitignored by setup, and same-filesystem with the checkout so worktree adds are cheap. Overridable via `defaults.workdir` in `workflow.yml` (and a `RIGGER_TMPDIR` env override for machine-local placement like `~/.rigger/tmp`); `std::env::temp_dir()` stops being the placement policy.
+- (b) **Shared build cache.** One `CARGO_TARGET_DIR` under the scratch root shared across worktrees (cargo's own locking makes concurrent builds safe), so targets stop multiplying per worktree.
+- (c) **Lifecycle: the loop cleans up after itself.** At every step start the conductor prunes worktrees of TERMINAL units (integrated, escalated, superseded) and stale registrations; unit test scratch is bounded to the worktree and dies with it.
+- (d) **Residue is surfaced.** `rigger validate` reports scratch-root residue (worktrees with no live unit, orphaned build caches) with sizes, so accumulation is a warning, never a full disk.
 
 ---
 
