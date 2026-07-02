@@ -8,8 +8,6 @@
 use std::path::Path;
 use std::process::Command;
 
-use serde_yaml;
-
 use rigger::conductor::{self, Deps};
 use rigger::config;
 use rigger::contextgraph::{self, sqlite::Projector, Projection};
@@ -1409,6 +1407,7 @@ fn cmd_validate() -> Res {
 ///      from the scaffold constants, keeping any file that already exists;
 ///   2. installs the Claude Code SessionStart hook into `<root>/.claude/settings.json`,
 ///      merging into (never clobbering) whatever settings are already there.
+///
 /// Scaffolds a new project and returns the names of agents that were scaffolded.
 fn init_project(root: &Path) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     // 1. Scaffold .rigger/.

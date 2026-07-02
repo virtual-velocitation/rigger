@@ -152,6 +152,7 @@ async function runWorker(req, fatal) {
     `When you finish, SELF-REPORT your result by running, from ${REPO}:\n` +
     `  rigger result ${req.id} "<your result: a one-line summary, or your full verdict/findings>"\n` +
     `(pipe multi-line output via stdin instead, e.g. \`rigger result ${req.id}\` reading a heredoc). ` +
+    `Also record the model that actually served you so the run's audit trail carries it (spec 05: every spawn's recorded events carry the resolved model id): add \`--meta '{"resolved_model":"<the concrete model id you ran as${req.model ? `, e.g. the resolved version of ${req.model}` : ''}>"}'\` to that success report. ` +
     `If you cannot complete the task, report the failure instead: \`rigger result ${req.id} --error "<why it failed>"\` (the message must be non-empty). ` +
     `--error means YOU were unable to perform your task (blocked, crashed, missing tools) - NEVER a negative conclusion: a reviewer whose verdict is REJECT, or a gate that found failures, COMPLETED its task and reports that verdict/finding as its NORMAL result (an --error replays as a dead worker and aborts the run, not as your verdict). ` +
     `Reporting your result is mandatory - the run cannot advance past this spawn until you do.`
