@@ -763,6 +763,98 @@ fn step_prints_a_disjoint_two_spawn_wave_then_reports_done() {
     );
 }
 
+/// End-to-end through the CLI seam (spec 05 line 52): a worker records its parked
+/// implementer's result with `rigger result <id> --meta '{"resolved_model": ..}'`, and
+/// the next `rigger step` replays that spawn and STAMPS the requested model alias plus the
+/// worker-reported resolved id onto the unit events the conductor emits for that spawn.
+/// Reads the run's `events.db` back through the library to confirm the metadata landed on
+/// a real `green` UnitStatus event - not just that the `--meta` was parsed.
+#[test]
+fn step_result_meta_stamps_the_resolved_model_on_the_replayed_units_events() {
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Direction, EventStore, Filter};
+
+    let dir = temp_project();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+
+    // Step 1: both units park their implementer spawns.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the first step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""done":false"#),
+        "spawns still pending; got: {out:?}"
+    );
+
+    // Each worker self-reports via the REAL `rigger result` command, carrying the concrete
+    // model it ran as through `--meta` (the mechanism the criterion names).
+    let resolved = [
+        ("a/implementer#0", "claude-sonnet-4-5-20250101"),
+        ("b/implementer#0", "claude-sonnet-4-5-20250929"),
+    ];
+    for (id, model) in resolved {
+        let (_o, err, ok) = run_rigger(
+            root,
+            &[
+                "result",
+                id,
+                &format!("did {id}"),
+                "--meta",
+                &format!(r#"{{"resolved_model":"{model}"}}"#),
+            ],
+        );
+        assert!(
+            ok,
+            "`rigger result {id} --meta` must succeed; stderr: {err}"
+        );
+    }
+
+    // Step 2: the recorded results replay to a fixpoint.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the second step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""done":true"#),
+        "every spawn answered; got: {out:?}"
+    );
+
+    // Read the run stream back and confirm each unit's `green` event carries the requested
+    // alias ("sonnet", from the worker agent) AND the resolved id the worker reported.
+    let db_path = root.join(".rigger").join("events.db");
+    let backend = Store::open(db_path.to_str().unwrap()).unwrap();
+    let events = backend
+        .read_all(0, Direction::Forward, &Filter::default())
+        .unwrap();
+    for (id, model) in resolved {
+        let unit = id.split('/').next().unwrap();
+        let green = events
+            .iter()
+            .find(|e| {
+                e.type_ == rigger::ledger::TYPE_UNIT_STATUS && {
+                    let body = String::from_utf8_lossy(&e.data);
+                    body.contains(r#""status":"green""#)
+                        && body.contains(&format!(r#""id":"{unit}""#))
+                }
+            })
+            .unwrap_or_else(|| panic!("unit {unit} must have a green status event"));
+        assert_eq!(
+            green
+                .meta
+                .get(rigger::conductor::META_MODEL_ALIAS)
+                .map(String::as_str),
+            Some("sonnet"),
+            "unit {unit}'s green event carries the requested alias"
+        );
+        assert_eq!(
+            green
+                .meta
+                .get(rigger::conductor::META_MODEL_RESOLVED)
+                .map(String::as_str),
+            Some(model),
+            "unit {unit}'s green event carries the worker-reported resolved model"
+        );
+    }
+}
+
 /// `rigger step` rejects an unknown flag with a clear, non-zero error rather than
 /// silently running an unconstrained step.
 #[test]

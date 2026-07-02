@@ -63,6 +63,27 @@ pub const TYPE_DEFERRED_GATE_FAILED: &str = ledger::TYPE_DEFERRED_GATE_FAILED;
 /// only [`RunCtx::emit_keyed`] and the gate-verdict replay read it.
 pub const META_REPLAY_KEY: &str = "replay_key";
 
+/// The metadata key carrying the REQUESTED model ALIAS on a spawn's recorded unit events
+/// (spec 05 line 52). It is the workflow-configured alias the agent was spawned with
+/// (`AgentDef::model`, the same value that rides the [`SpawnRequest`](crate::spawn::SpawnRequest)),
+/// copied here onto the ledger unit-lifecycle events the conductor emits FOR that spawn -
+/// UnitStarted and the green/verified/reviewed statuses - so every spawn's events name the
+/// model that was asked for, not only the request event. Stamped as metadata (never a new
+/// event type, per spec 05's Global constraints); folds and projections ignore it, exactly
+/// like [`META_REPLAY_KEY`] and [`contextgraph::META_ACTOR`].
+pub const META_MODEL_ALIAS: &str = "model_alias";
+
+/// The metadata key carrying the RESOLVED model id that actually ran a spawn (spec 05
+/// line 52). Unlike the requested [`META_MODEL_ALIAS`], the resolved id is known only
+/// AFTER the agent runs: the worker reports it via `rigger result --meta
+/// '{"resolved_model": ...}'` (see [`spawn::META_RESOLVED_MODEL`](crate::spawn::META_RESOLVED_MODEL)),
+/// it lands in the spawn's [`SpawnResult`](crate::spawn::SpawnResult) `meta`, the replay
+/// driver surfaces it on [`AgentResult::resolved_model`], and the conductor copies it here
+/// onto the unit events it emits once it has consumed that spawn's result (green/verified
+/// for the implementer, reviewed for the adjudicator). Empty (and so omitted) when the
+/// worker reported none.
+pub const META_MODEL_RESOLVED: &str = "model_resolved";
+
 /// The replay key for a gate's verdict, keyed by the `(unit, attempt, gate)` coordinate
 /// the gate ran under - so a step re-reaching an already-run gate REPLAYS its recorded
 /// verdict instead of re-running the command (spec 04, criterion 4). Distinct attempts
@@ -127,9 +148,15 @@ impl From<serde_json::Error> for Error {
 }
 
 /// What an agent returns when it finishes.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct AgentResult {
     pub output: String,
+    /// The RESOLVED model id that actually ran this spawn (spec 05 line 52), or empty when
+    /// unknown. The replay driver surfaces it from the worker's `rigger result --meta`
+    /// report ([`SpawnResult::resolved_model`](crate::spawn::SpawnResult::resolved_model));
+    /// the conductor copies it onto the spawn's unit events via [`META_MODEL_RESOLVED`].
+    /// The blocking drivers (cli/workflow) do not learn it and leave it empty.
+    pub resolved_model: String,
 }
 
 /// The result of running a stage's gates: whether they all passed, and the compact
@@ -827,6 +854,25 @@ impl RunCtx<'_> {
     /// statuses, and the manual-review pause all flow through here, keyed by unit +
     /// phase (+ remediation attempt where an event legitimately recurs per attempt).
     fn emit_keyed(&self, key: &str, type_: &str, payload: Value) -> Result<(), Error> {
+        self.emit_keyed_meta(key, type_, payload, &[])
+    }
+
+    /// [`emit_keyed`](RunCtx::emit_keyed) plus arbitrary EXTRA metadata stamped alongside
+    /// the replay key (each `(key, value)` pair with a non-empty value; empties are
+    /// omitted so the wire stays clean, exactly as [`emit_with_actor`](RunCtx::emit_with_actor)
+    /// omits an empty actor). This is how a spawn's requested [`META_MODEL_ALIAS`] and
+    /// worker-reported [`META_MODEL_RESOLVED`] ride the unit-lifecycle events the conductor
+    /// emits for that spawn (spec 05 line 52) without a second event type: the model is
+    /// audit metadata on an event that already exists, so folds/projections ignore it just
+    /// like the replay key. The dedup guarantee is unchanged - a replayed key still appends
+    /// nothing, so the extra metadata never manufactures a duplicate.
+    fn emit_keyed_meta(
+        &self,
+        key: &str,
+        type_: &str,
+        payload: Value,
+        extra: &[(&str, &str)],
+    ) -> Result<(), Error> {
         {
             // A first insert means this key is new work; a repeat means the log already
             // carries it (seeded at run start) or this process already emitted it - a
@@ -837,8 +883,26 @@ impl RunCtx<'_> {
                 return Ok(());
             }
         }
-        let ev = Event::new(type_, serde_json::to_vec(&payload)?).with_meta(META_REPLAY_KEY, key);
+        let mut ev =
+            Event::new(type_, serde_json::to_vec(&payload)?).with_meta(META_REPLAY_KEY, key);
+        for (k, v) in extra {
+            if !v.is_empty() {
+                ev = ev.with_meta(*k, *v);
+            }
+        }
         self.append_and_fold(ev)
+    }
+
+    /// The requested model ALIAS an agent is spawned with (`AgentDef::model`, the value
+    /// that also rides the spawn request), or empty when the stage names no agent (a
+    /// producer/review-only stage) or the agent is unknown. Stamped onto the spawn's unit
+    /// events via [`META_MODEL_ALIAS`] (spec 05 line 52).
+    fn agent_model(&self, agent_id: &str) -> String {
+        self.cfg
+            .agents
+            .get(agent_id)
+            .map(|a| a.model.clone())
+            .unwrap_or_default()
     }
 
     /// The recorded outcome of a gate whose verdict was already emitted under `key` in a
@@ -1220,7 +1284,11 @@ impl RunCtx<'_> {
         // step re-running the conductor over recorded history does not re-append it -
         // the double-count that would otherwise deflate the metrics denominators on
         // every replay step (finding adv-replay-dup-lifecycle).
-        self.emit_keyed(
+        // Stamp the requested model ALIAS (spec 05 line 52): UnitStarted is the spawn's
+        // first recorded unit event and the alias is known at spawn time, so it names the
+        // model asked for even before any result. The resolved id is not known yet - it
+        // arrives on the spawn's later status events once the worker reports it.
+        self.emit_keyed_meta(
             &format!("{name}/started"),
             ledger::TYPE_UNIT_STARTED,
             json!({
@@ -1232,6 +1300,7 @@ impl RunCtx<'_> {
                 "needs": st.needs,
                 "branch": unit_branch(name),
             }),
+            &[(META_MODEL_ALIAS, &self.agent_model(&st.agent))],
         )?;
         self.run_stage(st)
     }
@@ -1440,14 +1509,16 @@ impl RunCtx<'_> {
         }
         // TIER 3: the adjudicator grounds last, reads the lenses' and adversary's
         // findings from the graph, and renders the gating verdict.
-        let (approved, reason) = self.run_adjudicator(st, &adjudicator, dir, attempt)?;
+        let (approved, reason, adj_resolved) =
+            self.run_adjudicator(st, &adjudicator, dir, attempt)?;
         if approved {
             // The adjudicator's verdict reason is folded into the unit's `reviewed`
             // evidence (item 4). Replay-keyed on unit + attempt: a repo-less unit that
             // reached `reviewed` but does not merge (on_pass: none) re-runs its review
             // over the recorded verdicts every step, so the status is appended once
-            // (spec 04, criterion 4).
-            self.emit_keyed(
+            // (spec 04, criterion 4). It is the adjudicator SPAWN's unit event, so it
+            // carries the adjudicator's requested alias and resolved id (spec 05 line 52).
+            self.emit_keyed_meta(
                 &format!("{}/reviewed#{attempt}", st.name),
                 ledger::TYPE_UNIT_STATUS,
                 json!({
@@ -1455,6 +1526,10 @@ impl RunCtx<'_> {
                     "status": "reviewed",
                     "evidence": review_evidence(&reason),
                 }),
+                &[
+                    (META_MODEL_ALIAS, &self.agent_model(&adjudicator)),
+                    (META_MODEL_RESOLVED, &adj_resolved),
+                ],
             )?;
             Ok(ReviewOutcome::approved(reason))
         } else {
@@ -1516,8 +1591,16 @@ impl RunCtx<'_> {
         // Only the first iteration is skipped - if review then rejects, the retry
         // re-spawns the implementer normally to fix the rejected code.
         let mut skip_implement = phase == ResumePhase::Implemented;
+        // The implementer's requested model ALIAS (spec 05 line 52), stamped on every unit
+        // event this stage records for the implementer spawn. Empty for an agentless stage.
+        let impl_alias = self.agent_model(&st.agent);
         loop {
             let mut spawn_err: Option<String> = None;
+            // The RESOLVED model id the implementer reported for THIS attempt, surfaced by
+            // the replay driver from the worker's `--meta` report. Empty until the spawn's
+            // result is consumed (and on the resume-skip path, which re-uses a prior
+            // window's diff without a fresh spawn), so its metadata is then omitted.
+            let mut resolved_model = String::new();
             if skip_implement {
                 // Reuse the prior window's committed implementation: re-record the
                 // `green` status (the ledger reflects the reused diff) without
@@ -1531,10 +1614,11 @@ impl RunCtx<'_> {
                         unit_branch(&st.name)
                     ),
                 );
-                self.emit_keyed(
+                self.emit_keyed_meta(
                     &format!("{}/green#{attempts}", st.name),
                     ledger::TYPE_UNIT_STATUS,
                     json!({"id": st.name, "status": "green", "evidence": green}),
+                    &[(META_MODEL_ALIAS, &impl_alias)],
                 )?;
                 // Subsequent iterations (after a review reject) re-implement normally.
                 skip_implement = false;
@@ -1588,7 +1672,12 @@ impl RunCtx<'_> {
                         &emit,
                     )
                 }) {
-                    Ok(_) => {
+                    Ok(result) => {
+                        // The resolved model the worker reported via `--meta` (spec 05 line
+                        // 52): captured here so the green status - and the verified status
+                        // below, for the same spawn - both carry it. Empty on a live
+                        // (non-replay) driver that does not learn the resolved id.
+                        resolved_model = result.resolved_model;
                         // The green status records that the implementer produced a
                         // diff (item 4): the per-unit evidence names the agent that
                         // implemented it.
@@ -1597,10 +1686,16 @@ impl RunCtx<'_> {
                         // Replay-keyed on unit + attempt: a step replaying the recorded
                         // implementer result re-reaches this line every step, but the
                         // green status is appended once per attempt (spec 04, criterion 4).
-                        self.emit_keyed(
+                        // Stamped with the requested alias AND the resolved id the spawn ran
+                        // as (spec 05 line 52).
+                        self.emit_keyed_meta(
                             &format!("{}/green#{attempts}", st.name),
                             ledger::TYPE_UNIT_STATUS,
                             json!({"id": st.name, "status": "green", "evidence": green}),
+                            &[
+                                (META_MODEL_ALIAS, &impl_alias),
+                                (META_MODEL_RESOLVED, &resolved_model),
+                            ],
                         )?;
                     }
                     // A PARKED spawn (the stepwise/replay driver reached an unrecorded
@@ -1661,8 +1756,10 @@ impl RunCtx<'_> {
                     // The verified status carries the gate evidence (item 4): each
                     // gate that ran summarized for the ledger's per-unit evidence.
                     // Replay-keyed on unit + attempt so a re-step past this unit's
-                    // recorded gates does not re-append it (spec 04, criterion 4).
-                    self.emit_keyed(
+                    // recorded gates does not re-append it (spec 04, criterion 4). It is
+                    // still an event of the implementer spawn, so it carries the same
+                    // requested alias and resolved id as the green status (spec 05 line 52).
+                    self.emit_keyed_meta(
                         &format!("{}/verified#{attempts}", st.name),
                         ledger::TYPE_UNIT_STATUS,
                         json!({
@@ -1670,6 +1767,10 @@ impl RunCtx<'_> {
                             "status": "verified",
                             "evidence": verified_evidence(&st.gates),
                         }),
+                        &[
+                            (META_MODEL_ALIAS, &impl_alias),
+                            (META_MODEL_RESOLVED, &resolved_model),
+                        ],
                     )?;
                     let review = self.review_unit(st, dir, attempts)?;
                     if review.approved {
@@ -1808,8 +1909,8 @@ impl RunCtx<'_> {
             // The neutral adjudicator's verdict gates the stage (§3.2), fail-closed:
             // it approves ONLY on an explicit `approve`, blocking integration
             // otherwise, no matter the static gates.
-            let (approved, reason) = if st.adjudicator.is_empty() {
-                (true, String::new())
+            let (approved, reason, adj_resolved) = if st.adjudicator.is_empty() {
+                (true, String::new(), String::new())
             } else {
                 self.run_adjudicator(st, &st.adjudicator, dir, attempts)?
             };
@@ -1833,7 +1934,7 @@ impl RunCtx<'_> {
                 // so a crash between them - or a replay - re-reaches this line with the
                 // reviewers/gates all replayed; keying `reviewed` skips the duplicate and
                 // lets `UnitIntegrated` (terminal, never re-scheduled) land exactly once.
-                self.emit_keyed(
+                self.emit_keyed_meta(
                     &format!("{}/reviewed#{attempts}", st.name),
                     ledger::TYPE_UNIT_STATUS,
                     json!({
@@ -1841,6 +1942,10 @@ impl RunCtx<'_> {
                         "status": "reviewed",
                         "evidence": review_evidence(&reason),
                     }),
+                    &[
+                        (META_MODEL_ALIAS, &self.agent_model(&st.adjudicator)),
+                        (META_MODEL_RESOLVED, &adj_resolved),
+                    ],
                 )?;
                 self.emit(
                     ledger::TYPE_UNIT_INTEGRATED,
@@ -2003,7 +2108,7 @@ impl RunCtx<'_> {
         adj_id: &str,
         dir: &str,
         attempt: u32,
-    ) -> Result<(bool, String), Error> {
+    ) -> Result<(bool, String, String), Error> {
         let id = spawn_id(&st.name, ROLE_ADJUDICATOR, attempt);
         let opts = self.reviewer_spawn_opts(&id, "adjudicator", adj_id, dir, false, st)?;
         let agent_def = self.cfg.agents.get(adj_id).ok_or_else(|| {
@@ -2027,7 +2132,13 @@ impl RunCtx<'_> {
                     st.name, adj_id, e.0
                 ))
             })?;
-        Ok((verdict_approves(&result.output), result.output))
+        // The resolved model the adjudicator ran as (spec 05 line 52) rides back with the
+        // verdict so the `reviewed` status - this spawn's unit event - can carry it.
+        Ok((
+            verdict_approves(&result.output),
+            result.output,
+            result.resolved_model,
+        ))
     }
 
     /// Run a stage's inline gates for its `attempt`, returning whether they all passed
@@ -3263,6 +3374,10 @@ mod tests {
         /// test give a lens a distinct finding and the adjudicator a distinct verdict
         /// (item 1: assert the findings actually flow between tiers).
         output_by_agent: HashMap<String, String>,
+        /// Per-agent RESOLVED model id the driver returns on [`AgentResult::resolved_model`]
+        /// (spec 05 line 52), letting a test drive the live (non-replay) path where the
+        /// conductor copies the resolved id onto the spawn's unit events.
+        resolved_model_by_agent: HashMap<String, String>,
         fail_spawn: bool,
         last_prompt: Mutex<String>,
         /// Per-agent (isolation, parallel) the conductor passed at each spawn.
@@ -3291,6 +3406,7 @@ mod tests {
                 emits_by_agent: HashMap::new(),
                 output: String::new(),
                 output_by_agent: HashMap::new(),
+                resolved_model_by_agent: HashMap::new(),
                 fail_spawn: false,
                 last_prompt: Mutex::new(String::new()),
                 opts_by_agent: Mutex::new(HashMap::new()),
@@ -3396,7 +3512,14 @@ mod tests {
                 .get(&a.id)
                 .cloned()
                 .unwrap_or_else(|| self.output.clone());
-            Ok(AgentResult { output })
+            Ok(AgentResult {
+                output,
+                resolved_model: self
+                    .resolved_model_by_agent
+                    .get(&a.id)
+                    .cloned()
+                    .unwrap_or_default(),
+            })
         }
     }
 
@@ -4593,6 +4716,133 @@ mod tests {
         assert!(
             repo.path().join("feature.rs").exists(),
             "the prior window's committed file must land in the base on resume-integrate"
+        );
+    }
+
+    #[test]
+    fn stamps_the_model_alias_and_resolved_id_on_live_lifecycle_events() {
+        // spec 05 line 52, the LIVE (non-replay) path: the conductor copies the resolved
+        // model each spawn returns on `AgentResult::resolved_model` - independent of the
+        // driver - onto the unit events it records for that spawn, alongside the requested
+        // alias. This exercises the adjudicator/`reviewed` path the replay-driver test does
+        // not, and proves the copy is not replay-specific.
+        let store = Store::open(":memory:").unwrap();
+
+        let mut cfg = Config::default();
+        cfg.agents.insert(
+            "worker".into(),
+            AgentDef {
+                id: "worker".into(),
+                model: "sonnet".into(),
+                ..Default::default()
+            },
+        );
+        cfg.agents.insert(
+            "lens".into(),
+            AgentDef {
+                id: "lens".into(),
+                model: "haiku".into(),
+                ..Default::default()
+            },
+        );
+        cfg.agents.insert(
+            "judge".into(),
+            AgentDef {
+                id: "judge".into(),
+                model: "opus".into(),
+                ..Default::default()
+            },
+        );
+        cfg.workflow.stages.insert(
+            "u".into(),
+            Stage {
+                name: "u".into(),
+                agent: "worker".into(),
+                // Repo-less: the review approves and then `on_pass: none` stops before
+                // integrate, so no git repo is needed - `reviewed` is still emitted for the
+                // adjudicator spawn.
+                on_pass: "none".into(),
+                review: crate::config::ReviewPanel {
+                    lenses: vec!["lens".into()],
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        // Each spawn reports the concrete model it ran as (what a worker records via
+        // `rigger result --meta` on the stepwise path); the adjudicator approves.
+        let driver = Stub {
+            output_by_agent: HashMap::from([(
+                "judge".to_string(),
+                r#"{"verdict":"approve"}"#.to_string(),
+            )]),
+            resolved_model_by_agent: HashMap::from([
+                (
+                    "worker".to_string(),
+                    "claude-sonnet-4-5-20250101".to_string(),
+                ),
+                ("judge".to_string(), "claude-opus-4-8-20260101".to_string()),
+            ]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let status_meta = |want: &str, key: &str| -> Option<String> {
+            events
+                .iter()
+                .find(|e| {
+                    e.type_ == ledger::TYPE_UNIT_STATUS
+                        && String::from_utf8_lossy(&e.data)
+                            .contains(&format!("\"status\":\"{want}\""))
+                })
+                .and_then(|e| e.meta.get(key).cloned())
+        };
+
+        // The implementer spawn's green and verified events carry the worker's requested
+        // alias and the resolved id it ran as.
+        for st in ["green", "verified"] {
+            assert_eq!(
+                status_meta(st, META_MODEL_ALIAS).as_deref(),
+                Some("sonnet"),
+                "{st} carries the implementer's requested alias"
+            );
+            assert_eq!(
+                status_meta(st, META_MODEL_RESOLVED).as_deref(),
+                Some("claude-sonnet-4-5-20250101"),
+                "{st} carries the implementer's resolved id"
+            );
+        }
+        // The adjudicator spawn's reviewed event carries the judge's alias and resolved id.
+        assert_eq!(
+            status_meta("reviewed", META_MODEL_ALIAS).as_deref(),
+            Some("opus"),
+            "reviewed carries the adjudicator's requested alias"
+        );
+        assert_eq!(
+            status_meta("reviewed", META_MODEL_RESOLVED).as_deref(),
+            Some("claude-opus-4-8-20260101"),
+            "reviewed carries the adjudicator's resolved id"
+        );
+        // UnitStarted carries the requested alias (known before any result).
+        let started = events
+            .iter()
+            .find(|e| e.type_ == ledger::TYPE_UNIT_STARTED)
+            .expect("the unit started");
+        assert_eq!(
+            started.meta.get(META_MODEL_ALIAS).map(String::as_str),
+            Some("sonnet")
         );
     }
 

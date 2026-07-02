@@ -90,7 +90,13 @@ impl AgentDriver for ReplayDriver<'_> {
             if res.is_error() {
                 return Err(Error(res.error));
             }
-            return Ok(AgentResult { output: res.output });
+            // Surface the RESOLVED model the worker reported through `rigger result --meta`
+            // (spec 05 line 52), so the conductor can copy it onto this spawn's unit events.
+            let resolved_model = res.resolved_model();
+            return Ok(AgentResult {
+                output: res.output,
+                resolved_model,
+            });
         }
 
         // PARK an unrecorded spawn: persist the request so a courier can drain it and the
@@ -304,6 +310,89 @@ mod tests {
             count_status("verified"),
             1,
             "verified is appended once across three replay steps"
+        );
+    }
+
+    #[test]
+    fn a_replayed_spawn_stamps_the_model_alias_and_resolved_id_on_its_unit_events() {
+        // spec 05 line 52: every spawn's recorded events carry the requested model ALIAS
+        // and the RESOLVED model id that ran - the latter reported by the worker via
+        // `rigger result --meta` and COPIED by the conductor onto the spawn's unit events.
+        // Here the courier has recorded the implementer's success together with the
+        // resolved id it reported through `--meta`; replaying the recorded spawn must stamp
+        // BOTH the requested alias and the resolved id onto the unit events the conductor
+        // emits for that spawn.
+        use crate::conductor::{META_MODEL_ALIAS, META_MODEL_RESOLVED};
+
+        let store = Store::open(":memory:").unwrap();
+        let cfg = config_with(vec![stage("u", "worker")]);
+        let id = spawn_id("u", ROLE_IMPLEMENTER, 0);
+        spawn::record_result(
+            &store,
+            &spawn::SpawnResult::ok(&id, "implemented")
+                .with_meta(serde_json::json!({ "resolved_model": "claude-opus-4-8-20260101" })),
+        )
+        .unwrap();
+
+        let driver = ReplayDriver::new(&store);
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let status = |want: &str| {
+            events
+                .iter()
+                .find(|e| {
+                    e.type_ == crate::ledger::TYPE_UNIT_STATUS
+                        && String::from_utf8_lossy(&e.data)
+                            .contains(&format!("\"status\":\"{want}\""))
+                })
+                .unwrap_or_else(|| panic!("the replayed spawn emits a {want} status"))
+        };
+
+        // The green status is the implementer spawn's unit event: it carries the requested
+        // alias ("sonnet", the worker's configured model) AND the worker-reported resolved id.
+        let green = status("green");
+        assert_eq!(
+            green.meta.get(META_MODEL_ALIAS).map(String::as_str),
+            Some("sonnet"),
+            "green carries the requested model alias"
+        );
+        assert_eq!(
+            green.meta.get(META_MODEL_RESOLVED).map(String::as_str),
+            Some("claude-opus-4-8-20260101"),
+            "green carries the resolved model id the worker reported via --meta"
+        );
+
+        // The verified status (emitted after the gates, still for the same spawn) carries
+        // both too.
+        let verified = status("verified");
+        assert_eq!(
+            verified.meta.get(META_MODEL_ALIAS).map(String::as_str),
+            Some("sonnet")
+        );
+        assert_eq!(
+            verified.meta.get(META_MODEL_RESOLVED).map(String::as_str),
+            Some("claude-opus-4-8-20260101")
+        );
+
+        // UnitStarted carries the requested alias (known at spawn time, before any result).
+        let started = events
+            .iter()
+            .find(|e| e.type_ == crate::ledger::TYPE_UNIT_STARTED)
+            .expect("the unit started");
+        assert_eq!(
+            started.meta.get(META_MODEL_ALIAS).map(String::as_str),
+            Some("sonnet"),
+            "UnitStarted carries the requested model alias"
         );
     }
 

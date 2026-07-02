@@ -240,6 +240,13 @@ pub fn is_recorded(events: &[Event], id: &str) -> bool {
 /// result instead of re-running the agent.
 pub const TYPE_SPAWN_RESULT: &str = "SpawnResult";
 
+/// The `--meta` object key by which a worker reports the RESOLVED model id that actually
+/// served its spawn (spec 05 line 52): `rigger result <id> --meta '{"resolved_model": ..}'`
+/// stores it in [`SpawnResult::meta`]. The conductor copies it off the replayed result onto
+/// the spawn's unit events (see `conductor::META_MODEL_RESOLVED`), so the recorded events
+/// name the concrete model that ran, not only the requested alias on the spawn request.
+pub const META_RESOLVED_MODEL: &str = "resolved_model";
+
 /// A recorded spawn OUTCOME, keyed by the same deterministic [`spawn_id`] as its
 /// request. A successful run carries the agent's `output` and an empty `error`; a
 /// failed run (`rigger result --error`) carries the failure message in `error`, and
@@ -299,6 +306,19 @@ impl SpawnResult {
     /// Whether this result records a FAILURE (a non-empty `error`).
     pub fn is_error(&self) -> bool {
         !self.error.is_empty()
+    }
+
+    /// The RESOLVED model id the worker reported through `--meta` (the
+    /// [`META_RESOLVED_MODEL`] key of [`meta`](SpawnResult::meta)), or empty when the
+    /// worker reported none (or reported a non-string value). This is the concrete model
+    /// that actually ran the spawn - distinct from the requested alias on the spawn
+    /// REQUEST - which the conductor copies onto the spawn's unit events (spec 05 line 52).
+    pub fn resolved_model(&self) -> String {
+        self.meta
+            .get(META_RESOLVED_MODEL)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
     }
 
     /// Serialize this result as its [`TYPE_SPAWN_RESULT`] event, ready to append.
@@ -627,6 +647,34 @@ mod tests {
         // The failure survives the event round-trip so a step replays it AS a failure.
         let ev = res.to_event().unwrap();
         assert_eq!(SpawnResult::from_event(&ev).unwrap(), res);
+    }
+
+    #[test]
+    fn resolved_model_reads_the_meta_key_the_worker_reports() {
+        // spec 05 line 52: the worker reports the resolved model via `rigger result --meta
+        // '{"resolved_model": ..}'`; `resolved_model()` reads exactly that key so the
+        // conductor can copy it onto the spawn's unit events.
+        let with = SpawnResult::ok("u/implementer#0", "done")
+            .with_meta(serde_json::json!({ "resolved_model": "claude-opus-4-8-20260101" }));
+        assert_eq!(with.resolved_model(), "claude-opus-4-8-20260101");
+
+        // No meta, wrong key, or a non-string value each read as empty (then omitted).
+        assert_eq!(
+            SpawnResult::ok("u/implementer#0", "done").resolved_model(),
+            ""
+        );
+        assert_eq!(
+            SpawnResult::ok("u/implementer#0", "done")
+                .with_meta(serde_json::json!({ "by": "courier" }))
+                .resolved_model(),
+            ""
+        );
+        assert_eq!(
+            SpawnResult::ok("u/implementer#0", "done")
+                .with_meta(serde_json::json!({ "resolved_model": 7 }))
+                .resolved_model(),
+            ""
+        );
     }
 
     #[test]

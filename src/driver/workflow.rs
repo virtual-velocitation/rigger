@@ -121,7 +121,12 @@ impl Driver {
         let inner = self.inner.lock().unwrap();
         if let Some(call) = inner.pending.get(id) {
             let r = if err.is_empty() {
-                Ok(AgentResult { output })
+                // The in-process MCP result carries no resolved model id (spec 05 line 52
+                // sources it from the stepwise `rigger result --meta` path), so it is empty.
+                Ok(AgentResult {
+                    output,
+                    resolved_model: String::new(),
+                })
             } else {
                 Err(Error(err))
             };
