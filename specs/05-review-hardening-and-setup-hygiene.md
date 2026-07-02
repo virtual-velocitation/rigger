@@ -28,6 +28,11 @@ Four residual gaps after spec 04:
 - `rigger validate` warns when the installed workflow differs from the embedded one, and flags tracked `.rigger/` files carrying uncommitted modifications - config drift is surfaced, not discovered by accident.
 - This repo's stray scaffolded duplicates (`implementer.md`, `devils-advocate.md`, `reviewer.architecture.md`, `reviewer.technical.md` under `.rigger/agents/`) are removed; the committed, customized agents are the fleet.
 
+**Agent import (setup offers a starting fleet).** Writing a fleet from scratch is the highest-friction step of adopting the loop, and ready-made collections exist in the same Markdown-with-YAML-frontmatter shape - notably [agency-agents](https://github.com/msitarzewski/agency-agents) (MIT, 200+ agents). Two pieces, both offline:
+
+- When `rigger setup` scaffolds default agents (the empty-repo path only), it prints a pointer to the agency-agents collection and the handbook's authoring-agents chapter as the way to grow past the scaffold.
+- `rigger setup --agents <dir>` imports agent definition files from a local directory (a checkout of any collection): copies each `.md` into `.rigger/agents/`, normalizes the identity frontmatter field to Rigger's `id:`, refuses to overwrite an existing agent file, and runs the same validation `rigger validate` applies. No network access in setup; the user clones the collection themselves.
+
 ## Global constraints
 
 - Hyphens, not em dashes, in every file this spec touches (the style gate this spec adds must itself pass on this spec's own units).
@@ -43,3 +48,4 @@ Four residual gaps after spec 04:
 - [ ] `rigger setup` skips scaffolding default agents when the workflow's referenced agents exist, and writes `.gitignore` entries for `.claude/` and `.rigger/shim/` when they are neither ignored nor tracked
 - [ ] `rigger validate` warns on installed-vs-embedded workflow drift and flags tracked `.rigger/` files with uncommitted modifications
 - [ ] the four stray scaffolded agent duplicates under `.rigger/agents/` are removed from the working tree and cannot be re-scaffolded by a rerun of setup on this repo
+- [ ] `rigger setup --agents <dir>` imports agent `.md` files from a local directory into `.rigger/agents/` (normalizing the identity field to `id:`, never overwriting an existing agent, validating the result), and the empty-repo scaffold path prints a pointer to the agency-agents collection and the authoring-agents handbook chapter
