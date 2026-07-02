@@ -1494,6 +1494,18 @@ fn dirty_tracked_paths(porcelain: &str) -> Vec<String> {
         .collect()
 }
 
+/// The result of scaffolding a project via [`init_project`]: the default agent files
+/// provisioned, and whether at least one of them was NEWLY written this run (the
+/// empty-repo scaffold path) rather than kept because it already existed (a re-run
+/// over a fleet). `scaffolded_new` is the signal `rigger init` / `rigger setup` use to
+/// print the starter-fleet pointer on the empty-repo path only.
+struct ScaffoldOutcome {
+    /// The default agent files provisioned (whether newly written or already present).
+    agents: Vec<String>,
+    /// `true` iff at least one default agent file was newly written this run.
+    scaffolded_new: bool,
+}
+
 /// The full project setup, rooted at `root` so it is testable against a temp dir
 /// without touching the process-wide current directory (`set_current_dir` is not
 /// test-safe). It does two things, both idempotent:
@@ -1502,8 +1514,9 @@ fn dirty_tracked_paths(porcelain: &str) -> Vec<String> {
 ///   2. installs the Claude Code SessionStart hook into `<root>/.claude/settings.json`,
 ///      merging into (never clobbering) whatever settings are already there.
 ///
-/// Scaffolds a new project and returns the names of agents that were scaffolded.
-fn init_project(root: &Path) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+/// Reports which default agents were provisioned and whether any were newly written
+/// this run (see [`ScaffoldOutcome`]).
+fn init_project(root: &Path) -> Result<ScaffoldOutcome, Box<dyn std::error::Error>> {
     // 1. Scaffold .rigger/.
     let rigger_dir = root.join(RIGGER_DIR);
     let agents_dir = rigger_dir.join("agents");
@@ -1537,8 +1550,11 @@ fn init_project(root: &Path) -> Result<Vec<String>, Box<dyn std::error::Error>> 
     };
 
     let mut scaffolded_agents = Vec::new();
+    let mut scaffolded_new = false;
     for (file, content) in &agents_to_scaffold {
-        write_if_absent(&agents_dir.join(file), content);
+        if write_if_absent(&agents_dir.join(file), content) {
+            scaffolded_new = true;
+        }
         scaffolded_agents.push(file.to_string());
     }
 
@@ -1555,7 +1571,24 @@ fn init_project(root: &Path) -> Result<Vec<String>, Box<dyn std::error::Error>> 
     write_gitignore_entries(root, ".claude/")?;
     write_gitignore_entries(root, ".rigger/shim/")?;
 
-    Ok(scaffolded_agents)
+    Ok(ScaffoldOutcome {
+        agents: scaffolded_agents,
+        scaffolded_new,
+    })
+}
+
+/// Print the empty-repo scaffold pointer: where to get a real starting agent fleet
+/// (the agency-agents collection) and how to author agents (the handbook chapter).
+/// `rigger init` / `rigger setup` call this ONLY when the default fleet was actually
+/// scaffolded this run (spec 05 done-when line 57, clause 2), never on a re-run that
+/// keeps an existing fleet.
+fn print_scaffold_pointer() {
+    println!(
+        "next: this scaffolded a minimal starter fleet. For a fuller set, clone the \
+         agency-agents collection from https://github.com/msitarzewski/agency-agents and \
+         import it with `rigger setup --agents <dir>`, or author your own following the \
+         handbook chapter at docs/handbook/authoring-agents.md"
+    );
 }
 
 /// Write a .gitignore entry for the given pattern if it is not already ignored or tracked.
@@ -1640,12 +1673,15 @@ fn get_referenced_agent_ids(
 }
 
 fn cmd_init() -> Res {
-    let scaffolded_agents = init_project(Path::new("."))?;
+    let outcome = init_project(Path::new("."))?;
     println!(
         "scaffolded .rigger/workflow.yml and .rigger/agents/{{{}}} and installed a Claude Code \
          SessionStart hook in .claude/settings.json (it runs `rigger prime`)",
-        scaffolded_agents.join(", ")
+        outcome.agents.join(", ")
     );
+    if outcome.scaffolded_new {
+        print_scaffold_pointer();
+    }
     Ok(())
 }
 
@@ -1749,7 +1785,7 @@ fn run_npm_install(dir: &Path) -> Res {
 fn cmd_setup(args: &[String]) -> Res {
     let opts = parse_setup_args(args)?;
     let root = Path::new(".");
-    let scaffolded_agents = init_project(root)?;
+    let outcome = init_project(root)?;
     install_workflow(root)?;
     provision_shim(root)?;
     if let Some(src) = &opts.agents_dir {
@@ -1770,12 +1806,15 @@ fn cmd_setup(args: &[String]) -> Res {
         "scaffolded .rigger/workflow.yml and .rigger/agents/{{{}}}, installed a Claude Code \
          SessionStart hook in .claude/settings.json, and provisioned the JS driver in \
          .rigger/shim/ (wrote shim.mjs + package.json + package-lock.json and ran npm install)",
-        scaffolded_agents.join(", ")
+        outcome.agents.join(", ")
     );
     println!(
         "installed the /rigger workflow (.claude/workflows/rigger.js) - run it with: /rigger \
          <spec-path>"
     );
+    if outcome.scaffolded_new {
+        print_scaffold_pointer();
+    }
     Ok(())
 }
 
@@ -2100,13 +2139,22 @@ fn print_run_state(rs: &RunState) {
     }
 }
 
-fn write_if_absent(path: &Path, content: &str) {
+/// Write `content` to `path` when no file is already there, returning `true` when it
+/// wrote a new file and `false` when it kept an existing one (or the write failed).
+/// The wrote-vs-kept bool lets [`init_project`] tell the empty-repo scaffold path
+/// (default agents newly written) from a re-run over an existing fleet (all kept), so
+/// only the former prints the starter-fleet pointer.
+fn write_if_absent(path: &Path, content: &str) -> bool {
     if path.exists() {
         println!("kept existing {}", path.display());
-        return;
+        return false;
     }
-    if let Err(e) = std::fs::write(path, content) {
-        eprintln!("rigger: write {}: {e}", path.display());
+    match std::fs::write(path, content) {
+        Ok(()) => true,
+        Err(e) => {
+            eprintln!("rigger: write {}: {e}", path.display());
+            false
+        }
     }
 }
 
