@@ -5,7 +5,7 @@
 //! (`--eventstore sqlite|kurrentdb`) are selected by flag; `rigger graph` inspects
 //! the context graph; `rigger init`/`setup` scaffold a project.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use rigger::conductor::{self, Deps};
@@ -14,7 +14,7 @@ use rigger::contextgraph::{self, sqlite::Projector, Projection};
 use rigger::driver::cli;
 use rigger::driver::replay::ReplayDriver;
 use rigger::eventstore::namespace::Namespaced;
-use rigger::eventstore::{sqlite::Store, Direction, EventStore, Filter};
+use rigger::eventstore::{sqlite::Store, Direction, Event, EventStore, Filter};
 use rigger::gate::ExecRunner;
 use rigger::grounder::Grounder;
 use rigger::ledger::RunState;
@@ -380,6 +380,99 @@ fn db_path(name: &str) -> String {
         .join(name)
         .to_string_lossy()
         .into_owned()
+}
+
+/// Walk up from `start` (inclusive) and return the first ancestor directory that
+/// already holds an initialized `.rigger/events.db`, or `None` when none does. Pure
+/// over the given path (it touches no process cwd) so the walk-up rule is unit-testable.
+fn find_store_dir_from(start: &Path) -> Option<PathBuf> {
+    let mut cur = Some(start);
+    while let Some(dir) = cur {
+        if dir.join(RIGGER_DIR).join("events.db").is_file() {
+            return Some(dir.join(RIGGER_DIR));
+        }
+        cur = dir.parent();
+    }
+    None
+}
+
+/// Resolve the `.rigger` store directory a store-opening COURIER command
+/// (`emit`/`result`/`peers`) must use, REFUSING rather than fabricating a fresh empty
+/// store when neither the current directory nor any ancestor holds one (spec 05,
+/// done-when: "store-opening commands refuse (or walk up) instead of fabricating a fresh
+/// `.rigger/events.db` when run from a cwd with no existing store").
+///
+/// The defect this closes: a courier run from the WRONG cwd - most plausibly a unit
+/// worktree, which carries the tracked `.rigger/workflow.yml` + agents but NOT the
+/// machine-local, gitignored `.rigger/events.db` - used to `create_dir_all(.rigger)` +
+/// `Store::open` a brand-new empty store there, record into that dead store, and print
+/// success while the real spawn stayed parked forever in the project's actual run stream.
+/// Walking up finds the real store when the cwd is a SUBDIRECTORY of the project root;
+/// refusing (when no ancestor has one) surfaces the wrong-cwd mistake instead of silently
+/// swallowing the write. The run driver (`run`/`step`/`serve`) is deliberately NOT routed
+/// through here: it legitimately BOOTSTRAPS the store on the first step of a fresh project.
+fn require_store_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let cwd = std::env::current_dir()?;
+    find_store_dir_from(&cwd).ok_or_else(|| {
+        format!(
+            "no rigger store found: neither {} nor any parent directory has an initialized \
+             {RIGGER_DIR}/events.db. This usually means the command ran from the wrong \
+             directory (e.g. a unit worktree, whose {RIGGER_DIR} is not the run's store). \
+             Run it from the project root that owns the run; refusing to fabricate a fresh \
+             empty store here.",
+            cwd.display()
+        )
+        .into()
+    })
+}
+
+/// The path to a database file (`events.db` / `graph.db`) inside a resolved store
+/// directory, as the `&str` the sqlite `Store` / `Projector` opens.
+fn store_file(dir: &Path, name: &str) -> String {
+    dir.join(name).to_string_lossy().into_owned()
+}
+
+/// The stderr advisories `rigger result` prints from a single pre-write read of the run
+/// stream, BEFORE it records (spec 05, done-when: "`rigger result` prints stderr
+/// advisories for an orphan id and for superseding an existing result"). Two independent
+/// notes, both purely advisory - the record still lands, because pre-recording a result
+/// before its spawn request is parked is legitimate and re-recording deliberately
+/// supersedes (results are last-write-wins). ORPHAN: no `SpawnRequested` with this id is
+/// in the stream, so nothing is parked under it - a typoed id would otherwise silently
+/// strand the real spawn while the orphan result records against an id the run never
+/// requested. SUPERSEDE: a `SpawnResult` for this id is already recorded (at position N),
+/// so this write replaces the earlier outcome.
+///
+/// Pure over the already-read events (no I/O) so both rules are unit-testable without a
+/// store, mirroring the other `rigger result` seams ([`parse_result_args`]/[`build_result`]).
+/// `will_supersede` is false on the `--if-absent` path (weave with unit-10): the CAS
+/// refuses to overwrite, so a supersede note would claim a replacement that never
+/// happens - only the orphan rule applies there.
+fn result_advisories(events: &[Event], id: &str, will_supersede: bool) -> Vec<String> {
+    let mut notes = Vec::new();
+    if !spawn::is_recorded(events, id) {
+        notes.push(format!(
+            "result: note: no spawn request is recorded for {id:?}; recording an orphan \
+             result (nothing is parked under this id)"
+        ));
+    }
+    // The LATEST already-recorded result for this id (last-write-wins), and the log
+    // position it currently sits at, so the advisory can name it.
+    let prior = events.iter().rev().find(|e| {
+        e.type_ == spawn::TYPE_SPAWN_RESULT
+            && spawn::SpawnResult::from_event(e).is_ok_and(|r| r.id == id)
+    });
+    if !will_supersede {
+        return notes;
+    }
+    if let Some(e) = prior {
+        notes.push(format!(
+            "result: note: {id:?} already has a recorded result at position {}; this \
+             record supersedes it",
+            e.position
+        ));
+    }
+    notes
 }
 
 fn cmd_run(args: &[String]) -> Res {
@@ -1138,10 +1231,12 @@ fn cmd_emit(args: &[String]) -> Res {
         .into());
     }
 
-    std::fs::create_dir_all(RIGGER_DIR)?;
-    let backend = Store::open(&db_path("events.db"))?;
+    // Resolve the EXISTING store (walk up; refuse if none) rather than fabricating one
+    // in the wrong cwd - see [`require_store_dir`].
+    let dir = require_store_dir()?;
+    let backend = Store::open(&store_file(&dir, "events.db"))?;
     let store = Namespaced::new(&backend, &project_identity());
-    let graph = Projector::open(&db_path("graph.db"))?;
+    let graph = Projector::open(&store_file(&dir, "graph.db"))?;
 
     // Same args shape the MCP tool receives, so emit_event - the shared core both
     // surfaces call - behaves identically here and over MCP.
@@ -1153,15 +1248,16 @@ fn cmd_emit(args: &[String]) -> Res {
 
 /// `rigger peers [<file> ...]` - print the peer decisions and review findings from
 /// the context graph scoped to the given files (or all if none), EXACTLY as the MCP
-/// `rigger_peers` tool does (both render through [`mcpserver::peers_json`]). The
-/// store is opened the way `serve` opens it; a side-car replays the `conductor::STREAM`
+/// `rigger_peers` tool does (both render through [`mcpserver::peers_json`]). The store
+/// is RESOLVED by walking up to the project's existing `.rigger` (refusing to fabricate
+/// one, spec 05 - see [`require_store_dir`]); a side-car replays the `conductor::STREAM`
 /// backlog and this command waits for it to catch up before rendering one readable
 /// line per decision / finding.
 fn cmd_peers(args: &[String]) -> Res {
     let files: Vec<String> = args.to_vec();
 
-    std::fs::create_dir_all(RIGGER_DIR)?;
-    let backend = Store::open(&db_path("events.db"))?;
+    let dir = require_store_dir()?;
+    let backend = Store::open(&store_file(&dir, "events.db"))?;
     let store = Namespaced::new(&backend, &project_identity());
 
     // The side-car replays the whole backlog from position 0; wait until it has
@@ -1375,9 +1471,13 @@ fn read_outcome_from_stdin() -> Result<String, Box<dyn std::error::Error>> {
 /// <id> --error` guard left open (spec 05). See [`spawn::record_result_if_absent`].
 ///
 /// The [`spawn::SpawnResult`] is appended to the SAME per-project [`Namespaced`] `run`
-/// stream the conductor drives (identical composition to [`cmd_emit`] and the `run`
-/// path), so the write lands exactly where the replay driver reads. A recorded failure
-/// replays AS a failure - the conductor remediates it just as it would a live one.
+/// stream the conductor drives, so the write lands exactly where the replay driver reads.
+/// A recorded failure replays AS a failure - the conductor remediates it just as it would
+/// a live one. The store is RESOLVED by walking up to the project's existing `.rigger`
+/// (refusing to fabricate one in the wrong cwd, spec 05 - see [`require_store_dir`]); and
+/// before recording, a single pre-write read of the stream prints stderr advisories for
+/// an ORPHAN id (no matching spawn request) or for SUPERSEDING an existing result (see
+/// [`result_advisories`]).
 fn cmd_result(args: &[String]) -> Res {
     let parsed = parse_result_args(args)?;
     // The outcome text comes from the positional arg when given, else stdin. Resolving
@@ -1388,9 +1488,23 @@ fn cmd_result(args: &[String]) -> Res {
     };
     let res = build_result(&parsed.id, &text, parsed.is_error, parsed.meta)?;
 
-    std::fs::create_dir_all(RIGGER_DIR)?;
-    let backend = Store::open(&db_path("events.db"))?;
+    // Resolve the EXISTING store (walk up; refuse if none) rather than fabricating one
+    // in the wrong cwd - a courier run from a unit worktree would otherwise record into
+    // a fresh dead store while the real spawn stays parked (see [`require_store_dir`]).
+    let dir = require_store_dir()?;
+    let backend = Store::open(&store_file(&dir, "events.db"))?;
     let store = Namespaced::new(&backend, &project_identity());
+
+    // One cheap pre-write read of the run stream, to advise (on stderr) about an orphan
+    // id or about superseding an existing result BEFORE the append. Advisory only: the
+    // record still lands, since pre-recording and deliberate re-recording are both
+    // legitimate (see [`result_advisories`]). Weave with unit-10: under `--if-absent`
+    // nothing can supersede (the CAS refuses), so the supersede note is suppressed -
+    // the "left it untouched" line below reports that case honestly.
+    let prior = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+    for note in result_advisories(&prior, &res.id, !parsed.if_absent) {
+        eprintln!("{note}");
+    }
 
     let kind = if res.is_error() {
         "error result"
@@ -2582,6 +2696,112 @@ mod tests {
         let a = parse_result_args(&["u/implementer#0".into()]).unwrap();
         assert_eq!(a.id, "u/implementer#0");
         assert!(a.text.is_none());
+    }
+
+    // ---- store-open hardening: walk up to an existing store, never fabricate one ----
+
+    #[test]
+    fn find_store_dir_from_returns_the_dir_that_holds_the_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(RIGGER_DIR)).unwrap();
+        std::fs::File::create(root.join(RIGGER_DIR).join("events.db")).unwrap();
+        assert_eq!(find_store_dir_from(root), Some(root.join(RIGGER_DIR)));
+    }
+
+    #[test]
+    fn find_store_dir_from_walks_up_from_a_subdirectory() {
+        // A courier run from a SUBDIR of the project root still resolves the root's store.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(RIGGER_DIR)).unwrap();
+        std::fs::File::create(root.join(RIGGER_DIR).join("events.db")).unwrap();
+        let sub = root.join("src").join("deep");
+        std::fs::create_dir_all(&sub).unwrap();
+        assert_eq!(find_store_dir_from(&sub), Some(root.join(RIGGER_DIR)));
+    }
+
+    #[test]
+    fn find_store_dir_from_refuses_the_worktree_shape_with_no_events_db() {
+        // The unit-worktree shape: a `.rigger/` (tracked workflow.yml/agents) with NO
+        // machine-local events.db must NOT count as a store, so a courier there refuses
+        // rather than fabricating a fresh empty store - the exact defect this unit closes.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(RIGGER_DIR)).unwrap();
+        std::fs::write(root.join(RIGGER_DIR).join("workflow.yml"), "stages: []\n").unwrap();
+        let sub = root.join("nested");
+        std::fs::create_dir_all(&sub).unwrap();
+        assert_eq!(find_store_dir_from(&sub), None);
+    }
+
+    // ---- `rigger result` stderr advisories: orphan id and superseding result ----
+
+    #[test]
+    fn result_advisories_flags_an_orphan_id_with_no_spawn_request() {
+        // No SpawnRequested is recorded for the id -> exactly the orphan advisory.
+        let notes = result_advisories(&[], "u/implementer#0", true);
+        assert_eq!(notes.len(), 1, "only the orphan note; got {notes:?}");
+        assert!(notes[0].contains("no spawn request is recorded"));
+        assert!(notes[0].contains("u/implementer#0"));
+    }
+
+    #[test]
+    fn result_advisories_is_silent_for_a_parked_unanswered_spawn() {
+        // A parked spawn (its request is recorded) with no result yet needs no advisory:
+        // this is the normal courier path.
+        let req = spawn::SpawnRequest::new("u", "impl", "implementer", 0, "do it");
+        let ev = req.to_event().unwrap();
+        let notes = result_advisories(std::slice::from_ref(&ev), &req.id, true);
+        assert!(
+            notes.is_empty(),
+            "a parked-but-unanswered spawn needs no note; got {notes:?}"
+        );
+    }
+
+    #[test]
+    fn result_advisories_flags_a_supersede_with_the_prior_result_position() {
+        // Request recorded (no orphan) AND a prior result at a known position -> exactly
+        // the supersede advisory, naming that position.
+        let req = spawn::SpawnRequest::new("u", "impl", "implementer", 0, "do it");
+        let req_ev = req.to_event().unwrap();
+        let mut res_ev = spawn::SpawnResult::ok(&req.id, "first").to_event().unwrap();
+        res_ev.position = 7;
+        let notes = result_advisories(&[req_ev, res_ev], &req.id, true);
+        assert_eq!(notes.len(), 1, "only the supersede note; got {notes:?}");
+        assert!(notes[0].contains("already has a recorded result at position 7"));
+        assert!(notes[0].contains("supersedes"));
+    }
+
+    #[test]
+    fn result_advisories_suppresses_the_supersede_note_when_not_superseding() {
+        // The `--if-absent` path (weave with unit-10): the CAS never overwrites, so a
+        // supersede note would claim a replacement that never happens. Only the orphan
+        // rule applies; a request-and-result pair yields no note at all.
+        let req = spawn::SpawnRequest::new("u", "impl", "implementer", 0, "do it");
+        let req_ev = req.to_event().unwrap();
+        let mut res_ev = spawn::SpawnResult::ok(&req.id, "first").to_event().unwrap();
+        res_ev.position = 7;
+        let notes = result_advisories(&[req_ev, res_ev], &req.id, false);
+        assert!(
+            notes.is_empty(),
+            "no supersede note on the non-superseding path; got {notes:?}"
+        );
+    }
+
+    #[test]
+    fn result_advisories_flags_both_orphan_and_supersede() {
+        // A result recorded against an id the run never requested: BOTH notes fire.
+        let mut res_ev = spawn::SpawnResult::ok("typo/id#0", "prev")
+            .to_event()
+            .unwrap();
+        res_ev.position = 3;
+        let notes = result_advisories(std::slice::from_ref(&res_ev), "typo/id#0", true);
+        assert_eq!(notes.len(), 2, "orphan + supersede; got {notes:?}");
+        assert!(notes
+            .iter()
+            .any(|n| n.contains("no spawn request is recorded")));
+        assert!(notes.iter().any(|n| n.contains("at position 3")));
     }
 
     #[test]

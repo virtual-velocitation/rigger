@@ -27,6 +27,19 @@ fn temp_project() -> tempfile::TempDir {
     dir
 }
 
+/// Seed an initialized `.rigger/events.db` under `root`, standing in for the store a
+/// prior `rigger run`/`step` would have created. The store-opening couriers
+/// (`emit`/`result`/`peers`) now REFUSE to fabricate a fresh store from the wrong cwd
+/// (spec 05), so a round-trip test must first establish one, exactly as a real run does
+/// before any courier appends to it. An empty file is a valid empty SQLite database;
+/// `Store::open` adds the schema on first open - so this models "the run created the
+/// store" without needing a full workflow.
+fn seed_store(root: &Path) {
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(&rigger).unwrap();
+    std::fs::File::create(rigger.join("events.db")).unwrap();
+}
+
 /// A throwaway git project with a real commit, so a base ref like `HEAD` resolves.
 /// `temp_project` only `git init`s (unborn HEAD), which is enough for the offline
 /// step tests but not for the run-branch-anchoring path that needs a base commit.
@@ -144,6 +157,8 @@ fn run_rigger_env(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> RiggerOut
 fn emit_appends_and_folds_then_peers_shows_it() {
     let dir = temp_project();
     let root = dir.path();
+    // A run already created the store; the courier appends to it (it never fabricates).
+    seed_store(root);
 
     // Emit a DecisionMade governing src/foo.rs.
     let (out, err, ok) = run_rigger(
@@ -160,10 +175,11 @@ fn emit_appends_and_folds_then_peers_shows_it() {
         "emit prints a one-line confirmation; got: {out:?}"
     );
 
-    // The store and graph databases now exist under .rigger/.
+    // The seeded event store still holds the append, and emit created the graph db
+    // beside it (the projector db is derived state, so emit builds it on demand).
     assert!(
         root.join(".rigger").join("events.db").exists(),
-        "emit must create the namespaced event store"
+        "emit must append to the seeded event store"
     );
     assert!(
         root.join(".rigger").join("graph.db").exists(),
@@ -201,6 +217,7 @@ fn emit_appends_and_folds_then_peers_shows_it() {
 fn emit_review_finding_shows_in_peers() {
     let dir = temp_project();
     let root = dir.path();
+    seed_store(root);
 
     let (_out, err, ok) = run_rigger(
         root,
@@ -219,6 +236,147 @@ fn emit_review_finding_shows_in_peers() {
             && out.contains("by tech-lens")
             && out.contains("about: combat.rs"),
         "peers must render the finding's id/by/about; got: {out:?}"
+    );
+}
+
+/// `rigger emit` from a directory with NO existing `.rigger/events.db` (and no ancestor
+/// that has one) REFUSES rather than fabricating a fresh empty store there (spec 05). The
+/// payload is valid JSON, so this reaches the store-open seam rather than failing at parse.
+#[test]
+fn emit_refuses_to_fabricate_a_store_when_none_exists() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(
+        root,
+        &[
+            "emit",
+            "DecisionMade",
+            r#"{"id":"d1","summary":"x","governs":["src/foo.rs"]}"#,
+        ],
+    );
+    assert!(
+        !ok,
+        "emit must refuse when there is no existing store; stderr: {err}"
+    );
+    assert!(
+        err.contains("no rigger store found") && err.contains("refusing to fabricate"),
+        "emit must explain the refusal; got: {err:?}"
+    );
+    assert!(
+        !root.join(".rigger").join("events.db").exists(),
+        "emit must NOT fabricate a store when it refuses"
+    );
+}
+
+/// The paradigm defect (adv-result-wrong-cwd-fabricates-store): `rigger result` run from
+/// a unit-worktree-shaped cwd - a tracked `.rigger/workflow.yml` but NO machine-local
+/// `.rigger/events.db` - must REFUSE instead of fabricating a fresh dead store and printing
+/// success while the real spawn stays parked. Without the guard, result would create
+/// `.rigger/events.db` here and exit 0.
+#[test]
+fn result_refuses_to_fabricate_a_store_from_a_worktree_shaped_cwd() {
+    let dir = temp_project();
+    let root = dir.path();
+    // The tracked half of a checkout: `.rigger/` with workflow.yml, but no events.db.
+    std::fs::create_dir_all(root.join(".rigger")).unwrap();
+    std::fs::write(root.join(".rigger").join("workflow.yml"), "stages: []\n").unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["result", "u/implementer#0", "did the work"]);
+    assert!(
+        !ok,
+        "result must refuse from a storeless worktree; stdout: {out:?} stderr: {err}"
+    );
+    assert!(
+        err.contains("no rigger store found"),
+        "result must explain the refusal; got: {err:?}"
+    );
+    assert!(
+        !root.join(".rigger").join("events.db").exists(),
+        "result must NOT fabricate a store when it refuses"
+    );
+}
+
+/// A courier run from a SUBDIRECTORY of the project root walks up to the root's existing
+/// store and records THERE - it does not create a second store in the subdir. Proven by
+/// `rigger reported` from the root finding the result the subdir invocation wrote.
+#[test]
+fn result_walks_up_to_a_parent_store_from_a_subdirectory() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+    let sub = root.join("crate").join("src");
+    std::fs::create_dir_all(&sub).unwrap();
+
+    let (_out, err, ok) = run_rigger(&sub, &["result", "u/implementer#0", "did the work"]);
+    assert!(
+        ok,
+        "result from a subdir must record into the parent store; stderr: {err}"
+    );
+    assert!(
+        !sub.join(".rigger").exists(),
+        "result must not fabricate a store in the subdir; it walks up"
+    );
+
+    // The result landed in the ROOT store (not a fabricated subdir one): `reported`,
+    // which reads the cwd-relative store, finds it from the root.
+    let (out, err, ok) = run_rigger(root, &["reported", "u/implementer#0"]);
+    assert!(
+        ok,
+        "the walked-up result must be readable from the root store; stderr: {err}"
+    );
+    assert!(
+        out.contains("u/implementer#0") && out.contains("ok"),
+        "reported must confirm the recorded result; got: {out:?}"
+    );
+}
+
+/// `rigger result` for an id with no recorded spawn request prints an ORPHAN advisory to
+/// stderr - and still records (advisory only; pre-recording is legitimate).
+#[test]
+fn result_prints_an_orphan_advisory_for_an_unrecorded_id() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+
+    let (out, err, ok) = run_rigger(root, &["result", "ghost/implementer#0", "output"]);
+    assert!(
+        ok,
+        "an orphan result still records (advisory only); stderr: {err}"
+    );
+    assert!(
+        err.contains("no spawn request is recorded") && err.contains("ghost/implementer#0"),
+        "result must advise about the orphan id on stderr; got: {err:?}"
+    );
+    assert!(
+        out.contains("recorded result for ghost/implementer#0"),
+        "the orphan result must still be recorded; got: {out:?}"
+    );
+}
+
+/// Re-recording a result for the same id prints a SUPERSEDE advisory (naming the prior
+/// result's log position) - the record still lands (results are last-write-wins).
+#[test]
+fn result_prints_a_supersede_advisory_when_a_result_already_exists() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+
+    let (_out, _err, ok) = run_rigger(root, &["result", "u/implementer#0", "first"]);
+    assert!(ok, "the first record must succeed");
+
+    let (out, err, ok) = run_rigger(root, &["result", "u/implementer#0", "second"]);
+    assert!(
+        ok,
+        "the superseding record must succeed (advisory only); stderr: {err}"
+    );
+    assert!(
+        err.contains("already has a recorded result at position") && err.contains("supersedes"),
+        "result must advise that it supersedes the prior result; got: {err:?}"
+    );
+    assert!(
+        out.contains("recorded result for u/implementer#0"),
+        "the superseding result must still be recorded; got: {out:?}"
     );
 }
 
