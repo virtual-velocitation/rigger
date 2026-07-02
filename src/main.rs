@@ -1857,24 +1857,25 @@ mod tests {
             .join("\n")
     }
 
-    /// The workflow labels its progress phases PER UNIT so the `/workflows` display matches
-    /// per-unit execution (each unit runs its whole Build -> Review -> Integrate lifecycle
-    /// before the next starts) instead of implying a false global "all units Build, then all
-    /// Review" order. Because `meta` MUST be a pure literal (statically extracted by the
-    /// Workflow runtime, so no computed values / no interpolation) and unit ids are only
-    /// known at runtime, the per-unit labels live in the runtime `opts.phase` progress-group
-    /// strings inside `buildUnit`, while `meta.phases` keeps the fixed stage set. This test
-    /// pins all four facts so a future edit cannot silently regress any of them.
+    /// The native `/rigger` workflow is a THIN driver over the Rust conductor: it couriers
+    /// each frontier via `rigger step`, spawns the returned wave natively in parallel with a
+    /// per-unit `opts.phase` label built from the wave item, lets each worker self-report via
+    /// `rigger result`, records a dead worker's failure on its behalf via `rigger result
+    /// --error`, and loops until the step reports `done`. Because `meta` MUST be a pure literal
+    /// (statically extracted by the Workflow runtime - no computed values / no interpolation)
+    /// and unit ids are only known at runtime, the per-unit labels live in the runtime
+    /// `opts.phase` strings while `meta.phases` keeps the fixed stage set. This test pins the
+    /// thin-driver contract so a future edit cannot silently regress it; it supersedes the
+    /// fat-workflow `buildUnit`/`PH` structure this workflow replaced.
     #[test]
-    fn workflow_labels_phases_per_unit_and_keeps_meta_a_pure_literal() {
+    fn workflow_is_a_thin_courier_driver_with_per_unit_phase_labels() {
         let wf = RIGGER_WORKFLOW;
-        // Assertions about the executable code run against comment-stripped source so the
-        // workflow's own documentation prose (which references the removed marker) cannot
-        // trip them; assertions about the meta literal run against the raw object body.
+        // Code assertions run against comment-stripped source so the workflow's own prose
+        // (which documents the removed fat-workflow constructs) cannot trip them; the meta
+        // assertions run against the raw literal object body.
         let code = strip_line_comments(wf);
 
-        // 1. meta.phases keeps the FIXED stage set (Plan stays as is; Build/Review/Integrate
-        //    are the stable up-front stage names, not per-unit titles).
+        // 1. meta.phases keeps the FIXED stage set as a pure up-front literal.
         let meta = meta_object_body(wf);
         for stage in ["Plan", "Build", "Review", "Integrate"] {
             assert!(
@@ -1883,59 +1884,80 @@ mod tests {
             );
         }
 
-        // 2. meta stays a PURE LITERAL: no template-literal interpolation anywhere in the
-        //    object body. Per-unit unit ids (only known at runtime) must NOT leak into meta;
-        //    if they did, meta could no longer be statically extracted by the runtime.
+        // 2. meta stays a PURE LITERAL: no interpolation / computed values anywhere in the
+        //    object body, so the runtime can statically extract it before the body runs.
+        //    Runtime per-unit ids must never leak into meta.
         assert!(
             !meta.contains("${"),
             "meta must be a pure literal - no `${{...}}` interpolation or computed values \
              (found interpolation inside the meta object body): {meta}"
         );
+
+        // 3. The driver COURIERS the wave via `rigger step` - it does not decompose or
+        //    orchestrate the DAG itself (that lives in the conductor behind the step) - and
+        //    loops on the `{wave, done}` shape the step prints.
         assert!(
-            !meta.contains("u<id>:'") && !meta.contains("`u"),
-            "meta.phases must not carry runtime per-unit phase titles - those belong in \
-             opts.phase inside buildUnit"
+            code.contains("rigger step"),
+            "the thin driver must fetch each wave by having a courier run `rigger step`"
+        );
+        assert!(
+            code.contains("step.wave") && code.contains("step.done"),
+            "the driver must read the wave and loop until the step reports done"
         );
 
-        // 3. Per-unit progress groups are produced at runtime via a PH helper that suffixes
-        //    each fixed stage with the unit id, and every per-unit agent uses it.
+        // 4. It SPAWNS the wave natively in parallel, one agent per wave item.
         assert!(
-            code.contains("const PH = (stage) => `u${unit.id}:${stage}`"),
-            "buildUnit must define the per-unit PH(stage) => `u<id>:<stage>` progress-group helper"
+            code.contains("parallel(") && code.contains("wave.map("),
+            "the driver must spawn the wave's agents natively in parallel"
         );
+
+        // 5. Per-unit progress groups are produced at runtime from the WAVE ITEM (unit +
+        //    stage), per the spawn::SpawnRequest contract, and every worker is labelled with it.
+        assert!(
+            code.contains("function phaseOf(req)") && code.contains("`${req.unit}:${req.stage}`"),
+            "the driver must build each worker's opts.phase label from the wave item's unit + stage"
+        );
+        assert!(
+            code.contains("phase: ph"),
+            "each spawned worker must label its progress group with the per-unit phase"
+        );
+        // No bare global lifecycle phase markers: Build/Review/Integrate are per-unit (inside
+        // the conductor) now, so a global marker would re-imply a false "all units build, then
+        // all review" order.
         for stage in ["Build", "Review", "Integrate"] {
             assert!(
-                code.contains(&format!("phase: PH('{stage}')")),
-                "the per-unit agents must label their progress group via PH('{stage}')"
+                !code.contains(&format!("phase('{stage}')")),
+                "the global phase('{stage}') marker must not exist - {stage} is per-unit now"
             );
-        }
-        // The bare stage strings must no longer appear as opts.phase for the per-unit agents.
-        for stage in ["Build", "Review", "Integrate"] {
             assert!(
                 !code.contains(&format!("phase: '{stage}'")),
-                "no per-unit agent may use the bare global `phase: '{stage}'` - that would \
-                 collapse every unit into one global progress group and imply a false order"
+                "no agent may use the bare global `phase: '{stage}'` opts - that would collapse \
+                 every unit into one global progress group"
             );
         }
-
-        // 4. Only Plan remains a genuine global phase marker; the global `phase('Build')`
-        //    marker is removed (its per-unit opts.phase strings replace it). Plan stays as is.
+        // Only Plan remains a genuine global phase marker (the orchestration/courier pass).
         assert!(
             code.contains("phase('Plan')"),
             "the single global Plan pass must keep its phase('Plan') marker"
         );
+
+        // 6. Workers SELF-REPORT via `rigger result <id>`, and a worker that DIES without
+        //    reporting has its failure recorded on its behalf via `rigger result <id> --error`
+        //    from the `agent()`-rejected (catch) branch.
         assert!(
-            !code.contains("phase('Build')"),
-            "the global phase('Build') marker must be removed - Build is per-unit now, driven \
-             by each unit's opts.phase, so a global marker would re-imply a false global order"
+            code.contains("rigger result ${req.id}"),
+            "each worker must be told to self-report its result via `rigger result <id>`"
         );
-        // Plan's own agents legitimately keep the literal `phase: 'Plan'` opts (Plan stays as is).
         assert!(
-            code.contains("phase: 'Plan'"),
-            "the Plan-phase agents must keep their literal phase: 'Plan' opts"
+            code.contains("rigger result ${req.id} --error"),
+            "a dead worker's failure must be recorded on its behalf via `rigger result <id> --error`"
+        );
+        assert!(
+            code.contains("catch") && code.contains("report-death:"),
+            "a worker that dies (its agent() rejects) must be caught and its failure couriered"
         );
 
-        // 5. The workflow still parses: run `node --check` when node is on PATH (never a
+        // 7. The workflow still parses: run `node --check` when node is on PATH (never a
         //    silent skip - assert the clear reason when it is not available).
         let node = std::env::var("RIGGER_NODE").unwrap_or_else(|_| "node".to_string());
         let mut f = tempfile::NamedTempFile::new().unwrap();
