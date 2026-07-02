@@ -135,6 +135,16 @@ Dogfooding. Rigger ran on its own spec; the run's telemetry (`rigger stats`, `ri
 - (c) **Lifecycle: the loop cleans up after itself.** DONE out-of-band, same patch: every `rigger step` starts with `worktree::sweep_terminal` - prune stale registrations, remove scratch-root worktrees whose branch is an ancestor of the run branch (integrated units, review scaffolding); in-flight checkpoints untouched. Bounding unit test scratch to the worktree REMAINS for the loop.
 - (d) **Residue is surfaced.** `rigger validate` reports scratch-root residue (worktrees with no live unit, orphaned build caches) with sizes, so accumulation is a warning, never a full disk. REMAINS for the loop.
 
+## Gap 15: prompt assembly accumulates every prior verdict verbatim, without bound
+
+**Intent.** Grounding scopes each agent to "exactly the code it needs" plus the peer decisions that govern its blast radius - a SLICE, by design.
+
+**Reality.** The decisions-that-govern injection concatenates every prior adjudicator/adversary verdict verbatim into every subsequent prompt for the same files. By review round 4 of the spec-05 run, single prompts reached 280KB and an 11-item wave totaled 2.2MB - degrading agent focus, inflating cost, and (before waves went by-reference) exceeding what any relay could carry.
+
+**Evidence.** Run `wf_b9651f0b-dec`: the step courier measured the wave at 2,256,482 bytes, prompts 103-281KB each, and traced the growth to verbatim-quoted historical verdicts.
+
+**Fix shape.** Cap and curate the injection: most-recent-N verdicts per file plus a one-line summary of older ones (the store keeps the full history; the prompt does not need it), and a hard per-prompt context budget with the trim reported in the prompt itself ("k older decisions elided - `rigger peers <file>` for the rest"). The spawn-by-reference wave (operator fix, same day) removed the RELAY bottleneck; this gap is the GROWTH itself. Conductor-hardening family (Gaps 11-15).
+
 ---
 
 ## Closed

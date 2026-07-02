@@ -246,6 +246,7 @@ fn main() {
         "run" => cmd_run(&args[2..]),
         "step" => cmd_step(&args[2..]),
         "reported" => cmd_reported(&args[2..]),
+        "prompt" => cmd_prompt(&args[2..]),
         "serve" => cmd_serve(&args[2..]),
         "workflow" => cmd_workflow(&args[2..]),
         "graph" => cmd_graph(&args[2..]),
@@ -330,6 +331,9 @@ rigger reported <id>        exit 0 iff spawn <id> already has a recorded result 
 this project's run stream (else non-zero). The read half of\n                              \
 the thin driver's check-then-record death-report guard, so a\n                              \
 worker that self-reported is never clobbered by an --error\n  \
+rigger prompt <id>          print the parked spawn's full prompt (persona + task).\n                              \
+The step wave is a slim manifest; each worker fetches its\n                              \
+own prompt from the log by spawn id (spawn-by-reference)\n  \
 rigger workflow [spec]      turn-key: launch the per-project Node driver, which\n                              \
 spawns `rigger serve`, runs each agent via the Agent\n                              \
 SDK, and drives the loop (one command; run `rigger\n                              \
@@ -510,6 +514,28 @@ fn cmd_step(args: &[String]) -> Res {
 /// exact stream, boundary, and projection the replay driver uses to decide answer-vs-park,
 /// so this check agrees with the conductor by construction. The namespace-scoped read and
 /// its absent/unreported edges live in the testable [`result_of_at`] seam.
+/// `rigger prompt <spawn-id>` - print the parked spawn's full prompt (persona + task)
+/// on stdout. The thin driver's waves are SLIM manifests (spawn-by-reference): a
+/// review-round prompt can run to hundreds of kilobytes, which cannot survive a
+/// model-relayed structured output verbatim, so the worker fetches its own prompt
+/// straight from the log. Same stream/namespace composition as `rigger reported`.
+fn cmd_prompt(args: &[String]) -> Res {
+    let id = match args {
+        [id] => id.as_str(),
+        _ => return Err("prompt: expected exactly one spawn id: rigger prompt <id>".into()),
+    };
+    let backend = Store::open(&db_path("events.db"))?;
+    let store = Namespaced::new(&backend, &project_identity());
+    let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+    match spawn::prompt_for(&events, id).map_err(|e| e.to_string())? {
+        Some(p) => {
+            println!("{p}");
+            Ok(())
+        }
+        None => Err(format!("prompt: no spawn request recorded for {id:?}").into()),
+    }
+}
+
 fn cmd_reported(args: &[String]) -> Res {
     let id = match args {
         [id] => id.as_str(),

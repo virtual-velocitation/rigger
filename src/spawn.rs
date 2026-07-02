@@ -343,21 +343,56 @@ pub fn result_of(events: &[Event], id: &str) -> Result<Option<SpawnResult>, serd
     Ok(found)
 }
 
+/// One wave entry as `rigger step` prints it: the SLIM manifest of a parked spawn -
+/// everything the thin driver needs to LAUNCH the agent (identity, placement, model),
+/// and nothing it doesn't. The prompt and persona are deliberately ABSENT: they can be
+/// hundreds of kilobytes each (a review-round's accumulated context), and the wave
+/// transits a model-relayed structured output where megabyte payloads cannot survive
+/// verbatim. The worker fetches its own prompt from the log by spawn id
+/// (`rigger prompt <id>`) - the store is the channel, the wave is a reference.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct WaveItem {
+    pub id: String,
+    pub unit: String,
+    pub stage: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub model: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<String>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub dir: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub blast_radius: Vec<String>,
+}
+
+impl From<&SpawnRequest> for WaveItem {
+    fn from(req: &SpawnRequest) -> Self {
+        WaveItem {
+            id: req.id.clone(),
+            unit: req.unit.clone(),
+            stage: req.stage.clone(),
+            model: req.model.clone(),
+            tools: req.tools.clone(),
+            dir: req.dir.clone(),
+            blast_radius: req.blast_radius.clone(),
+        }
+    }
+}
+
 /// The outcome of one `rigger step`: the WAVE of spawns it newly parked, and whether
 /// the run has reached a fixpoint.
 ///
 /// This is exactly what `rigger step` prints as one line of JSON on stdout - the shape
 /// the thin native driver reads to spawn the wave's agents in parallel and to decide
-/// whether to loop again (§4, spec 04). `wave` serializes as an array of
-/// [`SpawnRequest`] (each with everything the driver needs to run the agent); `done` is
-/// a plain bool.
+/// whether to loop again (§4, spec 04). `wave` serializes as an array of [`WaveItem`]
+/// (slim manifests; workers fetch their own prompts via `rigger prompt <id>`); `done`
+/// is a plain bool.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Step {
-    /// The spawns this step NEWLY parked at the frontier - the wave the driver runs
-    /// now. Two ready units with disjoint blast radii park their spawns in the same
-    /// wave, so fan-out falls out of the run structure. Ordered deterministically by
-    /// [`spawn_id`].
-    pub wave: Vec<SpawnRequest>,
+    /// The pending frontier the driver runs now, as slim manifests. Two ready units
+    /// with disjoint blast radii park their spawns in the same wave, so fan-out falls
+    /// out of the run structure. Ordered deterministically by [`spawn_id`].
+    pub wave: Vec<WaveItem>,
     /// True when the run reached a fixpoint: every recorded spawn request already has a
     /// [`SpawnResult`], so the conductor replayed the whole log and parked nothing that
     /// still awaits a courier (all units integrated, or the run terminated). Another
@@ -395,10 +430,25 @@ pub fn step_result(events: &[Event]) -> Result<Step, serde_json::Error> {
     let wave = recorded
         .values()
         .filter(|req| !answered.contains(&req.id))
-        .cloned()
+        .map(WaveItem::from)
         .collect();
     let done = recorded.keys().all(|id| answered.contains(id));
     Ok(Step { wave, done })
+}
+
+/// The full prompt a worker fetches for its parked spawn: the persona (when the spawn
+/// carries one) followed by the task, separated by a `---` line - exactly what the
+/// thin driver used to inline into the worker's agent prompt before waves went
+/// by-reference. `None` when no spawn request with this id is recorded.
+pub fn prompt_for(events: &[Event], id: &str) -> Result<Option<String>, serde_json::Error> {
+    let recorded = recorded(events)?;
+    Ok(recorded.get(id).map(|req| {
+        if req.system_prompt.is_empty() {
+            req.prompt.clone()
+        } else {
+            format!("{}\n\n---\n\n{}", req.system_prompt, req.prompt)
+        }
+    }))
 }
 
 #[cfg(test)]
@@ -749,5 +799,30 @@ mod tests {
         assert_eq!(obj["wave"].as_array().unwrap().len(), 1);
         assert_eq!(obj["wave"][0]["id"], "u/implementer#0");
         assert_eq!(obj["done"], serde_json::json!(false));
+        // Spawn-by-reference: the wave is a SLIM manifest - the prompt and persona
+        // never transit the courier relay (they can be hundreds of KB; the worker
+        // fetches them from the log via `rigger prompt <id>` / spawn::prompt_for).
+        assert!(
+            obj["wave"][0].get("prompt").is_none() && obj["wave"][0].get("system_prompt").is_none(),
+            "wave items must not carry the prompt or persona"
+        );
+    }
+
+    #[test]
+    fn prompt_for_returns_persona_and_task_by_spawn_id() {
+        let store = Store::open(":memory:").unwrap();
+        let mut req = SpawnRequest::new("u", "implement", ROLE_IMPLEMENTER, 0, "do the task");
+        req.system_prompt = "you are the implementer".into();
+        park(&store, &req).unwrap();
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert_eq!(
+            prompt_for(&events, &req.id).unwrap().unwrap(),
+            "you are the implementer\n\n---\n\ndo the task",
+            "persona above a --- line, then the task"
+        );
+        assert!(
+            prompt_for(&events, "nope/implementer#0").unwrap().is_none(),
+            "an unknown id yields None"
+        );
     }
 }

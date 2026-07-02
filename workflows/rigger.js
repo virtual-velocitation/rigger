@@ -82,6 +82,10 @@ const BASEFLAG = A.base ? ` --base ${A.base}` : ''
 // invents a side-channel (a file reference, a summary field) fails validation and is
 // retried, instead of smuggling an empty wave past the driver. Wave ITEMS stay open
 // (additionalProperties: true) for forward-compat with new SpawnRequest fields.
+// Wave items are SLIM MANIFESTS (spawn-by-reference): identity, placement, and model
+// only - never the prompt. A review-round prompt can run to hundreds of kilobytes and
+// a wave to megabytes, which cannot survive a model-relayed structured output
+// verbatim; each worker fetches its own prompt from the log with `rigger prompt <id>`.
 const STEP = {
   type: 'object',
   additionalProperties: false,
@@ -92,13 +96,11 @@ const STEP = {
       items: {
         type: 'object',
         additionalProperties: true,
-        required: ['id', 'unit', 'stage', 'prompt'],
+        required: ['id', 'unit', 'stage'],
         properties: {
           id: { type: 'string' },
           unit: { type: 'string' },
           stage: { type: 'string' },
-          prompt: { type: 'string' },
-          system_prompt: { type: 'string' },
           model: { type: 'string' },
           dir: { type: 'string' },
           tools: { type: 'array', items: { type: 'string' } },
@@ -135,12 +137,14 @@ function phaseOf(req) {
 // wave drains rather than swallowing the failure (which would hang the run on resume).
 async function runWorker(req, fatal) {
   const ph = phaseOf(req)
-  const persona = req.system_prompt ? `${req.system_prompt}\n\n---\n\n` : ''
   const workdir = req.dir
     ? `Do all your file edits, cargo, and any git commit inside your isolated worktree ${req.dir} (the conductor assigned it and owns its lifecycle; run \`rigger ...\` commands from ${REPO}).`
     : `Work in ${REPO}.`
   const prompt =
-    `${persona}${req.prompt}\n\n` +
+    `You are the rigger worker for spawn ${req.id} (unit ${req.unit}). ` +
+    `Your persona and full task are recorded in the run log - FETCH THEM FIRST by running, from ${REPO}, using Bash:\n` +
+    `  cd ${REPO} && rigger prompt '${req.id}'\n` +
+    `Everything it prints (a persona above a \`---\` line when present, then the task) IS your assignment - follow it as if it were this message. Then:\n\n` +
     `--- rigger driver instructions ---\n` +
     `${workdir}\n` +
     `The rigger context tools your task refers to (rigger_emit, rigger_peers) are available here as the CLI commands \`rigger emit <Type> '<json>'\` and \`rigger peers <file>...\`, run from ${REPO}.\n` +
