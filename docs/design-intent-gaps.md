@@ -90,6 +90,16 @@ Dogfooding. Rigger ran on its own spec; the run's telemetry (`rigger stats`, `ri
 
 **Fix shape.** Byran disposition: inspect each (`git log main..<branch>`) and delete or PR what remains. Then close the class - the loop records branch creation in the event log, so a `rigger validate` (or `stats`) check can list local branches with no corresponding open unit and flag them as residue.
 
+## Gap 11: the run stream is not run-scoped, so a new run resurrects history's zombies
+
+**Intent.** A run folds ITS OWN events into state; prior runs' history informs memory (decisions, findings) but never becomes live work.
+
+**Reality.** The conductor folds the entire per-project `run` stream as one continuous run. The first stepwise run over the accumulated stream (spec 05, run `wf_a27a741f-767`) parked implementers for `u-autoresume` and `u-metrics-mod` - non-terminal residue of aborted pre-stepwise runs - alongside the spec's real units, and `rigger stats` reports all-time aggregates (35 units) as if they were one run.
+
+**Evidence.** Run B wave 1 contained 12 spawns: 10 spec-05 units plus the two zombies (one at attempt #2, inherited from its original run). Operator disposition: `UnitEscalated` + `rigger result --error` for both (positions 575-579).
+
+**Fix shape.** Scope the fold: a `RunStarted` event carrying a run id, unit events stamped with it, and the conductor folding only the current run's slice (prior-run units visible as history, never as ready work). `rigger stats` gains a per-run view. The workaround until then: terminal-escalate stray units by hand at run start - exactly what should never require a human.
+
 ---
 
 ## Closed
