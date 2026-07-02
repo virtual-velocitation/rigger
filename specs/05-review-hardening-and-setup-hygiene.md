@@ -33,6 +33,12 @@ Four residual gaps after spec 04:
 - When `rigger setup` scaffolds default agents (the empty-repo path only), it prints a pointer to the agency-agents collection and the handbook's authoring-agents chapter as the way to grow past the scaffold.
 - `rigger setup --agents <dir>` imports agent definition files from a local directory (a checkout of any collection): copies each `.md` into `.rigger/agents/`, normalizes the identity frontmatter field to Rigger's `id:`, refuses to overwrite an existing agent file, and runs the same validation `rigger validate` applies. No network access in setup; the user clones the collection themselves.
 
+**Store-open and courier hardening (from result-cmd's post-run review).** The review of the remediated result-cmd unit produced four non-blocking findings the adjudicator dispatched here (see ReviewVerdict `adj-result-cmd-remediation`):
+
+- The shared store-open seam (`create_dir_all(RIGGER_DIR)` + cwd-relative `db_path`, mirrored by `cmd_result`, `cmd_emit`, and other commands) silently fabricates a fresh `.rigger/events.db` when run from the wrong cwd - most plausibly a unit worktree - printing success while the real spawn stays parked. Harden it once for all commands: when the cwd has no existing `.rigger` store, refuse (or walk up to the repo root) instead of fabricating.
+- `rigger result` does one cheap pre-write read of the stream and prints a stderr advisory when the id matches no recorded spawn request (orphan result) or supersedes an existing result at position N. Advisory only - pre-recording stays legitimate.
+- `rigger result --if-absent` records atomically only when no result exists for the id (one transaction), and the thin driver's death courier uses it in place of the two-process `rigger reported <id> ||` guard, closing the TOCTOU window that could clobber a self-report landing in the gap.
+
 ## Global constraints
 
 - Hyphens, not em dashes, in every file this spec touches (the style gate this spec adds must itself pass on this spec's own units).
@@ -49,3 +55,5 @@ Four residual gaps after spec 04:
 - [ ] `rigger validate` warns on installed-vs-embedded workflow drift and flags tracked `.rigger/` files with uncommitted modifications
 - [ ] the four stray scaffolded agent duplicates under `.rigger/agents/` are removed from the working tree and cannot be re-scaffolded by a rerun of setup on this repo
 - [ ] `rigger setup --agents <dir>` imports agent `.md` files from a local directory into `.rigger/agents/` (normalizing the identity field to `id:`, never overwriting an existing agent, validating the result), and the empty-repo scaffold path prints a pointer to the agency-agents collection and the authoring-agents handbook chapter
+- [ ] store-opening commands refuse (or walk up) instead of fabricating a fresh `.rigger/events.db` when run from a cwd with no existing store, and `rigger result` prints stderr advisories for an orphan id and for superseding an existing result
+- [ ] `rigger result --if-absent` records atomically only when the id has no result, and the thin driver's death courier uses it instead of the two-process `rigger reported ||` guard
