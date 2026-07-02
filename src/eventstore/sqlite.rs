@@ -9,7 +9,7 @@ use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, TransactionBehavior};
 
 use super::{
     Direction, Error, Event, EventStore, ExpectedRevision, Filter, Position, Revision,
@@ -106,7 +106,21 @@ impl EventStore for Store {
         events: &[Event],
     ) -> Result<Position, Error> {
         let mut guard = self.conn.lock().unwrap();
-        let tx = guard.transaction().map_err(be)?;
+        // BEGIN IMMEDIATE, not the default BEGIN DEFERRED: acquire the write lock up
+        // front so a second connection (a separate process - the death courier racing
+        // the worker's self-report) QUEUES on `busy_timeout` instead of starting a read
+        // snapshot it must later upgrade. A deferred read->write upgrade under WAL with a
+        // concurrent writer cannot be resolved by the busy handler (SQLITE_BUSY_SNAPSHOT)
+        // and surfaces as a hard `database is locked` backend error; taking the write lock
+        // immediately makes concurrent appenders serialize cleanly, so a stale expectation
+        // surfaces as the port's `Error::Conflict` (which callers retry) and never as a
+        // spurious lock error. This is what the module header promises ("concurrent
+        // appenders queue instead of deadlocking on the SQLITE_BUSY class") and what the
+        // optimistic-concurrency contract needs to hold across connections, not just
+        // within one in-process `Store`.
+        let tx = guard
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(be)?;
 
         let count: i64 = tx
             .query_row(
@@ -429,5 +443,75 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].type_, "X");
         assert_eq!(events[0].stream, "run-a");
+    }
+
+    #[test]
+    fn concurrent_cross_connection_appends_serialize_without_spurious_lock_errors() {
+        // Two SEPARATE connections (two `Store` handles on one on-disk db - the
+        // two-process shape of the death courier racing a worker's self-report) append
+        // to the SAME stream at once, with NO shared in-process mutex to serialize them.
+        // Under the default BEGIN DEFERRED a read->write upgrade with a concurrent writer
+        // under WAL cannot be resolved by `busy_timeout` (SQLITE_BUSY_SNAPSHOT) and
+        // surfaces as a hard `database is locked` backend error the optimistic layer
+        // cannot retry. BEGIN IMMEDIATE takes the write lock up front, so the appenders
+        // QUEUE and every write lands - which is what the module header promises and what
+        // record_result_if_absent's compare-and-append relies on across connections. The
+        // in-process contract test (`concurrent_appends_to_distinct_streams...`) cannot
+        // reach this: its single `Mutex<Connection>` serializes the appends so they never
+        // contend at the sqlite layer.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("run.db");
+        let path = path.to_str().unwrap().to_string();
+
+        // Open both connections up front (serialized) so we race only the appends.
+        let a = Arc::new(Store::open(&path).unwrap());
+        let b = Arc::new(Store::open(&path).unwrap());
+
+        const ROUNDS: usize = 40;
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+
+        let spawn_writer = |s: Arc<Store>, bar: Arc<std::sync::Barrier>| {
+            std::thread::spawn(move || {
+                let mut hard_errs = 0usize;
+                for _ in 0..ROUNDS {
+                    bar.wait();
+                    match s.append(
+                        "run",
+                        ExpectedRevision::Any,
+                        &[Event::new("R", b"x".to_vec())],
+                    ) {
+                        Ok(_) => {}
+                        // A stale-expectation conflict is a legitimate optimistic outcome;
+                        // a lock error is the regression this test guards against.
+                        Err(Error::Conflict { .. }) => {}
+                        Err(_) => hard_errs += 1,
+                    }
+                }
+                hard_errs
+            })
+        };
+
+        let ha = spawn_writer(a.clone(), barrier.clone());
+        let hb = spawn_writer(b.clone(), barrier.clone());
+        let hard_errs = ha.join().unwrap() + hb.join().unwrap();
+        assert_eq!(
+            hard_errs, 0,
+            "concurrent cross-connection appends must queue, never hard-fail with a lock error"
+        );
+
+        // Every one of the 2 * ROUNDS appends is durably recorded, with contiguous,
+        // unique per-stream revisions - no lost write, no gap, no duplicated revision.
+        let events = a.read_stream("run", 0, Direction::Forward).unwrap();
+        assert_eq!(
+            events.len(),
+            2 * ROUNDS,
+            "every concurrent append must be durably recorded"
+        );
+        let revs: Vec<Revision> = events.iter().map(|e| e.revision).collect();
+        let expected: Vec<Revision> = (0..2 * ROUNDS as Revision).collect();
+        assert_eq!(
+            revs, expected,
+            "per-stream revisions must stay contiguous and unique under concurrency"
+        );
     }
 }
