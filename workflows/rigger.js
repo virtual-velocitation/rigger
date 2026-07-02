@@ -1,34 +1,59 @@
-// meta MUST be a pure literal: the Workflow runtime extracts it statically (before
-// the workflow body ever runs), so it cannot contain computed values or interpolation.
-// That is why meta.phases stays the FIXED stage set below and does NOT enumerate the
-// per-unit phases (u<id>:Build, u<id>:Review, u<id>:Integrate) - the unit ids come from
-// the planner at runtime and are unknowable at static-extraction time. The per-unit
-// distinction that makes the /workflows display match execution is carried entirely by
-// the runtime `opts.phase` progress-group strings assigned inside buildUnit; meta.phases
-// remains the stable up-front announcement of the stages a unit passes through. See the
-// buildUnit `PH` helper below.
+// The native `/rigger` Claude Code workflow - a THIN client over the Rust conductor.
+//
+// All of the dev-loop's intelligence (decomposing the spec into a unit DAG, ordering
+// the units, the per-unit implement -> cargo gates -> three-tier adversarial review ->
+// integrate lifecycle, and bounded remediation) lives in the Rust conductor and is
+// delivered one frontier at a time by `rigger step`. This script does NOT re-implement
+// any of it. It only:
+//   1. COURIERS a step: an agent runs `cd <repo> && rigger step` and returns the one
+//      line of JSON it prints - `{"wave":[<SpawnRequest>...],"done":<bool>}` - the wave
+//      the conductor newly parked plus whether the run has reached a fixpoint.
+//   2. SPAWNS the wave natively in parallel: one `agent()` per SpawnRequest, each in its
+//      own per-unit `opts.phase` progress group so the /workflows display groups a unit's
+//      agents together. Two ready units with disjoint blast radii share a wave, so
+//      fan-out falls straight out of the conductor's partition - the driver just runs it.
+//   3. Lets each worker SELF-REPORT via `rigger result <id> ...`, which is exactly what
+//      the next `rigger step` replays past to advance the run. A worker that DIES without
+//      reporting (its `agent()` rejects: max turns, a crash) has its failure recorded on
+//      its behalf by a courier agent - but GUARDED as check-then-record: the courier runs
+//      `rigger reported <id> || rigger result <id> --error <why>`, so the `--error` is
+//      written ONLY when the spawn has no result yet. A worker (or a reviewer that already
+//      emitted an approve verdict) that self-reported and THEN ran on to max-turns must not
+//      have its result clobbered - `rigger result` is last-write-wins - so the guard honors
+//      the "dies WITHOUT reporting" clause while still guaranteeing every parked spawn ends
+//      with a result and the run can never hang.
+//   4. LOOPS until a step reports `done`. Every anomalous exit - a courier agent that itself
+//      dies, `rigger step` failing, a failure that could not be recorded, or a stall - stops
+//      the loop LOUDLY (throws with a clear message) rather than aborting mid-agent or being
+//      reported as a clean completion; only a real fixpoint resolves the workflow.
+//
+// rigger's shared context store lives in <repo>/.rigger; every `rigger ...` command runs
+// in REPO. Each worker does its code edits, cargo, and commit inside the isolated worktree
+// the conductor assigned it (SpawnRequest.dir); the conductor owns that worktree's
+// lifecycle and the run-branch anchoring (`rigger step` sets up the run branch before it
+// parks anything). `base` (default origin/main) is threaded to `rigger step --base`: it is
+// the ref the run branch is created FROM the first time it does not exist (falling back to
+// HEAD if unresolvable); an existing run branch is reused, never reset.
+
+// meta MUST be a pure literal: the Workflow runtime extracts it statically (before the
+// workflow body ever runs), so it cannot contain computed values or interpolation. Unit
+// ids come from the conductor at RUNTIME and are unknowable at static-extraction time, so
+// meta.phases names only the FIXED lifecycle stages a unit passes through; the per-unit
+// distinction that makes the /workflows display match execution is carried entirely by the
+// runtime `opts.phase` strings the driver builds from each wave item (see `phaseOf` below).
 export const meta = {
   name: 'rigger',
   description:
-    'The rigger dev-loop as a native workflow: decompose a spec into a unit DAG, then for each unit implement -> cargo gates -> three-tier adversarial review -> integrate, with bounded remediation. Agents are grounded via `rigger ground`; decisions and review findings persist in the shared context graph via `rigger emit` and are read back via `rigger peers`. Build/Review/Integrate run PER UNIT (a unit is fully integrated before the next starts); the /workflows progress groups are labelled per unit (u<id>:Build, ...) at runtime via opts.phase - meta.phases can only name the fixed stages because it must be a static literal.',
+    'The rigger dev-loop as a native workflow, driven THINLY: a courier agent advances the Rust conductor one frontier via `rigger step`, the script spawns the returned wave of agents natively in parallel (each grounded, personified, and worktree-isolated by the conductor), every worker self-reports via `rigger result`, a worker that dies without reporting has its failure recorded on its behalf, and the loop repeats until done. All decomposition, per-unit implement -> cargo gates -> three-tier adversarial review -> integrate, and bounded remediation live in the conductor; the /workflows progress groups are labelled per unit (`<unit>:<stage>`) at runtime via opts.phase, and meta.phases names only the fixed stages because it must be a static literal.',
   phases: [
-    { title: 'Plan', detail: 'decompose the spec into a unit DAG (one global pass)' },
-    { title: 'Build', detail: 'per-unit implement + cargo gates; runs as opts.phase "u<id>:Build" per unit' },
-    { title: 'Review', detail: 'per-unit three-tier adversarial review (lenses, adversary, adjudicator); runs as "u<id>:Review"' },
-    { title: 'Integrate', detail: 'per-unit merge of the approved unit onto the run branch; runs as "u<id>:Integrate"' },
+    { title: 'Plan', detail: 'the conductor sets up the run branch and decomposes the spec into a unit DAG on the first `rigger step` (one global pass)' },
+    { title: 'Build', detail: 'per-unit implement + cargo gates; the conductor parks the implementer, the driver spawns it under opts.phase "<unit>:<stage>"' },
+    { title: 'Review', detail: 'per-unit three-tier adversarial review (lenses, adversary, adjudicator); the conductor parks each reviewer, the driver spawns it under "<unit>:<stage>"' },
+    { title: 'Integrate', detail: 'per-unit merge of the approved unit onto the run branch; the conductor does the merge when a unit passes review' },
   ],
 }
 
-// args: a spec path string, or { repo, spec, maxRetries, base }.
-// rigger's shared context store lives in <repo>/.rigger - every `rigger ...` command and the
-// run-branch git run in REPO; code edits, cargo gates, and the per-unit commit run in the worktree.
-// The grounding index is reindexed only AFTER a unit merges into REPO (in the Integrate step),
-// never from the pre-merge worktree, so it never embeds stale (unmerged) code.
-// `base` (default origin/main) is the ref the run branch is created FROM when it does not exist
-// yet; if base is unresolvable the run branch is created off HEAD. An EXISTING run branch is
-// REUSED, never reset, so a re-invoked/resumed run continues from (builds on) its accumulated
-// work instead of orphaning already-integrated units. This mirrors `rigger step --base`
-// (Worktree::ensure_run_branch): same reuse-else-create-off-base-else-create-off-HEAD contract.
+// args: a spec path string, or { repo, spec, base }.
 let A = args
 if (typeof A === 'string') {
   try {
@@ -40,107 +65,208 @@ if (typeof A === 'string') {
 A = A || {}
 const REPO = A.repo || '.'
 const SPEC = A.spec || 'spec.md'
-const MAX = A.maxRetries || 6
-const RUN = 'rigger-run'
 const BASE = A.base || 'origin/main'
-const LENSES = [
-  'technical correctness: it compiles, the logic is right, errors are handled, the tests genuinely exercise the behavior, idiomatic Rust',
-  'clean architecture: one mutation authority per domain, correct dependency direction, DRY (no duplicated literals or contracts), no new parallel abstraction where one already exists',
-]
 
-const PLAN = { type: 'object', additionalProperties: false, required: ['units'], properties: { units: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['id', 'criterion'], properties: { id: { type: 'string' }, criterion: { type: 'string' }, files: { type: 'array', items: { type: 'string' } } } } } } }
-const IMPL = { type: 'object', additionalProperties: false, required: ['summary', 'files'], properties: { summary: { type: 'string' }, files: { type: 'array', items: { type: 'string' } } } }
-const GATE = { type: 'object', additionalProperties: false, required: ['pass', 'evidence'], properties: { pass: { type: 'boolean' }, evidence: { type: 'string' } } }
-const VERDICT = { type: 'object', additionalProperties: false, required: ['approved', 'reason'], properties: { approved: { type: 'boolean' }, reason: { type: 'string' } } }
+// The JSON shape `rigger step` prints (see spawn::Step / spawn::SpawnRequest): the wave it
+// newly parked and a `done` fixpoint flag. The wave items carry everything the driver needs
+// to spawn each agent. Optional SpawnRequest fields are omitted from the wire when empty, so
+// only id/unit/stage/prompt are required; extra fields are tolerated (additionalProperties).
+// `error` is the courier's own out-of-band channel: if `rigger step` itself fails, the
+// courier reports the message here rather than fabricating a wave.
+const STEP = {
+  type: 'object',
+  additionalProperties: true,
+  required: ['wave', 'done'],
+  properties: {
+    wave: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: true,
+        required: ['id', 'unit', 'stage', 'prompt'],
+        properties: {
+          id: { type: 'string' },
+          unit: { type: 'string' },
+          stage: { type: 'string' },
+          prompt: { type: 'string' },
+          system_prompt: { type: 'string' },
+          model: { type: 'string' },
+          dir: { type: 'string' },
+          tools: { type: 'array', items: { type: 'string' } },
+          blast_radius: { type: 'array', items: { type: 'string' } },
+        },
+      },
+    },
+    done: { type: 'boolean' },
+    error: { type: 'string' },
+  },
+}
 
-phase('Plan')
-await agent(
-  `Prepare the rigger run branch in the repo ${REPO} (use Bash). Run: \`git -C ${REPO} fetch origin 2>/dev/null; git -C ${REPO} worktree prune; rm -rf /tmp/rigger-wf-*; if git -C ${REPO} rev-parse --verify --quiet refs/heads/${RUN}; then git -C ${REPO} checkout ${RUN}; else git -C ${REPO} checkout -B ${RUN} ${BASE} 2>/dev/null || git -C ${REPO} checkout -B ${RUN}; fi\`. This REUSES an existing ${RUN} branch (never resetting it, so a resumed run keeps its already-integrated units), and only when ${RUN} does not exist yet creates it off ${BASE} - falling back to the current HEAD if ${BASE} is unresolvable. Mirrors \`rigger step --base\` (Worktree::ensure_run_branch). Confirm the branch is checked out and the working tree is clean.`,
-  { phase: 'Plan', model: 'sonnet', label: 'setup run branch' },
-)
+// phaseOf builds a worker's per-unit `opts.phase` progress-group label from the wave item,
+// exactly per the documented `unit + stage` contract on spawn::SpawnRequest. The conductor
+// currently sets both to the unit id, so a unit's whole wave (implementer + reviewers)
+// shares one group - which is precisely the grouping we want; if the conductor later
+// distinguishes the stage half, this label refines automatically with no driver change.
+function phaseOf(req) {
+  return `${req.unit}:${req.stage}`
+}
 
-const plan = await agent(
-  `You are the rigger PLANNER for the repo ${REPO}. Read the spec at ${REPO}/${SPEC}. Ground yourself first: \`cd ${REPO} && rigger ground "$(head -1 ${REPO}/${SPEC})"\` and read the surfaced files to understand the existing code. Decompose the spec into a DAG of SMALL, independently-implementable units - ONE per acceptance criterion (the "- [ ]" Done-when lines) - in dependency order, each with a stable short id, the exact criterion text, and the files it touches. Record each unit in the shared store: \`cd ${REPO} && rigger emit UnitProposed '{"id":"<id>","summary":"<criterion>","governs":["<file>"]}'\`.`,
-  { phase: 'Plan', model: 'opus', schema: PLAN, label: 'planner' },
-)
-log(`planner decomposed ${SPEC} into ${plan.units.length} units: ${plan.units.map((u) => u.id).join(', ')}`)
+// runWorker spawns one wave item natively and lets it self-report. The Workflow `agent()`
+// primitive accepts only { phase, model, schema, label }, so everything the cli/serve
+// drivers pass out-of-band (the persona as --system-prompt, the worktree as cwd) must ride
+// in the prompt here. The conductor already ground the task and folded peer decisions into
+// req.prompt; the driver only frames it with the persona, the worktree, the rigger-CLI note
+// (the native Workflow path has no MCP proxy, so the rigger_emit/rigger_peers the prompt
+// references are used as `rigger emit`/`rigger peers` CLI commands), and the self-report
+// contract. If the agent REJECTS, a death courier records the failure on its behalf - but
+// GUARDED (check-then-record) so it never overwrites a result the worker already reported.
+//
+// `fatal` is a shared sink: if the death courier ITSELF dies, we can no longer guarantee a
+// result was recorded for this spawn, so we push it here and the loop stops loudly after the
+// wave drains rather than swallowing the failure (which would hang the run on resume).
+async function runWorker(req, fatal) {
+  const ph = phaseOf(req)
+  const persona = req.system_prompt ? `${req.system_prompt}\n\n---\n\n` : ''
+  const workdir = req.dir
+    ? `Do all your file edits, cargo, and any git commit inside your isolated worktree ${req.dir} (the conductor assigned it and owns its lifecycle; run \`rigger ...\` commands from ${REPO}).`
+    : `Work in ${REPO}.`
+  const prompt =
+    `${persona}${req.prompt}\n\n` +
+    `--- rigger driver instructions ---\n` +
+    `${workdir}\n` +
+    `The rigger context tools your task refers to (rigger_emit, rigger_peers) are available here as the CLI commands \`rigger emit <Type> '<json>'\` and \`rigger peers <file>...\`, run from ${REPO}.\n` +
+    `When you finish, SELF-REPORT your result by running, from ${REPO}:\n` +
+    `  rigger result ${req.id} "<your result: a one-line summary, or your full verdict/findings>"\n` +
+    `(pipe multi-line output via stdin instead, e.g. \`rigger result ${req.id}\` reading a heredoc). ` +
+    `If you cannot complete the task, report the failure instead: \`rigger result ${req.id} --error "<why it failed>"\` (the message must be non-empty). ` +
+    `Reporting your result is mandatory - the run cannot advance past this spawn until you do.`
 
-async function buildUnit(unit) {
-  const WT = `/tmp/rigger-wf-${unit.id}`
-  const BR = `rigger/u/${unit.id}`
-  const files = (unit.files || []).join(' ')
-  // Per-unit progress-group labels for the /workflows display. Each unit runs its whole
-  // Build -> Review -> Integrate lifecycle to completion before the next unit starts (see
-  // the sequential loop below), so labelling the progress groups per unit makes the display
-  // match execution instead of implying a false global "all units Build, then all Review"
-  // order. These are runtime strings (meta.phases, a static literal, cannot carry them) that
-  // still map back to the fixed meta.phases stages via the `<stage>` suffix after the colon.
-  const PH = (stage) => `u${unit.id}:${stage}`
-  let prior = ''
-  for (let a = 1; a <= MAX; a++) {
-    const impl = await agent(
-      `You are the rigger IMPLEMENTER (an expert Rust engineer) for repo ${REPO}. RULES: run every \`rigger ...\` command and the run-branch git from ${REPO} (the shared context store is ${REPO}/.rigger); do your code edits, cargo, and the unit commit inside the worktree ${WT}. Set up your worktree: if attempt ${a} is 1, \`git -C ${REPO} worktree add ${WT} -B ${BR} ${RUN}\`; otherwise reuse ${WT}. Ground: \`cd ${REPO} && rigger ground "${unit.criterion}" && rigger peers ${files}\` (do not silently contradict peers' decisions). ${a === 1 ? `Record the start: \`cd ${REPO} && rigger emit UnitStarted '{"id":"${unit.id}"}'\`.` : ''} Implement the unit FULLY, with tests, in ${WT}: "${unit.criterion}". ${prior} Record each significant design decision the moment you make it: \`cd ${REPO} && rigger emit DecisionMade '{"id":"<short>","summary":"<one line>","governs":["<file>"]}'\`. Then \`cd ${WT} && cargo fmt && git add -A && git commit -m "${unit.id} a${a}"\`. The change now lives on branch ${BR} in the worktree ${WT}, NOT yet in ${REPO} (which is still on ${RUN}), so do NOT reindex here - reindexing ${REPO} now would embed the pre-merge (stale) tree. The shared grounding index is refreshed AFTER the merge lands, in the Integrate step below. Idiomatic Rust, no placeholders, no TODO stubs. Return a one-line summary and the files you changed.`,
-      { phase: PH('Build'), model: 'opus', schema: IMPL, label: `impl:${unit.id} a${a}` },
-    )
-    const gate = await agent(
-      `Run the rigger gates in the worktree and report. \`cd ${WT} && export PATH="$HOME/.cargo/bin:$PATH" && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo build && cargo test\`. Set pass=true ONLY if every command succeeds; otherwise pass=false with a compact evidence summary of the key failing lines (not the whole log).`,
-      { phase: PH('Build'), model: 'sonnet', schema: GATE, label: `gate:${unit.id} a${a}` },
-    )
-    if (!gate.pass) {
-      prior = `Your previous attempt FAILED the gates:\n${gate.evidence}\nFix exactly these and keep everything else green.`
-      log(`${unit.id} a${a}: gates failed`)
-      continue
-    }
-    // tier 1: parallel expert lenses - each grounds, reads peers from the shared store, emits findings to it
-    await parallel(
-      LENSES.map((L, i) => () =>
-        agent(
-          `You are a rigger review LENS - ${L}. Review ONLY the diff for unit ${unit.id}: \`cd ${WT} && git diff ${RUN}...HEAD\`. Criterion: "${unit.criterion}". Read peers from the shared store first so you do not duplicate: \`cd ${REPO} && rigger peers ${files}\`. Record each REAL finding (a genuine defect against your lens, not a style nitpick) to the shared store: \`cd ${REPO} && rigger emit ReviewFinding '{"id":"<short>","summary":"<one line>","about":["<file>"]}'\`. If it is clean through your lens, emit nothing.`,
-          { phase: PH('Review'), model: 'opus', label: `lens${i + 1}:${unit.id}` },
-        ),
-      ),
-    )
-    // tier 2: adversary - reads the lenses' findings, refutes + finds what they missed
-    await agent(
-      `You are the rigger ADVERSARY for unit ${unit.id}. Read the lenses' findings from the shared store: \`cd ${REPO} && rigger peers ${files}\`. Inspect the diff: \`cd ${WT} && git diff ${RUN}...HEAD\` and the surrounding code. Refute any weak or overreaching lens finding, AND find the real defects the lenses MISSED. Record your findings: \`cd ${REPO} && rigger emit ReviewFinding '{"id":"adv-<short>","summary":"<one line>","about":["<file>"]}'\`.`,
-      { phase: PH('Review'), model: 'opus', label: `adversary:${unit.id}` },
-    )
-    // tier 3: adjudicator - reads ALL findings, gates the verdict
-    const verdict = await agent(
-      `You are the rigger ADJUDICATOR - the neutral final judge for unit ${unit.id} (criterion: "${unit.criterion}"). The gates already passed (it builds and tests). Read every finding from the lenses and the adversary: \`cd ${REPO} && rigger peers ${files}\`, and inspect the diff: \`cd ${WT} && git diff ${RUN}...HEAD\`. Weigh them. APPROVE if and only if the code correctly and completely implements the criterion with NO real correctness or architecture defect remaining; a genuine blocker is a REJECT with the specific reason and what must change. Pure style nitpicks are NOT blockers. Record your verdict: \`cd ${REPO} && rigger emit ReviewVerdict '{"id":"adj-${unit.id}-${a}","summary":"<approve or reject>: <reason>","about":["${unit.id}"]}'\`. If you reject, also \`cd ${REPO} && rigger emit UnitFailed '{"id":"${unit.id}","attempt":${a}}'\`.`,
-      { phase: PH('Review'), model: 'opus', schema: VERDICT, label: `adjudicator:${unit.id} a${a}` },
-    )
-    if (verdict.approved) {
+  try {
+    await agent(prompt, { phase: ph, model: req.model || undefined, label: req.id })
+  } catch (e) {
+    // The worker's agent() REJECTED (max turns, a crash, an execution error). That rejection
+    // does NOT prove it died before reporting - a worker (or a reviewer that already emitted
+    // an approve verdict) can self-report and THEN run on to max-turns. So record its failure
+    // ON ITS BEHALF as CHECK-THEN-RECORD: `rigger reported <id>` exits 0 iff the spawn already
+    // has a result, so `... || rigger result <id> --error <why>` writes the failure ONLY when
+    // the worker truly died WITHOUT reporting. `rigger result` is last-write-wins, so an
+    // unconditional --error would CLOBBER a self-reported success/approve and force-fail an
+    // approved unit on the next replay - the guard prevents exactly that while still ensuring
+    // every parked spawn ends with a result (the run can never hang).
+    // The --error message must be non-empty (a blank error would replay AS a success). Neutralize
+    // shell metacharacters (`"`, backtick, `$`, `\`) so it can never break out of - or trigger
+    // substitution inside - the double-quoted --error arg in the courier command.
+    const why = (e && e.message ? e.message : String(e))
+      .replace(/["`$\\]/g, "'")
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 400)
+    const msg = why || 'the worker agent exited without producing a result'
+    log(`worker ${req.id} agent rejected: ${msg.slice(0, 80)} - recording its failure on its behalf IF it has not already reported`)
+    try {
       await agent(
-        `Integrate unit ${unit.id}: \`git -C ${REPO} checkout ${RUN} && git -C ${REPO} merge --no-ff ${BR} -m "integrate ${unit.id}" && git -C ${REPO} worktree remove --force ${WT}\`. The unit's code is now MERGED into ${REPO} on ${RUN}, so pre-warm the shared grounding index against the just-integrated (not pre-merge) tree - this re-embeds only the changed files so the next unit and its review tier ground on the accepted code: \`cd ${REPO} && rigger reindex ${files || '<the repo-relative files this unit changed>'}\` (incremental; a no-op for the grep/nop grounders, and the next \`ground\` auto-freshens anything it misses). Then record it: \`cd ${REPO} && rigger emit UnitIntegrated '{"id":"${unit.id}"}'\`. Confirm ${RUN} now contains the unit and still builds.`,
-        { phase: PH('Integrate'), model: 'sonnet', label: `integrate:${unit.id}` },
+        `You are a rigger COURIER. The worker for spawn ${req.id} died. Record its failure ON ITS BEHALF, but ONLY if it did not already self-report - a result the worker already recorded must NEVER be overwritten. Run EXACTLY this, from ${REPO}, using Bash (ONE command, keep the \`||\`):\n` +
+          `  cd ${REPO} && rigger reported ${req.id} || rigger result ${req.id} --error "worker ${req.id} died without reporting: ${msg}"\n` +
+          `\`rigger reported ${req.id}\` exits 0 when the spawn ALREADY has a result - then the \`||\` SKIPS the --error and nothing is overwritten. It exits non-zero only when there is no result yet, in which case the failure is recorded (the message is non-empty by construction). Confirm the whole command exited 0; report nothing else.`,
+        { phase: ph, model: 'haiku', label: `report-death:${req.id}` },
       )
-      log(`${unit.id} INTEGRATED on attempt ${a}`)
-      return { unit: unit.id, integrated: true, attempts: a }
+    } catch (ce) {
+      // The death-report COURIER itself died (max turns / crash). We can no longer guarantee a
+      // result was recorded for ${req.id}, so the conductor's replay could hang on resume. Do
+      // NOT swallow it and do NOT re-throw (that would reject parallel() and abort sibling
+      // workers mid-wave); record it in the shared `fatal` sink so the loop stops LOUDLY once
+      // the wave has drained.
+      const cmsg = (ce && ce.message ? ce.message : String(ce)).replace(/\s+/g, ' ').trim().slice(0, 200)
+      log(`FATAL: the death-report courier for ${req.id} itself failed: ${cmsg} - the spawn may have no result`)
+      fatal.push(`${req.id}: ${cmsg}`)
     }
-    prior = `Your previous attempt was REJECTED by review: ${verdict.reason}. Read the full findings with \`cd ${REPO} && rigger peers ${files}\` and address ALL of them in the same worktree ${WT}, then re-commit.`
-    log(`${unit.id} a${a}: rejected - ${(verdict.reason || '').slice(0, 70)}`)
   }
-  await agent(
-    `Record the escalation - the implementer could not satisfy the strict review for unit ${unit.id} in ${MAX} attempts; its work is left on branch ${BR} for a human: \`cd ${REPO} && rigger emit UnitEscalated '{"id":"${unit.id}"}'\`.`,
-    { phase: PH('Review'), model: 'haiku', label: `escalate:${unit.id}` },
-  )
-  log(`${unit.id} ESCALATED after ${MAX} attempts (left on ${BR})`)
-  return { unit: unit.id, escalated: true }
 }
 
-// The planner returns units in dependency order; iterate sequentially so integrate never races.
-// No global `phase('Build')` marker here: each unit drives its OWN Build/Review/Integrate progress
-// groups via the per-unit opts.phase strings (u<id>:Build, ...) inside buildUnit, so the /workflows
-// display shows each unit's lifecycle distinctly instead of one global Build group that would falsely
-// imply every unit builds together before any reviews. meta.phases (a static literal) still names the
-// fixed stages up front; the per-unit labels are the runtime refinement of those same stages.
-const results = []
-for (const unit of plan.units) {
-  results.push(await buildUnit(unit))
+// The single global phase marker: everything up front (and the courier steps, which have no
+// unit of their own) is the run's Plan/orchestration pass. The per-unit progress groups are
+// the runtime opts.phase strings on the workers, NOT a global phase('Build') marker - a
+// global build marker would falsely imply every unit builds together before any review, when
+// in fact each unit runs its whole Build -> Review -> Integrate lifecycle (inside the
+// conductor) before the next unit's spawns are parked.
+phase('Plan')
+
+// The thin driver loop. Each iteration: courier one `rigger step`, spawn the wave it parked,
+// and stop when the conductor reports a fixpoint. Termination is guaranteed by the conductor
+// (its spawn-budget breaker and per-unit retry bound), so this loop needs no cap of its own.
+// Every non-fixpoint exit is an ANOMALY and stops the loop LOUDLY (`stop(...)` throws): a
+// stuck/failed run must never be reported as a clean completion, and a courier that itself
+// dies must be a controlled, visible stop - not an uncaught rejection that aborts the driver.
+let waves = 0
+
+// stop the driver LOUDLY: throw a clear, single Error so the anomalous exit surfaces as a
+// workflow failure with an actionable message (decision `thin-driver-loud-stops`), instead of
+// resolving as success (which would mask a hung/failed run) or aborting mid-agent uncaught.
+function stop(reason) {
+  log(`stopping the driver loop: ${reason}`)
+  throw new Error(`rigger driver stopped after ${waves} wave(s): ${reason}`)
 }
-return {
-  integrated: results.filter((r) => r.integrated).map((r) => r.unit),
-  escalated: results.filter((r) => r.escalated).map((r) => r.unit),
-  results,
+
+for (;;) {
+  // 1. Courier: advance the conductor one frontier and return the wave verbatim. `rigger step`
+  //    sets up/reuses the run branch (via --base) before parking anything, then prints one line
+  //    of JSON. On the FIRST step the run branch is anchored and the spec is decomposed; on
+  //    later steps the conductor replays past the results workers reported and parks the next
+  //    frontier. If `rigger step` errors, the courier returns it in `error` (not a faked wave);
+  //    if the COURIER AGENT itself dies (max turns / crash), agent() rejects and the try/catch
+  //    turns that into the same clean, loud stop instead of aborting the whole driver uncaught.
+  let step
+  try {
+    step = await agent(
+      `You are a rigger COURIER. Advance the run one frontier and return the wave, verbatim. Run EXACTLY this, from ${REPO}, using Bash:\n` +
+        `  cd ${REPO} && rigger step --spec ${SPEC} --base ${BASE}\n` +
+        `It prints ONE line of JSON on stdout: {"wave":[...],"done":<bool>}. Return that JSON object EXACTLY as printed - do not summarize it, drop fields, or run anything else. ` +
+        `If the command prints no JSON or exits non-zero, return {"wave":[],"done":true,"error":"<the stderr / failure message>"} so the loop stops cleanly and the error is visible.`,
+      { phase: 'Plan', model: 'haiku', schema: STEP, label: `step#${waves + 1}` },
+    )
+  } catch (e) {
+    // The `rigger step` courier AGENT itself rejected (its own max turns / crash) - distinct
+    // from `rigger step` failing, which the courier reports in `error`. Without this catch the
+    // rejection would abort the whole driver uncaught; instead stop cleanly and loudly.
+    stop(`the \`rigger step\` courier agent itself failed: ${e && e.message ? e.message : String(e)}`)
+  }
+
+  if (step.error) {
+    stop(`\`rigger step\` failed: ${step.error}`)
+  }
+
+  // 2. Spawn the wave natively in parallel; each worker in its own per-unit progress group. A
+  //    worker that dies has its failure recorded on its behalf inside runWorker; if that death
+  //    courier ITSELF dies, runWorker records it in `fatal` (it never re-throws, so parallel()
+  //    is not aborted mid-wave) and we stop loudly below.
+  const fatal = []
+  const wave = step.wave || []
+  if (wave.length > 0) {
+    waves += 1
+    log(`wave ${waves}: spawning ${wave.length} agent(s) in parallel: ${wave.map((r) => r.id).join(', ')}`)
+    await parallel(wave.map((req) => () => runWorker(req, fatal)))
+  }
+
+  // A death-report courier died, so a spawn may have no result and the conductor's replay could
+  // hang on resume. Stop LOUDLY rather than looping into an unrecoverable hang.
+  if (fatal.length > 0) {
+    stop(`the failure of ${fatal.length} worker(s) could not be recorded (their death-report couriers also died): ${fatal.join(' | ')}`)
+  }
+
+  // 3. Stop at the conductor's fixpoint (every parked spawn has a result and nothing new was
+  //    parked). A non-empty wave always implies done === false, so we drain it first (above),
+  //    then re-check on the next iteration.
+  if (step.done) {
+    log(`run complete: the conductor reached a fixpoint after ${waves} wave(s)`)
+    break
+  }
+  // An empty wave that is NOT done means a prior worker resolved WITHOUT self-reporting (its
+  // agent() neither errored nor recorded a result): the conductor has an unanswered spawn but
+  // there is nothing new for us to run, so stepping again would spin. This is an anomaly, not a
+  // completion - stop loudly rather than resolve as done or loop forever.
+  if (wave.length === 0) {
+    stop('`rigger step` parked no new wave yet is not done (a worker likely resolved without self-reporting)')
+  }
 }
+
+return { waves }

@@ -243,6 +243,7 @@ fn main() {
     let result = match args[1].as_str() {
         "run" => cmd_run(&args[2..]),
         "step" => cmd_step(&args[2..]),
+        "reported" => cmd_reported(&args[2..]),
         "serve" => cmd_serve(&args[2..]),
         "workflow" => cmd_workflow(&args[2..]),
         "graph" => cmd_graph(&args[2..]),
@@ -322,6 +323,10 @@ rigger step [--spec <path>]      advance the run one frontier via the replay dri
 as JSON. --base (default origin/main) anchors a NEW run\n                              \
 branch; if it is unresolvable the branch is created off\n                              \
 HEAD. An existing run branch is reused, never reset\n  \
+rigger reported <id>        exit 0 iff spawn <id> already has a recorded result in\n                              \
+this project's run stream (else non-zero). The read half of\n                              \
+the thin driver's check-then-record death-report guard, so a\n                              \
+worker that self-reported is never clobbered by an --error\n  \
 rigger workflow [spec]      turn-key: launch the per-project Node driver, which\n                              \
 spawns `rigger serve`, runs each agent via the Agent\n                              \
 SDK, and drives the loop (one command; run `rigger\n                              \
@@ -471,6 +476,78 @@ fn cmd_step(args: &[String]) -> Res {
     let step = spawn::step_result(&events, &before).map_err(|e| e.to_string())?;
     println!("{}", serde_json::to_string(&step)?);
     Ok(())
+}
+
+/// `rigger reported <id>` - exit 0 iff spawn `<id>` already has a recorded result in this
+/// project's run stream, and non-zero (a clear error) when it does not.
+///
+/// This is the READ half of the thin driver's check-then-record death-report guard
+/// (decision `thin-driver-death-guard`). When a worker's `agent()` rejects, the JS driver
+/// cannot tell from the rejection alone whether the worker died BEFORE self-reporting or
+/// AFTER (a worker - or a reviewer that already emitted an approve verdict - can report
+/// and then run on to max-turns / crash). Recording an `--error` on its behalf
+/// UNCONDITIONALLY would clobber a result that already exists, because [`spawn::result_of`]
+/// is last-write-wins: a genuinely successful/approved unit would be silently overwritten
+/// and force-failed on the next replay. So the driver's death courier runs
+/// `rigger reported <id> || rigger result <id> --error <why>`: this command answers the
+/// "does a result already exist?" check, and the `--error` is recorded ONLY when it does
+/// not - honoring the criterion's "dies WITHOUT reporting" clause while still guaranteeing
+/// every parked spawn ends with a result so the run can never hang.
+///
+/// Composition mirrors [`cmd_step`]/[`cmd_stats`]: the per-project namespaced sqlite run
+/// stream, read forward from revision 0 and projected through [`spawn::result_of`] - the
+/// exact stream, boundary, and projection the replay driver uses to decide answer-vs-park,
+/// so this check agrees with the conductor by construction. The namespace-scoped read and
+/// its absent/unreported edges live in the testable [`result_of_at`] seam.
+fn cmd_reported(args: &[String]) -> Res {
+    let id = match args {
+        [id] => id.as_str(),
+        _ => return Err("reported: expected exactly one spawn id: rigger reported <id>".into()),
+    };
+    match result_of_at(&db_path("events.db"), &project_identity(), id)? {
+        // Already answered: print a one-line summary (for the courier's log) and exit 0, so
+        // the guard's `|| rigger result <id> --error` is SKIPPED and the existing result -
+        // the worker's own report - stands untouched.
+        Some(res) => {
+            println!(
+                "{} {}",
+                res.id,
+                if res.is_error() { "failed" } else { "ok" }
+            );
+            Ok(())
+        }
+        // No result yet: exit non-zero (a clear error) so the guard proceeds to record the
+        // worker's failure on its behalf. This is the only branch that lets an `--error` be
+        // written, so a self-reported result is never overwritten.
+        None => Err(format!("reported: spawn {id:?} has no recorded result yet").into()),
+    }
+}
+
+/// The pure read-model core of `rigger reported`: open the embedded `events.db` at `path`,
+/// read `project`'s run stream through the per-project [`Namespaced`] decorator, and return
+/// the LATEST recorded result for `id` (or `None` when the spawn is still unreported).
+///
+/// Split from [`cmd_reported`] (which owns only the I/O boundary and the exit-code decision)
+/// so the namespace-scoped read and its absent-db / unreported edges are unit-testable
+/// against any backing file, project name, and id - without depending on the process cwd or
+/// a real git repo for identity (mirrors [`stats_lines`], decision `d-stats-read-seam`).
+///
+/// An absent `events.db` (a never-run project) reads as `None` - guarded BEFORE
+/// [`Store::open`], which would otherwise create the file - so the guard treats a spawn with
+/// no store exactly like a spawn with no result: unreported. The [`Namespaced`] read scopes
+/// to `proj-<project>-run`, so a result another project wrote never masks this one.
+fn result_of_at(
+    path: &str,
+    project: &str,
+    id: &str,
+) -> Result<Option<spawn::SpawnResult>, Box<dyn std::error::Error>> {
+    if !Path::new(path).exists() {
+        return Ok(None);
+    }
+    let backend = Store::open(path)?;
+    let store = Namespaced::new(&backend, project);
+    let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+    Ok(spawn::result_of(&events, id).map_err(|e| e.to_string())?)
 }
 
 /// The parsed flags of a `rigger step` invocation.
@@ -1857,24 +1934,25 @@ mod tests {
             .join("\n")
     }
 
-    /// The workflow labels its progress phases PER UNIT so the `/workflows` display matches
-    /// per-unit execution (each unit runs its whole Build -> Review -> Integrate lifecycle
-    /// before the next starts) instead of implying a false global "all units Build, then all
-    /// Review" order. Because `meta` MUST be a pure literal (statically extracted by the
-    /// Workflow runtime, so no computed values / no interpolation) and unit ids are only
-    /// known at runtime, the per-unit labels live in the runtime `opts.phase` progress-group
-    /// strings inside `buildUnit`, while `meta.phases` keeps the fixed stage set. This test
-    /// pins all four facts so a future edit cannot silently regress any of them.
+    /// The native `/rigger` workflow is a THIN driver over the Rust conductor: it couriers
+    /// each frontier via `rigger step`, spawns the returned wave natively in parallel with a
+    /// per-unit `opts.phase` label built from the wave item, lets each worker self-report via
+    /// `rigger result`, records a dead worker's failure on its behalf via `rigger result
+    /// --error`, and loops until the step reports `done`. Because `meta` MUST be a pure literal
+    /// (statically extracted by the Workflow runtime - no computed values / no interpolation)
+    /// and unit ids are only known at runtime, the per-unit labels live in the runtime
+    /// `opts.phase` strings while `meta.phases` keeps the fixed stage set. This test pins the
+    /// thin-driver contract so a future edit cannot silently regress it; it supersedes the
+    /// fat-workflow `buildUnit`/`PH` structure this workflow replaced.
     #[test]
-    fn workflow_labels_phases_per_unit_and_keeps_meta_a_pure_literal() {
+    fn workflow_is_a_thin_courier_driver_with_per_unit_phase_labels() {
         let wf = RIGGER_WORKFLOW;
-        // Assertions about the executable code run against comment-stripped source so the
-        // workflow's own documentation prose (which references the removed marker) cannot
-        // trip them; assertions about the meta literal run against the raw object body.
+        // Code assertions run against comment-stripped source so the workflow's own prose
+        // (which documents the removed fat-workflow constructs) cannot trip them; the meta
+        // assertions run against the raw literal object body.
         let code = strip_line_comments(wf);
 
-        // 1. meta.phases keeps the FIXED stage set (Plan stays as is; Build/Review/Integrate
-        //    are the stable up-front stage names, not per-unit titles).
+        // 1. meta.phases keeps the FIXED stage set as a pure up-front literal.
         let meta = meta_object_body(wf);
         for stage in ["Plan", "Build", "Review", "Integrate"] {
             assert!(
@@ -1883,59 +1961,114 @@ mod tests {
             );
         }
 
-        // 2. meta stays a PURE LITERAL: no template-literal interpolation anywhere in the
-        //    object body. Per-unit unit ids (only known at runtime) must NOT leak into meta;
-        //    if they did, meta could no longer be statically extracted by the runtime.
+        // 2. meta stays a PURE LITERAL: no interpolation / computed values anywhere in the
+        //    object body, so the runtime can statically extract it before the body runs.
+        //    Runtime per-unit ids must never leak into meta.
         assert!(
             !meta.contains("${"),
             "meta must be a pure literal - no `${{...}}` interpolation or computed values \
              (found interpolation inside the meta object body): {meta}"
         );
+
+        // 3. The driver COURIERS the wave via `rigger step` - it does not decompose or
+        //    orchestrate the DAG itself (that lives in the conductor behind the step) - and
+        //    loops on the `{wave, done}` shape the step prints.
         assert!(
-            !meta.contains("u<id>:'") && !meta.contains("`u"),
-            "meta.phases must not carry runtime per-unit phase titles - those belong in \
-             opts.phase inside buildUnit"
+            code.contains("rigger step"),
+            "the thin driver must fetch each wave by having a courier run `rigger step`"
+        );
+        assert!(
+            code.contains("step.wave") && code.contains("step.done"),
+            "the driver must read the wave and loop until the step reports done"
         );
 
-        // 3. Per-unit progress groups are produced at runtime via a PH helper that suffixes
-        //    each fixed stage with the unit id, and every per-unit agent uses it.
+        // 4. It SPAWNS the wave natively in parallel, one agent per wave item.
         assert!(
-            code.contains("const PH = (stage) => `u${unit.id}:${stage}`"),
-            "buildUnit must define the per-unit PH(stage) => `u<id>:<stage>` progress-group helper"
+            code.contains("parallel(") && code.contains("wave.map("),
+            "the driver must spawn the wave's agents natively in parallel"
         );
+
+        // 5. Per-unit progress groups are produced at runtime from the WAVE ITEM (unit +
+        //    stage), per the spawn::SpawnRequest contract, and every worker is labelled with it.
+        assert!(
+            code.contains("function phaseOf(req)") && code.contains("`${req.unit}:${req.stage}`"),
+            "the driver must build each worker's opts.phase label from the wave item's unit + stage"
+        );
+        assert!(
+            code.contains("phase: ph"),
+            "each spawned worker must label its progress group with the per-unit phase"
+        );
+        // No bare global lifecycle phase markers: Build/Review/Integrate are per-unit (inside
+        // the conductor) now, so a global marker would re-imply a false "all units build, then
+        // all review" order.
         for stage in ["Build", "Review", "Integrate"] {
             assert!(
-                code.contains(&format!("phase: PH('{stage}')")),
-                "the per-unit agents must label their progress group via PH('{stage}')"
+                !code.contains(&format!("phase('{stage}')")),
+                "the global phase('{stage}') marker must not exist - {stage} is per-unit now"
             );
-        }
-        // The bare stage strings must no longer appear as opts.phase for the per-unit agents.
-        for stage in ["Build", "Review", "Integrate"] {
             assert!(
                 !code.contains(&format!("phase: '{stage}'")),
-                "no per-unit agent may use the bare global `phase: '{stage}'` - that would \
-                 collapse every unit into one global progress group and imply a false order"
+                "no agent may use the bare global `phase: '{stage}'` opts - that would collapse \
+                 every unit into one global progress group"
             );
         }
-
-        // 4. Only Plan remains a genuine global phase marker; the global `phase('Build')`
-        //    marker is removed (its per-unit opts.phase strings replace it). Plan stays as is.
+        // Only Plan remains a genuine global phase marker (the orchestration/courier pass).
         assert!(
             code.contains("phase('Plan')"),
             "the single global Plan pass must keep its phase('Plan') marker"
         );
+
+        // 6. Workers SELF-REPORT via `rigger result <id>`, and a worker that DIES without
+        //    reporting has its failure recorded on its behalf via `rigger result <id> --error`
+        //    from the `agent()`-rejected (catch) branch.
         assert!(
-            !code.contains("phase('Build')"),
-            "the global phase('Build') marker must be removed - Build is per-unit now, driven \
-             by each unit's opts.phase, so a global marker would re-imply a false global order"
+            code.contains("rigger result ${req.id}"),
+            "each worker must be told to self-report its result via `rigger result <id>`"
         );
-        // Plan's own agents legitimately keep the literal `phase: 'Plan'` opts (Plan stays as is).
         assert!(
-            code.contains("phase: 'Plan'"),
-            "the Plan-phase agents must keep their literal phase: 'Plan' opts"
+            code.contains("rigger result ${req.id} --error"),
+            "a dead worker's failure must be recorded on its behalf via `rigger result <id> --error`"
+        );
+        assert!(
+            code.contains("catch") && code.contains("report-death:"),
+            "a worker that dies (its agent() rejects) must be caught and its failure couriered"
         );
 
-        // 5. The workflow still parses: run `node --check` when node is on PATH (never a
+        // 6a. The death courier is GUARDED as check-then-record: it records `--error` ONLY when
+        //     the spawn has no result yet (`rigger reported <id> || rigger result <id> --error`),
+        //     so a worker that self-reported success/approve and THEN ran to max-turns is never
+        //     clobbered (`rigger result` / `spawn::result_of` is last-write-wins). This is the
+        //     primary correctness invariant the review rejected the unguarded version for.
+        assert!(
+            code.contains("rigger reported ${req.id} || rigger result ${req.id} --error"),
+            "the death courier must be a guarded check-then-record (`rigger reported <id> || \
+             rigger result <id> --error`) so a self-reported result is never clobbered"
+        );
+
+        // 6b. Both courier `agent()` calls (the death-report courier AND the top-level `rigger
+        //     step` courier) are wrapped so a courier that itself dies is a clean, loud stop
+        //     rather than an uncaught rejection that aborts the driver (or, for the death
+        //     courier, an abort that also leaves the spawn unreported and hangs the run). The
+        //     death courier's own failure is captured in the shared `fatal` sink, not re-thrown.
+        assert!(
+            code.contains("fatal.push("),
+            "a death-report courier that itself fails must be captured (in `fatal`), not swallowed \
+             or allowed to abort parallel() mid-wave"
+        );
+        assert!(
+            code.contains("courier agent itself failed"),
+            "the top-level `rigger step` courier agent() must be wrapped so its own death is a \
+             clean, loud stop, not an uncaught abort of the whole driver"
+        );
+
+        // 6c. Every anomalous (non-fixpoint) exit stops LOUDLY: `stop()` throws so a hung/failed
+        //     run surfaces as a workflow failure instead of resolving as a clean completion.
+        assert!(
+            code.contains("function stop(") && code.contains("throw new Error"),
+            "anomalous exits must stop loudly via a throwing `stop()`, never a silent success return"
+        );
+
+        // 7. The workflow still parses: run `node --check` when node is on PATH (never a
         //    silent skip - assert the clear reason when it is not available).
         let node = std::env::var("RIGGER_NODE").unwrap_or_else(|_| "node".to_string());
         let mut f = tempfile::NamedTempFile::new().unwrap();
@@ -2273,6 +2406,134 @@ mod tests {
         assert!(
             out != NO_RUNS_MESSAGE,
             "a populated run must not print the no-runs message"
+        );
+    }
+
+    /// `result_of_at` (the read half of the `rigger reported` death-report guard) treats an
+    /// absent `events.db` as UNREPORTED (`None`) and does NOT create the file: a never-run
+    /// project has no result for any spawn, and opening would create the db, masking the edge.
+    /// A `None` here makes `rigger reported` exit non-zero, so the driver's guarded
+    /// `rigger reported <id> || rigger result <id> --error` proceeds to record the failure.
+    #[test]
+    fn result_of_at_absent_db_reads_as_unreported_and_creates_no_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let path_str = path.to_str().unwrap();
+
+        let got = result_of_at(path_str, "proj-x", "u/impl#0").expect("absent db is not an error");
+        assert!(got.is_none(), "an absent db must read as unreported (None)");
+        assert!(
+            !path.exists(),
+            "result_of_at must not create events.db when it is absent"
+        );
+    }
+
+    /// A spawn with no recorded result reads as UNREPORTED (`None`) even when the db exists and
+    /// holds OTHER events (including other spawns' results): `result_of_at` matches on the exact
+    /// spawn id, so an unanswered spawn is correctly treated as still-parked.
+    #[test]
+    fn result_of_at_unrecorded_spawn_reads_as_unreported() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let path_str = path.to_str().unwrap();
+
+        // A different spawn HAS a result; the one we ask about does not.
+        seed_run(
+            path_str,
+            "proj-me",
+            &[spawn::SpawnResult::ok("u/other#0", "done")
+                .to_event()
+                .unwrap()],
+        );
+
+        let got = result_of_at(path_str, "proj-me", "u/impl#0").expect("read is not an error");
+        assert!(
+            got.is_none(),
+            "a spawn with no result of its own must read as unreported (None)"
+        );
+    }
+
+    /// A recorded self-report reads back as `Some` - the anti-clobber invariant the review
+    /// rejected the unguarded death courier for. A worker that self-reported (success OR its own
+    /// failure) is ANSWERED, so `rigger reported` exits 0 and the guard's `|| rigger result
+    /// --error` is skipped: the worker's own result is never overwritten by a courier `--error`.
+    #[test]
+    fn result_of_at_reads_a_self_reported_result_so_it_is_not_clobbered() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let path_str = path.to_str().unwrap();
+
+        seed_run(
+            path_str,
+            "proj-me",
+            &[
+                spawn::SpawnResult::ok("u/impl#0", "implemented and reported")
+                    .to_event()
+                    .unwrap(),
+            ],
+        );
+
+        let got = result_of_at(path_str, "proj-me", "u/impl#0")
+            .expect("read is not an error")
+            .expect("a recorded result must read back as Some, not None");
+        assert_eq!(got.id, "u/impl#0");
+        assert!(
+            !got.is_error(),
+            "a self-reported success must read back as a success (so the guard skips --error)"
+        );
+        assert_eq!(got.output, "implemented and reported");
+    }
+
+    /// The read is namespace-scoped: a result ANOTHER project wrote to the same shared backend
+    /// must not make this project's spawn look reported. Proves the [`Namespaced`] decorator is
+    /// on the guard's read path, so a spawn id colliding across projects cannot cross-answer.
+    #[test]
+    fn result_of_at_is_namespace_scoped() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let path_str = path.to_str().unwrap();
+
+        // proj-other recorded a result for an id that ALSO exists in proj-me's run.
+        seed_run(
+            path_str,
+            "proj-other",
+            &[spawn::SpawnResult::ok("u/impl#0", "theirs")
+                .to_event()
+                .unwrap()],
+        );
+
+        // proj-me, reading the same file, sees its OWN (empty) namespace: still unreported.
+        let mine = result_of_at(path_str, "proj-me", "u/impl#0").expect("read is not an error");
+        assert!(
+            mine.is_none(),
+            "another project's result must not leak in - the read must be namespace-scoped"
+        );
+
+        // Sanity: the owner DOES see it, so the None above is the namespace boundary, not a miss.
+        let theirs =
+            result_of_at(path_str, "proj-other", "u/impl#0").expect("read is not an error");
+        assert!(
+            theirs.is_some(),
+            "the project that owns the result must see it"
+        );
+    }
+
+    /// `cmd_reported` validates its arg count BEFORE any store I/O: exactly one spawn id is
+    /// required, so a typo (zero args, or extra args) is a clear error rather than a silent
+    /// read of the wrong thing. The single-id read path itself is covered by `result_of_at`
+    /// (the testable seam), which `cmd_reported` wraps for I/O + identity + the exit decision.
+    #[test]
+    fn cmd_reported_requires_exactly_one_id() {
+        let none = cmd_reported(&[]).expect_err("no id must be a clear error");
+        assert!(
+            none.to_string().contains("rigger reported <id>"),
+            "the no-id error must show the usage; got: {none}"
+        );
+        let extra = cmd_reported(&["a".to_string(), "b".to_string()])
+            .expect_err("extra args must be a clear error");
+        assert!(
+            extra.to_string().contains("rigger reported <id>"),
+            "the extra-args error must show the usage; got: {extra}"
         );
     }
 }
