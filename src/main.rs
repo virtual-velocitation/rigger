@@ -12,6 +12,7 @@ use rigger::conductor::{self, Deps};
 use rigger::config;
 use rigger::contextgraph::{self, sqlite::Projector, Projection};
 use rigger::driver::cli;
+use rigger::driver::replay::ReplayDriver;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::{sqlite::Store, Direction, EventStore, Filter};
 use rigger::gate::ExecRunner;
@@ -19,7 +20,7 @@ use rigger::grounder::Grounder;
 use rigger::ledger::RunState;
 use rigger::metrics::{self, Metrics};
 use rigger::sidecar::{PeerDecision, Sidecar};
-use rigger::{hooks, mcpserver, spec};
+use rigger::{hooks, mcpserver, spawn, spec};
 
 const RIGGER_DIR: &str = ".rigger";
 
@@ -226,6 +227,7 @@ fn main() {
     }
     let result = match args[1].as_str() {
         "run" => cmd_run(&args[2..]),
+        "step" => cmd_step(&args[2..]),
         "serve" => cmd_serve(&args[2..]),
         "workflow" => cmd_workflow(&args[2..]),
         "graph" => cmd_graph(&args[2..]),
@@ -300,6 +302,8 @@ fn usage() {
         "rigger - a config-driven, event-sourced multi-agent dev-loop harness\n\n\
 usage:\n  \
 rigger run [spec] [opts]    run the workflow (opts below)\n  \
+rigger step [--spec <path>] advance the run one frontier via the replay driver and\n                              \
+print the newly parked spawn wave + a done flag as JSON\n  \
 rigger workflow [spec]      turn-key: launch the per-project Node driver, which\n                              \
 spawns `rigger serve`, runs each agent via the Agent\n                              \
 SDK, and drives the loop (one command; run `rigger\n                              \
@@ -354,6 +358,96 @@ fn cmd_run(args: &[String]) -> Res {
         DriverKind::Workflow => run_workflow(&parsed),
         DriverKind::Cli => run_cli(&parsed),
     }
+}
+
+/// `rigger step [--spec <path>]` - advance the run one frontier (§4, spec 04).
+///
+/// Drives `conductor::run` with the REPLAY driver over this project's namespaced run
+/// stream: every already-recorded spawn is replayed from the log and every unrecorded
+/// one at the frontier is parked as a `SpawnRequested` event. When every in-flight
+/// spawn is parked the conductor unwinds cleanly and returns, so the process ends with
+/// the run's whole state in the log - a later step, after a courier records results via
+/// `rigger result`, replays past them.
+///
+/// It then prints ONE line of JSON on stdout: the WAVE it newly parked plus a `done`
+/// flag (`{"wave":[<SpawnRequest>...],"done":<bool>}`), computed by the pure
+/// [`spawn::step_result`] seam from the stream read before and after the run (decision
+/// `d-step-wave-delta`). Two ready units with disjoint blast radii - which the
+/// conductor's blast-radius partition keeps in one wave - park their spawns together and
+/// appear in the same wave, so fan-out falls out of the run structure. The thin driver
+/// runs the wave's agents in parallel and steps again until `done`.
+///
+/// Composition mirrors `run_cli` (the per-project namespaced sqlite run stream, the
+/// grounder from `defaults.grounder`, the context-graph projector) so a step sees
+/// exactly the state a `rigger run` would. The `--base` run-branch ref of spec 04 is a
+/// separate unit and is intentionally not handled here (decision `d-step-base-scope`).
+fn cmd_step(args: &[String]) -> Res {
+    let spec = parse_step_args(args)?;
+    let cfg = config::load(".")?;
+    let criteria = load_criteria(spec.as_deref())?;
+    std::fs::create_dir_all(RIGGER_DIR)?;
+    let backend = Store::open(&db_path("events.db"))?;
+    let store = Namespaced::new(&backend, &project_identity());
+
+    // Snapshot the spawns already parked BEFORE this step, so the printed wave is the
+    // frontier this step NEWLY parks - not every outstanding spawn a prior step parked
+    // and the driver has already launched.
+    let before: std::collections::BTreeSet<String> =
+        spawn::recorded(&store.read_stream(conductor::STREAM, 0, Direction::Forward)?)
+            .map_err(|e| e.to_string())?
+            .into_keys()
+            .collect();
+
+    let graph = Projector::open(&db_path("graph.db"))?;
+    let grounder = select_grounder(&cfg.workflow.defaults.grounder)?;
+    let driver = ReplayDriver::new(&store);
+    let deps = Deps {
+        store: &store,
+        driver: &driver,
+        gates: &ExecRunner,
+        repo: git_repo(),
+        grounder: Some(grounder.as_ref()),
+        graph: Some(&graph),
+        criteria,
+    };
+    conductor::run(&cfg, &deps)?;
+
+    let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+    let step = spawn::step_result(&events, &before).map_err(|e| e.to_string())?;
+    println!("{}", serde_json::to_string(&step)?);
+    Ok(())
+}
+
+/// Parse `rigger step`'s flags: an optional `--spec <path>` (the spec whose Done-when
+/// criteria drive the deterministic decomposition, exactly as `rigger run` uses it).
+/// An unknown flag or a bare positional is a clear error, so a typo never silently runs
+/// an unconstrained step. (The `--base` run-branch ref of spec 04 belongs to a separate
+/// unit - decision `d-step-base-scope` - so it is not accepted here yet.)
+fn parse_step_args(args: &[String]) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    let mut spec = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--spec" => {
+                i += 1;
+                spec = match args.get(i) {
+                    Some(p) => Some(p.clone()),
+                    None => return Err("step: --spec expects a path".into()),
+                };
+            }
+            flag if flag.starts_with("--") => {
+                return Err(format!("step: unknown flag {flag:?}").into());
+            }
+            positional => {
+                return Err(format!(
+                    "step: unexpected positional argument {positional:?}; pass the spec via --spec <path>"
+                )
+                .into());
+            }
+        }
+        i += 1;
+    }
+    Ok(spec)
 }
 
 /// The standalone CLI path: ground, spawn agents as `claude` subprocesses, drive

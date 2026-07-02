@@ -636,3 +636,110 @@ fn main_exit_path_is_honestly_documented() {
         "the exit-path comment must reference `ort_teardown` for the full rationale / invariants"
     );
 }
+
+/// Scaffold a project whose workflow has TWO independent stages (neither `needs` the
+/// other, so both are ready in the first wave) that do no grounder work (`nop`) and
+/// never merge (`on_pass: none`). This is the minimal shape that drives `rigger step`
+/// into parking a disjoint two-unit wave, offline and deterministic (no model, no git
+/// worktrees - the worker's `isolation: none`).
+fn write_two_stage_workflow(root: &Path) {
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nDo the unit.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        r#"name: steptest
+defaults:
+  grounder: nop
+  budget: 60
+stages:
+  a:
+    agent: worker
+    on_pass: none
+  b:
+    agent: worker
+    on_pass: none
+"#,
+    )
+    .unwrap();
+}
+
+/// `rigger step` advances the run one frontier and prints the newly parked spawn WAVE
+/// plus a `done` flag as JSON. Two ready units with disjoint blast radii park their
+/// spawns in the SAME wave (so fan-out falls out of the run structure); once a courier
+/// records each spawn's result, the next step replays past them and reports `done`.
+#[test]
+fn step_prints_a_disjoint_two_spawn_wave_then_reports_done() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+
+    // Step 1: both independent units are ready in one wave, so both park their
+    // implementer spawns together - a two-spawn wave, and the run is not done.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "step must succeed; stderr: {err}");
+    let line = out.trim();
+    assert!(
+        line.contains(r#""id":"a/implementer#0""#) && line.contains(r#""id":"b/implementer#0""#),
+        "the wave must carry BOTH disjoint units' implementer spawns; got: {line:?}"
+    );
+    assert_eq!(
+        line.matches(r#""id":"#).count(),
+        2,
+        "exactly the two disjoint units park in one wave; got: {line:?}"
+    );
+    assert!(
+        line.contains(r#""done":false"#),
+        "with spawns still awaiting results the run is not done; got: {line:?}"
+    );
+
+    // A courier records each spawn's outcome - the `rigger result` channel, simulated
+    // here by emitting the SpawnResult event `rigger result` would write to the run
+    // stream (that command is a sibling unit).
+    for id in ["a/implementer#0", "b/implementer#0"] {
+        let (_o, err, ok) = run_rigger(
+            root,
+            &[
+                "emit",
+                "SpawnResult",
+                &format!(r#"{{"id":"{id}","output":"did {id}"}}"#),
+            ],
+        );
+        assert!(ok, "recording {id}'s result must succeed; stderr: {err}");
+    }
+
+    // Step 2: the recorded results replay, the conductor parks nothing new, and the
+    // run has reached a fixpoint - an empty wave and done:true.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the second step must succeed; stderr: {err}");
+    let line = out.trim();
+    assert!(
+        line.contains(r#""wave":[]"#),
+        "a step that parks nothing new prints an empty wave; got: {line:?}"
+    );
+    assert!(
+        line.contains(r#""done":true"#),
+        "every spawn now has a result, so the run is done; got: {line:?}"
+    );
+}
+
+/// `rigger step` rejects an unknown flag with a clear, non-zero error rather than
+/// silently running an unconstrained step. (The `--base` run-branch ref of spec 04 is a
+/// separate unit, so it is not accepted here yet.)
+#[test]
+fn step_rejects_an_unknown_flag() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+
+    let (_out, err, ok) = run_rigger(root, &["step", "--nope"]);
+    assert!(!ok, "an unknown flag must be a non-zero exit");
+    assert!(
+        err.contains("unknown flag"),
+        "the error must name the unknown flag; got: {err:?}"
+    );
+}

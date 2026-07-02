@@ -21,7 +21,7 @@
 //! driver's wire type: that path (the shim) keeps working unchanged, while this
 //! vocabulary is what the stepwise `rigger step` / `rigger result` surface persists.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -341,6 +341,63 @@ pub fn result_of(events: &[Event], id: &str) -> Result<Option<SpawnResult>, serd
     Ok(found)
 }
 
+/// The outcome of one `rigger step`: the WAVE of spawns it newly parked, and whether
+/// the run has reached a fixpoint.
+///
+/// This is exactly what `rigger step` prints as one line of JSON on stdout - the shape
+/// the thin native driver reads to spawn the wave's agents in parallel and to decide
+/// whether to loop again (§4, spec 04). `wave` serializes as an array of
+/// [`SpawnRequest`] (each with everything the driver needs to run the agent); `done` is
+/// a plain bool.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Step {
+    /// The spawns this step NEWLY parked at the frontier - the wave the driver runs
+    /// now. Two ready units with disjoint blast radii park their spawns in the same
+    /// wave, so fan-out falls out of the run structure. Ordered deterministically by
+    /// [`spawn_id`].
+    pub wave: Vec<SpawnRequest>,
+    /// True when the run reached a fixpoint: every recorded spawn request already has a
+    /// [`SpawnResult`], so the conductor replayed the whole log and parked nothing that
+    /// still awaits a courier (all units integrated, or the run terminated). Another
+    /// step would change nothing. A non-empty `wave` always implies `done == false`,
+    /// since a freshly parked spawn has no result yet.
+    pub done: bool,
+}
+
+/// Compute the [`Step`] a step process prints, from its run stream `events` and the set
+/// of spawn ids that were already parked BEFORE this step ran (`before`).
+///
+/// This is the pure core of `rigger step`, extracted so the wave/done contract is
+/// testable without a config, a repo, or the CLI: the command reads the stream before
+/// driving the conductor with the replay driver, reads it again after, and delegates
+/// here.
+///
+/// - `wave` is the DELTA: the requests recorded now whose id is not in `before`. Keeping
+///   it to the delta (rather than every outstanding spawn) means a step re-run over
+///   undrained history prints an empty wave instead of re-listing spawns the driver
+///   already launched - it falls straight out of the replay driver parking only
+///   unrecorded ids. It is ordered by [`spawn_id`] (the [`recorded`] map is keyed by id).
+/// - `done` is true when no recorded request still awaits a result: every parked spawn
+///   has a matching [`SpawnResult`]. An empty log is vacuously done (nothing to run).
+pub fn step_result(events: &[Event], before: &BTreeSet<String>) -> Result<Step, serde_json::Error> {
+    let recorded = recorded(events)?;
+    let wave = recorded
+        .values()
+        .filter(|req| !before.contains(&req.id))
+        .cloned()
+        .collect();
+    // The ids a courier has already drained (a recorded result). Folded once, so
+    // `done` is O(events) rather than a per-request rescan.
+    let mut answered: BTreeSet<String> = BTreeSet::new();
+    for e in events {
+        if e.type_ == TYPE_SPAWN_RESULT {
+            answered.insert(SpawnResult::from_event(e)?.id);
+        }
+    }
+    let done = recorded.keys().all(|id| answered.contains(id));
+    Ok(Step { wave, done })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -589,5 +646,96 @@ mod tests {
             1,
             "only the spawn event folds"
         );
+    }
+
+    #[test]
+    fn step_wave_is_the_spawns_newly_parked_this_step() {
+        // A prior step parked `plan`; this step parks two disjoint units. The wave is
+        // the two NEW spawns only, in deterministic id order - never the older one.
+        let store = Store::open(":memory:").unwrap();
+        let old = SpawnRequest::new("plan", "plan", ROLE_IMPLEMENTER, 0, "plan it");
+        park(&store, &old).unwrap();
+        let before: BTreeSet<String> = [old.id.clone()].into_iter().collect();
+
+        park(
+            &store,
+            &SpawnRequest::new("b", "implement", ROLE_IMPLEMENTER, 0, "b"),
+        )
+        .unwrap();
+        park(
+            &store,
+            &SpawnRequest::new("a", "implement", ROLE_IMPLEMENTER, 0, "a"),
+        )
+        .unwrap();
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let step = step_result(&events, &before).unwrap();
+
+        let ids: Vec<&str> = step.wave.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["a/implementer#0", "b/implementer#0"],
+            "the wave is the two new spawns, id-ordered, not the pre-step `plan`"
+        );
+        assert!(
+            !step.done,
+            "nothing has a result yet, so the run is not done"
+        );
+    }
+
+    #[test]
+    fn step_is_done_only_when_every_recorded_spawn_has_a_result() {
+        let store = Store::open(":memory:").unwrap();
+        let a = SpawnRequest::new("a", "implement", ROLE_IMPLEMENTER, 0, "a");
+        let b = SpawnRequest::new("b", "implement", ROLE_IMPLEMENTER, 0, "b");
+        park(&store, &a).unwrap();
+        park(&store, &b).unwrap();
+
+        // A re-step over the same frontier (both already parked) parks nothing new, and
+        // is not done while `b` still awaits a result.
+        let before: BTreeSet<String> = [a.id.clone(), b.id.clone()].into_iter().collect();
+        record_result(&store, &SpawnResult::ok(&a.id, "did a")).unwrap();
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let step = step_result(&events, &before).unwrap();
+        assert!(step.wave.is_empty(), "a re-step parks nothing new");
+        assert!(
+            !step.done,
+            "b still awaits a result, so the run is not done"
+        );
+
+        // Once `b` is answered too, the run has reached a fixpoint.
+        record_result(&store, &SpawnResult::ok(&b.id, "did b")).unwrap();
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let step = step_result(&events, &before).unwrap();
+        assert!(step.done, "every recorded spawn now has a result");
+    }
+
+    #[test]
+    fn step_on_an_empty_log_is_done_with_an_empty_wave() {
+        // No spawn was ever parked: vacuously done, empty wave (nothing left to run).
+        let store = Store::open(":memory:").unwrap();
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let step = step_result(&events, &BTreeSet::new()).unwrap();
+        assert!(step.wave.is_empty());
+        assert!(step.done);
+    }
+
+    #[test]
+    fn step_serializes_to_a_wave_array_and_a_done_bool() {
+        // The JSON `rigger step` prints: {"wave":[<SpawnRequest>...],"done":<bool>}.
+        let store = Store::open(":memory:").unwrap();
+        park(
+            &store,
+            &SpawnRequest::new("u", "implement", ROLE_IMPLEMENTER, 0, "do it"),
+        )
+        .unwrap();
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let step = step_result(&events, &BTreeSet::new()).unwrap();
+
+        let json = serde_json::to_value(&step).unwrap();
+        let obj = json.as_object().unwrap();
+        assert_eq!(obj["wave"].as_array().unwrap().len(), 1);
+        assert_eq!(obj["wave"][0]["id"], "u/implementer#0");
+        assert_eq!(obj["done"], serde_json::json!(false));
     }
 }
