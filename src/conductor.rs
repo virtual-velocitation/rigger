@@ -52,6 +52,33 @@ pub const TYPE_MANUAL_REVIEW: &str = "ManualReview";
 /// `ledger::TYPE_DEFERRED_GATE_FAILED`.
 pub const TYPE_DEFERRED_GATE_FAILED: &str = ledger::TYPE_DEFERRED_GATE_FAILED;
 
+/// The metadata key carrying an event's deterministic REPLAY KEY (spec 04, criterion
+/// 4). A stepwise/replay run re-executes `conductor::run` over recorded history on
+/// EVERY step; an event stamped with a replay key is appended AT MOST ONCE across those
+/// re-runs, so replay appends no duplicate unit-lifecycle event or gate verdict. The
+/// key is a pure function of the run structure (the unit id, a phase or gate token, and
+/// the remediation attempt), never wall clock or randomness, so two step processes
+/// compute the identical key for the identical event and the second recognizes the
+/// first's as a replay. Folds and projections ignore it (like [`contextgraph::META_ACTOR`]);
+/// only [`RunCtx::emit_keyed`] and the gate-verdict replay read it.
+pub const META_REPLAY_KEY: &str = "replay_key";
+
+/// The replay key for a gate's verdict, keyed by the `(unit, attempt, gate)` coordinate
+/// the gate ran under - so a step re-reaching an already-run gate REPLAYS its recorded
+/// verdict instead of re-running the command (spec 04, criterion 4). Distinct attempts
+/// are distinct gate runs (a re-implementation must re-gate), so only re-reaching the
+/// SAME attempt's gate is a replay.
+fn gate_verdict_key(unit: &str, attempt: u32, gate: &str) -> String {
+    format!("{unit}/gate:{gate}#{attempt}")
+}
+
+/// The replay key for a DEFERRED gate's phase-boundary verdict. A deferred gate runs
+/// once per run (not per unit/attempt), so the first step to reach the phase boundary
+/// runs it and every later re-step replays it.
+fn deferred_gate_verdict_key(gate: &str) -> String {
+    format!("deferred/gate:{gate}")
+}
+
 /// The `commit` value a standalone review-only stage records when it reaches its
 /// DAG-terminal state (item 7). A review stage integrates NO code artifact, so
 /// rather than fabricating an integration with an empty commit hash - which reads
@@ -346,8 +373,16 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     // Resume by replay (§4.2): seed integrated/terminal from the existing log so a
     // crashed or re-run conductor skips work that already landed instead of
     // re-spawning every agent from scratch.
-    let prior = ledger::project(&deps.store.read_stream(STREAM, 0, Direction::Forward)?)
-        .map_err(|e| Error(e.to_string()))?;
+    let prior_events = deps.store.read_stream(STREAM, 0, Direction::Forward)?;
+    let prior = ledger::project(&prior_events).map_err(|e| Error(e.to_string()))?;
+    // Replay idempotency (spec 04, criterion 4): seed the replay-key set from the prior
+    // log's [`META_REPLAY_KEY`] metadata so a step re-running the conductor over recorded
+    // history re-appends none of the keyed unit-lifecycle events it already emitted, and
+    // re-reaching an already-run gate replays its recorded verdict.
+    let replayed_keys: HashSet<String> = prior_events
+        .iter()
+        .filter_map(|e| e.meta.get(META_REPLAY_KEY).cloned())
+        .collect();
 
     // The RunCtx is created BEFORE the coverage check so a coverage gap can be
     // flagged as a spec defect through the event log (item 2 / §4.4) instead of
@@ -380,6 +415,7 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         budget_broke: std::sync::atomic::AtomicBool::new(false),
         prior_status,
         prior_attempts,
+        replayed_keys: Mutex::new(replayed_keys),
     };
 
     let mut stages = cfg.workflow.stages.clone();
@@ -522,6 +558,13 @@ struct RunCtx<'a> {
     /// that never failed). Integrated/escalated units are terminal and skipped before
     /// the lifecycle, so their presence here is harmless.
     prior_attempts: HashMap<String, u32>,
+    /// The set of REPLAY KEYS already present in the run (spec 04, criterion 4): seeded
+    /// at run start from the prior log's [`META_REPLAY_KEY`] metadata, then extended as
+    /// this process emits. [`emit_keyed`](RunCtx::emit_keyed) consults it so a step
+    /// re-running the conductor over recorded history appends each keyed unit-lifecycle
+    /// event AT MOST ONCE - the log stays free of duplicate UnitStarted/green/verified/
+    /// reviewed/ManualReview events no matter how many step processes replay it.
+    replayed_keys: Mutex<HashSet<String>>,
 }
 
 #[cfg(test)]
@@ -538,6 +581,7 @@ impl<'a> RunCtx<'a> {
             budget_broke: std::sync::atomic::AtomicBool::new(false),
             prior_status: HashMap::new(),
             prior_attempts: HashMap::new(),
+            replayed_keys: Mutex::new(HashSet::new()),
         }
     }
 }
@@ -564,6 +608,70 @@ impl RunCtx<'_> {
             let _ = g.apply(&ev);
         }
         Ok(())
+    }
+
+    /// Emit an event IDEMPOTENTLY under a deterministic replay `key` (spec 04, criterion
+    /// 4): if the key was already recorded in the log (a prior step emitted it) or has
+    /// already been emitted this process, the event is a REPLAY and the append is
+    /// skipped. Otherwise it is appended - with the key stamped in [`META_REPLAY_KEY`]
+    /// metadata so a later step recognizes the replay - and folded into the live graph,
+    /// exactly like [`emit`](RunCtx::emit).
+    ///
+    /// This is how a step re-running the conductor over recorded history re-emits no
+    /// duplicate unit-lifecycle event: UnitStarted, the green/verified/reviewed
+    /// statuses, and the manual-review pause all flow through here, keyed by unit +
+    /// phase (+ remediation attempt where an event legitimately recurs per attempt).
+    fn emit_keyed(&self, key: &str, type_: &str, payload: Value) -> Result<(), Error> {
+        {
+            // A first insert means this key is new work; a repeat means the log already
+            // carries it (seeded at run start) or this process already emitted it - a
+            // replay, so append nothing. Holding the lock only around the set guard lets
+            // concurrent units in a wave append their own keyed events in parallel.
+            let mut keys = self.replayed_keys.lock().unwrap();
+            if !keys.insert(key.to_string()) {
+                return Ok(());
+            }
+        }
+        let mut ev =
+            Event::new(type_, serde_json::to_vec(&payload)?).with_meta(META_REPLAY_KEY, key);
+        let pos =
+            self.deps
+                .store
+                .append(STREAM, ExpectedRevision::Any, std::slice::from_ref(&ev))?;
+        if let Some(g) = self.deps.graph {
+            ev.position = pos;
+            let _ = g.apply(&ev);
+        }
+        Ok(())
+    }
+
+    /// The recorded outcome of a gate whose verdict was already emitted under `key` in a
+    /// prior step - its `(pass, evidence)` - or `None` if this gate has not run yet. A
+    /// step re-reaching an already-run gate REPLAYS this instead of re-running the
+    /// command (spec 04, criterion 4): the log is the single source of truth for a
+    /// gate's outcome, so a re-run never pays gate-duration time twice and never appends
+    /// a second GateVerdict. Only [`emit_keyed`](RunCtx::emit_keyed)-stamped verdicts
+    /// (the inline and deferred gate runs) carry a replay key; the integrate-time
+    /// GATED_BY artifact verdicts do not, so they never match a gate-run key.
+    fn recorded_gate_verdict(&self, key: &str) -> Result<Option<(bool, String)>, Error> {
+        let events = self.deps.store.read_stream(STREAM, 0, Direction::Forward)?;
+        for e in &events {
+            if e.type_ != contextgraph::TYPE_GATE_VERDICT
+                || e.meta.get(META_REPLAY_KEY).map(String::as_str) != Some(key)
+            {
+                continue;
+            }
+            #[derive(Deserialize)]
+            struct Verdict {
+                pass: bool,
+                #[serde(default)]
+                evidence: String,
+            }
+            let v: Verdict =
+                serde_json::from_slice(&e.data).map_err(|err| Error(err.to_string()))?;
+            return Ok(Some((v.pass, v.evidence)));
+        }
+        Ok(None)
     }
 
     /// The configured remediation depth: how many attempts a failed unit gets
@@ -807,7 +915,12 @@ impl RunCtx<'_> {
         // DETERMINISTIC branch, so the graph can project ASSIGNED_TO (unit->agent) and
         // BLOCKS (need->unit), and the ledger records the durable checkpoint branch
         // (resume-continuity) the unit's committed work persists on across runs.
-        self.emit(
+        // UnitStarted is a once-per-unit checkpoint (replay-keyed on the unit id), so a
+        // step re-running the conductor over recorded history does not re-append it -
+        // the double-count that would otherwise deflate the metrics denominators on
+        // every replay step (finding adv-replay-dup-lifecycle).
+        self.emit_keyed(
+            &format!("{name}/started"),
             ledger::TYPE_UNIT_STARTED,
             json!({
                 "id": name,
@@ -829,7 +942,14 @@ impl RunCtx<'_> {
         // run concurrently and advance regardless. Only an explicit `autonomy: manual`
         // pauses; the AutoNotify default runs and integrates unattended.
         if self.stage_paused_for_review(st) {
-            self.emit(TYPE_MANUAL_REVIEW, json!({"id": st.name, "unit": st.name}))?;
+            // The pause recurs every step while the unit awaits a human, so it is
+            // replay-keyed on the unit id: the frontier reports one ManualReview, not a
+            // fresh one each re-step (spec 04, criterion 4).
+            self.emit_keyed(
+                &format!("{}/manual-review", st.name),
+                TYPE_MANUAL_REVIEW,
+                json!({"id": st.name, "unit": st.name}),
+            )?;
             return Ok(false);
         }
         if is_fan_out(st) {
@@ -1016,8 +1136,12 @@ impl RunCtx<'_> {
         let (approved, reason) = self.run_adjudicator(st, &adjudicator, dir, attempt)?;
         if approved {
             // The adjudicator's verdict reason is folded into the unit's `reviewed`
-            // evidence (item 4).
-            self.emit(
+            // evidence (item 4). Replay-keyed on unit + attempt: a repo-less unit that
+            // reached `reviewed` but does not merge (on_pass: none) re-runs its review
+            // over the recorded verdicts every step, so the status is appended once
+            // (spec 04, criterion 4).
+            self.emit_keyed(
+                &format!("{}/reviewed#{attempt}", st.name),
                 ledger::TYPE_UNIT_STATUS,
                 json!({
                     "id": st.name,
@@ -1100,7 +1224,8 @@ impl RunCtx<'_> {
                         unit_branch(&st.name)
                     ),
                 );
-                self.emit(
+                self.emit_keyed(
+                    &format!("{}/green#{attempts}", st.name),
                     ledger::TYPE_UNIT_STATUS,
                     json!({"id": st.name, "status": "green", "evidence": green}),
                 )?;
@@ -1159,7 +1284,11 @@ impl RunCtx<'_> {
                         // implemented it.
                         let mut green = BTreeMap::new();
                         green.insert("green".to_string(), format!("implemented by {}", st.agent));
-                        self.emit(
+                        // Replay-keyed on unit + attempt: a step replaying the recorded
+                        // implementer result re-reaches this line every step, but the
+                        // green status is appended once per attempt (spec 04, criterion 4).
+                        self.emit_keyed(
+                            &format!("{}/green#{attempts}", st.name),
                             ledger::TYPE_UNIT_STATUS,
                             json!({"id": st.name, "status": "green", "evidence": green}),
                         )?;
@@ -1217,11 +1346,14 @@ impl RunCtx<'_> {
                 if let Some(w) = wt {
                     w.commit(&format!("rigger: {} attempt {}", st.name, attempts + 1))?;
                 }
-                let gate_outcome = self.run_gates(st, dir)?;
+                let gate_outcome = self.run_gates(st, dir, attempts)?;
                 if gate_outcome.pass {
                     // The verified status carries the gate evidence (item 4): each
                     // gate that ran summarized for the ledger's per-unit evidence.
-                    self.emit(
+                    // Replay-keyed on unit + attempt so a re-step past this unit's
+                    // recorded gates does not re-append it (spec 04, criterion 4).
+                    self.emit_keyed(
+                        &format!("{}/verified#{attempts}", st.name),
                         ledger::TYPE_UNIT_STATUS,
                         json!({
                             "id": st.name,
@@ -1363,7 +1495,7 @@ impl RunCtx<'_> {
                 self.run_adjudicator(st, &st.adjudicator, dir, attempts)?
             };
 
-            let gates_pass = approved && self.run_gates(st, dir)?.pass;
+            let gates_pass = approved && self.run_gates(st, dir, attempts)?.pass;
             if gates_pass {
                 // on_pass governs integration (§3.2): any value other than empty /
                 // `merge` runs the gates but does not mark the stage integrated.
@@ -1575,7 +1707,16 @@ impl RunCtx<'_> {
         Ok((verdict_approves(&result.output), result.output))
     }
 
-    fn run_gates(&self, st: &Stage, dir: &str) -> Result<GateOutcome, Error> {
+    /// Run a stage's inline gates for its `attempt`, returning whether they all passed
+    /// and the compact evidence of any failure. Each gate's verdict is REPLAY-KEYED on
+    /// the `(unit, attempt, gate)` coordinate (spec 04, criterion 4): the first step to
+    /// reach an unrecorded gate runs its command inline and records a `GateVerdict`;
+    /// every later step re-reaching that same gate REPLAYS the recorded verdict without
+    /// re-running the command (so a stepwise run that hits a cargo gate pays its
+    /// duration once, not once per step) and appends no duplicate verdict. Distinct
+    /// attempts are distinct gate runs - a re-implementation must re-gate - so only
+    /// re-reaching the SAME attempt's gate is a replay.
+    fn run_gates(&self, st: &Stage, dir: &str, attempt: u32) -> Result<GateOutcome, Error> {
         let mut outcome = GateOutcome {
             pass: true,
             evidence: Vec::new(),
@@ -1596,6 +1737,19 @@ impl RunCtx<'_> {
             if !kind.runs_inline() {
                 continue;
             }
+            let key = gate_verdict_key(&st.name, attempt, gid);
+            // REPLAY a recorded verdict (spec 04, criterion 4): this gate already ran in
+            // a prior step, so reuse its recorded pass/evidence and re-run NOTHING - not
+            // the command, not the GateVerdict emit, not the ratchet. The recorded
+            // outcome is authoritative, so the unit's verified/failed decision is
+            // identical to the live run's.
+            if let Some((pass, evidence)) = self.recorded_gate_verdict(&key)? {
+                if !pass {
+                    outcome.pass = false;
+                    outcome.evidence.push(format!("{gid}: {evidence}"));
+                }
+                continue;
+            }
             let g = Gate {
                 id: gid.clone(),
                 run: gc.run,
@@ -1607,7 +1761,9 @@ impl RunCtx<'_> {
             // The compact gate evidence is threaded into the GateVerdict event
             // payload (item 3): a real run otherwise discarded it, so neither the
             // ledger nor the workflow driver ever saw WHY a gate passed or failed.
-            self.emit(
+            // Replay-keyed so a re-step replays this verdict instead of re-running.
+            self.emit_keyed(
+                &key,
                 contextgraph::TYPE_GATE_VERDICT,
                 json!({"gate": gid, "pass": res.pass, "evidence": res.evidence}),
             )?;
@@ -1685,6 +1841,16 @@ impl RunCtx<'_> {
                 .cloned()
                 .unwrap_or_default();
             let kind = gate::Kind::parse(&gc.kind);
+            // REPLAY a recorded deferred verdict (spec 04, criterion 4): a deferred gate
+            // runs once per run, so the first step to reach this phase boundary runs it
+            // and every later re-step replays its recorded outcome - no re-run of the
+            // (typically expensive, whole-tree) command, no duplicate GateVerdict, and
+            // no duplicate DeferredGateFailed. A recorded failure is already folded by
+            // the ledger, so the run stays reported not-fully-done on replay too.
+            let key = deferred_gate_verdict_key(gid);
+            if self.recorded_gate_verdict(&key)?.is_some() {
+                continue;
+            }
             let g = Gate {
                 id: gid.clone(),
                 run: gc.run,
@@ -1694,7 +1860,8 @@ impl RunCtx<'_> {
             };
             // The deferred gate runs in the base repo (the fully integrated tree).
             let res = self.deps.gates.run(&g, "");
-            self.emit(
+            self.emit_keyed(
+                &key,
                 contextgraph::TYPE_GATE_VERDICT,
                 json!({"gate": gid, "pass": res.pass, "evidence": res.evidence}),
             )?;
@@ -6164,6 +6331,7 @@ mod tests {
             budget_broke: std::sync::atomic::AtomicBool::new(false),
             prior_status: HashMap::new(),
             prior_attempts: HashMap::new(),
+            replayed_keys: Mutex::new(HashSet::new()),
         };
         ctx.record_gate("ok", gate::Kind::Core, true, "silent");
         let seeded = ctx.gate_tracker.lock().unwrap().get("ok").unwrap().autonomy;
@@ -7363,6 +7531,193 @@ mod tests {
         assert!(
             rs.deferred_gate_failed,
             "the run state must record the deferred-gate failure"
+        );
+    }
+
+    #[test]
+    fn a_replayed_step_re_runs_no_recorded_gate_and_appends_no_duplicate_events() {
+        // spec 04, criterion 4: a step re-running the conductor over recorded history
+        // appends no unit event or gate verdict twice, and a recorded GateVerdict is
+        // REPLAYED without re-running its gate command (finding adv-replay-dup-lifecycle).
+        use crate::driver::replay::ReplayDriver;
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.gates.insert("check".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "u".into(),
+            Stage {
+                name: "u".into(),
+                agent: "worker".into(),
+                gates: vec!["check".into()],
+                // No review panel and on_pass:none: the unit verifies and STAYS at
+                // `verified` (never integrates), so every step re-runs it fresh over the
+                // recorded implementer result - the exact shape a mid-flight unit replays.
+                on_pass: "none".into(),
+                ..Default::default()
+            },
+        );
+
+        let st = Store::open(":memory:").unwrap();
+        // A courier already recorded the implementer's result, so the replay driver
+        // ANSWERS the implementer spawn (never parks it) and the gate is reached both
+        // steps.
+        crate::spawn::record_result(
+            &st,
+            &crate::spawn::SpawnResult::ok(spawn_id("u", ROLE_IMPLEMENTER, 0), "done"),
+        )
+        .unwrap();
+
+        // Two consecutive steps replay the SAME recorded history. The gate runner
+        // records every command it runs, so a re-run of an already-recorded gate would
+        // show up as a second call.
+        let runner = RecordingRunner::new(&[]);
+        for _ in 0..2 {
+            let driver = ReplayDriver::new(&st);
+            let deps = Deps {
+                store: &st,
+                driver: &driver,
+                gates: &runner,
+                repo: String::new(),
+                grounder: None,
+                graph: None,
+                criteria: Vec::new(),
+            };
+            run(&cfg, &deps).unwrap();
+        }
+
+        // The gate command ran EXACTLY ONCE across both steps: the second step replayed
+        // the recorded verdict instead of re-running the command.
+        assert_eq!(
+            runner
+                .calls()
+                .iter()
+                .filter(|c| c.as_str() == "check")
+                .count(),
+            1,
+            "a recorded GateVerdict must be replayed, its command never re-run"
+        );
+
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let count_status = |status: &str| {
+            events
+                .iter()
+                .filter(|e| {
+                    e.type_ == ledger::TYPE_UNIT_STATUS
+                        && String::from_utf8_lossy(&e.data)
+                            .contains(&format!("\"status\":\"{status}\""))
+                })
+                .count()
+        };
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| e.type_ == ledger::TYPE_UNIT_STARTED)
+                .count(),
+            1,
+            "UnitStarted is appended once, not once per replay step"
+        );
+        assert_eq!(
+            count_status("green"),
+            1,
+            "green is appended once across steps"
+        );
+        assert_eq!(
+            count_status("verified"),
+            1,
+            "verified is appended once across steps"
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| e.type_ == contextgraph::TYPE_GATE_VERDICT)
+                .count(),
+            1,
+            "the GateVerdict is appended once - the replay re-emits none"
+        );
+    }
+
+    #[test]
+    fn a_re_step_replays_a_recorded_deferred_gate_without_re_running_it() {
+        // spec 04, criterion 4: a deferred gate's recorded verdict is replayed on a
+        // re-step, never re-running the (whole-tree) command or duplicating the verdict.
+        use crate::driver::replay::ReplayDriver;
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.gates.insert("inline".into(), gate_def("true"));
+        cfg.workflow.gates.insert(
+            "deferred".into(),
+            config::Gate {
+                run: "true".into(),
+                kind: "deferred".into(),
+            },
+        );
+        cfg.workflow.stages.insert(
+            "u".into(),
+            Stage {
+                name: "u".into(),
+                agent: "worker".into(),
+                gates: vec!["inline".into(), "deferred".into()],
+                on_pass: "none".into(),
+                ..Default::default()
+            },
+        );
+
+        let st = Store::open(":memory:").unwrap();
+        crate::spawn::record_result(
+            &st,
+            &crate::spawn::SpawnResult::ok(spawn_id("u", ROLE_IMPLEMENTER, 0), "done"),
+        )
+        .unwrap();
+
+        let runner = RecordingRunner::new(&[]);
+        for _ in 0..2 {
+            let driver = ReplayDriver::new(&st);
+            let deps = Deps {
+                store: &st,
+                driver: &driver,
+                gates: &runner,
+                repo: String::new(),
+                grounder: None,
+                graph: None,
+                criteria: Vec::new(),
+            };
+            run(&cfg, &deps).unwrap();
+        }
+
+        let calls = runner.calls();
+        assert_eq!(
+            calls.iter().filter(|c| c.as_str() == "deferred").count(),
+            1,
+            "the deferred gate runs once across steps, then replays; calls: {calls:?}"
+        );
+        assert_eq!(
+            calls.iter().filter(|c| c.as_str() == "inline").count(),
+            1,
+            "the inline gate runs once across steps, then replays; calls: {calls:?}"
+        );
+
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let verdicts = |gate: &str| {
+            events
+                .iter()
+                .filter(|e| {
+                    e.type_ == contextgraph::TYPE_GATE_VERDICT
+                        && String::from_utf8_lossy(&e.data)
+                            .contains(&format!("\"gate\":\"{gate}\""))
+                })
+                .count()
+        };
+        assert_eq!(
+            verdicts("deferred"),
+            1,
+            "no duplicate deferred GateVerdict on replay"
+        );
+        assert_eq!(
+            verdicts("inline"),
+            1,
+            "no duplicate inline GateVerdict on replay"
         );
     }
 

@@ -247,6 +247,66 @@ mod tests {
         assert_eq!(answered.output, "done");
     }
 
+    #[test]
+    fn replaying_a_recorded_result_appends_no_duplicate_lifecycle_events() {
+        // spec 04, criterion 4: once the implementer's result is recorded, re-running the
+        // conductor over that history any number of times appends no UnitStarted / green
+        // / verified twice - the unit-lifecycle events are replay-keyed, so the append-
+        // only log stays free of the duplicates a naive re-run would manufacture every
+        // step (finding adv-replay-dup-lifecycle).
+        let store = Store::open(":memory:").unwrap();
+        let cfg = config_with(vec![stage("u", "worker")]);
+        let id = spawn_id("u", ROLE_IMPLEMENTER, 0);
+        spawn::record_result(&store, &spawn::SpawnResult::ok(&id, "implemented")).unwrap();
+
+        // Three consecutive steps replay the SAME recorded history (the implementer is
+        // answered from the log every time; the unit reaches `verified` and, on_pass
+        // being `none`, stays there without integrating).
+        for _ in 0..3 {
+            let driver = ReplayDriver::new(&store);
+            let deps = Deps {
+                store: &store,
+                driver: &driver,
+                gates: &ExecRunner,
+                repo: String::new(),
+                grounder: None,
+                graph: None,
+                criteria: Vec::new(),
+            };
+            run(&cfg, &deps).unwrap();
+        }
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let started = events
+            .iter()
+            .filter(|e| e.type_ == crate::ledger::TYPE_UNIT_STARTED)
+            .count();
+        let count_status = |status: &str| {
+            events
+                .iter()
+                .filter(|e| {
+                    e.type_ == crate::ledger::TYPE_UNIT_STATUS
+                        && String::from_utf8_lossy(&e.data)
+                            .contains(&format!("\"status\":\"{status}\""))
+                })
+                .count()
+        };
+        assert_eq!(
+            started, 1,
+            "UnitStarted is appended once across three replay steps"
+        );
+        assert_eq!(
+            count_status("green"),
+            1,
+            "green is appended once across three replay steps"
+        );
+        assert_eq!(
+            count_status("verified"),
+            1,
+            "verified is appended once across three replay steps"
+        );
+    }
+
     fn stage(name: &str, agent: &str) -> Stage {
         Stage {
             name: name.into(),
