@@ -47,7 +47,7 @@ Everything underneath is pluggable through interfaces, each with a sensible defa
 - Agent driver. By default Rigger runs agents by shelling out to the `claude` command line tool, so it works anywhere that tool is installed, with no dependency on a particular editor or runtime. The in-Claude-Code workflow driver (`rigger serve`, over a stdio MCP bridge) is the richer alternative, again behind the same trait.
 - Grounding. The default is a self-contained grep grounder. Built with `--features turbovec`, the real turbovec engine (semantic vector search via `turbovec` + `fastembed`) plugs in behind the same trait.
 
-The loop itself is the part that has already been proven. It came out of a real harness that drove a large engine refactor: take a spec, break it into a dependency graph of units, refuse to call anything done until every requirement is covered and every gate is green, run independent units in parallel in isolated worktrees, review each one adversarially before it lands, and escalate or retry on failure instead of silently dropping it or spinning forever. Rigger is that machinery with everything specific to the project it grew up in stripped out.
+The loop's discipline, in one breath: take a spec, break it into a dependency graph of units, refuse to call anything done until every requirement is covered and every gate is green, run independent units in parallel in isolated worktrees, review each one adversarially before it lands, and escalate or retry on failure instead of silently dropping it or spinning forever. Rigger is that machinery and nothing else - everything project-specific arrives as your config.
 
 ## Quick start
 
@@ -65,6 +65,8 @@ Then drive the loop from inside Claude Code:
 /rigger specs/feature.md       # run the loop on a spec - no hand-editing, it just works
 rigger graph --around path/to/file
 ```
+
+Need a fleet to start from? [agency-agents](https://github.com/msitarzewski/agency-agents) (MIT) offers 200+ ready-made agent definitions in the same Markdown-with-frontmatter shape - see [the handbook's authoring-agents chapter](docs/handbook/authoring-agents.md) for how to adapt one into `.rigger/agents/`.
 
 `rigger setup` installs the native Claude Code workflow at `.claude/workflows/rigger.js`, which Claude Code auto-discovers - so `/rigger <spec>` is runnable immediately, with nothing else to wire up. That workflow is the primary driver: it decomposes the spec into a unit DAG and, per unit, implements -> runs the cargo gates -> three-tier adversarial review -> integrates, with bounded remediation. Its agents ground themselves with `rigger ground` and read/write the shared context graph through `rigger emit` and `rigger peers`, so no agent works blind.
 
