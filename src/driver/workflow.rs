@@ -199,6 +199,7 @@ mod tests {
                     isolation: false,
                     parallel: false,
                     blast_radius: vec!["a.rs".into()],
+                    ..Default::default()
                 },
                 &emit,
             )
@@ -284,6 +285,7 @@ mod tests {
                     isolation: false,
                     parallel: false,
                     blast_radius: Vec::new(),
+                    ..Default::default()
                 },
                 &emit,
             )
@@ -336,6 +338,7 @@ mod tests {
                     isolation: true,
                     parallel: false,
                     blast_radius: Vec::new(),
+                    ..Default::default()
                 },
                 &emit,
             )

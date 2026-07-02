@@ -282,6 +282,7 @@ thinking out loud, not json\n\
                     isolation: false,
                     parallel: false,
                     blast_radius: Vec::new(),
+                    ..Default::default()
                 },
                 &emit,
             )
