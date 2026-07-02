@@ -20,9 +20,20 @@ use rigger::grounder::Grounder;
 use rigger::ledger::RunState;
 use rigger::metrics::{self, Metrics};
 use rigger::sidecar::{PeerDecision, Sidecar};
+use rigger::worktree::Worktree;
 use rigger::{hooks, mcpserver, spawn, spec};
 
 const RIGGER_DIR: &str = ".rigger";
+
+/// The run branch the stepwise driver accumulates a run on: every unit worktree is
+/// branched from it and every approved unit is merged back into it. Mirrored by
+/// `RUN` in `workflows/rigger.js` (the JS driver); the two names must agree.
+const RUN_BRANCH: &str = "rigger-run";
+
+/// The default ref the run branch is anchored to when `rigger step` (or the driver)
+/// is not given `--base`. A later run builds on an earlier run's branch by passing
+/// that branch as `--base <ref>` instead. Mirrored by the driver's own default.
+const DEFAULT_BASE_REF: &str = "origin/main";
 
 /// The JS-driver RUNTIME files, embedded in the binary so `rigger setup` can
 /// provision a per-project shim without the user cloning the repo. Only the three
@@ -302,8 +313,10 @@ fn usage() {
         "rigger - a config-driven, event-sourced multi-agent dev-loop harness\n\n\
 usage:\n  \
 rigger run [spec] [opts]    run the workflow (opts below)\n  \
-rigger step [--spec <path>] advance the run one frontier via the replay driver and\n                              \
-print the newly parked spawn wave + a done flag as JSON\n  \
+rigger step [--spec <path>]      advance the run one frontier via the replay driver\n            \
+[--base <ref>]        and print the newly parked spawn wave + a done flag\n                              \
+as JSON. --base (default origin/main) anchors the run\n                              \
+branch, so a later run can build on an earlier one\n  \
 rigger workflow [spec]      turn-key: launch the per-project Node driver, which\n                              \
 spawns `rigger serve`, runs each agent via the Agent\n                              \
 SDK, and drives the loop (one command; run `rigger\n                              \
@@ -379,13 +392,27 @@ fn cmd_run(args: &[String]) -> Res {
 ///
 /// Composition mirrors `run_cli` (the per-project namespaced sqlite run stream, the
 /// grounder from `defaults.grounder`, the context-graph projector) so a step sees
-/// exactly the state a `rigger run` would. The `--base` run-branch ref of spec 04 is a
-/// separate unit and is intentionally not handled here (decision `d-step-base-scope`).
+/// exactly the state a `rigger run` would.
+///
+/// `--base <ref>` (default `origin/main`) anchors the run branch: before driving the
+/// conductor, a step ensures the [`RUN_BRANCH`] exists in the repo, created off
+/// `--base` if it does not yet exist (idempotent - an existing run branch is reused,
+/// never reset, so prior steps' integrations survive; see
+/// [`Worktree::ensure_run_branch`]). Pointing `--base` at an earlier run's branch is
+/// how a later run builds on it. A repo-less invocation skips this entirely.
 fn cmd_step(args: &[String]) -> Res {
-    let spec = parse_step_args(args)?;
+    let args = parse_step_args(args)?;
     let cfg = config::load(".")?;
-    let criteria = load_criteria(spec.as_deref())?;
+    let criteria = load_criteria(args.spec.as_deref())?;
     std::fs::create_dir_all(RIGGER_DIR)?;
+
+    // Anchor the run branch off --base before the conductor branches any unit worktree
+    // off it. Guarded on a real repo so the repo-less unit-test path is untouched.
+    let repo = git_repo();
+    if !repo.is_empty() {
+        Worktree::ensure_run_branch(&repo, RUN_BRANCH, &args.base)?;
+    }
+
     let backend = Store::open(&db_path("events.db"))?;
     let store = Namespaced::new(&backend, &project_identity());
 
@@ -405,7 +432,7 @@ fn cmd_step(args: &[String]) -> Res {
         store: &store,
         driver: &driver,
         gates: &ExecRunner,
-        repo: git_repo(),
+        repo,
         grounder: Some(grounder.as_ref()),
         graph: Some(&graph),
         criteria,
@@ -418,13 +445,23 @@ fn cmd_step(args: &[String]) -> Res {
     Ok(())
 }
 
+/// The parsed flags of a `rigger step` invocation.
+struct StepArgs {
+    /// The spec whose Done-when criteria drive the deterministic decomposition, or
+    /// None for an unconstrained step (exactly as `rigger run` uses `--spec`).
+    spec: Option<String>,
+    /// The ref the run branch is anchored to (`--base`, default [`DEFAULT_BASE_REF`]).
+    base: String,
+}
+
 /// Parse `rigger step`'s flags: an optional `--spec <path>` (the spec whose Done-when
-/// criteria drive the deterministic decomposition, exactly as `rigger run` uses it).
-/// An unknown flag or a bare positional is a clear error, so a typo never silently runs
-/// an unconstrained step. (The `--base` run-branch ref of spec 04 belongs to a separate
-/// unit - decision `d-step-base-scope` - so it is not accepted here yet.)
-fn parse_step_args(args: &[String]) -> Result<Option<String>, Box<dyn std::error::Error>> {
+/// criteria drive the deterministic decomposition, exactly as `rigger run` uses it) and
+/// an optional `--base <ref>` (the run-branch base, default [`DEFAULT_BASE_REF`]). Each
+/// flag requires its value, and an unknown flag or a bare positional is a clear error,
+/// so a typo never silently runs an unconstrained step.
+fn parse_step_args(args: &[String]) -> Result<StepArgs, Box<dyn std::error::Error>> {
     let mut spec = None;
+    let mut base = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -433,6 +470,13 @@ fn parse_step_args(args: &[String]) -> Result<Option<String>, Box<dyn std::error
                 spec = match args.get(i) {
                     Some(p) => Some(p.clone()),
                     None => return Err("step: --spec expects a path".into()),
+                };
+            }
+            "--base" => {
+                i += 1;
+                base = match args.get(i) {
+                    Some(r) => Some(r.clone()),
+                    None => return Err("step: --base expects a ref".into()),
                 };
             }
             flag if flag.starts_with("--") => {
@@ -447,7 +491,10 @@ fn parse_step_args(args: &[String]) -> Result<Option<String>, Box<dyn std::error
         }
         i += 1;
     }
-    Ok(spec)
+    Ok(StepArgs {
+        spec,
+        base: base.unwrap_or_else(|| DEFAULT_BASE_REF.to_string()),
+    })
 }
 
 /// The standalone CLI path: ground, spawn agents as `claude` subprocesses, drive
@@ -1524,6 +1571,34 @@ mod tests {
         assert!(parse_run_args(&["--eventstore".into(), "bogus".into()]).is_err());
         assert!(parse_run_args(&["--nope".into()]).is_err());
         assert!(parse_run_args(&["a".into(), "b".into()]).is_err());
+    }
+
+    /// `rigger step` accepts `--spec` and `--base`: `--base` defaults to `origin/main`,
+    /// both flags require a value, and an unknown flag or bare positional is rejected.
+    #[test]
+    fn parse_step_args_reads_spec_and_base_with_default() {
+        let s = |a: &[&str]| parse_step_args(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+
+        // Default base when --base is not given; no spec.
+        let a = s(&[]).unwrap();
+        assert_eq!(a.base, DEFAULT_BASE_REF);
+        assert_eq!(a.base, "origin/main");
+        assert!(a.spec.is_none());
+
+        // --base overrides the default; --spec is read independently and order-free.
+        let a = s(&["--base", "rigger-run-1"]).unwrap();
+        assert_eq!(a.base, "rigger-run-1");
+        assert!(a.spec.is_none());
+
+        let a = s(&["--spec", "specs/04.md", "--base", "origin/next"]).unwrap();
+        assert_eq!(a.spec.as_deref(), Some("specs/04.md"));
+        assert_eq!(a.base, "origin/next");
+
+        // Each flag requires its value; typos and positionals are hard errors.
+        assert!(s(&["--base"]).is_err(), "--base without a value must error");
+        assert!(s(&["--spec"]).is_err(), "--spec without a value must error");
+        assert!(s(&["--nope"]).is_err(), "an unknown flag must error");
+        assert!(s(&["bare"]).is_err(), "a bare positional must error");
     }
 
     /// With the default build (no `kurrentdb` feature), requesting the server store

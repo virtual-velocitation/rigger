@@ -27,6 +27,42 @@ fn temp_project() -> tempfile::TempDir {
     dir
 }
 
+/// A throwaway git project with a real commit, so a base ref like `HEAD` resolves.
+/// `temp_project` only `git init`s (unborn HEAD), which is enough for the offline
+/// step tests but not for the run-branch-anchoring path that needs a base commit.
+fn temp_git_project_with_commit() -> tempfile::TempDir {
+    let dir = temp_project();
+    let root = dir.path();
+    for args in [
+        &["config", "user.email", "t@example.com"][..],
+        &["config", "user.name", "t"],
+        &["commit", "--allow-empty", "-q", "-m", "init"],
+    ] {
+        let ok = Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .status()
+            .expect("git must be runnable")
+            .success();
+        assert!(ok, "git {args:?} must succeed while seeding the repo");
+    }
+    dir
+}
+
+/// Run a read-only `git <args...>` in `cwd`, returning its trimmed stdout on success
+/// (used to assert branch state after a `rigger step --base`), or None on failure.
+fn git_out(cwd: &Path, args: &[&str]) -> Option<String> {
+    let out = Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .expect("git must be runnable");
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
 /// Run `rigger <args...>` in `cwd` and return (stdout, stderr, success).
 fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
     let out = Command::new(rigger_bin())
@@ -728,8 +764,7 @@ fn step_prints_a_disjoint_two_spawn_wave_then_reports_done() {
 }
 
 /// `rigger step` rejects an unknown flag with a clear, non-zero error rather than
-/// silently running an unconstrained step. (The `--base` run-branch ref of spec 04 is a
-/// separate unit, so it is not accepted here yet.)
+/// silently running an unconstrained step.
 #[test]
 fn step_rejects_an_unknown_flag() {
     let dir = temp_project();
@@ -741,5 +776,56 @@ fn step_rejects_an_unknown_flag() {
     assert!(
         err.contains("unknown flag"),
         "the error must name the unknown flag; got: {err:?}"
+    );
+}
+
+/// `rigger step --base <ref>` anchors the run branch: it creates the `rigger-run`
+/// branch off the base ref and checks it out (so the conductor branches every unit
+/// worktree off it), without disturbing the step's `{wave,done}` JSON. This is the
+/// mechanism by which a later run builds on an earlier run's branch.
+#[test]
+fn step_accepts_base_and_anchors_the_run_branch() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+    let base_sha =
+        git_out(root, &["rev-parse", "HEAD"]).expect("the seeded repo has a HEAD commit");
+
+    let (out, err, ok) = run_rigger(root, &["step", "--base", "HEAD"]);
+    assert!(ok, "step --base must succeed; stderr: {err}");
+
+    // --base does not disturb the wave: both disjoint units still park, run not done.
+    let line = out.trim();
+    assert!(
+        line.matches(r#""id":"#).count() == 2 && line.contains(r#""done":false"#),
+        "the two-unit wave still parks with --base; got: {line:?}"
+    );
+
+    // The run branch was created off the base and checked out.
+    assert_eq!(
+        git_out(root, &["symbolic-ref", "--short", "-q", "HEAD"]).as_deref(),
+        Some("rigger-run"),
+        "rigger step --base must create and check out the run branch"
+    );
+    assert_eq!(
+        git_out(root, &["rev-parse", "rigger-run"]).as_deref(),
+        Some(base_sha.as_str()),
+        "the run branch must be anchored on the --base commit"
+    );
+}
+
+/// `rigger step --base` with no following ref is a clear, non-zero error, never a
+/// silent unconstrained step - matching the `--spec` contract.
+#[test]
+fn step_rejects_base_without_a_value() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+
+    let (_out, err, ok) = run_rigger(root, &["step", "--base"]);
+    assert!(!ok, "--base without a value must be a non-zero exit");
+    assert!(
+        err.contains("--base expects a ref"),
+        "the error must explain --base needs a ref; got: {err:?}"
     );
 }
