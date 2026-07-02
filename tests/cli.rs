@@ -931,3 +931,173 @@ fn step_reuses_the_run_branch_and_warns_when_explicit_base_is_ignored() {
         "an ignored explicit --base must be announced on stderr; got: {err:?}"
     );
 }
+
+/// A throwaway project dir that is deliberately NOT a git repo (no `git init`), so
+/// `git_repo()` resolves to empty and the conductor drives a REPO-LESS run. That is the
+/// offline shape the stepwise driver's own unit tests use (`repo: String::new()`): with
+/// no repo configured, `assert_isolated_cwd` is a no-op, so a reviewer spawn (the
+/// adjudicator) parks with an empty working dir instead of being refused for "would run
+/// in the main repo checkout". A repo-ful run would instead need real worktrees, and a
+/// fabricated `SpawnResult` (no actual diff) would then fail the pre-gate commit with
+/// "nothing to commit" - so repo-less is the faithful offline driver for this test.
+/// `project_identity()` falls back to the dir basename, which is stable across the
+/// step / emit / stats calls this test makes in the same dir.
+fn temp_repoless_project() -> tempfile::TempDir {
+    tempfile::tempdir().unwrap()
+}
+
+/// Scaffold a single-unit workflow whose unit runs a REAL inline gate and reviews itself
+/// through an adjudicator - the two event kinds `rigger stats` reports as its gate and
+/// review-verdict sections. It is offline and deterministic: the `nop` grounder does no
+/// model work, the `check` gate is a trivial `true` shell command the [`ExecRunner`]
+/// runs inline (recording a `GateVerdict`), the adjudicator's verdict is supplied via a
+/// recorded `SpawnResult`, and `on_pass: none` means the verified+reviewed unit never
+/// tries to merge (no git). The implementer and adjudicator spawns are parked by the
+/// replay driver and drained by recorded results, exactly like `write_two_stage_workflow`.
+fn write_gated_reviewed_workflow(root: &Path) {
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nImplement the unit.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("agents").join("judge.md"),
+        "---\nid: judge\nmodel: sonnet\ntools: [Read]\nisolation: none\n---\nAdjudicate the unit.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        r#"name: statstest
+defaults:
+  grounder: nop
+  budget: 60
+  review:
+    adjudicator: judge
+gates:
+  check: { run: "true", kind: core }
+stages:
+  solo:
+    agent: worker
+    gates: [check]
+    on_pass: none
+"#,
+    )
+    .unwrap();
+}
+
+/// spec 04, criterion 49: a step-driven run recorded in the event log yields NON-EMPTY
+/// gate and review-verdict sections in `rigger stats`. This is the capstone integration
+/// proof that closes Gap 3 (the old JS driver under-emitted the vocabulary, blinding
+/// `rigger stats`): driving the unit's whole lifecycle through the stepwise conductor -
+/// `rigger step` to advance the frontier, `rigger emit SpawnResult` to drain each parked
+/// spawn (the `rigger result` channel a courier uses), the inline gate running for real -
+/// records the exact `GateVerdict` and `UnitStatus` events the metrics projection folds,
+/// so the two sections that were empty under the thin driver are now populated.
+#[test]
+fn a_step_driven_run_yields_nonempty_gate_and_review_sections_in_stats() {
+    let dir = temp_repoless_project();
+    let root = dir.path();
+    write_gated_reviewed_workflow(root);
+
+    // Step 1: the unit is ready, so its implementer spawn parks at the frontier. The run
+    // is not done while a spawn awaits a courier's result.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the first step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"solo/implementer#0""#) && out.contains(r#""done":false"#),
+        "step 1 parks the implementer and is not done; got: {out:?}"
+    );
+
+    // Drain the implementer via a recorded SpawnResult (the `rigger result` channel,
+    // simulated here as its sibling command is not on this branch yet - the same
+    // substitution `step_prints_a_disjoint_two_spawn_wave_then_reports_done` makes).
+    let (_o, err, ok) = run_rigger(
+        root,
+        &[
+            "emit",
+            "SpawnResult",
+            r#"{"id":"solo/implementer#0","output":"implemented the unit"}"#,
+        ],
+    );
+    assert!(
+        ok,
+        "recording the implementer result must succeed; stderr: {err}"
+    );
+
+    // Step 2: the implementer REPLAYS from the log; the conductor commits (nothing, on the
+    // repo-less path), runs the `check` gate inline (recording a passing GateVerdict),
+    // emits `verified`, then the three-tier review parks the adjudicator spawn.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the second step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"solo/adjudicator#0""#) && out.contains(r#""done":false"#),
+        "step 2 replays the implementer, gates the unit, and parks the adjudicator; got: {out:?}"
+    );
+
+    // Drain the adjudicator with an APPROVE verdict (the last JSON line `verdict_approves`
+    // reads), so the review resolves to an approve and the unit records `reviewed`.
+    let (_o, err, ok) = run_rigger(
+        root,
+        &[
+            "emit",
+            "SpawnResult",
+            r#"{"id":"solo/adjudicator#0","output":"{\"verdict\":\"approve\"}"}"#,
+        ],
+    );
+    assert!(
+        ok,
+        "recording the adjudicator's approve must succeed; stderr: {err}"
+    );
+
+    // Step 3: everything replays - the implementer, the recorded gate verdict (never
+    // re-run), and the adjudicator's approve - so the unit reaches `reviewed`. `on_pass:
+    // none` means it does not merge, and no new spawn parks, so the run is done.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the third step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""wave":[]"#) && out.contains(r#""done":true"#),
+        "step 3 replays to a fixpoint: an empty wave and done; got: {out:?}"
+    );
+
+    // `rigger stats` folds that recorded run and prints BOTH sections populated.
+    let (stats, err, ok) = run_rigger(root, &["stats"]);
+    assert!(
+        ok,
+        "stats over the step-driven run must succeed; stderr: {err}"
+    );
+
+    // The GATE section is non-empty: the inline `check` gate ran once and passed, so the
+    // per-gate table appears (NOT the "no gate runs recorded" placeholder) and lists it.
+    assert!(
+        !stats.contains("no gate runs recorded"),
+        "a step-driven run recorded a real gate, so the gate section must not be the empty \
+         placeholder; got:\n{stats}"
+    );
+    assert!(
+        stats.contains("per-gate runs"),
+        "the gate section header must be present; got:\n{stats}"
+    );
+    let gate_line = stats
+        .lines()
+        .find(|l| l.contains("check"))
+        .unwrap_or_else(|| {
+            panic!("the `check` gate must appear in the gate section; got:\n{stats}")
+        });
+    assert!(
+        gate_line.contains("1 pass") && gate_line.contains("1 total"),
+        "the `check` gate must show its one passing inline run; got line: {gate_line:?}"
+    );
+
+    // The REVIEW-VERDICT section is non-empty: the adjudicator approved, so the review
+    // line reports one real verdict (a genuine approve, not the zeroed default).
+    let review_line = stats
+        .lines()
+        .find(|l| l.contains("review"))
+        .unwrap_or_else(|| panic!("the review section must appear; got:\n{stats}"));
+    assert!(
+        review_line.contains("1 approved"),
+        "the review-verdict section must record the adjudicator's approve; got line: {review_line:?}"
+    );
+}
