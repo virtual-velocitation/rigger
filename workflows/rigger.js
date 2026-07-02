@@ -78,9 +78,13 @@ const BASEFLAG = A.base ? ` --base ${A.base}` : ''
 // only id/unit/stage/prompt are required; extra fields are tolerated (additionalProperties).
 // `error` is the courier's own out-of-band channel: if `rigger step` itself fails, the
 // courier reports the message here rather than fabricating a wave.
+// Top level rejects unknown fields (additionalProperties: false): a courier that
+// invents a side-channel (a file reference, a summary field) fails validation and is
+// retried, instead of smuggling an empty wave past the driver. Wave ITEMS stay open
+// (additionalProperties: true) for forward-compat with new SpawnRequest fields.
 const STEP = {
   type: 'object',
-  additionalProperties: true,
+  additionalProperties: false,
   required: ['wave', 'done'],
   properties: {
     wave: {
