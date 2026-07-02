@@ -117,6 +117,16 @@ pub struct Defaults {
     /// the wave un-partitioned.
     #[serde(default)]
     pub partition: String,
+    /// Where the run's transient scratch (unit/review worktrees) lives. Empty (the
+    /// default) resolves to `<repo>/.rigger/tmp` - the REPO's partition, which on the
+    /// common small-root/large-home layout is the big one, and same-filesystem with
+    /// the checkout so worktree adds are cheap. A leading `~/` expands to $HOME. The
+    /// `RIGGER_TMPDIR` environment variable overrides this for machine-local
+    /// placement without touching versioned config. Never the OS temp dir: a 5G
+    /// cargo target per worktree on a 69G root partition is how a run fills the OS
+    /// disk (design-intent Gap 14).
+    #[serde(default)]
+    pub workdir: String,
 }
 
 /// Stage is one node of the workflow DAG.

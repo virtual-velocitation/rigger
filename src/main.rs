@@ -451,6 +451,16 @@ fn cmd_step(args: &[String]) -> Res {
             )
         })?;
         warn_on_run_branch_divergence(setup, &args);
+        // The maintenance half of Gap 14: every step starts by sweeping the scratch
+        // root's terminal worktrees (integrated units, review scaffolding), so leaks
+        // from crashed or superseded step processes are reclaimed by the loop itself
+        // instead of accumulating until a human notices a full disk.
+        let root = rigger::worktree::scratch_root_from_env(&repo, &cfg.workflow.defaults.workdir);
+        match rigger::worktree::sweep_terminal(&repo, &root, RUN_BRANCH) {
+            Ok(0) => {}
+            Ok(n) => eprintln!("rigger step: swept {n} terminal worktree(s) from {root}"),
+            Err(e) => eprintln!("rigger step: scratch sweep skipped: {e}"),
+        }
     }
 
     let backend = Store::open(&db_path("events.db"))?;
@@ -1417,7 +1427,10 @@ fn write_gitignore_entries(root: &Path, pattern: &str) -> Result<(), Box<dyn std
 
     // Check if already in .gitignore
     let current = std::fs::read_to_string(&gitignore_path).unwrap_or_default();
-    if current.lines().any(|line| line.trim() == normalized_pattern) {
+    if current
+        .lines()
+        .any(|line| line.trim() == normalized_pattern)
+    {
         return Ok(()); // Already in .gitignore
     }
 
@@ -1458,7 +1471,9 @@ fn write_gitignore_entries(root: &Path, pattern: &str) -> Result<(), Box<dyn std
 
 /// Get all agent IDs referenced in the workflow at <root>/.rigger/workflow.yml.
 /// Returns an empty set if the workflow cannot be loaded or parsed.
-fn get_referenced_agent_ids(root: &Path) -> Result<std::collections::HashSet<String>, Box<dyn std::error::Error>> {
+fn get_referenced_agent_ids(
+    root: &Path,
+) -> Result<std::collections::HashSet<String>, Box<dyn std::error::Error>> {
     use std::collections::HashSet;
 
     let workflow_path = root.join(RIGGER_DIR).join("workflow.yml");

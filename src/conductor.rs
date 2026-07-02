@@ -2619,9 +2619,14 @@ impl RunCtx<'_> {
         // reused on the next run instead of being thrown away under a per-run-uuid
         // branch. `Worktree::create` handles both a fresh branch (create off HEAD) and
         // an existing branch with prior commits (check it out, reusing the work). The
-        // worktree DIR stays transient - a fresh, unique temp dir each time, recreated
-        // from the branch as needed.
-        let dir = std::env::temp_dir().join(format!(
+        // worktree DIR stays transient - a fresh, unique dir under the run's scratch
+        // root each time (never the OS temp dir - Gap 14), recreated from the branch
+        // as needed.
+        let dir = std::path::PathBuf::from(crate::worktree::scratch_root_from_env(
+            &self.deps.repo,
+            &self.cfg.workflow.defaults.workdir,
+        ))
+        .join(format!(
             "rigger-wt-{}-{}",
             sanitize_for_path(&st.name),
             &uuid::Uuid::new_v4().to_string()[..8]
@@ -2647,7 +2652,11 @@ impl RunCtx<'_> {
             return Ok(None);
         }
         let uuid = uuid::Uuid::new_v4().to_string();
-        let dir = std::env::temp_dir().join(format!(
+        let dir = std::path::PathBuf::from(crate::worktree::scratch_root_from_env(
+            &self.deps.repo,
+            &self.cfg.workflow.defaults.workdir,
+        ))
+        .join(format!(
             "rigger-review-{}-{}",
             sanitize_for_path(&st.name),
             &uuid[..8]

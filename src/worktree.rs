@@ -348,6 +348,64 @@ fn current_branch(repo: &str) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// Resolve the run's scratch root - where transient worktrees live. Precedence:
+/// `env_override` (the `RIGGER_TMPDIR` environment variable, machine-local placement) >
+/// `configured` (`defaults.workdir` from workflow.yml, versioned placement) > the
+/// default `<repo>/.rigger/tmp`. A leading `~/` expands to $HOME. NEVER the OS temp
+/// dir: worktrees carry multi-gigabyte build dirs, and on the common
+/// small-root/large-home partition layout the OS disk is the one that cannot absorb
+/// them (design-intent Gap 14). The resolved dir is created if absent.
+pub fn scratch_root(repo: &str, configured: &str, env_override: Option<&str>) -> String {
+    let chosen = match env_override {
+        Some(v) if !v.trim().is_empty() => v.trim().to_string(),
+        _ if !configured.trim().is_empty() => configured.trim().to_string(),
+        _ => format!("{}/.rigger/tmp", if repo.is_empty() { "." } else { repo }),
+    };
+    let expanded = match (chosen.strip_prefix("~/"), std::env::var("HOME")) {
+        (Some(rest), Ok(home)) => format!("{home}/{rest}"),
+        _ => chosen,
+    };
+    let _ = std::fs::create_dir_all(&expanded);
+    expanded
+}
+
+/// [`scratch_root`] with the `RIGGER_TMPDIR` environment variable as the override.
+pub fn scratch_root_from_env(repo: &str, configured: &str) -> String {
+    let env = std::env::var("RIGGER_TMPDIR").ok();
+    scratch_root(repo, configured, env.as_deref())
+}
+
+/// Sweep the scratch root's TERMINAL worktrees: prune stale registrations, then remove
+/// every registered worktree under `root` whose branch tip is already an ancestor of
+/// `run_branch` - integrated (or never-advanced review scaffolding), so the worktree
+/// serves no in-flight unit. Unmerged branches are in-flight checkpoints and are left
+/// alone. Returns how many worktrees were removed. This is the "the loop cleans up
+/// after itself" half of Gap 14: crashed or superseded step processes leak worktrees,
+/// and integrate-time removal alone never reclaims them.
+pub fn sweep_terminal(repo: &str, root: &str, run_branch: &str) -> Result<usize, Error> {
+    git(repo, &["worktree", "prune"])?;
+    let out = run_git(repo, &["worktree", "list", "--porcelain"]).map_err(Error)?;
+    let mut removed = 0;
+    let mut dir: Option<String> = None;
+    for line in out.lines() {
+        if let Some(d) = line.strip_prefix("worktree ") {
+            dir = Some(d.to_string());
+        } else if let Some(branch) = line.strip_prefix("branch refs/heads/") {
+            let Some(d) = dir.take() else { continue };
+            if !d.starts_with(root) || branch == run_branch {
+                continue;
+            }
+            let merged =
+                run_git(repo, &["merge-base", "--is-ancestor", branch, run_branch]).is_ok();
+            if merged {
+                git(repo, &["worktree", "remove", "--force", &d])?;
+                removed += 1;
+            }
+        }
+    }
+    Ok(removed)
+}
+
 /// The dir of the worktree that already has `branch` checked out, if any - parsed
 /// from `git worktree list --porcelain` (a `worktree <dir>` line followed by its
 /// `branch refs/heads/<name>` line). Registrations whose dirs were deleted out from
@@ -569,6 +627,71 @@ mod tests {
         assert!(
             !Worktree::branch_has_work(&repo_path, branch),
             "delete_branch removes the checkpoint after it has served its purpose"
+        );
+    }
+
+    #[test]
+    fn scratch_root_resolves_env_then_config_then_repo_default() {
+        // Precedence: RIGGER_TMPDIR (passed as the override param) > defaults.workdir
+        // > <repo>/.rigger/tmp. The default lives on the REPO's partition, never the
+        // OS temp dir (Gap 14).
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+
+        let dflt = scratch_root(&repo_path, "", None);
+        assert_eq!(dflt, format!("{repo_path}/.rigger/tmp"));
+        assert!(std::path::Path::new(&dflt).is_dir(), "the root is created");
+
+        let cfg_dir = repo.path().join("elsewhere");
+        let configured = scratch_root(&repo_path, cfg_dir.to_str().unwrap(), None);
+        assert_eq!(configured, cfg_dir.to_str().unwrap());
+
+        let env_dir = repo.path().join("env-wins");
+        let env = scratch_root(
+            &repo_path,
+            cfg_dir.to_str().unwrap(),
+            Some(env_dir.to_str().unwrap()),
+        );
+        assert_eq!(env, env_dir.to_str().unwrap(), "env override beats config");
+
+        // A leading ~/ expands to $HOME (workflow.yml can say ~/.rigger/tmp).
+        if let Ok(home) = std::env::var("HOME") {
+            let tilde = scratch_root(&repo_path, "~/.rigger-scratch-test", None);
+            assert_eq!(tilde, format!("{home}/.rigger-scratch-test"));
+            let _ = std::fs::remove_dir_all(tilde);
+        }
+    }
+
+    #[test]
+    fn sweep_terminal_removes_merged_worktrees_and_keeps_inflight_ones() {
+        // Gap 14 maintenance: a worktree whose branch is already an ancestor of the
+        // run branch serves no in-flight unit and is swept; an unmerged branch is a
+        // live checkpoint and must be left alone. Only dirs under the scratch root
+        // are considered.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        run_git(&repo_path, &["checkout", "-b", "rigger-run"]).unwrap();
+        let root = scratch_root(&repo_path, "", None);
+
+        // Terminal: branch created off the run branch, never advanced (ancestor).
+        let done_dir = format!("{root}/rigger-wt-done");
+        Worktree::create(&repo_path, &done_dir, "rigger/u/done").unwrap();
+
+        // In-flight: branch carries a commit the run branch does not have.
+        let live_dir = format!("{root}/rigger-wt-live");
+        let live = Worktree::create(&repo_path, &live_dir, "rigger/u/live").unwrap();
+        std::fs::write(std::path::Path::new(&live_dir).join("wip.txt"), "wip\n").unwrap();
+        live.commit("rigger: in-flight").unwrap();
+
+        let removed = sweep_terminal(&repo_path, &root, "rigger-run").unwrap();
+        assert_eq!(removed, 1, "exactly the terminal worktree is swept");
+        assert!(
+            !std::path::Path::new(&done_dir).exists(),
+            "the merged/never-advanced worktree is gone"
+        );
+        assert!(
+            std::path::Path::new(&live_dir).join("wip.txt").exists(),
+            "the in-flight worktree is untouched"
         );
     }
 

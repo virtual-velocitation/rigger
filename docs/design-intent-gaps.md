@@ -130,10 +130,10 @@ Dogfooding. Rigger ran on its own spec; the run's telemetry (`rigger stats`, `ri
 
 **Fix shape** (Byran, 2026-07-02: a small OS partition with most disk on /home is a common layout; the scratch location must be configurable and MAINTAINED, not just relocated). Four parts:
 
-- (a) **Configurable scratch root, sane default.** Worktrees and all run scratch live under `<repo>/.rigger/tmp` by default - the repo's own partition (large by construction on the common layout), gitignored by setup, and same-filesystem with the checkout so worktree adds are cheap. Overridable via `defaults.workdir` in `workflow.yml` (and a `RIGGER_TMPDIR` env override for machine-local placement like `~/.rigger/tmp`); `std::env::temp_dir()` stops being the placement policy.
-- (b) **Shared build cache.** One `CARGO_TARGET_DIR` under the scratch root shared across worktrees (cargo's own locking makes concurrent builds safe), so targets stop multiplying per worktree.
-- (c) **Lifecycle: the loop cleans up after itself.** At every step start the conductor prunes worktrees of TERMINAL units (integrated, escalated, superseded) and stale registrations; unit test scratch is bounded to the worktree and dies with it.
-- (d) **Residue is surfaced.** `rigger validate` reports scratch-root residue (worktrees with no live unit, orphaned build caches) with sizes, so accumulation is a warning, never a full disk.
+- (a) **Configurable scratch root, sane default.** DONE out-of-band (operator, 2026-07-02, mid-campaign): worktrees live under `<repo>/.rigger/tmp` by default (gitignored, repo partition, same-filesystem adds), `defaults.workdir` / `RIGGER_TMPDIR` override, `~/` expansion; `std::env::temp_dir()` is no longer placement policy (`worktree::scratch_root`).
+- (b) **Shared build cache.** One `CARGO_TARGET_DIR` under the scratch root shared across worktrees (cargo's own locking makes concurrent builds safe), so targets stop multiplying per worktree. REMAINS for the loop.
+- (c) **Lifecycle: the loop cleans up after itself.** DONE out-of-band, same patch: every `rigger step` starts with `worktree::sweep_terminal` - prune stale registrations, remove scratch-root worktrees whose branch is an ancestor of the run branch (integrated units, review scaffolding); in-flight checkpoints untouched. Bounding unit test scratch to the worktree REMAINS for the loop.
+- (d) **Residue is surfaced.** `rigger validate` reports scratch-root residue (worktrees with no live unit, orphaned build caches) with sizes, so accumulation is a warning, never a full disk. REMAINS for the loop.
 
 ---
 
