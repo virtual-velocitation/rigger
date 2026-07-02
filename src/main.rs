@@ -470,6 +470,16 @@ fn cmd_step(args: &[String]) -> Res {
     let backend = Store::open(&db_path("events.db"))?;
     let store = Namespaced::new(&backend, &project_identity());
 
+    // Captured before `repo` moves into Deps: the fixpoint sweep below needs it.
+    let scratch_root = if repo.is_empty() {
+        None
+    } else {
+        Some(rigger::worktree::scratch_root_from_env(
+            &repo,
+            &cfg.workflow.defaults.workdir,
+        ))
+    };
+
     let graph = Projector::open(&db_path("graph.db"))?;
     let grounder = select_grounder(&cfg.workflow.defaults.grounder)?;
     let driver = ReplayDriver::new(&store);
@@ -489,6 +499,15 @@ fn cmd_step(args: &[String]) -> Res {
     // result), so a killed or re-run step process orphans nothing and a relaunched
     // driver resumes the in-flight wave (see spawn::step_result).
     let step = spawn::step_result(&events).map_err(|e| e.to_string())?;
+    // At the fixpoint, sweep the shared agent-scratch area (probe repos, verification
+    // builds workers park under <scratch-root>/agent-scratch per the driver's scratch
+    // policy): it exists only to serve in-flight spawns, and leaving it is how a run
+    // leaks gigabytes of build debris (Gap 14). Best-effort - never fails the step.
+    if step.done {
+        if let Some(root) = &scratch_root {
+            let _ = std::fs::remove_dir_all(std::path::Path::new(root).join("agent-scratch"));
+        }
+    }
     println!("{}", serde_json::to_string(&step)?);
     Ok(())
 }
