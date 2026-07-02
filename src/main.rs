@@ -1494,21 +1494,46 @@ fn dirty_tracked_paths(porcelain: &str) -> Vec<String> {
         .collect()
 }
 
-/// The full project setup, rooted at `root` so it is testable against a temp dir
-/// without touching the process-wide current directory (`set_current_dir` is not
-/// test-safe). It does two things, both idempotent:
-///   1. scaffolds `<root>/.rigger/` - `workflow.yml` plus the `agents/` folder -
-///      from the scaffold constants, keeping any file that already exists;
-///   2. installs the Claude Code SessionStart hook into `<root>/.claude/settings.json`,
-///      merging into (never clobbering) whatever settings are already there.
-///
-/// Scaffolds a new project and returns the names of agents that were scaffolded.
-fn init_project(root: &Path) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+/// What [`init_project`] did, PER ARTIFACT, so `rigger setup` / `rigger init` can
+/// narrate exactly what changed and stay a silent no-op on a rerun that changed nothing
+/// (spec 05, criterion 4: setup is re-runnable with no surprising output). The summary
+/// is built from these fields ([`scaffold_summary_lines`]) so it can never claim a
+/// scaffold action that was not performed - a gitignore-only repair reports only the
+/// gitignore change (the honest-summary bar the loop already enforced on unit-5).
+#[derive(Debug, Default)]
+struct ScaffoldReport {
+    /// True when this run newly wrote `.rigger/workflow.yml` (it was absent).
+    wrote_workflow: bool,
+    /// Agent files this run newly wrote (empty when they already existed).
+    new_agents: Vec<String>,
+    /// True when this run installed or updated the SessionStart hook in
+    /// `.claude/settings.json` (false when the hook was already present unchanged).
+    wrote_hook: bool,
+    /// `.gitignore` patterns this run newly appended (empty when every machine-local
+    /// pattern was already ignored or tracked).
+    gitignore_added: Vec<String>,
+}
+
+impl ScaffoldReport {
+    /// True when this run created or modified ANY scaffold artifact. False means the
+    /// scaffold was already complete and this run left the tree byte-for-byte identical.
+    fn changed(&self) -> bool {
+        self.wrote_workflow
+            || !self.new_agents.is_empty()
+            || self.wrote_hook
+            || !self.gitignore_added.is_empty()
+    }
+}
+
+/// Scaffold a project idempotently, returning a [`ScaffoldReport`] of what actually
+/// changed. Every step is a no-op when its artifact already exists and matches, so a
+/// rerun on an initialized project changes nothing and reports `changed: false`.
+fn init_project(root: &Path) -> Result<ScaffoldReport, Box<dyn std::error::Error>> {
     // 1. Scaffold .rigger/.
     let rigger_dir = root.join(RIGGER_DIR);
     let agents_dir = rigger_dir.join("agents");
     std::fs::create_dir_all(&agents_dir)?;
-    write_if_absent(&rigger_dir.join("workflow.yml"), SCAFFOLD_WORKFLOW);
+    let wrote_workflow = write_if_absent(&rigger_dir.join("workflow.yml"), SCAFFOLD_WORKFLOW);
 
     // 2. Load the workflow to determine which agents are referenced, then only
     // scaffold those agents. This allows setup to skip scaffolding when the
@@ -1536,30 +1561,51 @@ fn init_project(root: &Path) -> Result<Vec<String>, Box<dyn std::error::Error>> 
             .collect()
     };
 
-    let mut scaffolded_agents = Vec::new();
+    let mut new_agents = Vec::new();
     for (file, content) in &agents_to_scaffold {
-        write_if_absent(&agents_dir.join(file), content);
-        scaffolded_agents.push(file.to_string());
+        // Report only NEWLY-written agents; an existing agent is kept silently, so a
+        // rerun scaffolds nothing new (the skip-scaffolding hygiene of §05).
+        if write_if_absent(&agents_dir.join(file), content) {
+            new_agents.push(file.to_string());
+        }
     }
 
-    // 3. Install the SessionStart hook, merging into any existing settings.
+    // 3. Install the SessionStart hook, merging into any existing settings. Write ONLY
+    // when the merge actually changes settings.json, so a rerun (the hook already
+    // present) leaves the file - and its mtime - untouched.
     let claude_dir = root.join(".claude");
     std::fs::create_dir_all(&claude_dir)?;
     let settings_path = claude_dir.join("settings.json");
     let existing = std::fs::read(&settings_path).unwrap_or_default();
     let merged = hooks::install_session_start(&existing, "rigger prime")?;
-    std::fs::write(&settings_path, merged)?;
+    let wrote_hook = merged != existing;
+    if wrote_hook {
+        std::fs::write(&settings_path, &merged)?;
+    }
 
     // 4. Write .gitignore entries for machine-local installs (.claude/ and .rigger/shim/)
-    // when they are not already ignored or tracked.
-    write_gitignore_entries(root, ".claude/")?;
-    write_gitignore_entries(root, ".rigger/shim/")?;
+    // when they are not already ignored or tracked. Record WHICH patterns were appended
+    // so the summary reports the real gitignore change and nothing it did not do.
+    let mut gitignore_added = Vec::new();
+    for pattern in [".claude/", ".rigger/shim/"] {
+        if write_gitignore_entries(root, pattern)? {
+            gitignore_added.push(pattern.to_string());
+        }
+    }
 
-    Ok(scaffolded_agents)
+    Ok(ScaffoldReport {
+        wrote_workflow,
+        new_agents,
+        wrote_hook,
+        gitignore_added,
+    })
 }
 
-/// Write a .gitignore entry for the given pattern if it is not already ignored or tracked.
-fn write_gitignore_entries(root: &Path, pattern: &str) -> Result<(), Box<dyn std::error::Error>> {
+/// Write a .gitignore entry for the given pattern if it is not already ignored or
+/// tracked, returning whether it APPENDED an entry (`true`) or left `.gitignore`
+/// untouched (`false`). Idempotent: a rerun finds the entry already present and is a
+/// no-op, so setup never pollutes `.gitignore` with duplicates.
+fn write_gitignore_entries(root: &Path, pattern: &str) -> Result<bool, Box<dyn std::error::Error>> {
     let gitignore_path = root.join(".gitignore");
     let normalized_pattern = pattern.trim_end_matches('/');
 
@@ -1569,7 +1615,7 @@ fn write_gitignore_entries(root: &Path, pattern: &str) -> Result<(), Box<dyn std
         .lines()
         .any(|line| line.trim() == normalized_pattern)
     {
-        return Ok(()); // Already in .gitignore
+        return Ok(false); // Already in .gitignore
     }
 
     // Check if the path is tracked in git (it should not be, as .claude/ and .rigger/shim/
@@ -1587,7 +1633,7 @@ fn write_gitignore_entries(root: &Path, pattern: &str) -> Result<(), Box<dyn std
         .unwrap_or(false);
 
     if is_tracked {
-        return Ok(()); // Path is tracked, don't ignore it
+        return Ok(false); // Path is tracked, don't ignore it
     }
 
     // Append to .gitignore
@@ -1604,7 +1650,7 @@ fn write_gitignore_entries(root: &Path, pattern: &str) -> Result<(), Box<dyn std
 
     writeln!(file, "{}", normalized_pattern)?;
 
-    Ok(())
+    Ok(true)
 }
 
 /// Get all agent IDs referenced in the workflow at <root>/.rigger/workflow.yml.
@@ -1639,13 +1685,52 @@ fn get_referenced_agent_ids(
     Ok(ids)
 }
 
+/// The per-artifact summary lines for a scaffold run: ONE line for each artifact this
+/// run actually (re)wrote, and nothing for artifacts left untouched. This is the single
+/// authority for the setup/init summary, so it can never emit a blanket "scaffolded
+/// workflow + agents + hook" claim on a run that only repaired one artifact - a
+/// gitignore-only repair yields only the gitignore line (spec 05, criterion 4: prints
+/// nothing surprising; the honest-summary bar of adj-unit5). Pure so it is unit-testable
+/// without capturing stdout.
+fn scaffold_summary_lines(report: &ScaffoldReport) -> Vec<String> {
+    let mut lines = Vec::new();
+    if report.wrote_workflow {
+        lines.push("scaffolded .rigger/workflow.yml".to_string());
+    }
+    if !report.new_agents.is_empty() {
+        lines.push(format!(
+            "scaffolded .rigger/agents/{{{}}}",
+            report.new_agents.join(", ")
+        ));
+    }
+    if report.wrote_hook {
+        lines.push(
+            "installed a Claude Code SessionStart hook in .claude/settings.json (it runs \
+             `rigger prime`)"
+                .to_string(),
+        );
+    }
+    if !report.gitignore_added.is_empty() {
+        lines.push(format!(
+            "added .gitignore entries so machine-local installs stay untracked: {}",
+            report.gitignore_added.join(", ")
+        ));
+    }
+    lines
+}
+
 fn cmd_init() -> Res {
-    let scaffolded_agents = init_project(Path::new("."))?;
-    println!(
-        "scaffolded .rigger/workflow.yml and .rigger/agents/{{{}}} and installed a Claude Code \
-         SessionStart hook in .claude/settings.json (it runs `rigger prime`)",
-        scaffolded_agents.join(", ")
-    );
+    let report = init_project(Path::new("."))?;
+    let lines = scaffold_summary_lines(&report);
+    if lines.is_empty() {
+        // Re-runnable: an already-initialized project is a silent no-op with a plain
+        // confirmation, never a re-narration of every file left in place.
+        println!("rigger init: already initialized; nothing to scaffold");
+    } else {
+        for line in lines {
+            println!("{line}");
+        }
+    }
     Ok(())
 }
 
@@ -1657,21 +1742,52 @@ fn shim_dir(root: &Path) -> std::path::PathBuf {
     root.join(RIGGER_DIR).join("shim")
 }
 
-/// Install the native `/rigger` Claude Code workflow at
-/// `<root>/.claude/workflows/rigger.js`, returning that path. Creates the
-/// `.claude/workflows/` directory if absent and always (re)writes the file from the
-/// embedded [`RIGGER_WORKFLOW`], so a `rigger setup` after a `rigger` upgrade
-/// refreshes the workflow to match the binary - the workflow and the conductor /
-/// CLI it drives stay the same build. Claude Code auto-discovers `.js` here, so the
-/// user can run `/rigger <spec>` immediately, with no registration. Rooted at `root`
-/// so it is testable against a temp dir.
-fn install_workflow(root: &Path) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+/// What [`install_workflow`] did to `.claude/workflows/rigger.js`, so `rigger setup`
+/// can REPORT a refresh but stay a silent no-op when nothing drifted (spec 05,
+/// criterion 4: setup is re-runnable - it detects and refreshes a drifted installed
+/// workflow, reports the refresh, and changes nothing when the workflow is current).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkflowInstall {
+    /// No workflow was installed before; the embedded copy was written fresh.
+    Installed,
+    /// An installed workflow had DRIFTED from the embedded copy (e.g. an older
+    /// `rigger` build wrote it) and was refreshed to match this binary.
+    Refreshed,
+    /// The installed workflow already matched the embedded copy byte-for-byte, so
+    /// nothing was written - a rerun changes nothing (not even the file's mtime,
+    /// which the grounder keys off).
+    AlreadyCurrent,
+}
+
+/// Install (or refresh) the native `/rigger` Claude Code workflow at
+/// `<root>/.claude/workflows/rigger.js`, returning [what it did](WorkflowInstall).
+///
+/// It COMPARES the installed file against the embedded [`RIGGER_WORKFLOW`] and writes
+/// ONLY when the file is absent (a fresh install) or has drifted (a stale copy from an
+/// older `rigger` build): an up-to-date workflow is left untouched so a `rigger setup`
+/// rerun is a true no-op. A drifted file is overwritten so an upgrade refreshes the
+/// workflow to match the binary - the workflow and the conductor / CLI it drives stay
+/// the same build. Claude Code auto-discovers `.js` here, so the user can run `/rigger
+/// <spec>` immediately, with no registration. Rooted at `root` so it is testable
+/// against a temp dir. The installed path is [`workflow_path`]`(root)`.
+fn install_workflow(root: &Path) -> Result<WorkflowInstall, Box<dyn std::error::Error>> {
     let path = workflow_path(root);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
+    // Compare bytes so a byte-identical installed workflow is left in place - rewriting
+    // identical content would still bump the file's mtime, which is an observable side
+    // effect (the grounder's staleness gate keys off mtime), not a true no-op.
+    let existed = path.exists();
+    if existed && std::fs::read(&path)? == RIGGER_WORKFLOW.as_bytes() {
+        return Ok(WorkflowInstall::AlreadyCurrent);
+    }
     std::fs::write(&path, RIGGER_WORKFLOW)?;
-    Ok(path)
+    Ok(if existed {
+        WorkflowInstall::Refreshed
+    } else {
+        WorkflowInstall::Installed
+    })
 }
 
 /// Provision the per-project JS driver under `<root>/.rigger/shim/`: write the three
@@ -1679,17 +1795,47 @@ fn install_workflow(root: &Path) -> Result<std::path::PathBuf, Box<dyn std::erro
 /// install their npm dependencies so `node_modules` is ready and `rigger workflow`
 /// is zero-setup. Rooted at `root` so it is testable against a temp dir.
 ///
-/// The files are always (re)written from the embedded copies, so a `rigger setup`
-/// after a `rigger` upgrade refreshes the driver to match the binary - the shim and
-/// the conductor it drives stay the same build. npm install runs `npm ci` when the
-/// lockfile is present (a reproducible, locked install) and falls back to `npm
-/// install` otherwise. A missing `npm` is a CLEAR error (with the directory it would
-/// have installed in), never a silent skip - the user must know the driver is not
-/// ready.
-fn provision_shim(root: &Path) -> Res {
-    let dir = write_shim_files(root)?;
+/// Provisioning is a silent no-op when the shim is already up to date: the three
+/// runtime files match the embedded copies AND `node_modules` is present (see
+/// [`shim_is_current`]). Skipping then avoids re-touching the files' mtimes and
+/// re-running npm on every `rigger setup` (spec 05, criterion 4: setup is re-runnable
+/// and changes nothing when nothing drifted). Otherwise the files are (re)written from
+/// the embedded copies (so a `rigger` upgrade refreshes the driver to match the binary)
+/// and npm install runs: `npm ci` when the lockfile is present (a reproducible, locked
+/// install), else `npm install`. A missing `npm` is a CLEAR error (naming the directory
+/// it would have installed in), never a silent skip - the user must know the driver is
+/// not ready. Returns whether it actually (re)provisioned.
+fn provision_shim(root: &Path) -> Result<bool, Box<dyn std::error::Error>> {
+    let dir = shim_dir(root);
+    if shim_is_current(&dir) {
+        return Ok(false);
+    }
+    write_shim_files(root)?;
     run_npm_install(&dir)?;
-    Ok(())
+    Ok(true)
+}
+
+/// Whether the provisioned shim in `dir` is up to date: every embedded runtime file is
+/// present with byte-identical content AND npm's install is COMPLETE. Used by
+/// [`provision_shim`] to make a `rigger setup` rerun a no-op instead of re-writing the
+/// files and re-running npm.
+///
+/// Completeness is gated on `node_modules/.package-lock.json` - the hidden lockfile npm
+/// writes as the FINAL step of a successful `npm ci` / `npm install` - not on the mere
+/// PRESENCE of a `node_modules` directory. A torn/partial install (an interrupted `npm
+/// ci`, which `rm -rf`s `node_modules` then repopulates incrementally) leaves the
+/// directory present-but-incomplete and WITHOUT the marker; gating on the marker makes
+/// setup re-run npm and SELF-HEAL it rather than treating the broken tree as current and
+/// refusing to repair it forever (spec 05, criterion 4: setup is re-runnable).
+fn shim_is_current(dir: &Path) -> bool {
+    dir.join("node_modules")
+        .join(".package-lock.json")
+        .is_file()
+        && SHIM_FILES.iter().all(|(name, contents)| {
+            std::fs::read(dir.join(name))
+                .map(|on_disk| on_disk == contents.as_bytes())
+                .unwrap_or(false)
+        })
 }
 
 /// Write the three embedded shim runtime files into `<root>/.rigger/shim/`,
@@ -1748,19 +1894,42 @@ fn run_npm_install(dir: &Path) -> Res {
 /// remains as a fallback.
 fn cmd_setup() -> Res {
     let root = Path::new(".");
-    let scaffolded_agents = init_project(root)?;
-    install_workflow(root)?;
-    provision_shim(root)?;
-    println!(
-        "scaffolded .rigger/workflow.yml and .rigger/agents/{{{}}}, installed a Claude Code \
-         SessionStart hook in .claude/settings.json, and provisioned the JS driver in \
-         .rigger/shim/ (wrote shim.mjs + package.json + package-lock.json and ran npm install)",
-        scaffolded_agents.join(", ")
-    );
-    println!(
-        "installed the /rigger workflow (.claude/workflows/rigger.js) - run it with: /rigger \
-         <spec-path>"
-    );
+    // Each step is drift-aware and reports whether it changed anything, so setup is
+    // safely re-runnable: it refreshes a drifted workflow and reports it, and a rerun
+    // on an up-to-date repo changes nothing and prints nothing surprising (spec 05,
+    // criterion 4).
+    let scaffold = init_project(root)?;
+    let workflow = install_workflow(root)?;
+    let provisioned = provision_shim(root)?;
+
+    let workflow_changed = workflow != WorkflowInstall::AlreadyCurrent;
+    if !scaffold.changed() && !workflow_changed && !provisioned {
+        // A silent no-op: nothing drifted, so there is nothing to report.
+        return Ok(());
+    }
+
+    // Narrate ONLY the scaffold artifacts this run actually (re)wrote - never a blanket
+    // claim, so a gitignore-only repair reports the gitignore change alone.
+    for line in scaffold_summary_lines(&scaffold) {
+        println!("{line}");
+    }
+    if provisioned {
+        println!(
+            "provisioned the JS driver in .rigger/shim/ (wrote shim.mjs + package.json + \
+             package-lock.json and ran npm install)"
+        );
+    }
+    match workflow {
+        WorkflowInstall::Installed => println!(
+            "installed the /rigger workflow (.claude/workflows/rigger.js) - run it with: /rigger \
+             <spec-path>"
+        ),
+        WorkflowInstall::Refreshed => println!(
+            "refreshed the drifted /rigger workflow (.claude/workflows/rigger.js) to match this \
+             rigger build"
+        ),
+        WorkflowInstall::AlreadyCurrent => {}
+    }
     Ok(())
 }
 
@@ -1866,14 +2035,19 @@ fn print_run_state(rs: &RunState) {
     }
 }
 
-fn write_if_absent(path: &Path, content: &str) {
+/// Write `content` to `path` only when it does not already exist, returning whether it
+/// WROTE (`true`) or KEPT an existing file (`false`). Keeping is silent - a `rigger
+/// setup` / `rigger init` rerun must not narrate every file it left untouched - so the
+/// return value is how callers report only what a run actually created.
+fn write_if_absent(path: &Path, content: &str) -> bool {
     if path.exists() {
-        println!("kept existing {}", path.display());
-        return;
+        return false;
     }
     if let Err(e) = std::fs::write(path, content) {
         eprintln!("rigger: write {}: {e}", path.display());
+        return false;
     }
+    true
 }
 
 /// The scaffolded workflow (§3.2): a worked plan -> implement pipeline where the
@@ -2566,16 +2740,16 @@ mod tests {
         );
     }
 
-    /// `rigger setup` must install the native `/rigger` Claude Code workflow at
-    /// `.claude/workflows/rigger.js` with content byte-identical to the embedded
-    /// `RIGGER_WORKFLOW`, and re-running setup must overwrite it cleanly (so a
-    /// `rigger` upgrade refreshes the workflow to match the binary). The npm-install
-    /// step is exercised separately, so this test does not depend on npm.
+    /// Criterion 4 (spec 05): `rigger setup` is re-runnable. `install_workflow` installs
+    /// the native `/rigger` workflow at `.claude/workflows/rigger.js` byte-identical to
+    /// the embedded `RIGGER_WORKFLOW`, DETECTS and REFRESHES a drifted copy (an older
+    /// `rigger` build), and is a SILENT NO-OP - not even an mtime bump - when the
+    /// installed workflow already matches. The npm-install step is exercised separately,
+    /// so this test does not depend on npm.
     #[test]
-    fn setup_installs_the_native_rigger_workflow() {
+    fn setup_installs_refreshes_and_is_a_noop_on_the_native_rigger_workflow() {
         let dir = tempfile::tempdir().unwrap();
-        let path = install_workflow(dir.path()).expect("installing writes the workflow file");
-        assert_eq!(path, workflow_path(dir.path()));
+        let path = workflow_path(dir.path());
         assert_eq!(
             path,
             dir.path()
@@ -2585,9 +2759,15 @@ mod tests {
             "the workflow must be installed at .claude/workflows/rigger.js"
         );
 
-        let on_disk = std::fs::read_to_string(&path).unwrap();
+        // 1. Absent -> a fresh install, written byte-identical to the embedded copy.
         assert_eq!(
-            on_disk, RIGGER_WORKFLOW,
+            install_workflow(dir.path()).expect("installing writes the workflow file"),
+            WorkflowInstall::Installed,
+            "the first install reports a fresh install"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            RIGGER_WORKFLOW,
             "the installed workflow must be byte-identical to the embedded RIGGER_WORKFLOW"
         );
 
@@ -2598,15 +2778,197 @@ mod tests {
             "the embedded workflow must be the real native /rigger workflow"
         );
 
-        // Re-running setup overwrites cleanly: pre-seed stale content, reinstall, and
-        // confirm the embedded content wins (not appended, not left stale).
-        std::fs::write(&path, "// stale - from an older rigger build\n").unwrap();
-        let again = install_workflow(dir.path()).expect("re-install must succeed");
-        assert_eq!(again, path);
-        let after = std::fs::read_to_string(&path).unwrap();
+        // 2. Already current -> a silent no-op that changes NOTHING, not even the file's
+        //    mtime (the grounder's staleness gate keys off mtime). Sleep past the clock's
+        //    resolution first so a stray rewrite WOULD move the mtime we assert is stable.
+        let before = std::fs::metadata(&path).unwrap().modified().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
         assert_eq!(
-            after, RIGGER_WORKFLOW,
-            "re-running setup must overwrite the workflow with the embedded content"
+            install_workflow(dir.path()).expect("a no-op rerun must succeed"),
+            WorkflowInstall::AlreadyCurrent,
+            "an up-to-date workflow must be detected as current"
+        );
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().modified().unwrap(),
+            before,
+            "an up-to-date workflow must NOT be rewritten (its mtime must not move)"
+        );
+
+        // 3. Drifted (a stale copy from an older build) -> refreshed to the embedded copy.
+        std::fs::write(&path, "// stale - from an older rigger build\n").unwrap();
+        assert_eq!(
+            install_workflow(dir.path()).expect("re-install must succeed"),
+            WorkflowInstall::Refreshed,
+            "a drifted workflow must be refreshed"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            RIGGER_WORKFLOW,
+            "refreshing must overwrite the drifted workflow with the embedded content"
+        );
+    }
+
+    /// Criterion 4: provisioning the JS driver is a silent no-op when the shim is
+    /// already current - the runtime files match the embedded copies and npm's install
+    /// is COMPLETE (its `node_modules/.package-lock.json` marker present) - so a `rigger
+    /// setup` rerun does not rewrite the files or re-run npm. Faking a complete
+    /// `node_modules` lets this assert the short-circuit WITHOUT npm: were the
+    /// short-circuit broken, `provision_shim` would run npm and return `true` (or error
+    /// when npm is absent), both of which fail this test.
+    #[test]
+    fn provision_shim_is_a_silent_noop_when_already_current() {
+        let dir = tempfile::tempdir().unwrap();
+        let shim = write_shim_files(dir.path()).unwrap();
+        assert!(!shim_is_current(&shim), "no node_modules yet: not current");
+
+        // A COMPLETE npm install leaves node_modules/.package-lock.json as its final
+        // marker; only then is the shim current.
+        let node_modules = shim.join("node_modules");
+        std::fs::create_dir_all(&node_modules).unwrap();
+        std::fs::write(node_modules.join(".package-lock.json"), "{}").unwrap();
+        assert!(
+            shim_is_current(&shim),
+            "matching runtime files + a COMPLETE node_modules (marker present): current"
+        );
+
+        let provisioned = provision_shim(dir.path())
+            .expect("a fully-provisioned shim must be a clean no-op (no npm needed)");
+        assert!(
+            !provisioned,
+            "provision_shim must report no work when the shim is already current"
+        );
+
+        // A drifted runtime file makes the shim not-current again (an upgrade path).
+        std::fs::write(shim.join("shim.mjs"), "// stale shim from an older build\n").unwrap();
+        assert!(
+            !shim_is_current(&shim),
+            "a drifted runtime file must make the shim not-current"
+        );
+    }
+
+    /// Criterion 4: setup SELF-HEALS a torn/partial shim install. An interrupted `npm
+    /// ci` (which `rm -rf`s `node_modules` then repopulates incrementally) leaves a
+    /// `node_modules` DIRECTORY that lacks npm's completeness marker
+    /// (`node_modules/.package-lock.json`). `shim_is_current` must treat that as NOT
+    /// current so the next `rigger setup` re-runs npm and repairs it, rather than
+    /// short-circuiting on bare directory presence and permanently refusing to fix a
+    /// broken install. Regression-locks adv-u4-shim-torn-install-not-self-healed.
+    #[test]
+    fn shim_is_not_current_when_node_modules_is_torn_missing_the_install_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let shim = write_shim_files(dir.path()).unwrap();
+
+        // A torn install: node_modules exists (some deps partially unpacked) but the
+        // final .package-lock.json marker a COMPLETE install writes is absent.
+        std::fs::create_dir_all(shim.join("node_modules").join("some-partial-dep")).unwrap();
+        assert!(
+            !shim_is_current(&shim),
+            "a node_modules dir lacking the .package-lock.json completeness marker is a torn \
+             install and must NOT be treated as current"
+        );
+
+        // Adding the marker (as a completed npm install would) makes it current again.
+        std::fs::write(shim.join("node_modules").join(".package-lock.json"), "{}").unwrap();
+        assert!(
+            shim_is_current(&shim),
+            "once the completeness marker is present the shim is current"
+        );
+    }
+
+    /// Criterion 4: scaffolding is idempotent. The first `init_project` on an empty
+    /// project changes the tree and reports the agents it wrote; a second run finds
+    /// everything present and is a silent no-op (`changed: false`, no new agents), so
+    /// `rigger setup` / `rigger init` re-run without side effects.
+    #[test]
+    fn init_project_is_idempotent_reporting_new_work_only_once() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let first = init_project(dir.path()).expect("first init scaffolds the project");
+        assert!(
+            first.changed(),
+            "the first init on an empty project must change the tree"
+        );
+        assert!(
+            !first.new_agents.is_empty(),
+            "the first init scaffolds the workflow's referenced agents"
+        );
+
+        let second = init_project(dir.path()).expect("a rerun must succeed");
+        assert!(
+            !second.changed(),
+            "a rerun on an initialized project must change nothing"
+        );
+        assert!(
+            second.new_agents.is_empty(),
+            "a rerun scaffolds no new agents"
+        );
+    }
+
+    /// Criterion 4 (spec 05): the setup/init summary is HONEST per artifact - it must
+    /// never claim a scaffold action it did not perform. On a gitignore-only repair (the
+    /// primary Gap-9 upgrade path: `workflow.yml`, the agents, and the hook are all
+    /// already present, but a `.gitignore` entry was lost and gets re-appended) the
+    /// summary reports ONLY the gitignore change and does NOT emit the false "scaffolded
+    /// workflow.yml / agents / installed hook" line. Regression-locks
+    /// adv-u4-coarse-changed-summary-lies.
+    #[test]
+    fn scaffold_summary_reports_only_the_gitignore_change_on_a_gitignore_only_repair() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // First init scaffolds everything AND appends the machine-local .gitignore
+        // entries (a non-git temp dir is untracked, so the entries are written).
+        let first = init_project(dir.path()).expect("first init scaffolds the project");
+        assert!(
+            first.wrote_workflow && !first.new_agents.is_empty() && first.wrote_hook,
+            "the first init writes workflow.yml, the agents, and the hook"
+        );
+        assert!(
+            !first.gitignore_added.is_empty(),
+            "the first init appends the machine-local .gitignore entries"
+        );
+
+        // Simulate the Gap-9 upgrade path: only `.gitignore` needs repair; every other
+        // scaffold artifact is still present and byte-identical.
+        std::fs::remove_file(dir.path().join(".gitignore")).unwrap();
+
+        let repair = init_project(dir.path()).expect("a gitignore-only repair must succeed");
+        assert!(
+            !repair.wrote_workflow,
+            "workflow.yml already exists; it must NOT be reported as scaffolded"
+        );
+        assert!(
+            repair.new_agents.is_empty(),
+            "the agents already exist; none are newly written"
+        );
+        assert!(
+            !repair.wrote_hook,
+            "the hook is already installed; it must NOT be reported as installed"
+        );
+        assert!(
+            !repair.gitignore_added.is_empty(),
+            "the lost .gitignore entries are re-appended - the ONE real change this run made"
+        );
+
+        // The summary must report the gitignore change and NOTHING it did not do.
+        let lines = scaffold_summary_lines(&repair);
+        assert_eq!(
+            lines.len(),
+            1,
+            "a gitignore-only repair reports exactly one line, got: {lines:?}"
+        );
+        assert!(
+            lines[0].contains(".gitignore"),
+            "the one line must report the gitignore change, got: {:?}",
+            lines[0]
+        );
+        assert!(
+            !lines.iter().any(|l| {
+                l.contains("workflow.yml")
+                    || l.contains(".rigger/agents/")
+                    || l.contains("SessionStart hook")
+            }),
+            "a gitignore-only repair must not claim it scaffolded the workflow, agents, or \
+             hook: {lines:?}"
         );
     }
 
