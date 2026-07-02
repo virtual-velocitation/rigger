@@ -449,6 +449,8 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         spawns: AtomicU32::new(0),
         budget_broke: std::sync::atomic::AtomicBool::new(false),
         parked: std::sync::atomic::AtomicBool::new(false),
+        manual_review: std::sync::atomic::AtomicBool::new(false),
+        budget_halted: std::sync::atomic::AtomicBool::new(false),
         prior_status,
         prior_attempts,
         replayed_keys: Mutex::new(replayed_keys),
@@ -554,17 +556,29 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     // deferred gate runs a single time; a failing one is surfaced truthfully (a
     // DeferredGateFailed event + the run reported not-fully-done).
     //
-    // The run GENUINELY converged (so a deferred verdict measures the fully-assembled
-    // tree) only when no in-flight spawn parked AND every unit reached a non-parked
-    // terminal state this run. Under stepwise replay an early step empties the wave
-    // loop with units still PARKED (nothing integrated yet) or with a unit's dependents
-    // never scheduled behind a parked/escalated dep; recording the deferred verdict
-    // then would lock in a partial/base-tree result that every later step replays,
-    // defeating the gate's whole-tree purpose (finding
-    // adv-deferred-replay-locks-partial-tree). When the run has not converged the
-    // deferred gate is DEFERRED to the step that drains the last park - by which point
-    // it runs against the fully integrated tree and records its verdict once.
-    let converged = !ctx.parked() && stages.keys().all(|name| terminal.contains(name));
+    // The tree is FINAL - a deferred verdict measures the fully-assembled tree, not a
+    // partial one - exactly when NO unit is in a TRANSIENT pending state: none PARKED
+    // (a stepwise/replay frontier a later step drains and integrates), none
+    // MANUAL-REVIEW-PAUSED (awaiting a human who will approve+integrate it on a later
+    // step), and no BUDGET HALT that left ready units unscheduled (a resume with a
+    // fresh in-process budget completes them). Recording a run-scoped deferred verdict
+    // against any of those partial trees would lock that result in forever - every
+    // later step replays it and the assembled tree is never validated (findings
+    // adv-deferred-replay-locks-partial-tree, rf-converged-ignores-budget-refusal,
+    // adv-confirm-converged-nonpark-partial-tree). When the tree is not yet final the
+    // deferred gate is DEFERRED to the step that drains the last pending unit.
+    //
+    // We do NOT additionally require every unit to be integrated/terminal. A unit that
+    // ESCALATES is terminal-forever-yet-never-integrated, and `ready_stages` gates its
+    // dependents on INTEGRATED deps, so those dependents never schedule and never enter
+    // `terminal` - `stages.keys().all(terminal.contains)` would then stay false FOREVER
+    // and permanently SUPPRESS the whole-tree deferred gate (e.g. a security scan) for
+    // any workflow that escalates one unit but still assembles+delivers the rest
+    // (finding adv-converged-escalated-dep-suppresses-deferred). Once nothing is
+    // transiently pending, every remaining unit is settled - integrated, escalated,
+    // verified-but-does-not-integrate, or blocked-forever behind such a unit - so the
+    // as-assembled tree IS final and the deferred gate runs against it, once.
+    let converged = !ctx.parked() && !ctx.manual_review_pending() && !ctx.budget_halted();
     ctx.run_deferred_gates(&stages, converged)?;
 
     let events = deps.store.read_stream(STREAM, 0, Direction::Forward)?;
@@ -597,6 +611,26 @@ struct RunCtx<'a> {
     /// against the partial/base tree a parked frontier leaves behind (finding
     /// adv-deferred-replay-locks-partial-tree).
     parked: std::sync::atomic::AtomicBool,
+    /// Set the moment a stage PAUSES for human review (§4.3, its effective autonomy is
+    /// Manual): the unit emitted ManualReview and returned pending WITHOUT parking, so
+    /// it is terminal-inserted but not integrated - and its autonomy does not change
+    /// across steps, so the run can never legitimately converge while it waits. The
+    /// tree is therefore NOT final: a human has yet to approve, and the unit's work is
+    /// missing from the assembled tree. The phase boundary consults this so a DEFERRED
+    /// gate is HELD rather than recorded against the partial/base tree the paused unit
+    /// leaves behind - a run-scoped verdict recorded now would lock that partial-tree
+    /// result in forever (findings rf-converged-ignores-budget-refusal /
+    /// adv-confirm-converged-nonpark-partial-tree).
+    manual_review: std::sync::atomic::AtomicBool,
+    /// Set the moment the spawn-budget breaker HALTS the run with ready units still
+    /// unscheduled ([`trip_budget_breaker`](RunCtx::trip_budget_breaker), the single
+    /// chokepoint for BOTH the pre-wave and mid-wave trip). A budget-halted run left
+    /// work undone that a resume (with a fresh in-process budget) picks up, so the tree
+    /// is NOT final. Like the manual-review case this is a TRANSIENT non-park pending
+    /// state that terminal-inserts a non-integrated unit without setting `parked`, so
+    /// the phase boundary holds the DEFERRED gate rather than record it against the
+    /// partial tree the halt left behind (same finding pair as `manual_review`).
+    budget_halted: std::sync::atomic::AtomicBool,
     /// Each unit's LAST recorded status from the folded prior log (resume-continuity):
     /// a non-integrated, non-terminal unit that ran in a prior window has a status
     /// here (green/verified/reviewed/...), which `run_single_stage` uses to CONTINUE
@@ -645,6 +679,8 @@ impl<'a> RunCtx<'a> {
             spawns: AtomicU32::new(0),
             budget_broke: std::sync::atomic::AtomicBool::new(false),
             parked: std::sync::atomic::AtomicBool::new(false),
+            manual_review: std::sync::atomic::AtomicBool::new(false),
+            budget_halted: std::sync::atomic::AtomicBool::new(false),
             prior_status: HashMap::new(),
             prior_attempts: HashMap::new(),
             replayed_keys: Mutex::new(HashSet::new()),
@@ -821,6 +857,21 @@ impl RunCtx<'_> {
         self.parked.load(Ordering::SeqCst)
     }
 
+    /// Whether any unit is PAUSED for human review this run (§4.3): a Manual-autonomy
+    /// stage emitted ManualReview and returned pending without integrating. Like a
+    /// park, it is a TRANSIENT non-final state, so the phase boundary holds the
+    /// deferred gate rather than record a verdict against the tree missing that unit.
+    fn manual_review_pending(&self) -> bool {
+        self.manual_review.load(Ordering::SeqCst)
+    }
+
+    /// Whether the spawn-budget breaker HALTED the run with ready units still
+    /// unscheduled (item 9 / §4.4). A budget-halted run left work undone that a resume
+    /// completes, so the tree is not final and the deferred gate is deferred.
+    fn budget_halted(&self) -> bool {
+        self.budget_halted.load(Ordering::SeqCst)
+    }
+
     /// abortTask (§4.4): integrated work is already committed and every per-stage
     /// worktree is removed as its stage finishes, so there is no un-integrated
     /// worktree left to discard - abort_task records the abort so the run halts with
@@ -834,6 +885,12 @@ impl RunCtx<'_> {
     /// check and the mid-wave (spawn-granularity, item 9) trip so both halt the run
     /// the same way, with one audit trail.
     fn trip_budget_breaker(&self) -> Result<(), Error> {
+        // The breaker halts the run with ready units still unscheduled (the wave loop
+        // only reaches here while `ready_stages` is non-empty). Flag it so the phase
+        // boundary treats the tree as NOT final and DEFERS the deferred gate - a resume
+        // with a fresh in-process budget will schedule the remaining work, and only the
+        // step that assembles the full tree records the whole-tree verdict.
+        self.budget_halted.store(true, Ordering::SeqCst);
         self.emit(
             TYPE_BUDGET_EXHAUSTED,
             json!({
@@ -1043,6 +1100,12 @@ impl RunCtx<'_> {
                 TYPE_MANUAL_REVIEW,
                 json!({"id": st.name, "unit": st.name}),
             )?;
+            // A paused unit is terminal-inserted but NOT integrated and does no work
+            // this step, so the tree is not final: flag the pause so the phase boundary
+            // holds the deferred gate rather than record it against a tree missing this
+            // unit (findings rf-converged-ignores-budget-refusal /
+            // adv-confirm-converged-nonpark-partial-tree).
+            self.manual_review.store(true, Ordering::SeqCst);
             return Ok(false);
         }
         if is_fan_out(st) {
@@ -6474,6 +6537,8 @@ mod tests {
             spawns: AtomicU32::new(0),
             budget_broke: std::sync::atomic::AtomicBool::new(false),
             parked: std::sync::atomic::AtomicBool::new(false),
+            manual_review: std::sync::atomic::AtomicBool::new(false),
+            budget_halted: std::sync::atomic::AtomicBool::new(false),
             prior_status: HashMap::new(),
             prior_attempts: HashMap::new(),
             replayed_keys: Mutex::new(HashSet::new()),
@@ -8010,6 +8075,226 @@ mod tests {
             deferred_verdicts(&st.read_stream(STREAM, 0, Direction::Forward).unwrap()),
             1,
             "no duplicate deferred GateVerdict across the converged step and its replays"
+        );
+    }
+
+    #[test]
+    fn a_manual_review_paused_unit_defers_the_whole_tree_gate() {
+        // PRIMARY BLOCKER (findings rf-converged-ignores-budget-refusal /
+        // adv-confirm-converged-nonpark-partial-tree, F58/F60): a manual-review-paused
+        // unit emits ManualReview and returns pending WITHOUT parking - it is
+        // terminal-inserted but never integrated, and it does ZERO work this step (the
+        // pause is checked BEFORE the implementer or the inline gate ever runs). The old
+        // `!parked && stages.all(terminal.contains)` guard was TRUE against this
+        // partial/base tree, so it ran+recorded the whole-tree deferred verdict against a
+        // tree missing the paused unit - and the run-scoped key locked that partial-tree
+        // result in forever, replayed on every later step even after the human approves.
+        // The tree is NOT final while a unit awaits a human, so the deferred gate must be
+        // DEFERRED: it must run/record NOTHING here.
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.gates.insert("inline".into(), gate_def("true"));
+        cfg.workflow.gates.insert(
+            "deferred".into(),
+            config::Gate {
+                run: "true".into(),
+                kind: "deferred".into(),
+            },
+        );
+        // A Manual-autonomy stage pauses on its gate awaiting a human (§4.3). It also
+        // references the deferred gate, so the phase boundary would collect+run it if it
+        // (wrongly) considered the tree final.
+        cfg.workflow.stages.insert(
+            "m".into(),
+            Stage {
+                name: "m".into(),
+                agent: "worker".into(),
+                gates: vec!["inline".into(), "deferred".into()],
+                autonomy: "manual".into(),
+                ..Default::default()
+            },
+        );
+
+        let st = Store::open(":memory:").unwrap();
+        let runner = RecordingRunner::new(&[]);
+        // A blocking Stub driver never parks; the pause is a non-park terminal path.
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &runner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        assert_ne!(
+            rs.units["m"].status,
+            ledger::Status::Integrated,
+            "the manual unit is paused, not integrated"
+        );
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(
+            events.iter().any(|e| e.type_ == TYPE_MANUAL_REVIEW),
+            "the manual stage must emit ManualReview (it is paused, awaiting a human)"
+        );
+        assert_eq!(
+            runner
+                .calls()
+                .iter()
+                .filter(|c| c.as_str() == "deferred")
+                .count(),
+            0,
+            "the deferred gate must NOT run while a unit is manual-review-paused: the \
+             tree is missing that unit's work, so it is not final"
+        );
+        let deferred_verdicts = events
+            .iter()
+            .filter(|e| {
+                e.type_ == contextgraph::TYPE_GATE_VERDICT
+                    && String::from_utf8_lossy(&e.data).contains("\"gate\":\"deferred\"")
+            })
+            .count();
+        assert_eq!(
+            deferred_verdicts, 0,
+            "a manual-review-paused step records NO deferred GateVerdict - there is no \
+             partial-tree verdict to lock in for every later step to replay"
+        );
+    }
+
+    #[test]
+    fn an_escalated_dep_still_runs_the_whole_tree_deferred_gate() {
+        // SECONDARY BLOCKER (finding adv-converged-escalated-dep-suppresses-deferred,
+        // F59): an escalated unit is terminal-forever-yet-never-integrated, and
+        // `ready_stages` gates its dependents on INTEGRATED deps - so a dependent behind
+        // an escalated dep NEVER becomes ready, never runs, and never enters `terminal`.
+        // The old `stages.all(terminal.contains)` clause then stayed false FOREVER and
+        // permanently SUPPRESSED the whole-tree deferred gate (e.g. a security scan) on
+        // every run and resume - a regression from the pre-diff behavior where the
+        // deferred gate ran unconditionally at run end. When a unit escalates-forever the
+        // tree is as-assembled as it will ever be, so the deferred gate MUST still run
+        // against it, once, rather than be suppressed.
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("adversary".into(), agent("adversary"));
+        cfg.agents.insert("adj".into(), agent("adj"));
+        cfg.workflow.gates.insert("inline".into(), gate_def("true"));
+        cfg.workflow.gates.insert(
+            "deferred".into(),
+            config::Gate {
+                run: "true".into(),
+                kind: "deferred".into(),
+            },
+        );
+        cfg.workflow.defaults.review = config::ReviewPanel {
+            lenses: vec!["lens".into()],
+            adversary: "adversary".into(),
+            adjudicator: "adj".into(),
+        };
+        // `s` passes its inline gate but the adjudicator ALWAYS rejects, so it remediates
+        // to the bound and ESCALATES. It also references the deferred whole-tree gate.
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                gates: vec!["inline".into(), "deferred".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        // `d` depends on `s`. Because `s` escalates (never integrates), `d` is
+        // UNREACHABLE - it never becomes ready and never enters `terminal`.
+        cfg.workflow.stages.insert(
+            "d".into(),
+            Stage {
+                name: "d".into(),
+                agent: "worker".into(),
+                needs: vec!["s".into()],
+                gates: vec!["inline".into()],
+                ..Default::default()
+            },
+        );
+
+        let st = Store::open(":memory:").unwrap();
+        let runner = RecordingRunner::new(&[]);
+        // Every review agent returns a reject verdict; only the adjudicator's gates the
+        // unit, so `s` retries to the bound and escalates.
+        let driver = Stub {
+            output: r#"{"verdict":"reject","issues":[]}"#.into(),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &runner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Escalated,
+            "the always-rejected unit must escalate, not integrate"
+        );
+        assert!(
+            !rs.units.contains_key("d"),
+            "the dependent behind the escalated unit is unreachable: it never starts"
+        );
+        assert_eq!(
+            runner
+                .calls()
+                .iter()
+                .filter(|c| c.as_str() == "deferred")
+                .count(),
+            1,
+            "the whole-tree deferred gate must STILL run once against the as-assembled \
+             tree when a unit escalates-forever - not be suppressed permanently"
+        );
+        let deferred_verdicts = |events: &[Event]| {
+            events
+                .iter()
+                .filter(|e| {
+                    e.type_ == contextgraph::TYPE_GATE_VERDICT
+                        && String::from_utf8_lossy(&e.data).contains("\"gate\":\"deferred\"")
+                })
+                .count()
+        };
+        assert_eq!(
+            deferred_verdicts(&st.read_stream(STREAM, 0, Direction::Forward).unwrap()),
+            1,
+            "the deferred verdict is recorded once, against the as-assembled escalated tree"
+        );
+
+        // RESUME: `s` is folded terminal (Escalated) and skipped, `d` stays unreachable,
+        // and nothing is transiently pending - so the tree is still final. The recorded
+        // deferred verdict REPLAYS: the command never re-runs and no duplicate verdict is
+        // appended (spec 04, criterion 4 - replay is idempotent).
+        let rs2 = run(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs2.units["s"].status,
+            ledger::Status::Escalated,
+            "the escalated unit stays terminal across resume"
+        );
+        assert_eq!(
+            runner
+                .calls()
+                .iter()
+                .filter(|c| c.as_str() == "deferred")
+                .count(),
+            1,
+            "a re-step replays the recorded deferred verdict, never re-running its command"
+        );
+        assert_eq!(
+            deferred_verdicts(&st.read_stream(STREAM, 0, Direction::Forward).unwrap()),
+            1,
+            "no duplicate deferred GateVerdict across the escalated run and its replay"
         );
     }
 
