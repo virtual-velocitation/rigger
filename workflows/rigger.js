@@ -65,7 +65,12 @@ if (typeof A === 'string') {
 A = A || {}
 const REPO = A.repo || '.'
 const SPEC = A.spec || 'spec.md'
-const BASE = A.base || 'origin/main'
+// Pass --base ONLY when the caller explicitly provided one: `rigger step` applies its
+// own default (origin/main) for a run branch it must create, and an existing run branch
+// is reused with its own history as the anchor - an explicit --base that cannot be
+// applied to an existing branch draws a stderr advisory, so the steady state (no base
+// given, branch reused) stays silent instead of alarming the courier every step.
+const BASEFLAG = A.base ? ` --base ${A.base}` : ''
 
 // The JSON shape `rigger step` prints (see spawn::Step / spawn::SpawnRequest): the wave it
 // newly parked and a `done` fixpoint flag. The wave items carry everything the driver needs
@@ -219,7 +224,7 @@ for (;;) {
   try {
     step = await agent(
       `You are a rigger COURIER. Advance the run one frontier and return the wave, verbatim. Run EXACTLY this, from ${REPO}, using Bash with the timeout parameter set to 600000 (a step runs cargo gates inline and can take many minutes; the default timeout kills it mid-work):\n` +
-        `  cd ${REPO} && rigger step --spec ${SPEC} --base ${BASE}\n` +
+        `  cd ${REPO} && rigger step --spec ${SPEC}${BASEFLAG}\n` +
         `It prints ONE line of JSON on stdout: {"wave":[...],"done":<bool>}. Return that JSON object EXACTLY as printed - do not summarize it, drop fields, or run anything else. ` +
         `If the Bash call TIMES OUT, re-run the exact same command (up to 4 more times): the step's gate results are recorded durably as they complete, so each re-run resumes past the recorded ones and gets further; return the JSON from the run that prints it. ` +
         `If the command prints no JSON or exits non-zero (not a timeout), return {"wave":[],"done":true,"error":"<the stderr / failure message>"} so the loop stops cleanly and the error is visible.`,

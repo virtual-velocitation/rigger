@@ -454,15 +454,6 @@ fn cmd_step(args: &[String]) -> Res {
     let backend = Store::open(&db_path("events.db"))?;
     let store = Namespaced::new(&backend, &project_identity());
 
-    // Snapshot the spawns already parked BEFORE this step, so the printed wave is the
-    // frontier this step NEWLY parks - not every outstanding spawn a prior step parked
-    // and the driver has already launched.
-    let before: std::collections::BTreeSet<String> =
-        spawn::recorded(&store.read_stream(conductor::STREAM, 0, Direction::Forward)?)
-            .map_err(|e| e.to_string())?
-            .into_keys()
-            .collect();
-
     let graph = Projector::open(&db_path("graph.db"))?;
     let grounder = select_grounder(&cfg.workflow.defaults.grounder)?;
     let driver = ReplayDriver::new(&store);
@@ -478,7 +469,10 @@ fn cmd_step(args: &[String]) -> Res {
     conductor::run(&cfg, &deps)?;
 
     let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
-    let step = spawn::step_result(&events, &before).map_err(|e| e.to_string())?;
+    // The printed wave is the FULL pending frontier (every parked spawn without a
+    // result), so a killed or re-run step process orphans nothing and a relaunched
+    // driver resumes the in-flight wave (see spawn::step_result).
+    let step = spawn::step_result(&events).map_err(|e| e.to_string())?;
     println!("{}", serde_json::to_string(&step)?);
     Ok(())
 }
