@@ -693,7 +693,7 @@ fn cmd_step(args: &[String]) -> Res {
         graph: Some(&graph),
         criteria,
     };
-    conductor::run(&cfg, &deps)?;
+    let rs = conductor::run(&cfg, &deps)?;
 
     let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
     // The printed wave is the FULL pending frontier (every parked spawn without a
@@ -701,7 +701,12 @@ fn cmd_step(args: &[String]) -> Res {
     // driver resumes the in-flight wave (see spawn::step_result). Scoped to the CURRENT
     // run's slice (spec 06, unit 1): a prior run's unanswered spawns sit before this
     // run's RunStarted, so they never reappear in this run's wave (Gap 11).
-    let step = spawn::step_result(runscope::current_run(&events)).map_err(|e| e.to_string())?;
+    let mut step = spawn::step_result(runscope::current_run(&events)).map_err(|e| e.to_string())?;
+    // Surface a spawn-budget HALT (Gap 13) distinct from convergence: the conductor sets
+    // `budget_halt` from its in-process breaker when a trip left ready work unscheduled, so
+    // the printed `Step` carries a halt reason (`{"...","done":true,"halted":"..."}`) the
+    // thin driver stops LOUDLY on - instead of reading a starved run as a clean completion.
+    step.halted = rs.budget_halt;
     // At the fixpoint, sweep the shared agent-scratch area (probe repos, verification
     // builds workers park under <scratch-root>/agent-scratch per the driver's scratch
     // policy): it exists only to serve in-flight spawns, and leaving it is how a run
@@ -4205,6 +4210,23 @@ mod tests {
         assert!(
             code.contains("function stop(") && code.contains("throw new Error"),
             "anomalous exits must stop loudly via a throwing `stop()`, never a silent success return"
+        );
+
+        // 6d. A spawn-budget HALT (Gap 13) is a LOUD stop, never a clean completion: `rigger
+        //     step` reports a `halted` reason distinct from `done` convergence, and the driver
+        //     routes a halted step through the throwing `stop()` (so a starved run surfaces as a
+        //     workflow failure instead of the `done` fixpoint reading it as success). The STEP
+        //     schema must also ADMIT the optional `halted` field - the top level rejects unknown
+        //     properties, so a halted step's JSON would otherwise fail validation and be lost.
+        assert!(
+            code.contains("step.halted"),
+            "the driver must inspect `step.halted` and stop loudly on a budget halt \
+             (a halted run is never a clean completion)"
+        );
+        assert!(
+            code.contains("halted: { type: 'string' }"),
+            "the STEP schema must declare the optional `halted` field (top-level \
+             additionalProperties is false, so an undeclared `halted` would be rejected)"
         );
 
         // 7. The workflow still parses: run `node --check` when node is on PATH (never a

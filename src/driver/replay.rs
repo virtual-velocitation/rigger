@@ -598,6 +598,72 @@ mod tests {
     }
 
     #[test]
+    fn a_budget_halt_records_its_breaker_events_once_across_resumes() {
+        // Gap 13 / finding adv-budget-exhausted-dup-across-steps: the cross-step spawn
+        // fold makes a resume DETERMINISTICALLY re-reach the spent budget and RE-TRIP the
+        // breaker every step. A non-keyed emit would append a DUPLICATE `BudgetExhausted`
+        // and `TaskAborted` on each re-tripping step, double-reporting the one halt in the
+        // audit trail. The breaker must record its events IDEMPOTENTLY (keyed, like the
+        // green/verified/reviewed lifecycle), so the halt lands EXACTLY ONCE for the run.
+        //
+        // The finding's exact MIXED-FRONTIER trigger: budget 1, two independent units ready
+        // in the same wave. Step 1 admits and PARKS one implementer (spending the budget)
+        // and REFUSES the other, tripping the breaker; the parked unit is unanswered so the
+        // step is not done and the driver resumes. Step 2 replays the parked spawn for FREE
+        // (its id is already recorded) and, since the whole budget folds from that recorded
+        // spawn across steps (all in THIS run's slice - both spawns land after this run's
+        // `RunStarted`, so run-scoping keeps them in `base_spawns`), re-reaches the still-
+        // unrecorded sibling and REFUSES it again - re-tripping the breaker, which must
+        // append no SECOND `BudgetExhausted`/`TaskAborted`.
+        let store = Store::open(":memory:").unwrap();
+        let mut cfg = config_with(vec![stage("u1", "worker"), stage("u2", "worker")]);
+        cfg.workflow.defaults.budget = 1;
+
+        for _ in 0..2 {
+            let driver = ReplayDriver::new(&store);
+            let deps = Deps {
+                store: &store,
+                driver: &driver,
+                gates: &ExecRunner,
+                repo: String::new(),
+                grounder: None,
+                graph: None,
+                criteria: Vec::new(),
+            };
+            run(&cfg, &deps).expect("a tripped budget halts the run, it does not error");
+        }
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        // The mixed frontier really happened: exactly ONE of the two implementers was
+        // admitted+parked (its spawn recorded), the other was refused over budget - so the
+        // breaker tripped on a genuine over-budget refusal, not a degenerate empty wave.
+        let parked_implementers = ["u1", "u2"]
+            .iter()
+            .filter(|u| spawn::is_recorded(&events, &spawn_id(u, ROLE_IMPLEMENTER, 0)))
+            .count();
+        assert_eq!(
+            parked_implementers, 1,
+            "budget 1 admits exactly one implementer spawn; the sibling is refused over budget"
+        );
+        let budget_exhausted = events
+            .iter()
+            .filter(|e| e.type_ == crate::conductor::TYPE_BUDGET_EXHAUSTED)
+            .count();
+        let task_aborted = events
+            .iter()
+            .filter(|e| e.type_ == crate::conductor::TYPE_TASK_ABORTED)
+            .count();
+        assert_eq!(
+            budget_exhausted, 1,
+            "the breaker records BudgetExhausted exactly once across resumes, not once per re-trip"
+        );
+        assert_eq!(
+            task_aborted, 1,
+            "the breaker records TaskAborted exactly once across resumes, not once per re-trip"
+        );
+    }
+
+    #[test]
     fn a_run_that_spends_its_whole_budget_still_replays_its_recorded_work() {
         // The cross-step count must not ABORT a resume before it can assemble already-paid
         // work: a run that spent exactly its budget of 1 (one parked, then answered,

@@ -490,6 +490,19 @@ pub struct Step {
     /// step would change nothing. A non-empty `wave` always implies `done == false`,
     /// since a freshly parked spawn has no result yet.
     pub done: bool,
+    /// The halt reason when the run STOPPED on the spawn-budget breaker rather than
+    /// converging (Gap 13): e.g. `"budget exhausted: 200/200 spawns"`. `None` on a clean
+    /// fixpoint, and OMITTED from the wire then, so a converged run still prints
+    /// `{"wave":[],"done":true}` unchanged and a halted one adds `"halted":"..."` - the
+    /// `done`/`halted` split the spec (06, Gap 13) calls for. The thin driver treats a
+    /// present `halted` as a LOUD stop (a workflow failure carrying the reason), never a
+    /// clean completion, so a starved run is never reported as success. Populated by
+    /// `rigger step` (`cmd_step`) from the conductor's LIVE breaker state; [`step_result`]
+    /// leaves it `None` because a halt is a runtime condition of the current run process,
+    /// not derivable from the append-only log alone - a resume with a raised budget clears
+    /// it, yet the earlier halt's `BudgetExhausted` event stays in the log.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub halted: Option<String>,
 }
 
 /// Compute the [`Step`] a step process prints, from the run stream `events`.
@@ -524,7 +537,15 @@ pub fn step_result(events: &[Event]) -> Result<Step, serde_json::Error> {
         .map(WaveItem::from)
         .collect();
     let done = recorded.keys().all(|id| answered.contains(id));
-    Ok(Step { wave, done })
+    // A halt is a RUNTIME condition of the live run (the conductor's in-process breaker),
+    // not a fact of the append-only log: a resume with a raised budget clears it while the
+    // earlier `BudgetExhausted` event remains recorded. So this pure log seam never sets it;
+    // `rigger step` stamps `halted` from the conductor's `RunState::budget_halt`.
+    Ok(Step {
+        wave,
+        done,
+        halted: None,
+    })
 }
 
 /// The full prompt a worker fetches for its parked spawn: the persona (when the spawn
@@ -1216,6 +1237,55 @@ mod tests {
         assert!(
             obj["wave"][0].get("prompt").is_none() && obj["wave"][0].get("system_prompt").is_none(),
             "wave items must not carry the prompt or persona"
+        );
+        // A step_result-produced Step is never a halt: the pure log seam does not know the
+        // live breaker state, so the `halted` key is absent from the wire.
+        assert!(
+            obj.get("halted").is_none(),
+            "step_result output must omit the halted field"
+        );
+    }
+
+    #[test]
+    fn step_result_leaves_the_halt_reason_unset() {
+        // Gap 13: a halt is a RUNTIME condition of the live run, stamped by `rigger step`
+        // from the conductor's in-process breaker - the pure log seam never sets it.
+        let store = Store::open(":memory:").unwrap();
+        park(
+            &store,
+            &SpawnRequest::new("u", "implement", ROLE_IMPLEMENTER, 0, "do it"),
+        )
+        .unwrap();
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert_eq!(step_result(&events).unwrap().halted, None);
+    }
+
+    #[test]
+    fn a_halted_step_serializes_the_reason_and_a_converged_one_omits_it() {
+        // Gap 13: the `done`/`halted` split. A halted step carries the reason on the wire
+        // so the thin driver can stop loudly; a converged step omits the field entirely,
+        // leaving the historical `{"wave":[],"done":true}` shape byte-for-byte unchanged.
+        let halted = Step {
+            wave: Vec::new(),
+            done: true,
+            halted: Some("budget exhausted: 2/2 spawns".into()),
+        };
+        let obj = serde_json::to_value(&halted).unwrap();
+        assert_eq!(obj["done"], serde_json::json!(true));
+        assert_eq!(
+            obj["halted"],
+            serde_json::json!("budget exhausted: 2/2 spawns")
+        );
+
+        let converged = Step {
+            wave: Vec::new(),
+            done: true,
+            halted: None,
+        };
+        let wire = serde_json::to_string(&converged).unwrap();
+        assert_eq!(
+            wire, r#"{"wave":[],"done":true}"#,
+            "a converged step omits `halted`, preserving the historical wire shape"
         );
     }
 

@@ -63,6 +63,17 @@ pub const TYPE_DEFERRED_GATE_FAILED: &str = ledger::TYPE_DEFERRED_GATE_FAILED;
 /// only [`RunCtx::emit_keyed`] and the gate-verdict replay read it.
 pub const META_REPLAY_KEY: &str = "replay_key";
 
+/// The replay keys under which the spawn-budget breaker records its halt (Gap 13): a run
+/// halts on budget AT MOST ONCE, so the single `BudgetExhausted` + `TaskAborted` pair is
+/// keyed - like the green/verified/reviewed lifecycle - and lands exactly once. The
+/// cross-step spawn fold makes a resume DETERMINISTICALLY re-reach the spent budget and
+/// re-trip the breaker every step; keying dedups those re-trips (`replayed_keys` is seeded
+/// from the log at run start), so the audit trail never double-counts the one halt
+/// (finding adv-budget-exhausted-dup-across-steps). Fixed strings, not coordinate-derived:
+/// there is one breaker per run.
+const BUDGET_EXHAUSTED_KEY: &str = "budget-exhausted";
+const TASK_ABORTED_KEY: &str = "task-aborted";
+
 /// The metadata key carrying the REQUESTED model ALIAS on a spawn's recorded unit events
 /// (spec 05 line 52). It is the workflow-configured alias the agent was spawned with
 /// (`AgentDef::model`, the same value that rides the [`SpawnRequest`](crate::spawn::SpawnRequest)),
@@ -679,10 +690,16 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     let converged = !ctx.parked() && !ctx.manual_review_pending() && !ctx.budget_halted();
     ctx.run_deferred_gates(&stages, converged)?;
 
-    // Project the run state the caller sees from ONLY this run's slice, so a run
-    // returns its own state and never folds a prior run's units (Gap 11).
     let events = deps.store.read_stream(STREAM, 0, Direction::Forward)?;
-    ledger::project(crate::run::current_run(&events)).map_err(|e| Error(e.to_string()))
+    // Project the caller-visible run state from ONLY this run's slice (Gap 11, unit 1),
+    // then stamp the live HALT reason (Gap 13) from the conductor's IN-PROCESS breaker
+    // state, not from a fold of the log: a halt is a runtime condition of THIS process (a
+    // resume with a raised budget clears it), so `rigger step` reads it here to print a
+    // halt reason distinct from convergence and the thin driver stops loudly on it.
+    let mut rs =
+        ledger::project(crate::run::current_run(&events)).map_err(|e| Error(e.to_string()))?;
+    rs.budget_halt = ctx.halt_reason();
+    Ok(rs)
 }
 
 /// Whether the workflow has a planner stage that produces a DAG at runtime, which
@@ -1105,34 +1122,64 @@ impl RunCtx<'_> {
         self.budget_halted.load(Ordering::SeqCst)
     }
 
-    /// abortTask (§4.4): integrated work is already committed and every per-stage
-    /// worktree is removed as its stage finishes, so there is no un-integrated
-    /// worktree left to discard - abort_task records the abort so the run halts with
-    /// an audit trail, and the loop stops (a pause; resume replays the ledger).
-    fn abort_task(&self, reason: &str) -> Result<(), Error> {
-        self.emit(TYPE_TASK_ABORTED, json!({"reason": reason}))
-    }
-
-    /// Trip the spawn-budget circuit-breaker (§4.4, §8): record BudgetExhausted with
-    /// the budget and the spawns made, then abort the task. Shared by the pre-wave
-    /// check and the mid-wave (spawn-granularity, item 9) trip so both halt the run
-    /// the same way, with one audit trail.
+    /// Trip the spawn-budget circuit-breaker (§4.4, §8): record `BudgetExhausted` with the
+    /// budget and the spawns made, then record the `TaskAborted` that halts the run (abortTask,
+    /// §4.4: integrated work is already committed and every per-stage worktree is removed as
+    /// its stage finishes, so there is no un-integrated worktree left to discard - the abort
+    /// is a durable audit record; the loop stops, a pause the resume replays past). Shared by
+    /// the pre-wave check and the mid-wave (spawn-granularity, item 9) trip so both halt the
+    /// run the same way, with one audit trail.
     fn trip_budget_breaker(&self) -> Result<(), Error> {
         // The breaker halts the run with ready units still unscheduled (the wave loop
-        // only reaches here while `ready_stages` is non-empty). Flag it so the phase
-        // boundary treats the tree as NOT final and DEFERS the deferred gate - a resume
-        // (once the operator raises `defaults.budget`, since the count now binds across
-        // steps) schedules the remaining work, and only the step that assembles the full
-        // tree records the whole-tree verdict.
+        // only reaches here while `ready_stages` is non-empty). Flag it FIRST, before the
+        // (possibly-deduped) emits below: `halt_reason` reads this in-process flag so
+        // `rigger step` SURFACES the halt to the thin driver on EVERY tripping step - even a
+        // resume whose keyed `BudgetExhausted` is a replay that appends nothing. The flag
+        // also tells the phase boundary the tree is NOT final, so it DEFERS the deferred gate
+        // - a resume (once the operator raises `defaults.budget`, since the count now binds
+        // across steps) schedules the remaining work, and only the step that assembles the
+        // full tree records the whole-tree verdict.
         self.budget_halted.store(true, Ordering::SeqCst);
-        self.emit(
+        // Record the halt IDEMPOTENTLY (finding adv-budget-exhausted-dup-across-steps). The
+        // cross-step spawn fold makes a resume deterministically re-reach the spent budget and
+        // re-trip the breaker, so a NON-keyed emit would append a duplicate BudgetExhausted +
+        // TaskAborted on each re-tripping step, double-reporting the ONE halt in the audit
+        // trail. Keying both (like green/verified/reviewed) records the halt exactly once;
+        // both route through the single `append_and_fold` authority, so nothing diverges.
+        self.emit_keyed(
+            BUDGET_EXHAUSTED_KEY,
             TYPE_BUDGET_EXHAUSTED,
             json!({
                 "budget": self.cfg.workflow.defaults.budget,
                 "spawns": self.spawns.load(Ordering::SeqCst),
             }),
         )?;
-        self.abort_task("spawn budget exhausted")
+        self.emit_keyed(
+            TASK_ABORTED_KEY,
+            TYPE_TASK_ABORTED,
+            json!({ "reason": "spawn budget exhausted" }),
+        )
+    }
+
+    /// The run's live HALT reason when the spawn-budget breaker stopped this process with
+    /// ready work unscheduled (Gap 13), or `None` when the run converged cleanly. Read from
+    /// the IN-PROCESS `budget_halted` flag (set by [`trip_budget_breaker`](RunCtx::trip_budget_breaker)),
+    /// NOT from the durable `BudgetExhausted` event: a halt is a condition of the CURRENT run
+    /// process, so a resume with a raised `defaults.budget` - which admits the spawn and never
+    /// trips the breaker - reports no halt, even though the earlier halt's `BudgetExhausted`
+    /// still sits in the log. `rigger step` copies this onto its printed [`Step`](crate::spawn::Step)
+    /// so the thin driver stops LOUDLY on a halt instead of reading `{"wave":[],"done":true}`
+    /// as a clean completion.
+    fn halt_reason(&self) -> Option<String> {
+        if self.budget_halted() {
+            Some(format!(
+                "budget exhausted: {}/{} spawns",
+                self.spawns.load(Ordering::SeqCst),
+                self.cfg.workflow.defaults.budget,
+            ))
+        } else {
+            None
+        }
     }
 
     /// The coverage gate, routed through flagSpecDefect (§3.2, §4.4, §8): a remaining
@@ -6661,6 +6708,82 @@ mod tests {
         assert!(
             events.iter().any(|e| e.type_ == TYPE_TASK_ABORTED),
             "a tripped budget must abort the task"
+        );
+    }
+
+    #[test]
+    fn a_budget_halt_surfaces_its_reason_on_the_run_state() {
+        // Gap 13: a budget halt is a RUNTIME condition of this run process, surfaced on the
+        // returned RunState so `rigger step` can print a halt reason DISTINCT from
+        // convergence (and the thin driver stops loudly on it). budget=1, two independent
+        // units: one spawn is admitted, the second is refused and trips the breaker, so the
+        // run halts with the spent count over the budget.
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent("a"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.defaults.budget = 1;
+        for name in ["w1", "w2"] {
+            cfg.workflow.stages.insert(
+                name.into(),
+                Stage {
+                    name: name.into(),
+                    agent: "a".into(),
+                    gates: vec!["ok".into()],
+                    ..Default::default()
+                },
+            );
+        }
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs.budget_halt.as_deref(),
+            Some("budget exhausted: 1/1 spawns"),
+            "a budget-halted run must surface its halt reason on the RunState"
+        );
+    }
+
+    #[test]
+    fn a_run_within_budget_surfaces_no_halt_reason() {
+        // The halt signal is ABSENT on a run that did not trip the breaker: `rigger step`
+        // then prints `{"wave":[],"done":true}` with no halt and the driver reports a clean
+        // completion. A budget of 0 is unlimited, so the single unit never trips.
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent("a"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "w".into(),
+            Stage {
+                name: "w".into(),
+                agent: "a".into(),
+                gates: vec!["ok".into()],
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs.budget_halt, None,
+            "a run that never tripped the breaker reports no halt reason"
         );
     }
 

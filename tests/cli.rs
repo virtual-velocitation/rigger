@@ -971,6 +971,35 @@ stages:
     .unwrap();
 }
 
+/// Like [`write_two_stage_workflow`] but with a spawn budget of ONE: two independent units
+/// are ready in the first wave, so exactly one implementer spawn is admitted and parked and
+/// the other is refused - tripping the breaker so `rigger step` reports a halt (Gap 13).
+fn write_budget_one_two_stage_workflow(root: &Path) {
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nDo the unit.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        r#"name: steptest
+defaults:
+  grounder: nop
+  budget: 1
+stages:
+  a:
+    agent: worker
+    on_pass: none
+  b:
+    agent: worker
+    on_pass: none
+"#,
+    )
+    .unwrap();
+}
+
 /// `rigger step` advances the run one frontier and prints the newly parked spawn WAVE
 /// plus a `done` flag as JSON. Two ready units with disjoint blast radii park their
 /// spawns in the SAME wave (so fan-out falls out of the run structure); once a courier
@@ -1027,6 +1056,39 @@ fn step_prints_a_disjoint_two_spawn_wave_then_reports_done() {
     assert!(
         line.contains(r#""done":true"#),
         "every spawn now has a result, so the run is done; got: {line:?}"
+    );
+    // A converged run (budget not tripped) carries NO halt reason: the historical
+    // `{"wave":[],"done":true}` wire shape is unchanged, so the driver reads a clean
+    // completion, not a loud stop (Gap 13).
+    assert!(
+        !line.contains("halted"),
+        "a converged step must omit the halted field; got: {line:?}"
+    );
+}
+
+/// Gap 13: a spawn-budget HALT must be LOUD, not indistinguishable from convergence.
+/// `rigger step` prints a `halted` reason (distinct from a clean `{"wave":[],"done":true}`)
+/// when the breaker trips, so the thin driver stops loudly on a starved run instead of
+/// reporting success. Budget 1 with two independent units: one implementer spawn is admitted
+/// and parked, the second is refused - the breaker trips and records the halt.
+#[test]
+fn step_prints_a_budget_halt_reason_when_the_breaker_trips() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_budget_one_two_stage_workflow(root);
+
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    // The step process itself SUCCEEDS - it prints its halt on stdout (a halt is a run
+    // outcome carried in the JSON, not a process error): the driver reads `halted` and
+    // stops loudly, rather than `rigger step` exiting non-zero with no JSON.
+    assert!(
+        ok,
+        "a budget-halted step still prints its result and exits 0; stderr: {err}"
+    );
+    let line = out.trim();
+    assert!(
+        line.contains(r#""halted":"budget exhausted: 1/1 spawns""#),
+        "a tripped budget must print a halt reason distinct from convergence; got: {line:?}"
     );
 }
 
