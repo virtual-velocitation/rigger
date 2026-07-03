@@ -82,6 +82,41 @@ pub fn spawn_id(unit: &str, role: &str, attempt: u32) -> String {
     format!("{unit}/{role}#{attempt}")
 }
 
+/// Derive the spawn id for a reviewer RESPAWN (Gap 18, spec 07). A reviewer spawn
+/// (lens, adversary, or adjudicator) whose recorded result is empty or whitespace-only
+/// is an INFRASTRUCTURE fault, not a verdict, so the conductor respawns the SAME
+/// reviewer under a NEW deterministic id. `retry` is the 0-based respawn ordinal:
+/// `retry == 0` is the reviewer's ORIGINAL spawn and returns the plain [`spawn_id`]
+/// unchanged (so the normal, non-degenerate path keeps its exact id and nothing else
+/// moves), while each `retry > 0` appends a deterministic `~retry{n}` suffix - `~` is
+/// neither the `/` nor the `#` the id structure reserves, so the respawn id stays
+/// unambiguous and is the same human-readable `rigger result <id>` handle a courier
+/// uses. Each respawn thus gets a DISTINCT id a stepwise/replay driver parks and
+/// answers independently of the original.
+///
+/// Like [`spawn_id`] it is a PURE function of its coordinates - unit + role + attempt +
+/// retry ordinal - with no wall clock, no randomness, and no in-memory counter, so two
+/// step processes replaying the same recorded history compute the identical retry id
+/// (the spec 07 Gap-18 replay-safety constraint: every new spawn id derives
+/// deterministically from unit + role + attempt + retry ordinal).
+///
+/// ```
+/// # use rigger::spawn::{spawn_retry_id, spawn_id, ROLE_ADJUDICATOR};
+/// assert_eq!(
+///     spawn_retry_id("u", ROLE_ADJUDICATOR, 1, 0),
+///     spawn_id("u", ROLE_ADJUDICATOR, 1),
+/// );
+/// assert_eq!(spawn_retry_id("u", ROLE_ADJUDICATOR, 1, 2), "u/adjudicator#1~retry2");
+/// ```
+pub fn spawn_retry_id(unit: &str, role: &str, attempt: u32, retry: u32) -> String {
+    let base = spawn_id(unit, role, attempt);
+    if retry == 0 {
+        base
+    } else {
+        format!("{base}~retry{retry}")
+    }
+}
+
 /// A single spawn request: one agent to run, plus the deterministic id that names it
 /// and the display labels the thin driver groups its progress under.
 ///
@@ -599,6 +634,57 @@ mod tests {
             spawn_id("u", ROLE_IMPLEMENTER, 1),
             "attempt must vary the id"
         );
+    }
+
+    #[test]
+    fn spawn_retry_id_zero_is_the_plain_spawn_id() {
+        // The reviewer's ORIGINAL spawn (retry ordinal 0) keeps the exact base id, so
+        // the normal non-degenerate path is byte-identical to pre-Gap-18 behavior.
+        for role in [ROLE_ADVERSARY, ROLE_ADJUDICATOR, ROLE_IMPLEMENTER] {
+            for attempt in [0, 1, 4] {
+                assert_eq!(
+                    spawn_retry_id("u", role, attempt, 0),
+                    spawn_id("u", role, attempt),
+                    "retry ordinal 0 must equal the plain spawn id"
+                );
+            }
+        }
+        assert_eq!(
+            spawn_retry_id("u", &lens_role("sdet"), 2, 0),
+            spawn_id("u", &lens_role("sdet"), 2)
+        );
+    }
+
+    #[test]
+    fn spawn_retry_id_is_a_pure_deterministic_function_of_the_four_coordinates() {
+        // Gap 18 replay-safety: two step processes replaying the same history must
+        // compute the identical retry id (no wall clock, no randomness), so a recorded
+        // degenerate-respawn result matches the call that produced it across processes.
+        assert_eq!(
+            spawn_retry_id("u", ROLE_ADJUDICATOR, 1, 2),
+            spawn_retry_id("u", ROLE_ADJUDICATOR, 1, 2)
+        );
+        assert_eq!(
+            spawn_retry_id("u", ROLE_ADJUDICATOR, 1, 2),
+            "u/adjudicator#1~retry2"
+        );
+    }
+
+    #[test]
+    fn spawn_retry_id_varies_on_the_retry_ordinal() {
+        // Each respawn ordinal produces a DISTINCT id, so the original spawn and every
+        // respawn are individually addressable (their results never cross-wire) and a
+        // stepwise/replay driver parks and answers each independently.
+        let base = spawn_retry_id("u", ROLE_ADJUDICATOR, 0, 0);
+        let r1 = spawn_retry_id("u", ROLE_ADJUDICATOR, 0, 1);
+        let r2 = spawn_retry_id("u", ROLE_ADJUDICATOR, 0, 2);
+        assert_ne!(base, r1, "retry 1 must differ from the original spawn");
+        assert_ne!(r1, r2, "each respawn ordinal must vary the id");
+        assert_ne!(base, r2);
+        // The retry suffix carries no `/` or `#` collision with the id structure.
+        for id in [&r1, &r2] {
+            assert!(id.starts_with(&base), "a respawn extends its base id: {id}");
+        }
     }
 
     #[test]
