@@ -18,7 +18,9 @@ use crate::gate::{self, Gate};
 use crate::grounder::Grounder;
 use crate::ledger::{self, RunState};
 use crate::safety;
-use crate::spawn::{self, lens_role, spawn_id, ROLE_ADJUDICATOR, ROLE_ADVERSARY, ROLE_IMPLEMENTER};
+use crate::spawn::{
+    self, lens_role, spawn_id, spawn_retry_id, ROLE_ADJUDICATOR, ROLE_ADVERSARY, ROLE_IMPLEMENTER,
+};
 use crate::worktree::Worktree;
 
 /// The run's event stream name.
@@ -431,6 +433,36 @@ fn budget_refused(stage: &str, tier: &str, agent: &str) -> Error {
 /// error wrapping, since the marker survives as a substring.
 fn is_budget_refused(e: &Error) -> bool {
     e.0.contains(BUDGET_MARKER)
+}
+
+/// The number of times a reviewer whose result is DEGENERATE (empty or whitespace-only)
+/// is respawned before the run halts (Gap 18, spec 07). A degenerate reviewer result is
+/// an INFRASTRUCTURE fault, not a verdict, so the conductor respawns the SAME reviewer
+/// under a fresh deterministic id ([`spawn_retry_id`]); bounded here so a persistently
+/// broken reviewer agent/driver cannot loop the conductor forever. The reviewer runs at
+/// most `1 + REVIEWER_RESPAWN_BOUND` times (its original spawn plus this many respawns)
+/// before [`degenerate_reviewer`] halts the run.
+const REVIEWER_RESPAWN_BOUND: u32 = 2;
+
+/// Construct the LOUD-HALT error the review path returns when a reviewer's original spawn
+/// and all [`REVIEWER_RESPAWN_BOUND`] respawns each returned a degenerate (empty or
+/// whitespace-only) result (Gap 18, spec 07). It NAMES the dead reviewer - `tier`
+/// (lens/adversary/adjudicator), `agent`, and the `stage` - so the operator sees WHICH
+/// spawn is failing.
+///
+/// Unlike [`budget_refused`] and [`parked_spawn`] it carries NO sentinel marker: it is a
+/// plain error meant to PROPAGATE OUT of `run` unchanged (a degenerate reviewer is the
+/// operator's infrastructure problem, not a code defect to remediate). The respawn loop
+/// lives inside ONE review attempt and never touches the unit's remediation counter, so
+/// halting here does NOT charge the unit an attempt (no `UnitFailed`, no `UnitEscalated`).
+fn degenerate_reviewer(stage: &str, tier: &str, agent: &str) -> Error {
+    Error(format!(
+        "stage {stage:?} {tier} {agent:?} returned empty/whitespace-only output on all {} spawns \
+         (its original spawn plus {REVIEWER_RESPAWN_BOUND} respawns): a degenerate reviewer result \
+         is an infrastructure failure, not a verdict - the run halts. Re-run once the reviewer's \
+         agent/driver is healthy; the unit is NOT charged a remediation attempt.",
+        REVIEWER_RESPAWN_BOUND + 1
+    ))
 }
 
 /// The conductor's injected ports.
@@ -2141,24 +2173,85 @@ impl RunCtx<'_> {
     /// to thread into another agent's prompt - the graph is the channel. Budget-refused
     /// spawns (item 9) surface as an error so the run halts.
     fn run_lens(&self, st: &Stage, agent_id: &str, dir: &str, attempt: u32) -> Result<(), Error> {
-        let id = spawn_id(&st.name, &lens_role(agent_id), attempt);
-        let opts = self.reviewer_spawn_opts(&id, "lens", agent_id, dir, true, st)?;
+        // A lens's output is not a verdict - it emits its findings to the graph - so the
+        // substantive result is discarded here; the shared `run_reviewer` loop only needs
+        // it to be non-degenerate (Gap 18) before the review proceeds.
+        let prompt = self.build_review_prompt(st);
+        self.run_reviewer(
+            st,
+            "lens",
+            &lens_role(agent_id),
+            agent_id,
+            dir,
+            attempt,
+            true,
+            &prompt,
+        )?;
+        Ok(())
+    }
+
+    /// Run a single reviewer spawn of any tier (lens/adversary/adjudicator) with the
+    /// Gap-18 degenerate-result respawn loop, returning its GUARANTEED-non-degenerate
+    /// result. This is the ONE authority for the check-and-respawn behavior across all
+    /// three tiers - `run_lens`/`run_adversary` discard the returned result, while
+    /// `run_adjudicator` reads its verdict.
+    ///
+    /// A reviewer result that is empty or whitespace-only is an INFRASTRUCTURE fault, not
+    /// a verdict (spec 07): the conductor respawns the SAME reviewer under a deterministic
+    /// `~retry{n}` id ([`spawn_retry_id`]) - a NEW spawn a stepwise/replay driver parks
+    /// and answers independently - and only a substantive result is returned to fold into
+    /// the review outcome. The loop is bounded at [`REVIEWER_RESPAWN_BOUND`] respawns; if
+    /// every spawn (its original plus the respawns) is degenerate, it returns the
+    /// [`degenerate_reviewer`] halt error - a plain error (no park/budget sentinel) that
+    /// propagates out of `run` unchanged, so a dead reviewer HALTS the run loudly rather
+    /// than escalating the unit. The respawn loop lives INSIDE one review attempt: it
+    /// never touches the unit's remediation counter, so a degenerate reviewer never
+    /// charges the unit an attempt (spec 07 exclusion).
+    ///
+    /// `tier` is the human label the audit trail/`reviewer_spawn_opts` use; `role` is the
+    /// deterministic-id role token (`lens_role(agent)` / [`ROLE_ADVERSARY`] /
+    /// [`ROLE_ADJUDICATOR`]); `parallel` sets the reviewer's isolation-opt (§6, lenses run
+    /// in parallel); `prompt` is the tier's already-grounded prompt. A budget-refused
+    /// respawn surfaces the budget sentinel exactly like the original spawn.
+    #[allow(clippy::too_many_arguments)]
+    fn run_reviewer(
+        &self,
+        st: &Stage,
+        tier: &str,
+        role: &str,
+        agent_id: &str,
+        dir: &str,
+        attempt: u32,
+        parallel: bool,
+        prompt: &str,
+    ) -> Result<AgentResult, Error> {
         let agent_def = self.cfg.agents.get(agent_id).ok_or_else(|| {
             Error(format!(
-                "stage {:?} references unknown agent {:?}",
-                st.name, agent_id
+                "stage {:?} references unknown {tier} {agent_id:?}",
+                st.name
             ))
         })?;
-        if !self.reserve_spawn(&id) {
-            return Err(budget_refused(&st.name, "lens", agent_id));
+        // retry 0 is the reviewer's ORIGINAL spawn (its plain `spawn_id`); each later
+        // ordinal is a `~retry{n}` respawn. At most `1 + REVIEWER_RESPAWN_BOUND` spawns.
+        for retry in 0..=REVIEWER_RESPAWN_BOUND {
+            let id = spawn_retry_id(&st.name, role, attempt, retry);
+            let opts = self.reviewer_spawn_opts(&id, tier, agent_id, dir, parallel, st)?;
+            if !self.reserve_spawn(&id) {
+                return Err(budget_refused(&st.name, tier, agent_id));
+            }
+            let emit = |t: &str, v: Value| self.emit_with_actor(agent_id, t, v);
+            let result = self
+                .deps
+                .driver
+                .spawn(agent_def, prompt, &opts, &emit)
+                .map_err(|e| Error(format!("stage {:?} {tier} {agent_id:?}: {}", st.name, e.0)))?;
+            // A substantive result folds into the review; a degenerate (empty/whitespace-
+            // only) one loops to respawn the SAME reviewer under the next retry id.
+            if !result.output.trim().is_empty() {
+                return Ok(result);
+            }
         }
-        let prompt = self.build_review_prompt(st);
-        let emit = |t: &str, v: Value| self.emit_with_actor(agent_id, t, v);
-        self.deps
-            .driver
-            .spawn(agent_def, &prompt, &opts, &emit)
-            .map_err(|e| Error(format!("stage {:?} agent {:?}: {}", st.name, agent_id, e.0)))?;
-        Ok(())
+        Err(degenerate_reviewer(&st.name, tier, agent_id))
     }
 
     /// Run the adversary: a single agent that reviews the lenses' findings and the
@@ -2178,28 +2271,20 @@ impl RunCtx<'_> {
         dir: &str,
         attempt: u32,
     ) -> Result<(), Error> {
-        let id = spawn_id(&st.name, ROLE_ADVERSARY, attempt);
-        let opts = self.reviewer_spawn_opts(&id, "adversary", adv_id, dir, false, st)?;
-        let agent_def = self.cfg.agents.get(adv_id).ok_or_else(|| {
-            Error(format!(
-                "stage {:?} references unknown adversary {:?}",
-                st.name, adv_id
-            ))
-        })?;
-        if !self.reserve_spawn(&id) {
-            return Err(budget_refused(&st.name, "adversary", adv_id));
-        }
+        // Like a lens, the adversary emits its findings to the graph rather than
+        // returning a verdict, so its substantive result is discarded; `run_reviewer`
+        // only needs it non-degenerate (Gap 18) before the adjudicator grounds.
         let prompt = self.build_review_prompt(st);
-        let emit = |t: &str, v: Value| self.emit_with_actor(adv_id, t, v);
-        self.deps
-            .driver
-            .spawn(agent_def, &prompt, &opts, &emit)
-            .map_err(|e| {
-                Error(format!(
-                    "stage {:?} adversary {:?}: {}",
-                    st.name, adv_id, e.0
-                ))
-            })?;
+        self.run_reviewer(
+            st,
+            "adversary",
+            ROLE_ADVERSARY,
+            adv_id,
+            dir,
+            attempt,
+            false,
+            &prompt,
+        )?;
         Ok(())
     }
 
@@ -2218,29 +2303,21 @@ impl RunCtx<'_> {
         dir: &str,
         attempt: u32,
     ) -> Result<(bool, String, String), Error> {
-        let id = spawn_id(&st.name, ROLE_ADJUDICATOR, attempt);
-        let opts = self.reviewer_spawn_opts(&id, "adjudicator", adj_id, dir, false, st)?;
-        let agent_def = self.cfg.agents.get(adj_id).ok_or_else(|| {
-            Error(format!(
-                "stage {:?} references unknown adjudicator {:?}",
-                st.name, adj_id
-            ))
-        })?;
-        if !self.reserve_spawn(&id) {
-            return Err(budget_refused(&st.name, "adjudicator", adj_id));
-        }
+        // Unlike the other tiers the adjudicator's result IS the verdict, so it is read
+        // here (not discarded). `run_reviewer` guarantees it is non-degenerate before it
+        // is judged (Gap 18): an empty/whitespace-only verdict is an infrastructure fault
+        // that respawns or halts, never a silent reject.
         let prompt = self.build_prompt(st);
-        let emit = |t: &str, v: Value| self.emit_with_actor(adj_id, t, v);
-        let result = self
-            .deps
-            .driver
-            .spawn(agent_def, &prompt, &opts, &emit)
-            .map_err(|e| {
-                Error(format!(
-                    "stage {:?} adjudicator {:?}: {}",
-                    st.name, adj_id, e.0
-                ))
-            })?;
+        let result = self.run_reviewer(
+            st,
+            "adjudicator",
+            ROLE_ADJUDICATOR,
+            adj_id,
+            dir,
+            attempt,
+            false,
+            &prompt,
+        )?;
         // The resolved model the adjudicator ran as (spec 05 line 52) rides back with the
         // verdict so the `reviewed` status - this spawn's unit event - can carry it.
         Ok((
@@ -3673,6 +3750,16 @@ mod tests {
         /// test give a lens a distinct finding and the adjudicator a distinct verdict
         /// (item 1: assert the findings actually flow between tiers).
         output_by_agent: HashMap<String, String>,
+        /// Per-SPAWN-ID canned output, overriding both `output_by_agent` and `output`
+        /// for the spawn whose deterministic id ([`SpawnOpts::id`]) matches. Lets a Gap-18
+        /// test drive the SAME reviewer agent to a DEGENERATE (empty) result on its
+        /// original spawn id and a substantive result on its `~retry{n}` respawn id -
+        /// which `output_by_agent` (keyed on the agent, identical across retries) cannot.
+        output_by_spawn_id: HashMap<String, String>,
+        /// Every spawn's deterministic id ([`SpawnOpts::id`]), in spawn order. Lets a
+        /// Gap-18 test assert the exact deterministic respawn ids (`u/role#att~retry{n}`)
+        /// the conductor minted for a degenerate reviewer.
+        spawn_ids: Mutex<Vec<String>>,
         /// Per-agent RESOLVED model id the driver returns on [`AgentResult::resolved_model`]
         /// (spec 05 line 52), letting a test drive the live (non-replay) path where the
         /// conductor copies the resolved id onto the spawn's unit events.
@@ -3705,6 +3792,8 @@ mod tests {
                 emits_by_agent: HashMap::new(),
                 output: String::new(),
                 output_by_agent: HashMap::new(),
+                output_by_spawn_id: HashMap::new(),
+                spawn_ids: Mutex::new(Vec::new()),
                 resolved_model_by_agent: HashMap::new(),
                 fail_spawn: false,
                 last_prompt: Mutex::new(String::new()),
@@ -3744,6 +3833,23 @@ mod tests {
                 .unwrap()
                 .get(agent_id)
                 .cloned()
+        }
+
+        /// Every spawn's deterministic id, in spawn order (Gap-18 tests assert the exact
+        /// `~retry{n}` respawn ids the conductor minted for a degenerate reviewer).
+        fn spawn_ids(&self) -> Vec<String> {
+            self.spawn_ids.lock().unwrap().clone()
+        }
+
+        /// How many times the named agent was spawned this run (Gap-18 tests count a
+        /// degenerate reviewer's original spawn + its bounded respawns).
+        fn spawn_count(&self, agent_id: &str) -> usize {
+            self.call_order
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|id| *id == agent_id)
+                .count()
         }
 
         /// Whether the named agent was spawned at all this run (resume tests assert an
@@ -3786,6 +3892,7 @@ mod tests {
                 .or_default()
                 .push(prompt.to_string());
             self.call_order.lock().unwrap().push(a.id.clone());
+            self.spawn_ids.lock().unwrap().push(opts.id.clone());
             if self.fail_spawn {
                 return Err(Error("simulated mid-spawn crash".into()));
             }
@@ -3807,8 +3914,9 @@ mod tests {
                 }
             }
             let output = self
-                .output_by_agent
-                .get(&a.id)
+                .output_by_spawn_id
+                .get(&opts.id)
+                .or_else(|| self.output_by_agent.get(&a.id))
                 .cloned()
                 .unwrap_or_else(|| self.output.clone());
             Ok(AgentResult {
@@ -5270,11 +5378,13 @@ mod tests {
         );
 
         // The adjudicator approves; the unit must integrate via review, not implement.
+        // The lens returns a substantive (non-degenerate) review so it does not trip the
+        // Gap-18 respawn loop.
         let driver = Stub {
-            output_by_agent: HashMap::from([(
-                "judge".to_string(),
-                r#"{"verdict":"approve"}"#.to_string(),
-            )]),
+            output_by_agent: HashMap::from([
+                ("judge".to_string(), r#"{"verdict":"approve"}"#.to_string()),
+                ("lens".to_string(), "reviewed: no blocker".to_string()),
+            ]),
             ..Stub::new()
         };
         let deps = Deps {
@@ -5362,10 +5472,11 @@ mod tests {
         // Each spawn reports the concrete model it ran as (what a worker records via
         // `rigger result --meta` on the stepwise path); the adjudicator approves.
         let driver = Stub {
-            output_by_agent: HashMap::from([(
-                "judge".to_string(),
-                r#"{"verdict":"approve"}"#.to_string(),
-            )]),
+            output_by_agent: HashMap::from([
+                ("judge".to_string(), r#"{"verdict":"approve"}"#.to_string()),
+                // A substantive lens result so it does not trip the Gap-18 respawn loop.
+                ("lens".to_string(), "reviewed: no blocker".to_string()),
+            ]),
             resolved_model_by_agent: HashMap::from([
                 (
                     "worker".to_string(),
@@ -5432,6 +5543,240 @@ mod tests {
             started.meta.get(META_MODEL_ALIAS).map(String::as_str),
             Some("sonnet")
         );
+    }
+
+    /// Build a repo-less single stage with a lens + adjudicator review panel and
+    /// `on_pass: none` (so the approved review folds and emits `reviewed` without needing
+    /// a git repo to integrate into). The Gap-18 tests below drive its reviewers to
+    /// degenerate (empty) results and assert the respawn/halt behavior.
+    fn degenerate_reviewer_cfg() -> Config {
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("sdet".into(), agent("sdet"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.stages.insert(
+            "u".into(),
+            Stage {
+                name: "u".into(),
+                agent: "worker".into(),
+                on_pass: "none".into(),
+                review: crate::config::ReviewPanel {
+                    lenses: vec!["sdet".into()],
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        cfg
+    }
+
+    fn has_status(events: &[Event], status: &str) -> bool {
+        events.iter().any(|e| {
+            e.type_ == ledger::TYPE_UNIT_STATUS
+                && String::from_utf8_lossy(&e.data).contains(&format!("\"status\":\"{status}\""))
+        })
+    }
+
+    #[test]
+    fn a_degenerate_adjudicator_result_respawns_and_a_substantive_retry_folds_normally() {
+        // Gap 18 (spec 07): a reviewer result that is empty/whitespace-only is an
+        // INFRASTRUCTURE fault, not a verdict. The adjudicator's ORIGINAL spawn returns
+        // whitespace-only; the conductor respawns it under the deterministic
+        // `~retry1` id, and that substantive (approving) result folds NORMALLY.
+        let store = Store::open(":memory:").unwrap();
+        let cfg = degenerate_reviewer_cfg();
+        let driver = Stub {
+            output_by_spawn_id: HashMap::from([
+                // Original adjudicator spawn: whitespace only -> degenerate, respawned.
+                (spawn_id("u", ROLE_ADJUDICATOR, 0), "   \n\t  ".to_string()),
+                // First respawn: a real approving verdict -> folds normally.
+                (
+                    spawn_retry_id("u", ROLE_ADJUDICATOR, 0, 1),
+                    r#"{"verdict":"approve"}"#.to_string(),
+                ),
+            ]),
+            // The lens returns a substantive review so only the ADJUDICATOR exercises the
+            // degenerate-respawn path under test.
+            output_by_agent: HashMap::from([("sdet".to_string(), "lens: no blocker".to_string())]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).expect("a substantive retry folds the review normally");
+
+        // The adjudicator was spawned exactly twice: the degenerate original + one retry.
+        assert_eq!(
+            driver.spawn_count("judge"),
+            2,
+            "the degenerate adjudicator is respawned exactly once before it returns a verdict"
+        );
+        // The respawn used the DETERMINISTIC retry-suffixed id, not a fresh/random one.
+        let ids = driver.spawn_ids();
+        assert!(
+            ids.contains(&spawn_id("u", ROLE_ADJUDICATOR, 0)),
+            "the original spawn keeps its plain id: {ids:?}"
+        );
+        assert!(
+            ids.contains(&spawn_retry_id("u", ROLE_ADJUDICATOR, 0, 1)),
+            "the respawn uses the deterministic ~retry1 id: {ids:?}"
+        );
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        // The substantive verdict folded: `reviewed` is emitted ONLY on an explicit approve.
+        assert!(
+            has_status(&events, "reviewed"),
+            "the approving retry result folds into the review outcome (reviewed emitted)"
+        );
+        // The unit was NOT charged a remediation attempt: no UnitFailed, no UnitEscalated.
+        assert!(
+            !events.iter().any(|e| e.type_ == ledger::TYPE_UNIT_FAILED),
+            "a degenerate-then-recovered review must not charge the unit an attempt"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.type_ == ledger::TYPE_UNIT_ESCALATED),
+            "a degenerate-then-recovered review must not escalate the unit"
+        );
+        // The implementer ran exactly once - no remediation re-implement.
+        assert_eq!(driver.spawn_count("worker"), 1);
+    }
+
+    #[test]
+    fn a_degenerate_lens_result_respawns_the_lens_before_the_review_proceeds() {
+        // The respawn loop wraps ALL THREE reviewer roles: a degenerate tier-1 LENS is
+        // respawned the same way an adjudicator is (a shared helper, one authority), so a
+        // flaky lens spawn does not corrupt the review.
+        let store = Store::open(":memory:").unwrap();
+        let cfg = degenerate_reviewer_cfg();
+        let driver = Stub {
+            output_by_spawn_id: HashMap::from([
+                // Original lens spawn: empty -> degenerate, respawned.
+                (spawn_id("u", &lens_role("sdet"), 0), String::new()),
+                // First lens respawn: a substantive review (its output is folded via
+                // the graph, not a verdict, so any non-empty text lets the review proceed).
+                (
+                    spawn_retry_id("u", &lens_role("sdet"), 0, 1),
+                    "reviewed the diff; no blocking defect".to_string(),
+                ),
+            ]),
+            output_by_agent: HashMap::from([(
+                "judge".to_string(),
+                r#"{"verdict":"approve"}"#.to_string(),
+            )]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).expect("the review proceeds once the degenerate lens recovers");
+
+        assert_eq!(
+            driver.spawn_count("sdet"),
+            2,
+            "the degenerate lens is respawned exactly once"
+        );
+        assert!(
+            driver
+                .spawn_ids()
+                .contains(&spawn_retry_id("u", &lens_role("sdet"), 0, 1)),
+            "the lens respawn uses the deterministic ~retry1 id"
+        );
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(has_status(&events, "reviewed"), "the review still approves");
+        assert!(
+            !events.iter().any(|e| e.type_ == ledger::TYPE_UNIT_FAILED),
+            "a degenerate lens must not charge the unit an attempt"
+        );
+    }
+
+    #[test]
+    fn a_reviewer_that_only_ever_returns_degenerate_output_halts_the_run_loudly_naming_it() {
+        // Gap 18: when the respawn bound (two respawns) exhausts with only degenerate
+        // results, the unit does NOT lose the attempt - the run halts LOUDLY, naming the
+        // dead reviewer. It is an operator infrastructure problem, NOT code for
+        // remediation, so it propagates as an Error out of `run` (no UnitFailed/escalate).
+        let store = Store::open(":memory:").unwrap();
+        let cfg = degenerate_reviewer_cfg();
+        // The adjudicator returns whitespace-only on EVERY spawn, including both
+        // respawns; the lens returns a substantive review so the halt is provably the
+        // adjudicator's, not the lens's.
+        let driver = Stub {
+            output_by_agent: HashMap::from([
+                ("judge".to_string(), "  \n ".to_string()),
+                ("sdet".to_string(), "lens: no blocker".to_string()),
+            ]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let err = match run(&cfg, &deps) {
+            Ok(_) => panic!("an all-degenerate reviewer must halt the run"),
+            Err(e) => e,
+        };
+        // The halt NAMES the dead reviewer (its agent id, the tier, and the unit) so the
+        // operator can see WHICH spawn is failing.
+        assert!(
+            err.0.contains("\"judge\"") && err.0.contains("adjudicator") && err.0.contains("\"u\""),
+            "the loud halt must name the dead reviewer, its tier, and the unit: {}",
+            err.0
+        );
+
+        // The adjudicator was spawned exactly THREE times: the original + two respawns.
+        assert_eq!(
+            driver.spawn_count("judge"),
+            3,
+            "the respawn bound is two: original + 2 respawns, then halt"
+        );
+        // Each respawn used the deterministic retry-suffixed id.
+        let ids = driver.spawn_ids();
+        for id in [
+            spawn_id("u", ROLE_ADJUDICATOR, 0),
+            spawn_retry_id("u", ROLE_ADJUDICATOR, 0, 1),
+            spawn_retry_id("u", ROLE_ADJUDICATOR, 0, 2),
+        ] {
+            assert!(
+                ids.contains(&id),
+                "expected deterministic spawn id {id}: {ids:?}"
+            );
+        }
+
+        // The unit was NOT charged an attempt: an infrastructure halt records no
+        // UnitFailed and no UnitEscalated - it is the operator's problem, not the unit's.
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(
+            !events.iter().any(|e| e.type_ == ledger::TYPE_UNIT_FAILED),
+            "a degenerate-reviewer halt must not charge the unit an attempt (no UnitFailed)"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.type_ == ledger::TYPE_UNIT_ESCALATED),
+            "a degenerate-reviewer halt is not a code defect for remediation (no UnitEscalated)"
+        );
+        // The implementer ran exactly once - the halt did not restart the unit lifecycle.
+        assert_eq!(driver.spawn_count("worker"), 1);
     }
 
     #[test]
@@ -5592,12 +5937,13 @@ mod tests {
         );
 
         // The resumed attempt's review is approved, so the unit integrates this window.
+        // The lens returns a substantive review so it does not trip the Gap-18 respawn loop.
         let driver = Stub {
             write_file: Some("feature.rs".into()),
-            output_by_agent: HashMap::from([(
-                "judge".to_string(),
-                r#"{"verdict":"approve"}"#.to_string(),
-            )]),
+            output_by_agent: HashMap::from([
+                ("judge".to_string(), r#"{"verdict":"approve"}"#.to_string()),
+                ("lens".to_string(), "reviewed: no blocker".to_string()),
+            ]),
             ..Stub::new()
         };
         let deps = Deps {
@@ -7114,7 +7460,11 @@ mod tests {
                     r#"{"verdict":"reject","issues":[]}"#.to_string()
                 }
             } else {
-                String::new()
+                // Non-adjudicator reviewers (lens/adversary) emit their findings to the
+                // graph; their stdout is not a verdict but must be NON-degenerate, else the
+                // Gap-18 respawn loop would treat this stub's empty output as an
+                // infrastructure fault. A fixed narration keeps them substantive.
+                "reviewed the diff".to_string()
             };
             Ok(AgentResult {
                 output,
@@ -8216,7 +8566,12 @@ mod tests {
         cfg.agents.insert("lens".into(), agent("lens"));
         cfg.workflow.stages.insert("review".into(), review);
         let store = Store::open(":memory:").unwrap();
-        let driver = Stub::new();
+        // A substantive lens result so the standalone review proceeds (an empty result
+        // would trip the Gap-18 respawn loop).
+        let driver = Stub {
+            output: "reviewed the diff".into(),
+            ..Stub::new()
+        };
         let deps = Deps {
             store: &store,
             driver: &driver,
@@ -8397,6 +8752,9 @@ mod tests {
             "LENS_STDOUT_must_not_thread".to_string(),
         );
         output_by_agent.insert("adj".to_string(), r#"{"verdict":"approve"}"#.to_string());
+        // The adversary emits its finding to the graph; a substantive stdout keeps it out
+        // of the Gap-18 respawn loop (empty would read as an infrastructure fault).
+        output_by_agent.insert("adversary".to_string(), "ADV_reviewed".to_string());
         let driver = Stub {
             emits_by_agent,
             output_by_agent,
@@ -8689,6 +9047,9 @@ mod tests {
             "adj".to_string(),
             r#"{"verdict":"reject","reason":"REJECT_REASON_missing_tests"}"#.to_string(),
         );
+        // A substantive lens result so only the adjudicator's reject drives remediation
+        // (an empty lens would trip the Gap-18 respawn loop instead).
+        output_by_agent.insert("lens".to_string(), "reviewed: concerns noted".to_string());
         let driver = Stub {
             output_by_agent,
             ..Stub::new()
@@ -8754,7 +9115,12 @@ mod tests {
             },
         );
         let st = Store::open(":memory:").unwrap();
-        let driver = Stub::new();
+        // A substantive lens result so the review proceeds (an empty result would trip
+        // the Gap-18 respawn loop).
+        let driver = Stub {
+            output: "reviewed the diff".into(),
+            ..Stub::new()
+        };
         let deps = Deps {
             store: &st,
             driver: &driver,
