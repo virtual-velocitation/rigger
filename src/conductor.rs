@@ -2908,7 +2908,13 @@ impl RunCtx<'_> {
         terminal: &HashSet<String>,
     ) -> Result<(), Error> {
         let events = self.deps.store.read_stream(STREAM, 0, Direction::Forward)?;
-        for e in &events {
+        // Run-scoped (Gap 11, completing spec-06 unit-1): only THIS run's proposals
+        // fold. A prior run's UnitProposed must never resurrect as live work - its
+        // terminal states are (correctly) scoped OUT of `terminal`, so an unscoped
+        // harvest here re-parks ancient units at attempt #0. Observed live: the first
+        // run under the scoped binary rose u-metrics-mod from a weeks-dead aborted
+        // run, a second time, BECAUSE of the scoping it evaded.
+        for e in crate::run::current_run(&events) {
             if e.type_ != TYPE_UNIT_PROPOSED {
                 continue;
             }
@@ -4230,6 +4236,58 @@ mod tests {
             },
         );
         cfg
+    }
+
+    #[test]
+    fn a_prior_runs_proposal_never_resurrects_in_a_new_run() {
+        // Gap 11, completing spec-06 unit-1: the proposal harvest is run-scoped. A
+        // UnitProposed recorded BEFORE this run's RunStarted boundary (an aborted
+        // prior run's zombie) must never enter the new run's DAG - its terminal
+        // states are scoped out of `terminal`, so an unscoped harvest would re-park
+        // it as a fresh unit at attempt #0 (observed live on the first scoped run).
+        let crit_a = "criterion A: the metrics module is implemented";
+        let cfg = supersede_cfg();
+        let st = Store::open(":memory:").unwrap();
+        // The zombie: a prior run's proposal, with non-empty coverage citing a
+        // criterion this run does not have, sitting in the pre-boundary slice.
+        st.append(
+            STREAM,
+            ExpectedRevision::Any,
+            &[Event::new(
+                TYPE_UNIT_PROPOSED,
+                serde_json::to_vec(&json!({
+                    "id": "u-zombie-mod",
+                    "agent": "worker",
+                    "criterion": "an ancient criterion from an aborted run",
+                    "gates": ["ok"],
+                }))
+                .unwrap(),
+            )],
+        )
+        .unwrap();
+        // The planner proposes nothing this run; the baseline covers criterion A.
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: vec![crit_a.to_string()],
+        };
+        let state = run(&cfg, &deps).unwrap();
+        assert!(
+            !state.units.contains_key("u-zombie-mod"),
+            "a pre-boundary proposal must not enter the run: {:?}",
+            state.units.keys().collect::<Vec<_>>()
+        );
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(
+            !events.iter().any(|e| e.type_ == ledger::TYPE_UNIT_STARTED
+                && String::from_utf8_lossy(&e.data).contains("u-zombie-mod")),
+            "the zombie must never start"
+        );
     }
 
     #[test]
