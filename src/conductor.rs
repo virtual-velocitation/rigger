@@ -2728,32 +2728,22 @@ impl RunCtx<'_> {
             Err(_) => return String::new(),
         };
         let mut b = String::new();
-        // Gap 15: the decisions-that-govern injection is capped and curated (recent-N
-        // verbatim under a hard byte budget, older ones collapsed into a visible
-        // elision note) so a long rejection history's DECISIONS cannot blow the prompt.
-        // Capping the decisions section alone is this unit's scoped charter (spec-06
-        // unit 5, line 49). Lessons and findings below still render UNCAPPED via
-        // write_nodes / write_findings - and findings are in fact the LARGER, not the
-        // smaller, contributor on a hot file (measured: ~95KiB of findings ABOUT
-        // conductor.rs, ~187KiB ABOUT main.rs, i.e. 4-8x this 24KiB decisions cap), so
-        // the findings half of Gap 15 is NOT closed here: an unbounded findings pile
-        // can still blow the prompt. That is a RECORDED carry-forward for a follow-up
-        // unit (d-unit5-findings-uncapped-carryforward).
+        // Every prompt slice is budgeted (Gap 15's principle, extended to all sections by
+        // Gap 17): the decisions, lessons, and findings sections each render through ONE
+        // shared budgeted-section writer (recent-N verbatim under a hard per-section byte
+        // budget, the older remainder collapsed into a visible elision note that names the
+        // count and the `rigger peers <file>` recovery). So no single section - not even
+        // findings, the LARGER contributor on a hot file (measured ~95KiB ABOUT
+        // conductor.rs, ~187KiB ABOUT main.rs, 4-8x the 24KiB decisions cap) - can blow the
+        // prompt; the store keeps the full history, only the prompt slice narrows. The
+        // findings subgraph is seeded on the unit's files and a ReviewFinding folds ABOUT
+        // those files, so the same traversal that returns the GOVERNING decisions returns
+        // the findings too: this is the graph path by which the adversary and adjudicator
+        // (grounding AFTER the lenses) retrieve the lenses' findings, replacing the
+        // conductor hand-threading one agent's stdout into another's prompt.
         write_capped_decisions(&mut b, &g, seed);
-        write_nodes(
-            &mut b,
-            &g,
-            contextgraph::KIND_LESSON,
-            "Lessons already learned about these files (do not repeat these mistakes):",
-        );
-        // Findings other reviewers already raised about these files. The subgraph is
-        // seeded on the unit's files and a ReviewFinding folds ABOUT those files, so
-        // the same traversal that returns the GOVERNING decisions returns the findings
-        // too: this is the graph path by which the adversary and adjudicator (which
-        // ground AFTER the lenses) retrieve the lenses' findings, replacing the
-        // conductor hand-threading one agent's stdout into another's prompt. Each line
-        // names the reviewer (`by`) and the finding summary.
-        write_findings(&mut b, &g);
+        write_capped_lessons(&mut b, &g, seed);
+        write_capped_findings(&mut b, &g, seed);
         b
     }
 
@@ -3113,71 +3103,110 @@ const DECISIONS_VERBATIM_N: usize = 12;
 /// binds first), so a pile of chunky rejection verdicts can never blow the prompt.
 const DECISIONS_BUDGET_BYTES: usize = 24 * 1024;
 
+/// Gap-17 prompt budget: the most-recent lessons kept VERBATIM in a prompt. Lessons
+/// are terse one-liners recorded once per escalation, so the count that keeps the
+/// section actionable matches the decisions count.
+const LESSONS_VERBATIM_N: usize = 12;
+
+/// Gap-17 prompt budget: a hard byte cap on the verbatim body of the lessons section.
+/// Lessons are the smallest of the three sections (short summaries, few of them), so
+/// this is the tightest budget; the older remainder collapses into a visible note.
+const LESSONS_BUDGET_BYTES: usize = 12 * 1024;
+
+/// Gap-17 prompt budget: the most-recent findings kept VERBATIM in a prompt. Findings
+/// are the PRIMARY cross-tier review channel (a later tier addresses or refutes them),
+/// so a larger count survives verbatim than for decisions or lessons before the byte
+/// budget takes over.
+const FINDINGS_VERBATIM_N: usize = 24;
+
+/// Gap-17 prompt budget: a hard byte cap on the verbatim body of the findings section.
+/// Findings were measured 4-8x larger than decisions on a hot file (~95KiB about
+/// conductor.rs, ~187KiB about main.rs, spec 07 line 11), so this is the LARGEST of the
+/// three per-section budgets - still hard-bounded so an unbounded review history can
+/// never blow the prompt, but generous enough to carry the findings a later tier weighs.
+const FINDINGS_BUDGET_BYTES: usize = 48 * 1024;
+
 /// The header for the decisions-that-govern injection - single-sourced so the
 /// capped renderer and any test that asserts its presence agree byte-for-byte.
 const DECISIONS_HEADER: &str =
     "Decisions that govern these files (do not contradict them; supersede explicitly if you must):";
 
-/// Render the "Decisions that govern these files" section under the Gap-15 prompt
-/// budget (spec 06, unit 5). The most-recent [`DECISIONS_VERBATIM_N`] governing
-/// decisions are rendered verbatim AND kept under [`DECISIONS_BUDGET_BYTES`]
-/// (whichever binds first); the older remainder collapses into ONE visible elision
-/// note naming the elided count and the `rigger peers <file>` recovery command.
+/// Render ONE kind-filtered graph section (decisions, lessons, or findings) under the
+/// shared Gap-17 prompt budget: the most-recent `verbatim_n` nodes render verbatim AND
+/// stay under `budget_bytes` (whichever binds first), and the older remainder collapses
+/// into ONE visible elision note naming the elided count and the `rigger peers <file>`
+/// recovery command. This is the SINGLE budgeted-section writer behind all three
+/// `graph_context` sections (the three thin wrappers below name each section's config),
+/// so no section gets a divergent second capping mechanism and the earlier triplicated
+/// node-section render loop (arch-u5) is collapsed into one. The store keeps the FULL
+/// history - only this prompt slice narrows, and the trim is never silent.
 ///
-/// Recency is the maximum source position among a decision's OWN `GOVERNS` edges: a
-/// later `DecisionMade` folds a higher-positioned `GOVERNS` edge, so the freshest
-/// verdicts survive the trim (ties break on id for a deterministic prompt). A
-/// superseded decision's `GOVERNS` edge is invalidated (excluded from the subgraph),
-/// so it reaches this section only via the still-valid `SUPERSEDES` edge that carries
-/// its superseder's position; ranking off `GOVERNS`-source alone denies it that
-/// inherited freshness, so a stale verdict never crowds a current one out of the
-/// verbatim slice (sdet-u5 / arch-u5). The store keeps the FULL history - only this
-/// prompt slice narrows, and the trim is never silent.
-fn write_capped_decisions(b: &mut String, g: &Graph, seed: &[String]) {
-    // Recency per decision id: the max source position of its own GOVERNS edges. The
-    // GOVERNS edge points decision -> file, so key on the `from` (decision) side only;
-    // a SUPERSEDES edge (from = superseder) never contributes to the superseded node.
+/// `recency_rel` names the edge relation whose max source position dates each node so the
+/// freshest survive the trim (ties break on id for a deterministic prompt): a decision is
+/// dated by its own `GOVERNS` edge, a lesson or finding by its own `ABOUT` edge (all point
+/// node -> file, so key on the `from` side). A superseded decision's `GOVERNS` edge is
+/// invalidated (excluded from the subgraph), so it can reach a section only via the still
+/// valid `SUPERSEDES` edge that carries its superseder's position; dating off the node's
+/// OWN `recency_rel` edge alone denies it that inherited freshness, so a stale verdict
+/// never crowds a current one out of the verbatim slice (sdet-u5 / arch-u5). `line` renders
+/// one entry's body (the sections differ: findings name the raising reviewer, the rest do
+/// not); `noun` names the unit in the elision note.
+#[allow(clippy::too_many_arguments)]
+fn write_capped_section(
+    b: &mut String,
+    g: &Graph,
+    seed: &[String],
+    kind: &str,
+    recency_rel: &str,
+    header: &str,
+    noun: &str,
+    verbatim_n: usize,
+    budget_bytes: usize,
+    line: impl Fn(&contextgraph::Node) -> String,
+) {
+    // Recency per node id: the max source position of its own `recency_rel` edges. Those
+    // edges point node -> file, so key on the `from` (node) side only; a SUPERSEDES edge
+    // (from = superseder) never dates the superseded node.
     let mut recency: BTreeMap<&str, u64> = BTreeMap::new();
     for e in &g.edges {
-        if e.rel != contextgraph::REL_GOVERNS {
+        if e.rel != recency_rel {
             continue;
         }
         let slot = recency.entry(e.from.as_str()).or_insert(0);
         *slot = (*slot).max(e.source);
     }
-    // The governing decisions with a non-empty summary, most-recent first.
-    let mut decisions: Vec<&contextgraph::Node> = g
+    // The nodes of this kind with a non-empty summary, most-recent first.
+    let mut nodes: Vec<&contextgraph::Node> = g
         .nodes
         .iter()
-        .filter(|n| n.kind == contextgraph::KIND_DECISION)
+        .filter(|n| n.kind == kind)
         .filter(|n| n.attrs.get("summary").is_some_and(|s| !s.is_empty()))
         .collect();
-    decisions.sort_by(|a, c| {
+    nodes.sort_by(|a, c| {
         let ra = recency.get(a.id.as_str()).copied().unwrap_or(0);
         let rc = recency.get(c.id.as_str()).copied().unwrap_or(0);
         rc.cmp(&ra).then_with(|| a.id.cmp(&c.id))
     });
-    if decisions.is_empty() {
+    if nodes.is_empty() {
         return;
     }
 
-    b.push_str(DECISIONS_HEADER);
+    b.push_str(header);
     b.push('\n');
 
     let mut used = 0usize;
     let mut kept = 0usize;
-    for n in &decisions {
-        let summary = n.attrs.get("summary").map(String::as_str).unwrap_or("");
-        let line = format!("- {}: {}\n", n.id, summary);
-        if kept >= DECISIONS_VERBATIM_N || used + line.len() > DECISIONS_BUDGET_BYTES {
+    for n in &nodes {
+        let entry = line(n);
+        if kept >= verbatim_n || used + entry.len() > budget_bytes {
             break;
         }
-        used += line.len();
-        b.push_str(&line);
+        used += entry.len();
+        b.push_str(&entry);
         kept += 1;
     }
 
-    let elided = decisions.len() - kept;
+    let elided = nodes.len() - kept;
     if elided > 0 {
         let files = if seed.is_empty() {
             String::new()
@@ -3185,66 +3214,83 @@ fn write_capped_decisions(b: &mut String, g: &Graph, seed: &[String]) {
             format!(" {}", seed.join(" "))
         };
         b.push_str(&format!(
-            "- (+{elided} older decision(s) elided to keep this prompt under budget - recover the full set with `rigger peers{files}`)\n",
+            "- (+{elided} older {noun}(s) elided to keep this prompt under budget - recover the full set with `rigger peers{files}`)\n",
         ));
     }
     b.push('\n');
 }
 
-fn write_nodes(b: &mut String, g: &Graph, kind: &str, header: &str) {
-    let mut first = true;
-    for n in &g.nodes {
-        if n.kind != kind {
-            continue;
-        }
-        let summary = match n.attrs.get("summary") {
-            Some(s) if !s.is_empty() => s,
-            _ => continue,
-        };
-        if first {
-            b.push_str(header);
-            b.push('\n');
-            first = false;
-        }
-        b.push_str(&format!("- {}: {}\n", n.id, summary));
-    }
-    if !first {
-        b.push('\n');
-    }
+/// Render one node's `- {id}: {summary}` line - the plain body shared by the decisions
+/// and lessons sections.
+fn plain_node_line(n: &contextgraph::Node) -> String {
+    let summary = n.attrs.get("summary").map(String::as_str).unwrap_or("");
+    format!("- {}: {}\n", n.id, summary)
 }
 
-/// Surface the KIND_FINDING nodes a prior reviewer raised about the seeded files
-/// (item 2): the graph path by which a later review agent retrieves the findings the
-/// lenses already emitted. Each line names the raising reviewer (`by`) and the
-/// finding summary so the agent can address or refute it. A finding with no summary
-/// is skipped (nothing actionable to surface).
-fn write_findings(b: &mut String, g: &Graph) {
-    let header =
-        "Findings other reviewers have already raised about these files (address or refute them):";
-    let mut first = true;
-    for n in &g.nodes {
-        if n.kind != contextgraph::KIND_FINDING {
-            continue;
-        }
-        let summary = match n.attrs.get("summary") {
-            Some(s) if !s.is_empty() => s,
-            _ => continue,
-        };
-        if first {
-            b.push_str(header);
-            b.push('\n');
-            first = false;
-        }
-        let by = n.attrs.get("by").map(String::as_str).unwrap_or("");
-        if by.is_empty() {
-            b.push_str(&format!("- {}: {}\n", n.id, summary));
-        } else {
-            b.push_str(&format!("- {by} ({}): {summary}\n", n.id));
-        }
-    }
-    if !first {
-        b.push('\n');
-    }
+/// Render the "Decisions that govern these files" section (Gap 15, spec 06 unit 5) via
+/// the shared [`write_capped_section`] writer. Preserved as the decisions entry point so
+/// the Gap-15 cap tests bind the exact rendered behavior unchanged; it only names the
+/// decision-specific config (GOVERNS recency, the decisions header and budgets).
+fn write_capped_decisions(b: &mut String, g: &Graph, seed: &[String]) {
+    write_capped_section(
+        b,
+        g,
+        seed,
+        contextgraph::KIND_DECISION,
+        contextgraph::REL_GOVERNS,
+        DECISIONS_HEADER,
+        "decision",
+        DECISIONS_VERBATIM_N,
+        DECISIONS_BUDGET_BYTES,
+        plain_node_line,
+    );
+}
+
+/// Render the "Lessons already learned" section (Gap 17) via the shared
+/// [`write_capped_section`] writer. Lessons fold ABOUT the files they concern, so their
+/// recency is dated off the `ABOUT` edge.
+fn write_capped_lessons(b: &mut String, g: &Graph, seed: &[String]) {
+    write_capped_section(
+        b,
+        g,
+        seed,
+        contextgraph::KIND_LESSON,
+        contextgraph::REL_ABOUT,
+        "Lessons already learned about these files (do not repeat these mistakes):",
+        "lesson",
+        LESSONS_VERBATIM_N,
+        LESSONS_BUDGET_BYTES,
+        plain_node_line,
+    );
+}
+
+/// Render the "Findings other reviewers have already raised" section (Gap 17) via the
+/// shared [`write_capped_section`] writer: the graph path by which a later review agent
+/// retrieves the findings the lenses already emitted (each line names the raising reviewer
+/// `by` so the agent can address or refute it). Findings fold ABOUT the files they
+/// concern, so their recency is dated off the `ABOUT` edge; they run 4-8x larger than
+/// decisions, so they carry the largest per-section byte budget ([`FINDINGS_BUDGET_BYTES`]).
+fn write_capped_findings(b: &mut String, g: &Graph, seed: &[String]) {
+    write_capped_section(
+        b,
+        g,
+        seed,
+        contextgraph::KIND_FINDING,
+        contextgraph::REL_ABOUT,
+        "Findings other reviewers have already raised about these files (address or refute them):",
+        "finding",
+        FINDINGS_VERBATIM_N,
+        FINDINGS_BUDGET_BYTES,
+        |n| {
+            let summary = n.attrs.get("summary").map(String::as_str).unwrap_or("");
+            let by = n.attrs.get("by").map(String::as_str).unwrap_or("");
+            if by.is_empty() {
+                format!("- {}: {}\n", n.id, summary)
+            } else {
+                format!("- {by} ({}): {summary}\n", n.id)
+            }
+        },
+    );
 }
 
 /// The DETERMINISTIC branch a unit's worktree uses across runs (resume-continuity):
@@ -5123,6 +5169,102 @@ mod tests {
             out.len() < DECISIONS_BUDGET_BYTES + 1024,
             "the verbatim body must stay under the byte budget; len={}",
             out.len()
+        );
+    }
+
+    // Build a findings subgraph from a list of (id, by, summary) tuples, applied in
+    // order so each event's position increases (older first), then return the rendered
+    // capped-findings section for `seed`. Mirrors `render_capped_decisions` for the
+    // findings half of Gap 17.
+    fn render_capped_findings(findings: &[(&str, &str, String)], seed: &[String]) -> String {
+        let graph = crate::contextgraph::sqlite::Projector::open(":memory:").unwrap();
+        for (i, (id, by, summary)) in findings.iter().enumerate() {
+            let mut e = Event::new(
+                contextgraph::TYPE_REVIEW_FINDING,
+                serde_json::to_vec(&json!({
+                    "id": id,
+                    "by": by,
+                    "summary": summary,
+                    "about": seed,
+                }))
+                .unwrap(),
+            );
+            e.position = (i as u64) + 1;
+            graph.apply(&e).unwrap();
+        }
+        let g = graph.subgraph(seed, 2).unwrap();
+        let mut b = String::new();
+        write_capped_findings(&mut b, &g, seed);
+        b
+    }
+
+    #[test]
+    fn findings_prompt_injection_is_capped_under_budget_with_elision_note() {
+        // Gap 17 / spec 07 line 36: findings run 4-8x larger than decisions, so an
+        // unbounded pile of them ABOUT a hot file could blow the prompt on its own. The
+        // findings section rides the SAME budgeted-section writer as decisions: the
+        // most-recent findings stay verbatim under FINDINGS_BUDGET_BYTES, the older
+        // remainder collapses into ONE visible elision note naming the count and the
+        // `rigger peers <file>` recovery command. The store keeps the full history - only
+        // the prompt slice narrows.
+        let seed = vec!["conductor.rs".to_string()];
+        // K chunky findings, oldest (f000) first; recency grows with i, so f{K-1} is newest.
+        const K: usize = 300;
+        let findings: Vec<(String, String, String)> = (0..K)
+            .map(|i| {
+                (
+                    format!("f{i:03}"),
+                    format!("lens{}", i % 3),
+                    format!("FINDING_MARKER_{i} {}", "z".repeat(2400)),
+                )
+            })
+            .collect();
+        let borrowed: Vec<(&str, &str, String)> = findings
+            .iter()
+            .map(|(id, by, s)| (id.as_str(), by.as_str(), s.clone()))
+            .collect();
+        let out = render_capped_findings(&borrowed, &seed);
+
+        // Uncapped, the findings section alone would be ~700KB; the cap holds it under
+        // its per-section budget (plus slack for the header and the elision note line).
+        assert!(
+            out.len() < FINDINGS_BUDGET_BYTES + 2 * 1024,
+            "capped findings section must stay under its byte budget; len={}",
+            out.len()
+        );
+        // Newest survives verbatim; oldest is elided (it stays in the store).
+        assert!(
+            out.contains("FINDING_MARKER_299 "),
+            "the newest finding must be kept verbatim"
+        );
+        assert!(
+            !out.contains("FINDING_MARKER_0 "),
+            "the oldest finding must be elided from the prompt (it stays in the store)"
+        );
+        // The trim is VISIBLE: one elision note naming the elided count and the
+        // `rigger peers <file>` recovery command, exactly like the decisions section.
+        let verbatim = (0..K)
+            .filter(|i| out.contains(&format!("FINDING_MARKER_{i} ")))
+            .count();
+        assert!(
+            verbatim >= 1,
+            "at least one finding must still render verbatim; got {verbatim}"
+        );
+        let elided = K - verbatim;
+        assert!(
+            out.contains(&format!("+{elided} older finding")),
+            "the elision note must name the elided finding count ({elided})"
+        );
+        assert!(
+            out.contains("rigger peers conductor.rs"),
+            "the elision note must name the `rigger peers <file>` recovery command"
+        );
+        // The finding line still names the raising reviewer (`by`) and the id, preserving
+        // the prior write_findings format that a later reviewer reads.
+        assert!(
+            out.contains("lens2 (f299):"),
+            "a finding line must name the reviewer and id; output was:\n{}",
+            &out[..out.len().min(400)]
         );
     }
 
