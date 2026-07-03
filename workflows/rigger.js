@@ -78,6 +78,8 @@ const BASEFLAG = A.base ? ` --base ${A.base}` : ''
 // newly parked and a `done` fixpoint flag. The wave items carry everything the driver needs
 // to spawn each agent. Optional SpawnRequest fields are omitted from the wire when empty, so
 // only id/unit/stage/prompt are required; extra fields are tolerated (additionalProperties).
+// `halted` is the spawn-budget HALT reason (Gap 13): present (distinct from a clean `done`)
+// when the breaker stopped the run with work undone, so the driver stops LOUDLY on it.
 // `error` is the courier's own out-of-band channel: if `rigger step` itself fails, the
 // courier reports the message here rather than fabricating a wave.
 // Top level rejects unknown fields (additionalProperties: false): a courier that
@@ -111,6 +113,12 @@ const STEP = {
       },
     },
     done: { type: 'boolean' },
+    // A spawn-budget HALT (Gap 13): `rigger step` sets this to the halt reason (e.g.
+    // "budget exhausted: 200/200 spawns") when the breaker stopped the run with work
+    // undone, distinct from a clean `done` convergence. Omitted on a converged run. The
+    // top level rejects unknown properties, so this MUST be declared or a halted step's
+    // JSON would fail validation and the halt would be lost.
+    halted: { type: 'string' },
     error: { type: 'string' },
   },
 }
@@ -242,7 +250,7 @@ for (;;) {
       `You are a rigger COURIER. Advance the run one frontier and return the wave, verbatim. Run EXACTLY this, from ${REPO}, using Bash with the timeout parameter set to 600000 (a step runs cargo gates inline and can take many minutes; the default timeout kills it mid-work):\n` +
         `  cd ${REPO} && CARGO_TARGET_DIR=${REPO}/.rigger/tmp/cargo-target rigger step --spec ${SPEC}${BASEFLAG}\n` +
         `(the CARGO_TARGET_DIR prefix makes every gate share one build cache instead of cold-building per worktree - keep it exactly as written). ` +
-        `It prints ONE line of JSON on stdout: {"wave":[...],"done":<bool>}. Return that JSON object EXACTLY as printed, INLINE and IN FULL, in your structured output - no matter how large it is. NEVER write it to a file, return a path, a reference, a summary, or a truncation: the driver can only read your returned JSON, so anything but the verbatim object (all wave items, all their fields) LOSES the wave and stalls the run. Do not drop fields or run anything else. ` +
+        `It prints ONE line of JSON on stdout: {"wave":[...],"done":<bool>} (a halted run also carries a "halted":"<reason>" field). Return that JSON object EXACTLY as printed, INLINE and IN FULL, in your structured output - no matter how large it is. NEVER write it to a file, return a path, a reference, a summary, or a truncation: the driver can only read your returned JSON, so anything but the verbatim object (all wave items, all their fields) LOSES the wave and stalls the run. Do not drop fields or run anything else. ` +
         `If the Bash call TIMES OUT, re-run the exact same command - as many times as needed: the step's gate results are recorded durably as they complete, so every re-run resumes past the recorded ones and gets strictly further; return the JSON from the run that prints it. ` +
         `NEVER fabricate or guess the JSON: if you cannot obtain it after many re-runs, or the command prints no JSON / exits non-zero (not a timeout), return {"wave":[],"done":true,"error":"<the stderr / failure message, or 'step did not complete within my attempts'>"} so the loop stops cleanly and the error is visible.`,
       // sonnet, not haiku: the courier's one job is a verbatim relay of a possibly
@@ -280,7 +288,18 @@ for (;;) {
     stop(`the failure of ${fatal.length} worker(s) could not be recorded (their death-report couriers also died): ${fatal.join(' | ')}`)
   }
 
-  // 3. Stop at the conductor's fixpoint (every parked spawn has a result and nothing new was
+  // 3. A budget (or other rail) HALT is a LOUD stop, never a clean completion (Gap 13).
+  //    `rigger step` reports it as a `halted` reason distinct from `done` convergence: the
+  //    breaker stopped the run with ready work unscheduled (a resume needs a raised budget).
+  //    We drain any wave the halting step already parked (above), then surface the halt as a
+  //    workflow FAILURE carrying the reason - rather than letting the `done` fixpoint below
+  //    read a starved run as success (the exact Gap-13 defect: a breaker halt printed as a
+  //    clean completion and the driver reporting a starved run as done).
+  if (step.halted) {
+    stop(`the run halted: ${step.halted}`)
+  }
+
+  // 4. Stop at the conductor's fixpoint (every parked spawn has a result and nothing new was
   //    parked). A non-empty wave always implies done === false, so we drain it first (above),
   //    then re-check on the next iteration.
   if (step.done) {
