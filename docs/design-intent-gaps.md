@@ -1,6 +1,6 @@
 # Design-intent gaps
 
-Status: assessed 2026-07-01 against [architecture.md](architecture.md) after the three-gap dogfood run (PR #7); updated through 2026-07-03 across the stepwise-conductor campaign's four loop runs (specs 04-07). ALL RECORDED GAPS (1-19) ARE CLOSED. Open work: only the deferred housekeeping list in specs 06/07 (config-helper consolidation, scaffold-seed alignment, small test pins, shadow-store prefer-outermost policy). New gaps discovered by future runs land here as before.
+Status: assessed 2026-07-01 against [architecture.md](architecture.md) after the three-gap dogfood run (PR #7); updated through 2026-07-03 across the stepwise-conductor campaign's four loop runs (specs 04-07). ALL RECORDED GAPS (1-19) ARE CLOSED. Open work: NONE - the housekeeping deferrals were delivered by spec 08 (helper consolidation, canonical scaffold seed, the missing test pins, loud failed writes, honest --if-absent advisories, outermost-store-wins). New gaps discovered by future runs land here as before.
 
 This document records where the implementation currently falls short of the design intent, with the evidence that surfaced each gap and the shape of the fix. It is the feed for the next loop runs: each gap is written so it can be lifted into a spec's "Done when" criteria with little editing. Remove entries as they close.
 
