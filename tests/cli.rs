@@ -420,6 +420,92 @@ fn result_from_a_nested_git_worktree_records_into_the_repo_stream() {
     );
 }
 
+/// Spec 08 item 6: within the bounded walk scope the OUTERMOST store wins. A courier run
+/// from a subdir that carries its OWN shadow `.rigger/events.db` must record into the repo
+/// ROOT's store (the real run stream), never the nearer shadow - and it WARNS on stderr,
+/// naming BOTH paths, so a shadow can never silently eclipse the run. Proven end-to-end:
+/// `rigger result` from the shadowed subdir, `rigger reported` FROM THE ROOT sees it, and
+/// the bypassed shadow `events.db` stays a byte-empty file (nothing was ever written into it).
+#[test]
+fn result_binds_the_outermost_store_and_warns_about_a_bypassed_shadow() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root); // the repo root's real store (the outermost in scope)
+
+    // A nested subdir of the SAME repo carrying its own shadow store.
+    let shadowed = root.join("crate").join("nested");
+    std::fs::create_dir_all(&shadowed).unwrap();
+    seed_store(&shadowed);
+    let shadow_db = shadowed.join(".rigger").join("events.db");
+
+    let (out, err, ok) = run_rigger(&shadowed, &["result", "u/implementer#0", "did the work"]);
+    assert!(
+        ok,
+        "result from a shadowed subdir must record into the outermost store; stderr: {err}"
+    );
+    assert!(
+        out.contains("recorded result for u/implementer#0"),
+        "the result must still be recorded; got: {out:?}"
+    );
+    // The warning names BOTH the bypassed nearer shadow and the chosen outermost store.
+    assert!(
+        err.contains("shadow store")
+            && err.contains(&shadow_db.parent().unwrap().display().to_string())
+            && err.contains(&root.join(".rigger").display().to_string()),
+        "result must warn, naming both the bypassed shadow and the outermost store; got: {err:?}"
+    );
+    // The bypassed shadow store was NEVER opened: its seeded events.db stays byte-empty
+    // (a real write would have Store::open-initialized the schema, growing it past 0 bytes).
+    assert_eq!(
+        std::fs::metadata(&shadow_db).unwrap().len(),
+        0,
+        "the bypassed shadow store must stay untouched (byte-empty)"
+    );
+
+    // The write landed in the OUTERMOST (repo root) store: `reported` from the root - which
+    // resolves that same store - confirms the spawn is answered.
+    let (rout, rerr, ok) = run_rigger(root, &["reported", "u/implementer#0"]);
+    assert!(
+        ok,
+        "the result must be readable from the outermost store; stderr: {rerr}"
+    );
+    assert!(
+        rout.contains("u/implementer#0") && rout.contains("ok"),
+        "reported from the root must confirm the outermost-store record; got: {rout:?}"
+    );
+}
+
+/// Spec 08 item 5: under `--if-absent` the orphan advisory states the CONDITIONAL - it must
+/// never claim it is "recording an orphan result", because the CAS records only if the spawn
+/// is still unanswered (an already-answered spawn is left untouched). The plain path keeps
+/// its "recording an orphan result" wording (pinned by
+/// `result_prints_an_orphan_advisory_for_an_unrecorded_id`).
+#[test]
+fn result_if_absent_orphan_advisory_states_the_conditional_not_a_recording() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+
+    let (_out, err, ok) = run_rigger(
+        root,
+        &["result", "ghost/implementer#0", "--if-absent", "output"],
+    );
+    assert!(
+        ok,
+        "an --if-absent orphan record must still succeed; stderr: {err}"
+    );
+    assert!(
+        err.contains("no spawn request is recorded")
+            && err.contains("ghost/implementer#0")
+            && err.contains("--if-absent records only if the spawn is unanswered"),
+        "the --if-absent orphan advisory must state the conditional; got: {err:?}"
+    );
+    assert!(
+        !err.contains("recording an orphan result"),
+        "the --if-absent advisory must NOT claim a recording it may not make; got: {err:?}"
+    );
+}
+
 /// `rigger result` for an id with no recorded spawn request prints an ORPHAN advisory to
 /// stderr - and still records (advisory only; pre-recording is legitimate).
 #[test]
