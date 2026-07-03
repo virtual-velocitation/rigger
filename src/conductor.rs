@@ -1823,6 +1823,15 @@ impl RunCtx<'_> {
                         // path that mints an `IntegrationApproval`, so the only path that
                         // can merge. The reject branch below has no approval to hand to
                         // `integrate_and_emit`, so it cannot land the unit's code.
+                        //
+                        // Gap 16 invariant (spec 06 unit 3): the verdict is folded and
+                        // acted on HERE, and an approve returns before the `remediate`
+                        // terminal check below ever runs. So an approval on a unit's
+                        // FINAL permitted attempt integrates - `max_retries` gates only
+                        // STARTING another attempt, it never overrides an approval. This
+                        // ordering (verdict-fold before attempt-counter) is load-bearing;
+                        // reversing it re-opens the bug where unit-2's approved-on-
+                        // attempt-6 review was recorded as UnitFailed/UnitEscalated.
                         let commit = self.integrate_and_emit(
                             wt,
                             &st.agent,
@@ -1955,6 +1964,15 @@ impl RunCtx<'_> {
 
             let gates_pass = approved && self.run_gates(st, dir, attempts)?.pass;
             if gates_pass {
+                // Gap 16 invariant (spec 06 unit 3): the adjudicator's verdict is folded
+                // and acted on HERE - an approve (with green gates) integrates and returns
+                // BEFORE the `remediate` terminal check below. So a standalone review
+                // approved on its FINAL permitted attempt integrates; `max_retries` gates
+                // only STARTING another attempt. This is the exact path that recorded
+                // unit-2-the-adjudicator-persona's approved-on-attempt-6 review as
+                // UnitFailed/UnitEscalated when the terminal check preceded the fold;
+                // keep the verdict-fold ahead of the attempt-counter.
+                //
                 // on_pass governs integration (§3.2): any value other than empty /
                 // `merge` runs the gates but does not mark the stage integrated.
                 if !integrates(st) {
@@ -6530,6 +6548,207 @@ mod tests {
             worker_spawns,
             safety::MAX_RETRIES,
             "an absent max_retries must give exactly the historical three attempts; spawns were {worker_spawns}"
+        );
+    }
+
+    /// A driver for the Gap-16 regression (spec 06 unit 3, "approval beats the retry
+    /// cap"): the implementer and every lens/adversary stay SILENT (empty output, which
+    /// `verdict_approves` reads as no-approve, so only the fail-closed adjudicator's
+    /// verdict gates), and the ADJUDICATOR rejects every attempt EXCEPT the one named by
+    /// `approve_on_attempt`, where it approves. A test sets `approve_on_attempt` to the
+    /// FINAL permitted attempt (the loop-variable `max_retries - 1`), so the approve
+    /// arrives exactly on the attempt whose reject would trip `remediate` into Escalate -
+    /// proving the terminal check folds the verdict BEFORE the attempt counter.
+    struct AdjApprovesOnAttempt {
+        adj_id: String,
+        approve_on_attempt: u32,
+        /// Every adjudicator spawn's attempt index, in call order, so a test can assert
+        /// the unit ran the full attempt budget and the approve landed on the LAST one.
+        adj_attempts: Mutex<Vec<u32>>,
+    }
+    impl AdjApprovesOnAttempt {
+        fn new(adj_id: &str, approve_on_attempt: u32) -> Self {
+            Self {
+                adj_id: adj_id.to_string(),
+                approve_on_attempt,
+                adj_attempts: Mutex::new(Vec::new()),
+            }
+        }
+    }
+    impl AgentDriver for AdjApprovesOnAttempt {
+        fn spawn(
+            &self,
+            a: &AgentDef,
+            _prompt: &str,
+            opts: &SpawnOpts,
+            _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+        ) -> Result<AgentResult, Error> {
+            let output = if a.id == self.adj_id {
+                // The adjudicator's deterministic spawn id is `{unit}/adjudicator#{attempt}`;
+                // the attempt is the trailing integer.
+                let attempt = opts
+                    .id
+                    .rsplit('#')
+                    .next()
+                    .and_then(|s| s.parse::<u32>().ok())
+                    .unwrap_or(0);
+                self.adj_attempts.lock().unwrap().push(attempt);
+                if attempt == self.approve_on_attempt {
+                    r#"{"verdict":"approve"}"#.to_string()
+                } else {
+                    r#"{"verdict":"reject","issues":[]}"#.to_string()
+                }
+            } else {
+                String::new()
+            };
+            Ok(AgentResult {
+                output,
+                resolved_model: String::new(),
+            })
+        }
+    }
+
+    #[test]
+    fn approval_on_the_final_permitted_attempt_integrates_a_per_unit_stage() {
+        // Gap 16 (spec 06 unit 3): an adjudicator APPROVE on a unit's FINAL permitted
+        // attempt must INTEGRATE the unit - `max_retries` gates only STARTING another
+        // attempt, it never overrides an approval that folded on the last attempt. The
+        // adjudicator rejects attempts 0..CAP-1 and approves attempt CAP-1 (the final
+        // one). A reject there would trip `remediate(CAP-1, CAP)` -> Escalate, so an
+        // approve that still integrates proves the verdict is folded BEFORE the attempt
+        // counter - the exact regression that recorded unit-2's approved-on-attempt-6
+        // review as UnitFailed/UnitEscalated (design-intent Gap 16).
+        const CAP: u32 = 3;
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("adversary".into(), agent("adversary"));
+        cfg.agents.insert("adj".into(), agent("adj"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true")); // static gates pass
+        cfg.workflow.defaults.review = config::ReviewPanel {
+            lenses: vec!["lens".into()],
+            adversary: "adversary".into(),
+            adjudicator: "adj".into(),
+        };
+        cfg.workflow.defaults.max_retries = CAP;
+        cfg.workflow.stages.insert(
+            "implement".into(),
+            Stage {
+                name: "implement".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = AdjApprovesOnAttempt::new("adj", CAP - 1);
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs.units["implement"].status,
+            ledger::Status::Integrated,
+            "an approval on the FINAL permitted attempt must integrate the unit, not escalate it"
+        );
+        // The adjudicator ran once per attempt up to and including the final permitted
+        // one (0..CAP), so the approve genuinely landed on attempt == cap, not earlier.
+        let adj_attempts = driver.adj_attempts.lock().unwrap().clone();
+        assert_eq!(
+            adj_attempts,
+            (0..CAP).collect::<Vec<u32>>(),
+            "the adjudicator must have rejected every earlier attempt and approved the last; attempts were {adj_attempts:?}"
+        );
+        let events = st
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.type_ == ledger::TYPE_UNIT_ESCALATED),
+            "an approved unit must record NO UnitEscalated"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| e.type_ == ledger::TYPE_UNIT_INTEGRATED),
+            "an approved unit must record a UnitIntegrated"
+        );
+    }
+
+    #[test]
+    fn approval_on_the_final_permitted_attempt_integrates_a_standalone_review_stage() {
+        // Gap 16 in the EXACT shape that bit unit-2-the-adjudicator-persona: a STANDALONE
+        // three-tier review stage (the fan-out review path, `run_fan_out_review_loop`)
+        // whose adjudicator approves on the final permitted attempt. The pre-fix conductor
+        // recorded UnitFailed/UnitEscalated with the APPROVE text quoted under a "review
+        // rejected:" header; the fixed conductor integrates. Same discriminating driver as
+        // the per-unit test, on the standalone-review path.
+        const CAP: u32 = 3;
+        let mut cfg = Config::default();
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("adversary".into(), agent("adversary"));
+        cfg.agents.insert("adj".into(), agent("adj"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true")); // static gates pass
+        cfg.workflow.defaults.max_retries = CAP;
+        cfg.workflow.stages.insert(
+            "review".into(),
+            Stage {
+                name: "review".into(),
+                // No `agent` + an `agents` lens list routes this to the standalone
+                // fan-out review path.
+                agents: vec!["lens".into()],
+                adversary: "adversary".into(),
+                adjudicator: "adj".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = AdjApprovesOnAttempt::new("adj", CAP - 1);
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs.units["review"].status,
+            ledger::Status::Integrated,
+            "a standalone review approved on its FINAL permitted attempt must integrate, not escalate"
+        );
+        let adj_attempts = driver.adj_attempts.lock().unwrap().clone();
+        assert_eq!(
+            adj_attempts,
+            (0..CAP).collect::<Vec<u32>>(),
+            "the adjudicator must have rejected every earlier attempt and approved the last; attempts were {adj_attempts:?}"
+        );
+        let events = st
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.type_ == ledger::TYPE_UNIT_ESCALATED),
+            "an approved standalone review must record NO UnitEscalated"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| e.type_ == ledger::TYPE_UNIT_INTEGRATED),
+            "an approved standalone review must record a UnitIntegrated"
         );
     }
 
