@@ -84,6 +84,17 @@ pub struct RunState {
     /// conductor's DeferredGateFailed event; gates both `done` and `fully_done` so a
     /// deferred failure can never be reported as a finished run.
     pub deferred_gate_failed: bool,
+    /// The run's live HALT reason when the spawn-budget breaker stopped this run process
+    /// with ready work unscheduled (Gap 13) - e.g. `"budget exhausted: 200/200 spawns"` -
+    /// or `None` on a clean fixpoint. Unlike the other fields this is NOT folded from the
+    /// log by [`project`]: a halt is a condition of the CURRENT run process, so
+    /// `conductor::run` stamps it from its in-process breaker state after projecting. Folding
+    /// the durable `BudgetExhausted` event would falsely re-report a halt the operator has
+    /// since resolved by raising the budget (a resume then schedules the work and never
+    /// trips), so `project` deliberately leaves this `None` and only the live run sets it.
+    /// `rigger step` copies it onto its printed `Step` so the thin driver stops loudly on a
+    /// halt instead of reading convergence.
+    pub budget_halt: Option<String>,
 }
 
 // Run-event types the conductor emits (folded here into run state).

@@ -125,9 +125,16 @@ pub enum Action {
     Pause,
 }
 
-/// Runner runs a gate command in a working directory ("" = current dir).
+/// Runner runs a gate command in a working directory (`dir`, "" = current dir) under an
+/// optional `CARGO_TARGET_DIR` override (`target_dir`, "" = inherit the ambient env).
+///
+/// A gate that runs INSIDE a unit's worktree is handed a unit-keyed `target_dir` (Gap 19)
+/// so divergent unit trees never share one build cache - a compile error a gate sees is
+/// then always that unit's own, never a concurrent neighbour poisoning a shared target. A
+/// gate on the single integrated tree (the deferred phase-boundary gate, and the courier's
+/// inline `rigger step` gates) is handed "" and keeps inheriting the shared cache.
 pub trait Runner: Send + Sync {
-    fn run(&self, g: &Gate, dir: &str) -> GateResult;
+    fn run(&self, g: &Gate, dir: &str, target_dir: &str) -> GateResult;
 }
 
 /// Decide maps a gate's autonomy to the conductor's action.
@@ -184,11 +191,18 @@ pub fn auto_demote(g: &Gate, pass: bool) -> (Autonomy, bool) {
 pub struct ExecRunner;
 
 impl Runner for ExecRunner {
-    fn run(&self, g: &Gate, dir: &str) -> GateResult {
+    fn run(&self, g: &Gate, dir: &str, target_dir: &str) -> GateResult {
         let mut cmd = Command::new("sh");
         cmd.arg("-c").arg(&g.run);
         if !dir.is_empty() {
             cmd.current_dir(dir);
+        }
+        // Per-unit build cache (Gap 19): a non-empty target_dir points cargo at a
+        // unit-keyed CARGO_TARGET_DIR so this gate's incremental state is never shared
+        // with a concurrent unit's divergent tree. Empty leaves the ambient env
+        // untouched (the integrated-tree/deferred gate keeps the shared cache).
+        if !target_dir.is_empty() {
+            cmd.env("CARGO_TARGET_DIR", target_dir);
         }
         match cmd.output() {
             Ok(out) => {
@@ -329,8 +343,8 @@ mod tests {
 
     #[test]
     fn exec_runner_reports_pass_fail() {
-        assert!(ExecRunner.run(&gate_cmd("true"), "").pass);
-        assert!(!ExecRunner.run(&gate_cmd("false"), "").pass);
+        assert!(ExecRunner.run(&gate_cmd("true"), "", "").pass);
+        assert!(!ExecRunner.run(&gate_cmd("false"), "", "").pass);
     }
 
     #[test]
@@ -345,7 +359,7 @@ mod tests {
             }
         }
         cmd.push_str("false");
-        let res = ExecRunner.run(&gate_cmd(&cmd), "");
+        let res = ExecRunner.run(&gate_cmd(&cmd), "", "");
         assert!(!res.pass);
 
         let lines: Vec<&str> = res.evidence.lines().collect();
@@ -356,6 +370,33 @@ mod tests {
             res.evidence.contains("error: boom"),
             "evidence keeps the failure line, not just the trailing bytes: {:?}",
             res.evidence
+        );
+    }
+
+    #[test]
+    fn exec_runner_exports_cargo_target_dir_only_when_given() {
+        // Gap 19: a non-empty target_dir is exported to the gate command as
+        // CARGO_TARGET_DIR (the unit-keyed build cache); an empty one must NOT force an
+        // override, leaving the ambient env in place. The command asserts the value it
+        // sees and passes iff it matches.
+        let with = ExecRunner.run(
+            &gate_cmd("test \"$CARGO_TARGET_DIR\" = /tmp/rigger-gap19-probe"),
+            "",
+            "/tmp/rigger-gap19-probe",
+        );
+        assert!(
+            with.pass,
+            "a non-empty target_dir must reach the gate as CARGO_TARGET_DIR: {with:?}"
+        );
+
+        let without = ExecRunner.run(
+            &gate_cmd("test \"$CARGO_TARGET_DIR\" != /tmp/rigger-gap19-probe"),
+            "",
+            "",
+        );
+        assert!(
+            without.pass,
+            "an empty target_dir must not force a CARGO_TARGET_DIR override: {without:?}"
         );
     }
 

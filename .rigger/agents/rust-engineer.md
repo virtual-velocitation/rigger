@@ -1,6 +1,6 @@
 ---
 id: rust-engineer
-model: sonnet
+model: opus
 tools: [Read, Edit, Write, Grep, Glob, Bash]
 isolation: worktree
 recurse: false

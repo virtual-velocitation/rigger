@@ -117,6 +117,16 @@ pub struct Defaults {
     /// the wave un-partitioned.
     #[serde(default)]
     pub partition: String,
+    /// Where the run's transient scratch (unit/review worktrees) lives. Empty (the
+    /// default) resolves to `<repo>/.rigger/tmp` - the REPO's partition, which on the
+    /// common small-root/large-home layout is the big one, and same-filesystem with
+    /// the checkout so worktree adds are cheap. A leading `~/` expands to $HOME. The
+    /// `RIGGER_TMPDIR` environment variable overrides this for machine-local
+    /// placement without touching versioned config. Never the OS temp dir: a 5G
+    /// cargo target per worktree on a 69G root partition is how a run fills the OS
+    /// disk (design-intent Gap 14).
+    #[serde(default)]
+    pub workdir: String,
 }
 
 /// Stage is one node of the workflow DAG.
@@ -253,8 +263,19 @@ pub fn load(dir: &str) -> Result<Config, Error> {
 }
 
 fn load_agents(dir: &Path) -> Result<BTreeMap<String, AgentDef>, Error> {
-    let mut agents = BTreeMap::new();
+    index_agents(read_agents_dir(dir)?)
+}
+
+/// Read every `<dir>/*.md` agent definition into `(filename, AgentDef)` pairs, parsing
+/// each through [`parse_agent`]. This is the ONE directory-read-and-parse loop: [`load`]
+/// calls it then [`index_agents`]; a caller assembling a prospective fleet (e.g. `rigger
+/// setup --agents`) calls it to enumerate the agents already on disk, then indexes that
+/// list combined with its own additions - so both enumerate existing agents through the
+/// same seam rather than re-implementing (and drifting from) the loop. Returns the pairs
+/// UN-indexed so the caller controls when the fleet-wide id invariant is enforced.
+pub fn read_agents_dir(dir: &Path) -> Result<Vec<(String, AgentDef)>, Error> {
     let entries = std::fs::read_dir(dir).map_err(|e| err(format!("read agents dir: {e}")))?;
+    let mut parsed = Vec::new();
     for entry in entries {
         let path = entry.map_err(|e| err(e.to_string()))?.path();
         if path.extension().and_then(|x| x.to_str()) != Some("md") {
@@ -267,15 +288,31 @@ fn load_agents(dir: &Path) -> Result<BTreeMap<String, AgentDef>, Error> {
             .to_string();
         let b = std::fs::read(&path).map_err(|e| err(format!("read {name}: {e}")))?;
         let a = parse_agent(&b).map_err(|e| err(format!("{name}: {e}")))?;
+        parsed.push((name, a));
+    }
+    Ok(parsed)
+}
+
+/// Index a set of `(name, AgentDef)` pairs by id, enforcing the fleet invariants the
+/// loader relies on: every agent has a non-empty id, and no two agents share one. This
+/// is the SINGLE definition of a valid agent identity, so a caller assembling a
+/// prospective fleet (e.g. `rigger setup --agents`) validates by the same rule [`load`]
+/// does rather than re-implementing (and drifting from) it. `name` is a filename, used
+/// only for error context.
+pub fn index_agents(
+    agents: impl IntoIterator<Item = (String, AgentDef)>,
+) -> Result<BTreeMap<String, AgentDef>, Error> {
+    let mut map = BTreeMap::new();
+    for (name, a) in agents {
         if a.id.is_empty() {
             return Err(err(format!("{name}: agent is missing an id")));
         }
-        if agents.contains_key(&a.id) {
+        if map.contains_key(&a.id) {
             return Err(err(format!("duplicate agent id {:?}", a.id)));
         }
-        agents.insert(a.id.clone(), a);
+        map.insert(a.id.clone(), a);
     }
-    Ok(agents)
+    Ok(map)
 }
 
 /// ParseAgent parses a markdown-with-YAML-frontmatter agent definition: the
@@ -289,7 +326,13 @@ pub fn parse_agent(b: &[u8]) -> Result<AgentDef, Error> {
     Ok(a)
 }
 
-fn split_frontmatter(s: &str) -> Result<(&str, &str), Error> {
+/// Split a markdown-with-YAML-frontmatter document into `(frontmatter, body)`: the text
+/// between the opening `---` line and the closing `---` line, and everything after the
+/// closing delimiter. The single frontmatter-delimiter parser, so callers that only need
+/// the frontmatter (e.g. `rigger setup --agents` normalizing the identity key) parse it
+/// through this seam instead of a second copy of the delimiter logic. Errors when the
+/// opening or closing `---` is missing.
+pub fn split_frontmatter(s: &str) -> Result<(&str, &str), Error> {
     let rest = s
         .strip_prefix("---")
         .ok_or_else(|| err("missing YAML frontmatter (--- delimiters)"))?;

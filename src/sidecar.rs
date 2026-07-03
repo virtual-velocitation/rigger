@@ -40,6 +40,20 @@ pub struct PeerFinding {
     pub about: Vec<String>,
 }
 
+/// A lesson a prior run's escalation recorded, as the side-car surfaces it. Lessons
+/// fold ABOUT the files the failed unit touched, so they scope on `about` exactly like
+/// a [`PeerFinding`]. This is the recovery surface behind the lessons half of the
+/// prompt-budget elision note: when a hot file's lessons are trimmed from a prompt,
+/// `rigger peers <file>` returns the full set here (adj-u1gap17).
+#[derive(Clone, Debug, Deserialize)]
+pub struct PeerLesson {
+    pub id: String,
+    #[serde(default)]
+    pub summary: String,
+    #[serde(default)]
+    pub about: Vec<String>,
+}
+
 /// Sidecar collects the events on a filtered catch-up subscription in the
 /// background while one agent works.
 pub struct Sidecar {
@@ -132,6 +146,34 @@ impl Sidecar {
         self.findings()
             .into_iter()
             .filter(|f| f.about.iter().any(|file| scope.contains(file.as_str())))
+            .collect()
+    }
+
+    /// The LessonLearned events seen so far - the lessons a prior run's escalations
+    /// recorded about the files an agent is touching. The side-car collects these the
+    /// same way it collects decisions and findings, so `rigger peers` can recover the
+    /// lessons a capped prompt section elided.
+    pub fn lessons(&self) -> Vec<PeerLesson> {
+        let seen = self.seen.lock().unwrap();
+        seen.iter()
+            .filter(|e| e.type_ == contextgraph::TYPE_LESSON_LEARNED)
+            .filter_map(|e| serde_json::from_slice(&e.data).ok())
+            .collect()
+    }
+
+    /// The lessons scoped to an agent's blast-radius (§5.3), mirroring [`decisions_for`]
+    /// and [`findings_for`]: a lesson is relevant only when its `about` files intersect
+    /// the blast-radius. An empty `blast_radius` returns every lesson (the unscoped
+    /// behavior), so a caller that does not know its files still recovers its lessons.
+    pub fn lessons_for(&self, blast_radius: &[String]) -> Vec<PeerLesson> {
+        if blast_radius.is_empty() {
+            return self.lessons();
+        }
+        let scope: std::collections::HashSet<&str> =
+            blast_radius.iter().map(String::as_str).collect();
+        self.lessons()
+            .into_iter()
+            .filter(|l| l.about.iter().any(|file| scope.contains(file.as_str())))
             .collect()
     }
 
@@ -285,6 +327,60 @@ mod tests {
 
         // An empty blast-radius returns every finding.
         let all = sidecar.findings_for(&[]);
+        assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn lessons_for_scopes_to_the_blast_radius() {
+        // A prior run's LessonLearned is surfaced by the side-car and scoped to a
+        // blast-radius the same way decisions and findings are: a lesson about a file
+        // comes back from the blast-radius-scoped peers query, so `rigger peers` can
+        // recover the lessons elided from a capped prompt section (the recovery the
+        // elision note names). Without this surface `rigger peers` would return zero
+        // lessons and that note would be a dead promise (adj-u1gap17).
+        let store = Store::open(":memory:").unwrap();
+        let sidecar = Sidecar::start(&store, 0, Filter::default()).unwrap();
+
+        // One lesson about a.rs, another about b.rs.
+        for (id, about) in [("la", "a.rs"), ("lb", "b.rs")] {
+            let data = serde_json::to_vec(&serde_json::json!({
+                "id": id, "summary": "do not repeat x", "about": [about],
+            }))
+            .unwrap();
+            store
+                .append(
+                    "run",
+                    ExpectedRevision::Any,
+                    &[Event::new(contextgraph::TYPE_LESSON_LEARNED, data)],
+                )
+                .unwrap();
+        }
+
+        // Wait until both lessons have surfaced through the subscription.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if sidecar.lessons().len() >= 2 {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the side-car never surfaced both lessons"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        // Scoped to a.rs: only the a.rs lesson comes back.
+        let scoped = sidecar.lessons_for(&["a.rs".into()]);
+        assert_eq!(
+            scoped.len(),
+            1,
+            "a lesson about a.rs is returned scoped to a.rs"
+        );
+        assert_eq!(scoped[0].id, "la");
+        assert_eq!(scoped[0].summary, "do not repeat x");
+
+        // An empty blast-radius returns every lesson.
+        let all = sidecar.lessons_for(&[]);
         assert_eq!(all.len(), 2);
     }
 }

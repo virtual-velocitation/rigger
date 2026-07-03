@@ -22,3 +22,8 @@ shim/node_modules/
 .DS_Store
 .idea/
 .vscode/
+.claude
+.rigger/shim
+# The run's transient scratch root: unit/review worktrees + their build dirs
+# (defaults.workdir / RIGGER_TMPDIR override the location; Gap 14)
+.rigger/tmp

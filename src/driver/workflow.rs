@@ -121,7 +121,12 @@ impl Driver {
         let inner = self.inner.lock().unwrap();
         if let Some(call) = inner.pending.get(id) {
             let r = if err.is_empty() {
-                Ok(AgentResult { output })
+                // The in-process MCP result carries no resolved model id (spec 05 line 52
+                // sources it from the stepwise `rigger result --meta` path), so it is empty.
+                Ok(AgentResult {
+                    output,
+                    resolved_model: String::new(),
+                })
             } else {
                 Err(Error(err))
             };
@@ -199,6 +204,7 @@ mod tests {
                     isolation: false,
                     parallel: false,
                     blast_radius: vec!["a.rs".into()],
+                    ..Default::default()
                 },
                 &emit,
             )
@@ -284,6 +290,7 @@ mod tests {
                     isolation: false,
                     parallel: false,
                     blast_radius: Vec::new(),
+                    ..Default::default()
                 },
                 &emit,
             )
@@ -336,6 +343,7 @@ mod tests {
                     isolation: true,
                     parallel: false,
                     blast_radius: Vec::new(),
+                    ..Default::default()
                 },
                 &emit,
             )

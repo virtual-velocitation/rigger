@@ -245,12 +245,13 @@ impl<'a> Server<'a> {
             .map_err(ToolError::internal)
     }
 
-    /// List peers' decisions AND review findings, optionally scoped to a blast-radius
-    /// (§5.3). When the caller passes a `files` array (the agent's blast-radius), only
-    /// decisions whose `governs` intersects it and findings whose `about` intersects
-    /// it come back; absent or empty, every decision and finding does. The findings
+    /// List peers' decisions, lessons, AND review findings, optionally scoped to a
+    /// blast-radius (§5.3). When the caller passes a `files` array (the agent's
+    /// blast-radius), only decisions whose `governs`, lessons whose `about`, and findings
+    /// whose `about` intersect it come back; absent or empty, every one does. The findings
     /// are how concurrent review lenses see each other's findings LIVE, before any of
-    /// them grounds again - the same side-car channel that surfaces peer decisions.
+    /// them grounds again - the same side-car channel that surfaces peer decisions and the
+    /// lessons a capped prompt section elided.
     fn tool_peers(&self, args: &Value) -> Value {
         let files: Vec<String> = args
             .get("files")
@@ -321,21 +322,30 @@ pub fn emit_event(
 }
 
 /// The shared core of `rigger_peers` (the MCP tool) and `rigger peers` (the CLI):
-/// the peers' decisions AND review findings, scoped to `files` (empty = all),
-/// EXACTLY as the MCP tool returns them - `{"decisions": [...], "findings": [...]}`.
-/// Both paths call this so the CLI and the MCP surface stay identical.
+/// the peers' decisions, lessons, AND review findings, scoped to `files` (empty = all),
+/// EXACTLY as the MCP tool returns them - `{"decisions": [...], "lessons": [...],
+/// "findings": [...]}`. Both paths call this so the CLI and the MCP surface stay
+/// identical. The three sections mirror the three capped prompt sections
+/// (`graph_context`), so the elision note each capped section renders - "recover the
+/// full set with `rigger peers <file>`" - is honest for every section: what the prompt
+/// trims, this surface returns in full (adj-u1gap17).
 pub fn peers_json(peers: &Sidecar, files: &[String]) -> Value {
     let decisions: Vec<Value> = peers
         .decisions_for(files)
         .iter()
         .map(|d| json!({"id": d.id, "summary": d.summary, "governs": d.governs}))
         .collect();
+    let lessons: Vec<Value> = peers
+        .lessons_for(files)
+        .iter()
+        .map(|l| json!({"id": l.id, "summary": l.summary, "about": l.about}))
+        .collect();
     let findings: Vec<Value> = peers
         .findings_for(files)
         .iter()
         .map(|f| json!({"id": f.id, "by": f.by, "summary": f.summary, "about": f.about}))
         .collect();
-    json!({"decisions": decisions, "findings": findings})
+    json!({"decisions": decisions, "lessons": lessons, "findings": findings})
 }
 
 /// Parse a `valid_from` argument into a [`SystemTime`]: a JSON integer of unix
@@ -449,7 +459,7 @@ fn tool_list() -> Value {
         {"name": "rigger_next", "description": "Pick up the next queued agent spawn. The id is empty when nothing is waiting.", "inputSchema": {"type": "object", "properties": {}}},
         {"name": "rigger_result", "description": "Report an agent's final result by spawn id.", "inputSchema": {"type": "object", "properties": {"id": {"type": "string"}, "output": {"type": "string"}, "error": {"type": "string"}}, "required": ["id"]}},
         {"name": "rigger_emit", "description": "Record a decision on the shared event log, live, so other agents see it immediately. Optionally set meta (e.g. the acting agent, which stamps the graph's DECIDED edge) and valid_from (the bi-temporal time the fact became true).", "inputSchema": {"type": "object", "properties": {"type": {"type": "string"}, "data": {"type": "object"}, "meta": {"type": "object", "description": "Metadata entries (string->string), e.g. {\"actor\": \"<agent-id>\"}.", "additionalProperties": {"type": "string"}}, "valid_from": {"description": "When the fact became true: unix nanoseconds (integer) or an RFC3339 timestamp string.", "type": ["integer", "string"]}}, "required": ["type", "data"]}},
-        {"name": "rigger_peers", "description": "List the decisions AND review findings other agents have raised so far this run, so you do not work blind to them (concurrent reviewers see each other's findings live). Pass `files` (your blast-radius) to scope the result to decisions and findings that touch those files; omit it to see every one.", "inputSchema": {"type": "object", "properties": {"files": {"type": "array", "items": {"type": "string"}, "description": "The agent's blast-radius: only decisions whose `governs`, and findings whose `about`, intersect these files are returned. Omit for all."}}}},
+        {"name": "rigger_peers", "description": "List the decisions, lessons, AND review findings other agents have raised so far this run, so you do not work blind to them (concurrent reviewers see each other's findings live; lessons recover what a capped prompt section elided). Pass `files` (your blast-radius) to scope the result to decisions, lessons, and findings that touch those files; omit it to see every one.", "inputSchema": {"type": "object", "properties": {"files": {"type": "array", "items": {"type": "string"}, "description": "The agent's blast-radius: only decisions whose `governs`, and lessons and findings whose `about`, intersect these files are returned. Omit for all."}}}},
     ])
 }
 
@@ -524,7 +534,7 @@ mod tests {
 
     /// The shared `peers_json` core (which the CLI `rigger peers` renders from) must
     /// produce the SAME structured value the MCP `rigger_peers` tool returns - both
-    /// scope decisions and findings to the files arg through the one core.
+    /// scope decisions, lessons, and findings to the files arg through the one core.
     #[test]
     fn peers_json_core_matches_the_mcp_tool() {
         use std::time::Instant;
@@ -543,10 +553,26 @@ mod tests {
                 )
                 .unwrap();
         }
+        // One lesson about a.rs, another about b.rs - the lessons half must ride the
+        // same one core and the same blast-radius scoping as decisions and findings, so
+        // `rigger peers <file>` actually returns the lessons a capped prompt elided.
+        for (id, about) in [("la", "a.rs"), ("lb", "b.rs")] {
+            let data = serde_json::to_vec(&json!({
+                "id": id, "summary": "y", "about": [about],
+            }))
+            .unwrap();
+            store
+                .append(
+                    "run",
+                    ExpectedRevision::Any,
+                    &[Event::new(crate::contextgraph::TYPE_LESSON_LEARNED, data)],
+                )
+                .unwrap();
+        }
         let driver = Driver::new();
         let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
         let deadline = Instant::now() + Duration::from_secs(2);
-        while peers.decisions().len() < 2 {
+        while peers.decisions().len() < 2 || peers.lessons().len() < 2 {
             assert!(Instant::now() < deadline, "side-car never caught up");
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -568,6 +594,13 @@ mod tests {
         );
         assert_eq!(core["decisions"].as_array().unwrap().len(), 1);
         assert_eq!(core["decisions"][0]["id"], "da");
+        // The lessons section is present and blast-radius scoped exactly like decisions.
+        assert_eq!(
+            core["lessons"].as_array().unwrap().len(),
+            1,
+            "`rigger peers a.rs` must return the a.rs lesson (the recovery the elision note names)"
+        );
+        assert_eq!(core["lessons"][0]["id"], "la");
     }
 
     #[test]
