@@ -2736,12 +2736,15 @@ impl RunCtx<'_> {
         // - the git branch ref (which survives process death and worktree removal) is the
         //   unit's DURABLE checkpoint - a prior window's committed work is reused, not
         //   thrown away; and
-        // - because the dir no longer carries a per-process UUID, every process computes
-        //   the SAME path, so `Worktree::create` ADOPTS a prior/concurrent process's
-        //   worktree with a direct path lookup instead of a porcelain parse.
+        // - because the dir no longer carries a per-process UUID, a resume - or a step that
+        //   SUPERSEDES a prior one that died - computes the SAME path, so `Worktree::create`
+        //   ADOPTS that prior process's worktree with a direct path lookup instead of a
+        //   porcelain parse. (This is sequential resume/supersede, not true concurrency:
+        //   rigger drives unit-worktree creation single-threaded within one `rigger step`.)
         // `Worktree::create` handles a fresh branch (create off HEAD), an existing branch
-        // with prior commits (check it out, reusing the work), and adopt-or-prune of a
-        // stale registration whose dir was deleted out from under git.
+        // with prior commits (check it out, reusing the work), adopt-or-prune of a stale
+        // registration whose dir was deleted, and self-heal of a populated leftover dir at
+        // the deterministic path (deregister/remove it, then re-add).
         let scratch = crate::worktree::scratch_root_from_env(
             &self.deps.repo,
             &self.cfg.workflow.defaults.workdir,
@@ -2762,8 +2765,8 @@ impl RunCtx<'_> {
     ///
     /// Both the dir and the throwaway branch derive DETERMINISTICALLY from the stage id
     /// AND the review `attempt` (Gap 12, spec 06) - no per-process UUID - so a resumed
-    /// review step recomputes the same path and adopts-or-prunes it instead of leaking a
-    /// fresh worktree each process.
+    /// review step recomputes the same path and reclaims it instead of leaking a fresh
+    /// worktree each process.
     fn review_only_worktree(&self, st: &Stage, attempt: u32) -> Result<Option<Worktree>, Error> {
         if self.deps.repo.is_empty() {
             return Ok(None);
@@ -2777,6 +2780,13 @@ impl RunCtx<'_> {
         // read-only scaffolding, never a checkpoint, so its branch must not collide with -
         // or survive as - a unit's durable branch.
         let branch = review_branch(&st.name, attempt);
+        // A review worktree must reflect the CURRENT base HEAD. Since it carries no durable
+        // work, DISCARD any deterministic leftover (a crashed prior review step left the
+        // branch+dir pinned at a now-STALE HEAD) before creating, so we recreate off the
+        // current HEAD rather than ADOPT the stale checkout and review stale code
+        // (adv-u4det-review-adopt-staleness). This is the opposite of the unit worktree,
+        // whose durable branch is exactly what `create` reuses.
+        Worktree::discard(&self.deps.repo, &dir, &branch)?;
         let wt = Worktree::create(&self.deps.repo, &dir, &branch)?;
         Ok(Some(wt))
     }
@@ -3045,20 +3055,24 @@ fn unit_branch(unit_id: &str) -> String {
 
 /// The DETERMINISTIC worktree dir for a unit (Gap 12, spec 06): `<scratch-root>/
 /// rigger-wt-<unit-slug>`, with NO per-process UUID. Because it derives purely from the
-/// scratch root and the (sanitized) unit id, every process - a resume, a superseded step,
-/// a concurrent one - computes the SAME path, so adoption of a prior process's worktree
-/// is a direct path lookup rather than a `git worktree list` porcelain parse. Pairs with
-/// [`unit_branch`], which derives the unit's durable branch from the same id.
+/// scratch root and the (sanitized) unit id, a resume - or a step that supersedes a prior
+/// one that died - computes the SAME path, so adoption of that prior process's worktree is
+/// a direct path lookup rather than a `git worktree list` porcelain parse. (Sequential
+/// resume/supersede, not true concurrency: rigger drives unit-worktree creation
+/// single-threaded within one `rigger step`.) Pairs with [`unit_branch`], which derives the
+/// unit's durable branch from the same id.
 fn unit_worktree_dir(scratch_root: &str, unit_id: &str) -> String {
     format!("{scratch_root}/rigger-wt-{}", sanitize_for_path(unit_id))
 }
 
 /// The DETERMINISTIC dir for a STANDALONE review stage's throwaway worktree (spec 06):
 /// `<scratch-root>/rigger-review-<stage-slug>-<attempt>`, derived from the stage id and
-/// the review attempt, NO per-process UUID. A resumed review step recomputes the same
-/// path and adopts-or-prunes it instead of leaking a fresh worktree each process. Unlike
-/// the unit worktree this carries no durable checkpoint; [`Self::run_fan_out_stage`]
-/// removes both the dir and its [`review_branch`] when the stage ends.
+/// the review attempt, NO per-process UUID. A resumed review step recomputes the same path
+/// and RECLAIMS it - [`Self::review_only_worktree`] discards any leftover and recreates off
+/// the current HEAD (never adopting a stale checkout) - instead of leaking a fresh worktree
+/// each process. Unlike the unit worktree this carries no durable checkpoint;
+/// [`Self::run_fan_out_stage`] removes both the dir and its [`review_branch`] when the stage
+/// ends.
 fn review_worktree_dir(scratch_root: &str, stage_id: &str, attempt: u32) -> String {
     format!(
         "{scratch_root}/rigger-review-{}-{attempt}",
