@@ -105,7 +105,10 @@ impl AgentDriver for ReplayDriver<'_> {
         // SpawnRequested, so park only an id that is not already recorded.
         if !spawn::is_recorded(&events, &opts.id) {
             let req = spawn_request(agent, prompt, opts);
-            spawn::park(self.store, &req).map_err(|e| Error(e.to_string()))?;
+            // Park stamped with the run this spawn belongs to (spec 06, unit 1): the
+            // conductor threaded the current run id onto `opts`, so the persisted
+            // `SpawnRequested` carries the same run-id metadata as the run's other events.
+            spawn::park_in_run(self.store, &req, &opts.run_id).map_err(|e| Error(e.to_string()))?;
         }
 
         // Signal the parked frontier. The conductor unwinds this unit cleanly (no
@@ -556,6 +559,10 @@ mod tests {
         // per process (the pre-fix bug), the new unit would park and the run would spawn
         // unboundedly across steps.
         let store = Store::open(":memory:").unwrap();
+        // Run scoping (spec 06, unit 1): the earlier step's spawn belongs to THIS run, so
+        // begin the run before parking it - otherwise it sits before the boundary and the
+        // cross-step budget fold never counts it.
+        crate::run::ensure_started(&store, &[]).unwrap();
         let prior = SpawnRequest::new("earlier", "earlier", ROLE_IMPLEMENTER, 0, "prior work");
         spawn::park(&store, &prior).unwrap();
         spawn::record_result(&store, &spawn::SpawnResult::ok(&prior.id, "done")).unwrap();

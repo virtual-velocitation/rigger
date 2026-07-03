@@ -19,6 +19,7 @@ use rigger::gate::ExecRunner;
 use rigger::grounder::Grounder;
 use rigger::ledger::RunState;
 use rigger::metrics::{self, Metrics};
+use rigger::run as runscope;
 use rigger::sidecar::{PeerDecision, Sidecar};
 use rigger::worktree::{RunBranchSetup, Worktree};
 use rigger::{hooks, mcpserver, spawn, spec};
@@ -697,8 +698,10 @@ fn cmd_step(args: &[String]) -> Res {
     let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
     // The printed wave is the FULL pending frontier (every parked spawn without a
     // result), so a killed or re-run step process orphans nothing and a relaunched
-    // driver resumes the in-flight wave (see spawn::step_result).
-    let step = spawn::step_result(&events).map_err(|e| e.to_string())?;
+    // driver resumes the in-flight wave (see spawn::step_result). Scoped to the CURRENT
+    // run's slice (spec 06, unit 1): a prior run's unanswered spawns sit before this
+    // run's RunStarted, so they never reappear in this run's wave (Gap 11).
+    let step = spawn::step_result(runscope::current_run(&events)).map_err(|e| e.to_string())?;
     // At the fixpoint, sweep the shared agent-scratch area (probe repos, verification
     // builds workers park under <scratch-root>/agent-scratch per the driver's scratch
     // policy): it exists only to serve in-flight spawns, and leaving it is how a run
@@ -1153,15 +1156,26 @@ fn cmd_graph(args: &[String]) -> Res {
 ///
 /// `rigger stats` takes no arguments; any extra argument is a clear error.
 fn cmd_stats(args: &[String]) -> Res {
-    if !args.is_empty() {
-        return Err(format!("stats: expected no arguments, got {}", args.len()).into());
-    }
+    // `rigger stats` reports the LATEST run; `rigger stats --all` reports the historical
+    // aggregate over every run in the store (spec 06, unit 1). No other argument is
+    // accepted.
+    let all = match args {
+        [] => false,
+        [flag] if flag == "--all" => true,
+        _ => {
+            return Err(format!(
+                "stats: expected no arguments or --all, got {}",
+                args.join(" ")
+            )
+            .into())
+        }
+    };
 
     // Resolve the project identity and db path the same way every CLI command does,
     // then delegate the namespace-scoped read + no-runs decision to `stats_lines`. This
     // wrapper owns only the I/O boundary (which file, which project, and the printing);
     // the read-model edges live in the testable seam below.
-    match stats_lines(&db_path("events.db"), &project_identity())? {
+    match stats_lines(&db_path("events.db"), &project_identity(), all)? {
         Some(lines) => {
             for line in lines {
                 println!("{line}");
@@ -1195,6 +1209,7 @@ fn cmd_stats(args: &[String]) -> Res {
 fn stats_lines(
     path: &str,
     project: &str,
+    all: bool,
 ) -> Result<Option<Vec<String>>, Box<dyn std::error::Error>> {
     if !Path::new(path).exists() {
         return Ok(None);
@@ -1210,7 +1225,15 @@ fn stats_lines(
         return Ok(None);
     }
 
-    Ok(Some(format_stats(&metrics::project(&events))))
+    // Default to the LATEST run's slice; `--all` folds the whole stream for the
+    // historical aggregate (spec 06, unit 1). `metrics::project` stays a pure fold over
+    // whichever slice it is handed - the run choice lives here, at the read boundary.
+    let scoped = if all {
+        &events[..]
+    } else {
+        runscope::current_run(&events)
+    };
+    Ok(Some(format_stats(&metrics::project(scoped))))
 }
 
 /// The message printed when there is no run to report on - either the project has
@@ -4422,7 +4445,7 @@ mod tests {
         let path = dir.path().join("events.db");
         let path_str = path.to_str().unwrap();
 
-        let out = stats_lines(path_str, "proj-x").expect("absent db is not an error");
+        let out = stats_lines(path_str, "proj-x", false).expect("absent db is not an error");
         assert!(out.is_none(), "an absent db must read as no runs (None)");
         assert!(
             !path.exists(),
@@ -4445,7 +4468,8 @@ mod tests {
         seed_run(path_str, "proj-me", &[]);
         assert!(path.exists(), "the db file must exist for this edge");
 
-        let out = stats_lines(path_str, "proj-me").expect("empty run stream is not an error");
+        let out =
+            stats_lines(path_str, "proj-me", false).expect("empty run stream is not an error");
         assert!(
             out.is_none(),
             "an existing db with an empty run stream must read as no runs (None)"
@@ -4472,7 +4496,7 @@ mod tests {
         );
 
         // proj-me, reading the same file, sees its OWN (empty) namespace - no runs.
-        let mine = stats_lines(path_str, "proj-me").expect("read is not an error");
+        let mine = stats_lines(path_str, "proj-me", false).expect("read is not an error");
         assert!(
             mine.is_none(),
             "stats must be namespace-scoped: another project's run must not leak in"
@@ -4480,7 +4504,7 @@ mod tests {
 
         // Sanity: the other project's run IS visible to it, so the data really is there
         // and the None above is the namespace boundary, not a read failure.
-        let theirs = stats_lines(path_str, "proj-other").expect("read is not an error");
+        let theirs = stats_lines(path_str, "proj-other", false).expect("read is not an error");
         assert!(
             theirs.is_some(),
             "the project that owns the run must see its stats"
@@ -4507,7 +4531,7 @@ mod tests {
             ],
         );
 
-        let lines = stats_lines(path_str, "proj-me")
+        let lines = stats_lines(path_str, "proj-me", false)
             .expect("read is not an error")
             .expect("a populated run must render lines, not None");
         let out = lines.join("\n");

@@ -1030,6 +1030,167 @@ fn step_prints_a_disjoint_two_spawn_wave_then_reports_done() {
     );
 }
 
+/// Run scoping end-to-end (spec 06, unit 1 - Gap 11): a `rigger step` over a store that
+/// still holds an UNANSWERED spawn from an OLDER run must never re-print that stale spawn
+/// in this run's wave. The prior run's residue sits before this run's `RunStarted`
+/// boundary, so scoping the wave to the current run's slice excludes it - the exact
+/// zombie-resurrection this unit closes (a prior stepwise run re-parked implementers for
+/// aborted runs' units).
+#[test]
+fn step_scopes_the_wave_to_the_current_run_and_ignores_prior_run_residue() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+    seed_store(root);
+
+    // A prior campaign (DIFFERENT criteria) left an aborted, still-unanswered spawn in the
+    // store: its `RunStarted` and a parked implementer with no result.
+    let (_o, err, ok) = run_rigger(
+        root,
+        &[
+            "emit",
+            "RunStarted",
+            r#"{"run":"r0","criteria":["an older spec"]}"#,
+        ],
+    );
+    assert!(
+        ok,
+        "seeding the prior run's RunStarted must succeed; stderr: {err}"
+    );
+    let (_o, err, ok) = run_rigger(
+        root,
+        &[
+            "emit",
+            "SpawnRequested",
+            r#"{"id":"zombie/implementer#0","unit":"zombie","stage":"zombie","prompt":"stale"}"#,
+        ],
+    );
+    assert!(ok, "seeding the stale spawn must succeed; stderr: {err}");
+
+    // This run has no spec criteria, so it is a NEW campaign vs the prior one: the step
+    // begins a fresh run and its wave is only THIS run's units.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "step must succeed; stderr: {err}");
+    let line = out.trim();
+    assert!(
+        line.contains(r#""id":"a/implementer#0""#) && line.contains(r#""id":"b/implementer#0""#),
+        "the wave carries this run's two units; got: {line:?}"
+    );
+    assert!(
+        !line.contains("zombie/implementer#0"),
+        "the prior run's stale unanswered spawn must NOT reappear in this run's wave; got: {line:?}"
+    );
+    assert_eq!(
+        line.matches(r#""id":"#).count(),
+        2,
+        "exactly this run's two spawns, never the zombie; got: {line:?}"
+    );
+}
+
+/// `rigger stats` reports the LATEST run by default and `rigger stats --all` reports the
+/// historical aggregate over every run (spec 06, unit 1). Two runs are seeded through the
+/// real `rigger emit` courier: run 1 lands one clean unit, run 2 escalates one unit. The
+/// default view sees only run 2 (1 of 1 escalated); `--all` sees both (1 of 2).
+#[test]
+fn stats_reports_the_latest_run_by_default_and_all_for_the_aggregate() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+
+    // Run 1: one clean unit (started + integrated, never failed).
+    for (ty, body) in [
+        ("RunStarted", r#"{"run":"r1","criteria":["spec one"]}"#),
+        ("UnitStarted", r#"{"id":"u1","agent":"worker"}"#),
+        ("UnitIntegrated", r#"{"id":"u1","commit":"aaa"}"#),
+        // Run 2: one unit that escalates to a human.
+        ("RunStarted", r#"{"run":"r2","criteria":["spec two"]}"#),
+        ("UnitStarted", r#"{"id":"u2","agent":"worker"}"#),
+        ("UnitEscalated", r#"{"id":"u2"}"#),
+    ] {
+        let (_o, err, ok) = run_rigger(root, &["emit", ty, body]);
+        assert!(ok, "seeding {ty} must succeed; stderr: {err}");
+    }
+
+    // Default: only the latest run (run 2) - its single unit escalated.
+    let (out, err, ok) = run_rigger(root, &["stats"]);
+    assert!(ok, "stats must succeed; stderr: {err}");
+    assert!(
+        out.contains("(1/1 units escalated"),
+        "the default view reports ONLY the latest run (1 of 1 escalated); got:\n{out}"
+    );
+
+    // --all: the historical aggregate across both runs - one of two units escalated.
+    let (out_all, err, ok) = run_rigger(root, &["stats", "--all"]);
+    assert!(ok, "stats --all must succeed; stderr: {err}");
+    assert!(
+        out_all.contains("(1/2 units escalated"),
+        "the --all view aggregates every run (1 of 2 escalated); got:\n{out_all}"
+    );
+
+    // A stray argument is still rejected.
+    let (_o, _e, ok) = run_rigger(root, &["stats", "--bogus"]);
+    assert!(!ok, "an unknown stats argument must be rejected");
+}
+
+/// Every event the conductor emits carries the current run id in its metadata, and the
+/// run opens with a `RunStarted` carrying a fresh run id (spec 06, unit 1). Drives a real
+/// `rigger step`, then reads the store back and asserts the RunStarted, the parked spawn
+/// requests, and the unit events all share one run id.
+#[test]
+fn a_step_stamps_the_run_id_on_the_run_started_and_every_event_it_emits() {
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Direction, EventStore, Filter};
+
+    let dir = temp_project();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+
+    let (_out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the step must succeed; stderr: {err}");
+
+    let db_path = root.join(".rigger").join("events.db");
+    let backend = Store::open(db_path.to_str().unwrap()).unwrap();
+    let events = backend
+        .read_all(0, Direction::Forward, &Filter::default())
+        .unwrap();
+
+    // Exactly one RunStarted, carrying a fresh run id in both its payload and its metadata.
+    let starts: Vec<_> = events
+        .iter()
+        .filter(|e| e.type_ == rigger::run::TYPE_RUN_STARTED)
+        .collect();
+    assert_eq!(
+        starts.len(),
+        1,
+        "the run begins with exactly one RunStarted"
+    );
+    let run_id = starts[0]
+        .meta
+        .get(rigger::run::META_RUN_ID)
+        .expect("the RunStarted carries a run id in metadata")
+        .clone();
+    assert!(!run_id.is_empty(), "the run id is a fresh, non-empty id");
+
+    // Every conductor-emitted unit event and every parked spawn request carries THAT run id.
+    let scoped = ["UnitStarted", "SpawnRequested"];
+    let mut checked = 0;
+    for e in &events {
+        if scoped.contains(&e.type_.as_str()) {
+            assert_eq!(
+                e.meta.get(rigger::run::META_RUN_ID).map(String::as_str),
+                Some(run_id.as_str()),
+                "the {} event must carry the current run id",
+                e.type_
+            );
+            checked += 1;
+        }
+    }
+    assert!(
+        checked >= 3,
+        "the step parked two spawns and started two units, all run-stamped; checked {checked}"
+    );
+}
+
 /// End-to-end through the CLI seam (spec 05 line 52): a worker records its parked
 /// implementer's result with `rigger result <id> --meta '{"resolved_model": ..}'`, and
 /// the next `rigger step` replays that spawn and STAMPS the requested model alias plus the

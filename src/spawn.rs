@@ -197,9 +197,27 @@ impl SpawnRequest {
 /// counts spawns from the log rather than an in-memory counter. A serialization
 /// failure is surfaced as a backend error rather than panicking.
 pub fn park(store: &dyn EventStore, req: &SpawnRequest) -> Result<Position, Error> {
-    let ev = req
+    park_in_run(store, req, "")
+}
+
+/// Park `req` as a [`TYPE_SPAWN_REQUESTED`] event stamped with the run it belongs to,
+/// so the parked spawn is attributable to its run (spec 06, unit 1): the conductor
+/// threads the current run id onto every spawn and the replay driver parks through
+/// here, so a `SpawnRequested` carries the same `run_id` metadata as the unit/gate
+/// events the conductor emits for that run. An empty `run_id` stamps no metadata (a
+/// caller outside a run - e.g. the pure-fold tests), so [`park`] is exactly this with
+/// no run. This is the single park authority; [`park`] delegates to it.
+pub fn park_in_run(
+    store: &dyn EventStore,
+    req: &SpawnRequest,
+    run_id: &str,
+) -> Result<Position, Error> {
+    let mut ev = req
         .to_event()
         .map_err(|e| Error::Backend(format!("serialize spawn request {}: {e}", req.id)))?;
+    if !run_id.is_empty() {
+        ev = ev.with_meta(crate::run::META_RUN_ID, run_id);
+    }
     store.append(STREAM, ExpectedRevision::Any, std::slice::from_ref(&ev))
 }
 

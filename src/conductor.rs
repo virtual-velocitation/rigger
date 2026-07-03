@@ -332,6 +332,11 @@ pub struct SpawnOpts {
     /// blast-radius-filtered peer decisions and injects them at the tool boundary;
     /// the cli driver (a subprocess) cannot do mid-run injection and ignores it.
     pub blast_radius: Vec<String>,
+    /// The id of the run this spawn belongs to (spec 06, unit 1), set by the conductor
+    /// from the current run. A parking driver stamps it into the `SpawnRequested`
+    /// event's [`crate::run::META_RUN_ID`] metadata so the parked spawn is attributable
+    /// to its run; the blocking drivers ignore it. Empty for a caller outside a run.
+    pub run_id: String,
 }
 
 /// AgentDriver spawns an agent to completion. The agent records events it emits
@@ -455,11 +460,22 @@ struct UnitProposed {
 pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     validate_acyclic(&cfg.workflow.stages)?;
 
+    // Run scoping (spec 06, unit 1 - Gap 11). Begin the run - or adopt the one already
+    // in flight for these criteria - BEFORE reading any prior state, so the boundary is
+    // in the log and every fold below scopes to it. A fresh campaign mints a new
+    // `RunStarted`; a resume/idle/replay over the same criteria adopts the existing run
+    // and appends nothing. The run id then rides every event this process emits.
+    let run_id = crate::run::ensure_started(deps.store, &deps.criteria)?;
+
     // Resume by replay (§4.2): seed integrated/terminal from the existing log so a
     // crashed or re-run conductor skips work that already landed instead of
-    // re-spawning every agent from scratch.
-    let prior_events = deps.store.read_stream(STREAM, 0, Direction::Forward)?;
-    let prior = ledger::project(&prior_events).map_err(|e| Error(e.to_string()))?;
+    // re-spawning every agent from scratch. Only the CURRENT run's slice is folded
+    // (`crate::run::current_run`): a prior run's non-terminal residue sits before this
+    // run's `RunStarted` and so can never seed ready work (the Gap 11 zombie fix), while
+    // its decisions/findings stay visible as memory through the whole-stream graph.
+    let all_prior = deps.store.read_stream(STREAM, 0, Direction::Forward)?;
+    let prior_events = crate::run::current_run(&all_prior);
+    let prior = ledger::project(prior_events).map_err(|e| Error(e.to_string()))?;
     // Replay idempotency (spec 04, criterion 4): seed the replay-key set from the prior
     // log's [`META_REPLAY_KEY`] metadata so a step re-running the conductor over recorded
     // history re-appends none of the keyed unit-lifecycle events it already emitted, and
@@ -479,7 +495,7 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     // whole stream per spawn. The blocking drivers never park a request, so both are empty
     // for them and their in-process spawns are the whole count - historical behavior,
     // unchanged.
-    let recorded_spawns = spawn::recorded(&prior_events).map_err(|e| Error(e.to_string()))?;
+    let recorded_spawns = spawn::recorded(prior_events).map_err(|e| Error(e.to_string()))?;
     let base_spawns = recorded_spawns.len() as u32;
     let recorded_spawn_ids: HashSet<String> = recorded_spawns.into_keys().collect();
     // Gate-verdict replay cache (finding arch-gate-verdict-redundant-scan): seed the
@@ -523,6 +539,7 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     let ctx = RunCtx {
         cfg,
         deps,
+        run_id,
         gate_tracker: Mutex::new(HashMap::new()),
         integrate_mu: Mutex::new(()),
         spawns: AtomicU32::new(base_spawns),
@@ -662,8 +679,10 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     let converged = !ctx.parked() && !ctx.manual_review_pending() && !ctx.budget_halted();
     ctx.run_deferred_gates(&stages, converged)?;
 
+    // Project the run state the caller sees from ONLY this run's slice, so a run
+    // returns its own state and never folds a prior run's units (Gap 11).
     let events = deps.store.read_stream(STREAM, 0, Direction::Forward)?;
-    ledger::project(&events).map_err(|e| Error(e.to_string()))
+    ledger::project(crate::run::current_run(&events)).map_err(|e| Error(e.to_string()))
 }
 
 /// Whether the workflow has a planner stage that produces a DAG at runtime, which
@@ -675,6 +694,13 @@ fn has_producer(stages: &BTreeMap<String, Stage>) -> bool {
 struct RunCtx<'a> {
     cfg: &'a Config,
     deps: &'a Deps<'a>,
+    /// The id of the current run (spec 06, unit 1): the fresh id minted by
+    /// [`crate::run::ensure_started`] when this run began, or the adopted id of the run
+    /// in flight. Every event this process appends through [`append_and_fold`](RunCtx::append_and_fold)
+    /// carries it in [`crate::run::META_RUN_ID`] metadata, and it is threaded onto each
+    /// spawn (via [`SpawnOpts::run_id`]) so a parked request is attributable to its run.
+    /// Empty only in the pure-helper test context, where nothing is appended.
+    run_id: String,
     gate_tracker: Mutex<HashMap<String, Gate>>,
     integrate_mu: Mutex<()>,
     /// The CUMULATIVE spawn count for the budget circuit-breaker (§4.4, §8), across
@@ -790,6 +816,9 @@ impl<'a> RunCtx<'a> {
         RunCtx {
             cfg,
             deps,
+            // The pure-helper tests append nothing that needs run scoping; an empty run
+            // id makes `append_and_fold` stamp no run-id metadata.
+            run_id: String::new(),
             gate_tracker: Mutex::new(HashMap::new()),
             integrate_mu: Mutex::new(()),
             spawns: AtomicU32::new(base_spawns),
@@ -820,6 +849,13 @@ impl RunCtx<'_> {
     /// live in ONE place and can never silently diverge (finding
     /// arch-emit-keyed-dup-authority).
     fn append_and_fold(&self, mut ev: Event) -> Result<(), Error> {
+        // Stamp the run id on every conductor-emitted event (spec 06, unit 1): the one
+        // chokepoint every emit path routes through, so unit/status/gate-verdict/spec-
+        // defect events are all attributable to their run. Skipped only when the run id
+        // is empty (the pure-helper test context, which appends nothing meaningful).
+        if !self.run_id.is_empty() {
+            ev = ev.with_meta(crate::run::META_RUN_ID, &self.run_id);
+        }
         let pos =
             self.deps
                 .store
@@ -1461,6 +1497,7 @@ impl RunCtx<'_> {
             id: id.to_string(),
             unit: st.name.clone(),
             stage: st.name.clone(),
+            run_id: self.run_id.clone(),
         })
     }
 
@@ -1668,6 +1705,7 @@ impl RunCtx<'_> {
                             id: implementer_id.clone(),
                             unit: st.name.clone(),
                             stage: st.name.clone(),
+                            run_id: self.run_id.clone(),
                         },
                         &emit,
                     )
@@ -4158,8 +4196,9 @@ mod tests {
         // proposed one unit citing criterion A verbatim - exactly A's baseline. On
         // resume the planner does NOT run again (`plan` is terminal), so the only source
         // of A's supersede is folding this already-emitted UnitProposed before the wave.
-        seed_events(
+        seed_events_in_run(
             &st,
+            &[crit_a, crit_b],
             &[
                 Event::new(
                     ledger::TYPE_UNIT_STARTED,
@@ -4599,7 +4638,22 @@ mod tests {
 
     /// Append events into the run stream as if a prior window had emitted them, so a
     /// resumed `run` folds them and continues from the recorded phase.
-    fn seed_events(st: &Store, events: &[Event]) {
+    fn seed_events_in_run(st: &Store, criteria: &[&str], events: &[Event]) {
+        // Seed `events` as the prior-window state of a run started for `criteria` (spec
+        // 06, unit 1 run scoping): a leading `RunStarted` so the conductor ADOPTS this
+        // run when driven with the SAME criteria and folds the seeded state as its own
+        // resume state, rather than minting a fresh run that leaves the seed behind the
+        // boundary. `criteria` must match the `Deps::criteria` the test drives `run` with.
+        let started = Event::new(
+            crate::run::TYPE_RUN_STARTED,
+            serde_json::to_vec(&json!({ "run": "test-run", "criteria": criteria })).unwrap(),
+        );
+        st.append(
+            STREAM,
+            ExpectedRevision::Any,
+            std::slice::from_ref(&started),
+        )
+        .unwrap();
         st.append(STREAM, ExpectedRevision::Any, events).unwrap();
     }
 
@@ -4639,8 +4693,9 @@ mod tests {
         commit_on_unit_branch(&repo_path, "s", "feature.rs", "fn feature() {}\n");
 
         let st = Store::open(":memory:").unwrap();
-        seed_events(
+        seed_events_in_run(
             &st,
+            &[],
             &[
                 Event::new(
                     ledger::TYPE_UNIT_STARTED,
@@ -4858,8 +4913,9 @@ mod tests {
         commit_on_unit_branch(&repo_path, "s", "feature.rs", "fn feature() {}\n");
 
         let st = Store::open(":memory:").unwrap();
-        seed_events(
+        seed_events_in_run(
             &st,
+            &[],
             &[
                 Event::new(
                     ledger::TYPE_UNIT_STARTED,
@@ -4949,8 +5005,9 @@ mod tests {
         commit_on_unit_branch(&repo_path, "s", "feature.rs", "fn feature() {}\n");
 
         let st = Store::open(":memory:").unwrap();
-        seed_events(
+        seed_events_in_run(
             &st,
+            &[],
             &[
                 Event::new(
                     ledger::TYPE_UNIT_STARTED,
@@ -5060,8 +5117,9 @@ mod tests {
         let st = Store::open(":memory:").unwrap();
         // Prior window: the unit already failed twice (attempts:2), one short of the
         // bound. The next failure must escalate.
-        seed_events(
+        seed_events_in_run(
             &st,
+            &[],
             &[
                 Event::new(
                     ledger::TYPE_UNIT_STARTED,
@@ -5165,8 +5223,9 @@ mod tests {
         // Escalation is FINAL: a unit that genuinely reached MAX_RETRIES and escalated
         // stays terminal and is skipped on resume - no re-run, no fresh attempts.
         let st = Store::open(":memory:").unwrap();
-        seed_events(
+        seed_events_in_run(
             &st,
+            &[],
             &[
                 Event::new(
                     ledger::TYPE_UNIT_STARTED,
@@ -7124,6 +7183,7 @@ mod tests {
                 graph: None,
                 criteria: Vec::new(),
             },
+            run_id: String::new(),
             gate_tracker: Mutex::new(HashMap::new()),
             integrate_mu: Mutex::new(()),
             spawns: AtomicU32::new(0),
@@ -8924,6 +8984,9 @@ mod tests {
         );
 
         let st = Store::open(":memory:").unwrap();
+        // Run scoping (spec 06, unit 1): begin the run first so the recorded result and
+        // deferred verdict below fall INSIDE the current run and are replayed on resume.
+        crate::run::ensure_started(&st, &[]).unwrap();
         // The implementer result is recorded (the unit reaches `verified` and the run
         // converges), and a FAILING deferred verdict is already recorded under its replay
         // key - but the DeferredGateFailed is MISSING, exactly as a crash between the two
