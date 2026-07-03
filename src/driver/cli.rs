@@ -58,7 +58,13 @@ impl AgentDriver for Driver {
         // exactly what the workflow driver does live. Done BEFORE the exit-status
         // check so a partially-failed run still records what the agent decided.
         bridge_emits(&stdout, emit)?;
-        let result = AgentResult { output: stdout };
+        // A blocking subprocess driver does not learn the resolved model id (spec 05 line
+        // 52 sources it from the worker's `rigger result --meta` on the stepwise path), so
+        // it leaves it empty and the metadata is then omitted.
+        let result = AgentResult {
+            output: stdout,
+            resolved_model: String::new(),
+        };
         if !out.status.success() {
             return Err(Error(format!(
                 "cli driver: agent {:?} exited unsuccessfully ({})",
@@ -282,6 +288,7 @@ thinking out loud, not json\n\
                     isolation: false,
                     parallel: false,
                     blast_radius: Vec::new(),
+                    ..Default::default()
                 },
                 &emit,
             )

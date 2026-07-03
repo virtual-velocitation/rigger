@@ -27,18 +27,87 @@ fn temp_project() -> tempfile::TempDir {
     dir
 }
 
-/// Run `rigger <args...>` in `cwd` and return (stdout, stderr, success).
-fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
-    let out = Command::new(rigger_bin())
+/// Seed an initialized `.rigger/events.db` under `root`, standing in for the store a
+/// prior `rigger run`/`step` would have created. The store-opening couriers
+/// (`emit`/`result`/`peers`) now REFUSE to fabricate a fresh store from the wrong cwd
+/// (spec 05), so a round-trip test must first establish one, exactly as a real run does
+/// before any courier appends to it. An empty file is a valid empty SQLite database;
+/// `Store::open` adds the schema on first open - so this models "the run created the
+/// store" without needing a full workflow.
+fn seed_store(root: &Path) {
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(&rigger).unwrap();
+    std::fs::File::create(rigger.join("events.db")).unwrap();
+}
+
+/// A throwaway git project with a real commit, so a base ref like `HEAD` resolves.
+/// `temp_project` only `git init`s (unborn HEAD), which is enough for the offline
+/// step tests but not for the run-branch-anchoring path that needs a base commit.
+fn temp_git_project_with_commit() -> tempfile::TempDir {
+    let dir = temp_project();
+    let root = dir.path();
+    for args in [
+        &["config", "user.email", "t@example.com"][..],
+        &["config", "user.name", "t"],
+        &["commit", "--allow-empty", "-q", "-m", "init"],
+    ] {
+        let ok = Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .status()
+            .expect("git must be runnable")
+            .success();
+        assert!(ok, "git {args:?} must succeed while seeding the repo");
+    }
+    dir
+}
+
+/// Run a read-only `git <args...>` in `cwd`, returning its trimmed stdout on success
+/// (used to assert branch state after a `rigger step --base`), or None on failure.
+fn git_out(cwd: &Path, args: &[&str]) -> Option<String> {
+    let out = Command::new("git")
         .args(args)
         .current_dir(cwd)
         .output()
-        .expect("failed to spawn the rigger binary");
+        .expect("git must be runnable");
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Run `rigger <args...>` in `cwd` and return (stdout, stderr, success).
+fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
+    run_rigger_envs(cwd, args, &[])
+}
+
+/// Run `rigger <args...>` in `cwd` with extra environment `envs` and return
+/// (stdout, stderr, success). Used by the `rigger validate` advisory tests to stub
+/// `RIGGER_NPM` (so `rigger setup` installs the workflow without a real npm).
+fn run_rigger_envs(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> (String, String, bool) {
+    let mut cmd = Command::new(rigger_bin());
+    cmd.args(args).current_dir(cwd);
+    for (k, v) in envs {
+        cmd.env(k, v);
+    }
+    let out = cmd.output().expect("failed to spawn the rigger binary");
     (
         String::from_utf8_lossy(&out.stdout).into_owned(),
         String::from_utf8_lossy(&out.stderr).into_owned(),
         out.status.success(),
     )
+}
+
+/// Run `git <args...>` in `cwd` and assert it succeeds (for seeding a repo state in a
+/// test - staging and committing scaffolded files so `.rigger/` is tracked+clean).
+fn git_ok(cwd: &Path, args: &[&str]) {
+    let ok = Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .status()
+        .expect("git must be runnable")
+        .success();
+    assert!(ok, "git {args:?} must succeed");
 }
 
 /// The full exit disposition of a spawned `rigger`, richer than `run_rigger`'s bare
@@ -88,6 +157,8 @@ fn run_rigger_env(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> RiggerOut
 fn emit_appends_and_folds_then_peers_shows_it() {
     let dir = temp_project();
     let root = dir.path();
+    // A run already created the store; the courier appends to it (it never fabricates).
+    seed_store(root);
 
     // Emit a DecisionMade governing src/foo.rs.
     let (out, err, ok) = run_rigger(
@@ -104,10 +175,11 @@ fn emit_appends_and_folds_then_peers_shows_it() {
         "emit prints a one-line confirmation; got: {out:?}"
     );
 
-    // The store and graph databases now exist under .rigger/.
+    // The seeded event store still holds the append, and emit created the graph db
+    // beside it (the projector db is derived state, so emit builds it on demand).
     assert!(
         root.join(".rigger").join("events.db").exists(),
-        "emit must create the namespaced event store"
+        "emit must append to the seeded event store"
     );
     assert!(
         root.join(".rigger").join("graph.db").exists(),
@@ -145,6 +217,7 @@ fn emit_appends_and_folds_then_peers_shows_it() {
 fn emit_review_finding_shows_in_peers() {
     let dir = temp_project();
     let root = dir.path();
+    seed_store(root);
 
     let (_out, err, ok) = run_rigger(
         root,
@@ -163,6 +236,322 @@ fn emit_review_finding_shows_in_peers() {
             && out.contains("by tech-lens")
             && out.contains("about: combat.rs"),
         "peers must render the finding's id/by/about; got: {out:?}"
+    );
+}
+
+/// `rigger emit` from a directory with NO existing `.rigger/events.db` (and no ancestor
+/// that has one) REFUSES rather than fabricating a fresh empty store there (spec 05). The
+/// payload is valid JSON, so this reaches the store-open seam rather than failing at parse.
+#[test]
+fn emit_refuses_to_fabricate_a_store_when_none_exists() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(
+        root,
+        &[
+            "emit",
+            "DecisionMade",
+            r#"{"id":"d1","summary":"x","governs":["src/foo.rs"]}"#,
+        ],
+    );
+    assert!(
+        !ok,
+        "emit must refuse when there is no existing store; stderr: {err}"
+    );
+    assert!(
+        err.contains("no rigger store found") && err.contains("refusing to fabricate"),
+        "emit must explain the refusal; got: {err:?}"
+    );
+    assert!(
+        !root.join(".rigger").join("events.db").exists(),
+        "emit must NOT fabricate a store when it refuses"
+    );
+}
+
+/// `rigger prompt` is a WORKER-INVOKED store-opening courier (a unit fetches its own slim
+/// spawn manifest from the log), so run from a storeless cwd it must REFUSE like `emit`/
+/// `result`/`reported`, never fabricate a fresh empty `.rigger/events.db` and then report
+/// "no spawn request recorded" for every id, stranding the worker. Guards the routing of
+/// `cmd_prompt` through [`require_store_dir`] against regressing to a cwd-relative
+/// `Store::open`.
+#[test]
+fn prompt_refuses_to_fabricate_a_store_when_none_exists() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["prompt", "u/implementer#0"]);
+    assert!(
+        !ok,
+        "prompt must refuse when there is no existing store; stderr: {err}"
+    );
+    assert!(
+        err.contains("no rigger store found") && err.contains("refusing to fabricate"),
+        "prompt must explain the refusal; got: {err:?}"
+    );
+    assert!(
+        !root.join(".rigger").join("events.db").exists(),
+        "prompt must NOT fabricate a store when it refuses"
+    );
+}
+
+/// The paradigm defect (adv-result-wrong-cwd-fabricates-store): `rigger result` run from
+/// a unit-worktree-shaped cwd - a tracked `.rigger/workflow.yml` but NO machine-local
+/// `.rigger/events.db` - must REFUSE instead of fabricating a fresh dead store and printing
+/// success while the real spawn stays parked. Without the guard, result would create
+/// `.rigger/events.db` here and exit 0.
+#[test]
+fn result_refuses_to_fabricate_a_store_from_a_worktree_shaped_cwd() {
+    let dir = temp_project();
+    let root = dir.path();
+    // The tracked half of a checkout: `.rigger/` with workflow.yml, but no events.db.
+    std::fs::create_dir_all(root.join(".rigger")).unwrap();
+    std::fs::write(root.join(".rigger").join("workflow.yml"), "stages: []\n").unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["result", "u/implementer#0", "did the work"]);
+    assert!(
+        !ok,
+        "result must refuse from a storeless worktree; stdout: {out:?} stderr: {err}"
+    );
+    assert!(
+        err.contains("no rigger store found"),
+        "result must explain the refusal; got: {err:?}"
+    );
+    assert!(
+        !root.join(".rigger").join("events.db").exists(),
+        "result must NOT fabricate a store when it refuses"
+    );
+}
+
+/// A courier run from a SUBDIRECTORY of the project root walks up to the root's existing
+/// store and records THERE - it does not create a second store in the subdir. Proven by
+/// `rigger reported` from the root finding the result the subdir invocation wrote.
+#[test]
+fn result_walks_up_to_a_parent_store_from_a_subdirectory() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+    let sub = root.join("crate").join("src");
+    std::fs::create_dir_all(&sub).unwrap();
+
+    let (_out, err, ok) = run_rigger(&sub, &["result", "u/implementer#0", "did the work"]);
+    assert!(
+        ok,
+        "result from a subdir must record into the parent store; stderr: {err}"
+    );
+    assert!(
+        !sub.join(".rigger").exists(),
+        "result must not fabricate a store in the subdir; it walks up"
+    );
+
+    // The result landed in the ROOT store (not a fabricated subdir one): `reported`,
+    // which resolves the store the same walk-up way, finds it from the root.
+    let (out, err, ok) = run_rigger(root, &["reported", "u/implementer#0"]);
+    assert!(
+        ok,
+        "the walked-up result must be readable from the root store; stderr: {err}"
+    );
+    assert!(
+        out.contains("u/implementer#0") && out.contains("ok"),
+        "reported must confirm the recorded result; got: {out:?}"
+    );
+}
+
+/// The PRIMARY named threat (adv-u9-walkup-namespace-misfile-default-layout): a courier run
+/// from a REAL git-linked worktree nested INSIDE the repo - the Gap-14 default scratch root
+/// `<repo>/.rigger/tmp/...`, where the conductor actually spawns units - must record into the
+/// SAME namespaced stream the conductor reads, not misfile it under `proj-<worktree>-run`
+/// while the spawn stays parked. Walking up alone is not enough: the walked-up write lands in
+/// the real store FILE, but the stream is chosen by the identity, and `git rev-parse
+/// --show-toplevel` from inside a linked worktree returns the WORKTREE path (basename
+/// `rigger-wt-x`), so a cwd-anchored identity misfiles the append. A plain subdir shares the
+/// git top-level and hides this; only a real linked worktree exposes the divergence. Proven
+/// end-to-end: `rigger result` from inside the worktree, then `rigger reported` FROM THE REPO
+/// ROOT must see the recorded result (it reads `proj-<repo>-run`, the conductor's stream).
+#[test]
+fn result_from_a_nested_git_worktree_records_into_the_repo_stream() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    // A prior run created the store the conductor reads (identity = the repo basename).
+    seed_store(root);
+
+    // A REAL git-linked worktree nested under the repo, exactly like the conductor's
+    // Gap-14 scratch root. `git worktree add` needs a committed HEAD, which
+    // `temp_git_project_with_commit` provides.
+    let wt = root.join(".rigger").join("tmp").join("rigger-wt-x");
+    std::fs::create_dir_all(wt.parent().unwrap()).unwrap();
+    let ok = Command::new("git")
+        .args(["worktree", "add", "-q"])
+        .arg(&wt)
+        .current_dir(root)
+        .status()
+        .expect("git must be runnable")
+        .success();
+    assert!(
+        ok,
+        "git worktree add must succeed for the nested-worktree test"
+    );
+
+    // Record a result from INSIDE the nested worktree.
+    let (_out, err, ok) = run_rigger(&wt, &["result", "u/implementer#0", "did the work"]);
+    assert!(
+        ok,
+        "result from inside a nested git worktree must succeed; stderr: {err}"
+    );
+    // It walked up to the repo store - it did NOT fabricate a store inside the worktree.
+    assert!(
+        !wt.join(".rigger").join("events.db").exists(),
+        "result must NOT fabricate a store inside the worktree; it walks up to the repo"
+    );
+
+    // The write landed in the stream the CONDUCTOR reads (identity = repo root, not the
+    // worktree), so `reported` FROM THE REPO ROOT sees it. Before the identity fix, the
+    // append misfiled under `proj-rigger-wt-x-run` and this read returned exit-non-zero
+    // "no recorded result yet" while the spawn stayed parked - the exact charter defect.
+    let (out, err, ok) = run_rigger(root, &["reported", "u/implementer#0"]);
+    assert!(
+        ok,
+        "the worktree's result must be readable from the repo root (the conductor's \
+         stream); stderr: {err}, stdout: {out}"
+    );
+    assert!(
+        out.contains("u/implementer#0") && out.contains("ok"),
+        "reported from the repo root must confirm the worktree's recorded result; got: {out:?}"
+    );
+}
+
+/// Spec 08 item 6: within the bounded walk scope the OUTERMOST store wins. A courier run
+/// from a subdir that carries its OWN shadow `.rigger/events.db` must record into the repo
+/// ROOT's store (the real run stream), never the nearer shadow - and it WARNS on stderr,
+/// naming BOTH paths, so a shadow can never silently eclipse the run. Proven end-to-end:
+/// `rigger result` from the shadowed subdir, `rigger reported` FROM THE ROOT sees it, and
+/// the bypassed shadow `events.db` stays a byte-empty file (nothing was ever written into it).
+#[test]
+fn result_binds_the_outermost_store_and_warns_about_a_bypassed_shadow() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root); // the repo root's real store (the outermost in scope)
+
+    // A nested subdir of the SAME repo carrying its own shadow store.
+    let shadowed = root.join("crate").join("nested");
+    std::fs::create_dir_all(&shadowed).unwrap();
+    seed_store(&shadowed);
+    let shadow_db = shadowed.join(".rigger").join("events.db");
+
+    let (out, err, ok) = run_rigger(&shadowed, &["result", "u/implementer#0", "did the work"]);
+    assert!(
+        ok,
+        "result from a shadowed subdir must record into the outermost store; stderr: {err}"
+    );
+    assert!(
+        out.contains("recorded result for u/implementer#0"),
+        "the result must still be recorded; got: {out:?}"
+    );
+    // The warning names BOTH the bypassed nearer shadow and the chosen outermost store.
+    assert!(
+        err.contains("shadow store")
+            && err.contains(&shadow_db.parent().unwrap().display().to_string())
+            && err.contains(&root.join(".rigger").display().to_string()),
+        "result must warn, naming both the bypassed shadow and the outermost store; got: {err:?}"
+    );
+    // The bypassed shadow store was NEVER opened: its seeded events.db stays byte-empty
+    // (a real write would have Store::open-initialized the schema, growing it past 0 bytes).
+    assert_eq!(
+        std::fs::metadata(&shadow_db).unwrap().len(),
+        0,
+        "the bypassed shadow store must stay untouched (byte-empty)"
+    );
+
+    // The write landed in the OUTERMOST (repo root) store: `reported` from the root - which
+    // resolves that same store - confirms the spawn is answered.
+    let (rout, rerr, ok) = run_rigger(root, &["reported", "u/implementer#0"]);
+    assert!(
+        ok,
+        "the result must be readable from the outermost store; stderr: {rerr}"
+    );
+    assert!(
+        rout.contains("u/implementer#0") && rout.contains("ok"),
+        "reported from the root must confirm the outermost-store record; got: {rout:?}"
+    );
+}
+
+/// Spec 08 item 5: under `--if-absent` the orphan advisory states the CONDITIONAL - it must
+/// never claim it is "recording an orphan result", because the CAS records only if the spawn
+/// is still unanswered (an already-answered spawn is left untouched). The plain path keeps
+/// its "recording an orphan result" wording (pinned by
+/// `result_prints_an_orphan_advisory_for_an_unrecorded_id`).
+#[test]
+fn result_if_absent_orphan_advisory_states_the_conditional_not_a_recording() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+
+    let (_out, err, ok) = run_rigger(
+        root,
+        &["result", "ghost/implementer#0", "--if-absent", "output"],
+    );
+    assert!(
+        ok,
+        "an --if-absent orphan record must still succeed; stderr: {err}"
+    );
+    assert!(
+        err.contains("no spawn request is recorded")
+            && err.contains("ghost/implementer#0")
+            && err.contains("--if-absent records only if the spawn is unanswered"),
+        "the --if-absent orphan advisory must state the conditional; got: {err:?}"
+    );
+    assert!(
+        !err.contains("recording an orphan result"),
+        "the --if-absent advisory must NOT claim a recording it may not make; got: {err:?}"
+    );
+}
+
+/// `rigger result` for an id with no recorded spawn request prints an ORPHAN advisory to
+/// stderr - and still records (advisory only; pre-recording is legitimate).
+#[test]
+fn result_prints_an_orphan_advisory_for_an_unrecorded_id() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+
+    let (out, err, ok) = run_rigger(root, &["result", "ghost/implementer#0", "output"]);
+    assert!(
+        ok,
+        "an orphan result still records (advisory only); stderr: {err}"
+    );
+    assert!(
+        err.contains("no spawn request is recorded") && err.contains("ghost/implementer#0"),
+        "result must advise about the orphan id on stderr; got: {err:?}"
+    );
+    assert!(
+        out.contains("recorded result for ghost/implementer#0"),
+        "the orphan result must still be recorded; got: {out:?}"
+    );
+}
+
+/// Re-recording a result for the same id prints a SUPERSEDE advisory (naming the prior
+/// result's log position) - the record still lands (results are last-write-wins).
+#[test]
+fn result_prints_a_supersede_advisory_when_a_result_already_exists() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+
+    let (_out, _err, ok) = run_rigger(root, &["result", "u/implementer#0", "first"]);
+    assert!(ok, "the first record must succeed");
+
+    let (out, err, ok) = run_rigger(root, &["result", "u/implementer#0", "second"]);
+    assert!(
+        ok,
+        "the superseding record must succeed (advisory only); stderr: {err}"
+    );
+    assert!(
+        err.contains("already has a recorded result at position") && err.contains("supersedes"),
+        "result must advise that it supersedes the prior result; got: {err:?}"
+    );
+    assert!(
+        out.contains("recorded result for u/implementer#0"),
+        "the superseding result must still be recorded; got: {out:?}"
     );
 }
 
@@ -634,5 +1023,1237 @@ fn main_exit_path_is_honestly_documented() {
     assert!(
         block.contains("ort_teardown"),
         "the exit-path comment must reference `ort_teardown` for the full rationale / invariants"
+    );
+}
+
+/// Scaffold a project whose workflow has TWO independent stages (neither `needs` the
+/// other, so both are ready in the first wave) that do no grounder work (`nop`) and
+/// never merge (`on_pass: none`). This is the minimal shape that drives `rigger step`
+/// into parking a disjoint two-unit wave, offline and deterministic (no model, no git
+/// worktrees - the worker's `isolation: none`).
+fn write_two_stage_workflow(root: &Path) {
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nDo the unit.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        r#"name: steptest
+defaults:
+  grounder: nop
+  budget: 60
+stages:
+  a:
+    agent: worker
+    on_pass: none
+  b:
+    agent: worker
+    on_pass: none
+"#,
+    )
+    .unwrap();
+}
+
+/// Like [`write_two_stage_workflow`] but with a spawn budget of ONE: two independent units
+/// are ready in the first wave, so exactly one implementer spawn is admitted and parked and
+/// the other is refused - tripping the breaker so `rigger step` reports a halt (Gap 13).
+fn write_budget_one_two_stage_workflow(root: &Path) {
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nDo the unit.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        r#"name: steptest
+defaults:
+  grounder: nop
+  budget: 1
+stages:
+  a:
+    agent: worker
+    on_pass: none
+  b:
+    agent: worker
+    on_pass: none
+"#,
+    )
+    .unwrap();
+}
+
+/// `rigger step` advances the run one frontier and prints the newly parked spawn WAVE
+/// plus a `done` flag as JSON. Two ready units with disjoint blast radii park their
+/// spawns in the SAME wave (so fan-out falls out of the run structure); once a courier
+/// records each spawn's result, the next step replays past them and reports `done`.
+#[test]
+fn step_prints_a_disjoint_two_spawn_wave_then_reports_done() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+
+    // Step 1: both independent units are ready in one wave, so both park their
+    // implementer spawns together - a two-spawn wave, and the run is not done.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "step must succeed; stderr: {err}");
+    let line = out.trim();
+    assert!(
+        line.contains(r#""id":"a/implementer#0""#) && line.contains(r#""id":"b/implementer#0""#),
+        "the wave must carry BOTH disjoint units' implementer spawns; got: {line:?}"
+    );
+    assert_eq!(
+        line.matches(r#""id":"#).count(),
+        2,
+        "exactly the two disjoint units park in one wave; got: {line:?}"
+    );
+    assert!(
+        line.contains(r#""done":false"#),
+        "with spawns still awaiting results the run is not done; got: {line:?}"
+    );
+
+    // A courier records each spawn's outcome - the `rigger result` channel, simulated
+    // here by emitting the SpawnResult event `rigger result` would write to the run
+    // stream (that command is a sibling unit).
+    for id in ["a/implementer#0", "b/implementer#0"] {
+        let (_o, err, ok) = run_rigger(
+            root,
+            &[
+                "emit",
+                "SpawnResult",
+                &format!(r#"{{"id":"{id}","output":"did {id}"}}"#),
+            ],
+        );
+        assert!(ok, "recording {id}'s result must succeed; stderr: {err}");
+    }
+
+    // Step 2: the recorded results replay, the conductor parks nothing new, and the
+    // run has reached a fixpoint - an empty wave and done:true.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the second step must succeed; stderr: {err}");
+    let line = out.trim();
+    assert!(
+        line.contains(r#""wave":[]"#),
+        "a step that parks nothing new prints an empty wave; got: {line:?}"
+    );
+    assert!(
+        line.contains(r#""done":true"#),
+        "every spawn now has a result, so the run is done; got: {line:?}"
+    );
+    // A converged run (budget not tripped) carries NO halt reason: the historical
+    // `{"wave":[],"done":true}` wire shape is unchanged, so the driver reads a clean
+    // completion, not a loud stop (Gap 13).
+    assert!(
+        !line.contains("halted"),
+        "a converged step must omit the halted field; got: {line:?}"
+    );
+}
+
+/// Gap 13: a spawn-budget HALT must be LOUD, not indistinguishable from convergence.
+/// `rigger step` prints a `halted` reason (distinct from a clean `{"wave":[],"done":true}`)
+/// when the breaker trips, so the thin driver stops loudly on a starved run instead of
+/// reporting success. Budget 1 with two independent units: one implementer spawn is admitted
+/// and parked, the second is refused - the breaker trips and records the halt.
+#[test]
+fn step_prints_a_budget_halt_reason_when_the_breaker_trips() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_budget_one_two_stage_workflow(root);
+
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    // The step process itself SUCCEEDS - it prints its halt on stdout (a halt is a run
+    // outcome carried in the JSON, not a process error): the driver reads `halted` and
+    // stops loudly, rather than `rigger step` exiting non-zero with no JSON.
+    assert!(
+        ok,
+        "a budget-halted step still prints its result and exits 0; stderr: {err}"
+    );
+    let line = out.trim();
+    assert!(
+        line.contains(r#""halted":"budget exhausted: 1/1 spawns""#),
+        "a tripped budget must print a halt reason distinct from convergence; got: {line:?}"
+    );
+}
+
+/// Run scoping end-to-end (spec 06, unit 1 - Gap 11): a `rigger step` over a store that
+/// still holds an UNANSWERED spawn from an OLDER run must never re-print that stale spawn
+/// in this run's wave. The prior run's residue sits before this run's `RunStarted`
+/// boundary, so scoping the wave to the current run's slice excludes it - the exact
+/// zombie-resurrection this unit closes (a prior stepwise run re-parked implementers for
+/// aborted runs' units).
+#[test]
+fn step_scopes_the_wave_to_the_current_run_and_ignores_prior_run_residue() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+    seed_store(root);
+
+    // A prior campaign (DIFFERENT criteria) left an aborted, still-unanswered spawn in the
+    // store: its `RunStarted` and a parked implementer with no result.
+    let (_o, err, ok) = run_rigger(
+        root,
+        &[
+            "emit",
+            "RunStarted",
+            r#"{"run":"r0","criteria":["an older spec"]}"#,
+        ],
+    );
+    assert!(
+        ok,
+        "seeding the prior run's RunStarted must succeed; stderr: {err}"
+    );
+    let (_o, err, ok) = run_rigger(
+        root,
+        &[
+            "emit",
+            "SpawnRequested",
+            r#"{"id":"zombie/implementer#0","unit":"zombie","stage":"zombie","prompt":"stale"}"#,
+        ],
+    );
+    assert!(ok, "seeding the stale spawn must succeed; stderr: {err}");
+
+    // This run has no spec criteria, so it is a NEW campaign vs the prior one: the step
+    // begins a fresh run and its wave is only THIS run's units.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "step must succeed; stderr: {err}");
+    let line = out.trim();
+    assert!(
+        line.contains(r#""id":"a/implementer#0""#) && line.contains(r#""id":"b/implementer#0""#),
+        "the wave carries this run's two units; got: {line:?}"
+    );
+    assert!(
+        !line.contains("zombie/implementer#0"),
+        "the prior run's stale unanswered spawn must NOT reappear in this run's wave; got: {line:?}"
+    );
+    assert_eq!(
+        line.matches(r#""id":"#).count(),
+        2,
+        "exactly this run's two spawns, never the zombie; got: {line:?}"
+    );
+}
+
+/// `rigger stats` reports the LATEST run by default and `rigger stats --all` reports the
+/// historical aggregate over every run (spec 06, unit 1). Two runs are seeded through the
+/// real `rigger emit` courier: run 1 lands one clean unit, run 2 escalates one unit. The
+/// default view sees only run 2 (1 of 1 escalated); `--all` sees both (1 of 2).
+#[test]
+fn stats_reports_the_latest_run_by_default_and_all_for_the_aggregate() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+
+    // Run 1: one clean unit (started + integrated, never failed).
+    for (ty, body) in [
+        ("RunStarted", r#"{"run":"r1","criteria":["spec one"]}"#),
+        ("UnitStarted", r#"{"id":"u1","agent":"worker"}"#),
+        ("UnitIntegrated", r#"{"id":"u1","commit":"aaa"}"#),
+        // Run 2: one unit that escalates to a human.
+        ("RunStarted", r#"{"run":"r2","criteria":["spec two"]}"#),
+        ("UnitStarted", r#"{"id":"u2","agent":"worker"}"#),
+        ("UnitEscalated", r#"{"id":"u2"}"#),
+    ] {
+        let (_o, err, ok) = run_rigger(root, &["emit", ty, body]);
+        assert!(ok, "seeding {ty} must succeed; stderr: {err}");
+    }
+
+    // Default: only the latest run (run 2) - its single unit escalated.
+    let (out, err, ok) = run_rigger(root, &["stats"]);
+    assert!(ok, "stats must succeed; stderr: {err}");
+    assert!(
+        out.contains("(1/1 units escalated"),
+        "the default view reports ONLY the latest run (1 of 1 escalated); got:\n{out}"
+    );
+
+    // --all: the historical aggregate across both runs - one of two units escalated.
+    let (out_all, err, ok) = run_rigger(root, &["stats", "--all"]);
+    assert!(ok, "stats --all must succeed; stderr: {err}");
+    assert!(
+        out_all.contains("(1/2 units escalated"),
+        "the --all view aggregates every run (1 of 2 escalated); got:\n{out_all}"
+    );
+
+    // A stray argument is still rejected.
+    let (_o, _e, ok) = run_rigger(root, &["stats", "--bogus"]);
+    assert!(!ok, "an unknown stats argument must be rejected");
+}
+
+/// Every event the conductor emits carries the current run id in its metadata, and the
+/// run opens with a `RunStarted` carrying a fresh run id (spec 06, unit 1). Drives a real
+/// `rigger step`, then reads the store back and asserts the RunStarted, the parked spawn
+/// requests, and the unit events all share one run id.
+#[test]
+fn a_step_stamps_the_run_id_on_the_run_started_and_every_event_it_emits() {
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Direction, EventStore, Filter};
+
+    let dir = temp_project();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+
+    let (_out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the step must succeed; stderr: {err}");
+
+    let db_path = root.join(".rigger").join("events.db");
+    let backend = Store::open(db_path.to_str().unwrap()).unwrap();
+    let events = backend
+        .read_all(0, Direction::Forward, &Filter::default())
+        .unwrap();
+
+    // Exactly one RunStarted, carrying a fresh run id in both its payload and its metadata.
+    let starts: Vec<_> = events
+        .iter()
+        .filter(|e| e.type_ == rigger::run::TYPE_RUN_STARTED)
+        .collect();
+    assert_eq!(
+        starts.len(),
+        1,
+        "the run begins with exactly one RunStarted"
+    );
+    let run_id = starts[0]
+        .meta
+        .get(rigger::run::META_RUN_ID)
+        .expect("the RunStarted carries a run id in metadata")
+        .clone();
+    assert!(!run_id.is_empty(), "the run id is a fresh, non-empty id");
+
+    // Every conductor-emitted unit event and every parked spawn request carries THAT run id.
+    let scoped = ["UnitStarted", "SpawnRequested"];
+    let mut checked = 0;
+    for e in &events {
+        if scoped.contains(&e.type_.as_str()) {
+            assert_eq!(
+                e.meta.get(rigger::run::META_RUN_ID).map(String::as_str),
+                Some(run_id.as_str()),
+                "the {} event must carry the current run id",
+                e.type_
+            );
+            checked += 1;
+        }
+    }
+    assert!(
+        checked >= 3,
+        "the step parked two spawns and started two units, all run-stamped; checked {checked}"
+    );
+}
+
+/// End-to-end through the CLI seam (spec 05 line 52): a worker records its parked
+/// implementer's result with `rigger result <id> --meta '{"resolved_model": ..}'`, and
+/// the next `rigger step` replays that spawn and STAMPS the requested model alias plus the
+/// worker-reported resolved id onto the unit events the conductor emits for that spawn.
+/// Reads the run's `events.db` back through the library to confirm the metadata landed on
+/// a real `green` UnitStatus event - not just that the `--meta` was parsed.
+#[test]
+fn step_result_meta_stamps_the_resolved_model_on_the_replayed_units_events() {
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Direction, EventStore, Filter};
+
+    let dir = temp_project();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+
+    // Step 1: both units park their implementer spawns.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the first step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""done":false"#),
+        "spawns still pending; got: {out:?}"
+    );
+
+    // Each worker self-reports via the REAL `rigger result` command, carrying the concrete
+    // model it ran as through `--meta` (the mechanism the criterion names).
+    let resolved = [
+        ("a/implementer#0", "claude-sonnet-4-5-20250101"),
+        ("b/implementer#0", "claude-sonnet-4-5-20250929"),
+    ];
+    for (id, model) in resolved {
+        let (_o, err, ok) = run_rigger(
+            root,
+            &[
+                "result",
+                id,
+                &format!("did {id}"),
+                "--meta",
+                &format!(r#"{{"resolved_model":"{model}"}}"#),
+            ],
+        );
+        assert!(
+            ok,
+            "`rigger result {id} --meta` must succeed; stderr: {err}"
+        );
+    }
+
+    // Step 2: the recorded results replay to a fixpoint.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the second step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""done":true"#),
+        "every spawn answered; got: {out:?}"
+    );
+
+    // Read the run stream back and confirm each unit's `green` event carries the requested
+    // alias ("sonnet", from the worker agent) AND the resolved id the worker reported.
+    let db_path = root.join(".rigger").join("events.db");
+    let backend = Store::open(db_path.to_str().unwrap()).unwrap();
+    let events = backend
+        .read_all(0, Direction::Forward, &Filter::default())
+        .unwrap();
+    for (id, model) in resolved {
+        let unit = id.split('/').next().unwrap();
+        let green = events
+            .iter()
+            .find(|e| {
+                e.type_ == rigger::ledger::TYPE_UNIT_STATUS && {
+                    let body = String::from_utf8_lossy(&e.data);
+                    body.contains(r#""status":"green""#)
+                        && body.contains(&format!(r#""id":"{unit}""#))
+                }
+            })
+            .unwrap_or_else(|| panic!("unit {unit} must have a green status event"));
+        assert_eq!(
+            green
+                .meta
+                .get(rigger::conductor::META_MODEL_ALIAS)
+                .map(String::as_str),
+            Some("sonnet"),
+            "unit {unit}'s green event carries the requested alias"
+        );
+        assert_eq!(
+            green
+                .meta
+                .get(rigger::conductor::META_MODEL_RESOLVED)
+                .map(String::as_str),
+            Some(model),
+            "unit {unit}'s green event carries the worker-reported resolved model"
+        );
+    }
+}
+
+/// `rigger step` rejects an unknown flag with a clear, non-zero error rather than
+/// silently running an unconstrained step.
+#[test]
+fn step_rejects_an_unknown_flag() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+
+    let (_out, err, ok) = run_rigger(root, &["step", "--nope"]);
+    assert!(!ok, "an unknown flag must be a non-zero exit");
+    assert!(
+        err.contains("unknown flag"),
+        "the error must name the unknown flag; got: {err:?}"
+    );
+}
+
+/// `rigger step --base <ref>` anchors a NEW run branch: it creates the `rigger-run`
+/// branch off the base ref and checks it out (so the conductor branches every unit
+/// worktree off it), without disturbing the step's `{wave,done}` JSON on stdout.
+#[test]
+fn step_accepts_base_and_anchors_the_run_branch() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+    let base_sha =
+        git_out(root, &["rev-parse", "HEAD"]).expect("the seeded repo has a HEAD commit");
+
+    let (out, err, ok) = run_rigger(root, &["step", "--base", "HEAD"]);
+    assert!(ok, "step --base must succeed; stderr: {err}");
+
+    // --base does not disturb the wave: both disjoint units still park, run not done.
+    let line = out.trim();
+    assert!(
+        line.matches(r#""id":"#).count() == 2 && line.contains(r#""done":false"#),
+        "the two-unit wave still parks with --base; got: {line:?}"
+    );
+
+    // The run branch was created off the base and checked out.
+    assert_eq!(
+        git_out(root, &["symbolic-ref", "--short", "-q", "HEAD"]).as_deref(),
+        Some("rigger-run"),
+        "rigger step --base must create and check out the run branch"
+    );
+    assert_eq!(
+        git_out(root, &["rev-parse", "rigger-run"]).as_deref(),
+        Some(base_sha.as_str()),
+        "the run branch must be anchored on the --base commit"
+    );
+}
+
+/// `rigger step --base` with no following ref is a clear, non-zero error, never a
+/// silent unconstrained step - matching the `--spec` contract.
+#[test]
+fn step_rejects_base_without_a_value() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+
+    let (_out, err, ok) = run_rigger(root, &["step", "--base"]);
+    assert!(!ok, "--base without a value must be a non-zero exit");
+    assert!(
+        err.contains("--base expects a ref"),
+        "the error must explain --base needs a ref; got: {err:?}"
+    );
+}
+
+/// BLOCKER regression: when the base ref does NOT resolve (a repo with no remote, a
+/// `master`-default repo, or a pre-fetch clone - the common default `origin/main` case),
+/// `rigger step` must still establish the run branch by creating it off HEAD and checking
+/// it out, never silently proceed on the operator's own branch (which would let the
+/// conductor branch and merge machine-generated units directly onto it). The step still
+/// prints its `{wave,done}` JSON on stdout, and warns on stderr that it fell back to HEAD.
+#[test]
+fn step_creates_run_branch_off_head_when_base_unresolvable() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+    let head_sha =
+        git_out(root, &["rev-parse", "HEAD"]).expect("the seeded repo has a HEAD commit");
+    let operator_branch = git_out(root, &["symbolic-ref", "--short", "-q", "HEAD"])
+        .expect("the seeded repo is on a named branch");
+
+    // The default-style base that does not exist here.
+    let (out, err, ok) = run_rigger(root, &["step", "--base", "origin/does-not-exist"]);
+    assert!(
+        ok,
+        "step must still succeed on an unresolvable base; stderr: {err}"
+    );
+
+    // The {wave,done} JSON is undisturbed on stdout.
+    let line = out.trim();
+    assert!(
+        line.matches(r#""id":"#).count() == 2 && line.contains(r#""done":false"#),
+        "the two-unit wave still parks despite the base fallback; got: {line:?}"
+    );
+
+    // The run branch was created off HEAD (not the operator's branch) and checked out.
+    assert_ne!(
+        operator_branch, "rigger-run",
+        "guard: seed is not already on the run branch"
+    );
+    assert_eq!(
+        git_out(root, &["symbolic-ref", "--short", "-q", "HEAD"]).as_deref(),
+        Some("rigger-run"),
+        "an unresolvable base must still create and check out the run branch, off HEAD"
+    );
+    assert_eq!(
+        git_out(root, &["rev-parse", "rigger-run"]).as_deref(),
+        Some(head_sha.as_str()),
+        "the fallback run branch is anchored on the HEAD it was created from"
+    );
+
+    // The fallback is announced, not silent.
+    assert!(
+        err.contains("did not resolve") && err.contains("HEAD"),
+        "stderr must announce the HEAD fallback; got: {err:?}"
+    );
+}
+
+/// An existing run branch is the run's durable anchor: a second `rigger step` REUSES it
+/// (never resets it), so an already-integrated commit on `rigger-run` survives, and an
+/// EXPLICIT `--base` that would re-anchor it is ignored - with a stderr advisory, never
+/// silently - because re-anchoring would orphan the integrated units.
+#[test]
+fn step_reuses_the_run_branch_and_warns_when_explicit_base_is_ignored() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+
+    // First step creates + checks out rigger-run.
+    let (_out, err, ok) = run_rigger(root, &["step", "--base", "HEAD"]);
+    assert!(ok, "the first step must succeed; stderr: {err}");
+    assert_eq!(
+        git_out(root, &["symbolic-ref", "--short", "-q", "HEAD"]).as_deref(),
+        Some("rigger-run"),
+    );
+
+    // Simulate a prior step integrating a unit onto the run branch.
+    assert!(
+        Command::new("git")
+            .args(["commit", "--allow-empty", "-q", "-m", "integrated unit"])
+            .current_dir(root)
+            .status()
+            .expect("git must run")
+            .success(),
+        "seeding an integrated commit must succeed"
+    );
+    let integrated_tip =
+        git_out(root, &["rev-parse", "rigger-run"]).expect("the run branch has a tip");
+
+    // A second step with an EXPLICIT base pointing elsewhere must reuse rigger-run,
+    // preserve the integrated tip, and warn that --base was not applied.
+    let (out, err, ok) = run_rigger(root, &["step", "--base", "origin/main"]);
+    assert!(ok, "the second step must succeed; stderr: {err}");
+    assert!(
+        out.trim().contains(r#""wave""#),
+        "the second step still prints its {{wave,done}} JSON; got: {out:?}"
+    );
+    assert_eq!(
+        git_out(root, &["rev-parse", "rigger-run"]).as_deref(),
+        Some(integrated_tip.as_str()),
+        "reuse must NOT reset the run branch - the integrated commit is preserved"
+    );
+    assert!(
+        err.contains("already exists and was reused") && err.contains("NOT applied"),
+        "an ignored explicit --base must be announced on stderr; got: {err:?}"
+    );
+}
+
+/// A throwaway project dir that is deliberately NOT a git repo (no `git init`), so
+/// `git_repo()` resolves to empty and the conductor drives a REPO-LESS run. That is the
+/// offline shape the stepwise driver's own unit tests use (`repo: String::new()`): with
+/// no repo configured, `assert_isolated_cwd` is a no-op, so a reviewer spawn (the
+/// adjudicator) parks with an empty working dir instead of being refused for "would run
+/// in the main repo checkout". A repo-ful run would instead need real worktrees, and a
+/// fabricated `SpawnResult` (no actual diff) would then fail the pre-gate commit with
+/// "nothing to commit" - so repo-less is the faithful offline driver for this test.
+/// `project_identity()` falls back to the dir basename, which is stable across the
+/// step / emit / stats calls this test makes in the same dir.
+fn temp_repoless_project() -> tempfile::TempDir {
+    tempfile::tempdir().unwrap()
+}
+
+/// Scaffold a single-unit workflow whose unit runs a REAL inline gate and reviews itself
+/// through an adjudicator - the two event kinds `rigger stats` reports as its gate and
+/// review-verdict sections. It is offline and deterministic: the `nop` grounder does no
+/// model work, the `check` gate is a trivial `true` shell command the [`ExecRunner`]
+/// runs inline (recording a `GateVerdict`), the adjudicator's verdict is supplied via a
+/// recorded `SpawnResult`, and `on_pass: none` means the verified+reviewed unit never
+/// tries to merge (no git). The implementer and adjudicator spawns are parked by the
+/// replay driver and drained by recorded results, exactly like `write_two_stage_workflow`.
+fn write_gated_reviewed_workflow(root: &Path) {
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nImplement the unit.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("agents").join("judge.md"),
+        "---\nid: judge\nmodel: sonnet\ntools: [Read]\nisolation: none\n---\nAdjudicate the unit.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        r#"name: statstest
+defaults:
+  grounder: nop
+  budget: 60
+  review:
+    adjudicator: judge
+gates:
+  check: { run: "true", kind: core }
+stages:
+  solo:
+    agent: worker
+    gates: [check]
+    on_pass: none
+"#,
+    )
+    .unwrap();
+}
+
+/// spec 04, criterion 49: a step-driven run recorded in the event log yields NON-EMPTY
+/// gate and review-verdict sections in `rigger stats`. This is the capstone integration
+/// proof that closes Gap 3 (the old JS driver under-emitted the vocabulary, blinding
+/// `rigger stats`): driving the unit's whole lifecycle through the stepwise conductor -
+/// `rigger step` to advance the frontier, `rigger emit SpawnResult` to drain each parked
+/// spawn (the `rigger result` channel a courier uses), the inline gate running for real -
+/// records the exact `GateVerdict` and `UnitStatus` events the metrics projection folds,
+/// so the two sections that were empty under the thin driver are now populated.
+#[test]
+fn a_step_driven_run_yields_nonempty_gate_and_review_sections_in_stats() {
+    let dir = temp_repoless_project();
+    let root = dir.path();
+    write_gated_reviewed_workflow(root);
+
+    // Step 1: the unit is ready, so its implementer spawn parks at the frontier. The run
+    // is not done while a spawn awaits a courier's result.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the first step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"solo/implementer#0""#) && out.contains(r#""done":false"#),
+        "step 1 parks the implementer and is not done; got: {out:?}"
+    );
+
+    // Drain the implementer via a recorded SpawnResult (the `rigger result` channel,
+    // simulated here as its sibling command is not on this branch yet - the same
+    // substitution `step_prints_a_disjoint_two_spawn_wave_then_reports_done` makes).
+    let (_o, err, ok) = run_rigger(
+        root,
+        &[
+            "emit",
+            "SpawnResult",
+            r#"{"id":"solo/implementer#0","output":"implemented the unit"}"#,
+        ],
+    );
+    assert!(
+        ok,
+        "recording the implementer result must succeed; stderr: {err}"
+    );
+
+    // Step 2: the implementer REPLAYS from the log; the conductor commits (nothing, on the
+    // repo-less path), runs the `check` gate inline (recording a passing GateVerdict),
+    // emits `verified`, then the three-tier review parks the adjudicator spawn.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the second step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"solo/adjudicator#0""#) && out.contains(r#""done":false"#),
+        "step 2 replays the implementer, gates the unit, and parks the adjudicator; got: {out:?}"
+    );
+
+    // Drain the adjudicator with an APPROVE verdict (the last JSON line `verdict_approves`
+    // reads), so the review resolves to an approve and the unit records `reviewed`.
+    let (_o, err, ok) = run_rigger(
+        root,
+        &[
+            "emit",
+            "SpawnResult",
+            r#"{"id":"solo/adjudicator#0","output":"{\"verdict\":\"approve\"}"}"#,
+        ],
+    );
+    assert!(
+        ok,
+        "recording the adjudicator's approve must succeed; stderr: {err}"
+    );
+
+    // Step 3: everything replays - the implementer, the recorded gate verdict (never
+    // re-run), and the adjudicator's approve - so the unit reaches `reviewed`. `on_pass:
+    // none` means it does not merge, and no new spawn parks, so the run is done.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the third step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""wave":[]"#) && out.contains(r#""done":true"#),
+        "step 3 replays to a fixpoint: an empty wave and done; got: {out:?}"
+    );
+
+    // `rigger stats` folds that recorded run and prints BOTH sections populated.
+    let (stats, err, ok) = run_rigger(root, &["stats"]);
+    assert!(
+        ok,
+        "stats over the step-driven run must succeed; stderr: {err}"
+    );
+
+    // The GATE section is non-empty: the inline `check` gate ran once and passed, so the
+    // per-gate table appears (NOT the "no gate runs recorded" placeholder) and lists it.
+    assert!(
+        !stats.contains("no gate runs recorded"),
+        "a step-driven run recorded a real gate, so the gate section must not be the empty \
+         placeholder; got:\n{stats}"
+    );
+    assert!(
+        stats.contains("per-gate runs"),
+        "the gate section header must be present; got:\n{stats}"
+    );
+    let gate_line = stats
+        .lines()
+        .find(|l| l.contains("check"))
+        .unwrap_or_else(|| {
+            panic!("the `check` gate must appear in the gate section; got:\n{stats}")
+        });
+    assert!(
+        gate_line.contains("1 pass") && gate_line.contains("1 total"),
+        "the `check` gate must show its one passing inline run; got line: {gate_line:?}"
+    );
+
+    // The REVIEW-VERDICT section is non-empty: the adjudicator approved, so the review
+    // line reports one real verdict (a genuine approve, not the zeroed default).
+    let review_line = stats
+        .lines()
+        .find(|l| l.contains("review"))
+        .unwrap_or_else(|| panic!("the review section must appear; got:\n{stats}"));
+    assert!(
+        review_line.contains("1 approved"),
+        "the review-verdict section must record the adjudicator's approve; got line: {review_line:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// `rigger validate` install-drift + uncommitted-.rigger advisories (spec 05:55)
+// ---------------------------------------------------------------------------
+
+/// Clause (a) of spec 05:55: `rigger validate` WARNS (on stderr, without failing) when
+/// the installed `.claude/workflows/rigger.js` has drifted from the binary's embedded
+/// copy, and stays SILENT when the two are identical. A stale installed workflow (e.g.
+/// after a `rigger` upgrade with no re-`setup`) is surfaced, not discovered by accident.
+#[test]
+fn validate_warns_when_the_installed_workflow_drifts_from_the_embedded_copy() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    // `rigger setup` scaffolds a valid config AND installs the workflow byte-identical
+    // to the embedded copy. Stub npm so the shim's install is a no-op.
+    let (_out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok, "rigger setup must succeed; stderr:\n{err}");
+
+    // Identical installed vs embedded -> validate is drift-SILENT and succeeds.
+    let (out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(
+        ok,
+        "validate must succeed on a clean project; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("config valid"),
+        "validate must still print its config summary; stdout:\n{out}"
+    );
+    assert!(
+        !err.to_lowercase().contains("drift"),
+        "validate must NOT warn about drift when the installed workflow matches the \
+         embedded copy; stderr:\n{err}"
+    );
+
+    // Drift the installed workflow, then validate must WARN on stderr but still exit 0.
+    let installed = root.join(".claude").join("workflows").join("rigger.js");
+    std::fs::write(&installed, "// drifted from the embedded workflow\n").unwrap();
+    let (_out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(
+        ok,
+        "validate must still succeed (exit 0) when it only WARNS about drift; stderr:\n{err}"
+    );
+    assert!(
+        err.to_lowercase().contains("drift") && err.contains(".claude/workflows/rigger.js"),
+        "validate must warn on stderr that the installed workflow drifted from the \
+         embedded copy, naming the workflow file; stderr:\n{err}"
+    );
+}
+
+/// Clause (b) of spec 05:55: `rigger validate` FLAGS tracked `.rigger/` files that carry
+/// uncommitted modifications (a stderr advisory, exit 0), and stays SILENT when the
+/// tracked `.rigger/` state is clean.
+#[test]
+fn validate_flags_tracked_rigger_files_with_uncommitted_modifications() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+
+    // Scaffold a valid config (npm-free) and commit it so `.rigger/` is tracked+clean.
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    git_ok(root, &["add", "-A"]);
+    git_ok(root, &["commit", "-q", "-m", "scaffold"]);
+
+    // Clean tracked `.rigger/` -> validate is SILENT on the uncommitted advisory.
+    let (out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(ok, "validate must succeed; stderr:\n{err}");
+    assert!(
+        out.contains("config valid"),
+        "validate must print its config summary; stdout:\n{out}"
+    );
+    assert!(
+        !err.contains(".rigger/workflow.yml"),
+        "validate must NOT flag a clean tracked `.rigger/` tree; stderr:\n{err}"
+    );
+
+    // Modify a TRACKED `.rigger/` file (a YAML comment keeps the config valid), leaving
+    // it uncommitted -> validate must FLAG it on stderr but still exit 0.
+    {
+        use std::io::Write;
+        let mut wf = std::fs::OpenOptions::new()
+            .append(true)
+            .open(root.join(".rigger").join("workflow.yml"))
+            .unwrap();
+        writeln!(wf, "# locally edited, not committed").unwrap();
+    }
+    let (_out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(
+        ok,
+        "validate must still succeed (exit 0) when it only FLAGS uncommitted `.rigger/` \
+         changes; stderr:\n{err}"
+    );
+    assert!(
+        err.contains(".rigger/workflow.yml") && err.to_lowercase().contains("uncommitted"),
+        "validate must flag the tracked-but-modified `.rigger/workflow.yml` on stderr; \
+         stderr:\n{err}"
+    );
+}
+
+/// Spec 06 done-when line 60 (Gap 14d): `rigger validate` reports residue - scratch
+/// worktrees with no live unit, orphaned build caches, shadow stores, and `rigger/u/*`
+/// branches with no live unit - each with a size, as warnings that NEVER fail validation
+/// and NEVER delete anything. Driving the real binary is the only way to prove the store +
+/// git + filesystem read wiring; the pure scan is unit-tested in `src/main.rs`.
+#[test]
+fn validate_reports_scratch_residue_with_sizes_as_a_non_failing_warning() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+
+    // A valid, committed config so `.rigger/` is tracked+clean (no unrelated advisories),
+    // and a seeded store so `validate` has a run stream to read the LIVE unit set from.
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    git_ok(root, &["add", "-A"]);
+    git_ok(root, &["commit", "-q", "-m", "scaffold"]);
+    seed_store(root); // empty store -> zero live units -> leftovers read as residue
+
+    // Point the scratch root at a dir we control, so the scan is hermetic.
+    let scratch = root.join("scratchroot");
+    let tmp = scratch.to_str().unwrap();
+
+    // Clean scratch (no worktrees/caches/shadow stores) + no dead branches -> validate is
+    // residue-SILENT and still succeeds.
+    std::fs::create_dir_all(&scratch).unwrap();
+    let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("RIGGER_TMPDIR", tmp)]);
+    assert!(
+        ok,
+        "validate must succeed on a clean scratch root; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("config valid"),
+        "validate must still print its config summary; stdout:\n{out}"
+    );
+    assert!(
+        !err.to_lowercase().contains("residue"),
+        "validate must be residue-silent when the scratch root is clean; stderr:\n{err}"
+    );
+
+    // Now plant residue: a leftover unit worktree (with a shadow store inside it), an
+    // orphaned build cache, a standalone shadow store, and a dead `rigger/u/*` branch.
+    let ghost_wt = scratch.join("rigger-wt-unit-99-ghost-12345678");
+    std::fs::create_dir_all(ghost_wt.join(".rigger")).unwrap();
+    std::fs::write(ghost_wt.join("payload.bin"), [0u8; 4096]).unwrap();
+    std::fs::write(ghost_wt.join(".rigger").join("events.db"), b"shadow").unwrap();
+    std::fs::create_dir_all(scratch.join("cargo-target")).unwrap();
+    std::fs::write(scratch.join("cargo-target").join("x.rlib"), [0u8; 2048]).unwrap();
+    std::fs::create_dir_all(scratch.join("probe").join(".rigger")).unwrap();
+    std::fs::write(
+        scratch.join("probe").join(".rigger").join("events.db"),
+        b"s2",
+    )
+    .unwrap();
+    git_ok(root, &["branch", "rigger/u/unit-99-ghost"]);
+
+    let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("RIGGER_TMPDIR", tmp)]);
+    assert!(
+        ok,
+        "validate must still exit 0 when it only WARNS about residue; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("config valid"),
+        "validate must still print its config summary; stdout:\n{out}"
+    );
+    assert!(
+        err.to_lowercase().contains("residue"),
+        "validate must warn about residue on stderr; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("rigger-wt-unit-99-ghost-12345678"),
+        "the leftover worktree must be named; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("cargo-target"),
+        "the orphaned build cache must be named; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("probe/.rigger/events.db"),
+        "the standalone shadow store must be named; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("rigger/u/unit-99-ghost"),
+        "the dead `rigger/u/*` branch must be named; stderr:\n{err}"
+    );
+    // Sizes accompany the disk-bearing items (a parenthesized human size).
+    assert!(
+        err.contains("(4.0K)") || err.contains("(4.5K)"),
+        "the leftover worktree must carry a size; stderr:\n{err}"
+    );
+}
+
+/// Spec 06 done-when line 50 / unit desc line 30 (Gap 14d, CURRENT-run clause): residue is
+/// scoped to the CURRENT run. A PRIOR run's abandoned, still-non-terminal unit - which an
+/// UNSCOPED ledger fold reads as LIVE - must be surfaced as residue on BOTH sub-clauses (its
+/// `rigger-wt-*` worktree AND its `rigger/u/*` branch), while THIS run's in-flight unit is
+/// spared on both. This drives the real store + git + filesystem wiring end to end; reverting
+/// the `runscope::current_run` scoping (so the fold spans every run) reddens it, because the
+/// prior unit would then fold as live and its leftovers would be spared.
+#[test]
+fn validate_scopes_residue_to_the_current_run_flagging_a_prior_runs_abandoned_unit() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    git_ok(root, &["add", "-A"]);
+    git_ok(root, &["commit", "-q", "-m", "scaffold"]);
+    seed_store(root);
+
+    // Two runs recorded through the real courier: a PRIOR run whose `unit-old` never reached
+    // a terminal state (abandoned mid-flight), then the CURRENT run with an in-flight
+    // `unit-new`. `current_run` folds only the slice after the SECOND `RunStarted`, so
+    // `unit-old` is not live in this run.
+    for (ty, body) in [
+        ("RunStarted", r#"{"run":"r0","criteria":["prior spec"]}"#),
+        (
+            "UnitStarted",
+            r#"{"id":"unit-old","branch":"rigger/u/unit-old"}"#,
+        ),
+        ("RunStarted", r#"{"run":"r1","criteria":["current spec"]}"#),
+        (
+            "UnitStarted",
+            r#"{"id":"unit-new","branch":"rigger/u/unit-new"}"#,
+        ),
+    ] {
+        let (_o, e, ok) = run_rigger(root, &["emit", ty, body]);
+        assert!(ok, "seeding {ty} must succeed; stderr:\n{e}");
+    }
+
+    // Hermetic scratch root: a deterministic worktree for EACH unit, plus a local branch for
+    // each. Only the prior run's leftovers are residue.
+    let scratch = root.join("scratchroot");
+    let tmp = scratch.to_str().unwrap();
+    for wt in ["rigger-wt-unit-old", "rigger-wt-unit-new"] {
+        std::fs::create_dir_all(scratch.join(wt)).unwrap();
+        std::fs::write(scratch.join(wt).join("payload.bin"), [0u8; 4096]).unwrap();
+    }
+    git_ok(root, &["branch", "rigger/u/unit-old"]);
+    git_ok(root, &["branch", "rigger/u/unit-new"]);
+
+    let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("RIGGER_TMPDIR", tmp)]);
+    assert!(
+        ok,
+        "validate only WARNS about residue, still exits 0; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("config valid"),
+        "validate still prints its config summary; stdout:\n{out}"
+    );
+
+    // The PRIOR run's abandoned unit is residue on BOTH sub-clauses.
+    assert!(
+        err.contains("rigger-wt-unit-old"),
+        "a prior run's abandoned worktree must be flagged as residue; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("rigger/u/unit-old"),
+        "a prior run's abandoned branch must be flagged as residue; stderr:\n{err}"
+    );
+    // THIS run's in-flight unit is spared on BOTH sub-clauses (`rigger/u/unit-new` is not a
+    // substring of `rigger/u/unit-old`, so these assertions are independent).
+    assert!(
+        !err.contains("rigger-wt-unit-new"),
+        "the current run's live worktree must NOT be flagged; stderr:\n{err}"
+    );
+    assert!(
+        !err.contains("rigger/u/unit-new"),
+        "the current run's live branch must NOT be flagged; stderr:\n{err}"
+    );
+}
+
+/// Spec 05 done-when line 57, clause 2: the empty-repo scaffold path must print a
+/// pointer to the agency-agents collection AND the authoring-agents handbook chapter,
+/// and that pointer must appear ONLY when the default fleet is actually scaffolded -
+/// never on a re-run that keeps an existing fleet. Driving the real `rigger init`
+/// binary is the only way to observe the printed pointer; no cargo gate can see it,
+/// which is exactly why clause 2 was previously shipped unimplemented behind green
+/// gates.
+#[test]
+fn empty_repo_scaffold_path_prints_the_agent_collection_pointer() {
+    const COLLECTION_URL: &str = "github.com/msitarzewski/agency-agents";
+    const HANDBOOK: &str = "docs/handbook/authoring-agents.md";
+
+    let dir = temp_project();
+    let root = dir.path();
+
+    // First `init` on an empty repo actually scaffolds the default fleet, so the
+    // scaffold path must point the user at where to get a real fleet and how to
+    // author agents.
+    let (out, err, ok) = run_rigger(root, &["init"]);
+    assert!(
+        ok,
+        "rigger init must succeed on an empty repo; stderr:\n{err}"
+    );
+    assert!(
+        out.contains(COLLECTION_URL),
+        "the scaffold path must point at the agency-agents collection ({COLLECTION_URL}); got:\n{out}"
+    );
+    assert!(
+        out.contains(HANDBOOK),
+        "the scaffold path must point at the authoring-agents handbook chapter ({HANDBOOK}); got:\n{out}"
+    );
+
+    // A second `init` over the now-existing fleet keeps every agent file (scaffolds
+    // nothing new), so the pointer must be ABSENT - it belongs to the empty-repo path
+    // only. This is the discriminating half: a regression that always printed the
+    // pointer would pass the first assertion but fail here.
+    let (out2, err2, ok2) = run_rigger(root, &["init"]);
+    assert!(ok2, "a re-run of rigger init must succeed; stderr:\n{err2}");
+    assert!(
+        !out2.contains(COLLECTION_URL),
+        "the collection pointer must not print when scaffolding is skipped; got:\n{out2}"
+    );
+    assert!(
+        !out2.contains(HANDBOOK),
+        "the handbook pointer must not print when scaffolding is skipped; got:\n{out2}"
+    );
+}
+
+/// Spec 08 item 3: `rigger init` reports a POSITIVE per-artifact summary of what it
+/// scaffolded on the first run, then is a QUIET no-op on a rerun - it confirms the
+/// already-initialized state without re-narrating any scaffold action it did not perform.
+#[test]
+fn init_reports_the_positive_summary_then_is_a_quiet_noop() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    // First init on an empty repo scaffolds the fleet and NARRATES what it wrote.
+    let (out, err, ok) = run_rigger(root, &["init"]);
+    assert!(
+        ok,
+        "rigger init must succeed on an empty repo; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("scaffolded .rigger/workflow.yml"),
+        "the first init reports the workflow it scaffolded; got:\n{out}"
+    );
+    assert!(
+        out.contains("scaffolded .rigger/agents/"),
+        "the first init reports the agents it scaffolded; got:\n{out}"
+    );
+
+    // A rerun changes nothing: a quiet no-op that reports already-initialized and does
+    // NOT re-narrate any scaffold action.
+    let (out2, err2, ok2) = run_rigger(root, &["init"]);
+    assert!(ok2, "a rerun of rigger init must succeed; stderr:\n{err2}");
+    assert!(
+        out2.contains("already initialized"),
+        "a rerun reports the already-initialized no-op; got:\n{out2}"
+    );
+    assert!(
+        !out2.contains("scaffolded"),
+        "a rerun must NOT re-narrate any scaffold action; got:\n{out2}"
+    );
+}
+
+/// Spec 08 item 3: a `--agents` import is a REQUESTED change and is REPORTED even on an
+/// otherwise up-to-date repo - it runs before the silent-no-op check, so importing onto a
+/// repo where the scaffold, workflow, and shim are all no-ops is never silently skipped.
+#[test]
+fn setup_agents_import_is_reported_even_when_nothing_else_drifted() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    // Bring the repo fully up to date: scaffold + install workflow + provision the shim
+    // (npm stubbed to a no-op). Then mark the shim install COMPLETE so a re-run's
+    // provision step is itself a no-op.
+    let (_out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok, "the initial rigger setup must succeed; stderr:\n{err}");
+    let marker = root
+        .join(".rigger")
+        .join("shim")
+        .join("node_modules")
+        .join(".package-lock.json");
+    std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+    std::fs::write(&marker, "{}").unwrap();
+
+    // A local collection to import from (a foreign `name:` identity field).
+    let src = root.join("collection");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(
+        src.join("researcher.md"),
+        "---\nname: researcher\nmodel: sonnet\n---\nYou research prior art.\n",
+    )
+    .unwrap();
+
+    // Re-run setup with --agents on the now up-to-date repo: scaffold/workflow/shim are all
+    // no-ops, but the import must still be reported.
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["setup", "--agents", src.to_str().unwrap()],
+        &[("RIGGER_NPM", "true")],
+    );
+    assert!(
+        ok,
+        "setup --agents must succeed on an up-to-date repo; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("imported") && out.contains("researcher.md"),
+        "the --agents import must be reported even when nothing else drifted; got:\n{out}"
+    );
+    assert!(
+        root.join(".rigger/agents/researcher.md").exists(),
+        "the agent was actually imported into .rigger/agents/"
+    );
+}
+
+/// `rigger result <id> --if-absent` records a died-worker outcome only when the spawn is
+/// still unanswered: on a fresh run stream it writes the result and exits 0, so `rigger
+/// reported <id>` then confirms the spawn is answered. The "records when absent" half of
+/// the atomic guard the thin driver's death courier relies on (spec 05).
+#[test]
+fn result_if_absent_records_when_the_spawn_is_unanswered() {
+    let dir = temp_project();
+    let root = dir.path();
+    // unit-9 weave: store-opening couriers refuse to fabricate a store, so the
+    // project must hold one before `rigger result` can record into it.
+    seed_store(root);
+
+    let (out, err, ok) = run_rigger(
+        root,
+        &[
+            "result",
+            "u/implementer#0",
+            "--if-absent",
+            "--error",
+            "died without reporting",
+        ],
+    );
+    assert!(ok, "recording an absent result must succeed; stderr: {err}");
+    assert!(
+        out.contains("recorded error result for u/implementer#0"),
+        "an unanswered spawn's --if-absent record must land; got: {out:?}"
+    );
+
+    // The spawn now reads as answered, as a FAILURE (the courier's --error).
+    let (rout, _err, ok) = run_rigger(root, &["reported", "u/implementer#0"]);
+    assert!(ok, "the recorded spawn must read as reported");
+    assert!(
+        rout.contains("failed"),
+        "the recorded --error must read back as a failure; got: {rout:?}"
+    );
+}
+
+/// The anti-clobber invariant end-to-end: once a worker self-reported a success, a later
+/// `rigger result <id> --if-absent --error <why>` - the death courier's single atomic
+/// command - records NOTHING, exits 0, and leaves the self-report standing. This is what
+/// closes the TOCTOU window the old two-process `rigger reported <id> || rigger result
+/// <id> --error` guard left open (spec 05).
+#[test]
+fn result_if_absent_never_clobbers_a_self_reported_success() {
+    let dir = temp_project();
+    let root = dir.path();
+    // unit-9 weave: store-opening couriers refuse to fabricate a store, so the
+    // project must hold one before `rigger result` can record into it.
+    seed_store(root);
+
+    // The worker self-reports a success first.
+    let (_o, err, ok) = run_rigger(
+        root,
+        &["result", "u/implementer#0", "implemented and reported"],
+    );
+    assert!(ok, "the self-report must succeed; stderr: {err}");
+
+    // The death courier, unaware the worker already reported, fires --if-absent --error.
+    let (out, err, ok) = run_rigger(
+        root,
+        &[
+            "result",
+            "u/implementer#0",
+            "--if-absent",
+            "--error",
+            "died without reporting",
+        ],
+    );
+    assert!(ok, "the --if-absent no-op must still exit 0; stderr: {err}");
+    assert!(
+        out.contains("already has a result") && out.contains("left it untouched"),
+        "a spawn with a result must be left untouched by --if-absent; got: {out:?}"
+    );
+
+    // The self-reported SUCCESS still stands - it was NOT force-failed by the courier.
+    let (rout, _err, ok) = run_rigger(root, &["reported", "u/implementer#0"]);
+    assert!(ok, "the self-reported spawn must read as reported");
+    assert!(
+        rout.contains("ok") && !rout.contains("failed"),
+        "the self-reported success must survive un-clobbered; got: {rout:?}"
     );
 }
