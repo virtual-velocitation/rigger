@@ -1615,6 +1615,9 @@ fn empty_repo_scaffold_path_prints_the_agent_collection_pointer() {
 fn result_if_absent_records_when_the_spawn_is_unanswered() {
     let dir = temp_project();
     let root = dir.path();
+    // unit-9 weave: store-opening couriers refuse to fabricate a store, so the
+    // project must hold one before `rigger result` can record into it.
+    seed_store(root);
 
     let (out, err, ok) = run_rigger(
         root,
@@ -1650,6 +1653,9 @@ fn result_if_absent_records_when_the_spawn_is_unanswered() {
 fn result_if_absent_never_clobbers_a_self_reported_success() {
     let dir = temp_project();
     let root = dir.path();
+    // unit-9 weave: store-opening couriers refuse to fabricate a store, so the
+    // project must hold one before `rigger result` can record into it.
+    seed_store(root);
 
     // The worker self-reports a success first.
     let (_o, err, ok) = run_rigger(

@@ -409,17 +409,57 @@ fn db_path(name: &str) -> String {
 }
 
 /// Walk up from `start` (inclusive) and return the first ancestor directory that
-/// already holds an initialized `.rigger/events.db`, or `None` when none does. Pure
-/// over the given path (it touches no process cwd) so the walk-up rule is unit-testable.
+/// already holds an initialized `.rigger/events.db`, or `None` when none does.
+///
+/// The walk is BOUNDED at the main-repo root governing `start` (the parent of its git
+/// common dir): the sanctioned walk-up case is a courier inside a nested git worktree
+/// of THIS project, and an unbounded walk lets a courier in a storeless nested repo (an
+/// agent-scratch probe under `<repo>/.rigger/tmp`, say) bind to a PARENT project's
+/// store and write into a foreign run stream with exit-0 success (adversary finding
+/// adv9-walkup-cross-project, empirically proven). Outside any git context there is no
+/// sanctioned walk at all: only `start` itself counts.
 fn find_store_dir_from(start: &Path) -> Option<PathBuf> {
+    let boundary = main_repo_root(start);
     let mut cur = Some(start);
     while let Some(dir) = cur {
         if dir.join(RIGGER_DIR).join("events.db").is_file() {
             return Some(dir.join(RIGGER_DIR));
         }
+        match &boundary {
+            Some(root) if dir == root => return None, // reached the sanctioned bound
+            None => return None,                      // no git context: no walk-up
+            _ => {}
+        }
         cur = dir.parent();
     }
     None
+}
+
+/// The MAIN repo root governing `start`: the parent of `git rev-parse --git-common-dir`
+/// run from `start`. For a linked worktree the common dir is the main repo's `.git`, so
+/// this resolves to the main checkout's root - exactly the outermost directory the
+/// store walk-up is sanctioned to reach. `None` when `start` is not inside any git repo.
+fn main_repo_root(start: &Path) -> Option<PathBuf> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(start)
+        .args(["rev-parse", "--git-common-dir"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let common = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if common.is_empty() {
+        return None;
+    }
+    let common_path = Path::new(&common);
+    let abs = if common_path.is_absolute() {
+        common_path.to_path_buf()
+    } else {
+        start.join(common_path)
+    };
+    abs.parent().map(|p| p.to_path_buf())
 }
 
 /// A resolved rigger store, as a store-opening COURIER (`emit`/`result`/`peers`/
@@ -2824,14 +2864,66 @@ mod tests {
 
     #[test]
     fn find_store_dir_from_walks_up_from_a_subdirectory() {
-        // A courier run from a SUBDIR of the project root still resolves the root's store.
+        // A courier run from a SUBDIR of the project root still resolves the root's
+        // store. The root is a git repo: the walk is bounded at the main-repo root, so
+        // only git-governed ancestry is walkable (adv9-walkup-cross-project).
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
+        git_init_quiet(root);
         std::fs::create_dir_all(root.join(RIGGER_DIR)).unwrap();
         std::fs::File::create(root.join(RIGGER_DIR).join("events.db")).unwrap();
         let sub = root.join("src").join("deep");
         std::fs::create_dir_all(&sub).unwrap();
         assert_eq!(find_store_dir_from(&sub), Some(root.join(RIGGER_DIR)));
+    }
+
+    /// `git init -q` a test root so the bounded store walk has a sanctioned repo scope.
+    fn git_init_quiet(root: &Path) {
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(root)
+            .status()
+            .unwrap();
+    }
+
+    #[test]
+    fn find_store_dir_from_never_escapes_the_repo_into_a_parent_store() {
+        // adv9-walkup-cross-project: a courier in a storeless NESTED repo (an
+        // agent-scratch probe under the parent's .rigger/tmp, say) must NOT bind to the
+        // parent project's store - that writes into a foreign run stream. The walk stops
+        // at the nested repo's own root. And with no git context at all there is no
+        // sanctioned walk: only the start dir itself counts.
+        let dir = tempfile::tempdir().unwrap();
+        let parent = dir.path();
+        git_init_quiet(parent);
+        std::fs::create_dir_all(parent.join(RIGGER_DIR)).unwrap();
+        std::fs::File::create(parent.join(RIGGER_DIR).join("events.db")).unwrap();
+
+        // A nested, storeless git repo below the parent (not a linked worktree).
+        let nested = parent
+            .join(".rigger")
+            .join("tmp")
+            .join("agent-scratch")
+            .join("probe");
+        std::fs::create_dir_all(&nested).unwrap();
+        git_init_quiet(&nested);
+        assert_eq!(
+            find_store_dir_from(&nested),
+            None,
+            "a storeless nested repo must refuse, never bind the parent's store"
+        );
+
+        // No git context: no walk-up at all (a store AT the start dir still counts).
+        let bare = tempfile::tempdir().unwrap();
+        let sub = bare.path().join("deep");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::create_dir_all(bare.path().join(RIGGER_DIR)).unwrap();
+        std::fs::File::create(bare.path().join(RIGGER_DIR).join("events.db")).unwrap();
+        assert_eq!(
+            find_store_dir_from(&sub),
+            None,
+            "without a git scope the walk is unsanctioned"
+        );
     }
 
     #[test]
@@ -2860,6 +2952,7 @@ mod tests {
         // first `.rigger/` dir would strand every worker in a real rigger worktree.
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
+        git_init_quiet(root);
         // The repo root's real store.
         std::fs::create_dir_all(root.join(RIGGER_DIR)).unwrap();
         std::fs::File::create(root.join(RIGGER_DIR).join("events.db")).unwrap();
