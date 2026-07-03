@@ -2619,12 +2619,11 @@ impl RunCtx<'_> {
             Err(_) => return String::new(),
         };
         let mut b = String::new();
-        write_nodes(
-            &mut b,
-            &g,
-            contextgraph::KIND_DECISION,
-            "Decisions that govern these files (do not contradict them; supersede explicitly if you must):",
-        );
+        // Gap 15: the decisions-that-govern injection is capped and curated (recent-N
+        // verbatim under a hard byte budget, older ones collapsed into a visible
+        // elision note) so a long rejection history cannot blow the prompt. Lessons
+        // and findings render in full - they are the small, bounded sections.
+        write_capped_decisions(&mut b, &g, seed);
         write_nodes(
             &mut b,
             &g,
@@ -2979,6 +2978,88 @@ fn build_system_prompt(persona: &str) -> String {
 /// later tiers (and concurrent lenses) retrieve it via grounding + rigger_peers,
 /// never via the conductor splicing one agent's stdout into another's prompt.
 const REVIEW_PROTOCOL: &str = "Record each review finding you raise by calling the rigger_emit tool the moment you raise it, with type \"ReviewFinding\" and data:\n{\"id\":\"<short-id>\",\"summary\":\"<one line>\",\"about\":[\"<file>\"]}\nThis writes it to the shared context graph live, so the adversary, the adjudicator, and your fellow reviewers see it immediately (via grounding and rigger_peers) and address or refute it.";
+
+/// Gap-15 prompt budget: the most-recent governing decisions kept VERBATIM in a
+/// prompt. Older ones collapse into a single visible elision note. The store keeps
+/// the full history; only this prompt slice narrows.
+const DECISIONS_VERBATIM_N: usize = 12;
+
+/// Gap-15 prompt budget: a hard byte cap on the verbatim body of the
+/// decisions-that-govern section. Verbatim rendering stops as soon as the next
+/// entry would cross this budget (whichever of it and [`DECISIONS_VERBATIM_N`]
+/// binds first), so a pile of chunky rejection verdicts can never blow the prompt.
+const DECISIONS_BUDGET_BYTES: usize = 24 * 1024;
+
+/// The header for the decisions-that-govern injection - single-sourced so the
+/// capped renderer and any test that asserts its presence agree byte-for-byte.
+const DECISIONS_HEADER: &str =
+    "Decisions that govern these files (do not contradict them; supersede explicitly if you must):";
+
+/// Render the "Decisions that govern these files" section under the Gap-15 prompt
+/// budget (spec 06, unit 5). The most-recent [`DECISIONS_VERBATIM_N`] governing
+/// decisions are rendered verbatim AND kept under [`DECISIONS_BUDGET_BYTES`]
+/// (whichever binds first); the older remainder collapses into ONE visible elision
+/// note naming the elided count and the `rigger peers <file>` recovery command.
+///
+/// Recency is the maximum source position among a decision node's incident edges: a
+/// later `DecisionMade` folds a higher-positioned `GOVERNS` edge, so the freshest
+/// verdicts survive the trim (ties break on id for a deterministic prompt). The
+/// store keeps the FULL history - only this prompt slice narrows, and the trim is
+/// never silent.
+fn write_capped_decisions(b: &mut String, g: &Graph, seed: &[String]) {
+    // Recency per node id: the max source position of any incident edge.
+    let mut recency: BTreeMap<&str, u64> = BTreeMap::new();
+    for e in &g.edges {
+        for id in [e.from.as_str(), e.to.as_str()] {
+            let slot = recency.entry(id).or_insert(0);
+            *slot = (*slot).max(e.source);
+        }
+    }
+    // The governing decisions with a non-empty summary, most-recent first.
+    let mut decisions: Vec<&contextgraph::Node> = g
+        .nodes
+        .iter()
+        .filter(|n| n.kind == contextgraph::KIND_DECISION)
+        .filter(|n| n.attrs.get("summary").is_some_and(|s| !s.is_empty()))
+        .collect();
+    decisions.sort_by(|a, c| {
+        let ra = recency.get(a.id.as_str()).copied().unwrap_or(0);
+        let rc = recency.get(c.id.as_str()).copied().unwrap_or(0);
+        rc.cmp(&ra).then_with(|| a.id.cmp(&c.id))
+    });
+    if decisions.is_empty() {
+        return;
+    }
+
+    b.push_str(DECISIONS_HEADER);
+    b.push('\n');
+
+    let mut used = 0usize;
+    let mut kept = 0usize;
+    for n in &decisions {
+        let summary = n.attrs.get("summary").map(String::as_str).unwrap_or("");
+        let line = format!("- {}: {}\n", n.id, summary);
+        if kept >= DECISIONS_VERBATIM_N || used + line.len() > DECISIONS_BUDGET_BYTES {
+            break;
+        }
+        used += line.len();
+        b.push_str(&line);
+        kept += 1;
+    }
+
+    let elided = decisions.len() - kept;
+    if elided > 0 {
+        let files = if seed.is_empty() {
+            String::new()
+        } else {
+            format!(" {}", seed.join(" "))
+        };
+        b.push_str(&format!(
+            "- (+{elided} older decision(s) elided to keep this prompt under budget - recover the full set with `rigger peers{files}`)\n",
+        ));
+    }
+    b.push('\n');
+}
 
 fn write_nodes(b: &mut String, g: &Graph, kind: &str, header: &str) {
     let mut first = true;
@@ -4551,6 +4632,101 @@ mod tests {
         assert!(
             prompt.contains("generic engine pipeline"),
             "the agent should be fed the decision governing modifier.rs; prompt was:\n{prompt}"
+        );
+    }
+
+    #[test]
+    fn decisions_prompt_injection_is_capped_under_budget_with_elision_note() {
+        // Gap 15 / spec-06 unit 5: a pile of K rejection-round verdicts (each recorded
+        // as a DecisionMade governing the unit's file) must NOT be concatenated
+        // verbatim into the prompt. The most-recent decisions stay verbatim under a
+        // hard byte budget; the older remainder collapses into ONE visible elision note
+        // naming the count and the `rigger peers <file>` recovery command. The store
+        // keeps the full history - only the prompt slice narrows.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("modifier.rs"), "fn modifier() {}\n").unwrap();
+        let graph = crate::contextgraph::sqlite::Projector::open(":memory:").unwrap();
+
+        // K governing decisions, oldest (d0) first, each a chunky verdict; the event
+        // position increases with i, so recency = i (newest = d{K-1}).
+        const K: usize = 200;
+        for i in 0..K {
+            let summary = format!("REJECT_MARKER_{i} {}", "x".repeat(2400));
+            let mut e = Event::new(
+                contextgraph::TYPE_DECISION_MADE,
+                serde_json::to_vec(&json!({
+                    "id": format!("d{i}"),
+                    "summary": summary,
+                    "governs": ["modifier.rs"],
+                }))
+                .unwrap(),
+            );
+            e.position = (i as u64) + 1;
+            graph.apply(&e).unwrap();
+        }
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent("a"));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "a".into(),
+                coverage: "modifier".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let grep = crate::grounder::Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: Some(&graph),
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+        let prompt = driver.last_prompt.lock().unwrap().clone();
+
+        // Uncapped, the decisions section alone would be ~500KB; the cap holds the
+        // whole prompt well under budget (plus slack for the small fixed sections).
+        assert!(
+            prompt.len() < DECISIONS_BUDGET_BYTES + 8 * 1024,
+            "capped decisions prompt must stay under budget; len={}",
+            prompt.len()
+        );
+        // Newest verdicts survive verbatim; the oldest are elided from the prompt.
+        assert!(
+            prompt.contains("REJECT_MARKER_199 "),
+            "the newest decision must be kept verbatim"
+        );
+        assert!(
+            !prompt.contains("REJECT_MARKER_0 "),
+            "the oldest decision must be elided from the prompt (it stays in the store)"
+        );
+        // The verbatim set is capped to at most N (the byte budget may bind sooner).
+        let verbatim = (0..K)
+            .filter(|i| prompt.contains(&format!("REJECT_MARKER_{i} ")))
+            .count();
+        assert!(
+            (1..=DECISIONS_VERBATIM_N).contains(&verbatim),
+            "verbatim decisions must be capped to <= N; got {verbatim}"
+        );
+        // The trim is VISIBLE: one elision note naming the elided count and the
+        // `rigger peers <file>` recovery command.
+        let elided = K - verbatim;
+        assert!(
+            prompt.contains(&format!("+{elided} older decision")),
+            "the elision note must name the elided count ({elided})"
+        );
+        assert!(
+            prompt.contains("rigger peers modifier.rs"),
+            "the elision note must name the `rigger peers <file>` recovery command"
         );
     }
 
