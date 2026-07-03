@@ -1,6 +1,6 @@
 # Design-intent gaps
 
-Status: open work list, assessed 2026-07-01 against [architecture.md](architecture.md) after the three-gap dogfood run (PR #7); updated 2026-07-02 at the close of the stepwise-conductor campaign (Gaps 1-10 closed) and 2026-07-03 at the close of the spec-06 conductor-hardening run (Gaps 11-16 closed). Open: Gaps 17-19 plus the deferred housekeeping list in spec 06 - together the natural next batch.
+Status: assessed 2026-07-01 against [architecture.md](architecture.md) after the three-gap dogfood run (PR #7); updated through 2026-07-03 across the stepwise-conductor campaign's four loop runs (specs 04-07). ALL RECORDED GAPS (1-19) ARE CLOSED. Open work: only the deferred housekeeping list in specs 06/07 (config-helper consolidation, scaffold-seed alignment, small test pins, shadow-store prefer-outermost policy). New gaps discovered by future runs land here as before.
 
 This document records where the implementation currently falls short of the design intent, with the evidence that surfaced each gap and the shape of the fix. It is the feed for the next loop runs: each gap is written so it can be lifted into a spec's "Done when" criteria with little editing. Remove entries as they close.
 
@@ -9,36 +9,6 @@ This document records where the implementation currently falls short of the desi
 Dogfooding. Rigger ran on its own spec; the run's telemetry (`rigger stats`, `rigger peers`), the `/workflows` display, and independent verification of the run's output are the evidence base. The through-line: the memory layer and the review economics are delivering as designed (78.6% first-pass yield, 0% escalations, decisions demonstrably inherited across agents); the gaps concentrate in the **native workflow driver**, which implements the loop's shape but not all of the conductor's safeguards.
 
 ---
-
-## Gap 17: findings and lessons render uncapped in prompts (the larger half of prompt growth)
-
-**Intent.** Prompt slices are budgeted (Gap 15's principle applies to every section).
-
-**Reality.** Spec 06 unit 5 capped the DECISIONS section (recent-N verbatim under a 24KiB budget with a visible elision note) - and measured that findings are the larger contributor on hot files (~95KiB of findings about conductor.rs, ~187KiB about main.rs, 4-8x the decisions cap). Findings and lessons still render uncapped, so a long review history can still blow a prompt.
-
-**Evidence.** The unit-5 implementer's own measurement, recorded as `d-unit5-findings-uncapped-carryforward`.
-
-**Fix shape.** Extend the same cap-and-curate mechanism (recent-N verbatim, elision note naming the `rigger peers` recovery, hard byte budget) to the findings and lessons sections.
-
-## Gap 18: a degenerate reviewer spawn reads as a substantive failure
-
-**Intent.** Remediation attempts are spent on DEFECTS; infrastructure failures are retried, not charged against the unit.
-
-**Reality.** Unit-6's final-attempt adjudicator returned an empty output ("-"); the death-courier machinery correctly recorded a result on its behalf, but the conductor folded it as a substantive failure - `UnitFailed attempts:6`, escalation - on a unit whose lenses and adversary had all approved. The operator re-rendered the verdict by hand (APPROVE, position 4565).
-
-**Evidence.** Spec-06 run, positions ~4253-4320; triage of unit-6.
-
-**Fix shape.** An empty/whitespace reviewer result is an infrastructure failure: respawn the reviewer (bounded, e.g. twice) instead of folding a failed attempt; only a NON-degenerate reject charges the unit.
-
-## Gap 19: shared build-cache pollution false-fails gates across divergent unit trees
-
-**Intent.** Gap 14(b)'s shared `CARGO_TARGET_DIR` saves disk and cold-build time; gates stay trustworthy.
-
-**Reality.** Concurrent units whose trees diverge (one renames a symbol the other still uses) poison each other's incremental state: unit-6 burned attempts 4-5 on E0425 false-fails (`scratch_root_path_from_env` not found) that vanished in a clean target dir, and every post-run re-verification needed a dedicated target to trust its result.
-
-**Evidence.** Spec-06 run: unit-6 attempts 4-5; the adjudicators' own isolated-target re-runs; decision lineage `d-u6-gate-falsefail-stale-shared-target`.
-
-**Fix shape.** Per-unit target dirs under the scratch root (disk bounded by the existing sweeps), keyed by unit id - correctness over dedupe - with the shared dir kept only for the courier's inline step gates on the integrated tree; or a gate-retry-in-clean-target on suspect compile errors before charging the attempt.
 
 ---
 
@@ -66,3 +36,6 @@ Move entries here when they land, with the closing PR.
 - **Gap 14 (scratch storage)** - closed: configurable scratch root + overrides and terminal sweeps by hand (e986abd, 64d58c4), gate-lane shared build cache via the courier (ebc93dd; its pollution hazard is Gap 19), and validate residue surfacing by spec 06 unit 6.
 - **Gap 15 (unbounded prompt growth)** - closed for the decisions section by spec 06 unit 5 (recent-N verbatim, visible elision note, 24KiB budget); the measured larger half - findings/lessons - is Gap 17.
 - **Gap 16 (approval loses to the retry cap)** - closed by spec 06 unit 3: the verdict folds before the attempt counter, pinned by a regression test of the approve-on-final-attempt scenario.
+- **Gap 17 (findings/lessons uncapped in prompts)** - closed by spec 07 unit 1: one shared budgeted-section writer renders decisions, findings, and lessons alike (recent-N verbatim, visible elision note with the `rigger peers` recovery, per-section byte budgets as named constants).
+- **Gap 18 (degenerate reviewer charges an attempt)** - closed by spec 07 unit 2: an empty/whitespace reviewer result triggers a bounded, deterministic, replay-safe respawn instead of folding a failure; exhausting the respawn bound halts the run loudly naming the dead reviewer (tier-aware and recoverable after the retry round).
+- **Gap 19 (shared build-cache pollution)** - closed by spec 07 unit 3: worktree gates get per-unit `CARGO_TARGET_DIR`s reclaimed by the terminal sweep; the shared cache serves only the courier's inline gates on the integrated tree.
