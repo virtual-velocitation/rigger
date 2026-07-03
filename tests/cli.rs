@@ -1311,3 +1311,51 @@ fn validate_flags_tracked_rigger_files_with_uncommitted_modifications() {
          stderr:\n{err}"
     );
 }
+
+/// Spec 05 done-when line 57, clause 2: the empty-repo scaffold path must print a
+/// pointer to the agency-agents collection AND the authoring-agents handbook chapter,
+/// and that pointer must appear ONLY when the default fleet is actually scaffolded -
+/// never on a re-run that keeps an existing fleet. Driving the real `rigger init`
+/// binary is the only way to observe the printed pointer; no cargo gate can see it,
+/// which is exactly why clause 2 was previously shipped unimplemented behind green
+/// gates.
+#[test]
+fn empty_repo_scaffold_path_prints_the_agent_collection_pointer() {
+    const COLLECTION_URL: &str = "github.com/msitarzewski/agency-agents";
+    const HANDBOOK: &str = "docs/handbook/authoring-agents.md";
+
+    let dir = temp_project();
+    let root = dir.path();
+
+    // First `init` on an empty repo actually scaffolds the default fleet, so the
+    // scaffold path must point the user at where to get a real fleet and how to
+    // author agents.
+    let (out, err, ok) = run_rigger(root, &["init"]);
+    assert!(
+        ok,
+        "rigger init must succeed on an empty repo; stderr:\n{err}"
+    );
+    assert!(
+        out.contains(COLLECTION_URL),
+        "the scaffold path must point at the agency-agents collection ({COLLECTION_URL}); got:\n{out}"
+    );
+    assert!(
+        out.contains(HANDBOOK),
+        "the scaffold path must point at the authoring-agents handbook chapter ({HANDBOOK}); got:\n{out}"
+    );
+
+    // A second `init` over the now-existing fleet keeps every agent file (scaffolds
+    // nothing new), so the pointer must be ABSENT - it belongs to the empty-repo path
+    // only. This is the discriminating half: a regression that always printed the
+    // pointer would pass the first assertion but fail here.
+    let (out2, err2, ok2) = run_rigger(root, &["init"]);
+    assert!(ok2, "a re-run of rigger init must succeed; stderr:\n{err2}");
+    assert!(
+        !out2.contains(COLLECTION_URL),
+        "the collection pointer must not print when scaffolding is skipped; got:\n{out2}"
+    );
+    assert!(
+        !out2.contains(HANDBOOK),
+        "the handbook pointer must not print when scaffolding is skipped; got:\n{out2}"
+    );
+}
