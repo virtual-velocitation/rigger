@@ -2264,6 +2264,22 @@ impl RunCtx<'_> {
             pass: true,
             evidence: Vec::new(),
         };
+        // Per-unit build cache (Gap 19): a gate running INSIDE this unit's worktree
+        // builds into a unit-keyed CARGO_TARGET_DIR, a sibling of the worktree, so
+        // concurrent units' divergent trees never poison one shared incremental cache -
+        // a compile error a gate surfaces is then always this unit's own. Derived from
+        // the same scratch resolution `stage_worktree` uses, keyed on the stage name.
+        // The worktree-less path (`dir` "", e.g. an `isolation: none` agent or a
+        // repo-less run) has no per-unit tree to isolate and inherits the ambient target.
+        let target = if dir.is_empty() {
+            String::new()
+        } else {
+            let scratch = crate::worktree::scratch_root_from_env(
+                &self.deps.repo,
+                &self.cfg.workflow.defaults.workdir,
+            );
+            unit_target_dir(&scratch, &st.name)
+        };
         for gid in &st.gates {
             let gc = self
                 .cfg
@@ -2300,7 +2316,7 @@ impl RunCtx<'_> {
                 autonomy: gate::Autonomy::Manual,
                 history: Vec::new(),
             };
-            let res = self.deps.gates.run(&g, dir);
+            let res = self.deps.gates.run(&g, dir, &target);
             // The compact gate evidence is threaded into the GateVerdict event
             // payload (item 3): a real run otherwise discarded it, so neither the
             // ledger nor the workflow driver ever saw WHY a gate passed or failed.
@@ -2420,7 +2436,11 @@ impl RunCtx<'_> {
                         history: Vec::new(),
                     };
                     // The deferred gate runs in the base repo (the fully integrated tree).
-                    let res = self.deps.gates.run(&g, "");
+                    // It measures the ONE integrated tree, so it keeps inheriting the
+                    // shared build cache (empty target_dir) - a per-unit cache would be
+                    // wrong here, and this is exactly the tree `rigger step`'s inline
+                    // courier gates also build against (Gap 19).
+                    let res = self.deps.gates.run(&g, "", "");
                     self.emit_gate_verdict(&key, gid, res.pass, &res.evidence)?;
                     // Feed the ratchet the same way an inline gate does, so a deferred
                     // gate's trust still moves on its history (its ceiling is Silent,
@@ -3266,7 +3286,27 @@ fn unit_branch(unit_id: &str) -> String {
 /// single-threaded within one `rigger step`.) Pairs with [`unit_branch`], which derives the
 /// unit's durable branch from the same id.
 fn unit_worktree_dir(scratch_root: &str, unit_id: &str) -> String {
-    format!("{scratch_root}/rigger-wt-{}", sanitize_for_path(unit_id))
+    format!(
+        "{scratch_root}/{}{}",
+        crate::worktree::UNIT_WORKTREE_PREFIX,
+        sanitize_for_path(unit_id)
+    )
+}
+
+/// The per-unit build cache dir for a unit (Gap 19): `<scratch-root>/cargo-target-<unit-slug>`,
+/// a SIBLING of [`unit_worktree_dir`]'s `rigger-wt-<slug>`. Gate commands the conductor runs
+/// INSIDE the unit's worktree build into this unit-keyed `CARGO_TARGET_DIR` so concurrent,
+/// divergent unit trees never share incremental state - a compile error a gate sees is then
+/// always that unit's own, never a neighbour poisoning one shared target. Derived from the same
+/// scratch root and (sanitized) unit id as the worktree, so the two stay siblings by
+/// construction, which lets [`crate::worktree::sweep_terminal`] reclaim the cache alongside the
+/// worktree.
+fn unit_target_dir(scratch_root: &str, unit_id: &str) -> String {
+    format!(
+        "{scratch_root}/{}{}",
+        crate::worktree::UNIT_CACHE_PREFIX,
+        sanitize_for_path(unit_id)
+    )
 }
 
 /// The DETERMINISTIC dir for a STANDALONE review stage's throwaway worktree (spec 06):
@@ -8068,6 +8108,80 @@ mod tests {
     }
 
     #[test]
+    fn two_units_gate_environments_never_share_a_target_dir() {
+        // Gap 19 (criterion 3): a gate that runs INSIDE a unit's worktree must build into
+        // a unit-keyed CARGO_TARGET_DIR, so two concurrent units' divergent trees never
+        // share one incremental cache - a compile error a gate surfaces is then always
+        // that unit's own, never a neighbour poisoning a shared target. Two independent
+        // units each run a gate; the runner captures the target_dir handed to it, and the
+        // two must be DISTINCT, both NON-EMPTY, and each the `cargo-target-<unit-slug>`
+        // sibling of that unit's worktree under the run's scratch root.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent("a"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        for name in ["alpha", "beta"] {
+            cfg.workflow.stages.insert(
+                name.into(),
+                Stage {
+                    name: name.into(),
+                    agent: "a".into(),
+                    gates: vec!["ok".into()],
+                    // Verify-but-never-merge: the gate still runs per unit, but skipping
+                    // the merge keeps the two independent units off a shared-repo conflict.
+                    on_pass: "none".into(),
+                    ..Default::default()
+                },
+            );
+        }
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            write_file: Some("work.rs".into()),
+            ..Stub::new()
+        };
+        let runner = RecordingRunner::new(&[]);
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+
+        let targets = runner.targets();
+        assert_eq!(
+            targets.len(),
+            2,
+            "each of the two units ran its one gate exactly once: {targets:?}"
+        );
+        assert!(
+            targets.iter().all(|t| !t.is_empty()),
+            "a gate inside a unit worktree must get a per-unit CARGO_TARGET_DIR, never the empty (inherit-shared) one: {targets:?}"
+        );
+        let unique: HashSet<&String> = targets.iter().collect();
+        assert_eq!(
+            unique.len(),
+            2,
+            "the two units' gate target dirs must DIFFER - never one shared cache: {targets:?}"
+        );
+
+        // Each target is the `cargo-target-<slug>` sibling of that unit's worktree under
+        // the run's scratch root - the exact isolation the criterion requires.
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        for name in ["alpha", "beta"] {
+            let want = unit_target_dir(&scratch, name);
+            assert!(
+                targets.contains(&want),
+                "unit {name} must build into {want}, got {targets:?}"
+            );
+        }
+    }
+
+    #[test]
     fn bounded_pool_completes_every_stage_under_the_cap() {
         // Six independent stages exceed MAX_CONCURRENCY (4); the bounded pool runs
         // them in chunks, and all six must still integrate (§6).
@@ -8327,7 +8441,7 @@ mod tests {
         evidence: String,
     }
     impl gate::Runner for FlakyGate {
-        fn run(&self, _g: &Gate, _dir: &str) -> gate::GateResult {
+        fn run(&self, _g: &Gate, _dir: &str, _target: &str) -> gate::GateResult {
             let n = self.runs.fetch_add(1, Ordering::SeqCst);
             if n < self.fail_first {
                 gate::GateResult {
@@ -9034,6 +9148,9 @@ mod tests {
     struct RecordingRunner {
         /// The gate ids run, in invocation order.
         calls: Mutex<Vec<String>>,
+        /// The CARGO_TARGET_DIR (`target_dir`) handed to each run, in invocation order -
+        /// lets a test assert two units' gate environments never share a target (Gap 19).
+        targets: Mutex<Vec<String>>,
         /// Gate ids that must FAIL; everything else passes.
         fail: HashSet<String>,
     }
@@ -9041,16 +9158,21 @@ mod tests {
         fn new(fail: &[&str]) -> Self {
             RecordingRunner {
                 calls: Mutex::new(Vec::new()),
+                targets: Mutex::new(Vec::new()),
                 fail: fail.iter().map(|s| s.to_string()).collect(),
             }
         }
         fn calls(&self) -> Vec<String> {
             self.calls.lock().unwrap().clone()
         }
+        fn targets(&self) -> Vec<String> {
+            self.targets.lock().unwrap().clone()
+        }
     }
     impl gate::Runner for RecordingRunner {
-        fn run(&self, g: &Gate, _dir: &str) -> gate::GateResult {
+        fn run(&self, g: &Gate, _dir: &str, target: &str) -> gate::GateResult {
             self.calls.lock().unwrap().push(g.id.clone());
+            self.targets.lock().unwrap().push(target.to_string());
             let pass = !self.fail.contains(&g.id);
             gate::GateResult {
                 pass,
@@ -9998,7 +10120,7 @@ mod tests {
         saw_dirty: std::sync::atomic::AtomicBool,
     }
     impl gate::Runner for CleanTreeGate {
-        fn run(&self, _g: &Gate, dir: &str) -> gate::GateResult {
+        fn run(&self, _g: &Gate, dir: &str, _target: &str) -> gate::GateResult {
             let out = std::process::Command::new("git")
                 .arg("-C")
                 .arg(dir)

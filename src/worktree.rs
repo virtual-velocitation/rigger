@@ -447,6 +447,34 @@ pub fn scratch_root_path_from_env(repo: &str, configured: &str) -> String {
     scratch_root_path(repo, configured, env.as_deref())
 }
 
+/// Filesystem prefix of a unit's DETERMINISTIC worktree dir under the scratch root
+/// (`rigger-wt-<slug>`); the conductor's `unit_worktree_dir` is the single authority that
+/// builds it, and [`sweep_terminal`] / [`unit_cache_sibling`] read it back.
+pub const UNIT_WORKTREE_PREFIX: &str = "rigger-wt-";
+
+/// Filesystem prefix of a unit's per-unit build cache dir (`cargo-target-<slug>`), a
+/// SIBLING of its worktree under the scratch root (Gap 19). Gate commands the conductor
+/// runs inside a unit worktree build into this unit-keyed `CARGO_TARGET_DIR` so divergent
+/// unit trees never share incremental state. The conductor's `unit_target_dir` builds it;
+/// it is a plain dir, NOT a registered git worktree, so [`sweep_terminal`] removes it off
+/// disk directly alongside the worktree it belongs to.
+pub const UNIT_CACHE_PREFIX: &str = "cargo-target-";
+
+/// The per-unit build cache dir that is a SIBLING of the unit worktree at `worktree_dir`
+/// (Gap 19): `<root>/rigger-wt-<slug>` -> `<root>/cargo-target-<slug>`. Returns None for any
+/// dir that is not a unit worktree (e.g. a `rigger-review-*` review worktree), which owns no
+/// such cache. Because both the worktree dir and the cache dir derive from the same scratch
+/// root and the same slug, swapping the prefix reconstructs the exact cache path.
+fn unit_cache_sibling(worktree_dir: &str) -> Option<String> {
+    let path = std::path::Path::new(worktree_dir);
+    let slug = path
+        .file_name()?
+        .to_str()?
+        .strip_prefix(UNIT_WORKTREE_PREFIX)?;
+    let parent = path.parent()?.to_str()?;
+    Some(format!("{parent}/{UNIT_CACHE_PREFIX}{slug}"))
+}
+
 /// Sweep the scratch root's TERMINAL worktrees: prune stale registrations, then remove
 /// every registered worktree under `root` whose branch tip is already an ancestor of
 /// `run_branch` - integrated (or never-advanced review scaffolding), so the worktree
@@ -454,6 +482,11 @@ pub fn scratch_root_path_from_env(repo: &str, configured: &str) -> String {
 /// alone. Returns how many worktrees were removed. This is the "the loop cleans up
 /// after itself" half of Gap 14: crashed or superseded step processes leak worktrees,
 /// and integrate-time removal alone never reclaims them.
+///
+/// Removing a UNIT worktree also removes its sibling per-unit build cache
+/// (`cargo-target-<slug>`, Gap 19): the cache is a plain dir git never tracks, so nothing
+/// else reclaims it, and a terminal unit's cache is dead weight. Removal is best-effort - a
+/// unit whose gates never ran cargo has no cache dir - and never aborts the sweep.
 pub fn sweep_terminal(repo: &str, root: &str, run_branch: &str) -> Result<usize, Error> {
     git(repo, &["worktree", "prune"])?;
     let out = run_git(repo, &["worktree", "list", "--porcelain"]).map_err(Error)?;
@@ -471,6 +504,9 @@ pub fn sweep_terminal(repo: &str, root: &str, run_branch: &str) -> Result<usize,
                 run_git(repo, &["merge-base", "--is-ancestor", branch, run_branch]).is_ok();
             if merged {
                 git(repo, &["worktree", "remove", "--force", &d])?;
+                if let Some(cache) = unit_cache_sibling(&d) {
+                    let _ = std::fs::remove_dir_all(&cache);
+                }
                 removed += 1;
             }
         }
@@ -794,6 +830,46 @@ mod tests {
         assert!(
             std::path::Path::new(&live_dir).join("wip.txt").exists(),
             "the in-flight worktree is untouched"
+        );
+    }
+
+    #[test]
+    fn sweep_terminal_also_removes_the_swept_units_per_unit_build_cache() {
+        // Gap 19: a unit's per-unit build cache (`cargo-target-<slug>`) is a sibling of
+        // its worktree under the scratch root but is NOT a registered git worktree, so
+        // nothing else reclaims it. When the sweep removes a TERMINAL unit worktree it
+        // must also remove that sibling cache off disk; an IN-FLIGHT unit's cache (its
+        // worktree is kept) must be left untouched.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        run_git(&repo_path, &["checkout", "-b", "rigger-run"]).unwrap();
+        let root = scratch_root(&repo_path, "", None);
+
+        // Terminal unit: `rigger-wt-done` with its sibling `cargo-target-done` cache.
+        let done_dir = format!("{root}/{UNIT_WORKTREE_PREFIX}done");
+        Worktree::create(&repo_path, &done_dir, "rigger/u/done").unwrap();
+        let done_cache = format!("{root}/{UNIT_CACHE_PREFIX}done");
+        std::fs::create_dir_all(&done_cache).unwrap();
+        std::fs::write(std::path::Path::new(&done_cache).join("incremental"), "x").unwrap();
+
+        // In-flight unit: its worktree carries an unmerged commit, so both the worktree
+        // AND its sibling cache must survive the sweep.
+        let live_dir = format!("{root}/{UNIT_WORKTREE_PREFIX}live");
+        let live = Worktree::create(&repo_path, &live_dir, "rigger/u/live").unwrap();
+        std::fs::write(std::path::Path::new(&live_dir).join("wip.txt"), "wip\n").unwrap();
+        live.commit("rigger: in-flight").unwrap();
+        let live_cache = format!("{root}/{UNIT_CACHE_PREFIX}live");
+        std::fs::create_dir_all(&live_cache).unwrap();
+
+        let removed = sweep_terminal(&repo_path, &root, "rigger-run").unwrap();
+        assert_eq!(removed, 1, "exactly the terminal unit worktree is swept");
+        assert!(
+            !std::path::Path::new(&done_cache).exists(),
+            "the swept unit's per-unit build cache must be removed alongside its worktree"
+        );
+        assert!(
+            std::path::Path::new(&live_cache).exists(),
+            "an in-flight unit's build cache must be left untouched"
         );
     }
 
