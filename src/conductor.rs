@@ -2621,8 +2621,15 @@ impl RunCtx<'_> {
         let mut b = String::new();
         // Gap 15: the decisions-that-govern injection is capped and curated (recent-N
         // verbatim under a hard byte budget, older ones collapsed into a visible
-        // elision note) so a long rejection history cannot blow the prompt. Lessons
-        // and findings render in full - they are the small, bounded sections.
+        // elision note) so a long rejection history's DECISIONS cannot blow the prompt.
+        // Capping the decisions section alone is this unit's scoped charter (spec-06
+        // unit 5, line 49). Lessons and findings below still render UNCAPPED via
+        // write_nodes / write_findings - and findings are in fact the LARGER, not the
+        // smaller, contributor on a hot file (measured: ~95KiB of findings ABOUT
+        // conductor.rs, ~187KiB ABOUT main.rs, i.e. 4-8x this 24KiB decisions cap), so
+        // the findings half of Gap 15 is NOT closed here: an unbounded findings pile
+        // can still blow the prompt. That is a RECORDED carry-forward for a follow-up
+        // unit (d-unit5-findings-uncapped-carryforward).
         write_capped_decisions(&mut b, &g, seed);
         write_nodes(
             &mut b,
@@ -3001,19 +3008,26 @@ const DECISIONS_HEADER: &str =
 /// (whichever binds first); the older remainder collapses into ONE visible elision
 /// note naming the elided count and the `rigger peers <file>` recovery command.
 ///
-/// Recency is the maximum source position among a decision node's incident edges: a
+/// Recency is the maximum source position among a decision's OWN `GOVERNS` edges: a
 /// later `DecisionMade` folds a higher-positioned `GOVERNS` edge, so the freshest
-/// verdicts survive the trim (ties break on id for a deterministic prompt). The
-/// store keeps the FULL history - only this prompt slice narrows, and the trim is
-/// never silent.
+/// verdicts survive the trim (ties break on id for a deterministic prompt). A
+/// superseded decision's `GOVERNS` edge is invalidated (excluded from the subgraph),
+/// so it reaches this section only via the still-valid `SUPERSEDES` edge that carries
+/// its superseder's position; ranking off `GOVERNS`-source alone denies it that
+/// inherited freshness, so a stale verdict never crowds a current one out of the
+/// verbatim slice (sdet-u5 / arch-u5). The store keeps the FULL history - only this
+/// prompt slice narrows, and the trim is never silent.
 fn write_capped_decisions(b: &mut String, g: &Graph, seed: &[String]) {
-    // Recency per node id: the max source position of any incident edge.
+    // Recency per decision id: the max source position of its own GOVERNS edges. The
+    // GOVERNS edge points decision -> file, so key on the `from` (decision) side only;
+    // a SUPERSEDES edge (from = superseder) never contributes to the superseded node.
     let mut recency: BTreeMap<&str, u64> = BTreeMap::new();
     for e in &g.edges {
-        for id in [e.from.as_str(), e.to.as_str()] {
-            let slot = recency.entry(id).or_insert(0);
-            *slot = (*slot).max(e.source);
+        if e.rel != contextgraph::REL_GOVERNS {
+            continue;
         }
+        let slot = recency.entry(e.from.as_str()).or_insert(0);
+        *slot = (*slot).max(e.source);
     }
     // The governing decisions with a non-empty summary, most-recent first.
     let mut decisions: Vec<&contextgraph::Node> = g
@@ -4727,6 +4741,131 @@ mod tests {
         assert!(
             prompt.contains("rigger peers modifier.rs"),
             "the elision note must name the `rigger peers <file>` recovery command"
+        );
+    }
+
+    // Build a decisions subgraph from a list of (id, summary, supersedes) tuples,
+    // applied in order so each event's position increases (older first), then return
+    // the rendered capped-decisions section for `seed`.
+    fn render_capped_decisions(decisions: &[(&str, String, &str)], seed: &[String]) -> String {
+        let graph = crate::contextgraph::sqlite::Projector::open(":memory:").unwrap();
+        for (i, (id, summary, supersedes)) in decisions.iter().enumerate() {
+            let mut payload = json!({
+                "id": id,
+                "summary": summary,
+                "governs": seed,
+            });
+            if !supersedes.is_empty() {
+                payload["supersedes"] = json!(supersedes);
+            }
+            let mut e = Event::new(
+                contextgraph::TYPE_DECISION_MADE,
+                serde_json::to_vec(&payload).unwrap(),
+            );
+            e.position = (i as u64) + 1;
+            graph.apply(&e).unwrap();
+        }
+        let g = graph.subgraph(seed, 2).unwrap();
+        let mut b = String::new();
+        write_capped_decisions(&mut b, &g, seed);
+        b
+    }
+
+    #[test]
+    fn a_superseded_decision_never_outranks_a_current_one() {
+        // sdet-u5 / arch-u5 carry-forward: recency is the GOVERNS-edge source, so a
+        // SUPERSEDED decision (its GOVERNS edge invalidated, reachable only via the
+        // still-valid SUPERSEDES edge that carries its superseder's position) can no
+        // longer inherit that fresh position and crowd a genuinely-current decision out
+        // of the verbatim slice. d_a is superseded by the newest d_c; d_b is a current,
+        // middle-aged decision. The stale d_a must rank BELOW the current d_b.
+        let seed = vec!["modifier.rs".to_string()];
+        let out = render_capped_decisions(
+            &[
+                ("d_a", "the FIRST verdict, later superseded".into(), ""),
+                ("d_b", "a CURRENT middle-aged verdict".into(), ""),
+                ("d_c", "the NEWEST verdict, supersedes d_a".into(), "d_a"),
+            ],
+            &seed,
+        );
+        let idx = |needle: &str| {
+            out.find(needle)
+                .unwrap_or_else(|| panic!("decision {needle} must render; output was:\n{out}"))
+        };
+        let (ia, ib, ic) = (idx("- d_a:"), idx("- d_b:"), idx("- d_c:"));
+        assert!(
+            ic < ib,
+            "the newest current decision (d_c) must rank first; output was:\n{out}"
+        );
+        assert!(
+            ia > ib,
+            "the superseded decision (d_a) must rank below the current d_b, not inherit its \
+             superseder's recency; output was:\n{out}"
+        );
+    }
+
+    #[test]
+    fn the_verbatim_count_cap_binds_on_many_small_decisions() {
+        // sdet-u5-verbatim-n-cap-untested: with many TINY decisions the byte budget never
+        // binds, so this isolates the recent-N verbatim arm. Exactly N are kept verbatim
+        // and the rest collapse into the elision note. A regression removing the N cap
+        // would render all of them (bytes never bind) and fail this.
+        let seed = vec!["modifier.rs".to_string()];
+        let total = DECISIONS_VERBATIM_N + 8;
+        let decisions: Vec<(String, String, &str)> = (0..total)
+            .map(|i| (format!("small{i:03}"), format!("tiny verdict {i}"), ""))
+            .collect();
+        let borrowed: Vec<(&str, String, &str)> = decisions
+            .iter()
+            .map(|(id, s, sup)| (id.as_str(), s.clone(), *sup))
+            .collect();
+        let out = render_capped_decisions(&borrowed, &seed);
+        let kept = (0..total)
+            .filter(|i| out.contains(&format!("small{i:03}:")))
+            .count();
+        assert_eq!(
+            kept, DECISIONS_VERBATIM_N,
+            "exactly N tiny decisions must be kept verbatim (the count cap binds, not bytes); \
+             output was:\n{out}"
+        );
+        assert!(
+            out.contains(&format!("+{} older decision", total - DECISIONS_VERBATIM_N)),
+            "the elision note must name the count the N cap trims; output was:\n{out}"
+        );
+    }
+
+    #[test]
+    fn the_byte_budget_cap_binds_before_the_count_on_chunky_decisions() {
+        // sdet-u5-verbatim-n-cap-untested: with N chunky decisions the 24KiB byte budget
+        // binds BEFORE the recent-N count, so this isolates the byte-budget arm. Fewer
+        // than N are kept and the body stays under budget. A regression removing the byte
+        // cap would keep all N (~3KiB each => far over budget) and fail this.
+        let seed = vec!["modifier.rs".to_string()];
+        // Each line is ~3KiB, so ~8 fit under the 24KiB budget - fewer than N=12.
+        let chunk = "y".repeat(3000);
+        let decisions: Vec<(String, String, &str)> = (0..DECISIONS_VERBATIM_N)
+            .map(|i| (format!("chunk{i:03}"), format!("verdict {i} {chunk}"), ""))
+            .collect();
+        let borrowed: Vec<(&str, String, &str)> = decisions
+            .iter()
+            .map(|(id, s, sup)| (id.as_str(), s.clone(), *sup))
+            .collect();
+        let out = render_capped_decisions(&borrowed, &seed);
+        let kept = (0..DECISIONS_VERBATIM_N)
+            .filter(|i| out.contains(&format!("chunk{i:03}:")))
+            .count();
+        assert!(
+            kept < DECISIONS_VERBATIM_N,
+            "the byte budget must trim below the N count on chunky decisions; kept={kept}"
+        );
+        assert!(
+            kept >= 1,
+            "at least one chunky decision must still render verbatim; kept={kept}"
+        );
+        assert!(
+            out.len() < DECISIONS_BUDGET_BYTES + 1024,
+            "the verbatim body must stay under the byte budget; len={}",
+            out.len()
         );
     }
 
