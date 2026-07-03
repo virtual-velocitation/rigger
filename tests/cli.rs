@@ -2001,6 +2001,94 @@ fn empty_repo_scaffold_path_prints_the_agent_collection_pointer() {
     );
 }
 
+/// Spec 08 item 3: `rigger init` reports a POSITIVE per-artifact summary of what it
+/// scaffolded on the first run, then is a QUIET no-op on a rerun - it confirms the
+/// already-initialized state without re-narrating any scaffold action it did not perform.
+#[test]
+fn init_reports_the_positive_summary_then_is_a_quiet_noop() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    // First init on an empty repo scaffolds the fleet and NARRATES what it wrote.
+    let (out, err, ok) = run_rigger(root, &["init"]);
+    assert!(
+        ok,
+        "rigger init must succeed on an empty repo; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("scaffolded .rigger/workflow.yml"),
+        "the first init reports the workflow it scaffolded; got:\n{out}"
+    );
+    assert!(
+        out.contains("scaffolded .rigger/agents/"),
+        "the first init reports the agents it scaffolded; got:\n{out}"
+    );
+
+    // A rerun changes nothing: a quiet no-op that reports already-initialized and does
+    // NOT re-narrate any scaffold action.
+    let (out2, err2, ok2) = run_rigger(root, &["init"]);
+    assert!(ok2, "a rerun of rigger init must succeed; stderr:\n{err2}");
+    assert!(
+        out2.contains("already initialized"),
+        "a rerun reports the already-initialized no-op; got:\n{out2}"
+    );
+    assert!(
+        !out2.contains("scaffolded"),
+        "a rerun must NOT re-narrate any scaffold action; got:\n{out2}"
+    );
+}
+
+/// Spec 08 item 3: a `--agents` import is a REQUESTED change and is REPORTED even on an
+/// otherwise up-to-date repo - it runs before the silent-no-op check, so importing onto a
+/// repo where the scaffold, workflow, and shim are all no-ops is never silently skipped.
+#[test]
+fn setup_agents_import_is_reported_even_when_nothing_else_drifted() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    // Bring the repo fully up to date: scaffold + install workflow + provision the shim
+    // (npm stubbed to a no-op). Then mark the shim install COMPLETE so a re-run's
+    // provision step is itself a no-op.
+    let (_out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok, "the initial rigger setup must succeed; stderr:\n{err}");
+    let marker = root
+        .join(".rigger")
+        .join("shim")
+        .join("node_modules")
+        .join(".package-lock.json");
+    std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+    std::fs::write(&marker, "{}").unwrap();
+
+    // A local collection to import from (a foreign `name:` identity field).
+    let src = root.join("collection");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(
+        src.join("researcher.md"),
+        "---\nname: researcher\nmodel: sonnet\n---\nYou research prior art.\n",
+    )
+    .unwrap();
+
+    // Re-run setup with --agents on the now up-to-date repo: scaffold/workflow/shim are all
+    // no-ops, but the import must still be reported.
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["setup", "--agents", src.to_str().unwrap()],
+        &[("RIGGER_NPM", "true")],
+    );
+    assert!(
+        ok,
+        "setup --agents must succeed on an up-to-date repo; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("imported") && out.contains("researcher.md"),
+        "the --agents import must be reported even when nothing else drifted; got:\n{out}"
+    );
+    assert!(
+        root.join(".rigger/agents/researcher.md").exists(),
+        "the agent was actually imported into .rigger/agents/"
+    );
+}
+
 /// `rigger result <id> --if-absent` records a died-worker outcome only when the spawn is
 /// still unanswered: on a fresh run stream it writes the result and exits 0, so `rigger
 /// reported <id>` then confirms the spawn is answered. The "records when absent" half of

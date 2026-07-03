@@ -263,6 +263,17 @@ pub fn load(dir: &str) -> Result<Config, Error> {
 }
 
 fn load_agents(dir: &Path) -> Result<BTreeMap<String, AgentDef>, Error> {
+    index_agents(read_agents_dir(dir)?)
+}
+
+/// Read every `<dir>/*.md` agent definition into `(filename, AgentDef)` pairs, parsing
+/// each through [`parse_agent`]. This is the ONE directory-read-and-parse loop: [`load`]
+/// calls it then [`index_agents`]; a caller assembling a prospective fleet (e.g. `rigger
+/// setup --agents`) calls it to enumerate the agents already on disk, then indexes that
+/// list combined with its own additions - so both enumerate existing agents through the
+/// same seam rather than re-implementing (and drifting from) the loop. Returns the pairs
+/// UN-indexed so the caller controls when the fleet-wide id invariant is enforced.
+pub fn read_agents_dir(dir: &Path) -> Result<Vec<(String, AgentDef)>, Error> {
     let entries = std::fs::read_dir(dir).map_err(|e| err(format!("read agents dir: {e}")))?;
     let mut parsed = Vec::new();
     for entry in entries {
@@ -279,7 +290,7 @@ fn load_agents(dir: &Path) -> Result<BTreeMap<String, AgentDef>, Error> {
         let a = parse_agent(&b).map_err(|e| err(format!("{name}: {e}")))?;
         parsed.push((name, a));
     }
-    index_agents(parsed)
+    Ok(parsed)
 }
 
 /// Index a set of `(name, AgentDef)` pairs by id, enforcing the fleet invariants the
@@ -315,7 +326,13 @@ pub fn parse_agent(b: &[u8]) -> Result<AgentDef, Error> {
     Ok(a)
 }
 
-fn split_frontmatter(s: &str) -> Result<(&str, &str), Error> {
+/// Split a markdown-with-YAML-frontmatter document into `(frontmatter, body)`: the text
+/// between the opening `---` line and the closing `---` line, and everything after the
+/// closing delimiter. The single frontmatter-delimiter parser, so callers that only need
+/// the frontmatter (e.g. `rigger setup --agents` normalizing the identity key) parse it
+/// through this seam instead of a second copy of the delimiter logic. Errors when the
+/// opening or closing `---` is missing.
+pub fn split_frontmatter(s: &str) -> Result<(&str, &str), Error> {
     let rest = s
         .strip_prefix("---")
         .ok_or_else(|| err("missing YAML frontmatter (--- delimiters)"))?;

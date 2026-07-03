@@ -2235,7 +2235,7 @@ fn init_project(root: &Path) -> Result<ScaffoldReport, Box<dyn std::error::Error
     let rigger_dir = root.join(RIGGER_DIR);
     let agents_dir = rigger_dir.join("agents");
     std::fs::create_dir_all(&agents_dir)?;
-    let wrote_workflow = write_if_absent(&rigger_dir.join("workflow.yml"), SCAFFOLD_WORKFLOW);
+    let wrote_workflow = write_if_absent(&rigger_dir.join("workflow.yml"), SCAFFOLD_WORKFLOW)?;
 
     // 2. Load the workflow to determine which agents are referenced, then only
     // scaffold those agents. This allows setup to skip scaffolding when the
@@ -2266,8 +2266,9 @@ fn init_project(root: &Path) -> Result<ScaffoldReport, Box<dyn std::error::Error
     let mut new_agents = Vec::new();
     for (file, content) in &agents_to_scaffold {
         // Report only NEWLY-written agents; an existing agent is kept silently, so a
-        // rerun scaffolds nothing new (the skip-scaffolding hygiene of §05).
-        if write_if_absent(&agents_dir.join(file), content) {
+        // rerun scaffolds nothing new (the skip-scaffolding hygiene of §05). A genuine
+        // write failure escalates (naming the artifact), never a silent omission.
+        if write_if_absent(&agents_dir.join(file), content)? {
             new_agents.push(file.to_string());
         }
     }
@@ -2764,7 +2765,8 @@ fn import_agents(root: &Path, src: &Path) -> Result<ImportSummary, Box<dyn std::
     // the whole prospective fleet BEFORE writing anything (below), so a collision aborts
     // the import atomically instead of leaving half the files on disk to brick every
     // later load.
-    let mut fleet: Vec<(String, config::AgentDef)> = existing_agents(&dest)?;
+    let mut fleet: Vec<(String, config::AgentDef)> = config::read_agents_dir(&dest)
+        .map_err(|e| format!("setup --agents: reading the existing fleet: {e}"))?;
 
     // Pass 1: normalize, parse, and STAGE each file to write - writing nothing yet.
     let mut summary = ImportSummary::default();
@@ -2823,32 +2825,6 @@ fn import_agents(root: &Path, src: &Path) -> Result<ImportSummary, Box<dyn std::
     Ok(summary)
 }
 
-/// Parse the agent `.md` files already in `dir` into `(filename, AgentDef)` pairs, so an
-/// import can validate its additions against the fleet already on disk (id collisions in
-/// particular). A file that fails to parse is surfaced - the fleet is already broken, and
-/// the final `config::load` would reject it too.
-fn existing_agents(
-    dir: &Path,
-) -> Result<Vec<(String, config::AgentDef)>, Box<dyn std::error::Error>> {
-    let mut out = Vec::new();
-    for entry in std::fs::read_dir(dir)? {
-        let path = entry?.path();
-        if path.extension().and_then(|x| x.to_str()) != Some("md") {
-            continue;
-        }
-        let name = path
-            .file_name()
-            .and_then(|x| x.to_str())
-            .unwrap_or("?")
-            .to_string();
-        let raw = std::fs::read(&path)?;
-        let a = config::parse_agent(&raw)
-            .map_err(|e| format!("setup --agents: existing agent {name}: {e}"))?;
-        out.push((name, a));
-    }
-    Ok(out)
-}
-
 /// Return `content` with the agent's identity frontmatter key normalized to Rigger's
 /// `id:`. Collections such as agency-agents / Claude Code sub-agents name the identity
 /// field `name:`, while Rigger's [`config::AgentDef`] requires `id:`. If the
@@ -2857,23 +2833,19 @@ fn existing_agents(
 /// every other frontmatter line, and the prompt body verbatim. A file with no YAML
 /// frontmatter is an error (the same shape the loader rejects).
 fn normalize_identity(content: &str) -> Result<String, Box<dyn std::error::Error>> {
-    let after_open = content
-        .strip_prefix("---")
-        .ok_or("agent file is missing YAML frontmatter (--- delimiters)")?;
-    let after_open = after_open.strip_prefix('\n').unwrap_or(after_open);
-    let close = after_open
-        .find("\n---")
-        .ok_or("agent file has unterminated frontmatter (no closing ---)")?;
-    let front = &after_open[..close];
-    // Everything from the closing `---` onward (including the prompt body) is preserved
-    // byte-for-byte; only the frontmatter's identity key is ever rewritten.
-    let close_and_body = &after_open[close..];
+    // Parse the frontmatter through the SAME seam the loader uses
+    // (`config::split_frontmatter`), not a second private copy of the delimiter logic:
+    // `front` is the frontmatter text, `body` the prompt after the closing `---`. A file
+    // with no (or unterminated) frontmatter fails here exactly as the loader's parse does.
+    let (front, body) = config::split_frontmatter(content)?;
 
     // A top-level `id:` already present -> nothing to normalize.
     if front.lines().any(|l| top_level_key(l) == Some("id")) {
         return Ok(content.to_string());
     }
 
+    // Rename the FIRST top-level `name:` key to `id:`, preserving its value and every other
+    // frontmatter line; the prompt body is reattached verbatim.
     let mut renamed = false;
     let new_front = front
         .lines()
@@ -2889,7 +2861,7 @@ fn normalize_identity(content: &str) -> Result<String, Box<dyn std::error::Error
         .collect::<Vec<_>>()
         .join("\n");
 
-    Ok(format!("---\n{new_front}{close_and_body}"))
+    Ok(format!("---\n{new_front}\n---\n{body}"))
 }
 
 /// The top-level YAML key a frontmatter line declares, or `None` when the line is
@@ -3018,19 +2990,21 @@ fn print_run_state(rs: &RunState) {
     }
 }
 
-/// Write `content` to `path` only when it does not already exist, returning whether it
-/// WROTE (`true`) or KEPT an existing file (`false`). Keeping is silent - a `rigger
-/// setup` / `rigger init` rerun must not narrate every file it left untouched - so the
-/// return value is how callers report only what a run actually created.
-fn write_if_absent(path: &Path, content: &str) -> bool {
+/// Write `content` to `path` only when it does not already exist, returning `Ok(true)`
+/// when it WROTE the file and `Ok(false)` when it KEPT an existing one. Keeping is silent
+/// (a `rigger setup` / `rigger init` rerun must not narrate every file it left untouched),
+/// so the boolean is how callers report only what a run actually created. A genuine write
+/// FAILURE is an ERROR naming the artifact, not a swallowed `false`: setup/init must exit
+/// nonzero rather than drop an artifact it could not create from the summary while still
+/// exiting 0 (an honest-reporting hole on the error path). Only an already-present file is
+/// a silent success; a real I/O failure escalates.
+fn write_if_absent(path: &Path, content: &str) -> Result<bool, Box<dyn std::error::Error>> {
     if path.exists() {
-        return false;
+        return Ok(false);
     }
-    if let Err(e) = std::fs::write(path, content) {
-        eprintln!("rigger: write {}: {e}", path.display());
-        return false;
-    }
-    true
+    std::fs::write(path, content)
+        .map_err(|e| format!("rigger: could not write {}: {e}", path.display()))?;
+    Ok(true)
 }
 
 /// The scaffolded workflow (§3.2): a worked plan -> implement pipeline where the
@@ -3059,12 +3033,12 @@ budget: 60\n  \
 # escalating prematurely. It loosens the depth limit, never the review bar. Absent\n  \
 # falls back to 3 (the historical default); bounded by `budget` above.\n  \
 max_retries: 3\n  \
-# The three-tier review panel applied to EVERY implementer unit. Declared once\n  \
+# The three-tier review panel applied to EVERY implement unit. Declared once\n  \
 # here, inherited by the implement stage and every planner-proposed unit.\n  \
 review:\n    \
-lenses: [reviewer.architecture, reviewer.technical]   # tier 1: the expert lenses\n    \
+lenses: [architecture-reviewer, sdet]   # tier 1: the expert lenses\n    \
 adversary: adversary           # tier 2: reviews the lenses and refutes them\n    \
-adjudicator: devils-advocate   # tier 3: neutral judge; its verdict gates the unit\n\
+adjudicator: adjudicator   # tier 3: neutral judge; its verdict gates the unit\n\
 \n\
 gates:                    # a reusable library of commands, referenced by name\n  \
 build: { run: \"echo build ok; true\", kind: core }\n  \
@@ -3085,16 +3059,23 @@ produces: dag           # refine the spec's unit DAG at runtime\n\
 # same unit's remediation loop; it does NOT integrate until approved + green.\n  \
 implement:\n    \
 needs: [plan]\n    \
-agent: implementer\n    \
+agent: rust-engineer\n    \
 strategy: fan-out       # one worker per ready unit, in isolated worktrees\n    \
 partition: by-blast-radius\n    \
 gates: [build, test, lint]  # red -> green enforced around the change\n    \
 on_pass: merge          # land + reindex + record, per unit, once reviewed\n    \
 coverage: \"each unit is implemented, reviews itself, and integrates green\"\n";
 
-/// The agents the scaffolded workflow references, each a markdown-with-frontmatter
-/// definition `config::load` parses. Filenames are arbitrary; the `id` is what the
-/// workflow binds to.
+/// The agents the scaffolded workflow references - a fresh-repo SEED template, not a
+/// frozen canonical fleet. Every entry is referenced by [`SCAFFOLD_WORKFLOW`] and every
+/// referenced id is seeded here (the two stay in lockstep so a fresh `rigger init` seeds
+/// no stray, unreferenced agent). The ids match this project's own canonical personas
+/// (planner, rust-engineer, architecture-reviewer, sdet, adversary, adjudicator); the
+/// four generic placeholder personas (implementer, devils-advocate, reviewer.architecture,
+/// reviewer.technical) deliberately do NOT appear. Model tiers are a conscious seed
+/// default: the implementer and lenses on `sonnet`, the adversary and adjudicator on
+/// `opus`. Each is a markdown-with-frontmatter definition `config::load` parses; filenames
+/// are arbitrary, the `id` is what the workflow binds to.
 const SCAFFOLD_AGENTS: &[(&str, &str)] = &[
     (
         "planner.md",
@@ -3108,22 +3089,22 @@ You decompose the spec into a DAG of small, independently-verifiable units, one\
 per acceptance criterion. Emit each as a UnitProposed decision. Do not write code.\n",
     ),
     (
-        "implementer.md",
+        "rust-engineer.md",
         "---\n\
-id: implementer\n\
+id: rust-engineer\n\
 model: sonnet\n\
 tools: [Read, Edit, Write, Grep, Glob, Bash]\n\
 isolation: worktree\n\
 recurse: false\n\
 ---\n\
-You implement ONE fully-specified unit inside your worktree. Write the failing\n\
-test first, confirm RED, implement minimally, confirm GREEN, run the named gates,\n\
-commit. Report the final line as JSON: {\"id\",\"pass\",\"evidence\"}.\n",
+You implement ONE fully-specified unit inside your worktree, in idiomatic Rust.\n\
+Write the failing test first, confirm RED, implement minimally, confirm GREEN, run\n\
+the named gates, commit. Report the final line as JSON: {\"id\",\"pass\",\"evidence\"}.\n",
     ),
     (
-        "reviewer.architecture.md",
+        "architecture-reviewer.md",
         "---\n\
-id: reviewer.architecture\n\
+id: architecture-reviewer\n\
 model: sonnet\n\
 tools: [Read, Grep, Glob, Bash]\n\
 isolation: none\n\
@@ -3132,15 +3113,15 @@ You review a diff for architectural defects ONLY. Quote the rule or doc violated
 Output the REVIEW schema: {verdict, issues:[{title,file_line,reason}]}.\n",
     ),
     (
-        "reviewer.technical.md",
+        "sdet.md",
         "---\n\
-id: reviewer.technical\n\
+id: sdet\n\
 model: sonnet\n\
 tools: [Read, Grep, Glob, Bash]\n\
 isolation: none\n\
 ---\n\
-You review a diff for correctness, error-handling, and idiomatic defects ONLY.\n\
-Output the REVIEW schema: {verdict, issues:[{title,file_line,reason}]}.\n",
+You review a diff for correctness, error-handling, test coverage, and idiomatic\n\
+defects ONLY. Output the REVIEW schema: {verdict, issues:[{title,file_line,reason}]}.\n",
     ),
     (
         "adversary.md",
@@ -3157,9 +3138,9 @@ reviews - not a parallel lens - and you do NOT render the final verdict. Default
 skepticism; cite file:line. Record findings with rigger_emit.\n",
     ),
     (
-        "devils-advocate.md",
+        "adjudicator.md",
         "---\n\
-id: devils-advocate\n\
+id: adjudicator\n\
 model: opus\n\
 tools: [Read, Grep, Glob, Bash]\n\
 isolation: none\n\
@@ -4006,8 +3987,10 @@ mod tests {
         let cfg = config::load(dir.path().to_str().unwrap())
             .expect("the scaffolded config must load and validate");
 
-        // Six agents: planner, implementer, two reviewer lenses, the adversary, the
-        // adjudicator. Integration is folded into the unit lifecycle (no integrator).
+        // Six CANONICAL agents: planner, rust-engineer, the two reviewer lenses
+        // (architecture-reviewer + sdet), the adversary, the adjudicator. Integration is
+        // folded into the unit lifecycle (no integrator). None of the four generic
+        // placeholder personas is seeded.
         assert_eq!(cfg.agents.len(), 6, "scaffold agent count");
         // Two stages: plan -> implement (each unit reviews itself and integrates).
         assert_eq!(cfg.workflow.stages.len(), 2, "scaffold stage count");
@@ -4024,10 +4007,14 @@ mod tests {
         assert_eq!(implement.needs, ["plan"]);
         assert_eq!(implement.on_pass, "merge");
         let review = &cfg.workflow.defaults.review;
-        assert_eq!(review.lenses.len(), 2, "tier 1: the expert lenses");
+        assert_eq!(
+            review.lenses,
+            ["architecture-reviewer", "sdet"],
+            "tier 1: the two canonical expert lenses"
+        );
         assert_eq!(review.adversary, "adversary", "tier 2: refutes the lenses");
         assert_eq!(
-            review.adjudicator, "devils-advocate",
+            review.adjudicator, "adjudicator",
             "tier 3: the neutral adjudicator gates"
         );
         // The scaffold sets turbovec EXPLICITLY (visible, not implicit) - it is the
@@ -4051,7 +4038,7 @@ mod tests {
     // Reads relative paths (`.`, `..`) so it depends on the process CWD. Another test
     // (`cmd_stats_on_a_never_run_project...`) temporarily `set_current_dir`s to a temp
     // dir; if that runs concurrently, `config::load(".")` here resolves `.` to that
-    // temp dir and fails ("read reviewer.architecture.md: No such file"). CWD is
+    // temp dir and fails ("read architecture-reviewer.md: No such file"). CWD is
     // process-global, so a restore guard in the other test does not close the window -
     // the two must be mutually exclusive. Both share the `cwd` serial key.
     #[serial_test::serial(cwd)]
@@ -4480,6 +4467,202 @@ mod tests {
         );
     }
 
+    /// Spec 08 item 2: the scaffold seed and the scaffold workflow reference the SAME
+    /// canonical persona set - every seeded agent is referenced by the workflow and every
+    /// referenced agent is seeded (no stray, unreferenced persona on a fresh-repo init) -
+    /// and that set is the canonical six, with NONE of the four generic placeholder
+    /// personas. A regression re-seeding a generic stray, or seeding an agent the workflow
+    /// does not reference, fails here.
+    #[test]
+    fn scaffold_agents_and_workflow_reference_the_same_canonical_set() {
+        use std::collections::BTreeSet;
+
+        // Every agent id the scaffolded workflow references.
+        let wf: config::Workflow =
+            serde_yaml::from_str(SCAFFOLD_WORKFLOW).expect("the scaffolded workflow must parse");
+        let mut referenced: BTreeSet<String> = wf.defaults.review.agent_ids().into_iter().collect();
+        for stage in wf.stages.values() {
+            referenced.extend(stage.agent_ids());
+        }
+
+        // Every agent id the scaffold seeds.
+        let seeded: BTreeSet<String> = SCAFFOLD_AGENTS
+            .iter()
+            .map(|(_, c)| {
+                config::parse_agent(c.as_bytes())
+                    .expect("every seeded agent must parse")
+                    .id
+            })
+            .collect();
+
+        assert_eq!(
+            seeded, referenced,
+            "the seed and the scaffolded workflow must reference the same persona set: \
+             seeded={seeded:?} referenced={referenced:?}"
+        );
+
+        let canonical: BTreeSet<String> = [
+            "planner",
+            "rust-engineer",
+            "architecture-reviewer",
+            "sdet",
+            "adversary",
+            "adjudicator",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(
+            seeded, canonical,
+            "the seed is exactly the canonical persona set"
+        );
+
+        // The four generic placeholder personas are gone for good - not a filename, not an
+        // id (the strays spec 05/08 removed and must never re-scaffold).
+        for stray in [
+            "implementer",
+            "devils-advocate",
+            "reviewer.architecture",
+            "reviewer.technical",
+        ] {
+            assert!(
+                !seeded.contains(stray),
+                "the generic persona {stray:?} must not be seeded"
+            );
+            assert!(
+                !SCAFFOLD_AGENTS
+                    .iter()
+                    .any(|(f, _)| *f == format!("{stray}.md")),
+                "the generic file {stray}.md must not be seeded"
+            );
+        }
+    }
+
+    /// Spec 08 item 3: the referenced-agent scaffold-skip filter. `init_project` scaffolds
+    /// ONLY the seeded agents the workflow references, and skips (never writes) a seeded
+    /// agent the workflow does not reference. Driven with a workflow that references just
+    /// two of the six seeded agents: exactly those two are written, the other four are not.
+    #[test]
+    fn init_scaffolds_only_the_workflow_referenced_agents() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let rigger = root.join(RIGGER_DIR);
+        let agents = rigger.join("agents");
+        std::fs::create_dir_all(&agents).unwrap();
+
+        // A pre-existing workflow that references only `planner` and `adversary`.
+        // `init_project` keeps it (write_if_absent) and scaffolds against ITS references.
+        std::fs::write(
+            rigger.join("workflow.yml"),
+            "name: t\nstages:\n  plan:\n    agent: planner\n  go:\n    agent: adversary\n",
+        )
+        .unwrap();
+
+        let report = init_project(root).expect("init must scaffold the referenced agents");
+
+        assert!(
+            agents.join("planner.md").exists(),
+            "referenced planner seeded"
+        );
+        assert!(
+            agents.join("adversary.md").exists(),
+            "referenced adversary seeded"
+        );
+        for skipped in [
+            "rust-engineer.md",
+            "architecture-reviewer.md",
+            "sdet.md",
+            "adjudicator.md",
+        ] {
+            assert!(
+                !agents.join(skipped).exists(),
+                "an unreferenced seeded agent must NOT be scaffolded: {skipped}"
+            );
+        }
+        let mut got = report.new_agents.clone();
+        got.sort();
+        assert_eq!(
+            got,
+            ["adversary.md", "planner.md"],
+            "only the workflow-referenced agents are newly written"
+        );
+    }
+
+    /// Spec 08 item 3: `get_referenced_agent_ids` - the source of truth the scaffold-skip
+    /// filter reads - returns exactly the agent ids the workflow references, and an empty
+    /// set when there is no workflow (the empty-repo signal `init_project` uses to seed the
+    /// full default fleet).
+    #[test]
+    fn get_referenced_agent_ids_reads_the_scaffolded_workflows_fleet() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let rigger = root.join(RIGGER_DIR);
+        std::fs::create_dir_all(&rigger).unwrap();
+        std::fs::write(rigger.join("workflow.yml"), SCAFFOLD_WORKFLOW).unwrap();
+
+        let ids = get_referenced_agent_ids(root).unwrap();
+        let want: std::collections::HashSet<String> = [
+            "planner",
+            "rust-engineer",
+            "architecture-reviewer",
+            "sdet",
+            "adversary",
+            "adjudicator",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(
+            ids, want,
+            "the referenced fleet is exactly the scaffolded canonical six"
+        );
+
+        let empty = tempfile::tempdir().unwrap();
+        assert!(
+            get_referenced_agent_ids(empty.path()).unwrap().is_empty(),
+            "no workflow.yml yields an empty referenced set (the empty-repo seed signal)"
+        );
+    }
+
+    /// Spec 08 item 4: a FAILED scaffold write is an error naming the artifact, never a
+    /// swallowed `false` that drops the artifact from the summary while setup exits 0. An
+    /// already-present file is a silent `Ok(false)` (kept), a fresh path is `Ok(true)`
+    /// (wrote), and a genuine write failure is `Err` naming the path.
+    #[test]
+    fn write_if_absent_wrote_kept_and_errors_naming_the_artifact() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        // Fresh path -> wrote.
+        let fresh = root.join("fresh.txt");
+        assert!(
+            write_if_absent(&fresh, "hi").unwrap(),
+            "a fresh path is newly written"
+        );
+        assert_eq!(std::fs::read_to_string(&fresh).unwrap(), "hi");
+
+        // Already present -> kept, silent, and left byte-for-byte untouched.
+        assert!(
+            !write_if_absent(&fresh, "OVERWRITE").unwrap(),
+            "an existing file is kept, not rewritten"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&fresh).unwrap(),
+            "hi",
+            "keeping never touches the existing bytes"
+        );
+
+        // A genuine write failure (the parent directory does not exist) is an ERROR that
+        // names the artifact - not a swallowed false.
+        let unwritable = root.join("no-such-dir").join("agent.md");
+        let err = write_if_absent(&unwritable, "x")
+            .expect_err("a failed write must be an error, not a swallowed false");
+        assert!(
+            err.to_string().contains("agent.md"),
+            "the error must name the artifact it could not write; got: {err}"
+        );
+    }
+
     // ---- `rigger setup --agents <dir>`: importing a starting fleet from a local dir ----
 
     /// `rigger setup` takes only the `--agents <dir>` flag; a bare setup parses to no
@@ -4715,7 +4898,7 @@ mod tests {
         // Break a workflow agent reference so the whole-project load fails referentially.
         let wf_path = root.join(".rigger/workflow.yml");
         let wf = std::fs::read_to_string(&wf_path).unwrap();
-        std::fs::write(&wf_path, wf.replace("agent: implementer", "agent: ghost")).unwrap();
+        std::fs::write(&wf_path, wf.replace("agent: rust-engineer", "agent: ghost")).unwrap();
 
         let src = root.join("collection");
         std::fs::create_dir_all(&src).unwrap();
