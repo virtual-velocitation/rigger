@@ -325,9 +325,16 @@ impl Worktree {
         Ok(commit)
     }
 
-    /// Delete the worktree (its branch is left for the caller to clean up).
+    /// Delete the worktree (its branch is left for the caller to clean up), and reclaim its
+    /// sibling per-unit build cache (`cargo-target-<slug>`, Gap 19). This is the DOMINANT
+    /// graceful path a unit's worktree is torn down (the conductor's `run_stage` calls it at
+    /// stage-end on integrate / park / err), and the cache is a plain dir git never tracks, so
+    /// removing the worktree alone would leak a multi-gigabyte cache on the operator's small
+    /// partition. Reclamation is best-effort - a review worktree or an un-built unit has no
+    /// such sibling and it is a no-op there - and never changes the removal's result.
     pub fn remove(&self) -> Result<(), Error> {
         git(&self.repo, &["worktree", "remove", "--force", &self.dir])?;
+        reclaim_cache_sibling(&self.dir);
         Ok(())
     }
 }
@@ -447,6 +454,52 @@ pub fn scratch_root_path_from_env(repo: &str, configured: &str) -> String {
     scratch_root_path(repo, configured, env.as_deref())
 }
 
+/// Filesystem prefix of a unit's DETERMINISTIC worktree dir under the scratch root
+/// (`rigger-wt-<slug>`); the conductor's `unit_worktree_dir` is the single authority that
+/// builds it, and [`sweep_terminal`] / [`unit_cache_sibling`] read it back.
+pub const UNIT_WORKTREE_PREFIX: &str = "rigger-wt-";
+
+/// Filesystem prefix of a unit's per-unit build cache dir (`cargo-target-<slug>`), a
+/// SIBLING of its worktree under the scratch root (Gap 19). Gate commands the conductor
+/// runs inside a unit worktree build into this unit-keyed `CARGO_TARGET_DIR` so divergent
+/// unit trees never share incremental state. [`unit_cache_sibling`] is the single authority
+/// that derives the path (from the worktree dir the gate runs in); it is a plain dir, NOT a
+/// registered git worktree, so nothing git-side reclaims it. [`reclaim_cache_sibling`] does:
+/// [`Worktree::remove`] reclaims it on the DOMINANT graceful path (a unit's worktree is torn
+/// down at the end of `run_stage`), and [`sweep_terminal`] reclaims it on the crash-recovery
+/// path (a killed step process leaves the worktree still registered).
+pub const UNIT_CACHE_PREFIX: &str = "cargo-target-";
+
+/// The per-unit build cache dir that is a SIBLING of the unit worktree at `worktree_dir`
+/// (Gap 19): `<root>/rigger-wt-<slug>` -> `<root>/cargo-target-<slug>`. Returns None for any
+/// dir that is not a unit worktree (e.g. a `rigger-review-*` review worktree, or the empty
+/// worktree-less path), which owns no such cache. Because both the worktree dir and the cache
+/// dir derive from the same scratch root and the same slug, swapping the prefix reconstructs
+/// the exact cache path. This is the SINGLE source of the derivation: the conductor's
+/// `run_gates` uses it to point a gate's `CARGO_TARGET_DIR` at the cache, and
+/// [`reclaim_cache_sibling`] uses it to reclaim that same cache when the worktree is removed.
+pub fn unit_cache_sibling(worktree_dir: &str) -> Option<String> {
+    let path = std::path::Path::new(worktree_dir);
+    let slug = path
+        .file_name()?
+        .to_str()?
+        .strip_prefix(UNIT_WORKTREE_PREFIX)?;
+    let parent = path.parent()?.to_str()?;
+    Some(format!("{parent}/{UNIT_CACHE_PREFIX}{slug}"))
+}
+
+/// Reclaim the per-unit build cache that is a SIBLING of the unit worktree at `worktree_dir`
+/// (Gap 19) - the ONE mutation authority for cache reclamation, called from both worktree
+/// removal paths: [`Worktree::remove`] (the dominant graceful teardown) and [`sweep_terminal`]
+/// (crash recovery). A no-op for any dir that owns no such cache (a review worktree, or a unit
+/// whose gates never ran cargo, has none). Best-effort: a failed reclaim of a throwaway cache
+/// must never fail worktree teardown or abort the sweep.
+fn reclaim_cache_sibling(worktree_dir: &str) {
+    if let Some(cache) = unit_cache_sibling(worktree_dir) {
+        let _ = std::fs::remove_dir_all(cache);
+    }
+}
+
 /// Sweep the scratch root's TERMINAL worktrees: prune stale registrations, then remove
 /// every registered worktree under `root` whose branch tip is already an ancestor of
 /// `run_branch` - integrated (or never-advanced review scaffolding), so the worktree
@@ -454,6 +507,14 @@ pub fn scratch_root_path_from_env(repo: &str, configured: &str) -> String {
 /// alone. Returns how many worktrees were removed. This is the "the loop cleans up
 /// after itself" half of Gap 14: crashed or superseded step processes leak worktrees,
 /// and integrate-time removal alone never reclaims them.
+///
+/// Removing a UNIT worktree also reclaims its sibling per-unit build cache
+/// (`cargo-target-<slug>`, Gap 19) via [`reclaim_cache_sibling`]. This is the CRASH-recovery
+/// half: a step process killed before it reached [`Worktree::remove`] leaves its worktree
+/// still registered, so the graceful reclamation never ran and the sweep must reclaim the
+/// cache here. On the dominant graceful path [`Worktree::remove`] already reclaimed it, so
+/// this sweep never sees that worktree at all. Reclamation is best-effort and never aborts
+/// the sweep.
 pub fn sweep_terminal(repo: &str, root: &str, run_branch: &str) -> Result<usize, Error> {
     git(repo, &["worktree", "prune"])?;
     let out = run_git(repo, &["worktree", "list", "--porcelain"]).map_err(Error)?;
@@ -471,6 +532,7 @@ pub fn sweep_terminal(repo: &str, root: &str, run_branch: &str) -> Result<usize,
                 run_git(repo, &["merge-base", "--is-ancestor", branch, run_branch]).is_ok();
             if merged {
                 git(repo, &["worktree", "remove", "--force", &d])?;
+                reclaim_cache_sibling(&d);
                 removed += 1;
             }
         }
@@ -795,6 +857,109 @@ mod tests {
             std::path::Path::new(&live_dir).join("wip.txt").exists(),
             "the in-flight worktree is untouched"
         );
+    }
+
+    #[test]
+    fn sweep_terminal_reclaims_a_crash_left_terminal_units_per_unit_build_cache() {
+        // Gap 19 CRASH-recovery path: a step process killed before it reached
+        // `Worktree::remove` leaves its unit worktree STILL REGISTERED, so the graceful
+        // reclamation never ran and its sibling per-unit build cache (`cargo-target-<slug>`)
+        // is dead weight on disk. When the next step's sweep removes that still-registered
+        // TERMINAL worktree it must also reclaim the sibling cache; an IN-FLIGHT unit's cache
+        // (its worktree is kept) must be left untouched. (The DOMINANT graceful path, where
+        // `Worktree::remove` reclaims the cache directly, is pinned by
+        // `worktree_remove_reclaims_the_sibling_per_unit_cache`.)
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        run_git(&repo_path, &["checkout", "-b", "rigger-run"]).unwrap();
+        let root = scratch_root(&repo_path, "", None);
+
+        // Terminal unit: `rigger-wt-done` with its sibling `cargo-target-done` cache.
+        let done_dir = format!("{root}/{UNIT_WORKTREE_PREFIX}done");
+        Worktree::create(&repo_path, &done_dir, "rigger/u/done").unwrap();
+        let done_cache = format!("{root}/{UNIT_CACHE_PREFIX}done");
+        std::fs::create_dir_all(&done_cache).unwrap();
+        std::fs::write(std::path::Path::new(&done_cache).join("incremental"), "x").unwrap();
+
+        // In-flight unit: its worktree carries an unmerged commit, so both the worktree
+        // AND its sibling cache must survive the sweep.
+        let live_dir = format!("{root}/{UNIT_WORKTREE_PREFIX}live");
+        let live = Worktree::create(&repo_path, &live_dir, "rigger/u/live").unwrap();
+        std::fs::write(std::path::Path::new(&live_dir).join("wip.txt"), "wip\n").unwrap();
+        live.commit("rigger: in-flight").unwrap();
+        let live_cache = format!("{root}/{UNIT_CACHE_PREFIX}live");
+        std::fs::create_dir_all(&live_cache).unwrap();
+
+        let removed = sweep_terminal(&repo_path, &root, "rigger-run").unwrap();
+        assert_eq!(removed, 1, "exactly the terminal unit worktree is swept");
+        assert!(
+            !std::path::Path::new(&done_cache).exists(),
+            "the swept unit's per-unit build cache must be removed alongside its worktree"
+        );
+        assert!(
+            std::path::Path::new(&live_cache).exists(),
+            "an in-flight unit's build cache must be left untouched"
+        );
+    }
+
+    #[test]
+    fn worktree_remove_reclaims_the_sibling_per_unit_cache() {
+        // Gap 19 DOMINANT graceful path: `Worktree::remove` is what the conductor's
+        // `run_stage` calls to tear a unit's worktree down at stage-end (on integrate / park
+        // / err). It must reclaim the unit's sibling per-unit build cache
+        // (`cargo-target-<slug>`, a plain dir git never tracks) WITH the worktree, or every
+        // gracefully-terminated unit leaks a multi-gigabyte cache. A review worktree
+        // (`rigger-review-*`) owns no such sibling, so removing it must NOT disturb an
+        // unrelated sibling dir.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let root = scratch_root(&repo_path, "", None);
+
+        // A unit worktree with its sibling per-unit cache populated (as a real gate build).
+        let unit_dir = format!("{root}/{UNIT_WORKTREE_PREFIX}graceful");
+        let unit = Worktree::create(&repo_path, &unit_dir, "rigger/u/graceful").unwrap();
+        let unit_cache = format!("{root}/{UNIT_CACHE_PREFIX}graceful");
+        std::fs::create_dir_all(&unit_cache).unwrap();
+        std::fs::write(std::path::Path::new(&unit_cache).join("built.rlib"), "x").unwrap();
+
+        // A review worktree owns no `cargo-target-*` sibling; removing it must NOT touch an
+        // unrelated cache dir that happens to sit under the same scratch root.
+        let review_dir = format!("{root}/rigger-review-panel-0");
+        let review = Worktree::create(&repo_path, &review_dir, "rigger/rev/panel-0").unwrap();
+        let bystander = format!("{root}/{UNIT_CACHE_PREFIX}unrelated");
+        std::fs::create_dir_all(&bystander).unwrap();
+
+        unit.remove().unwrap();
+        assert!(
+            !std::path::Path::new(&unit_dir).exists(),
+            "the unit worktree is gone after remove()"
+        );
+        assert!(
+            !std::path::Path::new(&unit_cache).exists(),
+            "removing the unit worktree must reclaim its sibling per-unit cache, leaked at {unit_cache}"
+        );
+
+        review.remove().unwrap();
+        assert!(
+            std::path::Path::new(&bystander).exists(),
+            "removing a review worktree (which owns no per-unit cache) must not touch an unrelated cache dir"
+        );
+    }
+
+    #[test]
+    fn unit_cache_sibling_maps_a_unit_worktree_to_its_cache_and_ignores_the_rest() {
+        // The single derivation authority (Gap 19): a `rigger-wt-<slug>` unit worktree maps to
+        // its `cargo-target-<slug>` sibling under the SAME parent; anything that is not a unit
+        // worktree - a `rigger-review-*` review worktree, the shared `cargo-target` dir, or the
+        // empty worktree-less path - owns no per-unit cache and maps to None (so its gate
+        // inherits the shared target and nothing tries to reclaim a cache it never had).
+        assert_eq!(
+            unit_cache_sibling("/scratch/rigger-wt-unit-7"),
+            Some("/scratch/cargo-target-unit-7".to_string())
+        );
+        assert_eq!(unit_cache_sibling("/scratch/rigger-review-panel-0"), None);
+        assert_eq!(unit_cache_sibling("/scratch/cargo-target"), None);
+        assert_eq!(unit_cache_sibling(""), None);
     }
 
     #[test]
