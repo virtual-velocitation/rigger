@@ -444,25 +444,57 @@ fn is_budget_refused(e: &Error) -> bool {
 /// before [`degenerate_reviewer`] halts the run.
 const REVIEWER_RESPAWN_BOUND: u32 = 2;
 
+/// The sentinel a degenerate-reviewer HALT (Gap 18, spec 07) embeds in its error so
+/// [`run_wave`](RunCtx::run_wave) recognizes it through its own error wrapping and routes
+/// it through a DEDICATED arm - like [`PARKED_MARKER`] and [`BUDGET_MARKER`] it uses
+/// control characters no real error text carries. The dedicated arm propagates the loud
+/// halt but emits NO per-unit lesson: a lesson there would misattribute the OPERATOR's
+/// broken reviewer to the unit under review (finding adv-u2gap18-halt-lesson-
+/// misattribution). `run_wave` STRIPS the marker before it surfaces, so the operator's
+/// halt message stays clean.
+const DEGENERATE_MARKER: &str = "\u{1}rigger:reviewer-degenerate\u{1}";
+
 /// Construct the LOUD-HALT error the review path returns when a reviewer's original spawn
-/// and all [`REVIEWER_RESPAWN_BOUND`] respawns each returned a degenerate (empty or
-/// whitespace-only) result (Gap 18, spec 07). It NAMES the dead reviewer - `tier`
-/// (lens/adversary/adjudicator), `agent`, and the `stage` - so the operator sees WHICH
-/// spawn is failing.
+/// and all [`REVIEWER_RESPAWN_BOUND`] respawns each returned a degenerate result (Gap 18,
+/// spec 07). It NAMES the dead reviewer - `tier` (lens/adversary/adjudicator), `agent`,
+/// and the `stage` - so the operator sees WHICH spawn is failing, and names the REAL,
+/// working recovery.
 ///
-/// Unlike [`budget_refused`] and [`parked_spawn`] it carries NO sentinel marker: it is a
-/// plain error meant to PROPAGATE OUT of `run` unchanged (a degenerate reviewer is the
-/// operator's infrastructure problem, not a code defect to remediate). The respawn loop
-/// lives inside ONE review attempt and never touches the unit's remediation counter, so
-/// halting here does NOT charge the unit an attempt (no `UnitFailed`, no `UnitEscalated`).
-fn degenerate_reviewer(stage: &str, tier: &str, agent: &str) -> Error {
+/// It carries the [`DEGENERATE_MARKER`] sentinel so [`run_wave`](RunCtx::run_wave) routes
+/// it through the dedicated no-lesson arm ([`is_degenerate_reviewer`]) rather than the
+/// generic wave-failure arm (which would emit a misattributing per-unit lesson). It still
+/// PROPAGATES OUT of `run` (`run_wave` sets it as the wave's error), so a dead reviewer
+/// HALTS the run loudly rather than escalating the unit. The respawn loop lives inside ONE
+/// review attempt and never touches the unit's remediation counter, so halting here does
+/// NOT charge the unit an attempt (no `UnitFailed`, no `UnitEscalated`).
+///
+/// RECOVERY (the honest one, not the dead "just re-run"): reviewer spawn results are
+/// LAST-WRITE-WINS ([`spawn::result_of`] - a corrected re-record supersedes an earlier
+/// one), so the operator recovers by re-driving the reviewer and recording a SUBSTANTIVE
+/// result for one of its deterministic retry ids; the loop then replays that non-
+/// degenerate result and folds normally. Re-running WITHOUT a corrected result just
+/// replays the recorded empties and halts here again - which is why the message names the
+/// re-record, not a bare re-run.
+fn degenerate_reviewer(stage: &str, tier: &str, agent: &str, role: &str, attempt: u32) -> Error {
+    let latest = spawn_retry_id(stage, role, attempt, REVIEWER_RESPAWN_BOUND);
     Error(format!(
-        "stage {stage:?} {tier} {agent:?} returned empty/whitespace-only output on all {} spawns \
-         (its original spawn plus {REVIEWER_RESPAWN_BOUND} respawns): a degenerate reviewer result \
-         is an infrastructure failure, not a verdict - the run halts. Re-run once the reviewer's \
-         agent/driver is healthy; the unit is NOT charged a remediation attempt.",
+        "{DEGENERATE_MARKER}stage {stage:?} {tier} {agent:?} returned empty/whitespace-only output \
+         on all {} spawns (its original spawn plus {REVIEWER_RESPAWN_BOUND} respawns): a degenerate \
+         reviewer result is an infrastructure failure, not a verdict - the run halts and the unit is \
+         NOT charged a remediation attempt. Recover by re-driving the reviewer and recording a \
+         SUBSTANTIVE result for one of its spawn ids (results are last-write-wins, so a corrected \
+         re-record supersedes the empty one), e.g. `rigger result {latest:?} <substantive output>`; \
+         then re-run. Re-running WITHOUT a corrected result replays the recorded empties and halts \
+         here again.",
         REVIEWER_RESPAWN_BOUND + 1
     ))
+}
+
+/// Whether `e` is a degenerate-reviewer HALT signal (see [`degenerate_reviewer`]) rather
+/// than a real stage failure. Robust to the review sites' own error wrapping, since the
+/// [`DEGENERATE_MARKER`] survives as a substring.
+fn is_degenerate_reviewer(e: &Error) -> bool {
+    e.0.contains(DEGENERATE_MARKER)
 }
 
 /// The conductor's injected ports.
@@ -1282,6 +1314,20 @@ impl RunCtx<'_> {
                     // adv-confirm-review-tier-no-budgetexhausted,
                     // adv-budget-guard-cannot-assemble-reviewed-unit).
                     Err(e) if is_budget_refused(&e) => {}
+                    // A degenerate-reviewer HALT (Gap 18) is an INFRASTRUCTURE fault, not a
+                    // unit failure: the operator's reviewer agent/driver returned only
+                    // empty results. Route it through its OWN arm (like the park/budget
+                    // sentinels) - propagate the loud halt as the wave's error, but emit NO
+                    // per-unit lesson: a lesson here would misattribute the operator's
+                    // broken reviewer to the unit under review (finding adv-u2gap18-halt-
+                    // lesson-misattribution). It charges no attempt (no UnitFailed/
+                    // UnitEscalated - the halt writes nothing against the unit). Strip the
+                    // recognition marker so the operator's halt message stays clean.
+                    Err(e) if is_degenerate_reviewer(&e) => {
+                        if first_err.is_none() {
+                            first_err = Some(Error(e.0.replace(DEGENERATE_MARKER, "")));
+                        }
+                    }
                     Err(e) => {
                         // EVERY erroring stage leaves a record, not just the first
                         // (item 8): the wave collapses to a single returned error, so
@@ -2185,6 +2231,9 @@ impl RunCtx<'_> {
             dir,
             attempt,
             true,
+            // A lens's stdout is NOT its verdict - it emits findings to the graph - so an
+            // empty stdout is degenerate only when it also emitted no ReviewFinding.
+            false,
             &prompt,
         )?;
         Ok(())
@@ -2196,23 +2245,33 @@ impl RunCtx<'_> {
     /// three tiers - `run_lens`/`run_adversary` discard the returned result, while
     /// `run_adjudicator` reads its verdict.
     ///
-    /// A reviewer result that is empty or whitespace-only is an INFRASTRUCTURE fault, not
-    /// a verdict (spec 07): the conductor respawns the SAME reviewer under a deterministic
-    /// `~retry{n}` id ([`spawn_retry_id`]) - a NEW spawn a stepwise/replay driver parks
-    /// and answers independently - and only a substantive result is returned to fold into
-    /// the review outcome. The loop is bounded at [`REVIEWER_RESPAWN_BOUND`] respawns; if
-    /// every spawn (its original plus the respawns) is degenerate, it returns the
-    /// [`degenerate_reviewer`] halt error - a plain error (no park/budget sentinel) that
-    /// propagates out of `run` unchanged, so a dead reviewer HALTS the run loudly rather
-    /// than escalating the unit. The respawn loop lives INSIDE one review attempt: it
-    /// never touches the unit's remediation counter, so a degenerate reviewer never
-    /// charges the unit an attempt (spec 07 exclusion).
+    /// A DEGENERATE reviewer result is an INFRASTRUCTURE fault, not a verdict (spec 07):
+    /// the conductor respawns the SAME reviewer under a deterministic `~retry{n}` id
+    /// ([`spawn_retry_id`]) - a NEW spawn a stepwise/replay driver parks and answers
+    /// independently - and only a NON-degenerate result is returned to fold into the review
+    /// outcome. What COUNTS as degenerate is tier-specific (see
+    /// [`reviewer_result_is_degenerate`](RunCtx::reviewer_result_is_degenerate)): the
+    /// adjudicator's empty stdout is degenerate (its stdout is the verdict), while a
+    /// lens/adversary is degenerate only when it emitted no ReviewFinding AND an empty
+    /// stdout on the LIVE path (a replayed empty result is a valid graph-channel outcome).
+    /// The loop is bounded at [`REVIEWER_RESPAWN_BOUND`] respawns; if every spawn (its
+    /// original plus the respawns) is degenerate, it returns the [`degenerate_reviewer`]
+    /// halt error - a [`DEGENERATE_MARKER`]-tagged error [`run_wave`](RunCtx::run_wave)
+    /// routes through its dedicated no-lesson arm and propagates out of `run`, so a dead
+    /// reviewer HALTS the run loudly rather than escalating the unit. The respawn loop
+    /// lives INSIDE one review attempt: it never touches the unit's remediation counter, so
+    /// a degenerate reviewer never charges the unit an attempt (spec 07 exclusion). The
+    /// halt is RECOVERABLE on the replay driver: results are last-write-wins, so recording
+    /// a substantive result for a retry id lets the next step replay it and fold normally
+    /// (see [`degenerate_reviewer`]).
     ///
     /// `tier` is the human label the audit trail/`reviewer_spawn_opts` use; `role` is the
     /// deterministic-id role token (`lens_role(agent)` / [`ROLE_ADVERSARY`] /
     /// [`ROLE_ADJUDICATOR`]); `parallel` sets the reviewer's isolation-opt (§6, lenses run
-    /// in parallel); `prompt` is the tier's already-grounded prompt. A budget-refused
-    /// respawn surfaces the budget sentinel exactly like the original spawn.
+    /// in parallel); `stdout_is_verdict` selects the tier-specific degeneracy signal (see
+    /// [`reviewer_result_is_degenerate`](RunCtx::reviewer_result_is_degenerate)); `prompt`
+    /// is the tier's already-grounded prompt. A budget-refused respawn surfaces the budget
+    /// sentinel exactly like the original spawn.
     #[allow(clippy::too_many_arguments)]
     fn run_reviewer(
         &self,
@@ -2223,6 +2282,7 @@ impl RunCtx<'_> {
         dir: &str,
         attempt: u32,
         parallel: bool,
+        stdout_is_verdict: bool,
         prompt: &str,
     ) -> Result<AgentResult, Error> {
         let agent_def = self.cfg.agents.get(agent_id).ok_or_else(|| {
@@ -2239,19 +2299,92 @@ impl RunCtx<'_> {
             if !self.reserve_spawn(&id) {
                 return Err(budget_refused(&st.name, tier, agent_id));
             }
-            let emit = |t: &str, v: Value| self.emit_with_actor(agent_id, t, v);
+            // Count the ReviewFindings this spawn emits to the graph - a lens/adversary's
+            // REAL work channel (the REVIEW_PROTOCOL). A reviewer that emitted its findings
+            // but self-reported an empty stdout DID its work and must not be misread as
+            // degenerate (Gap 18, adv-u2gap18-empty-success-is-a-valid-outcome-misread-as-
+            // degenerate). The callback fires only while the agent runs IN-PROCESS.
+            let findings = std::cell::Cell::new(0u32);
+            let emit = |t: &str, v: Value| {
+                if t == contextgraph::TYPE_REVIEW_FINDING {
+                    findings.set(findings.get() + 1);
+                }
+                self.emit_with_actor(agent_id, t, v)
+            };
             let result = self
                 .deps
                 .driver
                 .spawn(agent_def, prompt, &opts, &emit)
                 .map_err(|e| Error(format!("stage {:?} {tier} {agent_id:?}: {}", st.name, e.0)))?;
-            // A substantive result folds into the review; a degenerate (empty/whitespace-
-            // only) one loops to respawn the SAME reviewer under the next retry id.
-            if !result.output.trim().is_empty() {
+            // A substantive result folds into the review; a degenerate one loops to respawn
+            // the SAME reviewer under the next retry id.
+            if !self.reviewer_result_is_degenerate(
+                stdout_is_verdict,
+                &id,
+                &result,
+                findings.get(),
+            )? {
                 return Ok(result);
             }
         }
-        Err(degenerate_reviewer(&st.name, tier, agent_id))
+        Err(degenerate_reviewer(&st.name, tier, agent_id, role, attempt))
+    }
+
+    /// Whether a reviewer spawn's `result` is DEGENERATE (Gap 18) - an infrastructure
+    /// fault the conductor respawns/halts on rather than folding into the review. The
+    /// signal DIFFERS by tier because each tier's WORK lands in a different channel:
+    ///
+    /// - The ADJUDICATOR's stdout IS its verdict (`stdout_is_verdict`), so an empty or
+    ///   whitespace-only stdout is degenerate on EVERY path - including a recorded empty
+    ///   result replayed on the stepwise path. That is the wedge Gap 18 must catch (and
+    ///   let recover): `build_result` records an empty success with no non-empty check, so
+    ///   an infra-broken adjudicator's empty result would otherwise fold as a silent
+    ///   reject.
+    /// - A LENS/ADVERSARY emits its findings to the GRAPH and its stdout is discarded, so
+    ///   an empty stdout is the NORMAL outcome, never degeneracy by itself. It is
+    ///   degenerate only when the conductor OBSERVED it produce nothing at all: zero
+    ///   ReviewFindings from this spawn's emit callback AND an empty stdout. That
+    ///   observation is possible only while the agent runs IN-PROCESS (the live drivers);
+    ///   on the stepwise path the agent ran out-of-process and its findings, if any, are
+    ///   already in the graph, so a REPLAYED result (one whose outcome is already recorded
+    ///   in the log) is a VALID outcome, never degeneracy. This is why a healthy
+    ///   lens/adversary that correctly emitted its findings and self-reported an empty
+    ///   success is NOT misread as degenerate on the production replay driver
+    ///   (adv-u2gap18-empty-success-is-a-valid-outcome-misread-as-degenerate), with no
+    ///   fragile per-spawn actor attribution of the recorded findings.
+    fn reviewer_result_is_degenerate(
+        &self,
+        stdout_is_verdict: bool,
+        id: &str,
+        result: &AgentResult,
+        findings_emitted: u32,
+    ) -> Result<bool, Error> {
+        if !result.output.trim().is_empty() {
+            return Ok(false);
+        }
+        if stdout_is_verdict {
+            // The adjudicator's verdict IS its stdout: empty is degenerate on both the
+            // live and the replay path.
+            return Ok(true);
+        }
+        if findings_emitted > 0 {
+            // A lens/adversary that emitted a ReviewFinding this spawn did its work.
+            return Ok(false);
+        }
+        // Empty stdout, zero observed findings: degenerate only if the agent actually ran
+        // in-process (live). A spawn whose result is ALREADY recorded was REPLAYED - the
+        // agent ran out-of-process and its findings went to the graph, so its empty stdout
+        // is a valid outcome, not degeneracy. The live drivers never record a spawn
+        // result, so this read is `None` there and the in-process observation stands.
+        let events = self
+            .deps
+            .store
+            .read_stream(STREAM, 0, Direction::Forward)
+            .map_err(|e| Error(e.to_string()))?;
+        let replayed = spawn::result_of(&events, id)
+            .map_err(|e| Error(e.to_string()))?
+            .is_some();
+        Ok(!replayed)
     }
 
     /// Run the adversary: a single agent that reviews the lenses' findings and the
@@ -2282,6 +2415,9 @@ impl RunCtx<'_> {
             adv_id,
             dir,
             attempt,
+            false,
+            // Like a lens, the adversary's stdout is discarded (findings go to the graph),
+            // so an empty stdout is degenerate only when it emitted no ReviewFinding.
             false,
             &prompt,
         )?;
@@ -2316,6 +2452,9 @@ impl RunCtx<'_> {
             dir,
             attempt,
             false,
+            // The adjudicator's stdout IS the gating verdict, so an empty/whitespace-only
+            // stdout is degenerate on every path (including a replayed recorded result).
+            true,
             &prompt,
         )?;
         // The resolved model the adjudicator ran as (spec 05 line 52) rides back with the
@@ -5659,7 +5798,9 @@ mod tests {
         let cfg = degenerate_reviewer_cfg();
         let driver = Stub {
             output_by_spawn_id: HashMap::from([
-                // Original lens spawn: empty -> degenerate, respawned.
+                // Original lens spawn: empty stdout AND (no emits_by_agent set) no
+                // ReviewFinding -> the conductor OBSERVED it produce nothing in-process, so
+                // it is degenerate and respawned.
                 (spawn_id("u", &lens_role("sdet"), 0), String::new()),
                 // First lens respawn: a substantive review (its output is folded via
                 // the graph, not a verdict, so any non-empty text lets the review proceed).
@@ -5705,6 +5846,69 @@ mod tests {
     }
 
     #[test]
+    fn a_lens_that_emitted_a_finding_but_reports_empty_stdout_is_not_degenerate() {
+        // Fix 1 for adj-u2gap18 / adv-u2gap18-empty-success-is-a-valid-outcome-misread-as-
+        // degenerate: a lens's stdout is NOT its verdict - it emits findings to the graph -
+        // so an EMPTY stdout is the normal outcome, NOT degeneracy, when the lens emitted a
+        // ReviewFinding. The lens here emits one ReviewFinding and reports empty stdout; it
+        // must fold on its FIRST spawn (no respawn), and the review must proceed.
+        let store = Store::open(":memory:").unwrap();
+        let cfg = degenerate_reviewer_cfg();
+        let driver = Stub {
+            // The lens does its real work through the graph (a ReviewFinding) and returns
+            // an EMPTY stdout - exactly the healthy shape the prior version misread.
+            emits_by_agent: HashMap::from([(
+                "sdet".to_string(),
+                vec![(
+                    contextgraph::TYPE_REVIEW_FINDING.to_string(),
+                    json!({"id": "f-sdet-1", "summary": "a real concern", "about": ["u"]}),
+                )],
+            )]),
+            output_by_agent: HashMap::from([
+                // sdet's stdout is deliberately empty (its finding is the work).
+                ("sdet".to_string(), String::new()),
+                ("judge".to_string(), r#"{"verdict":"approve"}"#.to_string()),
+            ]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).expect("a finding-emitting lens with empty stdout is not degenerate");
+
+        // The lens was spawned EXACTLY ONCE - its empty stdout was not misread as degenerate
+        // (no respawn), because it emitted a ReviewFinding.
+        assert_eq!(
+            driver.spawn_count("sdet"),
+            1,
+            "a lens that emitted a ReviewFinding is not degenerate on an empty stdout"
+        );
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        // Its finding really did reach the log (the graph is the channel), and the review
+        // approved normally.
+        assert!(
+            events
+                .iter()
+                .any(|e| e.type_ == contextgraph::TYPE_REVIEW_FINDING),
+            "the lens's ReviewFinding is recorded"
+        );
+        assert!(
+            has_status(&events, "reviewed"),
+            "the review approves normally"
+        );
+        assert!(
+            !events.iter().any(|e| e.type_ == ledger::TYPE_UNIT_FAILED),
+            "a healthy finding-emitting lens charges no attempt"
+        );
+    }
+
+    #[test]
     fn a_reviewer_that_only_ever_returns_degenerate_output_halts_the_run_loudly_naming_it() {
         // Gap 18: when the respawn bound (two respawns) exhausts with only degenerate
         // results, the unit does NOT lose the attempt - the run halts LOUDLY, naming the
@@ -5742,6 +5946,20 @@ mod tests {
             "the loud halt must name the dead reviewer, its tier, and the unit: {}",
             err.0
         );
+        // The surfaced halt message is CLEAN - the internal recognition marker is stripped
+        // by run_wave before it reaches the operator.
+        assert!(
+            !err.0.contains(DEGENERATE_MARKER),
+            "the operator-facing halt must not carry the internal sentinel marker: {:?}",
+            err.0
+        );
+        // It names the REAL recovery (re-record a substantive result; last-write-wins), not
+        // the dead "just re-run" promise the adjudicator rejected at adj-u2gap18.
+        assert!(
+            err.0.contains("rigger result") && err.0.contains("last-write-wins"),
+            "the halt must name the working recovery (a corrected re-record), not a bare re-run: {}",
+            err.0
+        );
 
         // The adjudicator was spawned exactly THREE times: the original + two respawns.
         assert_eq!(
@@ -5774,6 +5992,17 @@ mod tests {
                 .iter()
                 .any(|e| e.type_ == ledger::TYPE_UNIT_ESCALATED),
             "a degenerate-reviewer halt is not a code defect for remediation (no UnitEscalated)"
+        );
+        // And it emits NO per-unit lesson: routing the halt through run_wave's dedicated
+        // degenerate arm (not the generic wave-failure arm) keeps it from misattributing
+        // the operator's broken reviewer to the unit under review as a LESSON_LEARNED
+        // (fix for adv-u2gap18-halt-lesson-misattribution / sdet-u2-halt-emits-unit-lesson-
+        // misattribution).
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.type_ == contextgraph::TYPE_LESSON_LEARNED),
+            "a degenerate-reviewer halt must emit no per-unit lesson (no misattribution)"
         );
         // The implementer ran exactly once - the halt did not restart the unit lifecycle.
         assert_eq!(driver.spawn_count("worker"), 1);

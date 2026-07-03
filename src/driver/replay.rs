@@ -124,7 +124,7 @@ mod tests {
     use crate::config::{Config, Stage};
     use crate::eventstore::sqlite::Store;
     use crate::gate::ExecRunner;
-    use crate::spawn::{spawn_id, ROLE_IMPLEMENTER};
+    use crate::spawn::{lens_role, spawn_id, spawn_retry_id, ROLE_ADJUDICATOR, ROLE_IMPLEMENTER};
 
     /// A no-op emit sink: the replay driver never emits, so tests pass this.
     fn no_emit(_: &str, _: Value) -> Result<(), Error> {
@@ -851,6 +851,219 @@ mod tests {
             spawn::recorded(&events).unwrap().len(),
             1,
             "the refused lens is not parked - only the implementer spawn is recorded"
+        );
+    }
+
+    /// A read-only reviewer agent with its own id (so its spawn ids are distinct from the
+    /// implementer's).
+    fn named(id: &str) -> AgentDef {
+        AgentDef {
+            id: id.into(),
+            model: "sonnet".into(),
+            tools: vec!["Read".into()],
+            ..Default::default()
+        }
+    }
+
+    /// A single-unit config with a lens + adjudicator review panel and `on_pass: none` (so
+    /// an approved review folds without a git repo to integrate into). The Gap-18 replay
+    /// tests below drive its reviewers across the park/replay boundary.
+    fn reviewed_unit_cfg() -> Config {
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), worker());
+        cfg.agents.insert("sdet".into(), named("sdet"));
+        cfg.agents.insert("judge".into(), named("judge"));
+        cfg.workflow.stages.insert(
+            "u".into(),
+            Stage {
+                name: "u".into(),
+                agent: "worker".into(),
+                on_pass: "none".into(),
+                review: crate::config::ReviewPanel {
+                    lenses: vec!["sdet".into()],
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        cfg
+    }
+
+    /// Run one `rigger step`: a fresh ReplayDriver over `store`, driving `conductor::run`
+    /// to its parked frontier (or its loud halt).
+    fn replay_step(store: &Store, cfg: &Config) -> Result<(), Error> {
+        let driver = ReplayDriver::new(store);
+        let deps = Deps {
+            store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(cfg, &deps).map(|_| ())
+    }
+
+    /// A courier answering a parked spawn: record its result. An empty `output` is the
+    /// degenerate infrastructure answer `build_result` records for an empty reviewer.
+    fn courier_records(store: &Store, id: &str, output: &str) {
+        spawn::record_result(store, &spawn::SpawnResult::ok(id, output)).unwrap();
+    }
+
+    #[test]
+    fn a_degenerate_adjudicator_halts_across_replay_steps_then_recovers_when_healthy() {
+        // Gap 18 / adj-u2gap18 fixes 2+3, driven on the PRODUCTION stepwise/replay driver
+        // across the park/replay boundary - the untested wedge the reject named (done-when
+        // line 37 requires a test INCLUDING replay):
+        //  - the adjudicator's ORIGINAL spawn and both respawns are each answered EMPTY by a
+        //    courier (`build_result` records an empty success), so the run replays them to
+        //    the respawn bound and HALTS loudly, naming the dead adjudicator;
+        //  - the retry ids are DETERMINISTIC across the separate step processes (each
+        //    respawn parks under its `~retry{n}` id and is answered independently);
+        //  - the halt charges the unit no attempt and emits no misattributing lesson;
+        //  - RECOVERY is real, not the dead "just re-run": results are last-write-wins, so
+        //    re-driving the now-healthy adjudicator and recording a SUBSTANTIVE result for a
+        //    retry id lets the next step replay it and fold the review normally.
+        let store = Store::open(":memory:").unwrap();
+        let cfg = reviewed_unit_cfg();
+
+        let impl_id = spawn_id("u", ROLE_IMPLEMENTER, 0);
+        let lens_id = spawn_id("u", &lens_role("sdet"), 0);
+        let adj0 = spawn_retry_id("u", ROLE_ADJUDICATOR, 0, 0);
+        let adj1 = spawn_retry_id("u", ROLE_ADJUDICATOR, 0, 1);
+        let adj2 = spawn_retry_id("u", ROLE_ADJUDICATOR, 0, 2);
+
+        let parked = |id: &str| {
+            let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            spawn::is_recorded(&events, id)
+        };
+
+        // Step 1: the implementer parks; a courier answers it.
+        replay_step(&store, &cfg).expect("a parked frontier is not a run failure");
+        assert!(parked(&impl_id), "step 1 parks the implementer");
+        courier_records(&store, &impl_id, "implemented");
+
+        // Step 2: the implementer replays to `verified`, then the LENS parks. A courier
+        // answers it with a substantive review, so the halt below is provably the
+        // ADJUDICATOR's, not the lens's.
+        replay_step(&store, &cfg).unwrap();
+        assert!(parked(&lens_id), "step 2 parks the lens");
+        courier_records(&store, &lens_id, "lens: reviewed, no blocker");
+
+        // Step 3: the adjudicator's ORIGINAL spawn parks; the courier answers it EMPTY.
+        replay_step(&store, &cfg).unwrap();
+        assert!(
+            parked(&adj0),
+            "step 3 parks the adjudicator's original spawn"
+        );
+        courier_records(&store, &adj0, "");
+
+        // Step 4: retry0 replays EMPTY -> degenerate -> the `~retry1` respawn parks.
+        replay_step(&store, &cfg).unwrap();
+        assert!(
+            parked(&adj1),
+            "step 4 parks the deterministic ~retry1 respawn"
+        );
+        courier_records(&store, &adj1, "  \n ");
+
+        // Step 5: retry0+retry1 replay EMPTY -> the `~retry2` respawn parks.
+        replay_step(&store, &cfg).unwrap();
+        assert!(
+            parked(&adj2),
+            "step 5 parks the deterministic ~retry2 respawn"
+        );
+        courier_records(&store, &adj2, "");
+
+        // Step 6: retry0+retry1+retry2 ALL replay EMPTY -> the respawn bound is exhausted
+        // and the run HALTS loudly, naming the dead adjudicator.
+        let err = replay_step(&store, &cfg)
+            .expect_err("an all-degenerate adjudicator halts the run across replay steps");
+        assert!(
+            err.0.contains("\"judge\"") && err.0.contains("adjudicator"),
+            "the loud halt names the dead reviewer: {}",
+            err.0
+        );
+        // The bound holds WITHIN the run: no fresh retry3 is minted this run.
+        assert!(
+            !parked(&spawn_retry_id("u", ROLE_ADJUDICATOR, 0, 3)),
+            "the respawn bound holds - no retry3 is parked this run"
+        );
+        // The halt charges the unit no attempt and emits NO misattributing lesson.
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.type_ == crate::ledger::TYPE_UNIT_FAILED),
+            "the halt charges the unit no attempt (no UnitFailed)"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.type_ == crate::ledger::TYPE_UNIT_ESCALATED),
+            "the halt does not escalate the unit (no UnitEscalated)"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.type_ == crate::contextgraph::TYPE_LESSON_LEARNED),
+            "the halt emits no per-unit lesson (no misattribution of the broken reviewer)"
+        );
+
+        // RECOVERY: the operator's adjudicator is healthy now. Re-drive it and record a
+        // SUBSTANTIVE approve for the latest retry id; results are last-write-wins, so this
+        // supersedes the recorded empty - the honest recovery the halt message names.
+        courier_records(&store, &adj2, r#"{"verdict":"approve"}"#);
+
+        // Step 7: the run replays retry0+retry1 (empty, degenerate) then retry2 (now the
+        // SUBSTANTIVE approve) -> the review folds normally, NO halt.
+        replay_step(&store, &cfg).expect("a corrected retry result recovers the run - no halt");
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(
+            events.iter().any(|e| {
+                e.type_ == crate::ledger::TYPE_UNIT_STATUS
+                    && String::from_utf8_lossy(&e.data).contains("\"status\":\"reviewed\"")
+            }),
+            "the corrected adjudicator verdict folds and the unit reaches reviewed"
+        );
+    }
+
+    #[test]
+    fn a_recorded_empty_lens_result_is_valid_on_replay_not_degenerate() {
+        // adj-u2gap18 fix 1 on the PRODUCTION replay driver: the misclassification is
+        // reachable WITHOUT any broken reviewer. A healthy lens emits its findings to the
+        // graph and self-reports an EMPTY success; on the replay driver that empty recorded
+        // result must fold as VALID (the graph is the channel), never a degenerate respawn
+        // that could eventually halt. Every spawn's result is pre-recorded (as couriers
+        // would across steps): the lens answered EMPTY, the adjudicator approved. The single
+        // replay step must reach `reviewed` with NO lens respawn and NO halt.
+        let store = Store::open(":memory:").unwrap();
+        let cfg = reviewed_unit_cfg();
+        courier_records(&store, &spawn_id("u", ROLE_IMPLEMENTER, 0), "implemented");
+        courier_records(&store, &spawn_id("u", &lens_role("sdet"), 0), "");
+        courier_records(
+            &store,
+            &spawn_id("u", ROLE_ADJUDICATOR, 0),
+            r#"{"verdict":"approve"}"#,
+        );
+
+        replay_step(&store, &cfg)
+            .expect("an empty lens result is valid on the replay driver, not a halt");
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        // No lens respawn was parked - the empty stdout was not misread as degenerate.
+        assert!(
+            !spawn::is_recorded(&events, &spawn_retry_id("u", &lens_role("sdet"), 0, 1)),
+            "a healthy empty-stdout lens is not respawned on the replay driver"
+        );
+        // The review folded and the unit reached `reviewed`.
+        assert!(
+            events.iter().any(|e| {
+                e.type_ == crate::ledger::TYPE_UNIT_STATUS
+                    && String::from_utf8_lossy(&e.data).contains("\"status\":\"reviewed\"")
+            }),
+            "the review folds and the unit reaches reviewed"
         );
     }
 }
