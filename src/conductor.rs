@@ -3282,11 +3282,13 @@ fn write_capped_findings(b: &mut String, g: &Graph, seed: &[String]) {
         FINDINGS_VERBATIM_N,
         FINDINGS_BUDGET_BYTES,
         |n| {
-            let summary = n.attrs.get("summary").map(String::as_str).unwrap_or("");
             let by = n.attrs.get("by").map(String::as_str).unwrap_or("");
             if by.is_empty() {
-                format!("- {}: {}\n", n.id, summary)
+                // No raising reviewer recorded: fall back to the shared plain body so the
+                // `- {id}: {summary}` line lives in exactly one place (arch-u1gap17).
+                plain_node_line(n)
             } else {
+                let summary = n.attrs.get("summary").map(String::as_str).unwrap_or("");
                 format!("- {by} ({}): {summary}\n", n.id)
             }
         },
@@ -5265,6 +5267,178 @@ mod tests {
             out.contains("lens2 (f299):"),
             "a finding line must name the reviewer and id; output was:\n{}",
             &out[..out.len().min(400)]
+        );
+    }
+
+    #[test]
+    fn the_verbatim_count_cap_binds_on_many_small_findings() {
+        // sdet-u1gap17-findings-n-cap-undiscriminated: the byte-budget test above only
+        // exercises the byte arm (chunky findings bind FINDINGS_BUDGET_BYTES first). With
+        // many TINY findings the byte budget never binds, so this isolates the recent-N
+        // arm: exactly FINDINGS_VERBATIM_N are kept verbatim, asserted against that FIXED
+        // count (not a self-referencing byte threshold), so a regression ballooning
+        // FINDINGS_VERBATIM_N renders all of them and fails this.
+        let seed = vec!["conductor.rs".to_string()];
+        let total = FINDINGS_VERBATIM_N + 10;
+        let findings: Vec<(String, String, String)> = (0..total)
+            .map(|i| {
+                (
+                    format!("f{i:03}"),
+                    format!("lens{}", i % 3),
+                    format!("tiny finding {i}"),
+                )
+            })
+            .collect();
+        let borrowed: Vec<(&str, &str, String)> = findings
+            .iter()
+            .map(|(id, by, s)| (id.as_str(), by.as_str(), s.clone()))
+            .collect();
+        let out = render_capped_findings(&borrowed, &seed);
+        let kept = (0..total)
+            .filter(|i| out.contains(&format!("(f{i:03}):")))
+            .count();
+        assert_eq!(
+            kept, FINDINGS_VERBATIM_N,
+            "exactly N tiny findings must be kept verbatim (the count cap binds, not bytes); \
+             output was:\n{out}"
+        );
+        assert!(
+            out.contains(&format!("+{} older finding", total - FINDINGS_VERBATIM_N)),
+            "the elision note must name the count the N cap trims; output was:\n{out}"
+        );
+    }
+
+    // Build a lessons subgraph from a list of (id, summary) tuples, applied in order so
+    // each event's position increases (older first), then return the rendered
+    // capped-lessons section for `seed`. Mirrors `render_capped_findings` for the lessons
+    // half of Gap 17 (lessons carry no `by`, so their line is the plain `- id: summary`).
+    fn render_capped_lessons(lessons: &[(&str, String)], seed: &[String]) -> String {
+        let graph = crate::contextgraph::sqlite::Projector::open(":memory:").unwrap();
+        for (i, (id, summary)) in lessons.iter().enumerate() {
+            let mut e = Event::new(
+                contextgraph::TYPE_LESSON_LEARNED,
+                serde_json::to_vec(&json!({
+                    "id": id,
+                    "summary": summary,
+                    "about": seed,
+                }))
+                .unwrap(),
+            );
+            e.position = (i as u64) + 1;
+            graph.apply(&e).unwrap();
+        }
+        let g = graph.subgraph(seed, 2).unwrap();
+        let mut b = String::new();
+        write_capped_lessons(&mut b, &g, seed);
+        b
+    }
+
+    #[test]
+    fn lessons_prompt_injection_is_capped_under_budget_with_elision_note() {
+        // sdet-u1gap17-lessons-cap-render-untested / Gap 17 / spec 07 line 36: the lessons
+        // half of this unit's charter had ZERO render coverage, which is exactly why a dead
+        // recovery note shipped past all three tiers. This pins the whole rendered contract:
+        // the header, freshest-first recency, the byte cap firing on a pile of chunky
+        // lessons, and ONE visible elision note naming the elided count and the honest
+        // `rigger peers <file>` recovery (now backed by sidecar::lessons_for). The store
+        // keeps the full history - only the prompt slice narrows.
+        let seed = vec!["conductor.rs".to_string()];
+        // K chunky lessons, oldest (l000) first; recency grows with i, so l{K-1} is newest.
+        const K: usize = 200;
+        let lessons: Vec<(String, String)> = (0..K)
+            .map(|i| {
+                (
+                    format!("l{i:03}"),
+                    format!("LESSON_MARKER_{i} {}", "w".repeat(2400)),
+                )
+            })
+            .collect();
+        let borrowed: Vec<(&str, String)> = lessons
+            .iter()
+            .map(|(id, s)| (id.as_str(), s.clone()))
+            .collect();
+        let out = render_capped_lessons(&borrowed, &seed);
+
+        // The section renders under its own header.
+        assert!(
+            out.contains("Lessons already learned about these files"),
+            "the lessons section must render its header; output was:\n{}",
+            &out[..out.len().min(400)]
+        );
+        // Uncapped, the lessons section alone would be ~500KB; the cap holds it under its
+        // per-section budget (plus slack for the header and the elision note line).
+        assert!(
+            out.len() < LESSONS_BUDGET_BYTES + 2 * 1024,
+            "capped lessons section must stay under its byte budget; len={}",
+            out.len()
+        );
+        // Freshest-first: the newest survives verbatim, the oldest is elided (kept in store).
+        assert!(
+            out.contains("LESSON_MARKER_199 "),
+            "the newest lesson must be kept verbatim"
+        );
+        assert!(
+            !out.contains("LESSON_MARKER_0 "),
+            "the oldest lesson must be elided from the prompt (it stays in the store)"
+        );
+        // The trim is VISIBLE: one elision note naming the elided count and the honest
+        // `rigger peers <file>` recovery command.
+        let verbatim = (0..K)
+            .filter(|i| out.contains(&format!("LESSON_MARKER_{i} ")))
+            .count();
+        assert!(
+            verbatim >= 1,
+            "at least one lesson must still render verbatim; got {verbatim}"
+        );
+        let elided = K - verbatim;
+        assert!(
+            out.contains(&format!("+{elided} older lesson")),
+            "the elision note must name the elided lesson count ({elided})"
+        );
+        assert!(
+            out.contains("rigger peers conductor.rs"),
+            "the elision note must name the `rigger peers <file>` recovery command \
+             (backed by sidecar::lessons_for so it is not a dead promise)"
+        );
+    }
+
+    #[test]
+    fn the_verbatim_count_cap_binds_on_many_small_lessons() {
+        // sdet-u1gap17-lessons-cap-render-untested (N arm): with many TINY lessons the byte
+        // budget never binds, so this isolates the recent-N arm - exactly LESSONS_VERBATIM_N
+        // are kept, asserted against that FIXED count so a regression ballooning
+        // LESSONS_VERBATIM_N (bytes never bind) renders all of them and fails. Also pins the
+        // freshest-first ordering: the newest lesson outranks an older one in the slice.
+        let seed = vec!["conductor.rs".to_string()];
+        let total = LESSONS_VERBATIM_N + 8;
+        let lessons: Vec<(String, String)> = (0..total)
+            .map(|i| (format!("small{i:03}"), format!("tiny lesson {i}")))
+            .collect();
+        let borrowed: Vec<(&str, String)> = lessons
+            .iter()
+            .map(|(id, s)| (id.as_str(), s.clone()))
+            .collect();
+        let out = render_capped_lessons(&borrowed, &seed);
+        let kept = (0..total)
+            .filter(|i| out.contains(&format!("small{i:03}:")))
+            .count();
+        assert_eq!(
+            kept, LESSONS_VERBATIM_N,
+            "exactly N tiny lessons must be kept verbatim (the count cap binds, not bytes); \
+             output was:\n{out}"
+        );
+        // Freshest-first: the newest (highest index) survives, the oldest (small000) elides.
+        assert!(
+            out.contains(&format!("small{:03}:", total - 1)),
+            "the newest lesson must survive the N cap; output was:\n{out}"
+        );
+        assert!(
+            !out.contains("small000:"),
+            "the oldest lesson must be elided by the N cap; output was:\n{out}"
+        );
+        assert!(
+            out.contains(&format!("+{} older lesson", total - LESSONS_VERBATIM_N)),
+            "the elision note must name the count the N cap trims; output was:\n{out}"
         );
     }
 

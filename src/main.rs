@@ -379,8 +379,9 @@ rigger result <id> [out]    record a parked spawn's outcome to the run log so th
 step advances past it: <out> (or stdin) is the agent's output\n                              \
 (with --error, its failure message); --if-absent records only\n                              \
 if the id has no result; --meta <json> adds bookkeeping\n  \
-rigger peers [file ...]     print peer decisions and findings from the context\n                              \
-graph, scoped to the given files (the CLI form of rigger_peers)\n  \
+rigger peers [file ...]     print peer decisions, lessons, and findings from the\n                              \
+context graph, scoped to the given files (the CLI form of\n                              \
+rigger_peers)\n  \
 rigger validate             load and validate the workflow + agents\n  \
 rigger init                 set up a project: scaffold .rigger/ (workflow.yml +\n                              \
 an agents/ folder) and install the Claude Code\n                              \
@@ -1412,13 +1413,15 @@ fn cmd_emit(args: &[String]) -> Res {
     Ok(())
 }
 
-/// `rigger peers [<file> ...]` - print the peer decisions and review findings from
-/// the context graph scoped to the given files (or all if none), EXACTLY as the MCP
+/// `rigger peers [<file> ...]` - print the peer decisions, lessons, and review findings
+/// from the context graph scoped to the given files (or all if none), EXACTLY as the MCP
 /// `rigger_peers` tool does (both render through [`mcpserver::peers_json`]). The store
 /// is RESOLVED by walking up to the project's existing `.rigger` (refusing to fabricate
 /// one, spec 05 - see [`require_store_dir`]); a side-car replays the `conductor::STREAM`
 /// backlog and this command waits for it to catch up before rendering one readable
-/// line per decision / finding.
+/// line per decision / lesson / finding. Rendering the lessons here is what makes the
+/// capped prompt sections' "recover the full set with `rigger peers <file>`" note honest
+/// for the lessons section, not just decisions and findings (adj-u1gap17).
 fn cmd_peers(args: &[String]) -> Res {
     let files: Vec<String> = args.to_vec();
 
@@ -1440,12 +1443,19 @@ fn cmd_peers(args: &[String]) -> Res {
 
     let result = mcpserver::peers_json(&peers, &files);
     let decisions = result["decisions"].as_array().cloned().unwrap_or_default();
+    let lessons = result["lessons"].as_array().cloned().unwrap_or_default();
     let findings = result["findings"].as_array().cloned().unwrap_or_default();
     for d in &decisions {
         let id = d["id"].as_str().unwrap_or_default();
         let summary = d["summary"].as_str().unwrap_or_default();
         let governs = json_str_array(&d["governs"]);
         println!("decision {id} | {summary} | governs: {governs}");
+    }
+    for l in &lessons {
+        let id = l["id"].as_str().unwrap_or_default();
+        let summary = l["summary"].as_str().unwrap_or_default();
+        let about = json_str_array(&l["about"]);
+        println!("lesson {id} | {summary} | about: {about}");
     }
     for f in &findings {
         let id = f["id"].as_str().unwrap_or_default();
