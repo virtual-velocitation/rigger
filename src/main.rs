@@ -410,8 +410,25 @@ fn db_path(name: &str) -> String {
         .into_owned()
 }
 
-/// Walk up from `start` (inclusive) and return the first ancestor directory that
-/// already holds an initialized `.rigger/events.db`, or `None` when none does.
+/// The bounded store walk's outcome: the CHOSEN store (the OUTERMOST `.rigger/events.db`
+/// within scope) and any NEARER shadow stores it bypassed (nearest first).
+///
+/// Outermost wins (spec 08 item 6): a courier deep in the tree - inside a unit worktree or
+/// an agent-scratch dir that happens to carry its own `.rigger/events.db` - must bind the
+/// repo root's REAL run stream, never a nearer shadow that would eclipse it. So the walk
+/// does not stop at the first store it finds; it collects every store in scope and keeps
+/// the OUTERMOST, recording the bypassed nearer ones so the caller can warn (naming both).
+struct StoreWalk {
+    /// The `.rigger` dir of the OUTERMOST store in scope, or `None` when scope holds none.
+    dir: Option<PathBuf>,
+    /// The `.rigger` dirs of NEARER stores bypassed in favor of `dir` (nearest first);
+    /// empty unless a shadow was eclipsed.
+    shadows: Vec<PathBuf>,
+}
+
+/// Walk up from `start` (inclusive) collecting every `.rigger/events.db` in scope, and
+/// return the OUTERMOST as the chosen store together with any nearer shadows it bypassed
+/// (see [`StoreWalk`]).
 ///
 /// The walk is BOUNDED at the main-repo root governing `start` (the parent of its git
 /// common dir): the sanctioned walk-up case is a courier inside a nested git worktree
@@ -419,22 +436,39 @@ fn db_path(name: &str) -> String {
 /// agent-scratch probe under `<repo>/.rigger/tmp`, say) bind to a PARENT project's
 /// store and write into a foreign run stream with exit-0 success (adversary finding
 /// adv9-walkup-cross-project, empirically proven). Outside any git context there is no
-/// sanctioned walk at all: only `start` itself counts.
-fn find_store_dir_from(start: &Path) -> Option<PathBuf> {
+/// sanctioned walk at all: only `start` itself counts. This unit changes only WHICH store
+/// within that unchanged scope is chosen (the outermost, not the nearest), never the
+/// boundary itself (landed unit-9 behavior).
+fn walk_stores_from(start: &Path) -> StoreWalk {
     let boundary = main_repo_root(start);
+    let mut found: Vec<PathBuf> = Vec::new();
     let mut cur = Some(start);
     while let Some(dir) = cur {
-        if dir.join(RIGGER_DIR).join("events.db").is_file() {
-            return Some(dir.join(RIGGER_DIR));
+        let rigger = dir.join(RIGGER_DIR);
+        if rigger.join("events.db").is_file() {
+            found.push(rigger);
         }
         match &boundary {
-            Some(root) if dir == root => return None, // reached the sanctioned bound
-            None => return None,                      // no git context: no walk-up
+            Some(root) if dir == root => break, // reached the sanctioned bound (inclusive)
+            None => break,                      // no git context: only `start` counts
             _ => {}
         }
         cur = dir.parent();
     }
-    None
+    // `found` is nearest-first, so the LAST entry is the outermost store in scope; the
+    // earlier (nearer) ones are the bypassed shadows, kept nearest-first for the warning.
+    let dir = found.pop();
+    StoreWalk {
+        dir,
+        shadows: found,
+    }
+}
+
+/// The OUTERMOST store directory within the bounded walk scope from `start`, or `None`
+/// when scope holds none. Thin wrapper over [`walk_stores_from`] for the read-only callers
+/// (residue/validate) that only need the chosen store, not the bypassed-shadow report.
+fn find_store_dir_from(start: &Path) -> Option<PathBuf> {
+    walk_stores_from(start).dir
 }
 
 /// The MAIN repo root governing `start`: the parent of `git rev-parse --git-common-dir`
@@ -523,7 +557,8 @@ impl StoreLocation {
 /// first step of a fresh project.
 fn require_store_dir() -> Result<StoreLocation, Box<dyn std::error::Error>> {
     let cwd = std::env::current_dir()?;
-    let dir = find_store_dir_from(&cwd).ok_or_else(|| -> Box<dyn std::error::Error> {
+    let walk = walk_stores_from(&cwd);
+    let dir = walk.dir.ok_or_else(|| -> Box<dyn std::error::Error> {
         format!(
             "no rigger store found: neither {} nor any parent directory has an initialized \
              {RIGGER_DIR}/events.db. This usually means the command ran from the wrong \
@@ -534,6 +569,20 @@ fn require_store_dir() -> Result<StoreLocation, Box<dyn std::error::Error>> {
         )
         .into()
     })?;
+    // Outermost store wins (spec 08 item 6): a NEARER shadow `events.db` (inside a unit
+    // worktree or a scratch dir) must never SILENTLY eclipse the repo root's real run
+    // stream. When the bounded walk bypassed one, name BOTH the bypassed shadow and the
+    // chosen outermost store on stderr so the misfiling hazard is seen, not discovered.
+    // (`validate`'s residue scan keeps its own shadow-store warning; this is the
+    // courier-time notice at the exact moment a write is about to be routed.)
+    for shadow in &walk.shadows {
+        eprintln!(
+            "store: warning: bypassing a nearer shadow store at {} in favor of the outermost \
+             store at {} (a shadow store never eclipses the real run stream)",
+            shadow.display(),
+            dir.display()
+        );
+    }
     Ok(StoreLocation { dir })
 }
 
@@ -562,10 +611,23 @@ fn store_file(dir: &Path, name: &str) -> String {
 fn result_advisories(events: &[Event], id: &str, will_supersede: bool) -> Vec<String> {
     let mut notes = Vec::new();
     if !spawn::is_recorded(events, id) {
-        notes.push(format!(
-            "result: note: no spawn request is recorded for {id:?}; recording an orphan \
-             result (nothing is parked under this id)"
-        ));
+        // The orphan note never claims a recording it might not make (spec 08 item 5). On
+        // the plain (unconditional) path - `will_supersede` is true, since that path always
+        // overwrites - the record always lands, so it states the recording. On the
+        // `--if-absent` path (`will_supersede` is false) the CAS records ONLY if the spawn
+        // is still unanswered, so it states that condition rather than asserting a recording
+        // an already-answered spawn would leave untouched.
+        notes.push(if will_supersede {
+            format!(
+                "result: note: no spawn request is recorded for {id:?}; recording an orphan \
+                 result (nothing is parked under this id)"
+            )
+        } else {
+            format!(
+                "result: note: no spawn request is recorded for {id:?}; --if-absent records \
+                 only if the spawn is unanswered"
+            )
+        });
     }
     // The LATEST already-recorded result for this id (last-write-wins), and the log
     // position it currently sits at, so the advisory can name it.
@@ -3699,6 +3761,57 @@ mod tests {
         );
     }
 
+    #[test]
+    fn walk_stores_from_prefers_the_outermost_store_over_a_nearer_shadow() {
+        // Spec 08 item 6: within the bounded walk scope the OUTERMOST store wins. A nested
+        // subdir carries its own shadow `.rigger/events.db`; a courier there must bind the
+        // repo root's real store, and the walk must REPORT the bypassed shadow so the
+        // caller can warn. One git repo => the whole ancestry up to the root is in scope.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        git_init_quiet(root);
+        // The repo root's real store (the outermost in scope).
+        std::fs::create_dir_all(root.join(RIGGER_DIR)).unwrap();
+        std::fs::File::create(root.join(RIGGER_DIR).join("events.db")).unwrap();
+        // A nearer SHADOW store in a nested dir under the repo.
+        let nested = root.join("sub").join("deep");
+        std::fs::create_dir_all(nested.join(RIGGER_DIR)).unwrap();
+        std::fs::File::create(nested.join(RIGGER_DIR).join("events.db")).unwrap();
+
+        let walk = walk_stores_from(&nested);
+        assert_eq!(
+            walk.dir,
+            Some(root.join(RIGGER_DIR)),
+            "the outermost (repo root) store must win over the nearer shadow"
+        );
+        assert_eq!(
+            walk.shadows,
+            vec![nested.join(RIGGER_DIR)],
+            "the bypassed nearer shadow must be reported so the courier can warn"
+        );
+    }
+
+    #[test]
+    fn walk_stores_from_reports_no_shadow_for_a_single_store() {
+        // The normal topology - exactly one store in scope - bypasses nothing, so no
+        // warning ever fires. Guards against a spurious shadow warning on every courier.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        git_init_quiet(root);
+        std::fs::create_dir_all(root.join(RIGGER_DIR)).unwrap();
+        std::fs::File::create(root.join(RIGGER_DIR).join("events.db")).unwrap();
+        let sub = root.join("crate").join("src");
+        std::fs::create_dir_all(&sub).unwrap();
+
+        let walk = walk_stores_from(&sub);
+        assert_eq!(walk.dir, Some(root.join(RIGGER_DIR)));
+        assert!(
+            walk.shadows.is_empty(),
+            "a single store in scope bypasses nothing; got {:?}",
+            walk.shadows
+        );
+    }
+
     // ---- `rigger result` stderr advisories: orphan id and superseding result ----
 
     #[test]
@@ -3708,6 +3821,34 @@ mod tests {
         assert_eq!(notes.len(), 1, "only the orphan note; got {notes:?}");
         assert!(notes[0].contains("no spawn request is recorded"));
         assert!(notes[0].contains("u/implementer#0"));
+    }
+
+    #[test]
+    fn result_advisories_orphan_wording_is_plain_on_record_and_conditional_under_if_absent() {
+        // Spec 08 item 5: the plain (unconditional) record path keeps its "recording an
+        // orphan result" wording, while the `--if-absent` path (`will_supersede` false)
+        // states the conditional and NEVER claims a recording it may not make.
+        let plain = result_advisories(&[], "u/implementer#0", true);
+        assert_eq!(plain.len(), 1, "only the orphan note; got {plain:?}");
+        assert!(
+            plain[0].contains("recording an orphan result"),
+            "the plain path states the recording; got {plain:?}"
+        );
+
+        let if_absent = result_advisories(&[], "u/implementer#0", false);
+        assert_eq!(
+            if_absent.len(),
+            1,
+            "only the orphan note; got {if_absent:?}"
+        );
+        assert!(
+            if_absent[0].contains("--if-absent records only if the spawn is unanswered"),
+            "the --if-absent path states the conditional; got {if_absent:?}"
+        );
+        assert!(
+            !if_absent[0].contains("recording an orphan result"),
+            "the --if-absent path must NOT claim a recording; got {if_absent:?}"
+        );
     }
 
     #[test]
