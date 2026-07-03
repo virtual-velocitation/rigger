@@ -1359,3 +1359,80 @@ fn empty_repo_scaffold_path_prints_the_agent_collection_pointer() {
         "the handbook pointer must not print when scaffolding is skipped; got:\n{out2}"
     );
 }
+
+/// `rigger result <id> --if-absent` records a died-worker outcome only when the spawn is
+/// still unanswered: on a fresh run stream it writes the result and exits 0, so `rigger
+/// reported <id>` then confirms the spawn is answered. The "records when absent" half of
+/// the atomic guard the thin driver's death courier relies on (spec 05).
+#[test]
+fn result_if_absent_records_when_the_spawn_is_unanswered() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (out, err, ok) = run_rigger(
+        root,
+        &[
+            "result",
+            "u/implementer#0",
+            "--if-absent",
+            "--error",
+            "died without reporting",
+        ],
+    );
+    assert!(ok, "recording an absent result must succeed; stderr: {err}");
+    assert!(
+        out.contains("recorded error result for u/implementer#0"),
+        "an unanswered spawn's --if-absent record must land; got: {out:?}"
+    );
+
+    // The spawn now reads as answered, as a FAILURE (the courier's --error).
+    let (rout, _err, ok) = run_rigger(root, &["reported", "u/implementer#0"]);
+    assert!(ok, "the recorded spawn must read as reported");
+    assert!(
+        rout.contains("failed"),
+        "the recorded --error must read back as a failure; got: {rout:?}"
+    );
+}
+
+/// The anti-clobber invariant end-to-end: once a worker self-reported a success, a later
+/// `rigger result <id> --if-absent --error <why>` - the death courier's single atomic
+/// command - records NOTHING, exits 0, and leaves the self-report standing. This is what
+/// closes the TOCTOU window the old two-process `rigger reported <id> || rigger result
+/// <id> --error` guard left open (spec 05).
+#[test]
+fn result_if_absent_never_clobbers_a_self_reported_success() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    // The worker self-reports a success first.
+    let (_o, err, ok) = run_rigger(
+        root,
+        &["result", "u/implementer#0", "implemented and reported"],
+    );
+    assert!(ok, "the self-report must succeed; stderr: {err}");
+
+    // The death courier, unaware the worker already reported, fires --if-absent --error.
+    let (out, err, ok) = run_rigger(
+        root,
+        &[
+            "result",
+            "u/implementer#0",
+            "--if-absent",
+            "--error",
+            "died without reporting",
+        ],
+    );
+    assert!(ok, "the --if-absent no-op must still exit 0; stderr: {err}");
+    assert!(
+        out.contains("already has a result") && out.contains("left it untouched"),
+        "a spawn with a result must be left untouched by --if-absent; got: {out:?}"
+    );
+
+    // The self-reported SUCCESS still stands - it was NOT force-failed by the courier.
+    let (rout, _err, ok) = run_rigger(root, &["reported", "u/implementer#0"]);
+    assert!(ok, "the self-reported spawn must read as reported");
+    assert!(
+        rout.contains("ok") && !rout.contains("failed"),
+        "the self-reported success must survive un-clobbered; got: {rout:?}"
+    );
+}
