@@ -1999,6 +1999,18 @@ fn scan_residue(
                 // A build cache directly under the scratch root - a shared/leftover target
                 // dir the run never reclaims (Gap 14: orphaned build caches until a disk fills).
                 report.caches.push((name, dir_size_bytes(&entry.path())));
+            } else if let Some(slug) = name.strip_prefix(rigger::worktree::UNIT_CACHE_PREFIX) {
+                // A per-unit build cache (`cargo-target-<slug>`, Gap 19). It is reclaimed with
+                // its unit's worktree on BOTH the graceful (`Worktree::remove`) and crash
+                // (`sweep_terminal`) paths, so it is residue ONLY when that worktree is no
+                // longer live - a leftover a crash stranded between removing the worktree and
+                // reclaiming the cache, or from an older run. A LIVE unit's cache is in use,
+                // not residue. Mirror the worktree liveness check on the reconstructed
+                // `rigger-wt-<slug>` name so the cache and its worktree stay in lockstep.
+                let wt_name = format!("{}{slug}", rigger::worktree::UNIT_WORKTREE_PREFIX);
+                if !worktree_belongs_to_live(&wt_name, live_slugs, dead_slugs) {
+                    report.caches.push((name, dir_size_bytes(&entry.path())));
+                }
             }
         }
     }
@@ -2079,10 +2091,15 @@ fn find_shadow_stores(root: &Path) -> Vec<PathBuf> {
             let Ok(ft) = entry.file_type() else { continue };
             let name = entry.file_name();
             if ft.is_dir() {
+                let n = name.to_string_lossy();
+                // A per-unit build cache (`cargo-target-<slug>`, Gap 19) is pruned like the
+                // shared `cargo-target`: it never holds a real `events.db`, and descending a
+                // leaked multi-gigabyte cache would defeat this walk's cheap-beside-a-target
+                // guarantee (adv-u3gap19-shadow-walk-descends-per-unit-caches).
                 let pruned = matches!(
-                    name.to_string_lossy().as_ref(),
+                    n.as_ref(),
                     "target" | "cargo-target" | "node_modules" | ".git"
-                );
+                ) || n.starts_with(rigger::worktree::UNIT_CACHE_PREFIX);
                 if !pruned {
                     stack.push(entry.path());
                 }
@@ -3375,6 +3392,16 @@ mod tests {
             &root.join("cargo-target").join("debug").join("events.db"),
             b"not-a-store",
         );
+        // A per-unit build cache (`cargo-target-<slug>`, Gap 19) is pruned the same way -
+        // descending a leaked multi-gigabyte unit cache would defeat the walk's
+        // cheap-beside-a-target guarantee (adv-u3gap19-shadow-walk-descends-per-unit-caches).
+        write_file(
+            &root
+                .join("cargo-target-unit-9")
+                .join("debug")
+                .join("events.db"),
+            b"not-a-store-either",
+        );
         let mut found: Vec<String> = find_shadow_stores(root)
             .iter()
             .map(|p| p.strip_prefix(root).unwrap().to_string_lossy().into_owned())
@@ -3422,6 +3449,17 @@ mod tests {
         );
         // An orphaned build cache directly under the scratch root.
         write_file(&scratch.join("cargo-target").join("x.rlib"), &[0u8; 2048]);
+        // A DEAD unit's per-unit build cache (`cargo-target-<slug>`, Gap 19) - its owning
+        // worktree is not live, so the leaked cache is residue and must be reported.
+        write_file(
+            &scratch.join("cargo-target-unit-99-ghost").join("i.rlib"),
+            &[0u8; 512],
+        );
+        // A LIVE unit's per-unit build cache - in use, NOT residue, must be omitted.
+        write_file(
+            &scratch.join("cargo-target-unit-6").join("i.rlib"),
+            &[0u8; 128],
+        );
         // A shadow store inside the dead worktree.
         write_file(
             &scratch
@@ -3450,7 +3488,14 @@ mod tests {
             vec![("rigger-wt-unit-99-ghost-12345678".to_string(), 4096 + 6)],
             "only the DEAD unit's worktree is residue, sized (payload + shadow store)"
         );
-        assert_eq!(report.caches, vec![("cargo-target".to_string(), 2048)]);
+        assert_eq!(
+            report.caches,
+            vec![
+                ("cargo-target".to_string(), 2048),
+                ("cargo-target-unit-99-ghost".to_string(), 512),
+            ],
+            "the shared orphan cache and the DEAD unit's per-unit cache are residue; the LIVE unit's per-unit cache is omitted"
+        );
         assert_eq!(
             report.shadow_stores,
             vec![(
