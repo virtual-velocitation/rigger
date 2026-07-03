@@ -3,4 +3,5 @@
 //! particular runtime); `workflow` is the in-Claude-Code alternative.
 
 pub mod cli;
+pub mod replay;
 pub mod workflow;
