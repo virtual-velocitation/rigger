@@ -17,7 +17,7 @@ use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::{sqlite::Store, Direction, Event, EventStore, Filter};
 use rigger::gate::ExecRunner;
 use rigger::grounder::Grounder;
-use rigger::ledger::RunState;
+use rigger::ledger::{self, RunState};
 use rigger::metrics::{self, Metrics};
 use rigger::run as runscope;
 use rigger::sidecar::{PeerDecision, Sidecar};
@@ -1712,6 +1712,13 @@ fn cmd_validate() -> Res {
     for advisory in validate_advisories(root) {
         eprintln!("{advisory}");
     }
+    // Residue surfacing (spec 06, unit 6 / Gap 14d): report leftover scratch worktrees,
+    // orphaned build caches, shadow stores, and dead `rigger/u/*` branches - with sizes -
+    // so residue is seen before a disk fills. Warnings only; validate NEVER fails or
+    // deletes anything (cleanup stays with the step-start sweep).
+    for advisory in residue_advisories(root, &cfg) {
+        eprintln!("{advisory}");
+    }
     Ok(())
 }
 
@@ -1800,6 +1807,366 @@ fn dirty_tracked_paths(porcelain: &str) -> Vec<String> {
             Some(line[3..].to_string())
         })
         .collect()
+}
+
+// ---- `rigger validate` residue report (spec 06, unit 6 / Gap 14d) -----------------
+//
+// `rigger validate` surfaces the run's leftover disk - scratch worktrees whose unit is
+// no longer live, orphaned build caches, shadow `events.db` stores (the misfiling hazard
+// proven by adversary finding adv9-shadow-store-reopens-defect), and dead `rigger/u/*`
+// branches - as warnings that NEVER fail validation and NEVER delete anything. Cleanup
+// stays with the step-start sweep (`worktree::sweep_terminal`); this half only reports.
+
+/// The leftover artifacts a `rigger validate` residue scan found under the scratch root
+/// (plus dead `rigger/u/*` branches), each with a size where one is meaningful. Held as
+/// data so the scan is unit-testable apart from its stderr rendering ([`format_residue`]).
+#[derive(Debug, Default, PartialEq, Eq)]
+struct ResidueReport {
+    /// Scratch-root worktrees (`rigger-wt-*`) whose unit is not live: (dir name, bytes).
+    worktrees: Vec<(String, u64)>,
+    /// Orphaned build caches directly under the scratch root: (dir name, bytes).
+    caches: Vec<(String, u64)>,
+    /// Shadow `events.db` stores anywhere under the scratch root: (relative path, bytes).
+    shadow_stores: Vec<(String, u64)>,
+    /// Local `rigger/u/*` branches with no live unit.
+    branches: Vec<String>,
+}
+
+impl ResidueReport {
+    fn is_empty(&self) -> bool {
+        self.worktrees.is_empty()
+            && self.caches.is_empty()
+            && self.shadow_stores.is_empty()
+            && self.branches.is_empty()
+    }
+}
+
+/// The stderr advisory (spec 06:60) naming the run's residue, or empty when nothing is
+/// leftover. Reuses the two impure seams a courier uses - the run store (for the LIVE
+/// unit set) and git (for local `rigger/u/*` branches) - then folds the pure
+/// [`scan_residue`]. Anchored at `root`'s owning store so the scanned scratch root is the
+/// SAME `<repo>/.rigger/tmp` the run uses; the path is resolved WITHOUT creating it, so
+/// validate stays read-only.
+fn residue_advisories(root: &Path, cfg: &config::Config) -> Vec<String> {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| root.to_path_buf());
+    // The repo whose `<repo>/.rigger/tmp` the run uses: the store's OWNING root when a
+    // store exists (walking up as the couriers do), else the cwd's git top-level, else the
+    // cwd itself. Keeps the scanned scratch root aligned with the run's actual one.
+    let repo = find_store_dir_from(&cwd)
+        .and_then(|d| d.parent().map(|p| p.to_string_lossy().into_owned()))
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            let top = git_repo_at(&cwd);
+            if top.is_empty() {
+                cwd.to_string_lossy().into_owned()
+            } else {
+                top
+            }
+        });
+    let scratch = PathBuf::from(rigger::worktree::scratch_root_path_from_env(
+        &repo,
+        &cfg.workflow.defaults.workdir,
+    ));
+    let run_units = read_run_units(&cwd);
+    let slugs = live_slugs(&run_units.live_branches);
+    let local_branches = local_unit_branches(&cwd);
+    let report = scan_residue(
+        &scratch,
+        &slugs,
+        &run_units.dead_slugs,
+        &local_branches,
+        &run_units.live_branches,
+    );
+    format_residue(&report)
+}
+
+/// The CURRENT run's unit liveness, read from the run store the SAME way the couriers do
+/// (walk UP to the owning store, scope by its identity). No store (a project that never
+/// ran) means no live units, so every scratch worktree and `rigger/u/*` branch reads as
+/// residue.
+fn read_run_units(cwd: &Path) -> RunUnits {
+    let Some(dir) = find_store_dir_from(cwd) else {
+        return RunUnits::default();
+    };
+    let loc = StoreLocation { dir };
+    let Ok(backend) = Store::open(&loc.file("events.db")) else {
+        return RunUnits::default();
+    };
+    let store = Namespaced::new(&backend, &loc.identity());
+    match store.read_stream(conductor::STREAM, 0, Direction::Forward) {
+        Ok(events) => current_run_units(&events),
+        Err(_) => RunUnits::default(),
+    }
+}
+
+/// The branches/slugs of the CURRENT run's units. The branch (`rigger/u/<slug>`) is the
+/// durable per-unit key the conductor records on `UnitStarted`; it does NOT record the
+/// worktree dir (a per-process path), so the slug carried in the branch is the only stable
+/// handle back to a unit.
+#[derive(Default)]
+struct RunUnits {
+    /// `rigger/u/<slug>` of every non-terminal (in-flight) unit - these are LIVE, so their
+    /// worktrees and branches are spared from residue.
+    live_branches: std::collections::HashSet<String>,
+    /// `<slug>` of every terminal (integrated/escalated) unit. A DEAD unit's leftover
+    /// deterministic `rigger-wt-<slug>` worktree is itself residue, and its slug must not
+    /// be mistaken for a live unit's per-process `-<8hex>` tail (adv-u6res-uuid8-tail).
+    dead_slugs: std::collections::HashSet<String>,
+}
+
+/// Fold the CURRENT run's units from `events`. Scoping to the current run's slice via
+/// `runscope::current_run` BEFORE `ledger::project` (exactly as `conductor.rs` folds the
+/// run state it returns) is what makes a PRIOR run's abandoned non-terminal unit read as
+/// residue instead of live: this CONSUMES the one "what is a live unit" authority rather
+/// than defining a parallel notion of liveness (spec 06 unit 1, Gap 11).
+fn current_run_units(events: &[Event]) -> RunUnits {
+    let run = ledger::project(runscope::current_run(events)).unwrap_or_default();
+    let mut out = RunUnits::default();
+    for u in run.units.values() {
+        if run.is_terminal(&u.id) {
+            if let Some(slug) = u.branch.strip_prefix("rigger/u/") {
+                if !slug.is_empty() {
+                    out.dead_slugs.insert(slug.to_string());
+                }
+            }
+        } else if !u.branch.is_empty() {
+            out.live_branches.insert(u.branch.clone());
+        }
+    }
+    out
+}
+
+/// The `<slug>` of each live unit (the shared token in `rigger/u/<slug>` and
+/// `rigger-wt-<slug>`), derived from the live branch names.
+fn live_slugs(
+    live_branches: &std::collections::HashSet<String>,
+) -> std::collections::HashSet<String> {
+    live_branches
+        .iter()
+        .filter_map(|b| b.strip_prefix("rigger/u/").map(str::to_string))
+        .collect()
+}
+
+/// The local `rigger/u/*` branches in the repo governing `cwd`, via `git for-each-ref`.
+/// Empty when git is unavailable or `cwd` is not a repo (nothing to flag then).
+fn local_unit_branches(cwd: &Path) -> Vec<String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args([
+            "for-each-ref",
+            "--format=%(refname:short)",
+            "refs/heads/rigger/u/",
+        ])
+        .output();
+    match out {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Scan `scratch_root` (a filesystem read, no mutation) plus the given local `rigger/u/*`
+/// branches for residue no live unit owns. `live_slugs` are the `<slug>` of live units and
+/// `live_branches` their full branch names; `dead_slugs` are the `<slug>` of terminal units
+/// (used only to disambiguate a `<live-slug>-<8hex>`-shaped worktree, see
+/// `worktree_belongs_to_live`). Pure over its inputs, so it is testable against a temp
+/// scratch dir with synthetic worktrees, caches, and shadow stores.
+fn scan_residue(
+    scratch_root: &Path,
+    live_slugs: &std::collections::HashSet<String>,
+    dead_slugs: &std::collections::HashSet<String>,
+    local_unit_branches: &[String],
+    live_branches: &std::collections::HashSet<String>,
+) -> ResidueReport {
+    let mut report = ResidueReport::default();
+    if let Ok(entries) = std::fs::read_dir(scratch_root) {
+        for entry in entries.flatten() {
+            let Ok(ft) = entry.file_type() else { continue };
+            if !ft.is_dir() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with("rigger-wt-") {
+                if !worktree_belongs_to_live(&name, live_slugs, dead_slugs) {
+                    report.worktrees.push((name, dir_size_bytes(&entry.path())));
+                }
+            } else if name == "target" || name == "cargo-target" {
+                // A build cache directly under the scratch root - a shared/leftover target
+                // dir the run never reclaims (Gap 14: orphaned build caches until a disk fills).
+                report.caches.push((name, dir_size_bytes(&entry.path())));
+            }
+        }
+    }
+    // Shadow stores: any `events.db` anywhere under the scratch root (including inside a
+    // worktree) - a store a misdirected courier can silently record into. Reported
+    // regardless of the containing worktree's liveness, because the hazard is the store
+    // itself (adv9-shadow-store-reopens-defect), not whether its worktree is in flight.
+    for path in find_shadow_stores(scratch_root) {
+        let rel = path
+            .strip_prefix(scratch_root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .into_owned();
+        let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        report.shadow_stores.push((rel, size));
+    }
+    for b in local_unit_branches {
+        if !live_branches.contains(b) {
+            report.branches.push(b.clone());
+        }
+    }
+    report.worktrees.sort();
+    report.caches.sort();
+    report.shadow_stores.sort();
+    report.branches.sort();
+    report
+}
+
+/// Whether a scratch worktree dir named `name` (a `rigger-wt-...` basename) belongs to a
+/// LIVE unit (so it is NOT residue). Matches BOTH the deterministic `rigger-wt-<slug>`
+/// shape (spec 06 unit 4) and the legacy per-process `rigger-wt-<slug>-<8hex>` shape.
+///
+/// The per-process shape is ambiguous with a DEAD unit whose slug is itself
+/// `<live-slug>-<8hex>`: e.g. a dead `foo-deadbeef` while `foo` is live owns a
+/// deterministic `rigger-wt-foo-deadbeef` worktree that would otherwise decompose as
+/// live-`foo` + uuid-`deadbeef` and be spared. `dead_slugs` (the current run's terminal
+/// units) resolves it - an exact dead slug is its OWN (dead) unit's worktree, never a live
+/// unit's per-process tail (adv-u6res-uuid8-tail-false-match), so it stays residue.
+fn worktree_belongs_to_live(
+    name: &str,
+    live_slugs: &std::collections::HashSet<String>,
+    dead_slugs: &std::collections::HashSet<String>,
+) -> bool {
+    let Some(rest) = name.strip_prefix("rigger-wt-") else {
+        return false;
+    };
+    if dead_slugs.contains(rest) {
+        return false;
+    }
+    live_slugs.iter().any(|slug| {
+        rest == slug.as_str()
+            || rest
+                .strip_prefix(slug.as_str())
+                .and_then(|s| s.strip_prefix('-'))
+                .is_some_and(is_uuid8)
+    })
+}
+
+/// Whether `s` is exactly 8 hex digits - the `uuid[..8]` suffix the conductor appends to a
+/// per-process worktree dir name.
+fn is_uuid8(s: &str) -> bool {
+    s.len() == 8 && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// Every `events.db` under `root` (recursively) - the shadow stores Gap 14d surfaces. The
+/// walk prunes build-cache / vcs / node dirs (which never hold an `events.db`) so it stays
+/// cheap even beside a multi-gigabyte target dir, and it does not follow symlinks (an
+/// `entry.file_type()` reflects the dirent, so a symlinked dir is neither descended nor
+/// counted - no cycles).
+fn find_shadow_stores(root: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(ft) = entry.file_type() else { continue };
+            let name = entry.file_name();
+            if ft.is_dir() {
+                let pruned = matches!(
+                    name.to_string_lossy().as_ref(),
+                    "target" | "cargo-target" | "node_modules" | ".git"
+                );
+                if !pruned {
+                    stack.push(entry.path());
+                }
+            } else if ft.is_file() && name == std::ffi::OsStr::new("events.db") {
+                found.push(entry.path());
+            }
+        }
+    }
+    found
+}
+
+/// Total size in bytes of every regular file under `path` (recursively). Best-effort: an
+/// unreadable dir/entry is skipped so a residue size can never fail the report, and
+/// symlinks are not followed (so no cycles). A non-existent path is `0`.
+fn dir_size_bytes(path: &Path) -> u64 {
+    let mut total = 0;
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(ft) = entry.file_type() else { continue };
+            if ft.is_dir() {
+                stack.push(entry.path());
+            } else if ft.is_file() {
+                if let Ok(md) = entry.metadata() {
+                    total += md.len();
+                }
+            }
+        }
+    }
+    total
+}
+
+/// A short human-readable size (`5.5G`, `12.0M`, `340.0K`, `18B`) for a residue line.
+fn human_size(bytes: u64) -> String {
+    const GB: u64 = 1 << 30;
+    const MB: u64 = 1 << 20;
+    const KB: u64 = 1 << 10;
+    if bytes >= GB {
+        format!("{:.1}G", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.1}M", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.1}K", bytes as f64 / KB as f64)
+    } else {
+        format!("{bytes}B")
+    }
+}
+
+/// Render a [`ResidueReport`] as `rigger validate` stderr advisory lines - empty when
+/// there is no residue (validate stays silent), otherwise a single `warning:`-prefixed
+/// block with one indented, sized line per leftover so an operator sees what to reclaim.
+fn format_residue(report: &ResidueReport) -> Vec<String> {
+    if report.is_empty() {
+        return Vec::new();
+    }
+    let mut msg = String::from(
+        "warning: residue found under the scratch root (surfaced only - validate never \
+         removes it):",
+    );
+    for (name, bytes) in &report.worktrees {
+        msg.push_str(&format!(
+            "\n  worktree with no live unit: {name} ({})",
+            human_size(*bytes)
+        ));
+    }
+    for (name, bytes) in &report.caches {
+        msg.push_str(&format!(
+            "\n  orphaned build cache: {name} ({})",
+            human_size(*bytes)
+        ));
+    }
+    for (path, bytes) in &report.shadow_stores {
+        msg.push_str(&format!(
+            "\n  shadow store: {path} ({})",
+            human_size(*bytes)
+        ));
+    }
+    for b in &report.branches {
+        msg.push_str(&format!("\n  branch with no live unit: {b}"));
+    }
+    vec![msg]
 }
 
 /// What [`init_project`] did, PER ARTIFACT, so `rigger setup` / `rigger init` can
@@ -2858,6 +3225,283 @@ mod tests {
             "a drifted installed workflow yields a drift advisory naming the file; got: \
              {advisories:?}"
         );
+    }
+
+    // ---- `rigger validate` residue report (spec 06:60 / Gap 14d): pure seams --------
+
+    use std::collections::HashSet;
+
+    fn slugs<const N: usize>(xs: [&str; N]) -> HashSet<String> {
+        xs.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn write_file(path: &Path, bytes: &[u8]) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    #[test]
+    fn human_size_formats_bytes_through_gib() {
+        assert_eq!(human_size(0), "0B");
+        assert_eq!(human_size(18), "18B");
+        assert_eq!(human_size(1024), "1.0K");
+        assert_eq!(human_size(1536), "1.5K");
+        assert_eq!(human_size(5 * (1 << 20)), "5.0M");
+        assert_eq!(human_size(3 * (1 << 30) + (1 << 29)), "3.5G");
+    }
+
+    #[test]
+    fn is_uuid8_accepts_exactly_eight_hex_digits() {
+        assert!(is_uuid8("99dd4e29"));
+        assert!(is_uuid8("deadbeef"));
+        assert!(!is_uuid8("99dd4e2")); // 7
+        assert!(!is_uuid8("99dd4e299")); // 9
+        assert!(!is_uuid8("99dd4e2g")); // non-hex
+    }
+
+    #[test]
+    fn worktree_belongs_to_live_matches_both_naming_shapes_without_prefix_false_match() {
+        let live = slugs(["unit-6-rigger-validate-reports-residue-w", "unit-1"]);
+        let no_dead = slugs([]);
+        // Legacy per-process shape `rigger-wt-<slug>-<8hex>`.
+        assert!(worktree_belongs_to_live(
+            "rigger-wt-unit-6-rigger-validate-reports-residue-w-99dd4e29",
+            &live,
+            &no_dead
+        ));
+        // Deterministic shape `rigger-wt-<slug>` (spec 06 unit 4, no uuid).
+        assert!(worktree_belongs_to_live(
+            "rigger-wt-unit-1",
+            &live,
+            &no_dead
+        ));
+        // A dead unit's worktree is NOT live.
+        assert!(!worktree_belongs_to_live(
+            "rigger-wt-unit-99-ghost-12345678",
+            &live,
+            &no_dead
+        ));
+        // `unit-1` is a prefix of the longer slug but must not false-match a foreign uuid:
+        // `rigger-wt-unit-1-2-abcdef12` has slug `unit-1-2`, not live.
+        assert!(!worktree_belongs_to_live(
+            "rigger-wt-unit-1-2-abcdef12",
+            &live,
+            &no_dead
+        ));
+
+        // adv-u6res-uuid8-tail-false-match: a DEAD unit `unit-1-deadbeef` (while `unit-1`
+        // is live) owns a deterministic `rigger-wt-unit-1-deadbeef`. Without the dead-slug
+        // set it decomposes as live-`unit-1` + uuid-`deadbeef` and is (wrongly) spared...
+        assert!(worktree_belongs_to_live(
+            "rigger-wt-unit-1-deadbeef",
+            &live,
+            &no_dead
+        ));
+        // ...but knowing `unit-1-deadbeef` is a terminal unit, it is its OWN dead unit's
+        // worktree - residue, NOT live. (Reverting the `dead_slugs` guard reddens this.)
+        let dead = slugs(["unit-1-deadbeef"]);
+        assert!(!worktree_belongs_to_live(
+            "rigger-wt-unit-1-deadbeef",
+            &live,
+            &dead
+        ));
+    }
+
+    #[test]
+    fn current_run_units_scopes_to_the_current_run_and_splits_live_from_dead() {
+        let events = [
+            // A PRIOR run left a still-non-terminal unit. Under an UNSCOPED fold it reads
+            // as live; scoping to the current run's slice must EXCLUDE it (it is residue of
+            // an aborted run) - this is the dispositive current-run clause (spec 06:50/30).
+            Event::new(
+                runscope::TYPE_RUN_STARTED,
+                br#"{"run":"r0","criteria":["old"]}"#.to_vec(),
+            ),
+            Event::new(
+                ledger::TYPE_UNIT_STARTED,
+                br#"{"id":"unit-prior","branch":"rigger/u/unit-prior"}"#.to_vec(),
+            ),
+            // The CURRENT run begins here.
+            Event::new(
+                runscope::TYPE_RUN_STARTED,
+                br#"{"run":"r1","criteria":["new"]}"#.to_vec(),
+            ),
+            Event::new(
+                ledger::TYPE_UNIT_STARTED,
+                br#"{"id":"unit-6","branch":"rigger/u/unit-6"}"#.to_vec(),
+            ),
+            Event::new(
+                ledger::TYPE_UNIT_STARTED,
+                br#"{"id":"unit-old","branch":"rigger/u/unit-old"}"#.to_vec(),
+            ),
+            // unit-old integrated -> terminal -> dead, not live.
+            Event::new(
+                ledger::TYPE_UNIT_INTEGRATED,
+                br#"{"id":"unit-old","commit":"abc"}"#.to_vec(),
+            ),
+            Event::new(
+                ledger::TYPE_UNIT_STARTED,
+                br#"{"id":"unit-gone","branch":"rigger/u/unit-gone"}"#.to_vec(),
+            ),
+            // unit-gone escalated -> terminal -> dead, not live.
+            Event::new(
+                ledger::TYPE_UNIT_ESCALATED,
+                br#"{"id":"unit-gone"}"#.to_vec(),
+            ),
+        ];
+        let run = current_run_units(&events);
+        // Only THIS run's in-flight unit is live: unit-prior is excluded by run-scoping,
+        // and this run's terminal units are dead, not live.
+        assert_eq!(run.live_branches, slugs(["rigger/u/unit-6"]));
+        assert_eq!(live_slugs(&run.live_branches), slugs(["unit-6"]));
+        assert_eq!(run.dead_slugs, slugs(["unit-old", "unit-gone"]));
+    }
+
+    #[test]
+    fn find_shadow_stores_finds_nested_events_db_and_prunes_build_caches() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        // A shadow store inside a worktree, and one in a scratch probe repo.
+        write_file(
+            &root.join("rigger-wt-x").join(".rigger").join("events.db"),
+            b"shadow",
+        );
+        write_file(
+            &root.join("probe").join(".rigger").join("events.db"),
+            b"shadow2",
+        );
+        // A same-named file buried in a build cache must be PRUNED (never a real store).
+        write_file(
+            &root.join("cargo-target").join("debug").join("events.db"),
+            b"not-a-store",
+        );
+        let mut found: Vec<String> = find_shadow_stores(root)
+            .iter()
+            .map(|p| p.strip_prefix(root).unwrap().to_string_lossy().into_owned())
+            .collect();
+        found.sort();
+        assert_eq!(
+            found,
+            vec![
+                "probe/.rigger/events.db".to_string(),
+                "rigger-wt-x/.rigger/events.db".to_string(),
+            ],
+            "shadow-store walk finds nested events.db but prunes build caches"
+        );
+    }
+
+    #[test]
+    fn dir_size_bytes_sums_files_recursively() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write_file(&root.join("a.txt"), &[0u8; 100]);
+        write_file(&root.join("sub").join("b.txt"), &[0u8; 250]);
+        assert_eq!(dir_size_bytes(root), 350);
+        assert_eq!(
+            dir_size_bytes(&root.join("nonexistent")),
+            0,
+            "a missing path sizes to 0, never a panic"
+        );
+    }
+
+    #[test]
+    fn scan_residue_reports_dead_worktrees_caches_shadows_and_branches() {
+        let dir = tempfile::tempdir().unwrap();
+        let scratch = dir.path();
+        // A LIVE unit's worktree - must NOT be flagged.
+        write_file(
+            &scratch.join("rigger-wt-unit-6-99dd4e29").join("keep.txt"),
+            &[0u8; 10],
+        );
+        // A DEAD unit's worktree - flagged, with size.
+        write_file(
+            &scratch
+                .join("rigger-wt-unit-99-ghost-12345678")
+                .join("big.bin"),
+            &[0u8; 4096],
+        );
+        // An orphaned build cache directly under the scratch root.
+        write_file(&scratch.join("cargo-target").join("x.rlib"), &[0u8; 2048]);
+        // A shadow store inside the dead worktree.
+        write_file(
+            &scratch
+                .join("rigger-wt-unit-99-ghost-12345678")
+                .join(".rigger")
+                .join("events.db"),
+            b"shadow",
+        );
+        let live_slugs = slugs(["unit-6"]);
+        let live_branches = slugs(["rigger/u/unit-6"]);
+        let local_branches = vec![
+            "rigger/u/unit-6".to_string(),        // live -> kept
+            "rigger/u/unit-99-ghost".to_string(), // dead -> flagged
+        ];
+
+        let report = scan_residue(
+            scratch,
+            &live_slugs,
+            &slugs([]),
+            &local_branches,
+            &live_branches,
+        );
+
+        assert_eq!(
+            report.worktrees,
+            vec![("rigger-wt-unit-99-ghost-12345678".to_string(), 4096 + 6)],
+            "only the DEAD unit's worktree is residue, sized (payload + shadow store)"
+        );
+        assert_eq!(report.caches, vec![("cargo-target".to_string(), 2048)]);
+        assert_eq!(
+            report.shadow_stores,
+            vec![(
+                "rigger-wt-unit-99-ghost-12345678/.rigger/events.db".to_string(),
+                6
+            )],
+        );
+        assert_eq!(report.branches, vec!["rigger/u/unit-99-ghost".to_string()]);
+        assert!(!report.is_empty());
+    }
+
+    #[test]
+    fn scan_residue_is_empty_when_everything_is_live_and_no_shadow_stores() {
+        let dir = tempfile::tempdir().unwrap();
+        let scratch = dir.path();
+        write_file(
+            &scratch.join("rigger-wt-unit-6-99dd4e29").join("keep.txt"),
+            &[0u8; 10],
+        );
+        let report = scan_residue(
+            scratch,
+            &slugs(["unit-6"]),
+            &slugs([]),
+            &["rigger/u/unit-6".to_string()],
+            &slugs(["rigger/u/unit-6"]),
+        );
+        assert!(
+            report.is_empty(),
+            "a scratch root holding only the live unit's clean worktree is not residue: {report:?}"
+        );
+        assert!(format_residue(&report).is_empty());
+    }
+
+    #[test]
+    fn format_residue_renders_a_sized_warning_block() {
+        let report = ResidueReport {
+            worktrees: vec![("rigger-wt-unit-99-ghost-12345678".to_string(), 4096)],
+            caches: vec![("cargo-target".to_string(), 5_905_580_032)],
+            shadow_stores: vec![("probe/.rigger/events.db".to_string(), 6)],
+            branches: vec!["rigger/u/unit-99-ghost".to_string()],
+        };
+        let lines = format_residue(&report);
+        assert_eq!(lines.len(), 1, "the residue report is one stderr block");
+        let block = &lines[0];
+        assert!(block.starts_with("warning: residue found under the scratch root"));
+        assert!(
+            block.contains("worktree with no live unit: rigger-wt-unit-99-ghost-12345678 (4.0K)")
+        );
+        assert!(block.contains("orphaned build cache: cargo-target (5.5G)"));
+        assert!(block.contains("shadow store: probe/.rigger/events.db (6B)"));
+        assert!(block.contains("branch with no live unit: rigger/u/unit-99-ghost"));
     }
 
     // ---- `rigger result`: argument parsing and outcome shaping (the stepwise CLI) ----

@@ -356,23 +356,39 @@ fn current_branch(repo: &str) -> Option<String> {
 /// small-root/large-home partition layout the OS disk is the one that cannot absorb
 /// them (design-intent Gap 14). The resolved dir is created if absent.
 pub fn scratch_root(repo: &str, configured: &str, env_override: Option<&str>) -> String {
+    let expanded = scratch_root_path(repo, configured, env_override);
+    let _ = std::fs::create_dir_all(&expanded);
+    expanded
+}
+
+/// Resolve the scratch root PATH by the SAME precedence as [`scratch_root`] but WITHOUT
+/// the create-if-absent side effect - the read-only half. `rigger validate`'s residue
+/// scan (spec 06) needs the path to READ leftover worktrees/caches under it and must stay
+/// read-only, so it resolves here and never conjures a `.rigger/tmp` on a project that
+/// never ran. [`scratch_root`] is this plus a `create_dir_all`, keeping ONE resolver.
+pub fn scratch_root_path(repo: &str, configured: &str, env_override: Option<&str>) -> String {
     let chosen = match env_override {
         Some(v) if !v.trim().is_empty() => v.trim().to_string(),
         _ if !configured.trim().is_empty() => configured.trim().to_string(),
         _ => format!("{}/.rigger/tmp", if repo.is_empty() { "." } else { repo }),
     };
-    let expanded = match (chosen.strip_prefix("~/"), std::env::var("HOME")) {
+    match (chosen.strip_prefix("~/"), std::env::var("HOME")) {
         (Some(rest), Ok(home)) => format!("{home}/{rest}"),
         _ => chosen,
-    };
-    let _ = std::fs::create_dir_all(&expanded);
-    expanded
+    }
 }
 
 /// [`scratch_root`] with the `RIGGER_TMPDIR` environment variable as the override.
 pub fn scratch_root_from_env(repo: &str, configured: &str) -> String {
     let env = std::env::var("RIGGER_TMPDIR").ok();
     scratch_root(repo, configured, env.as_deref())
+}
+
+/// [`scratch_root_path`] with the `RIGGER_TMPDIR` environment variable as the override -
+/// the read-only resolver `rigger validate` uses to locate (never create) the scratch root.
+pub fn scratch_root_path_from_env(repo: &str, configured: &str) -> String {
+    let env = std::env::var("RIGGER_TMPDIR").ok();
+    scratch_root_path(repo, configured, env.as_deref())
 }
 
 /// Sweep the scratch root's TERMINAL worktrees: prune stale registrations, then remove

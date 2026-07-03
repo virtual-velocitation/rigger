@@ -1782,6 +1782,177 @@ fn validate_flags_tracked_rigger_files_with_uncommitted_modifications() {
     );
 }
 
+/// Spec 06 done-when line 60 (Gap 14d): `rigger validate` reports residue - scratch
+/// worktrees with no live unit, orphaned build caches, shadow stores, and `rigger/u/*`
+/// branches with no live unit - each with a size, as warnings that NEVER fail validation
+/// and NEVER delete anything. Driving the real binary is the only way to prove the store +
+/// git + filesystem read wiring; the pure scan is unit-tested in `src/main.rs`.
+#[test]
+fn validate_reports_scratch_residue_with_sizes_as_a_non_failing_warning() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+
+    // A valid, committed config so `.rigger/` is tracked+clean (no unrelated advisories),
+    // and a seeded store so `validate` has a run stream to read the LIVE unit set from.
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    git_ok(root, &["add", "-A"]);
+    git_ok(root, &["commit", "-q", "-m", "scaffold"]);
+    seed_store(root); // empty store -> zero live units -> leftovers read as residue
+
+    // Point the scratch root at a dir we control, so the scan is hermetic.
+    let scratch = root.join("scratchroot");
+    let tmp = scratch.to_str().unwrap();
+
+    // Clean scratch (no worktrees/caches/shadow stores) + no dead branches -> validate is
+    // residue-SILENT and still succeeds.
+    std::fs::create_dir_all(&scratch).unwrap();
+    let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("RIGGER_TMPDIR", tmp)]);
+    assert!(
+        ok,
+        "validate must succeed on a clean scratch root; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("config valid"),
+        "validate must still print its config summary; stdout:\n{out}"
+    );
+    assert!(
+        !err.to_lowercase().contains("residue"),
+        "validate must be residue-silent when the scratch root is clean; stderr:\n{err}"
+    );
+
+    // Now plant residue: a leftover unit worktree (with a shadow store inside it), an
+    // orphaned build cache, a standalone shadow store, and a dead `rigger/u/*` branch.
+    let ghost_wt = scratch.join("rigger-wt-unit-99-ghost-12345678");
+    std::fs::create_dir_all(ghost_wt.join(".rigger")).unwrap();
+    std::fs::write(ghost_wt.join("payload.bin"), [0u8; 4096]).unwrap();
+    std::fs::write(ghost_wt.join(".rigger").join("events.db"), b"shadow").unwrap();
+    std::fs::create_dir_all(scratch.join("cargo-target")).unwrap();
+    std::fs::write(scratch.join("cargo-target").join("x.rlib"), [0u8; 2048]).unwrap();
+    std::fs::create_dir_all(scratch.join("probe").join(".rigger")).unwrap();
+    std::fs::write(
+        scratch.join("probe").join(".rigger").join("events.db"),
+        b"s2",
+    )
+    .unwrap();
+    git_ok(root, &["branch", "rigger/u/unit-99-ghost"]);
+
+    let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("RIGGER_TMPDIR", tmp)]);
+    assert!(
+        ok,
+        "validate must still exit 0 when it only WARNS about residue; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("config valid"),
+        "validate must still print its config summary; stdout:\n{out}"
+    );
+    assert!(
+        err.to_lowercase().contains("residue"),
+        "validate must warn about residue on stderr; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("rigger-wt-unit-99-ghost-12345678"),
+        "the leftover worktree must be named; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("cargo-target"),
+        "the orphaned build cache must be named; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("probe/.rigger/events.db"),
+        "the standalone shadow store must be named; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("rigger/u/unit-99-ghost"),
+        "the dead `rigger/u/*` branch must be named; stderr:\n{err}"
+    );
+    // Sizes accompany the disk-bearing items (a parenthesized human size).
+    assert!(
+        err.contains("(4.0K)") || err.contains("(4.5K)"),
+        "the leftover worktree must carry a size; stderr:\n{err}"
+    );
+}
+
+/// Spec 06 done-when line 50 / unit desc line 30 (Gap 14d, CURRENT-run clause): residue is
+/// scoped to the CURRENT run. A PRIOR run's abandoned, still-non-terminal unit - which an
+/// UNSCOPED ledger fold reads as LIVE - must be surfaced as residue on BOTH sub-clauses (its
+/// `rigger-wt-*` worktree AND its `rigger/u/*` branch), while THIS run's in-flight unit is
+/// spared on both. This drives the real store + git + filesystem wiring end to end; reverting
+/// the `runscope::current_run` scoping (so the fold spans every run) reddens it, because the
+/// prior unit would then fold as live and its leftovers would be spared.
+#[test]
+fn validate_scopes_residue_to_the_current_run_flagging_a_prior_runs_abandoned_unit() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    git_ok(root, &["add", "-A"]);
+    git_ok(root, &["commit", "-q", "-m", "scaffold"]);
+    seed_store(root);
+
+    // Two runs recorded through the real courier: a PRIOR run whose `unit-old` never reached
+    // a terminal state (abandoned mid-flight), then the CURRENT run with an in-flight
+    // `unit-new`. `current_run` folds only the slice after the SECOND `RunStarted`, so
+    // `unit-old` is not live in this run.
+    for (ty, body) in [
+        ("RunStarted", r#"{"run":"r0","criteria":["prior spec"]}"#),
+        (
+            "UnitStarted",
+            r#"{"id":"unit-old","branch":"rigger/u/unit-old"}"#,
+        ),
+        ("RunStarted", r#"{"run":"r1","criteria":["current spec"]}"#),
+        (
+            "UnitStarted",
+            r#"{"id":"unit-new","branch":"rigger/u/unit-new"}"#,
+        ),
+    ] {
+        let (_o, e, ok) = run_rigger(root, &["emit", ty, body]);
+        assert!(ok, "seeding {ty} must succeed; stderr:\n{e}");
+    }
+
+    // Hermetic scratch root: a deterministic worktree for EACH unit, plus a local branch for
+    // each. Only the prior run's leftovers are residue.
+    let scratch = root.join("scratchroot");
+    let tmp = scratch.to_str().unwrap();
+    for wt in ["rigger-wt-unit-old", "rigger-wt-unit-new"] {
+        std::fs::create_dir_all(scratch.join(wt)).unwrap();
+        std::fs::write(scratch.join(wt).join("payload.bin"), [0u8; 4096]).unwrap();
+    }
+    git_ok(root, &["branch", "rigger/u/unit-old"]);
+    git_ok(root, &["branch", "rigger/u/unit-new"]);
+
+    let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("RIGGER_TMPDIR", tmp)]);
+    assert!(
+        ok,
+        "validate only WARNS about residue, still exits 0; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("config valid"),
+        "validate still prints its config summary; stdout:\n{out}"
+    );
+
+    // The PRIOR run's abandoned unit is residue on BOTH sub-clauses.
+    assert!(
+        err.contains("rigger-wt-unit-old"),
+        "a prior run's abandoned worktree must be flagged as residue; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("rigger/u/unit-old"),
+        "a prior run's abandoned branch must be flagged as residue; stderr:\n{err}"
+    );
+    // THIS run's in-flight unit is spared on BOTH sub-clauses (`rigger/u/unit-new` is not a
+    // substring of `rigger/u/unit-old`, so these assertions are independent).
+    assert!(
+        !err.contains("rigger-wt-unit-new"),
+        "the current run's live worktree must NOT be flagged; stderr:\n{err}"
+    );
+    assert!(
+        !err.contains("rigger/u/unit-new"),
+        "the current run's live branch must NOT be flagged; stderr:\n{err}"
+    );
+}
+
 /// Spec 05 done-when line 57, clause 2: the empty-repo scaffold path must print a
 /// pointer to the agency-agents collection AND the authoring-agents handbook chapter,
 /// and that pointer must appear ONLY when the default fleet is actually scaffolded -
