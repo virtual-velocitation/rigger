@@ -3450,9 +3450,12 @@ coverage: \"each unit is implemented, reviews itself, and integrates green\"\n";
 /// (planner, rust-engineer, architecture-reviewer, sdet, adversary, adjudicator); the
 /// four generic placeholder personas (implementer, devils-advocate, reviewer.architecture,
 /// reviewer.technical) deliberately do NOT appear. Model tiers are a conscious seed
-/// default: the implementer and lenses on `sonnet`, the adversary and adjudicator on
-/// `opus`. Each is a markdown-with-frontmatter definition `config::load` parses; filenames
-/// are arbitrary, the `id` is what the workflow binds to.
+/// default: the implementer ships on a cheap-first `model_ladder` (`[sonnet, opus]`, spec 10
+/// unit 4) so its first attempt is cheap and a persistently-failing unit escalates to the
+/// strong model under remediation; the lenses stay on `sonnet` and the adversary and
+/// adjudicator on a fixed `opus` (judgment is not laddered). Each is a
+/// markdown-with-frontmatter definition `config::load` parses; filenames are arbitrary, the
+/// `id` is what the workflow binds to.
 const SCAFFOLD_AGENTS: &[(&str, &str)] = &[
     (
         "planner.md",
@@ -3469,7 +3472,7 @@ per acceptance criterion. Emit each as a UnitProposed decision. Do not write cod
         "rust-engineer.md",
         "---\n\
 id: rust-engineer\n\
-model: sonnet\n\
+model_ladder: [sonnet, opus]\n\
 tools: [Read, Edit, Write, Grep, Glob, Bash]\n\
 isolation: worktree\n\
 recurse: false\n\

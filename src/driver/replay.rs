@@ -48,7 +48,10 @@ impl<'a> ReplayDriver<'a> {
 /// arguments: its deterministic id, unit, and stage come from `opts` (the conductor
 /// set them from the run structure); its persona, dir, and blast-radius from `opts`;
 /// its model alias and granted tools from the agent (already fan-out-stripped by
-/// [`AgentDef::allowed_tools`]); and its task prompt from `prompt`.
+/// [`AgentDef::allowed_tools`]); and its task prompt from `prompt`. The model is the
+/// cascade rung this attempt resolves ([`AgentDef::model_for_attempt`], spec 10 unit 4),
+/// so a `model_ladder` agent parks a request naming the rung it escalated to for
+/// `opts.attempt` - the same rung the conductor stamps as the requested alias.
 fn spawn_request(agent: &AgentDef, prompt: &str, opts: &SpawnOpts) -> SpawnRequest {
     SpawnRequest {
         id: opts.id.clone(),
@@ -56,7 +59,7 @@ fn spawn_request(agent: &AgentDef, prompt: &str, opts: &SpawnOpts) -> SpawnReque
         stage: opts.stage.clone(),
         prompt: prompt.to_string(),
         system_prompt: opts.system_prompt.clone(),
-        model: agent.model.clone(),
+        model: agent.model_for_attempt(opts.attempt),
         tools: agent.allowed_tools(),
         dir: opts.dir.clone(),
         blast_radius: opts.blast_radius.clone(),
@@ -147,6 +150,50 @@ mod tests {
             stage: "u".into(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_parked_spawn_carries_the_model_ladder_rung_for_its_attempt() {
+        // Spec 10 unit 4: the ACTUAL model a spawn runs on is the cascade rung its attempt
+        // resolves, so the parked SpawnRequest names that rung - not a fixed `model`. A
+        // laddered agent parked at attempt 0 carries rung 0; parked at a later remediation
+        // attempt it carries the higher rung it escalated to, clamped at the last.
+        let agent = AgentDef {
+            id: "worker".into(),
+            model_ladder: vec!["haiku".into(), "sonnet".into(), "opus".into()],
+            ..Default::default()
+        };
+        let parked_model = |attempt: u32, id: &str| -> String {
+            let store = Store::open(":memory:").unwrap();
+            let driver = ReplayDriver::new(&store);
+            let opts = SpawnOpts {
+                id: id.to_string(),
+                unit: "u".into(),
+                stage: "u".into(),
+                attempt,
+                ..Default::default()
+            };
+            // An unrecorded spawn parks (and signals the parked frontier).
+            let err = driver.spawn(&agent, "do it", &opts, &no_emit).unwrap_err();
+            assert!(is_parked(&err), "an unrecorded spawn must park");
+            let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            spawn::recorded(&events).unwrap()[id].model.clone()
+        };
+        assert_eq!(
+            parked_model(0, "u/implementer#0"),
+            "haiku",
+            "attempt 0 parks on the cheap first rung"
+        );
+        assert_eq!(
+            parked_model(1, "u/implementer#1"),
+            "sonnet",
+            "the first remediation parks one rung higher"
+        );
+        assert_eq!(
+            parked_model(9, "u/implementer#9"),
+            "opus",
+            "past the top clamps at the strongest rung"
+        );
     }
 
     #[test]

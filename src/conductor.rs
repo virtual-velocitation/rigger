@@ -322,6 +322,13 @@ pub struct SpawnOpts {
     /// The stage that produced this spawn - the parked request's `stage` (the thin
     /// driver's per-unit `opts.phase` label half). Empty when the caller does not park.
     pub stage: String,
+    /// The 0-based remediation attempt this spawn runs under (the same integer the
+    /// deterministic `id` encodes after `#`). Every driver resolves the actual spawn
+    /// model through [`AgentDef::model_for_attempt`](crate::config::AgentDef::model_for_attempt)
+    /// with it, so a `model_ladder` agent (spec 10 unit 4) escalates one rung per attempt
+    /// and the model that runs matches the [`META_MODEL_ALIAS`] the conductor stamps for
+    /// the same attempt. 0 for a caller that does not remediate.
+    pub attempt: u32,
     /// The agent's PERSONA - its role instructions, the markdown body of its
     /// `.rigger/agents/<id>.md` definition (`AgentDef::prompt`). It belongs as the
     /// agent's SYSTEM prompt, distinct from the grounded task `prompt`. The conductor
@@ -1010,15 +1017,18 @@ impl RunCtx<'_> {
         self.append_and_fold(ev)
     }
 
-    /// The requested model ALIAS an agent is spawned with (`AgentDef::model`, the value
-    /// that also rides the spawn request), or empty when the stage names no agent (a
-    /// producer/review-only stage) or the agent is unknown. Stamped onto the spawn's unit
-    /// events via [`META_MODEL_ALIAS`] (spec 05 line 52).
-    fn agent_model(&self, agent_id: &str) -> String {
+    /// The requested model ALIAS an agent is spawned with for `attempt` - the cascade rung
+    /// [`AgentDef::model_for_attempt`](crate::config::AgentDef::model_for_attempt) resolves
+    /// (spec 10 unit 4), which is `AgentDef::model` for a ladder-less agent - or empty when
+    /// the stage names no agent (a producer/review-only stage) or the agent is unknown. This
+    /// is the SAME resolution the driver runs to pick the actual spawn model, so the alias
+    /// stamped onto the spawn's unit events via [`META_MODEL_ALIAS`] (spec 05 line 52) names
+    /// exactly the rung that ran for that attempt.
+    fn agent_model(&self, agent_id: &str, attempt: u32) -> String {
         self.cfg
             .agents
             .get(agent_id)
-            .map(|a| a.model.clone())
+            .map(|a| a.model_for_attempt(attempt))
             .unwrap_or_default()
     }
 
@@ -1461,7 +1471,11 @@ impl RunCtx<'_> {
                 "needs": st.needs,
                 "branch": unit_branch(name),
             }),
-            &[(META_MODEL_ALIAS, &self.agent_model(&st.agent))],
+            // UnitStarted is a once-per-unit checkpoint, so it names the model the unit's
+            // FIRST attempt asks for - rung 0 of any cascade. The per-attempt rungs a
+            // remediating unit escalates through ride on the per-attempt green/verified
+            // status events below (spec 10 unit 4).
+            &[(META_MODEL_ALIAS, &self.agent_model(&st.agent, 0))],
         )?;
         self.run_stage(st)
     }
@@ -1592,12 +1606,17 @@ impl RunCtx<'_> {
     /// the diff under review). So a reviewer runs IN that worktree - it reads the
     /// unit's actual code, and any accidental write lands in the throwaway worktree,
     /// never the main repo. `assert_isolated_cwd` enforces the dir is a real worktree.
+    // The reviewer coordinates (id, tier role, agent, worktree dir, attempt, parallelism,
+    // stage) are each a distinct spawn input threaded straight into one SpawnOpts; the same
+    // primitive-argument shape run_reviewer carries, allowed for the same reason.
+    #[allow(clippy::too_many_arguments)]
     fn reviewer_spawn_opts(
         &self,
         id: &str,
         role: &str,
         agent_id: &str,
         dir: &str,
+        attempt: u32,
         parallel: bool,
         st: &Stage,
     ) -> Result<SpawnOpts, Error> {
@@ -1622,6 +1641,12 @@ impl RunCtx<'_> {
             id: id.to_string(),
             unit: st.name.clone(),
             stage: st.name.clone(),
+            // A reviewer keeps a FIXED tier - judgment is not laddered (spec 10 unit 4
+            // exclusion) - so a scaffold reviewer declares no `model_ladder` and resolves
+            // its single `model` regardless. The attempt is threaded through anyway so the
+            // model the driver spawns and the alias the conductor stamps agree by
+            // construction if a reviewer ever were given a ladder.
+            attempt,
             run_id: self.run_id.clone(),
         })
     }
@@ -1689,7 +1714,7 @@ impl RunCtx<'_> {
                     "evidence": review_evidence(&reason),
                 }),
                 &[
-                    (META_MODEL_ALIAS, &self.agent_model(&adjudicator)),
+                    (META_MODEL_ALIAS, &self.agent_model(&adjudicator, attempt)),
                     (META_MODEL_RESOLVED, &adj_resolved),
                 ],
             )?;
@@ -1753,10 +1778,13 @@ impl RunCtx<'_> {
         // Only the first iteration is skipped - if review then rejects, the retry
         // re-spawns the implementer normally to fix the rejected code.
         let mut skip_implement = phase == ResumePhase::Implemented;
-        // The implementer's requested model ALIAS (spec 05 line 52), stamped on every unit
-        // event this stage records for the implementer spawn. Empty for an agentless stage.
-        let impl_alias = self.agent_model(&st.agent);
         loop {
+            // The implementer's requested model ALIAS for THIS attempt (spec 05 line 52),
+            // stamped on every unit event this stage records for the implementer spawn.
+            // Recomputed each iteration from the live `attempts` so a `model_ladder` agent
+            // (spec 10 unit 4) escalates one rung per remediation attempt - the same rung
+            // the driver spawns on for `attempts`. Empty for an agentless stage.
+            let impl_alias = self.agent_model(&st.agent, attempts);
             let mut spawn_err: Option<String> = None;
             // The RESOLVED model id the implementer reported for THIS attempt, surfaced by
             // the replay driver from the worker's `--meta` report. Empty until the spawn's
@@ -1830,6 +1858,9 @@ impl RunCtx<'_> {
                             id: implementer_id.clone(),
                             unit: st.name.clone(),
                             stage: st.name.clone(),
+                            // The cascade rung the driver resolves for this attempt (spec 10
+                            // unit 4) - the same `attempts` the alias stamp above uses.
+                            attempt: attempts,
                             run_id: self.run_id.clone(),
                         },
                         &emit,
@@ -2130,7 +2161,10 @@ impl RunCtx<'_> {
                         "evidence": review_evidence(&reason),
                     }),
                     &[
-                        (META_MODEL_ALIAS, &self.agent_model(&st.adjudicator)),
+                        (
+                            META_MODEL_ALIAS,
+                            &self.agent_model(&st.adjudicator, attempts),
+                        ),
                         (META_MODEL_RESOLVED, &adj_resolved),
                     ],
                 )?;
@@ -2295,7 +2329,7 @@ impl RunCtx<'_> {
         // ordinal is a `~retry{n}` respawn. At most `1 + REVIEWER_RESPAWN_BOUND` spawns.
         for retry in 0..=REVIEWER_RESPAWN_BOUND {
             let id = spawn_retry_id(&st.name, role, attempt, retry);
-            let opts = self.reviewer_spawn_opts(&id, tier, agent_id, dir, parallel, st)?;
+            let opts = self.reviewer_spawn_opts(&id, tier, agent_id, dir, attempt, parallel, st)?;
             if !self.reserve_spawn(&id) {
                 return Err(budget_refused(&st.name, tier, agent_id));
             }
@@ -8109,6 +8143,98 @@ mod tests {
                 .iter()
                 .any(|e| e.type_ == ledger::TYPE_UNIT_INTEGRATED),
             "an approved unit must record a UnitIntegrated"
+        );
+    }
+
+    #[test]
+    fn a_model_ladder_implementer_escalates_one_rung_per_remediation_attempt() {
+        // Spec 10 unit 4 - the ladder-advance-on-retry path. An implementer on a
+        // `model_ladder` resolves rung 0 on its first attempt and advances one rung on each
+        // remediation attempt, and the resolved rung is VISIBLE in the logged model stamps.
+        // The adjudicator rejects attempt 0 (forcing one remediation) then approves attempt 1,
+        // so the unit records a `green` status for BOTH attempts; each must carry the rung
+        // that attempt ran on as its META_MODEL_ALIAS. This is the same discriminating driver
+        // the Gap-16 approval tests use, here proving the per-attempt rung escalation.
+        const CAP: u32 = 3;
+        let mut cfg = Config::default();
+        let mut worker = agent("worker");
+        worker.model_ladder = vec!["haiku".into(), "sonnet".into(), "opus".into()];
+        cfg.agents.insert("worker".into(), worker);
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("adversary".into(), agent("adversary"));
+        cfg.agents.insert("adj".into(), agent("adj"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true")); // static gates pass
+        cfg.workflow.defaults.review = config::ReviewPanel {
+            lenses: vec!["lens".into()],
+            adversary: "adversary".into(),
+            adjudicator: "adj".into(),
+        };
+        cfg.workflow.defaults.max_retries = CAP;
+        cfg.workflow.stages.insert(
+            "implement".into(),
+            Stage {
+                name: "implement".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        // Reject attempt 0, approve attempt 1: exactly one remediation, so the ladder advances
+        // exactly once (rung 0 -> rung 1).
+        let driver = AdjApprovesOnAttempt::new("adj", 1);
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs.units["implement"].status,
+            ledger::Status::Integrated,
+            "the unit integrates once the adjudicator approves attempt 1"
+        );
+        // The adjudicator ran on attempts 0 and 1 (rejected then approved), confirming exactly
+        // one remediation actually occurred - so the ladder genuinely advanced.
+        assert_eq!(
+            driver.adj_attempts.lock().unwrap().clone(),
+            vec![0, 1],
+            "the adjudicator rejected attempt 0 and approved attempt 1"
+        );
+
+        // Each attempt's `green` status carries the rung that attempt ran on. Distinguish the
+        // two attempts by their replay key (`implement/green#<attempt>`).
+        let events = st
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        let alias_for_attempt = |attempt: u32| -> String {
+            let key = format!("implement/green#{attempt}");
+            events
+                .iter()
+                .find(|e| {
+                    e.type_ == ledger::TYPE_UNIT_STATUS
+                        && e.meta.get(META_REPLAY_KEY).map(String::as_str) == Some(key.as_str())
+                })
+                .unwrap_or_else(|| panic!("a green status for attempt {attempt} must exist"))
+                .meta
+                .get(META_MODEL_ALIAS)
+                .cloned()
+                .unwrap_or_default()
+        };
+        assert_eq!(
+            alias_for_attempt(0),
+            "haiku",
+            "attempt 0's stamp names the cheap first rung"
+        );
+        assert_eq!(
+            alias_for_attempt(1),
+            "sonnet",
+            "the remediation attempt's stamp advanced exactly one rung"
         );
     }
 
