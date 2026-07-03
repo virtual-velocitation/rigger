@@ -2848,6 +2848,37 @@ mod tests {
         assert_eq!(find_store_dir_from(&sub), None);
     }
 
+    #[test]
+    fn find_store_dir_from_walks_past_a_storeless_rigger_to_the_real_store_above() {
+        // The REAL production topology: a git-linked unit worktree nested under the repo
+        // carries a TRACKED but storeless `.rigger/` (workflow.yml + agents, no machine-
+        // local events.db), while the repo root above it holds the real store. A courier
+        // run from inside that worktree must walk PAST its own storeless `.rigger/` and
+        // resolve the repo's real store - not stop at (nor fabricate under) the storeless
+        // one. `find_store_dir_from` keys on `.rigger/events.db` as a FILE, so the storeless
+        // intermediate `.rigger/` is correctly skipped; a regression that refused at the
+        // first `.rigger/` dir would strand every worker in a real rigger worktree.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        // The repo root's real store.
+        std::fs::create_dir_all(root.join(RIGGER_DIR)).unwrap();
+        std::fs::File::create(root.join(RIGGER_DIR).join("events.db")).unwrap();
+        // A nested worktree with a tracked-but-storeless `.rigger/` (no events.db).
+        let worktree = root.join(".rigger").join("tmp").join("rigger-wt-x");
+        std::fs::create_dir_all(worktree.join(RIGGER_DIR)).unwrap();
+        std::fs::write(
+            worktree.join(RIGGER_DIR).join("workflow.yml"),
+            "stages: []\n",
+        )
+        .unwrap();
+        // A courier running from inside the storeless worktree resolves the root's store.
+        assert_eq!(
+            find_store_dir_from(&worktree),
+            Some(root.join(RIGGER_DIR)),
+            "must walk past the storeless worktree `.rigger/` to the repo's real store"
+        );
+    }
+
     // ---- `rigger result` stderr advisories: orphan id and superseding result ----
 
     #[test]
