@@ -36,7 +36,11 @@ defaults:
   # 60 was consumed by one 12-implementer fan-out wave plus reviews, remediation,
   # two zombie units (Gap 11), and several crashed-process retries. 200 bounds ten
   # units' full review lifecycles; still a hard cap, never 0.
-  budget: 200
+  # 2026-07-03: raised 200 -> 400 for the spec-06 run. The unscoped stream (Gap 11)
+  # already holds exactly 200 spawns, so a new run under 200 halts before its first
+  # spawn. Spec 06 unit 1 scopes the fold per run, making this cumulative-count
+  # artifact obsolete; revisit the number after it lands.
+  budget: 400
 
   # The remediation depth (§4.4): how many attempts a failed unit gets before it
   # escalates to a human. This is the REFINEMENT-depth knob, NOT a review-rigor
