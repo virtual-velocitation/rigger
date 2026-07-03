@@ -2257,3 +2257,192 @@ fn result_if_absent_never_clobbers_a_self_reported_success() {
         "the self-reported success must survive un-clobbered; got: {rout:?}"
     );
 }
+
+/// Spec 09 (Gap 20): `rigger init` MINTS a durable `.rigger/project.id` when absent -
+/// deterministically from the normalized origin URL - and REPORTS it in the summary, then a
+/// rerun never re-mints (the file is left untouched, so the id is stable).
+#[test]
+fn init_mints_and_reports_the_durable_project_identity() {
+    let dir = temp_project();
+    let root = dir.path();
+    // A remote so the minted id is the deterministic origin-hash form, not the random one.
+    git_ok(
+        root,
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/acme/widgets.git",
+        ],
+    );
+
+    let (out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    assert!(
+        out.contains("minted the durable project identity") && out.contains(".rigger/project.id"),
+        "init reports the minted identity in its summary; got:\n{out}"
+    );
+    let id = std::fs::read_to_string(root.join(".rigger/project.id")).unwrap();
+    assert!(
+        !id.trim().is_empty(),
+        "project.id holds a non-empty id; got: {id:?}"
+    );
+
+    // A rerun never re-mints: the existing file is left untouched, so the id is stable.
+    let (out2, _err2, ok2) = run_rigger(root, &["init"]);
+    assert!(ok2, "a rerun of rigger init must succeed");
+    assert!(
+        !out2.contains("minted"),
+        "a rerun must NOT re-mint the identity; got:\n{out2}"
+    );
+    let id2 = std::fs::read_to_string(root.join(".rigger/project.id")).unwrap();
+    assert_eq!(id, id2, "the minted id is stable across reruns");
+}
+
+/// Spec 09 headline scenario (Gap 20): a project's history SURVIVES a directory rename
+/// end-to-end, because identity resolves from the tracked `.rigger/project.id`, not the
+/// volatile directory basename. Mint the id, record a decision under it, `mv` the checkout,
+/// and read the SAME decision back from the renamed directory.
+#[test]
+fn project_identity_survives_a_directory_rename() {
+    // A parent tempdir so the PROJECT subdir can be renamed cleanly (the TempDir handle owns
+    // the parent, not the project path).
+    let base = tempfile::tempdir().unwrap();
+    let proj = base.path().join("original-name");
+    std::fs::create_dir_all(&proj).unwrap();
+    git_ok(&proj, &["init", "-q"]);
+    git_ok(
+        &proj,
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/acme/widgets.git",
+        ],
+    );
+
+    // Mint the durable identity, then establish the store and record a decision under it.
+    let (_o, err, ok) = run_rigger(&proj, &["init"]);
+    assert!(ok, "init must mint the identity; stderr:\n{err}");
+    seed_store(&proj);
+    let (_o, err, ok) = run_rigger(
+        &proj,
+        &[
+            "emit",
+            "DecisionMade",
+            r#"{"id":"survivor","summary":"pre-rename history","governs":["src/foo.rs"]}"#,
+        ],
+    );
+    assert!(
+        ok,
+        "emit must record under the minted identity; stderr:\n{err}"
+    );
+
+    // Before the rename, the decision reads back.
+    let (out, _e, ok) = run_rigger(&proj, &["peers", "src/foo.rs"]);
+    assert!(
+        ok && out.contains("decision survivor"),
+        "the decision must read back before the rename; got:\n{out}"
+    );
+
+    // Rename the checkout - the exact `mv` that used to orphan a project's history (Gap 20).
+    let renamed = base.path().join("renamed-away");
+    std::fs::rename(&proj, &renamed).unwrap();
+
+    // From the renamed directory the SAME history reads back: identity came from the tracked
+    // project.id, not the (now-changed) directory basename.
+    let (out, err, ok) = run_rigger(&renamed, &["peers", "src/foo.rs"]);
+    assert!(ok, "peers must succeed after the rename; stderr:\n{err}");
+    assert!(
+        out.contains("decision survivor") && out.contains("governs: src/foo.rs"),
+        "history must survive the directory rename end-to-end (Gap 20); got:\n{out}"
+    );
+}
+
+/// Spec 09 one-time migration: a store holding events ONLY under the legacy basename
+/// namespace is migrated once to the minted identity when the run driver opens it - the
+/// streams are renamed, the history reads back under the minted identity, and a re-open is a
+/// no-op (idempotent).
+#[test]
+fn step_migrates_legacy_history_to_the_minted_identity() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+    seed_store(root);
+
+    // Pre-spec-09 history: a DecisionMade recorded BEFORE any project.id exists lands under
+    // the legacy basename namespace.
+    let (_o, err, ok) = run_rigger(
+        root,
+        &[
+            "emit",
+            "DecisionMade",
+            r#"{"id":"legacy-decision","summary":"pre-mint history","governs":["src/legacy.rs"]}"#,
+        ],
+    );
+    assert!(ok, "seeding legacy history must succeed; stderr:\n{err}");
+
+    // Mint a durable identity DISTINCT from the basename (written directly so the test is
+    // deterministic, independent of the temp dir's random basename).
+    std::fs::write(root.join(".rigger/project.id"), "durablemint\n").unwrap();
+
+    // A step opens the store with the minted identity: it migrates the legacy history once
+    // and says so on stderr.
+    let (_out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the step must succeed; stderr:\n{err}");
+    assert!(
+        err.contains("migrated project identity") && err.contains("durablemint"),
+        "the step reports the one-time identity migration on stderr; got:\n{err}"
+    );
+
+    // The legacy decision now reads back under the MINTED identity (peers resolves via
+    // project.id): the history moved namespaces, it was not lost.
+    let (out, err, ok) = run_rigger(root, &["peers", "src/legacy.rs"]);
+    assert!(ok, "peers must succeed; stderr:\n{err}");
+    assert!(
+        out.contains("decision legacy-decision"),
+        "the pre-mint history reads back under the minted identity after migration; got:\n{out}"
+    );
+
+    // A second step is idempotent: nothing is left under the legacy namespace, so it does
+    // not migrate again.
+    let (_out, err2, ok2) = run_rigger(root, &["step"]);
+    assert!(ok2, "the second step must succeed; stderr:\n{err2}");
+    assert!(
+        !err2.contains("migrated project identity"),
+        "the migration is one-time: a re-open does not migrate again; got:\n{err2}"
+    );
+}
+
+/// Spec 09: `rigger validate` WARNS (stderr, exit 0) when `.rigger/project.id` is absent - a
+/// rename away would orphan the history - and is SILENT about identity once the id is minted.
+#[test]
+fn validate_warns_when_the_project_id_is_absent_and_is_silent_after_minting() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_two_stage_workflow(root); // a loadable config so `rigger validate` reaches the advisories
+
+    // No project.id yet: validate WARNS (still exit 0) that identity falls back to the basename.
+    let (out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(
+        ok,
+        "validate must still succeed (warning only); stderr:\n{err}"
+    );
+    assert!(
+        out.contains("config valid"),
+        "validate prints its config summary; stdout:\n{out}"
+    );
+    assert!(
+        err.contains(".rigger/project.id") && err.to_lowercase().contains("orphan"),
+        "validate warns that a missing project.id lets a rename orphan history; stderr:\n{err}"
+    );
+
+    // Mint it, then validate is SILENT on the identity advisory.
+    std::fs::write(root.join(".rigger/project.id"), "durable-xyz\n").unwrap();
+    let (_out, err2, ok2) = run_rigger(root, &["validate"]);
+    assert!(ok2, "validate must succeed; stderr:\n{err2}");
+    assert!(
+        !err2.contains("project.id"),
+        "validate is silent about identity once project.id exists; stderr:\n{err2}"
+    );
+}

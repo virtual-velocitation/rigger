@@ -26,6 +26,11 @@ use rigger::{hooks, mcpserver, spawn, spec};
 
 const RIGGER_DIR: &str = ".rigger";
 
+/// The tracked file under `.rigger/` that carries the durable project identity (spec 09,
+/// Gap 20): one trimmed line committed to git, so the identity survives directory renames
+/// and machine moves instead of tracking the volatile directory basename.
+const PROJECT_ID_FILE: &str = "project.id";
+
 /// The run branch the stepwise driver accumulates a run on: every unit worktree is
 /// branched from it and every approved unit is merged back into it. Mirrored by
 /// `RUN` in `workflows/rigger.js` (the JS driver); the two names must agree.
@@ -218,10 +223,19 @@ fn project_identity() -> String {
     project_identity_at(&cwd)
 }
 
-/// The project identity, anchored at an explicit `root` rather than the process cwd:
-/// the basename of the git top-level *containing `root`* (resolved with `git -C <root>`,
-/// so it is stable no matter which subdirectory the command ran from), falling back to
-/// `root`'s own basename, then to "rigger". Never empty.
+/// The project identity, anchored at an explicit `root` rather than the process cwd. In
+/// precedence order (spec 09): the tracked `.rigger/project.id` file when present, else the
+/// legacy basename identity ([`legacy_identity_at`]). Never empty.
+///
+/// The tracked id file survives directory renames, machine moves, and shared backends - a
+/// `mv` of the checkout no longer orphans the project's history, because the identity is a
+/// committed line, not the volatile directory basename (Gap 20). A pre-spec-09 checkout with
+/// no `project.id` behaves EXACTLY as before (the legacy basename), until `rigger init`/
+/// `setup` mints the file, so backward compatibility is a hard bar.
+///
+/// The id file is resolved relative to the git top-level (where `.rigger` conventionally
+/// lives, like `.git`), so it is found no matter which subdirectory the command ran from,
+/// falling back to `root` itself outside any git context.
 ///
 /// Anchoring at an explicit root is load-bearing for the store-opening couriers. When a
 /// courier walks UP from a git-linked worktree nested inside the repo (the Gap-14 default
@@ -229,12 +243,36 @@ fn project_identity() -> String {
 /// --show-toplevel` run from the cwd returns the LINKED-WORKTREE path, so the append would
 /// misfile under `proj-<worktree>-run` while the spawn the conductor is waiting on stays
 /// parked forever (spec 05's exact charter defect). Running git anchored at the resolved
-/// store root instead returns the repo root, so the write lands in the `proj-<repo>-run`
-/// stream the conductor reads - identical to the identity the conductor computed when it
-/// created that store from the same root.
+/// store root instead returns the repo root, so it reads THAT root's `project.id` first and
+/// the write lands in the `proj-<repo>-run` stream the conductor reads - identical to the
+/// identity the conductor computed when it created that store from the same root.
 fn project_identity_at(root: &Path) -> String {
     let toplevel = git_repo_at(root);
-    let from_repo = Path::new(&toplevel)
+    let base: &Path = if toplevel.is_empty() {
+        root
+    } else {
+        Path::new(&toplevel)
+    };
+    if let Some(id) = read_project_id(base) {
+        return id;
+    }
+    legacy_identity_from(&toplevel, root)
+}
+
+/// The LEGACY basename identity, anchored at an explicit `root`: the basename of the git
+/// top-level containing `root`, falling back to `root`'s own basename, then to "rigger".
+/// Never empty. This is the pre-spec-09 behavior, unchanged - it is what identity resolves
+/// to when no `.rigger/project.id` is present, and the "before" namespace the spec-09
+/// migration renames a project's history AWAY from once the file is minted.
+fn legacy_identity_at(root: &Path) -> String {
+    legacy_identity_from(&git_repo_at(root), root)
+}
+
+/// The legacy basename identity given an already-resolved git `toplevel` (empty outside a
+/// repo) and the `root` it was resolved from - so [`project_identity_at`] resolves the git
+/// top-level exactly once and reuses it for the fallback.
+fn legacy_identity_from(toplevel: &str, root: &Path) -> String {
+    let from_repo = Path::new(toplevel)
         .file_name()
         .and_then(|n| n.to_str())
         .filter(|s| !s.is_empty());
@@ -246,6 +284,230 @@ fn project_identity_at(root: &Path) -> String {
         .map(String::from)
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "rigger".to_string())
+}
+
+/// The trimmed contents of the tracked `<base>/.rigger/project.id`, or `None` when the file
+/// is absent, unreadable, or blank. A present, non-empty line IS the project identity
+/// (spec 09): clones and checkouts inherit it through git, so one logical project shares a
+/// single namespace across machines and paths.
+fn read_project_id(base: &Path) -> Option<String> {
+    let path = base.join(RIGGER_DIR).join(PROJECT_ID_FILE);
+    let raw = std::fs::read_to_string(path).ok()?;
+    let id = raw.trim();
+    if id.is_empty() {
+        None
+    } else {
+        Some(id.to_string())
+    }
+}
+
+/// Whether the tracked `.rigger/project.id` is present (and non-blank) for the project at
+/// `root`, resolved relative to the git top-level (else `root`) - the same anchoring
+/// [`project_identity_at`] uses. `false` means identity falls back to the volatile basename,
+/// which `rigger validate` surfaces as a rename-orphans-history hazard.
+fn has_tracked_project_id(root: &Path) -> bool {
+    let toplevel = git_repo_at(root);
+    let base: &Path = if toplevel.is_empty() {
+        root
+    } else {
+        Path::new(&toplevel)
+    };
+    read_project_id(base).is_some()
+}
+
+/// A stable, deterministic 64-bit FNV-1a hash. The project id derived from a remote must
+/// be the SAME on every clone, machine, and rigger version, so this uses the fixed FNV
+/// constants rather than `std::collections::hash_map::DefaultHasher` (whose output is
+/// explicitly NOT guaranteed stable across builds).
+fn fnv1a_64(bytes: &[u8]) -> u64 {
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = OFFSET;
+    for &b in bytes {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(PRIME);
+    }
+    hash
+}
+
+/// Canonicalize a git remote URL so the ssh, https, and `.git`-suffixed forms of ONE repo
+/// all reduce to the SAME string (spec 09): strip the scheme (`https://`, `ssh://`,
+/// `git://`) and any `user@` credential, lowercase the host, drop a trailing `.git` and
+/// surrounding slashes, and normalize the scp-style `host:path` separator to `/`. So
+/// `git@github.com:Acme/Repo.git`, `https://github.com/Acme/Repo.git`, and
+/// `ssh://git@github.com/Acme/Repo` all normalize to `github.com/Acme/Repo`, minting one
+/// identity. Pure, so the "ssh/https/.git forms mint identical ids" invariant is unit-tested.
+fn normalize_origin_url(url: &str) -> String {
+    let mut s = url.trim();
+    // Strip the scheme (everything up to and including "://").
+    if let Some(idx) = s.find("://") {
+        s = &s[idx + 3..];
+    }
+    // Strip any "user@" credential prefix (e.g. the ssh `git@`).
+    if let Some(idx) = s.find('@') {
+        s = &s[idx + 1..];
+    }
+    // Split the host from the path on the first ':' (scp-style) or '/'.
+    let (host, path) = match s.find([':', '/']) {
+        Some(i) => (&s[..i], &s[i + 1..]),
+        None => (s, ""),
+    };
+    let host = host.to_ascii_lowercase();
+    // Drop surrounding slashes and a single trailing `.git` from the path.
+    let path = path.trim_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    let path = path.trim_end_matches('/');
+    if path.is_empty() {
+        host
+    } else {
+        format!("{host}/{path}")
+    }
+}
+
+/// The `origin` remote URL configured at `root`, or `None` when there is no `origin` remote
+/// (or git is unavailable). Read via `git config --get remote.origin.url`, which needs no
+/// network and no newer git than the rest of rigger already assumes.
+fn origin_url_at(root: &Path) -> Option<String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["config", "--get", "remote.origin.url"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if url.is_empty() {
+        None
+    } else {
+        Some(url)
+    }
+}
+
+/// Mint a fresh durable project id for `root` (spec 09): deterministically from the
+/// normalized `origin` URL when a remote exists (so every clone of one repo mints the same
+/// id, and the ssh/https/`.git` forms agree), else a random id when there is no remote to
+/// anchor on. The result is a compact hex token, safe as a stream-namespace component.
+fn mint_project_id(root: &Path) -> String {
+    match origin_url_at(root) {
+        Some(url) => format!("{:016x}", fnv1a_64(normalize_origin_url(&url).as_bytes())),
+        None => uuid::Uuid::new_v4().simple().to_string(),
+    }
+}
+
+/// What the spec-09 open-time identity migration should do, given whether each namespace
+/// holds history. Pure over the two facts, so the decision is unit-testable without a store.
+#[derive(Debug, PartialEq, Eq)]
+enum MigrationOutcome {
+    /// Nothing to migrate: no minted identity distinct from the basename, already migrated
+    /// (minted populated), or a fresh project (both empty).
+    NoOp,
+    /// Legacy history with an empty minted namespace: rename the legacy streams once.
+    Rename,
+    /// BOTH namespaces hold history: ambiguous, refuse loudly (never guess).
+    Ambiguous,
+}
+
+/// Decide the migration from the minted vs legacy identities and whether each namespace is
+/// populated (spec 09). When the minted identity is not distinct from the legacy basename
+/// (no `project.id`, or it equals the basename) there is nothing to migrate. Otherwise the
+/// only case that renames is legacy-populated + minted-empty; a populated minted namespace
+/// means it already migrated (or is a fresh mint), and both populated is ambiguous.
+fn decide_migration(
+    minted: &str,
+    legacy: &str,
+    minted_has: bool,
+    legacy_has: bool,
+) -> MigrationOutcome {
+    if minted == legacy {
+        return MigrationOutcome::NoOp;
+    }
+    match (legacy_has, minted_has) {
+        (true, true) => MigrationOutcome::Ambiguous,
+        (true, false) => MigrationOutcome::Rename,
+        _ => MigrationOutcome::NoOp,
+    }
+}
+
+/// Perform the one-time spec-09 identity migration on an already-opened sqlite `backend`,
+/// renaming a project's legacy-namespace history to the `minted` identity and recording the
+/// move as a `DecisionMade` (no new event types). Returns `Some(n)` with the stream count
+/// when it migrated, `None` when there was nothing to do (idempotent on re-open), and an
+/// `Err` naming BOTH identities when the store is ambiguous (history under both namespaces).
+/// Takes the identities as arguments so it is unit-testable against an in-memory store.
+fn migrate_project_identity(
+    backend: &Store,
+    minted: &str,
+    legacy: &str,
+    graph: Option<&dyn Projection>,
+) -> Result<Option<usize>, Box<dyn std::error::Error>> {
+    let legacy_ns = format!("proj-{legacy}-");
+    let minted_ns = format!("proj-{minted}-");
+    let legacy_has = backend.has_stream_prefix(&legacy_ns)?;
+    let minted_has = backend.has_stream_prefix(&minted_ns)?;
+    match decide_migration(minted, legacy, minted_has, legacy_has) {
+        MigrationOutcome::NoOp => Ok(None),
+        MigrationOutcome::Ambiguous => Err(format!(
+            "ambiguous project identity: the event store holds history under BOTH the minted \
+             identity {minted:?} and the legacy identity {legacy:?}. Refusing to guess which \
+             is authoritative - resolve it manually (keep one namespace) before running again."
+        )
+        .into()),
+        MigrationOutcome::Rename => {
+            let n = backend.rename_stream_prefix(&legacy_ns, &minted_ns)?;
+            // Record the migration as a DecisionMade in the MINTED namespace (spec 09: the
+            // migration is recorded with the existing DecisionMade, NO new event type) - old
+            // identity, new identity, and stream count - so the audit trail carries it and a
+            // re-open finds the legacy namespace already empty (a no-op).
+            let store = Namespaced::new(backend, minted);
+            let data = serde_json::json!({
+                "id": format!("identity-migration-{minted}"),
+                "summary": format!(
+                    "migrated project history to the durable identity: renamed {n} stream(s) \
+                     from the legacy namespace {legacy:?} to the minted identity {minted:?} \
+                     (.rigger/{PROJECT_ID_FILE})"
+                ),
+                "governs": [format!("{RIGGER_DIR}/{PROJECT_ID_FILE}")],
+            });
+            let args = serde_json::json!({
+                "type": contextgraph::TYPE_DECISION_MADE,
+                "data": data,
+            });
+            mcpserver::emit_event(&store, conductor::STREAM, graph, &args)
+                .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+            Ok(Some(n))
+        }
+    }
+}
+
+/// Run the spec-09 open-time identity migration against the LOCAL sqlite store
+/// (`.rigger/events.db` under the cwd), before the run driver opens its own backend. A
+/// no-op when there is no local store yet (a fresh project), or when the minted identity is
+/// not distinct from the legacy basename (no `project.id` minted). Refuses loudly (Err) when
+/// both namespaces hold history. Self-contained: it opens its own short-lived store + graph
+/// connections and drops them before the caller opens the real ones, so it wires into any
+/// run-driver entry point in a single call and never touches the injected backend.
+fn migrate_local_identity() -> Res {
+    let store_path = db_path("events.db");
+    if !Path::new(&store_path).is_file() {
+        return Ok(()); // a fresh project: no history to migrate
+    }
+    let cwd = std::env::current_dir()?;
+    let minted = project_identity_at(&cwd);
+    let legacy = legacy_identity_at(&cwd);
+    if minted == legacy {
+        return Ok(()); // no minted identity distinct from the basename
+    }
+    let backend = Store::open(&store_path)?;
+    let graph = Projector::open(&db_path("graph.db"))?;
+    if let Some(n) = migrate_project_identity(&backend, &minted, &legacy, Some(&graph))? {
+        eprintln!(
+            "rigger: migrated project identity - renamed {n} stream(s) from the legacy \
+             namespace {legacy:?} to the minted identity {minted:?} (.rigger/{PROJECT_ID_FILE})"
+        );
+    }
+    Ok(())
 }
 
 fn main() {
@@ -731,6 +993,12 @@ fn cmd_step(args: &[String]) -> Res {
         }
     }
 
+    // Migrate a pre-spec-09 store's legacy-namespace history to the minted identity once,
+    // before opening the run backend (spec 09, Gap 20). A no-op unless `.rigger/project.id`
+    // was minted with an id distinct from the basename and the legacy namespace still holds
+    // the history; refuses loudly if both namespaces are populated.
+    migrate_local_identity()?;
+
     let backend = Store::open(&db_path("events.db"))?;
     let store = Namespaced::new(&backend, &project_identity());
 
@@ -997,6 +1265,12 @@ fn run_cli(parsed: &RunArgs) -> Res {
     // The boxed backend and its namespaced wrapper both live here, in this stack
     // frame, for the whole run: the decorator borrows the concrete store, and both
     // outlive the `conductor::run` call below.
+    // Migrate a pre-spec-09 store's legacy-namespace history to the minted identity once,
+    // before opening the run backend (spec 09). Local-sqlite only - the migration renames
+    // streams in the local `.rigger/events.db`; a shared KurrentDB backend is out of scope.
+    if parsed.store == StoreKind::Sqlite {
+        migrate_local_identity()?;
+    }
     let backend = open_store(parsed.store, parsed.conn.as_deref())?;
     let store = Namespaced::new(backend.as_ref(), &project_identity());
     let graph = Projector::open(&db_path("graph.db"))?;
@@ -1025,6 +1299,10 @@ fn run_workflow(parsed: &RunArgs) -> Res {
     let cfg = config::load(".")?;
     let criteria = load_criteria(parsed.spec.as_deref())?;
     std::fs::create_dir_all(RIGGER_DIR)?;
+    // One-time spec-09 identity migration before opening the run backend (local-sqlite only).
+    if parsed.store == StoreKind::Sqlite {
+        migrate_local_identity()?;
+    }
     let backend = open_store(parsed.store, parsed.conn.as_deref())?;
     let store = Namespaced::new(backend.as_ref(), &project_identity());
     let graph = Projector::open(&db_path("graph.db"))?;
@@ -1802,6 +2080,16 @@ fn cmd_validate() -> Res {
 /// temp dir without mutating the process-wide current directory.
 fn validate_advisories(root: &Path) -> Vec<String> {
     let mut advisories = Vec::new();
+    // Identity durability (spec 09): without a tracked project.id, identity is the volatile
+    // directory basename, so a rename away orphans this project's run history. Warn (like
+    // the other drift advisories) so it is seen before a rename loses the log.
+    if !has_tracked_project_id(root) {
+        advisories.push(format!(
+            "warning: no tracked {RIGGER_DIR}/{PROJECT_ID_FILE}; this project's identity falls \
+             back to the directory basename, so renaming the checkout orphans its run history. \
+             Run `rigger setup` (or `rigger init`) to mint a durable id, then commit it."
+        ));
+    }
     if installed_workflow_drifted(root) {
         advisories.push(format!(
             "warning: the installed /rigger workflow ({}) has drifted from this rigger \
@@ -2276,6 +2564,9 @@ struct ScaffoldReport {
     /// `.gitignore` patterns this run newly appended (empty when every machine-local
     /// pattern was already ignored or tracked).
     gitignore_added: Vec<String>,
+    /// The durable project id this run newly MINTED into `.rigger/project.id` (spec 09),
+    /// or `None` when the file already existed and was left untouched.
+    minted_id: Option<String>,
 }
 
 impl ScaffoldReport {
@@ -2286,6 +2577,7 @@ impl ScaffoldReport {
             || !self.new_agents.is_empty()
             || self.wrote_hook
             || !self.gitignore_added.is_empty()
+            || self.minted_id.is_some()
     }
 }
 
@@ -2298,6 +2590,22 @@ fn init_project(root: &Path) -> Result<ScaffoldReport, Box<dyn std::error::Error
     let agents_dir = rigger_dir.join("agents");
     std::fs::create_dir_all(&agents_dir)?;
     let wrote_workflow = write_if_absent(&rigger_dir.join("workflow.yml"), SCAFFOLD_WORKFLOW)?;
+
+    // 1b. Mint the durable project identity when absent (spec 09, Gap 20): a tracked
+    // `.rigger/project.id` line so the identity survives directory renames and machine
+    // moves instead of tracking the volatile directory basename. Deterministic from the
+    // normalized `origin` URL when a remote exists (every clone mints the same id), random
+    // otherwise. A present file is left untouched (`minted_id` stays `None`), so a rerun
+    // never re-mints. A genuine write failure escalates (naming the artifact), never a
+    // silent omission - identity is load-bearing.
+    let id_path = rigger_dir.join(PROJECT_ID_FILE);
+    let minted_id = if id_path.exists() {
+        None
+    } else {
+        let id = mint_project_id(root);
+        write_if_absent(&id_path, &format!("{id}\n"))?;
+        Some(id)
+    };
 
     // 2. Load the workflow to determine which agents are referenced, then only
     // scaffold those agents. This allows setup to skip scaffolding when the
@@ -2363,6 +2671,7 @@ fn init_project(root: &Path) -> Result<ScaffoldReport, Box<dyn std::error::Error
         new_agents,
         wrote_hook,
         gitignore_added,
+        minted_id,
     })
 }
 
@@ -2474,6 +2783,12 @@ fn get_referenced_agent_ids(
 /// without capturing stdout.
 fn scaffold_summary_lines(report: &ScaffoldReport) -> Vec<String> {
     let mut lines = Vec::new();
+    if let Some(id) = &report.minted_id {
+        lines.push(format!(
+            "minted the durable project identity in .rigger/{PROJECT_ID_FILE}: {id} \
+             (commit it so a rename never orphans this project's history)"
+        ));
+    }
     if report.wrote_workflow {
         lines.push("scaffolded .rigger/workflow.yml".to_string());
     }
@@ -4336,6 +4651,197 @@ mod tests {
     #[test]
     fn project_identity_is_never_empty() {
         assert!(!project_identity().is_empty());
+    }
+
+    #[test]
+    fn project_identity_reads_the_tracked_id_file_then_falls_back_to_the_basename() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        // No project.id: identity is the legacy basename (unchanged pre-spec-09 behavior).
+        let basename = root.file_name().unwrap().to_str().unwrap().to_string();
+        assert_eq!(project_identity_at(root), basename);
+        assert_eq!(legacy_identity_at(root), basename);
+
+        // A tracked project.id, when present (and trimmed), IS the identity - it survives a
+        // directory rename because it does not track the basename.
+        std::fs::create_dir_all(root.join(RIGGER_DIR)).unwrap();
+        std::fs::write(
+            root.join(RIGGER_DIR).join(PROJECT_ID_FILE),
+            "  durable-id-42 \n",
+        )
+        .unwrap();
+        assert_eq!(project_identity_at(root), "durable-id-42");
+        // The legacy resolver ignores the file, so the migration can still name the "before".
+        assert_eq!(legacy_identity_at(root), basename);
+        assert!(has_tracked_project_id(root));
+
+        // A blank id file is treated as absent (falls back), never an empty identity.
+        std::fs::write(root.join(RIGGER_DIR).join(PROJECT_ID_FILE), "   \n").unwrap();
+        assert_eq!(project_identity_at(root), basename);
+        assert!(!has_tracked_project_id(root));
+    }
+
+    #[test]
+    fn ssh_https_and_git_suffix_forms_of_one_repo_mint_identical_ids() {
+        let forms = [
+            "git@github.com:Acme/Repo.git",
+            "https://github.com/Acme/Repo.git",
+            "https://github.com/Acme/Repo",
+            "ssh://git@github.com/Acme/Repo.git",
+            "git://github.com/Acme/Repo.git",
+            "https://GitHub.com/Acme/Repo.git/",
+        ];
+        // Every form canonicalizes to the same normalized URL...
+        assert_eq!(normalize_origin_url(forms[0]), "github.com/Acme/Repo");
+        for f in forms {
+            assert_eq!(
+                normalize_origin_url(f),
+                "github.com/Acme/Repo",
+                "form {f:?} must normalize identically"
+            );
+        }
+        // ...so the derived stable id is identical across all forms.
+        let id0 = format!(
+            "{:016x}",
+            fnv1a_64(normalize_origin_url(forms[0]).as_bytes())
+        );
+        for f in forms {
+            let id = format!("{:016x}", fnv1a_64(normalize_origin_url(f).as_bytes()));
+            assert_eq!(id, id0, "form {f:?} must mint the same id");
+        }
+    }
+
+    #[test]
+    fn normalize_origin_url_separates_distinct_repos_and_lowercases_only_the_host() {
+        assert_ne!(
+            normalize_origin_url("git@github.com:Acme/One.git"),
+            normalize_origin_url("git@github.com:Acme/Two.git")
+        );
+        // Host case is normalized; path case is significant (never lowercased).
+        assert_eq!(
+            normalize_origin_url("https://GITHUB.com/Acme/Repo"),
+            normalize_origin_url("https://github.com/Acme/Repo")
+        );
+        assert_ne!(
+            normalize_origin_url("https://github.com/Acme/Repo"),
+            normalize_origin_url("https://github.com/acme/repo")
+        );
+    }
+
+    #[test]
+    fn decide_migration_covers_every_case() {
+        // No minted identity distinct from the basename: nothing to migrate, ever.
+        assert_eq!(
+            decide_migration("same", "same", false, false),
+            MigrationOutcome::NoOp
+        );
+        assert_eq!(
+            decide_migration("same", "same", true, true),
+            MigrationOutcome::NoOp
+        );
+        // Legacy history with an empty minted namespace: rename once.
+        assert_eq!(
+            decide_migration("minted", "legacy", false, true),
+            MigrationOutcome::Rename
+        );
+        // BOTH namespaces populated: ambiguous, refuse.
+        assert_eq!(
+            decide_migration("minted", "legacy", true, true),
+            MigrationOutcome::Ambiguous
+        );
+        // Already migrated (minted populated, legacy empty) or fresh (both empty): no-op.
+        assert_eq!(
+            decide_migration("minted", "legacy", true, false),
+            MigrationOutcome::NoOp
+        );
+        assert_eq!(
+            decide_migration("minted", "legacy", false, false),
+            MigrationOutcome::NoOp
+        );
+    }
+
+    #[test]
+    fn migrate_project_identity_renames_legacy_history_and_records_a_decision() {
+        use rigger::eventstore::ExpectedRevision;
+        let backend = Store::open(":memory:").unwrap();
+        // Pre-spec-09 history under the legacy basename namespace.
+        backend
+            .append(
+                "proj-oldname-run",
+                ExpectedRevision::Any,
+                &[Event::new("UnitStarted", b"{}".to_vec())],
+            )
+            .unwrap();
+
+        let moved = migrate_project_identity(&backend, "mint123", "oldname", None).unwrap();
+        assert_eq!(moved, Some(1), "one legacy stream renamed");
+
+        // The legacy namespace is now empty; the minted namespace holds the history.
+        assert!(backend
+            .read_stream("proj-oldname-run", 0, Direction::Forward)
+            .unwrap()
+            .is_empty());
+        let migrated = backend
+            .read_stream("proj-mint123-run", 0, Direction::Forward)
+            .unwrap();
+        assert!(
+            migrated.iter().any(|e| e.type_ == "UnitStarted"),
+            "the original history moved to the minted namespace"
+        );
+        assert!(
+            migrated
+                .iter()
+                .any(|e| e.type_ == contextgraph::TYPE_DECISION_MADE),
+            "the migration is recorded as a DecisionMade in the minted namespace"
+        );
+
+        // Idempotent: a second open sees the legacy namespace empty and does nothing.
+        assert_eq!(
+            migrate_project_identity(&backend, "mint123", "oldname", None).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn migrate_project_identity_refuses_when_both_namespaces_hold_history() {
+        use rigger::eventstore::ExpectedRevision;
+        let backend = Store::open(":memory:").unwrap();
+        backend
+            .append(
+                "proj-oldname-run",
+                ExpectedRevision::Any,
+                &[Event::new("A", b"".to_vec())],
+            )
+            .unwrap();
+        backend
+            .append(
+                "proj-mint123-run",
+                ExpectedRevision::Any,
+                &[Event::new("B", b"".to_vec())],
+            )
+            .unwrap();
+
+        let err = migrate_project_identity(&backend, "mint123", "oldname", None).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("mint123") && msg.contains("oldname"),
+            "the refusal names BOTH identities; got: {msg}"
+        );
+        // Nothing was renamed - both namespaces are intact.
+        assert_eq!(
+            backend
+                .read_stream("proj-oldname-run", 0, Direction::Forward)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            backend
+                .read_stream("proj-mint123-run", 0, Direction::Forward)
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     /// `rigger setup` must provision the per-project JS driver: write the three
