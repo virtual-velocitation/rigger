@@ -54,11 +54,28 @@ impl Worktree {
     /// it out instead.
     pub fn create(repo: &str, dir: &str, branch: &str) -> Result<Self, Error> {
         if branch_exists(repo, branch) {
-            // The branch may still be checked out in a PRIOR process's worktree (a
-            // killed or superseded `rigger step` - each process derives its own dir, and
-            // git refuses to check one branch out twice). The dir is transient and the
-            // branch is the checkpoint, so ADOPT the existing registration when its dir
-            // survives, and prune-then-recreate when it does not; never fail on it.
+            // FAST PATH - adoption by PATH LOOKUP (Gap 12, spec 06). The dir is now
+            // DETERMINISTIC (derived from the unit id / stage+attempt, no per-process
+            // uuid), so a resume - or a step that SUPERSEDES a prior one that died -
+            // derives the SAME `dir` for this branch. If that dir already IS this branch's
+            // worktree, adopt it directly - a check on the dir's own HEAD, with no
+            // `git worktree list` porcelain parse and no re-`add` (which git refuses for a
+            // branch already checked out). (This handles sequential resume/supersede, not
+            // a true create-race: two processes that both see the branch absent still race
+            // the underlying `git worktree add -b`; rigger drives unit-worktree creation
+            // single-threaded within one `rigger step`, so that is not a first-class case.)
+            if worktree_on_branch(dir, branch) {
+                return Ok(Worktree {
+                    dir: dir.to_string(),
+                    branch: branch.to_string(),
+                    repo: repo.to_string(),
+                });
+            }
+            // FALLBACK - adopt-or-prune, for a dir DELETED out from under git (the branch
+            // is still checked out in a PRIOR process's registration - a killed or
+            // superseded `rigger step` - whose working dir may be at a different/old path
+            // or gone entirely). ADOPT the surviving registration when its dir survives,
+            // and prune-then-recreate when it does not; never fail on it.
             if let Some(existing) = registered_worktree_for(repo, branch) {
                 if std::path::Path::new(&existing).is_dir() {
                     return Ok(Worktree {
@@ -68,6 +85,20 @@ impl Worktree {
                     });
                 }
                 git(repo, &["worktree", "prune"])?;
+            }
+            // DEFEND THE DETERMINISTIC DIR before re-adding. Because the path no longer
+            // carries a per-process uuid, a SIGKILL mid `git worktree add` (dir populated,
+            // registration not finalized) - or any crash that leaves a populated dir at
+            // this fixed path that is NOT a registered worktree on the branch - would make
+            // the `add` below hard-fail (`fatal: <dir> already exists`, exit 128), and
+            // every subsequent resume re-derives the SAME path and re-hits the SAME failure:
+            // a NON-SELF-HEALING PERMANENT WEDGE on the very resume path this unit hardens.
+            // Clear the unregistered leftover (deregister it if git still tracks it, else
+            // remove the bare dir) so the branch's committed checkpoint is checked out
+            // afresh (adv-u4det-leftover-hardfail-confirmed-nonselfhealing). Only the dir is
+            // cleared, never the durable branch - the branch's work is exactly what we reuse.
+            if std::path::Path::new(dir).exists() {
+                clear_worktree_dir(repo, dir)?;
             }
             // Reuse the existing branch's committed work: check it out into the fresh
             // worktree dir, no `-b` (which would refuse, the ref already exists).
@@ -119,6 +150,31 @@ impl Worktree {
             git(repo, &["branch", "-D", branch])?;
         }
         Ok(())
+    }
+
+    /// Discard any leftover worktree at `dir` AND any existing `branch`, so a following
+    /// [`Self::create`] checks out a FRESH worktree off the repo's CURRENT HEAD.
+    ///
+    /// For THROWAWAY review scaffolding whose deterministic branch/dir must never ADOPT a
+    /// stale checkpoint: a review stage carries no durable work, so its branch is created
+    /// off the base HEAD and torn down each step. If a step CRASHES after the review
+    /// worktree is created but before cleanup, the deterministic review branch+dir survive
+    /// pinned at the OLD base HEAD; on resume [`Self::create`] would ADOPT that surviving
+    /// worktree (the fast path / registration adopt), and if sibling stages integrated onto
+    /// the base meanwhile the reviewers would review STALE code
+    /// (adv-u4det-review-adopt-staleness). Because the review worktree holds nothing worth
+    /// keeping, the safe resume is always prune-then-recreate: this clears the dir and the
+    /// branch so the subsequent `create` mints a fresh checkout of the current HEAD. NEVER
+    /// call this on a unit's durable `rigger/u/*` branch - that would throw away a
+    /// checkpoint; it is only for the non-durable `rigger/review/*` branch.
+    pub fn discard(repo: &str, dir: &str, branch: &str) -> Result<(), Error> {
+        if std::path::Path::new(dir).exists() {
+            clear_worktree_dir(repo, dir)?;
+        } else {
+            // No dir to clear, but a killed process may still leave a dangling admin entry.
+            git(repo, &["worktree", "prune"])?;
+        }
+        Self::delete_branch(repo, branch)
     }
 
     /// Ensure the run branch `branch` is present in `repo` and CHECKED OUT - the branch
@@ -406,6 +462,18 @@ pub fn sweep_terminal(repo: &str, root: &str, run_branch: &str) -> Result<usize,
     Ok(removed)
 }
 
+/// Whether `dir` already exists on disk AS the worktree that has `branch` checked out -
+/// a direct PATH LOOKUP (the dir's own HEAD via `symbolic-ref`), NOT a parse of the
+/// repo-wide `git worktree list`. Because unit and review worktree dirs are now
+/// DETERMINISTIC (derived from the id / stage+attempt, no per-process uuid, Gap 12), a
+/// resume or concurrent process derives the same `dir`, and [`Worktree::create`] uses
+/// this to ADOPT it without the porcelain adopt-or-prune scan. A dir that is absent, is
+/// not a git worktree, or is checked out to a different branch yields false, so the
+/// caller falls back to the porcelain adopt-or-prune path.
+fn worktree_on_branch(dir: &str, branch: &str) -> bool {
+    std::path::Path::new(dir).is_dir() && current_branch(dir).as_deref() == Some(branch)
+}
+
 /// The dir of the worktree that already has `branch` checked out, if any - parsed
 /// from `git worktree list --porcelain` (a `worktree <dir>` line followed by its
 /// `branch refs/heads/<name>` line). Registrations whose dirs were deleted out from
@@ -422,6 +490,24 @@ fn registered_worktree_for(repo: &str, branch: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Remove whatever occupies `dir` so a subsequent `git worktree add <dir>` cannot
+/// hard-fail on a pre-existing path, then prune dangling worktree admin entries. Handles
+/// BOTH a worktree git still tracks (deregistered cleanly via `git worktree remove
+/// --force`, which also tolerates a dirty tree) AND a bare leftover directory a killed
+/// process left behind (`git worktree remove` refuses it - "not a working tree" - so we
+/// delete it off disk). Used to defend the now-DETERMINISTIC unit dir in
+/// [`Worktree::create`] and to reset a throwaway review worktree in [`Worktree::discard`].
+fn clear_worktree_dir(repo: &str, dir: &str) -> Result<(), Error> {
+    if run_git(repo, &["worktree", "remove", "--force", dir]).is_err()
+        && std::path::Path::new(dir).exists()
+    {
+        std::fs::remove_dir_all(dir)
+            .map_err(|e| Error(format!("remove leftover worktree dir {dir}: {e}")))?;
+    }
+    git(repo, &["worktree", "prune"])?;
+    Ok(())
 }
 
 fn git(dir: &str, args: &[&str]) -> Result<String, Error> {
@@ -742,6 +828,216 @@ mod tests {
             "the re-created worktree checks out the branch's committed work"
         );
         wt3.remove().unwrap();
+    }
+
+    #[test]
+    fn create_heals_a_leftover_dir_at_the_deterministic_path() {
+        // Resume self-heal (Gap 12, spec 06:48): with a DETERMINISTIC dir, a SIGKILL mid
+        // `git worktree add` can leave a POPULATED dir at the fixed path that is NOT a
+        // registered worktree, while the unit's durable BRANCH survives as a checkpoint.
+        // The old per-process-uuid design made this collision IMPOSSIBLE; determinism must
+        // not trade self-healing for a permanent wedge. `create` must REMOVE the
+        // unregistered leftover and check the branch out afresh - never hard-fail
+        // `git worktree add` (exit 128) on every subsequent resume that re-derives the same
+        // path (adv-u4det-leftover-hardfail-confirmed-nonselfhealing).
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        run_git(&repo_path, &["checkout", "-b", "rigger-run"]).unwrap();
+        let root = scratch_root(&repo_path, "", None);
+        let branch = "rigger/u/unit-leftover";
+        let dir = format!("{root}/rigger-wt-unit-leftover");
+
+        // Establish the durable branch checkpoint with committed work, then remove the
+        // worktree dir (registration gone) - the branch ref survives.
+        let wt1 = Worktree::create(&repo_path, &dir, branch).unwrap();
+        std::fs::write(
+            std::path::Path::new(&dir).join("carried.txt"),
+            "checkpoint\n",
+        )
+        .unwrap();
+        wt1.commit("rigger: checkpoint work").unwrap();
+        wt1.remove().unwrap();
+        assert!(
+            !std::path::Path::new(&dir).exists(),
+            "precondition: the deterministic dir is gone after remove"
+        );
+        assert!(
+            Worktree::branch_has_work(&repo_path, branch),
+            "precondition: the durable branch still carries the checkpoint work"
+        );
+
+        // Plant a POPULATED leftover at the deterministic path that is NOT a registered
+        // worktree - exactly the residue a SIGKILL mid `worktree add` leaves behind.
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(std::path::Path::new(&dir).join("leftover.txt"), "torn\n").unwrap();
+        assert!(
+            !worktree_on_branch(&dir, branch),
+            "precondition: the leftover is not this branch's registered worktree (fast path can't adopt)"
+        );
+        assert!(
+            registered_worktree_for(&repo_path, branch).is_none(),
+            "precondition: no worktree is registered for the branch (fallback can't adopt)"
+        );
+
+        // `create` must HEAL rather than hard-fail exit 128.
+        let wt2 = Worktree::create(&repo_path, &dir, branch)
+            .expect("create must self-heal a leftover dir, not wedge on `git worktree add`");
+        assert_eq!(
+            wt2.dir, dir,
+            "the healed worktree uses the requested deterministic dir"
+        );
+        assert!(
+            std::path::Path::new(&dir).join("carried.txt").exists(),
+            "the healed worktree checks out the branch's committed checkpoint work"
+        );
+        assert!(
+            !std::path::Path::new(&dir).join("leftover.txt").exists(),
+            "the unregistered leftover residue is removed, not merged into the fresh checkout"
+        );
+        wt2.remove().unwrap();
+    }
+
+    #[test]
+    fn create_adopts_the_deterministic_dir_via_a_path_lookup() {
+        // Gap 12 (spec 06:48): with a DETERMINISTIC dir, a second process computes the
+        // SAME path for the branch. `create` must adopt that existing worktree by a
+        // direct PATH LOOKUP on the requested dir (it is already this branch's worktree)
+        // - never failing on the double-checkout, never needing to parse the porcelain
+        // worktree list to discover where the branch lives. The adopted worktree carries
+        // the prior process's committed work.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        run_git(&repo_path, &["checkout", "-b", "rigger-run"]).unwrap();
+        let root = scratch_root(&repo_path, "", None);
+        let branch = "rigger/u/unit-det";
+        // Deterministic dir - the same string both processes derive, no uuid.
+        let dir = format!("{root}/rigger-wt-unit-det");
+
+        // Process 1: create the deterministic worktree and commit work.
+        let wt1 = Worktree::create(&repo_path, &dir, branch).unwrap();
+        std::fs::write(std::path::Path::new(&dir).join("work.txt"), "det\n").unwrap();
+        wt1.commit("rigger: process 1 work").unwrap();
+
+        // Process 2: SAME deterministic dir + branch. It must adopt the existing dir (a
+        // path lookup), returning that exact dir with the committed work present.
+        let wt2 = Worktree::create(&repo_path, &dir, branch).unwrap();
+        assert_eq!(
+            wt2.dir, dir,
+            "create adopts the requested deterministic dir directly"
+        );
+        assert!(
+            std::path::Path::new(&wt2.dir).join("work.txt").exists(),
+            "the adopted deterministic worktree carries the committed work"
+        );
+        wt2.remove().unwrap();
+    }
+
+    #[test]
+    fn worktree_on_branch_matches_only_this_branchs_own_checkout() {
+        // The fast-path adoption arm (Gap 12) is a PATH LOOKUP on the dir's OWN HEAD, not a
+        // `git worktree list` porcelain parse. Pin the predicate directly so a mutation of
+        // the fast path is caught (the flagship adopt test alone stays green with the fast
+        // path deleted, because the porcelain fallback adopts the same registered dir -
+        // adv-u4det-adopt-test-nondiscriminating). It must be TRUE only for a dir that IS
+        // this branch's worktree, and FALSE for an absent dir, a bare non-worktree dir, and
+        // a worktree on a DIFFERENT branch.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        run_git(&repo_path, &["checkout", "-b", "rigger-run"]).unwrap();
+        let root = scratch_root(&repo_path, "", None);
+        let branch = "rigger/u/unit-fastpath";
+        let dir = format!("{root}/rigger-wt-unit-fastpath");
+
+        // Absent dir: no worktree to adopt.
+        assert!(
+            !worktree_on_branch(&dir, branch),
+            "an absent dir is not a worktree on the branch"
+        );
+
+        // A bare, populated NON-worktree dir under the repo: its HEAD walks UP to the parent
+        // repo's branch (rigger-run), not `branch`, so the fast path must NOT adopt it - this
+        // is exactly the leftover the fallback must defend against.
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(std::path::Path::new(&dir).join("x.txt"), "y\n").unwrap();
+        assert!(
+            !worktree_on_branch(&dir, branch),
+            "a bare leftover dir (HEAD resolves to the parent repo) is not this branch's worktree"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        // The real worktree on the branch: matched by path lookup.
+        let wt = Worktree::create(&repo_path, &dir, branch).unwrap();
+        assert!(
+            worktree_on_branch(&dir, branch),
+            "the dir that IS this branch's worktree matches by its own HEAD"
+        );
+
+        // A worktree checked out on a DIFFERENT branch is not matched for `branch`.
+        let other_dir = format!("{root}/rigger-wt-other");
+        let other = Worktree::create(&repo_path, &other_dir, "rigger/u/other").unwrap();
+        assert!(
+            !worktree_on_branch(&other_dir, branch),
+            "a worktree on another branch does not match this branch's path lookup"
+        );
+        wt.remove().unwrap();
+        other.remove().unwrap();
+    }
+
+    #[test]
+    fn discard_resets_a_throwaway_review_worktree_to_the_current_head() {
+        // adv-u4det-review-adopt-staleness: a review worktree's deterministic branch/dir
+        // must never ADOPT a stale checkpoint. A review step that crashed after creating the
+        // throwaway worktree leaves the branch pinned at the OLD base HEAD; a naive `create`
+        // would adopt it and review STALE code once the base advanced. `discard` + `create`
+        // must instead tear down the leftover and recreate off the CURRENT HEAD.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        run_git(&repo_path, &["checkout", "-b", "rigger-run"]).unwrap();
+        let root = scratch_root(&repo_path, "", None);
+        let branch = "rigger/review/stage-0";
+        let dir = format!("{root}/rigger-review-stage-0");
+
+        // A prior review step created the throwaway worktree off the base HEAD, then CRASHED
+        // (no cleanup): the branch + dir survive, pinned at the OLD head.
+        let stale = Worktree::create(&repo_path, &dir, branch).unwrap();
+        let old_head = git(&dir, &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
+        drop(stale); // the Rust struct is gone but the worktree registration + dir survive.
+
+        // The base advances (a sibling unit integrates onto the run branch).
+        run_git(
+            &repo_path,
+            &["commit", "--allow-empty", "-q", "-m", "sibling integrated"],
+        )
+        .unwrap();
+        let new_head = run_git(&repo_path, &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
+        assert_ne!(
+            old_head, new_head,
+            "precondition: the base advanced past the stale review worktree"
+        );
+
+        // The resumed review step discards the stale scaffolding and recreates off HEAD.
+        Worktree::discard(&repo_path, &dir, branch).unwrap();
+        assert!(
+            !branch_exists(&repo_path, branch),
+            "discard deletes the throwaway review branch"
+        );
+        let fresh = Worktree::create(&repo_path, &dir, branch).unwrap();
+        let fresh_head = git(&fresh.dir, &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
+        assert_eq!(
+            fresh_head, new_head,
+            "the recreated review worktree reflects the CURRENT base HEAD, not the stale one"
+        );
+        fresh.remove().unwrap();
+        Worktree::delete_branch(&repo_path, branch).unwrap();
     }
 
     #[test]

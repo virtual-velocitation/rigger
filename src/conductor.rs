@@ -1948,7 +1948,13 @@ impl RunCtx<'_> {
         // so `dir` stays empty there (the project cwd, guarded by `assert_isolated_cwd`
         // which is a no-op when no repo is configured). The worktree is torn down on
         // every exit path here, including the early-return ones inside the loop.
-        let review_wt = self.review_only_worktree(st)?;
+        //
+        // The review worktree derives from the stage AND the review attempt (spec 06);
+        // seed the attempt from the prior log's folded remediation count exactly as
+        // `run_fan_out_review_loop` does below, so both agree and a resumed step
+        // recomputes the same deterministic worktree path.
+        let attempt = self.prior_attempts.get(&st.name).copied().unwrap_or(0);
+        let review_wt = self.review_only_worktree(st, attempt)?;
         let dir = review_wt
             .as_ref()
             .map(|w| w.dir.clone())
@@ -2832,30 +2838,28 @@ impl RunCtx<'_> {
         if !self.agent_isolated(&st.agent) {
             return Ok(None);
         }
-        // The BRANCH is DETERMINISTIC, derived from the unit id (resume-continuity):
-        // `rigger/u/<unit-id>`. The same unit uses the same branch across runs, so a
-        // git branch ref - which survives process death and worktree removal - is the
-        // unit's DURABLE checkpoint: a prior window's committed work is found and
-        // reused on the next run instead of being thrown away under a per-run-uuid
-        // branch. `Worktree::create` handles both a fresh branch (create off HEAD) and
-        // an existing branch with prior commits (check it out, reusing the work). The
-        // worktree DIR stays transient - a fresh, unique dir under the run's scratch
-        // root each time (never the OS temp dir - Gap 14), recreated from the branch
-        // as needed.
-        let dir = std::path::PathBuf::from(crate::worktree::scratch_root_from_env(
+        // Both the BRANCH and the DIR are DETERMINISTIC, derived purely from the unit id
+        // (Gap 12, spec 06): the branch is `rigger/u/<unit-slug>` and the dir is
+        // `<scratch-root>/rigger-wt-<unit-slug>` (never the OS temp dir - Gap 14). The
+        // same unit uses the same branch AND the same dir on every run, so:
+        // - the git branch ref (which survives process death and worktree removal) is the
+        //   unit's DURABLE checkpoint - a prior window's committed work is reused, not
+        //   thrown away; and
+        // - because the dir no longer carries a per-process UUID, a resume - or a step that
+        //   SUPERSEDES a prior one that died - computes the SAME path, so `Worktree::create`
+        //   ADOPTS that prior process's worktree with a direct path lookup instead of a
+        //   porcelain parse. (This is sequential resume/supersede, not true concurrency:
+        //   rigger drives unit-worktree creation single-threaded within one `rigger step`.)
+        // `Worktree::create` handles a fresh branch (create off HEAD), an existing branch
+        // with prior commits (check it out, reusing the work), adopt-or-prune of a stale
+        // registration whose dir was deleted, and self-heal of a populated leftover dir at
+        // the deterministic path (deregister/remove it, then re-add).
+        let scratch = crate::worktree::scratch_root_from_env(
             &self.deps.repo,
             &self.cfg.workflow.defaults.workdir,
-        ))
-        .join(format!(
-            "rigger-wt-{}-{}",
-            sanitize_for_path(&st.name),
-            &uuid::Uuid::new_v4().to_string()[..8]
-        ));
-        let wt = Worktree::create(
-            &self.deps.repo,
-            dir.to_str().unwrap_or_default(),
-            &unit_branch(&st.name),
-        )?;
+        );
+        let dir = unit_worktree_dir(&scratch, &st.name);
+        let wt = Worktree::create(&self.deps.repo, &dir, &unit_branch(&st.name))?;
         Ok(Some(wt))
     }
 
@@ -2863,33 +2867,36 @@ impl RunCtx<'_> {
     /// (one that integrates no code and so has no unit worktree). Its reviewers run IN
     /// it - reading the integrated code under review - so they never run in the live
     /// main checkout (where a stray Bash/Edit would corrupt the repo). Unlike the unit
-    /// worktree, this carries NO durable checkpoint: it is created off a fresh,
-    /// run-unique throwaway branch and removed (dir + branch) when the stage ends. A
-    /// repo-less run has no checkout to protect, so it returns None (reviewers run in
-    /// the project cwd, which is the workspace; `assert_isolated_cwd` is a no-op there).
-    fn review_only_worktree(&self, st: &Stage) -> Result<Option<Worktree>, Error> {
+    /// worktree, this carries NO durable checkpoint: it is created off a throwaway branch
+    /// and removed (dir + branch) when the stage ends. A repo-less run has no checkout to
+    /// protect, so it returns None (reviewers run in the project cwd, which is the
+    /// workspace; `assert_isolated_cwd` is a no-op there).
+    ///
+    /// Both the dir and the throwaway branch derive DETERMINISTICALLY from the stage id
+    /// AND the review `attempt` (Gap 12, spec 06) - no per-process UUID - so a resumed
+    /// review step recomputes the same path and reclaims it instead of leaking a fresh
+    /// worktree each process.
+    fn review_only_worktree(&self, st: &Stage, attempt: u32) -> Result<Option<Worktree>, Error> {
         if self.deps.repo.is_empty() {
             return Ok(None);
         }
-        let uuid = uuid::Uuid::new_v4().to_string();
-        let dir = std::path::PathBuf::from(crate::worktree::scratch_root_from_env(
+        let scratch = crate::worktree::scratch_root_from_env(
             &self.deps.repo,
             &self.cfg.workflow.defaults.workdir,
-        ))
-        .join(format!(
-            "rigger-review-{}-{}",
-            sanitize_for_path(&st.name),
-            &uuid[..8]
-        ));
-        // A run-unique throwaway branch (NOT the deterministic unit branch): this
-        // worktree is read-only scaffolding, never a checkpoint, so its branch must
-        // not collide with - or survive as - a unit's durable branch.
-        let branch = format!(
-            "rigger/review/{}-{}",
-            sanitize_for_path(&st.name),
-            &uuid[..8]
         );
-        let wt = Worktree::create(&self.deps.repo, dir.to_str().unwrap_or_default(), &branch)?;
+        let dir = review_worktree_dir(&scratch, &st.name, attempt);
+        // A throwaway branch (NOT the deterministic unit branch): this worktree is
+        // read-only scaffolding, never a checkpoint, so its branch must not collide with -
+        // or survive as - a unit's durable branch.
+        let branch = review_branch(&st.name, attempt);
+        // A review worktree must reflect the CURRENT base HEAD. Since it carries no durable
+        // work, DISCARD any deterministic leftover (a crashed prior review step left the
+        // branch+dir pinned at a now-STALE HEAD) before creating, so we recreate off the
+        // current HEAD rather than ADOPT the stale checkout and review stale code
+        // (adv-u4det-review-adopt-staleness). This is the opposite of the unit worktree,
+        // whose durable branch is exactly what `create` reuses.
+        Worktree::discard(&self.deps.repo, &dir, &branch)?;
+        let wt = Worktree::create(&self.deps.repo, &dir, &branch)?;
         Ok(Some(wt))
     }
 
@@ -3244,6 +3251,42 @@ fn unit_branch(unit_id: &str) -> String {
     format!("rigger/u/{}", sanitize_for_path(unit_id))
 }
 
+/// The DETERMINISTIC worktree dir for a unit (Gap 12, spec 06): `<scratch-root>/
+/// rigger-wt-<unit-slug>`, with NO per-process UUID. Because it derives purely from the
+/// scratch root and the (sanitized) unit id, a resume - or a step that supersedes a prior
+/// one that died - computes the SAME path, so adoption of that prior process's worktree is
+/// a direct path lookup rather than a `git worktree list` porcelain parse. (Sequential
+/// resume/supersede, not true concurrency: rigger drives unit-worktree creation
+/// single-threaded within one `rigger step`.) Pairs with [`unit_branch`], which derives the
+/// unit's durable branch from the same id.
+fn unit_worktree_dir(scratch_root: &str, unit_id: &str) -> String {
+    format!("{scratch_root}/rigger-wt-{}", sanitize_for_path(unit_id))
+}
+
+/// The DETERMINISTIC dir for a STANDALONE review stage's throwaway worktree (spec 06):
+/// `<scratch-root>/rigger-review-<stage-slug>-<attempt>`, derived from the stage id and
+/// the review attempt, NO per-process UUID. A resumed review step recomputes the same path
+/// and RECLAIMS it - [`Self::review_only_worktree`] discards any leftover and recreates off
+/// the current HEAD (never adopting a stale checkout) - instead of leaking a fresh worktree
+/// each process. Unlike the unit worktree this carries no durable checkpoint;
+/// [`Self::run_fan_out_stage`] removes both the dir and its [`review_branch`] when the stage
+/// ends.
+fn review_worktree_dir(scratch_root: &str, stage_id: &str, attempt: u32) -> String {
+    format!(
+        "{scratch_root}/rigger-review-{}-{attempt}",
+        sanitize_for_path(stage_id)
+    )
+}
+
+/// The DETERMINISTIC throwaway branch for a standalone review worktree (spec 06):
+/// `rigger/review/<stage-slug>-<attempt>`. It is NOT a unit's durable `rigger/u/*`
+/// checkpoint - it is read-only review scaffolding, removed with its worktree when the
+/// stage ends - so it must never collide with, or survive as, a unit branch. Deriving it
+/// from stage + attempt (no uuid) lets a resumed step recompute and reclaim it.
+fn review_branch(stage_id: &str, attempt: u32) -> String {
+    format!("rigger/review/{}-{attempt}", sanitize_for_path(stage_id))
+}
+
 /// Whether two filesystem paths name the same location. Used by the cwd-isolation
 /// guard to refuse spawning an agent directly in the main repo checkout. Compares
 /// the canonicalized paths when both resolve (so `.`, `..`, symlinks, and a trailing
@@ -3559,6 +3602,58 @@ mod tests {
     use crate::eventstore::Filter;
     use crate::gate::ExecRunner;
     use std::path::Path;
+
+    #[test]
+    fn unit_worktree_dir_derives_deterministically_from_scratch_root_and_unit_id() {
+        // Gap 12 remainder (spec 06:48): the unit worktree DIR derives purely from the
+        // scratch root and the unit id - NO per-process UUID - so every process (a
+        // resume, a concurrent step) computes the SAME path and adoption is a lookup.
+        let a = unit_worktree_dir("/scratch", "unit-4 worktree paths");
+        let b = unit_worktree_dir("/scratch", "unit-4 worktree paths");
+        assert_eq!(
+            a, b,
+            "the same unit must yield the same worktree dir across processes (no uuid)"
+        );
+        assert_eq!(
+            a, "/scratch/rigger-wt-unit-4-worktree-paths",
+            "the dir is <scratch>/rigger-wt-<unit-slug>, sanitized, with no uuid suffix"
+        );
+        assert_ne!(
+            unit_worktree_dir("/scratch", "unit-a"),
+            unit_worktree_dir("/scratch", "unit-b"),
+            "distinct units get distinct dirs"
+        );
+    }
+
+    #[test]
+    fn review_worktree_dir_and_branch_derive_from_stage_and_attempt() {
+        // Spec 06:48: review worktrees derive from stage + attempt (not a per-process
+        // uuid), so a resumed review step recomputes the same path/branch and can
+        // adopt-or-prune rather than leaking a fresh one each process.
+        assert_eq!(
+            review_worktree_dir("/scratch", "review stage", 2),
+            "/scratch/rigger-review-review-stage-2"
+        );
+        assert_eq!(
+            review_branch("review stage", 2),
+            "rigger/review/review-stage-2"
+        );
+        assert_eq!(
+            review_worktree_dir("/scratch", "s", 0),
+            review_worktree_dir("/scratch", "s", 0),
+            "same (stage, attempt) is deterministic"
+        );
+        assert_ne!(
+            review_worktree_dir("/scratch", "s", 0),
+            review_worktree_dir("/scratch", "s", 1),
+            "a different attempt yields a different worktree dir"
+        );
+        assert_ne!(
+            review_branch("s", 0),
+            review_branch("s", 1),
+            "a different attempt yields a different throwaway review branch"
+        );
+    }
 
     struct Stub {
         write_file: Option<String>,
