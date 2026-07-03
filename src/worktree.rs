@@ -54,11 +54,24 @@ impl Worktree {
     /// it out instead.
     pub fn create(repo: &str, dir: &str, branch: &str) -> Result<Self, Error> {
         if branch_exists(repo, branch) {
-            // The branch may still be checked out in a PRIOR process's worktree (a
-            // killed or superseded `rigger step` - each process derives its own dir, and
-            // git refuses to check one branch out twice). The dir is transient and the
-            // branch is the checkpoint, so ADOPT the existing registration when its dir
-            // survives, and prune-then-recreate when it does not; never fail on it.
+            // FAST PATH - adoption by PATH LOOKUP (Gap 12, spec 06). The dir is now
+            // DETERMINISTIC (derived from the unit id / stage+attempt, no per-process
+            // uuid), so a resume or a concurrent process derives the SAME `dir` for this
+            // branch. If that dir already IS this branch's worktree, adopt it directly -
+            // a check on the dir's own HEAD, with no `git worktree list` porcelain parse
+            // and no re-`add` (which git refuses for a branch already checked out).
+            if worktree_on_branch(dir, branch) {
+                return Ok(Worktree {
+                    dir: dir.to_string(),
+                    branch: branch.to_string(),
+                    repo: repo.to_string(),
+                });
+            }
+            // FALLBACK - adopt-or-prune, for a dir DELETED out from under git (the branch
+            // is still checked out in a PRIOR process's registration - a killed or
+            // superseded `rigger step` - whose working dir may be at a different/old path
+            // or gone entirely). ADOPT the surviving registration when its dir survives,
+            // and prune-then-recreate when it does not; never fail on it.
             if let Some(existing) = registered_worktree_for(repo, branch) {
                 if std::path::Path::new(&existing).is_dir() {
                     return Ok(Worktree {
@@ -406,6 +419,18 @@ pub fn sweep_terminal(repo: &str, root: &str, run_branch: &str) -> Result<usize,
     Ok(removed)
 }
 
+/// Whether `dir` already exists on disk AS the worktree that has `branch` checked out -
+/// a direct PATH LOOKUP (the dir's own HEAD via `symbolic-ref`), NOT a parse of the
+/// repo-wide `git worktree list`. Because unit and review worktree dirs are now
+/// DETERMINISTIC (derived from the id / stage+attempt, no per-process uuid, Gap 12), a
+/// resume or concurrent process derives the same `dir`, and [`Worktree::create`] uses
+/// this to ADOPT it without the porcelain adopt-or-prune scan. A dir that is absent, is
+/// not a git worktree, or is checked out to a different branch yields false, so the
+/// caller falls back to the porcelain adopt-or-prune path.
+fn worktree_on_branch(dir: &str, branch: &str) -> bool {
+    std::path::Path::new(dir).is_dir() && current_branch(dir).as_deref() == Some(branch)
+}
+
 /// The dir of the worktree that already has `branch` checked out, if any - parsed
 /// from `git worktree list --porcelain` (a `worktree <dir>` line followed by its
 /// `branch refs/heads/<name>` line). Registrations whose dirs were deleted out from
@@ -742,6 +767,41 @@ mod tests {
             "the re-created worktree checks out the branch's committed work"
         );
         wt3.remove().unwrap();
+    }
+
+    #[test]
+    fn create_adopts_the_deterministic_dir_via_a_path_lookup() {
+        // Gap 12 (spec 06:48): with a DETERMINISTIC dir, a second process computes the
+        // SAME path for the branch. `create` must adopt that existing worktree by a
+        // direct PATH LOOKUP on the requested dir (it is already this branch's worktree)
+        // - never failing on the double-checkout, never needing to parse the porcelain
+        // worktree list to discover where the branch lives. The adopted worktree carries
+        // the prior process's committed work.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        run_git(&repo_path, &["checkout", "-b", "rigger-run"]).unwrap();
+        let root = scratch_root(&repo_path, "", None);
+        let branch = "rigger/u/unit-det";
+        // Deterministic dir - the same string both processes derive, no uuid.
+        let dir = format!("{root}/rigger-wt-unit-det");
+
+        // Process 1: create the deterministic worktree and commit work.
+        let wt1 = Worktree::create(&repo_path, &dir, branch).unwrap();
+        std::fs::write(std::path::Path::new(&dir).join("work.txt"), "det\n").unwrap();
+        wt1.commit("rigger: process 1 work").unwrap();
+
+        // Process 2: SAME deterministic dir + branch. It must adopt the existing dir (a
+        // path lookup), returning that exact dir with the committed work present.
+        let wt2 = Worktree::create(&repo_path, &dir, branch).unwrap();
+        assert_eq!(
+            wt2.dir, dir,
+            "create adopts the requested deterministic dir directly"
+        );
+        assert!(
+            std::path::Path::new(&wt2.dir).join("work.txt").exists(),
+            "the adopted deterministic worktree carries the committed work"
+        );
+        wt2.remove().unwrap();
     }
 
     #[test]
