@@ -1,6 +1,6 @@
 # Design-intent gaps
 
-Status: assessed 2026-07-01 against [architecture.md](architecture.md) after the three-gap dogfood run (PR #7); updated through 2026-07-03 across the stepwise-conductor campaign's four loop runs (specs 04-07). ALL RECORDED GAPS (1-19) ARE CLOSED. Open work: Gap 20 (volatile project identity - spec 09 in flight). The spec-08 housekeeping deferrals were delivered. New gaps discovered by future runs land here as before.
+Status: assessed 2026-07-01 against [architecture.md](architecture.md) after the three-gap dogfood run (PR #7); updated through 2026-07-03 across the stepwise-conductor campaign's four loop runs (specs 04-07). ALL RECORDED GAPS (1-19) ARE CLOSED. Open work: NONE recorded (the improvement program in docs/research/ drives specs 10-13). New gaps discovered by future runs land here as before.
 
 This document records where the implementation currently falls short of the design intent, with the evidence that surfaced each gap and the shape of the fix. It is the feed for the next loop runs: each gap is written so it can be lifted into a spec's "Done when" criteria with little editing. Remove entries as they close.
 
@@ -9,16 +9,6 @@ This document records where the implementation currently falls short of the desi
 Dogfooding. Rigger ran on its own spec; the run's telemetry (`rigger stats`, `rigger peers`), the `/workflows` display, and independent verification of the run's output are the evidence base. The through-line: the memory layer and the review economics are delivering as designed (78.6% first-pass yield, 0% escalations, decisions demonstrably inherited across agents); the gaps concentrate in the **native workflow driver**, which implements the loop's shape but not all of the conductor's safeguards.
 
 ---
-
-## Gap 20: project identity derives from the directory basename - a rename orphans history
-
-**Intent.** A project's identity is stable for the life of the project: its event history, decisions, and memory survive checkouts moving, machines changing, and backends being shared.
-
-**Reality.** `project_identity()` is the git top-level's BASENAME. Renaming or moving the repo directory silently re-namespaces every stream (`proj-<name>-run`), so the project's own local `events.db` reads as empty - history, decisions, and metrics orphaned under the old name. On a shared server backend, two unrelated repos with the same directory name collide into one namespace.
-
-**Evidence.** Byran's design review, 2026-07-03: "local filesystem paths are too volatile." The failure needs one `mv` to reproduce.
-
-**Fix shape (dispositions decided).** Identity becomes durable and portable: a tracked one-line `.rigger/project.id` file is THE identity when present; `rigger init`/`setup` mint it - deterministically from the normalized origin URL (scheme/user/`.git`-insensitive hash) when a remote exists, else a random id - and clones inherit it through git. Store-opening paths fall back to the legacy basename identity when no `project.id` exists, and a store holding streams only under the legacy identity is migrated once (streams renamed) on first open with a minted id, recorded as a decision. `rigger validate` nudges when the file is missing.
 
 ---
 
@@ -49,3 +39,4 @@ Move entries here when they land, with the closing PR.
 - **Gap 17 (findings/lessons uncapped in prompts)** - closed by spec 07 unit 1: one shared budgeted-section writer renders decisions, findings, and lessons alike (recent-N verbatim, visible elision note with the `rigger peers` recovery, per-section byte budgets as named constants).
 - **Gap 18 (degenerate reviewer charges an attempt)** - closed by spec 07 unit 2: an empty/whitespace reviewer result triggers a bounded, deterministic, replay-safe respawn instead of folding a failure; exhausting the respawn bound halts the run loudly naming the dead reviewer (tier-aware and recoverable after the retry round).
 - **Gap 19 (shared build-cache pollution)** - closed by spec 07 unit 3: worktree gates get per-unit `CARGO_TARGET_DIR`s reclaimed by the terminal sweep; the shared cache serves only the courier's inline gates on the integrated tree.
+- **Gap 20 (volatile project identity)** - closed by spec 09: identity is the tracked `.rigger/project.id` (minted from the normalized origin URL, random without a remote; clones inherit), with legacy-basename fallback, a one-time recorded stream migration, loud refusal on ambiguous double-namespace stores, and a validate nudge. History survives a directory rename, pinned end-to-end.
