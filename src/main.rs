@@ -5,7 +5,7 @@
 //! (`--eventstore sqlite|kurrentdb`) are selected by flag; `rigger graph` inspects
 //! the context graph; `rigger init`/`setup` scaffold a project.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use rigger::conductor::{self, Deps};
@@ -14,7 +14,7 @@ use rigger::contextgraph::{self, sqlite::Projector, Projection};
 use rigger::driver::cli;
 use rigger::driver::replay::ReplayDriver;
 use rigger::eventstore::namespace::Namespaced;
-use rigger::eventstore::{sqlite::Store, Direction, EventStore, Filter};
+use rigger::eventstore::{sqlite::Store, Direction, Event, EventStore, Filter};
 use rigger::gate::ExecRunner;
 use rigger::grounder::Grounder;
 use rigger::ledger::RunState;
@@ -205,8 +205,34 @@ fn open_kurrentdb(_conn: Option<&str>) -> Result<Box<dyn EventStore>, Box<dyn st
 /// The project identity that scopes the event streams and context graph (§5.1.1,
 /// R9): the basename of the git repo top-level, falling back to the current
 /// directory's name, falling back to "rigger". Never empty.
+///
+/// Anchored at the process cwd, which is correct for the RUN DRIVER (`run`/`step`/
+/// `serve`): it creates the store under the cwd's `.rigger/`, so the cwd's git
+/// top-level is the identity that scopes it. The store-opening COURIERS must NOT use
+/// this - a courier can run from a cwd that is not the store's owner (a nested git
+/// worktree) - so they bind identity to the RESOLVED store root instead, via
+/// [`StoreLocation::identity`] / [`project_identity_at`].
 fn project_identity() -> String {
-    let toplevel = git_repo();
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    project_identity_at(&cwd)
+}
+
+/// The project identity, anchored at an explicit `root` rather than the process cwd:
+/// the basename of the git top-level *containing `root`* (resolved with `git -C <root>`,
+/// so it is stable no matter which subdirectory the command ran from), falling back to
+/// `root`'s own basename, then to "rigger". Never empty.
+///
+/// Anchoring at an explicit root is load-bearing for the store-opening couriers. When a
+/// courier walks UP from a git-linked worktree nested inside the repo (the Gap-14 default
+/// scratch root `<repo>/.rigger/tmp/...`) to the repo's real store, `git rev-parse
+/// --show-toplevel` run from the cwd returns the LINKED-WORKTREE path, so the append would
+/// misfile under `proj-<worktree>-run` while the spawn the conductor is waiting on stays
+/// parked forever (spec 05's exact charter defect). Running git anchored at the resolved
+/// store root instead returns the repo root, so the write lands in the `proj-<repo>-run`
+/// stream the conductor reads - identical to the identity the conductor computed when it
+/// created that store from the same root.
+fn project_identity_at(root: &Path) -> String {
+    let toplevel = git_repo_at(root);
     let from_repo = Path::new(&toplevel)
         .file_name()
         .and_then(|n| n.to_str())
@@ -214,9 +240,9 @@ fn project_identity() -> String {
     if let Some(name) = from_repo {
         return name.to_string();
     }
-    std::env::current_dir()
-        .ok()
-        .and_then(|p| p.file_name().and_then(|n| n.to_str()).map(String::from))
+    root.file_name()
+        .and_then(|n| n.to_str())
+        .map(String::from)
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "rigger".to_string())
 }
@@ -382,6 +408,182 @@ fn db_path(name: &str) -> String {
         .into_owned()
 }
 
+/// Walk up from `start` (inclusive) and return the first ancestor directory that
+/// already holds an initialized `.rigger/events.db`, or `None` when none does.
+///
+/// The walk is BOUNDED at the main-repo root governing `start` (the parent of its git
+/// common dir): the sanctioned walk-up case is a courier inside a nested git worktree
+/// of THIS project, and an unbounded walk lets a courier in a storeless nested repo (an
+/// agent-scratch probe under `<repo>/.rigger/tmp`, say) bind to a PARENT project's
+/// store and write into a foreign run stream with exit-0 success (adversary finding
+/// adv9-walkup-cross-project, empirically proven). Outside any git context there is no
+/// sanctioned walk at all: only `start` itself counts.
+fn find_store_dir_from(start: &Path) -> Option<PathBuf> {
+    let boundary = main_repo_root(start);
+    let mut cur = Some(start);
+    while let Some(dir) = cur {
+        if dir.join(RIGGER_DIR).join("events.db").is_file() {
+            return Some(dir.join(RIGGER_DIR));
+        }
+        match &boundary {
+            Some(root) if dir == root => return None, // reached the sanctioned bound
+            None => return None,                      // no git context: no walk-up
+            _ => {}
+        }
+        cur = dir.parent();
+    }
+    None
+}
+
+/// The MAIN repo root governing `start`: the parent of `git rev-parse --git-common-dir`
+/// run from `start`. For a linked worktree the common dir is the main repo's `.git`, so
+/// this resolves to the main checkout's root - exactly the outermost directory the
+/// store walk-up is sanctioned to reach. `None` when `start` is not inside any git repo.
+fn main_repo_root(start: &Path) -> Option<PathBuf> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(start)
+        .args(["rev-parse", "--git-common-dir"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let common = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if common.is_empty() {
+        return None;
+    }
+    let common_path = Path::new(&common);
+    let abs = if common_path.is_absolute() {
+        common_path.to_path_buf()
+    } else {
+        start.join(common_path)
+    };
+    abs.parent().map(|p| p.to_path_buf())
+}
+
+/// A resolved rigger store, as a store-opening COURIER (`emit`/`result`/`peers`/
+/// `reported`) must see it: the `.rigger` directory that actually holds the store (found
+/// by walking UP from the cwd, never fabricated), together with the identity that scopes
+/// its namespaced streams - bound to the store's OWNING ROOT, not the process cwd.
+///
+/// Binding identity to the owning root is the whole point of this type. Walking up already
+/// finds the real store file when a courier runs from a nested git worktree; but the
+/// STREAM the write lands in is chosen by the identity, and `project_identity()` reads the
+/// cwd's git top-level, which inside a git-linked worktree is the WORKTREE path (basename
+/// `rigger-wt-...`), not the repo. So a walked-up write would silently misfile under
+/// `proj-<worktree>-run` while the conductor keeps reading `proj-<repo>-run` - the spawn
+/// stays parked (spec 05's charter defect). [`identity`](Self::identity) anchors identity
+/// at the resolved root instead, so the write lands in the stream the conductor reads.
+struct StoreLocation {
+    /// The `.rigger` store directory (`<root>/.rigger`) resolved by walking up the cwd.
+    dir: PathBuf,
+}
+
+impl StoreLocation {
+    /// A store file path (`events.db` / `graph.db`) under the resolved `.rigger/`, as the
+    /// `&str` the sqlite `Store` / `Projector` opens.
+    fn file(&self, name: &str) -> String {
+        store_file(&self.dir, name)
+    }
+
+    /// The identity scoping this store's namespaced streams, bound to the store's OWNING
+    /// ROOT (the parent of the resolved `.rigger/`), NOT the process cwd - so a courier
+    /// walked up from a nested git worktree records into the same `proj-<repo>-run` stream
+    /// the conductor reads, never a `proj-<worktree>-run` misfile (spec 05).
+    fn identity(&self) -> String {
+        match self.dir.parent() {
+            Some(root) => project_identity_at(root),
+            // A `.rigger` with no parent is pathological (the resolved dir is always
+            // `<root>/.rigger` from an absolute cwd); fall back to the cwd-anchored identity.
+            None => project_identity(),
+        }
+    }
+}
+
+/// Resolve the `.rigger` store a store-opening COURIER command (`emit`/`result`/`peers`/
+/// `reported`) must use, REFUSING rather than fabricating a fresh empty store when neither
+/// the current directory nor any ancestor holds one (spec 05, done-when: "store-opening
+/// commands refuse (or walk up) instead of fabricating a fresh `.rigger/events.db` when run
+/// from a cwd with no existing store").
+///
+/// The defect this closes: a courier run from the WRONG cwd - most plausibly a unit
+/// worktree, which carries the tracked `.rigger/workflow.yml` + agents but NOT the
+/// machine-local, gitignored `.rigger/events.db` - used to `create_dir_all(.rigger)` +
+/// `Store::open` a brand-new empty store there, record into that dead store, and print
+/// success while the real spawn stayed parked forever in the project's actual run stream.
+/// Walking up finds the real store when the cwd is a SUBDIRECTORY (or a nested worktree) of
+/// the project root; refusing (when no ancestor has one) surfaces the wrong-cwd mistake
+/// instead of silently swallowing the write. The returned [`StoreLocation`] additionally
+/// binds identity to the resolved root, so a walked-up write lands in the stream the
+/// conductor reads (see [`StoreLocation::identity`]). The run driver (`run`/`step`/`serve`)
+/// is deliberately NOT routed through here: it legitimately BOOTSTRAPS the store on the
+/// first step of a fresh project.
+fn require_store_dir() -> Result<StoreLocation, Box<dyn std::error::Error>> {
+    let cwd = std::env::current_dir()?;
+    let dir = find_store_dir_from(&cwd).ok_or_else(|| -> Box<dyn std::error::Error> {
+        format!(
+            "no rigger store found: neither {} nor any parent directory has an initialized \
+             {RIGGER_DIR}/events.db. This usually means the command ran from the wrong \
+             directory (e.g. a unit worktree, whose {RIGGER_DIR} is not the run's store). \
+             Run it from the project root that owns the run; refusing to fabricate a fresh \
+             empty store here.",
+            cwd.display()
+        )
+        .into()
+    })?;
+    Ok(StoreLocation { dir })
+}
+
+/// The path to a database file (`events.db` / `graph.db`) inside a resolved store
+/// directory, as the `&str` the sqlite `Store` / `Projector` opens.
+fn store_file(dir: &Path, name: &str) -> String {
+    dir.join(name).to_string_lossy().into_owned()
+}
+
+/// The stderr advisories `rigger result` prints from a single pre-write read of the run
+/// stream, BEFORE it records (spec 05, done-when: "`rigger result` prints stderr
+/// advisories for an orphan id and for superseding an existing result"). Two independent
+/// notes, both purely advisory - the record still lands, because pre-recording a result
+/// before its spawn request is parked is legitimate and re-recording deliberately
+/// supersedes (results are last-write-wins). ORPHAN: no `SpawnRequested` with this id is
+/// in the stream, so nothing is parked under it - a typoed id would otherwise silently
+/// strand the real spawn while the orphan result records against an id the run never
+/// requested. SUPERSEDE: a `SpawnResult` for this id is already recorded (at position N),
+/// so this write replaces the earlier outcome.
+///
+/// Pure over the already-read events (no I/O) so both rules are unit-testable without a
+/// store, mirroring the other `rigger result` seams ([`parse_result_args`]/[`build_result`]).
+/// `will_supersede` is false on the `--if-absent` path (weave with unit-10): the CAS
+/// refuses to overwrite, so a supersede note would claim a replacement that never
+/// happens - only the orphan rule applies there.
+fn result_advisories(events: &[Event], id: &str, will_supersede: bool) -> Vec<String> {
+    let mut notes = Vec::new();
+    if !spawn::is_recorded(events, id) {
+        notes.push(format!(
+            "result: note: no spawn request is recorded for {id:?}; recording an orphan \
+             result (nothing is parked under this id)"
+        ));
+    }
+    // The LATEST already-recorded result for this id (last-write-wins), and the log
+    // position it currently sits at, so the advisory can name it.
+    let prior = events.iter().rev().find(|e| {
+        e.type_ == spawn::TYPE_SPAWN_RESULT
+            && spawn::SpawnResult::from_event(e).is_ok_and(|r| r.id == id)
+    });
+    if !will_supersede {
+        return notes;
+    }
+    if let Some(e) = prior {
+        notes.push(format!(
+            "result: note: {id:?} already has a recorded result at position {}; this \
+             record supersedes it",
+            e.position
+        ));
+    }
+    notes
+}
+
 fn cmd_run(args: &[String]) -> Res {
     let parsed = parse_run_args(args)?;
     // `--driver workflow` is the equivalent of `rigger serve`: the in-Claude-Code
@@ -525,41 +727,35 @@ fn cmd_step(args: &[String]) -> Res {
 /// is [`spawn::record_result_if_absent`]). This command is retained as a standalone check -
 /// e.g. an operator asking whether a spawn is answered - not as the courier's guard.
 ///
-/// Composition mirrors [`cmd_step`]/[`cmd_stats`]: the per-project namespaced sqlite run
-/// stream, read forward from revision 0 and projected through [`spawn::result_of`] - the
-/// exact stream, boundary, and projection the replay driver uses to decide answer-vs-park,
-/// so this check agrees with the conductor by construction. The namespace-scoped read and
-/// its absent/unreported edges live in the testable [`result_of_at`] seam.
-/// `rigger prompt <spawn-id>` - print the parked spawn's full prompt (persona + task)
-/// on stdout. The thin driver's waves are SLIM manifests (spawn-by-reference): a
-/// review-round prompt can run to hundreds of kilobytes, which cannot survive a
-/// model-relayed structured output verbatim, so the worker fetches its own prompt
-/// straight from the log. Same stream/namespace composition as `rigger reported`.
-fn cmd_prompt(args: &[String]) -> Res {
-    let id = match args {
-        [id] => id.as_str(),
-        _ => return Err("prompt: expected exactly one spawn id: rigger prompt <id>".into()),
-    };
-    let backend = Store::open(&db_path("events.db"))?;
-    let store = Namespaced::new(&backend, &project_identity());
-    let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
-    match spawn::prompt_for(&events, id).map_err(|e| e.to_string())? {
-        Some(p) => {
-            println!("{p}");
-            Ok(())
-        }
-        None => Err(format!("prompt: no spawn request recorded for {id:?}").into()),
-    }
-}
-
+/// Composition mirrors [`cmd_result`]: the store is RESOLVED by walking up to the owning
+/// root and scoped by that root's identity (via [`require_store_dir`]), the SAME per-project
+/// namespaced sqlite run stream the write half lands in - so the guard and the self-report
+/// can never disagree about which store/stream is authoritative (a cwd-relative or cwd-git-
+/// worktree read could see "not reported" off-root and clobber a real self-report). The
+/// stream is read forward from revision 0 and projected through [`spawn::result_of`] - the
+/// exact boundary and projection the replay driver uses to decide answer-vs-park, so this
+/// check agrees with the conductor by construction. The namespace-scoped read and its
+/// absent/unreported edges live in the testable [`result_of_at`] seam.
 fn cmd_reported(args: &[String]) -> Res {
     let id = match args {
         [id] => id.as_str(),
         _ => return Err("reported: expected exactly one spawn id: rigger reported <id>".into()),
     };
-    match result_of_at(&db_path("events.db"), &project_identity(), id)? {
-        // Already answered: print a one-line summary (id + ok/failed) and exit 0, so a caller
-        // scripting on this exit code can tell the spawn is answered.
+    // Resolve the store the SAME way `cmd_result` does - walk UP to the owning root and
+    // bind identity to THAT root - so the death-report guard reads the exact namespaced
+    // stream a self-report landed in. Reading a cwd-relative store (or the cwd's git-
+    // worktree identity) could see "not reported" off-root and clobber a real self-report
+    // with an `--error` (arch-reported-result-store-asym). When no store exists up-tree,
+    // nothing could have been reported: treat it as unreported (the guard proceeds), the
+    // same outcome as `result_of_at`'s absent-db edge, without fabricating a store.
+    let reported = match require_store_dir() {
+        Ok(loc) => result_of_at(&loc.file("events.db"), &loc.identity(), id)?,
+        Err(_) => None,
+    };
+    match reported {
+        // Already answered: print a one-line summary (for the courier's log) and exit 0, so
+        // the guard's `|| rigger result <id> --error` is SKIPPED and the existing result -
+        // the worker's own report - stands untouched.
         Some(res) => {
             println!(
                 "{} {}",
@@ -571,6 +767,40 @@ fn cmd_reported(args: &[String]) -> Res {
         // No result yet: exit non-zero (a clear error) so a caller can tell the spawn is still
         // unanswered.
         None => Err(format!("reported: spawn {id:?} has no recorded result yet").into()),
+    }
+}
+
+/// `rigger prompt <spawn-id>` - print the parked spawn's full prompt (persona + task)
+/// on stdout. The thin driver's waves are SLIM manifests (spawn-by-reference): a
+/// review-round prompt can run to hundreds of kilobytes, which cannot survive a
+/// model-relayed structured output verbatim, so the worker fetches its own prompt
+/// straight from the log.
+///
+/// A store-opening COURIER, invoked BY THE WORKER from inside its unit worktree, so it
+/// resolves the store the SAME way `cmd_reported`/`cmd_result` do - walk UP to the owning
+/// root and scope by that root's identity (via [`require_store_dir`] /
+/// [`StoreLocation::identity`]) - reading the `proj-<repo>-run` stream the conductor parked
+/// the spawn in. A cwd-relative `Store::open(&db_path("events.db"))` would instead FABRICATE
+/// a fresh empty `.rigger/events.db` inside the worktree (which carries the tracked
+/// `.rigger/` but never the gitignored store) and then report "no spawn request recorded"
+/// for every id, stranding the worker that ran it - the exact store-opening defect spec 05
+/// closes, and the reason this sibling of `cmd_reported` must not stay a parallel un-hardened
+/// store-opener.
+fn cmd_prompt(args: &[String]) -> Res {
+    let id = match args {
+        [id] => id.as_str(),
+        _ => return Err("prompt: expected exactly one spawn id: rigger prompt <id>".into()),
+    };
+    let loc = require_store_dir()?;
+    let backend = Store::open(&loc.file("events.db"))?;
+    let store = Namespaced::new(&backend, &loc.identity());
+    let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+    match spawn::prompt_for(&events, id).map_err(|e| e.to_string())? {
+        Some(p) => {
+            println!("{p}");
+            Ok(())
+        }
+        None => Err(format!("prompt: no spawn request recorded for {id:?}").into()),
     }
 }
 
@@ -1138,10 +1368,13 @@ fn cmd_emit(args: &[String]) -> Res {
         .into());
     }
 
-    std::fs::create_dir_all(RIGGER_DIR)?;
-    let backend = Store::open(&db_path("events.db"))?;
-    let store = Namespaced::new(&backend, &project_identity());
-    let graph = Projector::open(&db_path("graph.db"))?;
+    // Resolve the EXISTING store (walk up; refuse if none) rather than fabricating one
+    // in the wrong cwd, and scope it by the RESOLVED root's identity (not the cwd's), so
+    // a walked-up write lands in the stream the conductor reads - see [`require_store_dir`].
+    let loc = require_store_dir()?;
+    let backend = Store::open(&loc.file("events.db"))?;
+    let store = Namespaced::new(&backend, &loc.identity());
+    let graph = Projector::open(&loc.file("graph.db"))?;
 
     // Same args shape the MCP tool receives, so emit_event - the shared core both
     // surfaces call - behaves identically here and over MCP.
@@ -1153,16 +1386,17 @@ fn cmd_emit(args: &[String]) -> Res {
 
 /// `rigger peers [<file> ...]` - print the peer decisions and review findings from
 /// the context graph scoped to the given files (or all if none), EXACTLY as the MCP
-/// `rigger_peers` tool does (both render through [`mcpserver::peers_json`]). The
-/// store is opened the way `serve` opens it; a side-car replays the `conductor::STREAM`
+/// `rigger_peers` tool does (both render through [`mcpserver::peers_json`]). The store
+/// is RESOLVED by walking up to the project's existing `.rigger` (refusing to fabricate
+/// one, spec 05 - see [`require_store_dir`]); a side-car replays the `conductor::STREAM`
 /// backlog and this command waits for it to catch up before rendering one readable
 /// line per decision / finding.
 fn cmd_peers(args: &[String]) -> Res {
     let files: Vec<String> = args.to_vec();
 
-    std::fs::create_dir_all(RIGGER_DIR)?;
-    let backend = Store::open(&db_path("events.db"))?;
-    let store = Namespaced::new(&backend, &project_identity());
+    let loc = require_store_dir()?;
+    let backend = Store::open(&loc.file("events.db"))?;
+    let store = Namespaced::new(&backend, &loc.identity());
 
     // The side-car replays the whole backlog from position 0; wait until it has
     // drained every event currently in the store before reading, so a one-shot CLI
@@ -1375,9 +1609,13 @@ fn read_outcome_from_stdin() -> Result<String, Box<dyn std::error::Error>> {
 /// <id> --error` guard left open (spec 05). See [`spawn::record_result_if_absent`].
 ///
 /// The [`spawn::SpawnResult`] is appended to the SAME per-project [`Namespaced`] `run`
-/// stream the conductor drives (identical composition to [`cmd_emit`] and the `run`
-/// path), so the write lands exactly where the replay driver reads. A recorded failure
-/// replays AS a failure - the conductor remediates it just as it would a live one.
+/// stream the conductor drives, so the write lands exactly where the replay driver reads.
+/// A recorded failure replays AS a failure - the conductor remediates it just as it would
+/// a live one. The store is RESOLVED by walking up to the project's existing `.rigger`
+/// (refusing to fabricate one in the wrong cwd, spec 05 - see [`require_store_dir`]); and
+/// before recording, a single pre-write read of the stream prints stderr advisories for
+/// an ORPHAN id (no matching spawn request) or for SUPERSEDING an existing result (see
+/// [`result_advisories`]).
 fn cmd_result(args: &[String]) -> Res {
     let parsed = parse_result_args(args)?;
     // The outcome text comes from the positional arg when given, else stdin. Resolving
@@ -1388,9 +1626,25 @@ fn cmd_result(args: &[String]) -> Res {
     };
     let res = build_result(&parsed.id, &text, parsed.is_error, parsed.meta)?;
 
-    std::fs::create_dir_all(RIGGER_DIR)?;
-    let backend = Store::open(&db_path("events.db"))?;
-    let store = Namespaced::new(&backend, &project_identity());
+    // Resolve the EXISTING store (walk up; refuse if none) rather than fabricating one
+    // in the wrong cwd, scoped by the RESOLVED root's identity: a courier run from a unit
+    // worktree would otherwise record into a fresh dead store (no store) or misfile under
+    // the worktree's own namespace (walked-up store) while the real spawn stays parked
+    // forever - both fixed here (see [`require_store_dir`] / [`StoreLocation::identity`]).
+    let loc = require_store_dir()?;
+    let backend = Store::open(&loc.file("events.db"))?;
+    let store = Namespaced::new(&backend, &loc.identity());
+
+    // One cheap pre-write read of the run stream, to advise (on stderr) about an orphan
+    // id or about superseding an existing result BEFORE the append. Advisory only: the
+    // record still lands, since pre-recording and deliberate re-recording are both
+    // legitimate (see [`result_advisories`]). Weave with unit-10: under `--if-absent`
+    // nothing can supersede (the CAS refuses), so the supersede note is suppressed -
+    // the "left it untouched" line below reports that case honestly.
+    let prior = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+    for note in result_advisories(&prior, &res.id, !parsed.if_absent) {
+        eprintln!("{note}");
+    }
 
     let kind = if res.is_error() {
         "error result"
@@ -2308,7 +2562,20 @@ fn select_reindex_grounder(name: &str) -> Result<Box<dyn Grounder>, Box<dyn std:
 }
 
 fn git_repo() -> String {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    git_repo_at(&cwd)
+}
+
+/// The git top-level directory *containing `root`*, resolved with `git -C <root>` so the
+/// answer is anchored at `root` rather than the process cwd - empty when `root` is not in
+/// a git repo. Running git anchored at an explicit directory is what lets the couriers
+/// derive a store's identity from the RESOLVED store root (which git reports as the repo
+/// root) instead of the cwd (which, inside a git-linked worktree, git reports as the
+/// worktree path) - see [`project_identity_at`].
+fn git_repo_at(root: &Path) -> String {
     Command::new("git")
+        .arg("-C")
+        .arg(root)
         .args(["rev-parse", "--show-toplevel"])
         .output()
         .ok()
@@ -2582,6 +2849,196 @@ mod tests {
         let a = parse_result_args(&["u/implementer#0".into()]).unwrap();
         assert_eq!(a.id, "u/implementer#0");
         assert!(a.text.is_none());
+    }
+
+    // ---- store-open hardening: walk up to an existing store, never fabricate one ----
+
+    #[test]
+    fn find_store_dir_from_returns_the_dir_that_holds_the_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(RIGGER_DIR)).unwrap();
+        std::fs::File::create(root.join(RIGGER_DIR).join("events.db")).unwrap();
+        assert_eq!(find_store_dir_from(root), Some(root.join(RIGGER_DIR)));
+    }
+
+    #[test]
+    fn find_store_dir_from_walks_up_from_a_subdirectory() {
+        // A courier run from a SUBDIR of the project root still resolves the root's
+        // store. The root is a git repo: the walk is bounded at the main-repo root, so
+        // only git-governed ancestry is walkable (adv9-walkup-cross-project).
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        git_init_quiet(root);
+        std::fs::create_dir_all(root.join(RIGGER_DIR)).unwrap();
+        std::fs::File::create(root.join(RIGGER_DIR).join("events.db")).unwrap();
+        let sub = root.join("src").join("deep");
+        std::fs::create_dir_all(&sub).unwrap();
+        assert_eq!(find_store_dir_from(&sub), Some(root.join(RIGGER_DIR)));
+    }
+
+    /// `git init -q` a test root so the bounded store walk has a sanctioned repo scope.
+    fn git_init_quiet(root: &Path) {
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(root)
+            .status()
+            .unwrap();
+    }
+
+    #[test]
+    fn find_store_dir_from_never_escapes_the_repo_into_a_parent_store() {
+        // adv9-walkup-cross-project: a courier in a storeless NESTED repo (an
+        // agent-scratch probe under the parent's .rigger/tmp, say) must NOT bind to the
+        // parent project's store - that writes into a foreign run stream. The walk stops
+        // at the nested repo's own root. And with no git context at all there is no
+        // sanctioned walk: only the start dir itself counts.
+        let dir = tempfile::tempdir().unwrap();
+        let parent = dir.path();
+        git_init_quiet(parent);
+        std::fs::create_dir_all(parent.join(RIGGER_DIR)).unwrap();
+        std::fs::File::create(parent.join(RIGGER_DIR).join("events.db")).unwrap();
+
+        // A nested, storeless git repo below the parent (not a linked worktree).
+        let nested = parent
+            .join(".rigger")
+            .join("tmp")
+            .join("agent-scratch")
+            .join("probe");
+        std::fs::create_dir_all(&nested).unwrap();
+        git_init_quiet(&nested);
+        assert_eq!(
+            find_store_dir_from(&nested),
+            None,
+            "a storeless nested repo must refuse, never bind the parent's store"
+        );
+
+        // No git context: no walk-up at all (a store AT the start dir still counts).
+        let bare = tempfile::tempdir().unwrap();
+        let sub = bare.path().join("deep");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::create_dir_all(bare.path().join(RIGGER_DIR)).unwrap();
+        std::fs::File::create(bare.path().join(RIGGER_DIR).join("events.db")).unwrap();
+        assert_eq!(
+            find_store_dir_from(&sub),
+            None,
+            "without a git scope the walk is unsanctioned"
+        );
+    }
+
+    #[test]
+    fn find_store_dir_from_refuses_the_worktree_shape_with_no_events_db() {
+        // The unit-worktree shape: a `.rigger/` (tracked workflow.yml/agents) with NO
+        // machine-local events.db must NOT count as a store, so a courier there refuses
+        // rather than fabricating a fresh empty store - the exact defect this unit closes.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(RIGGER_DIR)).unwrap();
+        std::fs::write(root.join(RIGGER_DIR).join("workflow.yml"), "stages: []\n").unwrap();
+        let sub = root.join("nested");
+        std::fs::create_dir_all(&sub).unwrap();
+        assert_eq!(find_store_dir_from(&sub), None);
+    }
+
+    #[test]
+    fn find_store_dir_from_walks_past_a_storeless_rigger_to_the_real_store_above() {
+        // The REAL production topology: a git-linked unit worktree nested under the repo
+        // carries a TRACKED but storeless `.rigger/` (workflow.yml + agents, no machine-
+        // local events.db), while the repo root above it holds the real store. A courier
+        // run from inside that worktree must walk PAST its own storeless `.rigger/` and
+        // resolve the repo's real store - not stop at (nor fabricate under) the storeless
+        // one. `find_store_dir_from` keys on `.rigger/events.db` as a FILE, so the storeless
+        // intermediate `.rigger/` is correctly skipped; a regression that refused at the
+        // first `.rigger/` dir would strand every worker in a real rigger worktree.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        git_init_quiet(root);
+        // The repo root's real store.
+        std::fs::create_dir_all(root.join(RIGGER_DIR)).unwrap();
+        std::fs::File::create(root.join(RIGGER_DIR).join("events.db")).unwrap();
+        // A nested worktree with a tracked-but-storeless `.rigger/` (no events.db).
+        let worktree = root.join(".rigger").join("tmp").join("rigger-wt-x");
+        std::fs::create_dir_all(worktree.join(RIGGER_DIR)).unwrap();
+        std::fs::write(
+            worktree.join(RIGGER_DIR).join("workflow.yml"),
+            "stages: []\n",
+        )
+        .unwrap();
+        // A courier running from inside the storeless worktree resolves the root's store.
+        assert_eq!(
+            find_store_dir_from(&worktree),
+            Some(root.join(RIGGER_DIR)),
+            "must walk past the storeless worktree `.rigger/` to the repo's real store"
+        );
+    }
+
+    // ---- `rigger result` stderr advisories: orphan id and superseding result ----
+
+    #[test]
+    fn result_advisories_flags_an_orphan_id_with_no_spawn_request() {
+        // No SpawnRequested is recorded for the id -> exactly the orphan advisory.
+        let notes = result_advisories(&[], "u/implementer#0", true);
+        assert_eq!(notes.len(), 1, "only the orphan note; got {notes:?}");
+        assert!(notes[0].contains("no spawn request is recorded"));
+        assert!(notes[0].contains("u/implementer#0"));
+    }
+
+    #[test]
+    fn result_advisories_is_silent_for_a_parked_unanswered_spawn() {
+        // A parked spawn (its request is recorded) with no result yet needs no advisory:
+        // this is the normal courier path.
+        let req = spawn::SpawnRequest::new("u", "impl", "implementer", 0, "do it");
+        let ev = req.to_event().unwrap();
+        let notes = result_advisories(std::slice::from_ref(&ev), &req.id, true);
+        assert!(
+            notes.is_empty(),
+            "a parked-but-unanswered spawn needs no note; got {notes:?}"
+        );
+    }
+
+    #[test]
+    fn result_advisories_flags_a_supersede_with_the_prior_result_position() {
+        // Request recorded (no orphan) AND a prior result at a known position -> exactly
+        // the supersede advisory, naming that position.
+        let req = spawn::SpawnRequest::new("u", "impl", "implementer", 0, "do it");
+        let req_ev = req.to_event().unwrap();
+        let mut res_ev = spawn::SpawnResult::ok(&req.id, "first").to_event().unwrap();
+        res_ev.position = 7;
+        let notes = result_advisories(&[req_ev, res_ev], &req.id, true);
+        assert_eq!(notes.len(), 1, "only the supersede note; got {notes:?}");
+        assert!(notes[0].contains("already has a recorded result at position 7"));
+        assert!(notes[0].contains("supersedes"));
+    }
+
+    #[test]
+    fn result_advisories_suppresses_the_supersede_note_when_not_superseding() {
+        // The `--if-absent` path (weave with unit-10): the CAS never overwrites, so a
+        // supersede note would claim a replacement that never happens. Only the orphan
+        // rule applies; a request-and-result pair yields no note at all.
+        let req = spawn::SpawnRequest::new("u", "impl", "implementer", 0, "do it");
+        let req_ev = req.to_event().unwrap();
+        let mut res_ev = spawn::SpawnResult::ok(&req.id, "first").to_event().unwrap();
+        res_ev.position = 7;
+        let notes = result_advisories(&[req_ev, res_ev], &req.id, false);
+        assert!(
+            notes.is_empty(),
+            "no supersede note on the non-superseding path; got {notes:?}"
+        );
+    }
+
+    #[test]
+    fn result_advisories_flags_both_orphan_and_supersede() {
+        // A result recorded against an id the run never requested: BOTH notes fire.
+        let mut res_ev = spawn::SpawnResult::ok("typo/id#0", "prev")
+            .to_event()
+            .unwrap();
+        res_ev.position = 3;
+        let notes = result_advisories(std::slice::from_ref(&res_ev), "typo/id#0", true);
+        assert_eq!(notes.len(), 2, "orphan + supersede; got {notes:?}");
+        assert!(notes
+            .iter()
+            .any(|n| n.contains("no spawn request is recorded")));
+        assert!(notes.iter().any(|n| n.contains("at position 3")));
     }
 
     #[test]

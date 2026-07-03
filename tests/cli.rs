@@ -27,6 +27,19 @@ fn temp_project() -> tempfile::TempDir {
     dir
 }
 
+/// Seed an initialized `.rigger/events.db` under `root`, standing in for the store a
+/// prior `rigger run`/`step` would have created. The store-opening couriers
+/// (`emit`/`result`/`peers`) now REFUSE to fabricate a fresh store from the wrong cwd
+/// (spec 05), so a round-trip test must first establish one, exactly as a real run does
+/// before any courier appends to it. An empty file is a valid empty SQLite database;
+/// `Store::open` adds the schema on first open - so this models "the run created the
+/// store" without needing a full workflow.
+fn seed_store(root: &Path) {
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(&rigger).unwrap();
+    std::fs::File::create(rigger.join("events.db")).unwrap();
+}
+
 /// A throwaway git project with a real commit, so a base ref like `HEAD` resolves.
 /// `temp_project` only `git init`s (unborn HEAD), which is enough for the offline
 /// step tests but not for the run-branch-anchoring path that needs a base commit.
@@ -144,6 +157,8 @@ fn run_rigger_env(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> RiggerOut
 fn emit_appends_and_folds_then_peers_shows_it() {
     let dir = temp_project();
     let root = dir.path();
+    // A run already created the store; the courier appends to it (it never fabricates).
+    seed_store(root);
 
     // Emit a DecisionMade governing src/foo.rs.
     let (out, err, ok) = run_rigger(
@@ -160,10 +175,11 @@ fn emit_appends_and_folds_then_peers_shows_it() {
         "emit prints a one-line confirmation; got: {out:?}"
     );
 
-    // The store and graph databases now exist under .rigger/.
+    // The seeded event store still holds the append, and emit created the graph db
+    // beside it (the projector db is derived state, so emit builds it on demand).
     assert!(
         root.join(".rigger").join("events.db").exists(),
-        "emit must create the namespaced event store"
+        "emit must append to the seeded event store"
     );
     assert!(
         root.join(".rigger").join("graph.db").exists(),
@@ -201,6 +217,7 @@ fn emit_appends_and_folds_then_peers_shows_it() {
 fn emit_review_finding_shows_in_peers() {
     let dir = temp_project();
     let root = dir.path();
+    seed_store(root);
 
     let (_out, err, ok) = run_rigger(
         root,
@@ -219,6 +236,236 @@ fn emit_review_finding_shows_in_peers() {
             && out.contains("by tech-lens")
             && out.contains("about: combat.rs"),
         "peers must render the finding's id/by/about; got: {out:?}"
+    );
+}
+
+/// `rigger emit` from a directory with NO existing `.rigger/events.db` (and no ancestor
+/// that has one) REFUSES rather than fabricating a fresh empty store there (spec 05). The
+/// payload is valid JSON, so this reaches the store-open seam rather than failing at parse.
+#[test]
+fn emit_refuses_to_fabricate_a_store_when_none_exists() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(
+        root,
+        &[
+            "emit",
+            "DecisionMade",
+            r#"{"id":"d1","summary":"x","governs":["src/foo.rs"]}"#,
+        ],
+    );
+    assert!(
+        !ok,
+        "emit must refuse when there is no existing store; stderr: {err}"
+    );
+    assert!(
+        err.contains("no rigger store found") && err.contains("refusing to fabricate"),
+        "emit must explain the refusal; got: {err:?}"
+    );
+    assert!(
+        !root.join(".rigger").join("events.db").exists(),
+        "emit must NOT fabricate a store when it refuses"
+    );
+}
+
+/// `rigger prompt` is a WORKER-INVOKED store-opening courier (a unit fetches its own slim
+/// spawn manifest from the log), so run from a storeless cwd it must REFUSE like `emit`/
+/// `result`/`reported`, never fabricate a fresh empty `.rigger/events.db` and then report
+/// "no spawn request recorded" for every id, stranding the worker. Guards the routing of
+/// `cmd_prompt` through [`require_store_dir`] against regressing to a cwd-relative
+/// `Store::open`.
+#[test]
+fn prompt_refuses_to_fabricate_a_store_when_none_exists() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["prompt", "u/implementer#0"]);
+    assert!(
+        !ok,
+        "prompt must refuse when there is no existing store; stderr: {err}"
+    );
+    assert!(
+        err.contains("no rigger store found") && err.contains("refusing to fabricate"),
+        "prompt must explain the refusal; got: {err:?}"
+    );
+    assert!(
+        !root.join(".rigger").join("events.db").exists(),
+        "prompt must NOT fabricate a store when it refuses"
+    );
+}
+
+/// The paradigm defect (adv-result-wrong-cwd-fabricates-store): `rigger result` run from
+/// a unit-worktree-shaped cwd - a tracked `.rigger/workflow.yml` but NO machine-local
+/// `.rigger/events.db` - must REFUSE instead of fabricating a fresh dead store and printing
+/// success while the real spawn stays parked. Without the guard, result would create
+/// `.rigger/events.db` here and exit 0.
+#[test]
+fn result_refuses_to_fabricate_a_store_from_a_worktree_shaped_cwd() {
+    let dir = temp_project();
+    let root = dir.path();
+    // The tracked half of a checkout: `.rigger/` with workflow.yml, but no events.db.
+    std::fs::create_dir_all(root.join(".rigger")).unwrap();
+    std::fs::write(root.join(".rigger").join("workflow.yml"), "stages: []\n").unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["result", "u/implementer#0", "did the work"]);
+    assert!(
+        !ok,
+        "result must refuse from a storeless worktree; stdout: {out:?} stderr: {err}"
+    );
+    assert!(
+        err.contains("no rigger store found"),
+        "result must explain the refusal; got: {err:?}"
+    );
+    assert!(
+        !root.join(".rigger").join("events.db").exists(),
+        "result must NOT fabricate a store when it refuses"
+    );
+}
+
+/// A courier run from a SUBDIRECTORY of the project root walks up to the root's existing
+/// store and records THERE - it does not create a second store in the subdir. Proven by
+/// `rigger reported` from the root finding the result the subdir invocation wrote.
+#[test]
+fn result_walks_up_to_a_parent_store_from_a_subdirectory() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+    let sub = root.join("crate").join("src");
+    std::fs::create_dir_all(&sub).unwrap();
+
+    let (_out, err, ok) = run_rigger(&sub, &["result", "u/implementer#0", "did the work"]);
+    assert!(
+        ok,
+        "result from a subdir must record into the parent store; stderr: {err}"
+    );
+    assert!(
+        !sub.join(".rigger").exists(),
+        "result must not fabricate a store in the subdir; it walks up"
+    );
+
+    // The result landed in the ROOT store (not a fabricated subdir one): `reported`,
+    // which resolves the store the same walk-up way, finds it from the root.
+    let (out, err, ok) = run_rigger(root, &["reported", "u/implementer#0"]);
+    assert!(
+        ok,
+        "the walked-up result must be readable from the root store; stderr: {err}"
+    );
+    assert!(
+        out.contains("u/implementer#0") && out.contains("ok"),
+        "reported must confirm the recorded result; got: {out:?}"
+    );
+}
+
+/// The PRIMARY named threat (adv-u9-walkup-namespace-misfile-default-layout): a courier run
+/// from a REAL git-linked worktree nested INSIDE the repo - the Gap-14 default scratch root
+/// `<repo>/.rigger/tmp/...`, where the conductor actually spawns units - must record into the
+/// SAME namespaced stream the conductor reads, not misfile it under `proj-<worktree>-run`
+/// while the spawn stays parked. Walking up alone is not enough: the walked-up write lands in
+/// the real store FILE, but the stream is chosen by the identity, and `git rev-parse
+/// --show-toplevel` from inside a linked worktree returns the WORKTREE path (basename
+/// `rigger-wt-x`), so a cwd-anchored identity misfiles the append. A plain subdir shares the
+/// git top-level and hides this; only a real linked worktree exposes the divergence. Proven
+/// end-to-end: `rigger result` from inside the worktree, then `rigger reported` FROM THE REPO
+/// ROOT must see the recorded result (it reads `proj-<repo>-run`, the conductor's stream).
+#[test]
+fn result_from_a_nested_git_worktree_records_into_the_repo_stream() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    // A prior run created the store the conductor reads (identity = the repo basename).
+    seed_store(root);
+
+    // A REAL git-linked worktree nested under the repo, exactly like the conductor's
+    // Gap-14 scratch root. `git worktree add` needs a committed HEAD, which
+    // `temp_git_project_with_commit` provides.
+    let wt = root.join(".rigger").join("tmp").join("rigger-wt-x");
+    std::fs::create_dir_all(wt.parent().unwrap()).unwrap();
+    let ok = Command::new("git")
+        .args(["worktree", "add", "-q"])
+        .arg(&wt)
+        .current_dir(root)
+        .status()
+        .expect("git must be runnable")
+        .success();
+    assert!(
+        ok,
+        "git worktree add must succeed for the nested-worktree test"
+    );
+
+    // Record a result from INSIDE the nested worktree.
+    let (_out, err, ok) = run_rigger(&wt, &["result", "u/implementer#0", "did the work"]);
+    assert!(
+        ok,
+        "result from inside a nested git worktree must succeed; stderr: {err}"
+    );
+    // It walked up to the repo store - it did NOT fabricate a store inside the worktree.
+    assert!(
+        !wt.join(".rigger").join("events.db").exists(),
+        "result must NOT fabricate a store inside the worktree; it walks up to the repo"
+    );
+
+    // The write landed in the stream the CONDUCTOR reads (identity = repo root, not the
+    // worktree), so `reported` FROM THE REPO ROOT sees it. Before the identity fix, the
+    // append misfiled under `proj-rigger-wt-x-run` and this read returned exit-non-zero
+    // "no recorded result yet" while the spawn stayed parked - the exact charter defect.
+    let (out, err, ok) = run_rigger(root, &["reported", "u/implementer#0"]);
+    assert!(
+        ok,
+        "the worktree's result must be readable from the repo root (the conductor's \
+         stream); stderr: {err}, stdout: {out}"
+    );
+    assert!(
+        out.contains("u/implementer#0") && out.contains("ok"),
+        "reported from the repo root must confirm the worktree's recorded result; got: {out:?}"
+    );
+}
+
+/// `rigger result` for an id with no recorded spawn request prints an ORPHAN advisory to
+/// stderr - and still records (advisory only; pre-recording is legitimate).
+#[test]
+fn result_prints_an_orphan_advisory_for_an_unrecorded_id() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+
+    let (out, err, ok) = run_rigger(root, &["result", "ghost/implementer#0", "output"]);
+    assert!(
+        ok,
+        "an orphan result still records (advisory only); stderr: {err}"
+    );
+    assert!(
+        err.contains("no spawn request is recorded") && err.contains("ghost/implementer#0"),
+        "result must advise about the orphan id on stderr; got: {err:?}"
+    );
+    assert!(
+        out.contains("recorded result for ghost/implementer#0"),
+        "the orphan result must still be recorded; got: {out:?}"
+    );
+}
+
+/// Re-recording a result for the same id prints a SUPERSEDE advisory (naming the prior
+/// result's log position) - the record still lands (results are last-write-wins).
+#[test]
+fn result_prints_a_supersede_advisory_when_a_result_already_exists() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+
+    let (_out, _err, ok) = run_rigger(root, &["result", "u/implementer#0", "first"]);
+    assert!(ok, "the first record must succeed");
+
+    let (out, err, ok) = run_rigger(root, &["result", "u/implementer#0", "second"]);
+    assert!(
+        ok,
+        "the superseding record must succeed (advisory only); stderr: {err}"
+    );
+    assert!(
+        err.contains("already has a recorded result at position") && err.contains("supersedes"),
+        "result must advise that it supersedes the prior result; got: {err:?}"
+    );
+    assert!(
+        out.contains("recorded result for u/implementer#0"),
+        "the superseding result must still be recorded; got: {out:?}"
     );
 }
 
@@ -1368,6 +1615,9 @@ fn empty_repo_scaffold_path_prints_the_agent_collection_pointer() {
 fn result_if_absent_records_when_the_spawn_is_unanswered() {
     let dir = temp_project();
     let root = dir.path();
+    // unit-9 weave: store-opening couriers refuse to fabricate a store, so the
+    // project must hold one before `rigger result` can record into it.
+    seed_store(root);
 
     let (out, err, ok) = run_rigger(
         root,
@@ -1403,6 +1653,9 @@ fn result_if_absent_records_when_the_spawn_is_unanswered() {
 fn result_if_absent_never_clobbers_a_self_reported_success() {
     let dir = temp_project();
     let root = dir.path();
+    // unit-9 weave: store-opening couriers refuse to fabricate a store, so the
+    // project must hold one before `rigger result` can record into it.
+    seed_store(root);
 
     // The worker self-reports a success first.
     let (_o, err, ok) = run_rigger(
