@@ -3563,6 +3563,11 @@ impl RunCtx<'_> {
         terminal: &HashSet<String>,
     ) -> Result<(), Error> {
         let events = self.deps.store.read_stream(STREAM, 0, Direction::Forward)?;
+        // The plan-critique gate (Unit 1, spec 10) that HOLDS the fan-out until it
+        // releases, if the workflow wires one. Computed once over the static gate stage
+        // (always present) so it is stable as the loop mutates `stages`; None when no
+        // gate is wired (the historical no-gate shape, untouched).
+        let gate = critique_gate_name(stages);
         // Run-scoped (Gap 11, completing spec-06 unit-1): only THIS run's proposals
         // fold. A prior run's UnitProposed must never resurrect as live work - its
         // terminal states are (correctly) scoped OUT of `terminal`, so an unscoped
@@ -3626,12 +3631,30 @@ impl RunCtx<'_> {
                     stages.remove(&baseline_id);
                 }
             }
+            // Hold the fan-out behind the plan-critique gate (the resume-safety fix, spec
+            // 10 done-when 1: ONLY an approve releases the wave). A conductor-synthesized
+            // baseline inherits `[plan-critique, plan]` from the implement template, so it
+            // is naturally held; a PLANNER-proposed unit's `needs` (PLAN_PROTOCOL) name
+            // only sibling unit ids, NEVER the gate, so without this it would be scheduled
+            // the moment `plan` integrates - and on a RESUME the pre-gate planning wave
+            // fans it out BEFORE the gate renders (or replays) its verdict, implementing a
+            // decomposition three reviews may reject. Give every proposed fan-out unit the
+            // gate as a dependency so `ready_stages` holds it - in the pre-gate wave AND
+            // the main loop - until the gate INTEGRATES (an adjudicator approve); a
+            // terminal-but-unintegrated (escalated) or still-parked (mid-review) gate never
+            // surfaces it. The single hold the baselines already carry, now uniform.
+            let mut needs = u.needs;
+            if let Some(g) = &gate {
+                if u.id != *g && !needs.iter().any(|n| n == g) {
+                    needs.push(g.clone());
+                }
+            }
             stages.insert(
                 u.id.clone(),
                 Stage {
                     name: u.id,
                     agent: u.agent,
-                    needs: u.needs,
+                    needs,
                     coverage: u.coverage,
                     gates: u.gates,
                     ..Default::default()
@@ -12212,6 +12235,281 @@ mod tests {
         assert_eq!(
             integrated, 1,
             "the gate must integrate exactly once across the resume, not re-emit"
+        );
+    }
+
+    #[test]
+    fn a_resumed_step_holds_the_fan_out_while_the_plan_critique_gate_is_escalated() {
+        // The resume-hold arm the approve-only resume test cannot reach (spec 10,
+        // done-when 1: ONLY an approve releases the wave). A real planner follows
+        // PLAN_PROTOCOL - its proposed units' `needs` name sibling unit ids, NEVER the
+        // gate - so it emits the split with `needs:[]`. Two run() over ONE store model
+        // the stepwise resume the production `rigger step` path runs on: run 1 the gate
+        // ESCALATES (its adjudicator never approves the shared-blast-radius split); run 2
+        // resumes over that settled, TERMINAL-but-not-integrated gate. The fan-out must
+        // stay HELD across the resume - a step after an escalation must NOT implement the
+        // decomposition three reviews rejected, the exact harm the gate exists to prevent.
+        let dir = tempfile::tempdir().unwrap();
+        let criterion = "the widget renderer is implemented";
+        std::fs::write(
+            dir.path().join("feature.rs"),
+            format!("// {criterion}\nfn render() {{}}\n"),
+        )
+        .unwrap();
+        let cfg = critique_cfg();
+        let st = Store::open(":memory:").unwrap();
+        let grep = crate::grounder::Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+        // PLAN_PROTOCOL shape: the split units carry `needs:[]` (only sibling ids ever
+        // appear here, never the gate) - the exact shape that bypassed the pre-gate wave.
+        let split = || {
+            vec![
+                (
+                    TYPE_UNIT_PROPOSED.to_string(),
+                    json!({"id":"u-a","agent":"worker","criterion":criterion,"needs":[]}),
+                ),
+                (
+                    TYPE_UNIT_PROPOSED.to_string(),
+                    json!({"id":"u-b","agent":"worker","criterion":criterion,"needs":[]}),
+                ),
+            ]
+        };
+
+        // Run 1: the gate escalates; the fan-out is held (no worker runs).
+        let d1 = CritiqueDriver::new(split());
+        let deps1 = Deps {
+            store: &st,
+            driver: &d1,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: None,
+            criteria: vec![criterion.to_string()],
+        };
+        let rs1 = run(&cfg, &deps1).unwrap();
+        assert_eq!(
+            rs1.units["plan-critique"].status,
+            ledger::Status::Escalated,
+            "run 1: the shared-blast-radius split must escalate the gate"
+        );
+        assert_eq!(
+            d1.count("worker"),
+            0,
+            "run 1: no implementer runs while the gate is unresolved; calls: {:?}",
+            d1.calls.lock().unwrap()
+        );
+
+        // Run 2 over the SAME store (the resume): the gate is terminal-but-not-integrated.
+        let d2 = CritiqueDriver::new(split());
+        let deps2 = Deps {
+            store: &st,
+            driver: &d2,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: None,
+            criteria: vec![criterion.to_string()],
+        };
+        let _ = run(&cfg, &deps2).unwrap();
+        // The resume short-circuit correctly does NOT re-run the gate...
+        assert_eq!(
+            d2.count("judge"),
+            0,
+            "resume: an already-resolved (escalated) gate must not re-spawn its adjudicator"
+        );
+        // ...and, critically, the pre-gate planning wave must NOT fan the rejected units
+        // out. This is the blocker: before the fix, `harvest_proposed` folds the prior
+        // window's proposals (needs:[]) as READY and the pre-gate wave runs them BEFORE
+        // the terminal-hold arm ever fires.
+        assert_eq!(
+            d2.count("worker"),
+            0,
+            "resume: the fan-out must stay HELD over an ESCALATED gate; workers ran: {:?}",
+            d2.calls.lock().unwrap()
+        );
+    }
+
+    #[test]
+    fn an_approved_gate_releases_planner_proposed_units_not_only_baselines() {
+        // The release direction of the same hold (spec 10, done-when 1: an approve
+        // RELEASES the wave). The fix gives PLANNER-proposed units the gate as a
+        // dependency; this pins that the dependency is SATISFIED on approve, so a proposed
+        // unit (not only a conductor baseline) fans out once the gate integrates. The
+        // planner proposes two DISJOINT units (each `needs:[]`, the PLAN_PROTOCOL shape),
+        // superseding the baselines; disjoint blast radii draw no rule-6 conflict, the
+        // adjudicator approves, and BOTH proposed implementers run.
+        let dir = tempfile::tempdir().unwrap();
+        let crit_a = "the alpha module is implemented";
+        let crit_b = "the beta module is implemented";
+        std::fs::write(dir.path().join("alpha.rs"), format!("// {crit_a}\n")).unwrap();
+        std::fs::write(dir.path().join("beta.rs"), format!("// {crit_b}\n")).unwrap();
+        let cfg = critique_cfg();
+        let st = Store::open(":memory:").unwrap();
+        let grep = crate::grounder::Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+        let driver = CritiqueDriver::new(vec![
+            (
+                TYPE_UNIT_PROPOSED.to_string(),
+                json!({"id":"u-a","agent":"worker","criterion":crit_a,"needs":[]}),
+            ),
+            (
+                TYPE_UNIT_PROPOSED.to_string(),
+                json!({"id":"u-b","agent":"worker","criterion":crit_b,"needs":[]}),
+            ),
+        ]);
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: None,
+            criteria: vec![crit_a.to_string(), crit_b.to_string()],
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        assert_eq!(
+            rs.units["plan-critique"].status,
+            ledger::Status::Integrated,
+            "a disjoint decomposition approves and the gate integrates"
+        );
+        assert_eq!(
+            driver.count("planner"),
+            1,
+            "no reject means no re-plan; the planner runs exactly once"
+        );
+        // The proposed units - held behind the gate by the fix - release on approve.
+        assert_eq!(
+            driver.count("worker"),
+            2,
+            "an approve releases the PROPOSED fan-out units; workers ran: {:?}",
+            driver.calls.lock().unwrap()
+        );
+    }
+
+    /// A driver that answers the PLANNER (emitting a shared-blast-radius split in the
+    /// real PLAN_PROTOCOL `needs:[]` shape) but PARKS every reviewer, so the plan-critique
+    /// gate stays UNRESOLVED (mid-review) across a step boundary - the stepwise shape
+    /// where the gate's adversary and adjudicator each take their own `rigger step`. Any
+    /// implementer (`worker`) spawn is recorded via `calls` before it parks, so a fan-out
+    /// that leaks before the gate resolves is detected even though the worker never runs.
+    struct ParkingGateDriver {
+        plan_emits: Vec<(String, Value)>,
+        calls: Mutex<Vec<String>>,
+    }
+    impl ParkingGateDriver {
+        fn new(plan_emits: Vec<(String, Value)>) -> Self {
+            ParkingGateDriver {
+                plan_emits,
+                calls: Mutex::new(Vec::new()),
+            }
+        }
+        fn count(&self, id: &str) -> usize {
+            self.calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|c| *c == id)
+                .count()
+        }
+    }
+    impl AgentDriver for ParkingGateDriver {
+        fn spawn(
+            &self,
+            a: &AgentDef,
+            _prompt: &str,
+            opts: &SpawnOpts,
+            emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+        ) -> Result<AgentResult, Error> {
+            self.calls.lock().unwrap().push(a.id.clone());
+            if a.id == "planner" {
+                for (t, v) in &self.plan_emits {
+                    emit(t, v.clone())?;
+                }
+                return Ok(AgentResult {
+                    output: "proposed the DAG".into(),
+                    resolved_model: String::new(),
+                });
+            }
+            // Every reviewer (and any leaked implementer) parks: the gate never renders a
+            // verdict, so it stays unresolved (mid-review) across the resume.
+            Err(parked_spawn(&opts.id))
+        }
+    }
+
+    #[test]
+    fn a_resumed_step_holds_the_fan_out_while_the_plan_critique_gate_is_mid_review() {
+        // The OTHER held arm (spec 10, done-when 1): a gate parked MID-REVIEW - the
+        // stepwise dogfood shape where plan integrates on step 1 and the gate's reviewers
+        // park across later steps. On the resume the gate is neither integrated NOR
+        // terminal (its verdict is unrendered), so the fan-out must stay held. Before the
+        // fix the pre-gate planning wave folds the prior window's proposals (needs:[]) as
+        // ready and runs the implementers BEFORE the gate re-reaches its (still parked)
+        // adjudicator - fanning out over a decomposition NO reviewer has approved.
+        let dir = tempfile::tempdir().unwrap();
+        let criterion = "the widget renderer is implemented";
+        std::fs::write(
+            dir.path().join("feature.rs"),
+            format!("// {criterion}\nfn render() {{}}\n"),
+        )
+        .unwrap();
+        let cfg = critique_cfg();
+        let st = Store::open(":memory:").unwrap();
+        let grep = crate::grounder::Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+        let split = || {
+            vec![
+                (
+                    TYPE_UNIT_PROPOSED.to_string(),
+                    json!({"id":"u-a","agent":"worker","criterion":criterion,"needs":[]}),
+                ),
+                (
+                    TYPE_UNIT_PROPOSED.to_string(),
+                    json!({"id":"u-b","agent":"worker","criterion":criterion,"needs":[]}),
+                ),
+            ]
+        };
+
+        // Run 1: the planner emits the split, then the gate parks mid-review.
+        let d1 = ParkingGateDriver::new(split());
+        let deps1 = Deps {
+            store: &st,
+            driver: &d1,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: None,
+            criteria: vec![criterion.to_string()],
+        };
+        run(&cfg, &deps1).unwrap();
+        assert_eq!(
+            d1.count("worker"),
+            0,
+            "run 1: no implementer runs while the gate is mid-review; calls: {:?}",
+            d1.calls.lock().unwrap()
+        );
+
+        // Run 2 over the SAME store (the resume): the gate is STILL unresolved (its
+        // verdict was never recorded), so the fan-out must remain held.
+        let d2 = ParkingGateDriver::new(split());
+        let deps2 = Deps {
+            store: &st,
+            driver: &d2,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: None,
+            criteria: vec![criterion.to_string()],
+        };
+        run(&cfg, &deps2).unwrap();
+        assert_eq!(
+            d2.count("worker"),
+            0,
+            "resume: the fan-out must stay HELD while the gate is mid-review; workers: {:?}",
+            d2.calls.lock().unwrap()
         );
     }
 }
