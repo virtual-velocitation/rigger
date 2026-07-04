@@ -2771,20 +2771,38 @@ impl RunCtx<'_> {
                     // courier gates also build against (Gap 19).
                     let res = self.deps.gates.run(&g, "", "");
                     // The deferred phase-boundary gate keeps its single-run semantics (no
-                    // taxonomy rerun): it measures the ONE integrated tree once, so its
-                    // verdict carries no flaky annotation and its ratchet moves on the
-                    // straight pass/fail (spec 10 folds the three-way at the inline
-                    // per-unit gate; a whole-tree deferred rerun is out of this unit's
-                    // scope).
+                    // taxonomy RERUN): it measures the ONE integrated tree once, so its
+                    // verdict carries no flaky annotation (a whole-tree deferred rerun is
+                    // out of this unit's scope). The DEMOTE-vs-HOLD decision, though, is
+                    // folded through the SAME single classification authority the inline
+                    // gate uses (self.taxonomy) - one fault earns one demotion policy
+                    // regardless of gate SITE.
                     self.emit_gate_verdict(&key, gid, res.pass, false, &res.evidence)?;
                     // Feed the ratchet the same way an inline gate does, so a deferred
                     // gate's trust still moves on its history (its ceiling is Silent,
                     // like Core). Only the fresh run feeds it; a replay must not re-emit
-                    // the (non-keyed) promote/demote events.
+                    // the (non-keyed) promote/demote events. A clean pass promotes; a
+                    // FAILURE is classified through self.taxonomy for the demote-vs-hold
+                    // decision ONLY (still single-run, no rerun): an `infra` class HOLDS
+                    // the ratchet (FailNoDemote) - an outage must never cost a deferred
+                    // gate its earned autonomy, exactly as at an inline gate - while a
+                    // product/flaky class and any UNMATCHED failure demote (FailDemote) as
+                    // before. Routing through the taxonomy (not a hardcoded FailDemote)
+                    // keeps ONE failure-classification authority across both gate sites.
                     let ratchet = if res.pass {
                         GateRatchet::CleanPass
                     } else {
-                        GateRatchet::FailDemote
+                        let sig = Signal::from_output(res.evidence.clone());
+                        let demotes = self
+                            .taxonomy
+                            .classify(&sig)
+                            .map(|rule| rule.class.demotes_on_persistent_failure())
+                            .unwrap_or(true);
+                        if demotes {
+                            GateRatchet::FailDemote
+                        } else {
+                            GateRatchet::FailNoDemote
+                        }
                     };
                     let (promoted, demoted, autonomy) = self.record_gate(gid, kind, ratchet, "");
                     if promoted {
@@ -10667,6 +10685,103 @@ mod tests {
         assert!(
             rs.deferred_gate_failed,
             "the run state must record the deferred-gate failure"
+        );
+    }
+
+    /// A gate runner that FAILS one named gate with caller-supplied evidence and passes
+    /// every other gate. Lets a test drive a specific gate (e.g. a deferred phase-boundary
+    /// gate) into a failure whose evidence the taxonomy classifies, while the unit's inline
+    /// gate still passes so the unit integrates.
+    struct FailOneGate {
+        fail: String,
+        evidence: String,
+    }
+    impl gate::Runner for FailOneGate {
+        fn run(&self, g: &Gate, _dir: &str, _target: &str) -> gate::GateResult {
+            if g.id == self.fail {
+                gate::GateResult {
+                    pass: false,
+                    evidence: self.evidence.clone(),
+                }
+            } else {
+                gate::GateResult {
+                    pass: true,
+                    evidence: "PASS".into(),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_default_infra_fault_at_a_deferred_gate_does_not_demote() {
+        // Spec 10, unit 2 - the DEFERRED leg of the SINGLE classification authority. A
+        // persistent infra outage (one the SHIPPED DEFAULT taxonomy classifies `infra`) at
+        // a DEFERRED phase-boundary gate must HOLD the ratchet exactly as the identical
+        // fault does at an INLINE gate (FailNoDemote): an outage must never cost a graduated
+        // gate its earned autonomy. run_deferred_gates used to hardcode `if pass {CleanPass}
+        // else {FailDemote}`, a second failure-classification path that BYPASSED
+        // self.taxonomy and demoted the deferred gate AutoNotify->Manual on the SAME fault
+        // the inline site holds - two demotion policies for one fault by gate SITE, the
+        // exact harm this unit exists to prevent. No failure_rules are authored, so the
+        // shipped default taxonomy governs and classifies the outage below as infra.
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent("a"));
+        cfg.workflow.gates.insert("inline".into(), gate_def("true"));
+        cfg.workflow.gates.insert(
+            "deferred".into(),
+            config::Gate {
+                run: "false".into(),
+                kind: "deferred".into(),
+            },
+        );
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "a".into(),
+                gates: vec!["inline".into(), "deferred".into()],
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        // The inline gate passes (the unit integrates); the deferred gate fails at the
+        // phase boundary with an outage the DEFAULT taxonomy recognises as infra. The
+        // deferred gate is seeded at the default autonomy (AutoNotify, above Manual), so a
+        // bug-path FailDemote WOULD emit a visible GateDemoted.
+        let runner = FailOneGate {
+            fail: "deferred".into(),
+            evidence: "FAIL\nno space left on device".into(),
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &runner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        // The unit integrated on its passing inline gate.
+        assert_eq!(rs.units["s"].status, ledger::Status::Integrated);
+
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        // The deferred failure is still surfaced truthfully...
+        assert!(
+            events.iter().any(|e| {
+                e.type_ == TYPE_DEFERRED_GATE_FAILED
+                    && String::from_utf8_lossy(&e.data).contains("\"gate\":\"deferred\"")
+            }),
+            "a failing deferred gate must still surface a DeferredGateFailed event"
+        );
+        // ...but an INFRA outage classified through the SINGLE authority must NEVER demote
+        // the deferred gate's ratchet - the same HOLD the inline site gives the identical
+        // fault. This is the pinned single-authority invariant the reject demanded.
+        assert!(
+            !events.iter().any(|e| e.type_ == TYPE_GATE_DEMOTED),
+            "a persistent infra fault at a deferred gate must HOLD the ratchet (FailNoDemote), not demote it"
         );
     }
 
