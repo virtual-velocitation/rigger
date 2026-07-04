@@ -720,10 +720,7 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         // already integrated, `ready_stages` would otherwise surface the gate (it needs
         // plan) and `run_wave` would run it through the wrong path (`run_single_stage`).
         let gate = critique_gate_name(&stages);
-        let ready: Vec<String> = ready_stages(&stages, &integrated, &terminal)
-            .into_iter()
-            .filter(|n| gate.as_deref() != Some(n.as_str()))
-            .collect();
+        let ready = wave_ready(&stages, &integrated, &terminal, gate.as_deref());
         if !ready.is_empty() {
             ctx.run_wave(&stages, &ready, &mut integrated, &mut terminal)?;
             ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)?;
@@ -789,8 +786,15 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     // unscheduled; the run reports the gate's escalation/park, never a fan-out over an
     // unapproved decomposition.
     if fan_out_released {
+        // The critique gate belongs to the producer prelude EXCLUSIVELY: it must never
+        // enter a main wave. Without this filter, a gate left verified-but-not-integrated
+        // by an interrupted prior step satisfies ready_stages (needs plan, not terminal)
+        // and run_wave drives it through run_single_stage's standalone-review path, whose
+        // lenses have no worktree - the empty-cwd isolation refusal that killed the first
+        // adopted spec-10 run (lesson-plan-critique-996e0010).
+        let gate = critique_gate_name(&stages);
         loop {
-            let ready = ready_stages(&stages, &integrated, &terminal);
+            let ready = wave_ready(&stages, &integrated, &terminal, gate.as_deref());
             if ready.is_empty() {
                 break;
             }
@@ -4360,6 +4364,25 @@ fn coverage_gap(stages: &BTreeMap<String, Stage>, criteria: &[String]) -> Option
         "coverage gap - no stage with an LLM verifier covers: {}",
         gaps.join("; ")
     ))
+}
+
+/// The stages a WAVE may run: [`ready_stages`] minus the plan-critique gate. The gate
+/// belongs to the producer prelude EXCLUSIVELY (its reject re-runs the planner - a
+/// coupling the per-stage scheduler cannot express), so no wave may ever schedule it.
+/// Load-bearing on resume: a gate left verified-but-not-integrated by an interrupted
+/// step satisfies `ready_stages` (needs the producer, not terminal), and driving it
+/// through `run_single_stage`'s standalone-review path spawns lenses with no worktree -
+/// the empty-cwd isolation refusal that killed the first adopted spec-10 run.
+fn wave_ready(
+    stages: &BTreeMap<String, Stage>,
+    integrated: &HashSet<String>,
+    terminal: &HashSet<String>,
+    critique_gate: Option<&str>,
+) -> Vec<String> {
+    ready_stages(stages, integrated, terminal)
+        .into_iter()
+        .filter(|n| critique_gate != Some(n.as_str()))
+        .collect()
 }
 
 fn ready_stages(
@@ -12285,6 +12308,33 @@ mod tests {
                 "the plan-critique prompt must name rule targets ({target:?}); got:\n{prompt}"
             );
         }
+    }
+
+    #[test]
+    fn the_critique_gate_never_enters_a_wave_even_when_ready() {
+        // Regression pin for the adopted-run crash (lesson-plan-critique-996e0010): a
+        // gate left verified-but-not-integrated by an interrupted step satisfies
+        // ready_stages (its producer integrated, itself non-terminal), but a wave
+        // driving it through run_single_stage's standalone-review path spawns lenses
+        // with no worktree. wave_ready must exclude the gate UNCONDITIONALLY - it is
+        // the producer prelude's to run, never a wave's.
+        let cfg = critique_cfg();
+        let stages = cfg.workflow.stages.clone();
+        let mut integrated = HashSet::new();
+        integrated.insert("plan".to_string());
+        let terminal: HashSet<String> = integrated.clone();
+
+        let raw = ready_stages(&stages, &integrated, &terminal);
+        assert!(
+            raw.iter().any(|n| n == "plan-critique"),
+            "precondition: the raw ready set must surface the gate for this pin to bite; got {raw:?}"
+        );
+        let gate = critique_gate_name(&stages);
+        let wave = wave_ready(&stages, &integrated, &terminal, gate.as_deref());
+        assert!(
+            !wave.iter().any(|n| n == "plan-critique"),
+            "the critique gate must never be wave-scheduled; got {wave:?}"
+        );
     }
 
     #[test]
