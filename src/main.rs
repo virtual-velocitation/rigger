@@ -3431,11 +3431,21 @@ plan:\n    \
 agent: planner\n    \
 produces: dag           # refine the spec's unit DAG at runtime\n\
 \n  \
+# The adversarial plan-critique gate: BEFORE any implementer spawns, the adversary +\n  \
+# adjudicator review the PROPOSED unit DAG against the decomposition rules (shared\n  \
+# blast radius, mitigation ownership, open dispositions). A reject feeds back to the\n  \
+# planner (bounded by max_retries); an approve releases the fan-out. Review-only (no\n  \
+# agent) - it critiques the plan, it does not implement.\n  \
+plan-critique:\n    \
+needs: [plan]\n    \
+adversary: adversary        # tier 2: reviews the DAG and refutes it\n    \
+adjudicator: adjudicator    # tier 3: its approve/reject gates the fan-out\n\
+\n  \
 # Each unit implements, three-tier-reviews ITSELF (via defaults.review), and\n  \
 # integrates in one lifecycle. A reject or a gate failure feeds back into that\n  \
 # same unit's remediation loop; it does NOT integrate until approved + green.\n  \
 implement:\n    \
-needs: [plan]\n    \
+needs: [plan-critique]\n    \
 agent: rust-engineer\n    \
 strategy: fan-out       # one worker per ready unit, in isolated worktrees\n    \
 partition: by-blast-radius\n    \
@@ -4448,19 +4458,31 @@ mod tests {
         // folded into the unit lifecycle (no integrator). None of the four generic
         // placeholder personas is seeded.
         assert_eq!(cfg.agents.len(), 6, "scaffold agent count");
-        // Two stages: plan -> implement (each unit reviews itself and integrates).
-        assert_eq!(cfg.workflow.stages.len(), 2, "scaffold stage count");
+        // Three stages: plan -> plan-critique -> implement. The plan-critique gate
+        // (spec 10, Unit 1) reviews the proposed DAG before the fan-out releases.
+        assert_eq!(cfg.workflow.stages.len(), 3, "scaffold stage count");
         // Three gates in the reusable library.
         assert_eq!(cfg.workflow.gates.len(), 3, "scaffold gate count");
 
-        // The scaffold exercises the per-unit shape: a producer, a fan-out implement
-        // stage that integrates on_pass: merge, and a three-tier review panel
-        // (lenses -> adversary -> adjudicator) declared once on defaults.review.
+        // The scaffold exercises the per-unit shape: a producer, the plan-critique gate
+        // between plan and implement, a fan-out implement stage that integrates on_pass:
+        // merge, and a three-tier review panel declared once on defaults.review.
         let plan = &cfg.workflow.stages["plan"];
         assert_eq!(plan.produces, "dag");
+        // The plan-critique gate: review-only (no agent), needs plan, its adversary +
+        // adjudicator gate the fan-out.
+        let critique = &cfg.workflow.stages["plan-critique"];
+        assert!(critique.agent.is_empty(), "the gate implements nothing");
+        assert_eq!(critique.needs, ["plan"]);
+        assert_eq!(critique.adversary, "adversary");
+        assert_eq!(critique.adjudicator, "adjudicator");
         let implement = &cfg.workflow.stages["implement"];
         assert_eq!(implement.strategy, "fan-out");
-        assert_eq!(implement.needs, ["plan"]);
+        assert_eq!(
+            implement.needs,
+            ["plan-critique"],
+            "the fan-out releases only after the plan-critique gate approves"
+        );
         assert_eq!(implement.on_pass, "merge");
         let review = &cfg.workflow.defaults.review;
         assert_eq!(
