@@ -1178,6 +1178,70 @@ fn step_prints_a_budget_halt_reason_when_the_breaker_trips() {
     );
 }
 
+/// Agent liveness end-to-end (spec 10, unit 3): a spawn carries a `max_wall_clock` bound;
+/// when its per-spawn heartbeat marker goes STALE beyond that bound, the next `rigger step`
+/// classifies it as an infrastructure fault (a HUNG agent) and SURFACES it in the step
+/// output as a loud halt - so a hung agent can no longer stall the wave invisibly - while
+/// charging the unit NO remediation attempt. Pinned with a synthetic stale marker.
+#[test]
+fn step_surfaces_a_hung_spawn_with_a_stale_marker_as_a_liveness_halt() {
+    let dir = temp_project();
+    let root = dir.path();
+    // A single-stage workflow with a per-role wall-clock default, so the parked implementer
+    // spawn carries a `max_wall_clock` the sweep can time out against.
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nDo the unit.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        "name: livetest\ndefaults:\n  grounder: nop\n  budget: 60\n  max_wall_clock: 60\nstages:\n  a:\n    agent: worker\n    on_pass: none\n",
+    )
+    .unwrap();
+
+    // Step 1: the unit is ready, so its implementer parks in-flight (no result yet).
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the first step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"a/implementer#0""#),
+        "step 1 parks the implementer in-flight; got: {out:?}"
+    );
+
+    // Plant a SYNTHETIC STALE MARKER for that spawn: touched an hour ago, far past the 60s
+    // bound. The sweep reads its mtime, so no timing dependence on the test's own clock.
+    let marker_dir = root.join(".rigger").join("tmp").join("agent-live");
+    std::fs::create_dir_all(&marker_dir).unwrap();
+    let marker = marker_dir.join("a_implementer_0");
+    std::fs::write(&marker, b"heartbeat").unwrap();
+    let stale = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+    std::fs::File::options()
+        .write(true)
+        .open(&marker)
+        .unwrap()
+        .set_modified(stale)
+        .unwrap();
+
+    // Step 2: the sweep finds the marker stale beyond the bound, classifies the spawn infra,
+    // records the fault on its id, and surfaces it as a loud halt.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(
+        ok,
+        "a liveness-halted step still prints its result and exits 0; stderr: {err}"
+    );
+    let line = out.trim();
+    assert!(
+        line.contains(r#""halted":"#) && line.contains("a/implementer#0"),
+        "the hung spawn must be surfaced as a halt naming it; got: {line:?}"
+    );
+    assert!(
+        line.contains("infra") && line.contains("no remediation attempt"),
+        "the halt must state infra classification and no-attempt-charged; got: {line:?}"
+    );
+}
+
 /// Run scoping end-to-end (spec 06, unit 1 - Gap 11): a `rigger step` over a store that
 /// still holds an UNANSWERED spawn from an OLDER run must never re-print that stale spawn
 /// in this run's wave. The prior run's residue sits before this run's `RunStarted`

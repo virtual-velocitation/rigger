@@ -1014,6 +1014,36 @@ fn cmd_step(args: &[String]) -> Res {
 
     let graph = Projector::open(&db_path("graph.db"))?;
     let grounder = select_grounder(&cfg.workflow.defaults.grounder)?;
+    // Liveness sweep (spec 10, unit 3): BEFORE the conductor replays the frontier, classify
+    // any IN-FLIGHT spawn whose per-spawn heartbeat marker went stale beyond its
+    // `max_wall_clock` as an infrastructure fault (a HUNG agent) and record it on the
+    // spawn's id. The conductor then re-parks that fault (charging no remediation attempt -
+    // the unit's code is not at fault), and it surfaces as a halt below. Best-effort and
+    // scoped to the current run; a sweep failure never blocks the step.
+    if let Some(root) = &scratch_root {
+        match cfg.workflow.failure_taxonomy() {
+            Ok(taxonomy) => {
+                let pre = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+                match rigger::liveness::sweep(
+                    &store,
+                    runscope::current_run(&pre),
+                    root,
+                    &taxonomy,
+                    std::time::SystemTime::now(),
+                ) {
+                    Ok(stale) if !stale.is_empty() => eprintln!(
+                        "rigger step: liveness swept {} hung spawn(s) (classified infra, no attempt charged): {}",
+                        stale.len(),
+                        stale.iter().map(|s| s.id.clone()).collect::<Vec<_>>().join(", ")
+                    ),
+                    Ok(_) => {}
+                    Err(e) => eprintln!("rigger step: liveness sweep skipped: {e}"),
+                }
+            }
+            Err(e) => eprintln!("rigger step: liveness sweep skipped (taxonomy: {e})"),
+        }
+    }
+
     let driver = ReplayDriver::new(&store);
     let deps = Deps {
         store: &store,
@@ -1038,6 +1068,19 @@ fn cmd_step(args: &[String]) -> Res {
     // the printed `Step` carries a halt reason (`{"...","done":true,"halted":"..."}`) the
     // thin driver stops LOUDLY on - instead of reading a starved run as a clean completion.
     step.halted = rs.budget_halt;
+    // Surface hung agents (spec 10, unit 3): any spawn whose LATEST result is a liveness
+    // fault is a hung, unrecovered agent. Halt LOUDLY - like the budget breaker - so the
+    // driver stops on a named reason instead of reading a stalled wave as a clean fixpoint;
+    // a hung agent can no longer stall the wave invisibly. A budget halt already on the
+    // channel takes precedence (it is the harder global rail). Recovery: record a real
+    // result on the named spawn (last-write-wins supersedes the fault), then re-drive.
+    if step.halted.is_none() {
+        let hung = rigger::liveness::hung_spawns(runscope::current_run(&events))
+            .map_err(|e| e.to_string())?;
+        if !hung.is_empty() {
+            step.halted = Some(rigger::liveness::halt_reason(&hung));
+        }
+    }
     // At the fixpoint, sweep the shared agent-scratch area (probe repos, verification
     // builds workers park under <scratch-root>/agent-scratch per the driver's scratch
     // policy): it exists only to serve in-flight spawns, and leaving it is how a run

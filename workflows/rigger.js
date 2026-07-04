@@ -146,11 +146,29 @@ function phaseOf(req) {
 // `fatal` is a shared sink: if the death courier ITSELF dies, we can no longer guarantee a
 // result was recorded for this spawn, so we push it here and the loop stops loudly after the
 // wave drains rather than swallowing the failure (which would hang the run on resume).
+// markerPath is the per-spawn liveness marker (spec 10, unit 3). It MUST match Rust
+// `liveness::marker_path`: <scratch-root>/agent-live/<sanitized id>, where the id's chars
+// outside [A-Za-z0-9._-] each become '_'. The scratch root is the SAME default the sweep
+// resolves (<repo>/.rigger/tmp), matching the SCRATCH POLICY path framed below.
+function markerPath(id) {
+  const safe = id.replace(/[^A-Za-z0-9._-]/g, '_')
+  return `${REPO}/.rigger/tmp/agent-live/${safe}`
+}
+
 async function runWorker(req, fatal) {
   const ph = phaseOf(req)
   const workdir = req.dir
     ? `Do all your file edits, cargo, and any git commit inside your isolated worktree ${req.dir} (the conductor assigned it and owns its lifecycle; run \`rigger ...\` commands from ${REPO}).`
     : `Work in ${REPO}.`
+  // The driver-framed liveness heartbeat (spec 10, unit 3), same mechanism family as the
+  // SCRATCH POLICY: only when this spawn carries a wall-clock bound. The worker keeps a
+  // per-spawn marker fresh so a HUNG agent (one that stops touching it) is caught by
+  // `rigger step`'s liveness sweep as an infrastructure fault - never charging the unit.
+  const heartbeat = req.max_wall_clock
+    ? `LIVENESS HEARTBEAT (spec 10): your spawn carries a ${req.max_wall_clock}s wall-clock bound. Prove you are alive by TOUCHING your per-spawn marker at the START of your work and again after each significant step (a tool call, a build, a commit), using Bash:\n` +
+      `  mkdir -p ${REPO}/.rigger/tmp/agent-live && touch ${markerPath(req.id)}\n` +
+      `\`rigger step\` treats this marker going stale beyond your ${req.max_wall_clock}s bound as a HUNG agent - an infrastructure fault that charges you NO remediation attempt - so keep it fresh while you work. It stops mattering the instant you self-report your result.\n`
+    : ''
   const prompt =
     `You are the rigger worker for spawn ${req.id} (unit ${req.unit}). ` +
     `Your persona and full task are recorded in the run log - FETCH THEM FIRST by running, from ${REPO}, using Bash:\n` +
@@ -159,6 +177,7 @@ async function runWorker(req, fatal) {
     `--- rigger driver instructions ---\n` +
     `${workdir}\n` +
     `SCRATCH POLICY (hard rule): any scratch YOU create - probe repos, verification worktrees, test builds, setup rehearsals - lives under ${REPO}/.rigger/tmp/agent-scratch/, NEVER under /tmp or your own session scratchpad (those are on the operator's small OS partition, and a single cargo target or \`rigger setup\` shim install there fills the disk). For any cargo you run outside your assigned worktree, export CARGO_TARGET_DIR=${REPO}/.rigger/tmp/cargo-target first. agent-scratch is swept when the run completes - do not store anything durable there.\n` +
+    heartbeat +
     `The rigger context tools your task refers to (rigger_emit, rigger_peers) are available here as the CLI commands \`rigger emit <Type> '<json>'\` and \`rigger peers <file>...\`, run from ${REPO}.\n` +
     `When you finish, SELF-REPORT your result by running, from ${REPO}:\n` +
     `  rigger result ${req.id} "<your result: a one-line summary, or your full verdict/findings>"\n` +
@@ -168,9 +187,43 @@ async function runWorker(req, fatal) {
     `--error means YOU were unable to perform your task (blocked, crashed, missing tools) - NEVER a negative conclusion: a reviewer whose verdict is REJECT, or a gate that found failures, COMPLETED its task and reports that verdict/finding as its NORMAL result (an --error replays as a dead worker and aborts the run, not as your verdict). ` +
     `Reporting your result is mandatory - the run cannot advance past this spawn until you do.`
 
-  try {
-    await agent(prompt, { phase: ph, model: req.model || undefined, label: req.id })
-  } catch (e) {
+  // Run the worker, but do not await it FOREVER when it carries a wall-clock bound: a HUNG
+  // agent must not stall the whole wave (spec 10, unit 3). Map agent() to a never-rejecting
+  // outcome so abandoning it can never surface as an unhandled rejection after we stop
+  // awaiting it, then race it against an opt-in wall-clock watchdog.
+  const ran = agent(prompt, { phase: ph, model: req.model || undefined, label: req.id }).then(
+    () => ({ kind: 'done' }),
+    (e) => ({ kind: 'error', e }),
+  )
+  const wallMs = req.max_wall_clock ? req.max_wall_clock * 1000 : 0
+  let timer = null
+  const watchdog =
+    wallMs > 0 && typeof setTimeout === 'function'
+      ? new Promise((resolve) => {
+          timer = setTimeout(() => resolve({ kind: 'hung' }), wallMs)
+        })
+      : null
+  const outcome = watchdog ? await Promise.race([ran, watchdog]) : await ran
+  if (timer) clearTimeout(timer)
+
+  if (outcome.kind === 'hung') {
+    // The worker outran its max_wall_clock. Presume it HUNG and STOP awaiting it. Do NOT run
+    // the death courier: that is the dead-worker-EXIT path and would CHARGE the unit, whereas
+    // a hung agent is an INFRASTRUCTURE fault. We just return, so parallel() resolves and the
+    // loop reaches the next `rigger step`, whose liveness sweep classifies the spawn's stale
+    // marker as infra (no attempt charged) and surfaces it. A worker that was merely slow but
+    // kept its marker fresh is found not-stale by the sweep, left in-flight, and re-run next
+    // wave. The abandoned agent() promise (`ran`) is inert - it resolves to an ignored value.
+    log(
+      `worker ${req.id} exceeded its ${req.max_wall_clock}s max_wall_clock - abandoning it; the next \`rigger step\` liveness sweep classifies a stale marker as infra (no attempt charged)`,
+    )
+    return
+  }
+  if (outcome.kind === 'done') {
+    return
+  }
+  {
+    const e = outcome.e
     // The worker's agent() REJECTED (max turns, a crash, an execution error). That rejection
     // does NOT prove it died before reporting - a worker (or a reviewer that already emitted
     // an approve verdict) can self-report and THEN run on to max-turns. So record its failure

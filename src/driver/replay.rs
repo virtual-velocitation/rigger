@@ -47,8 +47,10 @@ impl<'a> ReplayDriver<'a> {
 /// Reconstruct the full [`SpawnRequest`] this call would park, from the trait's spawn
 /// arguments: its deterministic id, unit, and stage come from `opts` (the conductor
 /// set them from the run structure); its persona, dir, and blast-radius from `opts`;
-/// its model alias and granted tools from the agent (already fan-out-stripped by
-/// [`AgentDef::allowed_tools`]); and its task prompt from `prompt`.
+/// its model alias, granted tools, and wall-clock bound from the agent (the tools
+/// already fan-out-stripped by [`AgentDef::allowed_tools`], the `max_wall_clock` already
+/// resolved from `defaults.max_wall_clock` at config load); and its task prompt from
+/// `prompt`. So the parked spawn carries its per-role liveness bound (spec 10, unit 3).
 fn spawn_request(agent: &AgentDef, prompt: &str, opts: &SpawnOpts) -> SpawnRequest {
     SpawnRequest {
         id: opts.id.clone(),
@@ -60,6 +62,7 @@ fn spawn_request(agent: &AgentDef, prompt: &str, opts: &SpawnOpts) -> SpawnReque
         tools: agent.allowed_tools(),
         dir: opts.dir.clone(),
         blast_radius: opts.blast_radius.clone(),
+        max_wall_clock: agent.max_wall_clock,
     }
 }
 
@@ -86,17 +89,27 @@ impl AgentDriver for ReplayDriver<'_> {
         // the agent already ran, so return its outcome without re-running it. A recorded
         // failure replays AS a failure (never a fabricated success), so a step sees the
         // identical outcome the live run saw and remediates it exactly the same way.
+        //
+        // EXCEPT a step-synthesized LIVENESS fault (spec 10, unit 3): the agent HUNG and
+        // `rigger step` recorded an infra fault on its id to make the stall visible. That
+        // is NOT the unit's code failing, so it must charge no remediation attempt - we
+        // fall through to RE-PARK it (idempotent, the request is already recorded), so the
+        // unit unwinds cleanly like any parked spawn. A real worker result recorded later
+        // (last-write-wins) is a genuine answer and supersedes it here.
         if let Some(res) = spawn::result_of(&events, &opts.id).map_err(|e| Error(e.to_string()))? {
-            if res.is_error() {
-                return Err(Error(res.error));
+            if !res.is_liveness_fault() {
+                if res.is_error() {
+                    return Err(Error(res.error));
+                }
+                // Surface the RESOLVED model the worker reported through `rigger result
+                // --meta` (spec 05 line 52), so the conductor can copy it onto this spawn's
+                // unit events.
+                let resolved_model = res.resolved_model();
+                return Ok(AgentResult {
+                    output: res.output,
+                    resolved_model,
+                });
             }
-            // Surface the RESOLVED model the worker reported through `rigger result --meta`
-            // (spec 05 line 52), so the conductor can copy it onto this spawn's unit events.
-            let resolved_model = res.resolved_model();
-            return Ok(AgentResult {
-                output: res.output,
-                resolved_model,
-            });
         }
 
         // PARK an unrecorded spawn: persist the request so a courier can drain it and the
@@ -189,6 +202,52 @@ mod tests {
         // A recorded failure is a real failure, NOT a park - so the conductor remediates
         // it exactly as it did live.
         assert!(!is_parked(&err));
+    }
+
+    #[test]
+    fn re_parks_a_liveness_fault_instead_of_charging_it_as_a_failure() {
+        // A step recorded a liveness fault on a hung spawn (spec 10, unit 3). Unlike a
+        // worker-reported failure, this must NOT replay as a charged error - the agent's
+        // process hung, not the unit's code. The driver RE-PARKS it (a clean unwind, no
+        // remediation), and appends no duplicate request.
+        let store = Store::open(":memory:").unwrap();
+        // The spawn was parked, then a liveness fault was recorded on it.
+        spawn::park(
+            &store,
+            &spawn::SpawnRequest::new("u", "u", ROLE_IMPLEMENTER, 0, "task"),
+        )
+        .unwrap();
+        spawn::record_result(
+            &store,
+            &spawn::SpawnResult::liveness_fault("u/implementer#0", "the agent hung", "infra"),
+        )
+        .unwrap();
+
+        let driver = ReplayDriver::new(&store);
+        let err = driver
+            .spawn(&worker(), "do it", &opts_for("u/implementer#0"), &no_emit)
+            .expect_err("a liveness fault re-parks (a clean unwind), never a charged error");
+        assert!(
+            is_parked(&err),
+            "it re-parks, so the conductor charges no attempt"
+        );
+
+        // Re-parking is idempotent: no DUPLICATE spawn request is appended (the request
+        // was already recorded when it first parked).
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let requested = spawn::recorded(&events).unwrap();
+        assert_eq!(requested.len(), 1, "no duplicate spawn request is parked");
+
+        // A real result recorded LATER (last-write-wins) IS a terminal answer again.
+        spawn::record_result(
+            &store,
+            &spawn::SpawnResult::ok("u/implementer#0", "recovered output"),
+        )
+        .unwrap();
+        let got = driver
+            .spawn(&worker(), "do it", &opts_for("u/implementer#0"), &no_emit)
+            .expect("a real result superseding the liveness fault is answered normally");
+        assert_eq!(got.output, "recovered output");
     }
 
     #[test]

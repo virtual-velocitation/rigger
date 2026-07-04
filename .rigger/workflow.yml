@@ -52,6 +52,20 @@ defaults:
   # default). Bounded by `budget` above, so it can never spin unboundedly.
   max_retries: 6
 
+  # The per-spawn wall-clock bound in SECONDS (spec 10, unit 3): the liveness ceiling
+  # every spawn inherits unless its agent's frontmatter sets its own `max_wall_clock`
+  # (per-role override). A worker keeps a per-spawn heartbeat marker fresh under
+  # <scratch>/agent-live while it works; `rigger step`'s liveness sweep treats a marker
+  # stale beyond this bound as a HUNG agent - an INFRASTRUCTURE fault routed through the
+  # failure taxonomy (infra), recorded on the spawn's id and charging the unit NO
+  # remediation attempt (its code is not at fault) - so a hung agent halts the wave
+  # VISIBLY instead of stalling it invisibly. Recover by recording a real result on the
+  # named spawn (last-write-wins) and re-driving. 0 (absent) means unbounded - liveness
+  # timeouts are opt-in and an un-set workflow is byte-for-byte back-compatible. 3600s
+  # (1h) is a deliberately generous "definitely hung" ceiling for this repo's cargo-heavy
+  # workers; a fast reviewer role can pin a tighter bound in its own frontmatter.
+  max_wall_clock: 3600
+
   # The three-tier review panel applied to EVERY implementer unit (§3.2). TIER 1:
   # the expert lenses (architecture + sdet) review the unit's diff in parallel.
   # TIER 2: the adversary reviews THE LENSES' findings and tries to prove them

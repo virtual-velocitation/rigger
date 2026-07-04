@@ -160,6 +160,14 @@ pub struct SpawnRequest {
     /// tool-boundary injection of peer decisions.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub blast_radius: Vec<String>,
+    /// The per-spawn wall-clock bound in SECONDS (spec 10, unit 3), resolved from the
+    /// agent's `max_wall_clock` (its own, or the inherited `defaults.max_wall_clock`).
+    /// `rigger step` treats this spawn as a hung/infra fault once its liveness marker is
+    /// stale longer than this, and the driver frames the worker's heartbeat around it.
+    /// `None` (the common back-compatible case) means unbounded - never timed out - and
+    /// is omitted from the wire.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_wall_clock: Option<u64>,
 }
 
 impl SpawnRequest {
@@ -178,6 +186,7 @@ impl SpawnRequest {
             tools: Vec::new(),
             dir: String::new(),
             blast_radius: Vec::new(),
+            max_wall_clock: None,
         }
     }
 
@@ -300,6 +309,15 @@ pub const TYPE_SPAWN_RESULT: &str = "SpawnResult";
 /// name the concrete model that ran, not only the requested alias on the spawn request.
 pub const META_RESOLVED_MODEL: &str = "resolved_model";
 
+/// The [`SpawnResult::meta`] key `rigger step` stamps on a spawn it recorded as a LIVENESS
+/// fault (spec 10, unit 3): its value is the failure CLASS the taxonomy assigned the hung
+/// agent (e.g. `"infra"`). Its presence marks the result as a step-synthesized liveness
+/// outcome - distinct from a worker-reported failure - so the replay driver re-parks it
+/// (never charging the unit) and a later real result supersedes it (last-write-wins). No
+/// new EVENT TYPE is introduced; the fault rides the existing [`SpawnResult`] on the
+/// spawn's id, as the spec requires.
+pub const META_LIVENESS_CLASS: &str = "liveness_class";
+
 /// A recorded spawn OUTCOME, keyed by the same deterministic [`spawn_id`] as its
 /// request. A successful run carries the agent's `output` and an empty `error`; a
 /// failed run (`rigger result --error`) carries the failure message in `error`, and
@@ -350,6 +368,25 @@ impl SpawnResult {
         }
     }
 
+    /// A LIVENESS-FAULT result `rigger step` records for a hung spawn (spec 10, unit 3):
+    /// the `error` describes the stall and the [`META_LIVENESS_CLASS`] meta key carries the
+    /// class the taxonomy assigned it (`class`). It is a step-synthesized outcome, not a
+    /// worker report, so the replay driver re-parks it (charging no attempt) and a real
+    /// result later supersedes it. Reuses the existing [`SpawnResult`] on the spawn's id -
+    /// no new event type.
+    pub fn liveness_fault(
+        id: impl Into<String>,
+        error: impl Into<String>,
+        class: &str,
+    ) -> SpawnResult {
+        SpawnResult {
+            id: id.into(),
+            output: String::new(),
+            error: error.into(),
+            meta: serde_json::json!({ META_LIVENESS_CLASS: class }),
+        }
+    }
+
     /// Builder: attach the optional courier metadata (`rigger result --meta <json>`).
     pub fn with_meta(mut self, meta: Value) -> Self {
         self.meta = meta;
@@ -359,6 +396,23 @@ impl SpawnResult {
     /// Whether this result records a FAILURE (a non-empty `error`).
     pub fn is_error(&self) -> bool {
         !self.error.is_empty()
+    }
+
+    /// Whether this result is a step-synthesized LIVENESS fault (spec 10, unit 3): it
+    /// carries the [`META_LIVENESS_CLASS`] meta key. The replay driver re-parks such a
+    /// result instead of answering the spawn as a charged failure, so a hung agent never
+    /// charges the unit a remediation attempt.
+    pub fn is_liveness_fault(&self) -> bool {
+        self.meta.get(META_LIVENESS_CLASS).is_some()
+    }
+
+    /// The liveness class recorded on this fault (empty when it is not a liveness fault).
+    pub fn liveness_class(&self) -> String {
+        self.meta
+            .get(META_LIVENESS_CLASS)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
     }
 
     /// The RESOLVED model id the worker reported through `--meta` (the
@@ -489,6 +543,11 @@ pub struct WaveItem {
     pub dir: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub blast_radius: Vec<String>,
+    /// The per-spawn wall-clock bound in SECONDS (spec 10, unit 3), carried to the thin
+    /// driver so it can frame the worker's heartbeat and watchdog a hung agent. Omitted
+    /// from the wire when the spawn is unbounded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_wall_clock: Option<u64>,
 }
 
 impl From<&SpawnRequest> for WaveItem {
@@ -501,6 +560,7 @@ impl From<&SpawnRequest> for WaveItem {
             tools: req.tools.clone(),
             dir: req.dir.clone(),
             blast_radius: req.blast_radius.clone(),
+            max_wall_clock: req.max_wall_clock,
         }
     }
 }
@@ -825,6 +885,48 @@ mod tests {
         // The failure survives the event round-trip so a step replays it AS a failure.
         let ev = res.to_event().unwrap();
         assert_eq!(SpawnResult::from_event(&ev).unwrap(), res);
+    }
+
+    #[test]
+    fn liveness_fault_is_a_recognizable_no_charge_result_that_round_trips() {
+        let f = SpawnResult::liveness_fault("u/implementer#0", "the agent hung", "infra");
+        assert!(
+            f.is_error(),
+            "a hung spawn's fault carries a describing error"
+        );
+        assert!(
+            f.is_liveness_fault(),
+            "it is recognizable as a liveness fault"
+        );
+        assert_eq!(f.liveness_class(), "infra");
+        // A plain success/failure is NOT a liveness fault.
+        assert!(!SpawnResult::ok("u/implementer#0", "done").is_liveness_fault());
+        assert!(!SpawnResult::failed("u/implementer#0", "boom").is_liveness_fault());
+        // Survives the event round-trip so the replay driver recognizes it on a later step.
+        let ev = f.to_event().unwrap();
+        let back = SpawnResult::from_event(&ev).unwrap();
+        assert_eq!(back, f);
+        assert!(back.is_liveness_fault());
+    }
+
+    #[test]
+    fn spawn_request_max_wall_clock_round_trips_and_omits_when_absent() {
+        // Absent (the back-compatible common case): omitted from the wire.
+        let plain = SpawnRequest::new("u", "implement", ROLE_IMPLEMENTER, 0, "task");
+        assert_eq!(plain.max_wall_clock, None);
+        let json = serde_json::to_value(&plain).unwrap();
+        assert!(
+            !json.as_object().unwrap().contains_key("max_wall_clock"),
+            "an unbounded spawn omits max_wall_clock from the persisted event"
+        );
+        // Present: persisted and recovered so the sweep reads it off the parked event.
+        let mut bounded = SpawnRequest::new("u", "implement", ROLE_IMPLEMENTER, 0, "task");
+        bounded.max_wall_clock = Some(1800);
+        let ev = bounded.to_event().unwrap();
+        assert_eq!(
+            SpawnRequest::from_event(&ev).unwrap().max_wall_clock,
+            Some(1800)
+        );
     }
 
     #[test]
