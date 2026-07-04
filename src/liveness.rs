@@ -6,29 +6,38 @@
 //!
 //! This module is the framework-free domain of that mechanism: the single marker-path
 //! authority, the pure staleness decision, and the classification that routes a hung
-//! spawn through unit 2's [`failure::Taxonomy`]. It names no store, no config, and no
-//! conductor type - the caller (`rigger step`) reads the marker mtimes and records the
-//! outcome; this module only decides.
+//! spawn through unit 2's [`failure::Taxonomy`]. The pure decisions ([`is_stale`],
+//! [`classify_stale`], [`classify_hung`]) name no store and no config; [`sweep`] and
+//! [`hung_spawns`] are the caller-facing helpers `rigger step` runs, which read marker
+//! mtimes and record/fold the outcome on the run stream.
 //!
-//! ## Classification (routes through unit 2's rules)
+//! ## Classification (the class is an operator-facing LABEL; the treatment is uniform)
 //!
 //! A hung worker is classified by feeding a distinctive [`stale_signal`] to the
 //! configured [`failure::Taxonomy`]. A hung/unresponsive worker is an INFRASTRUCTURE
-//! fault (the agent process stalled, not the unit's code), so it defaults to
-//! [`FailureClass::Infra`] and is overridable ONLY by a rule that SPECIFICALLY targets
-//! the liveness signal - a NON-wildcard matcher (e.g. an `output_regex` on the stale
-//! text). A workflow's catch-all rule (`match: {}`, the shipped default's final
-//! `product` rule) is meant for GATE-output classification, NOT for hung agents, so it
-//! does NOT capture a hung spawn: charging a unit's remediation counter for its agent
-//! process hanging would be exactly the misclassification unit 2's infra semantics
-//! exist to prevent. Only an infra-classified hung spawn is recorded as a
-//! no-attempt-charged liveness fault; a workflow that DELIBERATELY (non-wildcard)
-//! reclassified it gets that class's usual treatment.
+//! condition (the agent PROCESS stalled, not the unit's code), so [`classify_hung`]
+//! defaults to [`FailureClass::Infra`] and lets a workflow RELABEL it only through a rule
+//! that SPECIFICALLY targets the liveness signal - a NON-wildcard matcher (e.g. an
+//! `output_regex` on the stale text). A catch-all rule (`match: {}`, the shipped
+//! default's final `product` rule) classifies GATE output, not hung agents, so it does
+//! NOT capture a hung spawn.
+//!
+//! The class is a DISPLAY/AUDIT label only: it rides the recorded fault (the
+//! [`spawn::META_LIVENESS_CLASS`] meta value) and is surfaced in the step halt and the
+//! stats, so an operator sees how the workflow named the stall. It does NOT change the
+//! TREATMENT. EVERY hung spawn - whatever class a rule labels it - is recorded as a
+//! no-attempt-charged liveness fault ([`SpawnResult::liveness_fault`]) and re-parked by
+//! the replay driver, because a hung agent PROCESS is infrastructure regardless of any
+//! rule's label: charging a unit's remediation counter for its agent hanging would be
+//! exactly the misclassification unit 2's infra semantics exist to prevent. (A workflow
+//! that wants a hung agent to CHARGE the unit would be asking the liveness mechanism to
+//! do the dead-worker-exit driver's job, which is out of this unit's scope.) Recovery is
+//! uniform too: an operator records a real result (last-write-wins) and re-drives.
 
 use std::time::{Duration, SystemTime};
 
 use crate::eventstore::{Error, Event, EventStore};
-use crate::failure::{FailureClass, Matcher, Signal, Taxonomy};
+use crate::failure::{FailureClass, Signal, Taxonomy};
 use crate::spawn::{self, SpawnResult};
 
 /// The scratch subdirectory the per-spawn liveness markers live under, a sibling of the
@@ -54,13 +63,25 @@ pub fn marker_filename(spawn_id: &str) -> String {
         .collect()
 }
 
-/// The absolute marker path for a spawn: `<scratch_root>/agent-live/<sanitized id>`.
-/// The SINGLE authority for where a spawn's liveness marker lives; the worker touches
-/// it (driver-framed instruction) and the sweep stats it.
-pub fn marker_path(scratch_root: &str, spawn_id: &str) -> std::path::PathBuf {
-    std::path::Path::new(scratch_root)
-        .join(MARKER_SUBDIR)
-        .join(marker_filename(spawn_id))
+/// The absolute marker path for a spawn:
+/// `<scratch_root>/agent-live/<run_id>/<sanitized id>`.
+///
+/// The SINGLE authority for where a spawn's liveness marker lives - the worker touches it
+/// (driver-framed instruction, over the path `rigger step` carries on the wave item) and
+/// the sweep stats it, both through THIS function, so a re-hardcoded root can never make
+/// the two diverge. The `run_id` component gives the marker RUN IDENTITY: a re-run that
+/// reuses a unit-title slug computes the same spawn id, but a DIFFERENT run gets a
+/// different subdir, so the sweep never reads a prior run's leftover mtime and records a
+/// bogus multi-hour `silent_for`. An empty `run_id` (a caller outside a run - the pure-fold
+/// tests) omits the run subdir, keeping the path stable for the no-run case.
+pub fn marker_path(scratch_root: &str, run_id: &str, spawn_id: &str) -> std::path::PathBuf {
+    let dir = std::path::Path::new(scratch_root).join(MARKER_SUBDIR);
+    let dir = if run_id.is_empty() {
+        dir
+    } else {
+        dir.join(marker_filename(run_id))
+    };
+    dir.join(marker_filename(spawn_id))
 }
 
 /// Whether a spawn last seen alive at `last_seen` is STALE at `now` given its wall-clock
@@ -85,22 +106,19 @@ pub fn stale_signal() -> Signal {
     )
 }
 
-/// Whether a matcher is a wildcard (every field absent - it matches every signal). The
-/// shipped default taxonomy's final `product` rule is exactly such a catch-all; it
-/// classifies GATE output, so it must not capture a hung agent. Reads the taxonomy's own
-/// public matcher fields, so this stays a pure query with no change to unit 2's module.
-fn is_wildcard(m: &Matcher) -> bool {
-    m.exit_status.is_none() && m.signal.is_none() && m.output_regex.is_none()
-}
-
 /// Classify a hung spawn: a rule that SPECIFICALLY (non-wildcard) matches the hung-agent
-/// signal governs, letting a workflow deliberately reclassify liveness faults; a wildcard
-/// catch-all match or no match at all defaults to [`FailureClass::Infra`] - a hung worker
-/// is infrastructure, not the unit's code, and the generic gate catch-all must never
-/// charge a unit for its agent process hanging.
+/// signal governs, letting a workflow RELABEL liveness faults; a wildcard catch-all match
+/// (the shipped default's final `product` rule classifies GATE output) or no match at all
+/// defaults to [`FailureClass::Infra`] - a hung worker is infrastructure, not the unit's
+/// code, and the generic gate catch-all must never label a hung agent as the unit's fault.
+///
+/// The returned class is a DISPLAY/AUDIT label only (see the module docs): every hung spawn
+/// is recorded and re-parked no-charge regardless of it. The wildcard test routes through
+/// [`Matcher::is_any`](crate::failure::Matcher::is_any) - the single authority - rather
+/// than re-checking the matcher fields.
 pub fn classify_hung(taxonomy: &Taxonomy) -> FailureClass {
     match taxonomy.classify(&stale_signal()) {
-        Some(rule) if !is_wildcard(&rule.matcher) => rule.class,
+        Some(rule) if !rule.matcher.is_any() => rule.class,
         _ => FailureClass::Infra,
     }
 }
@@ -191,6 +209,7 @@ pub fn sweep(
     store: &dyn EventStore,
     events: &[Event],
     scratch_root: &str,
+    run_id: &str,
     taxonomy: &Taxonomy,
     now: SystemTime,
 ) -> Result<Vec<StaleSpawn>, Error> {
@@ -210,9 +229,11 @@ pub fn sweep(
         {
             continue;
         }
-        // The marker's mtime is the spawn's last proof of life. A MISSING marker is left
-        // alone (conservative - see the fn docs); only a present-but-stale marker is hung.
-        let last_seen = match std::fs::metadata(marker_path(scratch_root, &req.id))
+        // The marker's mtime is the spawn's last proof of life. The path carries the run id
+        // ([`marker_path`]), so a prior run's leftover marker for a slug-colliding id lives
+        // under a different subdir and is never read here. A MISSING marker is left alone
+        // (conservative - see the fn docs); only a present-but-stale marker is hung.
+        let last_seen = match std::fs::metadata(marker_path(scratch_root, run_id, &req.id))
             .and_then(|m| m.modified())
         {
             Ok(mtime) => mtime,
@@ -290,11 +311,25 @@ mod tests {
     }
 
     #[test]
-    fn marker_path_is_scratch_root_joined_with_the_subdir_and_filename() {
-        let p = marker_path("/scratch", "u/implementer#0");
+    fn marker_path_is_scratch_root_joined_with_the_run_subdir_and_filename() {
+        // With a run id: `<scratch>/agent-live/<run>/<sanitized id>` - the run subdir gives
+        // the marker RUN IDENTITY, so a slug-colliding re-run never reads a prior mtime.
+        let p = marker_path("/scratch", "run-7", "u/implementer#0");
+        assert_eq!(
+            p,
+            std::path::Path::new("/scratch/agent-live/run-7/u_implementer_0")
+        );
+        // An empty run id (a caller outside a run) omits the run subdir - the no-run path.
+        let p = marker_path("/scratch", "", "u/implementer#0");
         assert_eq!(
             p,
             std::path::Path::new("/scratch/agent-live/u_implementer_0")
+        );
+        // A run id carrying id-structure characters is sanitized like a spawn id.
+        let p = marker_path("/scratch", "run/7#a", "u/implementer#0");
+        assert_eq!(
+            p,
+            std::path::Path::new("/scratch/agent-live/run_7_a/u_implementer_0")
         );
     }
 
@@ -387,13 +422,16 @@ mod tests {
         store.read_stream(STREAM, 0, Direction::Forward).unwrap()
     }
 
-    /// Plant a synthetic liveness marker touched "now" (its mtime is the wall-clock at
-    /// creation). The sweep's `now` parameter is advanced past the bound to make it stale,
-    /// so no mtime manipulation is needed.
+    /// The run id every sweep test scopes its markers under (the run-identity subdir).
+    const TEST_RUN: &str = "r1";
+
+    /// Plant a synthetic liveness marker (under the test run's subdir) touched "now" - its
+    /// mtime is the wall-clock at creation. The sweep's `now` parameter is advanced past the
+    /// bound to make it stale, so no mtime manipulation is needed.
     fn plant_marker(root: &str, id: &str) {
-        let dir = std::path::Path::new(root).join(MARKER_SUBDIR);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(marker_path(root, id), b"heartbeat").unwrap();
+        let path = marker_path(root, TEST_RUN, id);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b"heartbeat").unwrap();
     }
 
     #[test]
@@ -410,7 +448,7 @@ mod tests {
         let events = read(&store);
         let taxonomy = Taxonomy::default();
         let now = SystemTime::now() + Duration::from_secs(400);
-        let stale = sweep(&store, &events, root, &taxonomy, now).unwrap();
+        let stale = sweep(&store, &events, root, TEST_RUN, &taxonomy, now).unwrap();
 
         // Classified infra and returned.
         assert_eq!(stale.len(), 1);
@@ -462,7 +500,7 @@ mod tests {
 
         let events = read(&store);
         let now = SystemTime::now() + Duration::from_secs(10);
-        let stale = sweep(&store, &events, root, &Taxonomy::default(), now).unwrap();
+        let stale = sweep(&store, &events, root, TEST_RUN, &Taxonomy::default(), now).unwrap();
         assert!(
             stale.is_empty(),
             "a fresh marker and a missing marker are not hung"
@@ -489,7 +527,7 @@ mod tests {
 
         let events = read(&store);
         let now = SystemTime::now() + Duration::from_secs(99_999);
-        let stale = sweep(&store, &events, root, &Taxonomy::default(), now).unwrap();
+        let stale = sweep(&store, &events, root, TEST_RUN, &Taxonomy::default(), now).unwrap();
         assert!(
             stale.is_empty(),
             "an unbounded spawn is never timed out, however old its marker"

@@ -548,6 +548,17 @@ pub struct WaveItem {
     /// from the wire when the spawn is unbounded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_wall_clock: Option<u64>,
+    /// The RESOLVED absolute path of this spawn's liveness marker (spec 10, unit 3), stamped
+    /// by `rigger step` from the SINGLE authority [`crate::liveness::marker_path`] over the
+    /// step's own resolved scratch root (`RIGGER_TMPDIR` > `defaults.workdir` > repo default)
+    /// and run id. Carrying it on the wire is what keeps the worker-write path IDENTICAL to
+    /// the sweep-read path under ANY scratch config: the thin driver frames both the
+    /// heartbeat `touch` and its staleness watchdog around THIS path and never re-derives a
+    /// root of its own. Present only for a bounded spawn (a marker exists only when
+    /// `max_wall_clock` is set); [`WaveItem::from`] leaves it `None` because the scratch root
+    /// and run id are not known to a pure fold - `rigger step` fills it in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marker_path: Option<String>,
 }
 
 impl From<&SpawnRequest> for WaveItem {
@@ -561,6 +572,9 @@ impl From<&SpawnRequest> for WaveItem {
             dir: req.dir.clone(),
             blast_radius: req.blast_radius.clone(),
             max_wall_clock: req.max_wall_clock,
+            // Stamped by `rigger step` (cmd_step) from the resolved scratch root + run id;
+            // a pure fold has neither, so leave it absent here.
+            marker_path: None,
         }
     }
 }
@@ -1354,6 +1368,32 @@ mod tests {
         assert!(
             !step.done,
             "two spawns have no result yet, so the run is not done"
+        );
+    }
+
+    #[test]
+    fn wave_item_marker_path_is_absent_from_a_pure_fold_and_omitted_when_unset() {
+        // `WaveItem::from` cannot know the scratch root or run id, so it leaves the resolved
+        // marker path absent; `rigger step` stamps it. An absent marker path is omitted from
+        // the wire (like an unbounded spawn's), so a slim manifest stays slim.
+        let req = SpawnRequest::new("u", "implement", ROLE_IMPLEMENTER, 0, "task");
+        let item = WaveItem::from(&req);
+        assert_eq!(item.marker_path, None, "a pure fold leaves the path unset");
+        let json = serde_json::to_value(&item).unwrap();
+        assert!(
+            !json.as_object().unwrap().contains_key("marker_path"),
+            "an unstamped marker path is omitted from the wire"
+        );
+
+        // Once stamped (as cmd_step does from liveness::marker_path), it rides the wire so the
+        // thin driver frames the heartbeat + watchdog around the exact path the sweep reads.
+        let mut stamped = item;
+        stamped.marker_path = Some("/scratch/agent-live/r1/u_implementer_0".into());
+        let json = serde_json::to_value(&stamped).unwrap();
+        assert_eq!(
+            json.get("marker_path").and_then(|v| v.as_str()),
+            Some("/scratch/agent-live/r1/u_implementer_0"),
+            "a stamped marker path is carried on the wire verbatim"
         );
     }
 

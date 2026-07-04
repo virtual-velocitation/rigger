@@ -251,6 +251,121 @@ mod tests {
     }
 
     #[test]
+    fn a_non_infra_labeled_liveness_fault_is_still_re_parked_no_charge() {
+        // Follow-up (b) / sdet-u3-classify-hung-reclassification-cosmetic: the taxonomy class
+        // on a liveness fault is a DISPLAY LABEL only; the no-charge re-park is UNIFORM. A
+        // hung spawn a workflow deliberately RELABELED (here "product", not the infra
+        // default) must STILL re-park (a clean unwind), never replay as a charged error - a
+        // hung agent PROCESS is infrastructure regardless of the label, so the unit is never
+        // charged. This pins the corrected module doc (class is a label, treatment is uniform).
+        let store = Store::open(":memory:").unwrap();
+        spawn::park(
+            &store,
+            &spawn::SpawnRequest::new("u", "u", ROLE_IMPLEMENTER, 0, "task"),
+        )
+        .unwrap();
+        spawn::record_result(
+            &store,
+            &spawn::SpawnResult::liveness_fault("u/implementer#0", "the agent hung", "product"),
+        )
+        .unwrap();
+
+        let driver = ReplayDriver::new(&store);
+        let err = driver
+            .spawn(&worker(), "do it", &opts_for("u/implementer#0"), &no_emit)
+            .expect_err("a liveness fault re-parks whatever class labels it, never a charge");
+        assert!(
+            is_parked(&err),
+            "a 'product'-labeled liveness fault re-parks no-charge, exactly like infra"
+        );
+        // The label still rides the recorded fault for the operator (display/audit).
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert_eq!(
+            spawn::result_of(&events, "u/implementer#0")
+                .unwrap()
+                .unwrap()
+                .liveness_class(),
+            "product",
+            "the class rides the fault as a display label even though treatment ignores it"
+        );
+    }
+
+    #[test]
+    fn a_liveness_fault_re_parks_no_charge_across_run_boundaries_then_recovers() {
+        // sdet-u3-nocharge-repark-secondstep-and-recovery-untested (follow-up c): drive the
+        // no-charge re-park through conductor::run ACROSS the replay boundary (several run()
+        // over one store, as successive `rigger step` processes do) AND the recovery - not the
+        // isolated single-driver.spawn the other test covers. A liveness fault (as the sweep
+        // records) must, on EVERY subsequent run, re-park the spawn (a clean unwind) and
+        // append NO UnitFailed - a hung agent never charges the unit - and append no duplicate
+        // SpawnRequested; then a real result recorded later supersedes it and the unit advances.
+        let store = Store::open(":memory:").unwrap();
+        let cfg = config_with(vec![stage("u", "worker")]);
+        let id = spawn_id("u", ROLE_IMPLEMENTER, 0);
+
+        // Step 1: conductor::run parks the implementer frontier.
+        replay_step(&store, &cfg).expect("a parked frontier is not a run failure");
+        assert!(spawn::is_recorded(
+            &store.read_stream(STREAM, 0, Direction::Forward).unwrap(),
+            &id
+        ));
+
+        // The sweep records a liveness fault on the hung spawn (a SpawnResult, never a
+        // UnitFailed) - exactly what liveness::sweep does on a stale marker.
+        spawn::record_result(
+            &store,
+            &spawn::SpawnResult::liveness_fault(&id, "the agent hung", "infra"),
+        )
+        .unwrap();
+
+        // Steps 2 and 3: each run REPLAYS the fault, re-parks (no UnitFailed, no duplicate
+        // SpawnRequested), and the unit never advances past implement to `verified`.
+        for _ in 0..2 {
+            replay_step(&store, &cfg).expect("re-parking a liveness fault is a clean unwind");
+            let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            assert!(
+                !events
+                    .iter()
+                    .any(|e| e.type_ == crate::ledger::TYPE_UNIT_FAILED),
+                "a hung spawn charges no remediation attempt across the boundary (no UnitFailed)"
+            );
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|e| e.type_ == spawn::TYPE_SPAWN_REQUESTED)
+                    .count(),
+                1,
+                "re-parking the same id appends no duplicate SpawnRequested"
+            );
+            assert!(
+                !events.iter().any(|e| {
+                    e.type_ == crate::ledger::TYPE_UNIT_STATUS
+                        && String::from_utf8_lossy(&e.data).contains("\"status\":\"verified\"")
+                }),
+                "the unit stays parked at the hung spawn, never advancing while it is hung"
+            );
+        }
+
+        // Recovery: a real result recorded later (last-write-wins) supersedes the fault.
+        spawn::record_result(&store, &spawn::SpawnResult::ok(&id, "implemented")).unwrap();
+        replay_step(&store, &cfg).expect("a recovered spawn replays and the run advances");
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(
+            events.iter().any(|e| {
+                e.type_ == crate::ledger::TYPE_UNIT_STATUS
+                    && String::from_utf8_lossy(&e.data).contains("\"status\":\"verified\"")
+            }),
+            "the real result supersedes the fault and the unit advances past implement"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.type_ == crate::ledger::TYPE_UNIT_FAILED),
+            "no UnitFailed is ever appended - the hung spawn charged nothing, even on recovery"
+        );
+    }
+
+    #[test]
     fn parks_an_unrecorded_spawn_and_signals_the_frontier() {
         let store = Store::open(":memory:").unwrap();
         let driver = ReplayDriver::new(&store);

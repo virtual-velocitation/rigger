@@ -158,6 +158,17 @@ impl Matcher {
         }
     }
 
+    /// Whether this matcher is a WILDCARD - every field absent, so it matches every
+    /// signal (equivalent to [`Matcher::any`]). This is the SINGLE authority for the
+    /// wildcard test: `Regex` is not `PartialEq`, so a caller cannot compare against
+    /// `Matcher::any()` directly, and callers that need to special-case a catch-all rule
+    /// (e.g. `liveness::classify_hung`, which must not let the shipped default's final
+    /// catch-all `product` rule capture a hung AGENT) ask here rather than re-checking the
+    /// three fields themselves - which would grow fragile the day `Matcher` gains a field.
+    pub fn is_any(&self) -> bool {
+        self.exit_status.is_none() && self.signal.is_none() && self.output_regex.is_none()
+    }
+
     /// Whether this predicate matches `sig`: every present field must match; a present
     /// numeric field requires the signal carry that exact value (an absent signal value
     /// never matches a pinned rule), and a present `output_regex` must find a match in
@@ -350,6 +361,32 @@ mod tests {
             signal: Some(9),
             output: "killed".into(),
         }));
+    }
+
+    #[test]
+    fn is_any_is_true_exactly_for_the_all_wildcard_matcher() {
+        // The single wildcard authority: true for `any()` (and any all-absent matcher),
+        // false the moment any field is pinned - so `liveness::classify_hung` can tell the
+        // shipped default's catch-all `product` rule from a rule that targets a real signal.
+        assert!(Matcher::any().is_any());
+        assert!(Matcher {
+            exit_status: None,
+            signal: None,
+            output_regex: None,
+        }
+        .is_any());
+        assert!(!Matcher {
+            exit_status: Some(1),
+            signal: None,
+            output_regex: None,
+        }
+        .is_any());
+        assert!(!Matcher {
+            exit_status: None,
+            signal: None,
+            output_regex: Some(Regex::new("x").unwrap()),
+        }
+        .is_any());
     }
 
     #[test]
