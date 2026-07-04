@@ -22,6 +22,17 @@ pub struct AgentDef {
     pub id: String,
     #[serde(default)]
     pub model: String,
+    /// A cheap-first model cascade (spec 10 unit 4): the successive model aliases this
+    /// agent runs on across remediation attempts. Attempt 0 resolves rung 0 and each
+    /// remediation attempt advances one rung, CLAMPED at the last rung once the ladder is
+    /// exhausted, so a persistently-failing unit escalates from a cheap model to a strong
+    /// one. Empty (the common case) means no cascade: the single [`model`](Self::model)
+    /// alias is used on every attempt, exactly as before this field existed. When a ladder
+    /// IS declared it takes precedence and `model` is ignored - `model` is the implicit
+    /// one-rung ladder only when `model_ladder` is empty. Resolution lives in the single
+    /// authority [`model_for_attempt`](Self::model_for_attempt).
+    #[serde(default)]
+    pub model_ladder: Vec<String>,
     #[serde(default)]
     pub tools: Vec<String>,
     #[serde(default)]
@@ -185,6 +196,26 @@ impl AgentDef {
     /// empty or `worktree` opts in (§3.1, §6).
     pub fn isolated(&self) -> bool {
         !self.isolation.eq_ignore_ascii_case("none")
+    }
+
+    /// The model alias this agent runs on for `attempt` (the 0-based remediation attempt),
+    /// resolving the cheap-first cascade (spec 10 unit 4). This is the SINGLE model-selection
+    /// authority: every driver (which sets the actual spawn model) and the conductor (which
+    /// stamps the requested alias onto the spawn's unit events) resolve through it, so the
+    /// model that runs and the model recorded agree by construction for every attempt.
+    ///
+    /// With a [`model_ladder`](Self::model_ladder) declared, attempt `n` resolves rung `n`,
+    /// CLAMPED at the last rung once the ladder is exhausted (a unit that keeps failing stays
+    /// on the strongest rung). Absent a ladder, the single [`model`](Self::model) alias is a
+    /// one-rung ladder returned on every attempt - so an agent that only sets `model` behaves
+    /// exactly as it did before the cascade existed. Empty when the agent declares neither
+    /// (the driver's default model is inherited).
+    pub fn model_for_attempt(&self, attempt: u32) -> String {
+        if self.model_ladder.is_empty() {
+            return self.model.clone();
+        }
+        let last = self.model_ladder.len() - 1;
+        self.model_ladder[(attempt as usize).min(last)].clone()
     }
 
     /// The tools this agent is actually granted. When `recurse` is false (the
@@ -458,6 +489,81 @@ mod tests {
     #[test]
     fn rejects_missing_frontmatter() {
         assert!(parse_agent(b"no frontmatter here").is_err());
+    }
+
+    #[test]
+    fn model_ladder_parses_from_frontmatter() {
+        // Agent frontmatter accepts a `model_ladder` list (spec 10 unit 4): the cheap-first
+        // cascade the agent escalates through under remediation.
+        let b = b"---\nid: worker\nmodel_ladder: [haiku, sonnet, opus]\n---\nImplement.\n";
+        let a = parse_agent(b).unwrap();
+        assert_eq!(a.id, "worker");
+        assert_eq!(a.model_ladder, ["haiku", "sonnet", "opus"]);
+        // Absent a `model:` line, the single-model field stays empty (the ladder is authority).
+        assert_eq!(a.model, "");
+    }
+
+    #[test]
+    fn model_for_attempt_advances_one_rung_per_attempt_and_clamps_at_the_last() {
+        // A unit's first attempt resolves the first rung and each remediation attempt advances
+        // one rung, CLAMPED at the last once exhausted (spec 10 unit 4).
+        let a = AgentDef {
+            id: "worker".into(),
+            model_ladder: vec!["haiku".into(), "sonnet".into(), "opus".into()],
+            ..Default::default()
+        };
+        assert_eq!(a.model_for_attempt(0), "haiku", "attempt 0 -> rung 0");
+        assert_eq!(a.model_for_attempt(1), "sonnet", "attempt 1 -> rung 1");
+        assert_eq!(a.model_for_attempt(2), "opus", "attempt 2 -> rung 2 (last)");
+        assert_eq!(
+            a.model_for_attempt(3),
+            "opus",
+            "past the end clamps at the last rung"
+        );
+        assert_eq!(
+            a.model_for_attempt(99),
+            "opus",
+            "far past the end still clamps"
+        );
+    }
+
+    #[test]
+    fn a_single_model_is_a_one_rung_ladder_used_on_every_attempt() {
+        // With no ladder, the single `model` alias is returned on every attempt - so an agent
+        // that only sets `model` behaves EXACTLY as before the cascade existed (back-compat).
+        let one = AgentDef {
+            id: "worker".into(),
+            model: "sonnet".into(),
+            ..Default::default()
+        };
+        for attempt in [0, 1, 5, 42] {
+            assert_eq!(
+                one.model_for_attempt(attempt),
+                "sonnet",
+                "a lone model: does not ladder - attempt {attempt} still resolves it"
+            );
+        }
+        // Neither declared: empty (the driver's default model is inherited), on every attempt.
+        let none = AgentDef {
+            id: "worker".into(),
+            ..Default::default()
+        };
+        assert_eq!(none.model_for_attempt(0), "");
+        assert_eq!(none.model_for_attempt(3), "");
+    }
+
+    #[test]
+    fn a_declared_ladder_takes_precedence_over_a_lone_model() {
+        // When both are set the ladder is authority and `model` is ignored, so the resolved
+        // rung is never silently overridden by the shorthand field.
+        let a = AgentDef {
+            id: "worker".into(),
+            model: "haiku".into(),
+            model_ladder: vec!["sonnet".into(), "opus".into()],
+            ..Default::default()
+        };
+        assert_eq!(a.model_for_attempt(0), "sonnet");
+        assert_eq!(a.model_for_attempt(1), "opus");
     }
 
     #[test]

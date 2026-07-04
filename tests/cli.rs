@@ -1431,6 +1431,73 @@ fn step_result_meta_stamps_the_resolved_model_on_the_replayed_units_events() {
     }
 }
 
+/// End-to-end through the CLI/step seam (spec 10 unit 4): an implementer agent declaring a
+/// `model_ladder` parks on - and stamps - the cheap FIRST rung on its first attempt, so the
+/// resolved rung is visible in the log the moment the spawn is parked. Reads the run's
+/// `events.db` back through the library to confirm BOTH the parked `SpawnRequest`'s model and
+/// the `UnitStarted` event's requested alias are the ladder's first rung (not a fixed model).
+#[test]
+fn step_resolves_the_model_ladders_first_rung_for_the_initial_attempt() {
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Direction, EventStore, Filter};
+
+    let dir = temp_project();
+    let root = dir.path();
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel_ladder: [haiku, sonnet, opus]\ntools: [Read, Edit]\nisolation: none\n---\nDo the unit.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        "name: laddertest\ndefaults:\n  grounder: nop\n  budget: 60\nstages:\n  a:\n    agent: worker\n    on_pass: none\n",
+    )
+    .unwrap();
+
+    // One step parks the implementer for unit `a` on its first (attempt-0) spawn.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""done":false"#),
+        "the implementer spawn is still pending; got: {out:?}"
+    );
+
+    let db_path = rigger.join("events.db");
+    let backend = Store::open(db_path.to_str().unwrap()).unwrap();
+    let events = backend
+        .read_all(0, Direction::Forward, &Filter::default())
+        .unwrap();
+
+    // The UnitStarted event names the model the first attempt asks for - rung 0 (haiku), NOT
+    // a fixed model. A ladder-less `model: haiku` would look identical here; the escalation is
+    // pinned by the conductor's ladder-advance-on-retry test.
+    let started = events
+        .iter()
+        .find(|e| e.type_ == rigger::ledger::TYPE_UNIT_STARTED)
+        .expect("a UnitStarted must be recorded");
+    assert_eq!(
+        started
+            .meta
+            .get(rigger::conductor::META_MODEL_ALIAS)
+            .map(String::as_str),
+        Some("haiku"),
+        "UnitStarted stamps the ladder's first rung as the requested alias"
+    );
+
+    // The parked implementer SpawnRequest runs on that same first rung - the model the driver
+    // resolved for attempt 0, not the last rung or an empty default.
+    let parked = rigger::spawn::recorded(&events).unwrap();
+    let req = parked
+        .get("a/implementer#0")
+        .expect("the implementer spawn must be parked");
+    assert_eq!(
+        req.model, "haiku",
+        "the parked spawn runs on the ladder's first rung"
+    );
+}
+
 /// `rigger step` rejects an unknown flag with a clear, non-zero error rather than
 /// silently running an unconstrained step.
 #[test]

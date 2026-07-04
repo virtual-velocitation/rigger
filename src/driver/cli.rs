@@ -43,7 +43,7 @@ impl AgentDriver for Driver {
             &self.bin
         };
         let mut cmd = Command::new(bin);
-        cmd.args(build_args(agent, prompt, &opts.system_prompt));
+        cmd.args(build_args(agent, prompt, &opts.system_prompt, opts.attempt));
         if !opts.dir.is_empty() {
             cmd.current_dir(&opts.dir);
         }
@@ -138,16 +138,24 @@ fn bridge_emits(
 /// `system_prompt` - the conductor's single persona source (`SpawnOpts::system_prompt`,
 /// set from `AgentDef::prompt`) - NOT read from `agent.prompt` here, so the cli and
 /// workflow paths thread the SAME persona and cannot diverge. An empty persona omits
-/// the flag (the agent runs with the default system prompt).
-pub fn build_args(agent: &AgentDef, prompt: &str, system_prompt: &str) -> Vec<String> {
+/// the flag (the agent runs with the default system prompt). `attempt` selects the
+/// cascade rung ([`AgentDef::model_for_attempt`], spec 10 unit 4): a `model_ladder`
+/// agent runs on the rung it escalated to for this remediation attempt.
+pub fn build_args(
+    agent: &AgentDef,
+    prompt: &str,
+    system_prompt: &str,
+    attempt: u32,
+) -> Vec<String> {
     let mut args = vec!["-p".to_string(), prompt.to_string()];
     if !system_prompt.is_empty() {
         args.push("--system-prompt".to_string());
         args.push(system_prompt.to_string());
     }
-    if !agent.model.is_empty() {
+    let model = agent.model_for_attempt(attempt);
+    if !model.is_empty() {
         args.push("--model".to_string());
-        args.push(agent.model.clone());
+        args.push(model);
     }
     // recurse: false strips any fan-out (Agent/Task) tool so the agent cannot
     // spawn sub-agents - runaway-proof by construction (§3.1, §6).
@@ -325,7 +333,7 @@ thinking out loud, not json\n\
             prompt: "stale body that must not be used".into(),
             ..Default::default()
         };
-        let args = build_args(&a, "do the thing", "You implement findings.");
+        let args = build_args(&a, "do the thing", "You implement findings.", 0);
         // The grounded task is the -p prompt, and the persona is NOT spliced into it.
         let pi = args.iter().position(|x| x == "-p").unwrap();
         assert_eq!(args[pi + 1], "do the thing");
@@ -348,7 +356,7 @@ thinking out loud, not json\n\
             recurse: false,
             ..Default::default()
         };
-        let args = build_args(&a, "task", "");
+        let args = build_args(&a, "task", "", 0);
         let ti = args.iter().position(|x| x == "--allowed-tools").unwrap();
         assert_eq!(args[ti + 1], "Read");
         assert!(!args[ti + 1].contains("Agent"));
@@ -362,9 +370,36 @@ thinking out loud, not json\n\
             recurse: true,
             ..Default::default()
         };
-        let args = build_args(&a, "task", "");
+        let args = build_args(&a, "task", "", 0);
         let ti = args.iter().position(|x| x == "--allowed-tools").unwrap();
         assert_eq!(args[ti + 1], "Read,Agent");
+    }
+
+    #[test]
+    fn a_model_ladder_agent_runs_the_attempts_rung() {
+        // The cli invocation's `--model` is the cascade rung this attempt resolves (spec 10
+        // unit 4): attempt 0 runs the cheap first rung, a later remediation attempt the next.
+        let a = AgentDef {
+            id: "impl".into(),
+            model_ladder: vec!["haiku".into(), "sonnet".into(), "opus".into()],
+            ..Default::default()
+        };
+        let model_at = |attempt: u32| {
+            let args = build_args(&a, "task", "", attempt);
+            let mi = args.iter().position(|x| x == "--model").unwrap();
+            args[mi + 1].clone()
+        };
+        assert_eq!(model_at(0), "haiku", "attempt 0 runs the first rung");
+        assert_eq!(
+            model_at(1),
+            "sonnet",
+            "the first remediation advances one rung"
+        );
+        assert_eq!(
+            model_at(5),
+            "opus",
+            "past the top clamps at the strongest rung"
+        );
     }
 
     #[test]
@@ -378,6 +413,7 @@ thinking out loud, not json\n\
             },
             "task",
             "",
+            0,
         );
         assert_eq!(args, ["-p", "task"]);
     }
