@@ -66,6 +66,33 @@ defaults:
     adversary: adversary                    # tier 2: refutes the lenses
     adjudicator: adjudicator                # tier 3: neutral judge; verdict gates
 
+  # The declarative failure taxonomy (spec 10, unit 2). An ORDERED, first-match-wins
+  # list of rules that classify a failure signal (a process's `exit_status`, terminating
+  # `signal`, and/or an `output_regex` over its captured output) into a `class` -
+  # `infra` | `product` | `flaky` - with a per-rule rerun `limit` and exponential
+  # `backoff` ({duration_ms, factor, max_ms}). It replaces the infra-vs-product split the
+  # conductor hand-coded across its gate/spawn sites (R1). At an inline gate the class
+  # drives the three-way outcome: a `product` failure fails immediately and demotes the
+  # autonomy ratchet (today's behavior); a `flaky`/`infra` failure is rerun up to `limit`
+  # and a MIXED result (it passed on a rerun) is a FlakyVerdict pass-with-warning that
+  # NEVER demotes; a `flaky` that stays red demotes, an `infra` that stays red does not.
+  #
+  # OMITTED (as here) means the shipped code default (`failure::Taxonomy::default`) is
+  # used, whose rules preserve spec-07 semantics: recognised transient infra faults
+  # (out of disk, refused/reset connection, DNS failure) classify `infra` and reran;
+  # everything else is `product` (no rerun). Uncomment to author your own, e.g.:
+  #
+  # failure_rules:
+  #   - match: {output_regex: "SIGSEGV|thread panicked while panicking"}
+  #     class: flaky
+  #     limit: 2
+  #     backoff: {duration_ms: 1000, factor: 2.0, max_ms: 30000}
+  #   - match: {exit_status: 137}          # OOM-killed worker
+  #     class: infra
+  #     limit: 1
+  #   - match: {}                          # catch-all: any other failure is a defect
+  #     class: product
+
 gates:                      # the project's verification library, referenced by name
   fmt:    { run: "cargo fmt --check",                        kind: core }
   clippy: { run: "cargo clippy --all-targets -- -D warnings", kind: core }

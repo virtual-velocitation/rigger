@@ -10,6 +10,7 @@ pub mod config;
 pub mod contextgraph;
 pub mod driver;
 pub mod eventstore;
+pub mod failure;
 pub mod gate;
 pub mod grounder;
 pub mod hooks;

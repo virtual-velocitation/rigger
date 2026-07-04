@@ -14,6 +14,7 @@ use serde_json::{json, Value};
 use crate::config::{AgentDef, Config, Stage};
 use crate::contextgraph::{self, Graph, Projection};
 use crate::eventstore::{Direction, Event, EventStore, ExpectedRevision};
+use crate::failure::{self, Signal};
 use crate::gate::{self, Gate};
 use crate::grounder::Grounder;
 use crate::ledger::{self, RunState};
@@ -178,6 +179,23 @@ pub struct AgentResult {
 struct GateOutcome {
     pass: bool,
     evidence: Vec<String>,
+}
+
+/// The ratchet effect of a single gate run, resolved by the failure taxonomy's three-way
+/// outcome (spec 10, unit 2). `record_gate` maps each to a promote / demote / hold.
+enum GateRatchet {
+    /// A gate that passed on its first run: feeds the promotion ratchet normally.
+    CleanPass,
+    /// A gate that FAILED then PASSED on a rerun (a flaky/infra mixed result): a
+    /// pass-with-warning that never demotes and never promotes.
+    FlakyPass,
+    /// A believed-real failure (a `product` gate, or a `flaky` gate that stayed red
+    /// across every rerun): demotes the ratchet exactly as a gate failure did before.
+    FailDemote,
+    /// A persistent `infra` failure: a real failure that still charges the unit a
+    /// remediation attempt, but must NOT demote the ratchet (an outage must not cost the
+    /// gate its earned autonomy).
+    FailNoDemote,
 }
 
 /// The outcome of a unit's three-tier review: whether the adjudicator approved, and
@@ -628,6 +646,13 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         prior_attempts,
         replayed_keys: Mutex::new(replayed_keys),
         gate_verdicts: Mutex::new(gate_verdicts),
+        // The failure taxonomy is built ONCE here from the same validated config the run
+        // loads (its regexes were compiled and classes checked at `Config::validate`), so
+        // every gate-failure classification this run makes reads one rule set.
+        taxonomy: cfg
+            .workflow
+            .failure_taxonomy()
+            .map_err(|e| Error(e.to_string()))?,
     };
 
     let mut stages = cfg.workflow.stages.clone();
@@ -876,6 +901,13 @@ struct RunCtx<'a> {
     /// arch-gate-verdict-redundant-scan): gate-verdict replay is O(1) per lookup, seeded
     /// from the same `prior_events` read that already seeded `replayed_keys`.
     gate_verdicts: Mutex<HashMap<String, (bool, String)>>,
+    /// The declarative failure taxonomy (spec 10, unit 2): the SINGLE authority the
+    /// conductor folds its gate-failure classification from, built once from
+    /// `defaults.failure_rules` (or the shipped spec-07-preserving default when none are
+    /// authored). `run_gates` classifies a gate failure through it to decide the
+    /// three-way outcome (rerun a flaky/infra failure, annotate a mixed rerun flaky and
+    /// never demote, fail a product failure exactly as before).
+    taxonomy: failure::Taxonomy,
 }
 
 #[cfg(test)]
@@ -913,6 +945,10 @@ impl<'a> RunCtx<'a> {
             prior_attempts: HashMap::new(),
             replayed_keys: Mutex::new(HashSet::new()),
             gate_verdicts: Mutex::new(HashMap::new()),
+            // The pure-helper test context builds no gates through the taxonomy; the
+            // shipped default is a harmless placeholder. The gate-behavior tests drive the
+            // full `run`, which builds the taxonomy from the config under test.
+            taxonomy: failure::Taxonomy::default(),
         }
     }
 }
@@ -1049,12 +1085,17 @@ impl RunCtx<'_> {
         key: &str,
         gid: &str,
         pass: bool,
+        flaky: bool,
         evidence: &str,
     ) -> Result<(), Error> {
+        // `flaky` is the FlakyVerdict annotation (spec 10, unit 2, NO new event type): a
+        // gate that failed then passed on a rerun is recorded as a PASS carrying
+        // `flaky: true`, a pass-with-warning the ledger can surface without it demoting
+        // the ratchet. A clean pass or a real failure carries `flaky: false`.
         self.emit_keyed(
             key,
             contextgraph::TYPE_GATE_VERDICT,
-            json!({"gate": gid, "pass": pass, "evidence": evidence}),
+            json!({"gate": gid, "pass": pass, "flaky": flaky, "evidence": evidence}),
         )?;
         self.gate_verdicts
             .lock()
@@ -2527,14 +2568,18 @@ impl RunCtx<'_> {
                 autonomy: gate::Autonomy::Manual,
                 history: Vec::new(),
             };
-            let res = self.deps.gates.run(&g, dir, &target);
-            // The compact gate evidence is threaded into the GateVerdict event
-            // payload (item 3): a real run otherwise discarded it, so neither the
-            // ledger nor the workflow driver ever saw WHY a gate passed or failed.
-            // Replay-keyed (and cached) so a re-step replays this verdict instead of
-            // re-running.
-            self.emit_gate_verdict(&key, gid, res.pass, &res.evidence)?;
-            let (promoted, demoted, autonomy) = self.record_gate(gid, kind, res.pass, &st.autonomy);
+            // Run the gate and fold the failure taxonomy's three-way outcome (spec 10,
+            // unit 2): a clean pass; a flaky/infra failure that reran and PASSED (a
+            // FlakyVerdict pass-with-warning); or a real failure (product/flaky demote,
+            // infra hold).
+            let (pass, flaky, ratchet, evidence) = self.run_gate_with_taxonomy(&g, dir, &target);
+            // The compact gate evidence is threaded into the GateVerdict event payload
+            // (item 3): a real run otherwise discarded it, so neither the ledger nor the
+            // workflow driver ever saw WHY a gate passed or failed. `flaky` rides as the
+            // FlakyVerdict annotation (no new event type). Replay-keyed (and cached) so a
+            // re-step replays this verdict instead of re-running.
+            self.emit_gate_verdict(&key, gid, pass, flaky, &evidence)?;
+            let (promoted, demoted, autonomy) = self.record_gate(gid, kind, ratchet, &st.autonomy);
             if promoted {
                 self.emit(
                     TYPE_GATE_PROMOTED,
@@ -2546,14 +2591,87 @@ impl RunCtx<'_> {
                     json!({"gate": gid, "autonomy": autonomy.as_str()}),
                 )?;
             }
-            if !res.pass {
+            if !pass {
                 outcome.pass = false;
                 // Capture the failing gate's compact summary so the next attempt's
                 // prompt names exactly which gate failed and why (item 3 / spec 02).
-                outcome.evidence.push(format!("{gid}: {}", res.evidence));
+                outcome.evidence.push(format!("{gid}: {evidence}"));
             }
         }
         Ok(outcome)
+    }
+
+    /// Run one gate and fold the failure taxonomy's three-way outcome (spec 10, unit 2).
+    ///
+    /// A gate that passes on its first run is a clean pass. A gate that FAILS is
+    /// classified by the taxonomy (a gate site supplies the captured output; exit-status
+    /// and signal matchers simply never match here). A `product` failure - the shipped
+    /// default for any unrecognised gate output - fails immediately and demotes, exactly
+    /// as a gate failure did before this taxonomy. A `flaky` or `infra` failure is rerun
+    /// up to the matched rule's `limit` with its `backoff`: the FIRST rerun that passes
+    /// makes the outcome MIXED - a `FlakyVerdict` pass-with-warning that never demotes -
+    /// while a failure that stays red across every rerun is a believed-real failure that
+    /// demotes (`flaky`) or holds the ratchet (`infra`).
+    ///
+    /// Returns `(recorded_pass, flaky_annotation, ratchet_effect, evidence)`.
+    fn run_gate_with_taxonomy(
+        &self,
+        g: &Gate,
+        dir: &str,
+        target: &str,
+    ) -> (bool, bool, GateRatchet, String) {
+        let res = self.deps.gates.run(g, dir, target);
+        if res.pass {
+            return (true, false, GateRatchet::CleanPass, res.evidence);
+        }
+        // Classify the failure. `FailureClass` is Copy and `Backoff` cheap to clone, so we
+        // hold no borrow of the taxonomy across the rerun loop below.
+        let sig = Signal::from_output(res.evidence.clone());
+        let (class, limit, backoff) = match self.taxonomy.classify(&sig) {
+            Some(rule) => (rule.class, rule.limit, rule.backoff.clone()),
+            // No rule matched: a plain product defect (no rerun) - today's behavior.
+            None => (
+                failure::FailureClass::Product,
+                0,
+                failure::Backoff::default(),
+            ),
+        };
+        let first_evidence = res.evidence;
+        if !class.reruns() || limit == 0 {
+            // A deterministic failure (product, or a rerunnable class configured with a
+            // zero limit): fail now and demote, exactly as before this taxonomy.
+            return (false, false, GateRatchet::FailDemote, first_evidence);
+        }
+        for n in 0..limit {
+            let delay = backoff.delay(n);
+            if !delay.is_zero() {
+                // The only wall-clock wait in the loop; a zero-backoff rule (and every
+                // test) never reaches it. There is no injected clock seam in `Deps`, so a
+                // configured backoff sleeps this unit's own thread - it delays only this
+                // unit's gate, never the wider wave.
+                std::thread::sleep(delay);
+            }
+            let retry = self.deps.gates.run(g, dir, target);
+            if retry.pass {
+                // MIXED: the gate failed then passed - a FlakyVerdict pass-with-warning.
+                let evidence = format!(
+                    "flaky: gate {:?} failed then passed on rerun {}/{}; first failure:\n{first_evidence}",
+                    g.id,
+                    n + 1,
+                    limit,
+                );
+                return (true, true, GateRatchet::FlakyPass, evidence);
+            }
+        }
+        // Stayed red across every rerun: a believed-real failure. A `flaky` class demotes
+        // (it was thought intermittent but consistently fails); an `infra` class holds the
+        // ratchet - an outage must not cost the gate its earned autonomy.
+        let ratchet = if class.demotes_on_persistent_failure() {
+            GateRatchet::FailDemote
+        } else {
+            GateRatchet::FailNoDemote
+        };
+        (false, false, ratchet, first_evidence)
     }
 
     /// Run the workflow's DEFERRED gates ONCE at the run's phase boundary (§4.3).
@@ -2652,12 +2770,23 @@ impl RunCtx<'_> {
                     // wrong here, and this is exactly the tree `rigger step`'s inline
                     // courier gates also build against (Gap 19).
                     let res = self.deps.gates.run(&g, "", "");
-                    self.emit_gate_verdict(&key, gid, res.pass, &res.evidence)?;
+                    // The deferred phase-boundary gate keeps its single-run semantics (no
+                    // taxonomy rerun): it measures the ONE integrated tree once, so its
+                    // verdict carries no flaky annotation and its ratchet moves on the
+                    // straight pass/fail (spec 10 folds the three-way at the inline
+                    // per-unit gate; a whole-tree deferred rerun is out of this unit's
+                    // scope).
+                    self.emit_gate_verdict(&key, gid, res.pass, false, &res.evidence)?;
                     // Feed the ratchet the same way an inline gate does, so a deferred
                     // gate's trust still moves on its history (its ceiling is Silent,
                     // like Core). Only the fresh run feeds it; a replay must not re-emit
                     // the (non-keyed) promote/demote events.
-                    let (promoted, demoted, autonomy) = self.record_gate(gid, kind, res.pass, "");
+                    let ratchet = if res.pass {
+                        GateRatchet::CleanPass
+                    } else {
+                        GateRatchet::FailDemote
+                    };
+                    let (promoted, demoted, autonomy) = self.record_gate(gid, kind, ratchet, "");
                     if promoted {
                         self.emit(
                             TYPE_GATE_PROMOTED,
@@ -2706,11 +2835,17 @@ impl RunCtx<'_> {
     /// Record a gate's run on the ratchet, seeding a newly-tracked gate's starting
     /// autonomy from the stage override (`stage_autonomy`, when non-empty) and
     /// otherwise from `defaults.autonomy` (§3.2, §4.3).
+    ///
+    /// The `ratchet` argument is the three-way outcome the failure taxonomy resolved for
+    /// this gate run (spec 10, unit 2): a clean pass promotes normally; a flaky
+    /// pass-with-warning and a persistent infra failure move the autonomy NOWHERE (they
+    /// neither demote nor build promotion trust); a believed-real failure demotes exactly
+    /// as a gate failure did before.
     fn record_gate(
         &self,
         gid: &str,
         kind: gate::Kind,
-        pass: bool,
+        ratchet: GateRatchet,
         stage_autonomy: &str,
     ) -> (bool, bool, gate::Autonomy) {
         let mut tracker = self.gate_tracker.lock().unwrap();
@@ -2730,22 +2865,49 @@ impl RunCtx<'_> {
             autonomy,
             history: Vec::new(),
         });
+        // The history entry records whether the gate ultimately passed (a flaky rerun
+        // pass counts as a pass for the run's evidence); the promotion/demotion below
+        // then applies the class-specific ratchet effect.
+        let pass = matches!(ratchet, GateRatchet::CleanPass | GateRatchet::FlakyPass);
         g.history.push(gate::HistoryEntry { pass });
-        let (new_a, demoted) = gate::auto_demote(g, pass);
-        if demoted {
-            g.autonomy = new_a;
-            g.history.clear();
-            return (false, true, g.autonomy);
+        match ratchet {
+            GateRatchet::CleanPass => {
+                if gate::propose_promotion(g) {
+                    // Promotion is PROPOSED, never auto-applied (§4.3): surface it but
+                    // keep the gate at its current autonomy until a human approves. The
+                    // proposed step is capped at the gate kind's ceiling.
+                    let proposed = gate::next_autonomy(g);
+                    g.history.clear();
+                    return (true, false, proposed);
+                }
+                (false, false, g.autonomy)
+            }
+            GateRatchet::FlakyPass => {
+                // A pass-with-warning (a flaky/infra MIXED rerun): it must NEVER demote
+                // the ratchet, and it also builds no promotion trust - a flaky green is
+                // not a clean green. Reset the clean-pass streak, leave autonomy put.
+                g.history.clear();
+                (false, false, g.autonomy)
+            }
+            GateRatchet::FailDemote => {
+                // A believed-real failure (a product gate, or a flaky gate that stayed
+                // red across every rerun): demote exactly as a gate failure did before.
+                let (new_a, demoted) = gate::auto_demote(g, false);
+                if demoted {
+                    g.autonomy = new_a;
+                    g.history.clear();
+                    return (false, true, g.autonomy);
+                }
+                (false, false, g.autonomy)
+            }
+            GateRatchet::FailNoDemote => {
+                // A persistent INFRA failure: it charges a remediation attempt like any
+                // failure (the caller still treats the gate as failed), but an outage
+                // must not cost the gate its earned autonomy, so it does NOT demote. The
+                // pushed fail entry naturally breaks any promotion streak.
+                (false, false, g.autonomy)
+            }
         }
-        if gate::propose_promotion(g) {
-            // Promotion is PROPOSED, never auto-applied (§4.3): surface it but keep
-            // the gate at its current autonomy until a human approves. The proposed
-            // step is capped at the gate kind's ceiling.
-            let proposed = gate::next_autonomy(g);
-            g.history.clear();
-            return (true, false, proposed);
-        }
-        (false, false, g.autonomy)
     }
 
     fn integrate_and_emit(
@@ -8921,8 +9083,9 @@ mod tests {
             prior_attempts: HashMap::new(),
             replayed_keys: Mutex::new(HashSet::new()),
             gate_verdicts: Mutex::new(HashMap::new()),
+            taxonomy: failure::Taxonomy::default(),
         };
-        ctx.record_gate("ok", gate::Kind::Core, true, "silent");
+        ctx.record_gate("ok", gate::Kind::Core, GateRatchet::CleanPass, "silent");
         let seeded = ctx.gate_tracker.lock().unwrap().get("ok").unwrap().autonomy;
         assert_eq!(
             seeded,
@@ -9724,6 +9887,159 @@ mod tests {
             prompts[1].contains("Your previous attempt failed these gates"),
             "the retry prompt must carry an explicit prior-failed-gates block; prompt was:\n{}",
             prompts[1]
+        );
+    }
+
+    #[test]
+    fn a_flaky_gate_rerun_is_a_pass_with_warning_that_never_demotes() {
+        // Spec 10, unit 2 - the PINNED three-way outcome. A gate whose failure matches a
+        // `flaky` rule is rerun; a MIXED result (it failed once then passed on a rerun) is
+        // a FlakyVerdict pass-with-warning: the unit integrates WITHOUT charging a
+        // remediation attempt, the GateVerdict is annotated `flaky: true`, and the
+        // autonomy ratchet is NEVER demoted.
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.gates.insert("g".into(), gate_def("unused"));
+        // A zero-backoff flaky rule matching the gate's failure evidence (rerun up to 2x).
+        cfg.workflow.defaults.failure_rules = vec![config::FailureRuleDef {
+            match_: config::MatchDef {
+                output_regex: Some("TRANSIENT_RACE".into()),
+                ..Default::default()
+            },
+            class: "flaky".into(),
+            limit: 2,
+            backoff: config::BackoffDef::default(),
+        }];
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                gates: vec!["g".into()],
+                // A graduated (silent) gate, so any demotion would be visible.
+                autonomy: "silent".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        // The gate FAILS its first run then PASSES on the rerun - within one attempt.
+        let flaky = FlakyGate {
+            fail_first: 1,
+            runs: AtomicU32::new(0),
+            evidence: "FAIL\nTRANSIENT_RACE flaked once".into(),
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &flaky,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "a flaky mixed rerun passes, so the unit integrates"
+        );
+        // No remediation: the worker was spawned exactly ONCE (a flaky pass is not a
+        // failure, so no re-implementation attempt is charged).
+        assert_eq!(
+            driver.prompts_for("worker").len(),
+            1,
+            "a flaky-rerun pass must not charge the unit a remediation attempt"
+        );
+        // The gate ran exactly twice within the one attempt: the initial fail + one
+        // passing rerun (the flaky rule's limit is 2, but the first passing rerun stops).
+        assert_eq!(
+            flaky.runs.load(Ordering::SeqCst),
+            2,
+            "the gate is rerun after its first failure, and the first passing rerun ends it"
+        );
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        // The inline GateVerdict is recorded as a PASS annotated flaky=true.
+        assert!(
+            events.iter().any(|e| {
+                e.type_ == contextgraph::TYPE_GATE_VERDICT
+                    && serde_json::from_slice::<serde_json::Value>(&e.data)
+                        .map(|v| v["pass"] == json!(true) && v["flaky"] == json!(true))
+                        .unwrap_or(false)
+            }),
+            "a mixed rerun records a pass annotated as a FlakyVerdict (flaky: true)"
+        );
+        // The pinned guarantee: a flaky pass-with-warning NEVER demotes the ratchet.
+        assert!(
+            !events.iter().any(|e| e.type_ == TYPE_GATE_DEMOTED),
+            "a flaky pass-with-warning must NEVER demote the autonomy ratchet"
+        );
+    }
+
+    #[test]
+    fn a_product_gate_failure_is_not_rerun_and_demotes_as_before() {
+        // Spec 10, unit 2 - the back-compat guard. Without an authored flaky rule, the
+        // shipped DEFAULT taxonomy classifies an ordinary gate failure as `product`: it
+        // is run ONCE per attempt (no rerun - today's behavior) and a graduated gate that
+        // fails demotes exactly as before this taxonomy.
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.gates.insert("g".into(), gate_def("unused"));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                gates: vec!["g".into()],
+                autonomy: "silent".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        // A gate that ALWAYS fails, with evidence matching no default infra pattern.
+        let always_fail = FlakyGate {
+            fail_first: u32::MAX,
+            runs: AtomicU32::new(0),
+            evidence: "FAIL\nassertion `left == right` failed: a real product defect".into(),
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &always_fail,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_ne!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "a persistently failing product gate must never integrate"
+        );
+        // No rerun: the gate ran EXACTLY once per attempt. The default remediation bound
+        // is 3, so a persistently-failing unit makes 3 attempts before escalating.
+        assert_eq!(
+            always_fail.runs.load(Ordering::SeqCst),
+            3,
+            "a product gate failure is never rerun: one run per attempt, no flaky retries"
+        );
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        // The graduated gate demoted on its first failure, exactly as before.
+        assert!(
+            events.iter().any(|e| e.type_ == TYPE_GATE_DEMOTED),
+            "a real product gate failure still demotes the ratchet"
+        );
+        // No verdict was ever annotated flaky.
+        assert!(
+            !events.iter().any(|e| {
+                e.type_ == contextgraph::TYPE_GATE_VERDICT
+                    && serde_json::from_slice::<serde_json::Value>(&e.data)
+                        .map(|v| v["flaky"] == json!(true))
+                        .unwrap_or(false)
+            }),
+            "a product failure is never annotated flaky"
         );
     }
 
