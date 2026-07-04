@@ -198,6 +198,25 @@ enum GateRatchet {
     FailNoDemote,
 }
 
+impl GateRatchet {
+    /// The demote-vs-hold authority for a believed-real (persistent) gate failure: the
+    /// SINGLE place every gate site folds its demote-vs-hold decision through, so one
+    /// fault earns one demotion policy regardless of gate SITE. A class that demotes on
+    /// persistent failure (`product`, `flaky`) demotes the ratchet exactly as a gate
+    /// failure did before this taxonomy; an `infra` fault HOLDS it (`FailNoDemote`) - an
+    /// outage must never cost a gate its earned autonomy. The inline early-return
+    /// (a no-rerun or zero-limit class), the inline rerun-exhaustion fall-through, and
+    /// the single-run deferred gate all resolve their persistent failure through THIS
+    /// function, so the three sites are structurally unable to drift.
+    fn for_persistent_failure(class: failure::FailureClass) -> GateRatchet {
+        if class.demotes_on_persistent_failure() {
+            GateRatchet::FailDemote
+        } else {
+            GateRatchet::FailNoDemote
+        }
+    }
+}
+
 /// The outcome of a unit's three-tier review: whether the adjudicator approved, and
 /// its verdict reasoning (the adjudicator's raw output). On approval the reason is
 /// folded into the unit's `reviewed` evidence (item 4); on a reject it is threaded
@@ -2638,9 +2657,19 @@ impl RunCtx<'_> {
         };
         let first_evidence = res.evidence;
         if !class.reruns() || limit == 0 {
-            // A deterministic failure (product, or a rerunnable class configured with a
-            // zero limit): fail now and demote, exactly as before this taxonomy.
-            return (false, false, GateRatchet::FailDemote, first_evidence);
+            // A failure that is never rerun (a `product` defect, or a rerunnable class
+            // authored with a zero/omitted limit): believed real on its first run. Its
+            // demote-vs-hold is the SAME persistent-failure decision as the rerun
+            // exhaustion below and the deferred gate - an authored `infra` rule with its
+            // limit omitted (serde default 0) HOLDS the ratchet here exactly as it does
+            // at the deferred site, never demotes by gate SITE. Routed through the single
+            // demote-vs-hold authority so the three gate sites cannot drift.
+            return (
+                false,
+                false,
+                GateRatchet::for_persistent_failure(class),
+                first_evidence,
+            );
         }
         for n in 0..limit {
             let delay = backoff.delay(n);
@@ -2665,12 +2694,9 @@ impl RunCtx<'_> {
         }
         // Stayed red across every rerun: a believed-real failure. A `flaky` class demotes
         // (it was thought intermittent but consistently fails); an `infra` class holds the
-        // ratchet - an outage must not cost the gate its earned autonomy.
-        let ratchet = if class.demotes_on_persistent_failure() {
-            GateRatchet::FailDemote
-        } else {
-            GateRatchet::FailNoDemote
-        };
+        // ratchet - an outage must not cost the gate its earned autonomy. Same single
+        // demote-vs-hold authority as the early-return above and the deferred gate.
+        let ratchet = GateRatchet::for_persistent_failure(class);
         (false, false, ratchet, first_evidence)
     }
 
@@ -2792,17 +2818,18 @@ impl RunCtx<'_> {
                     let ratchet = if res.pass {
                         GateRatchet::CleanPass
                     } else {
+                        // Classify the single deferred run (an UNMATCHED failure is a
+                        // plain `product` defect, exactly as the inline site resolves
+                        // None), then fold demote-vs-hold through the SAME single
+                        // authority the inline gate uses, so one fault earns one demotion
+                        // policy regardless of gate SITE.
                         let sig = Signal::from_output(res.evidence.clone());
-                        let demotes = self
+                        let class = self
                             .taxonomy
                             .classify(&sig)
-                            .map(|rule| rule.class.demotes_on_persistent_failure())
-                            .unwrap_or(true);
-                        if demotes {
-                            GateRatchet::FailDemote
-                        } else {
-                            GateRatchet::FailNoDemote
-                        }
+                            .map(|rule| rule.class)
+                            .unwrap_or(failure::FailureClass::Product);
+                        GateRatchet::for_persistent_failure(class)
                     };
                     let (promoted, demoted, autonomy) = self.record_gate(gid, kind, ratchet, "");
                     if promoted {
@@ -10058,6 +10085,185 @@ mod tests {
                         .unwrap_or(false)
             }),
             "a product failure is never annotated flaky"
+        );
+    }
+
+    #[test]
+    fn an_authored_infra_rule_with_limit_zero_at_an_inline_gate_holds_the_ratchet() {
+        // Spec 10, unit 2 - the INLINE leg of the SINGLE demote-vs-hold authority, the
+        // mirror of a_default_infra_fault_at_a_deferred_gate_does_not_demote. An AUTHORED
+        // `infra` rule whose `limit` is OMITTED deserializes to limit 0 (config.rs: limit is
+        // #[serde(default)] over u32, and validation never enforces limit >= 1 for a
+        // rerunnable class), so the fault lands on the no-rerun/zero-limit early-return in
+        // run_gate_with_taxonomy. That early-return USED to hardcode FailDemote, so it
+        // DEMOTED a graduated inline gate on the very fault the deferred site (and the
+        // rerun-exhaustion fall-through) HOLD - two demotion policies for one fault by gate
+        // SITE, the exact harm this unit ships to prevent. The early-return now folds through
+        // GateRatchet::for_persistent_failure, so an infra fault HOLDS the ratchet
+        // (FailNoDemote) at the inline gate exactly as it does at the deferred gate.
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.gates.insert("g".into(), gate_def("unused"));
+        // An authored infra rule matching the gate's failure, with `limit` OMITTED: it
+        // deserializes to the serde default 0 - the exact reachable config the reject cites.
+        cfg.workflow.defaults.failure_rules = vec![config::FailureRuleDef {
+            match_: config::MatchDef {
+                output_regex: Some("OUTAGE".into()),
+                ..Default::default()
+            },
+            class: "infra".into(),
+            // limit + backoff omitted: limit is the serde default 0 (a rerunnable class
+            // authored with no reruns), which routes to the early-return under test.
+            ..Default::default()
+        }];
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                gates: vec!["g".into()],
+                // A graduated (silent) gate, so a bug-path FailDemote would be VISIBLE.
+                autonomy: "silent".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        // The inline gate ALWAYS fails, with evidence the authored infra rule matches.
+        let always_fail = FlakyGate {
+            fail_first: u32::MAX,
+            runs: AtomicU32::new(0),
+            evidence: "FAIL\nOUTAGE the build host lost the network".into(),
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &always_fail,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        // A persistently failing gate never integrates (an infra HOLD still charges a
+        // remediation attempt - it just must not demote the ratchet).
+        assert_ne!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "a persistently failing gate must never integrate"
+        );
+        // limit 0: the gate is NEVER rerun - it ran EXACTLY once per attempt (the default
+        // remediation bound is 3), proving the no-rerun/zero-limit early-return path.
+        assert_eq!(
+            always_fail.runs.load(Ordering::SeqCst),
+            3,
+            "a zero-limit infra rule is never rerun: one run per attempt via the early-return"
+        );
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        // The pinned single-authority invariant: an infra fault at the INLINE gate must HOLD
+        // the ratchet, never demote it - identical to the deferred site. Before the fix this
+        // asserted false (the early-return hardcoded FailDemote -> a visible GateDemoted).
+        assert!(
+            !events.iter().any(|e| e.type_ == TYPE_GATE_DEMOTED),
+            "an authored infra fault at an inline gate must HOLD the ratchet (FailNoDemote), not demote it"
+        );
+    }
+
+    #[test]
+    fn an_inline_gate_red_across_every_rerun_holds_for_infra_and_demotes_for_flaky() {
+        // Spec 10, unit 2 - the INLINE rerun-EXHAUSTION fall-through (the `for n in 0..limit`
+        // loop completing red), closing sdet-u2-inline-rerun-exhaustion-still-uncovered. A
+        // rerunnable class with limit >= 1 that stays red across EVERY rerun is a
+        // believed-real failure whose demote-vs-hold folds through the SAME single authority
+        // as the zero-limit early-return and the deferred gate: an `infra` outage HOLDS the
+        // ratchet (FailNoDemote); a `flaky` failure DEMOTES it (FailDemote). This drives the
+        // real rerun loop (not the early-return) in BOTH directions, so a regression routing
+        // inline persistent-infra to FailDemote, or exhaustion to FailNoDemote for a real
+        // flaky failure, is caught.
+        let inline_exhaustion = |class: &str, regex: &str, evidence: &str| {
+            let mut cfg = Config::default();
+            cfg.agents.insert("worker".into(), agent("worker"));
+            cfg.workflow.gates.insert("g".into(), gate_def("unused"));
+            // A rerunnable rule with limit 2: the gate is rerun twice per attempt before the
+            // failure is believed, exercising the exhaustion fall-through (zero backoff, so
+            // no wall-clock wait).
+            cfg.workflow.defaults.failure_rules = vec![config::FailureRuleDef {
+                match_: config::MatchDef {
+                    output_regex: Some(regex.into()),
+                    ..Default::default()
+                },
+                class: class.into(),
+                limit: 2,
+                backoff: config::BackoffDef::default(),
+            }];
+            cfg.workflow.stages.insert(
+                "s".into(),
+                Stage {
+                    name: "s".into(),
+                    agent: "worker".into(),
+                    gates: vec!["g".into()],
+                    // Graduated (silent), so a demotion is visible.
+                    autonomy: "silent".into(),
+                    ..Default::default()
+                },
+            );
+            let st = Store::open(":memory:").unwrap();
+            let driver = Stub::new();
+            let always_fail = FlakyGate {
+                fail_first: u32::MAX,
+                runs: AtomicU32::new(0),
+                evidence: evidence.into(),
+            };
+            let deps = Deps {
+                store: &st,
+                driver: &driver,
+                gates: &always_fail,
+                repo: String::new(),
+                grounder: None,
+                graph: None,
+                criteria: Vec::new(),
+            };
+            run(&cfg, &deps).unwrap();
+            let runs = always_fail.runs.load(Ordering::SeqCst);
+            let demoted = st
+                .read_stream(STREAM, 0, Direction::Forward)
+                .unwrap()
+                .iter()
+                .any(|e| e.type_ == TYPE_GATE_DEMOTED);
+            (runs, demoted)
+        };
+
+        // (a) An infra rule, limit 2, gate always red: reruns exhaust, then HOLD. Each
+        // attempt runs the gate 3x (initial + 2 reruns); the default remediation bound is 3,
+        // so 9 runs prove the rerun loop actually ran, and no demote proves the hold.
+        let (infra_runs, infra_demoted) = inline_exhaustion(
+            "infra",
+            "OUTAGE",
+            "FAIL\nOUTAGE the build host lost the network",
+        );
+        assert_eq!(
+            infra_runs, 9,
+            "an infra rule with limit 2 reruns the gate twice per attempt before exhausting"
+        );
+        assert!(
+            !infra_demoted,
+            "a persistent infra fault that exhausts its reruns must HOLD the ratchet, not demote it"
+        );
+
+        // (b) A flaky rule, limit 2, gate always red: reruns exhaust, then DEMOTE (a
+        // believed-real failure), proving the fall-through is not a blanket hold.
+        let (flaky_runs, flaky_demoted) = inline_exhaustion(
+            "flaky",
+            "TRANSIENT_RACE",
+            "FAIL\nTRANSIENT_RACE never settled",
+        );
+        assert!(
+            flaky_runs >= 3,
+            "a flaky rule with limit 2 reruns the gate twice per attempt before believing the failure"
+        );
+        assert!(
+            flaky_demoted,
+            "a flaky gate that stays red across every rerun is a believed-real failure and demotes"
         );
     }
 
