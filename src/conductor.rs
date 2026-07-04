@@ -2743,6 +2743,10 @@ impl RunCtx<'_> {
                     unit: plan_name.to_string(),
                     stage: plan_name.to_string(),
                     run_id: self.run_id.clone(),
+                    // The re-plan is remediation of the DECOMPOSITION: the critique
+                    // attempt drives the planner's ladder rung exactly as a unit's
+                    // remediation attempt drives its implementer's (spec 10 unit 4).
+                    attempt: critique_attempt,
                 },
                 &emit,
             )
@@ -2827,7 +2831,16 @@ impl RunCtx<'_> {
                 "needs": gate_st.needs,
                 "branch": unit_branch(&gate_name),
             }),
-            &[(META_MODEL_ALIAS, &self.agent_model(&gate_st.adjudicator))],
+            // The gate's representative alias is informational on its start event; the
+            // seeded attempt keeps the stamp consistent with the rung the adjudicator
+            // actually resolves on this attempt (spec 10 unit 4's ladder).
+            &[(
+                META_MODEL_ALIAS,
+                &self.agent_model(
+                    &gate_st.adjudicator,
+                    self.prior_attempts.get(&gate_name).copied().unwrap_or(0),
+                ),
+            )],
         )?;
         let mut attempts = self.prior_attempts.get(&gate_name).copied().unwrap_or(0);
         let mut prior_reason = String::new();
@@ -2888,7 +2901,10 @@ impl RunCtx<'_> {
                         "evidence": review_evidence(&reason),
                     }),
                     &[
-                        (META_MODEL_ALIAS, &self.agent_model(&gate_st.adjudicator)),
+                        (
+                            META_MODEL_ALIAS,
+                            &self.agent_model(&gate_st.adjudicator, attempts),
+                        ),
                         (META_MODEL_RESOLVED, &adj_resolved),
                     ],
                 )?;

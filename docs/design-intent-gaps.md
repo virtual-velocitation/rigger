@@ -1,6 +1,6 @@
 # Design-intent gaps
 
-Status: assessed 2026-07-01 against [architecture.md](architecture.md) after the three-gap dogfood run (PR #7); updated through 2026-07-03 across the stepwise-conductor campaign's four loop runs (specs 04-07). ALL RECORDED GAPS (1-19) ARE CLOSED. Open work: NONE recorded (the improvement program in docs/research/ drives specs 10-13). New gaps discovered by future runs land here as before.
+Status: assessed 2026-07-01 against [architecture.md](architecture.md) after the three-gap dogfood run (PR #7); updated through 2026-07-03 across the stepwise-conductor campaign's four loop runs (specs 04-07). ALL RECORDED GAPS (1-19) ARE CLOSED. Open work: Gap 21 (integrate does not re-gate the merged tree - surfaced during the spec-10 campaign; fix shape below, natural spec-12 companion since content-addressed verdicts make the post-merge re-gate cheap). The improvement program in docs/research/ drives specs 10-13.
 
 This document records where the implementation currently falls short of the design intent, with the evidence that surfaced each gap and the shape of the fix. It is the feed for the next loop runs: each gap is written so it can be lifted into a spec's "Done when" criteria with little editing. Remove entries as they close.
 
@@ -9,6 +9,16 @@ This document records where the implementation currently falls short of the desi
 Dogfooding. Rigger ran on its own spec; the run's telemetry (`rigger stats`, `rigger peers`), the `/workflows` display, and independent verification of the run's output are the evidence base. The through-line: the memory layer and the review economics are delivering as designed (78.6% first-pass yield, 0% escalations, decisions demonstrably inherited across agents); the gaps concentrate in the **native workflow driver**, which implements the loop's shape but not all of the conductor's safeguards.
 
 ---
+
+## Gap 21: integrate asserts "done" on a merged tree the gates never saw
+
+**Intent.** R6: a unit is done only when machine-verified - and the thing that must be verified is what actually LANDS, the post-merge tree.
+
+**Reality.** Gates run in the unit's worktree (pre-merge); integration merges into the run branch WITHOUT re-running gates on the merged result. Two units that are each green in isolation can merge into a broken tree: spec-10 unit-1 (stale-based, one-arg `agent_model` calls) textually auto-merged over unit-4's two-arg signature change and `rigger-run` stopped compiling - while both units' events read Integrated. The breakage surfaced only at the next `cargo install`, hours later.
+
+**Evidence.** 2026-07-03: commits 57baf35 (unit-4) + 07f9f44/95ba133 (unit-1) produced a rigger-run tree failing `cargo build` with E0061/E0063; operator hand-weave repaired it. PR-level CI would have caught it eventually; the run branch was broken and "integrated" in the meantime.
+
+**Fix shape.** The integrate step re-runs the gate suite against the MERGED tree before emitting `UnitIntegrated` (spec 12's content-addressed verdicts make this cheap - an unchanged-input gate is a cache hit, so the post-merge re-gate costs only what the merge actually changed); a red post-merge re-gate blocks integration and feeds remediation with the semantic-conflict evidence.
 
 ---
 
