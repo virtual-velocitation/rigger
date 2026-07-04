@@ -140,6 +140,19 @@ fn deferred_gate_failed_key(gate: &str) -> String {
 /// "this stage reviewed; it produced no artifact to commit".
 pub const REVIEW_ONLY_NO_ARTIFACT: &str = "(review-only: no integrated artifact)";
 
+/// The phrase the plan-critique prompt uses to flag a rule-6 shared-blast-radius
+/// conflict between two proposed units (Unit 1, spec 10). It is stable so the gate's
+/// deterministic detection reads the SAME way to the adversary/adjudicator across
+/// replay steps, and so a test can assert the split is surfaced as concrete evidence.
+const BLAST_RADIUS_CONFLICT_MARKER: &str = "share a blast radius";
+
+/// The deterministic-id role token for a plan-critique planner RE-SPAWN (Unit 1, spec
+/// 10). Distinct from [`ROLE_IMPLEMENTER`] (which the plan stage's first-wave spawn
+/// uses), so a re-plan spawn id (`plan/replan#<critique-attempt>`) never collides with
+/// the planner's original `plan/implementer#0` and a replay driver parks/replays each
+/// re-plan independently.
+const ROLE_REPLAN: &str = "replan";
+
 #[derive(Debug, thiserror::Error)]
 #[error("conductor: {0}")]
 pub struct Error(pub String);
@@ -698,36 +711,106 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     // after planning: it has no units yet, so we run the planning wave + harvest
     // the proposed units FIRST, then check coverage against the extended DAG.
     // A run with no planner checks coverage up front, before any agent runs.
+    // The adversarial plan-critique gate (Unit 1, spec 10) releases the fan-out. A
+    // workflow with no gate leaves it released, so the wave loop runs exactly as before.
+    let mut fan_out_released = true;
     if has_producer(&stages) {
-        let ready = ready_stages(&stages, &integrated, &terminal);
+        // The plan-critique gate (if wired) is driven SYNCHRONOUSLY below, never through a
+        // wave, so exclude it from the planning wave's ready set: on a resume where `plan`
+        // already integrated, `ready_stages` would otherwise surface the gate (it needs
+        // plan) and `run_wave` would run it through the wrong path (`run_single_stage`).
+        let gate = critique_gate_name(&stages);
+        let ready: Vec<String> = ready_stages(&stages, &integrated, &terminal)
+            .into_iter()
+            .filter(|n| gate.as_deref() != Some(n.as_str()))
+            .collect();
         if !ready.is_empty() {
             ctx.run_wave(&stages, &ready, &mut integrated, &mut terminal)?;
             ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)?;
         }
+        // If the workflow wires a plan-critique stage, review the PROPOSED DAG with its
+        // adversary + adjudicator BEFORE any implementer runs. A reject loops the planner
+        // (bounded by the remediation depth); only an approve releases the fan-out. This
+        // runs synchronously here - not as a main-loop stage - because its reject re-runs
+        // the PLANNER, a coupling the per-stage scheduler does not express. Park/budget/
+        // halt from its reviewer or re-plan spawns are routed exactly like a wave's.
+        if let Some(gate) = gate {
+            // Resume short-circuit: a gate that already RESOLVED in a prior step must not
+            // re-run (it would re-spawn its reviewers and re-emit UnitIntegrated). An
+            // integrated gate released the fan-out; a terminal-but-not-integrated gate
+            // escalated and holds it. Both states are seeded from the log at run start.
+            if integrated.contains(&gate) {
+                fan_out_released = true;
+            } else if terminal.contains(&gate) {
+                fan_out_released = false;
+            } else {
+                let plan = producer_name(&stages)
+                    .expect("a critique gate is detected only when a producer exists");
+                match ctx.run_plan_critique_gate(
+                    &gate,
+                    &plan,
+                    &mut stages,
+                    &mut proposed,
+                    &mut integrated,
+                    &mut terminal,
+                ) {
+                    Ok(released) => fan_out_released = released,
+                    // A parked reviewer/re-plan spawn (stepwise/replay) ends the step
+                    // cleanly; a later step replays the recorded result and re-reaches
+                    // the gate.
+                    Err(e) if is_parked(&e) => {
+                        ctx.parked.store(true, Ordering::SeqCst);
+                        fan_out_released = false;
+                    }
+                    // A budget-refused gate spawn already set `budget_broke`; hold the
+                    // fan-out and let the breaker trip below (like the wave's handling).
+                    Err(e) if is_budget_refused(&e) => fan_out_released = false,
+                    // A degenerate-reviewer HALT (Gap 18) propagates loudly, marker
+                    // stripped.
+                    Err(e) if is_degenerate_reviewer(&e) => {
+                        return Err(Error(e.0.replace(DEGENERATE_MARKER, "")))
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+        }
     }
     ctx.check_coverage_or_flag(&stages, &deps.criteria)?;
 
-    loop {
-        let ready = ready_stages(&stages, &integrated, &terminal);
-        if ready.is_empty() {
-            break;
+    // A held fan-out (the plan-critique gate did not release, or a gate spawn was parked/
+    // budget-refused) must still trip the breaker if a gate spawn exhausted the budget -
+    // the main wave loop below is skipped, so it cannot.
+    if !fan_out_released && ctx.budget_broke() {
+        ctx.trip_budget_breaker()?;
+    }
+
+    // The wave loop runs only once the plan-critique gate released the fan-out (or the
+    // workflow wires no gate, so it stayed released). A held gate leaves the frontier
+    // unscheduled; the run reports the gate's escalation/park, never a fan-out over an
+    // unapproved decomposition.
+    if fan_out_released {
+        loop {
+            let ready = ready_stages(&stages, &integrated, &terminal);
+            if ready.is_empty() {
+                break;
+            }
+            // checkBudget circuit-breaker (§4.4, §8): before each wave, if the spawn
+            // budget is spent, trip the breaker - record it, abort the task, and pause
+            // the loop. Resume replays the ledger and continues from where it stopped.
+            if ctx.budget_tripped() {
+                ctx.trip_budget_breaker()?;
+                break;
+            }
+            ctx.run_wave(&stages, &ready, &mut integrated, &mut terminal)?;
+            // The breaker also trips at SPAWN granularity, mid-wave (item 9): a single
+            // wide wave can exhaust the budget partway through, refusing later spawns.
+            // Record the breaker and stop here too, not only at the next wave boundary.
+            if ctx.budget_broke() {
+                ctx.trip_budget_breaker()?;
+                break;
+            }
+            ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)?;
         }
-        // checkBudget circuit-breaker (§4.4, §8): before each wave, if the spawn
-        // budget is spent, trip the breaker - record it, abort the task, and pause
-        // the loop. Resume replays the ledger and continues from where it stopped.
-        if ctx.budget_tripped() {
-            ctx.trip_budget_breaker()?;
-            break;
-        }
-        ctx.run_wave(&stages, &ready, &mut integrated, &mut terminal)?;
-        // The breaker also trips at SPAWN granularity, mid-wave (item 9): a single
-        // wide wave can exhaust the budget partway through, refusing later spawns.
-        // Record the breaker and stop here too, not only at the next wave boundary.
-        if ctx.budget_broke() {
-            ctx.trip_budget_breaker()?;
-            break;
-        }
-        ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)?;
     }
 
     // Phase boundary (§4.3): the wave loop has converged - every ready unit reached a
@@ -2500,6 +2583,357 @@ impl RunCtx<'_> {
         ))
     }
 
+    /// The fan-out implement units in the live DAG, each paired with its blast-radius
+    /// files (Unit 1, spec 10). These are the baseline + planner-proposed units the
+    /// plan-critique gate reviews: a stage that carries an implementer `agent`, is not
+    /// the producer, is not the fan-out TEMPLATE (which is removed once expanded but
+    /// guarded here defensively), and is not the gate itself. Each unit's blast radius is
+    /// the SAME grounding [`grounded_seed`](Self::grounded_seed) uses (so rule-6 conflicts
+    /// are computed against exactly the files the implementer will be grounded on), in the
+    /// stages' stable (BTreeMap) name order so the analysis is deterministic across steps.
+    fn dag_unit_blast_radii(
+        &self,
+        stages: &BTreeMap<String, Stage>,
+        gate_name: &str,
+    ) -> Vec<(String, Vec<String>)> {
+        let mut units = Vec::new();
+        for (name, st) in stages {
+            if st.agent.is_empty()
+                || is_producer(st)
+                || name == gate_name
+                || st.strategy.eq_ignore_ascii_case("fan-out")
+            {
+                continue;
+            }
+            units.push((name.clone(), self.grounded_seed(st)));
+        }
+        units
+    }
+
+    /// Build the plan-critique reviewer prompt (Unit 1, spec 10): the proposed unit DAG,
+    /// the deterministic rule-6 blast-radius analysis, and the three decomposition review
+    /// targets NAMED in the prompt (handbook rules 6-8: shared blast radius, mitigation
+    /// ownership, open dispositions). On a re-plan it leads with the prior rejection so
+    /// the reviewer judges the revised DAG against what was wrong before. The same prompt
+    /// feeds the adversary (which appends the REVIEW_PROTOCOL and emits findings) and the
+    /// adjudicator (whose stdout verdict gates the fan-out).
+    fn build_dag_critique_prompt(
+        &self,
+        stages: &BTreeMap<String, Stage>,
+        radii: &[(String, Vec<String>)],
+        conflicts: &[(String, String, Vec<String>)],
+        prior_reason: &str,
+    ) -> String {
+        let mut b = String::new();
+        if !prior_reason.trim().is_empty() {
+            b.push_str("A prior plan-critique REJECTED this decomposition:\n");
+            b.push_str(prior_reason.trim());
+            b.push_str("\n\nThe planner has since revised the DAG; re-review it below.\n\n");
+        }
+        b.push_str(
+            "You are the plan-critique gate. Review the PROPOSED unit DAG below - the \
+             decomposition the planner produced - BEFORE any implementer runs, and judge \
+             it against the decomposition rules (docs/handbook/authoring-loops.md rules \
+             6-8):\n\
+             - Rule 6 (shared blast radius): criteria whose blast radii overlap belong in \
+             ONE unit. Two units whose file footprints overlap make each reviewer see its \
+             sibling's half-landed changes and cannot converge independently - reject such \
+             a split.\n\
+             - Rule 7 (mitigation ownership): every demanded mitigation must be owned by \
+             exactly one unit, with the exclusion named on its neighbors; an unassigned or \
+             ambiguously-owned mitigation is a reject.\n\
+             - Rule 8 (open dispositions): a unit must not leave a disposition open for a \
+             reviewer to re-litigate; an undecided disposition is a reject.\n\n",
+        );
+        b.push_str("Proposed units:\n");
+        for (name, files) in radii {
+            let st = &stages[name];
+            let criterion = if st.coverage.trim().is_empty() {
+                "(no criterion)"
+            } else {
+                st.coverage.trim()
+            };
+            let needs = if st.needs.is_empty() {
+                "none".to_string()
+            } else {
+                st.needs.join(", ")
+            };
+            let radius = if files.is_empty() {
+                "(none grounded)".to_string()
+            } else {
+                files.join(", ")
+            };
+            b.push_str(&format!(
+                "- `{name}`: criterion={criterion:?}; needs=[{needs}]; blast radius=[{radius}]\n"
+            ));
+        }
+        if conflicts.is_empty() {
+            b.push_str(
+                "\nBlast-radius analysis (rule 6): every proposed unit has a DISJOINT \
+                 blast radius (no overlap detected).\n",
+            );
+        } else {
+            b.push_str("\nBlast-radius analysis (rule 6):\n");
+            for (a, other, shared) in conflicts {
+                b.push_str(&format!(
+                    "- units `{a}` and `{other}` {BLAST_RADIUS_CONFLICT_MARKER} (both touch: {})\n",
+                    shared.join(", ")
+                ));
+            }
+        }
+        b.push_str(
+            "\nRender your final verdict as a JSON line: {\"verdict\":\"approve\"} to \
+             release the fan-out, or {\"verdict\":\"reject\"} to send the decomposition \
+             back to the planner. Reject if any rule above is violated.\n",
+        );
+        b
+    }
+
+    /// Re-spawn the planner with the plan-critique's rejection feedback so it revises the
+    /// DAG (Unit 1, spec 10: "a reject feeds back to the planner"). The re-plan spawn id
+    /// is deterministic (`plan/replan#<critique-attempt>`), distinct from the plan stage's
+    /// own `plan/implementer#0`, so a stepwise/replay driver parks and replays it exactly
+    /// like any other spawn; its budget is reserved through the same breaker. The planner
+    /// (`isolation: none`) runs in the project cwd like its first-wave spawn. Its revised
+    /// `UnitProposed` emits land in the log; the caller re-harvests them into the DAG.
+    fn re_plan(
+        &self,
+        plan_name: &str,
+        plan_st: &Stage,
+        critique_attempt: u32,
+        feedback: &str,
+    ) -> Result<(), Error> {
+        let agent_def = self.cfg.agents.get(&plan_st.agent).ok_or_else(|| {
+            Error(format!(
+                "plan-critique re-plan references unknown planner {:?}",
+                plan_st.agent
+            ))
+        })?;
+        let id = spawn_id(plan_name, ROLE_REPLAN, critique_attempt);
+        if !self.reserve_spawn(&id) {
+            return Err(budget_refused(plan_name, "planner", &plan_st.agent));
+        }
+        let prompt = format!(
+            "The plan-critique gate REJECTED your previous decomposition:\n{}\n\nRevise \
+             the unit DAG to resolve it, then re-emit your UnitProposed refinements.\n\n{}",
+            feedback.trim(),
+            self.build_prompt(plan_st)
+        );
+        let emit = |t: &str, v: Value| self.emit_with_actor(&plan_st.agent, t, v);
+        // The planner opts out of isolation (`isolation: none`), so - like its first-wave
+        // spawn in `run_single_stage` - it runs in the project cwd; only an ISOLATED agent
+        // must carry a worktree dir (asserted there, not here). An isolated planner would
+        // be a misconfiguration the first-wave spawn already rejects.
+        self.deps
+            .driver
+            .spawn(
+                agent_def,
+                &prompt,
+                &SpawnOpts {
+                    system_prompt: self.build_system_prompt(agent_def),
+                    dir: String::new(),
+                    isolation: false,
+                    parallel: false,
+                    blast_radius: self.grounded_seed(plan_st),
+                    id: id.clone(),
+                    unit: plan_name.to_string(),
+                    stage: plan_name.to_string(),
+                    run_id: self.run_id.clone(),
+                },
+                &emit,
+            )
+            .map_err(|e| {
+                Error(format!(
+                    "plan-critique re-plan {:?}: {}",
+                    plan_st.agent, e.0
+                ))
+            })?;
+        Ok(())
+    }
+
+    /// Run the adversarial plan-critique gate (Unit 1, spec 10): the existing adversary +
+    /// adjudicator review the PROPOSED unit DAG BEFORE any implementer runs. It runs
+    /// SYNCHRONOUSLY inside the producer prelude (after the planner wave + harvest), not as
+    /// a main-loop stage, so its reject can loop the PLANNER - a coupling the per-stage DAG
+    /// scheduler does not express - while the fan-out stays gated on its release. Returns
+    /// whether the gate RELEASED the fan-out (an adjudicator approve): the caller runs the
+    /// implement waves only when it did. The reviewers run in a throwaway read-only
+    /// worktree (like a standalone review stage) so a stray Bash/Edit never touches the
+    /// main checkout; it is torn down on every exit path.
+    fn run_plan_critique_gate(
+        &self,
+        gate_name: &str,
+        plan_name: &str,
+        stages: &mut BTreeMap<String, Stage>,
+        proposed: &mut HashSet<String>,
+        integrated: &mut HashSet<String>,
+        terminal: &mut HashSet<String>,
+    ) -> Result<bool, Error> {
+        let gate_st = stages[gate_name].clone();
+        // Seed the review worktree at the folded attempt so a resumed step recomputes the
+        // same deterministic path (mirrors `run_fan_out_stage`).
+        let seeded = self.prior_attempts.get(gate_name).copied().unwrap_or(0);
+        let review_wt = self.review_only_worktree(&gate_st, seeded)?;
+        let dir = review_wt
+            .as_ref()
+            .map(|w| w.dir.clone())
+            .unwrap_or_default();
+        let result = self.plan_critique_loop(
+            &gate_st, plan_name, &dir, stages, proposed, integrated, terminal,
+        );
+        if let Some(w) = &review_wt {
+            let _ = w.remove();
+            let _ = Worktree::delete_branch(&self.deps.repo, &w.branch);
+        }
+        result
+    }
+
+    /// The plan-critique review + planner-remediation loop, factored out of
+    /// [`run_plan_critique_gate`](Self::run_plan_critique_gate) so the throwaway review
+    /// worktree is torn down on EVERY exit path (the `?` early-returns here are caught by
+    /// the wrapper). `dir` is the read-only worktree the reviewers run in (empty only on a
+    /// repo-less run). The attempt counter is seeded from the prior log so the escalation
+    /// bound ACCUMULATES across steps and a replay parks at the next unrecorded frontier
+    /// (mirrors `run_fan_out_review_loop`).
+    #[allow(clippy::too_many_arguments)]
+    fn plan_critique_loop(
+        &self,
+        gate_st: &Stage,
+        plan_name: &str,
+        dir: &str,
+        stages: &mut BTreeMap<String, Stage>,
+        proposed: &mut HashSet<String>,
+        integrated: &mut HashSet<String>,
+        terminal: &mut HashSet<String>,
+    ) -> Result<bool, Error> {
+        let gate_name = gate_st.name.clone();
+        let plan_st = stages[plan_name].clone();
+        // The gate is a real DAG unit: record its start once (replay-keyed) so the ledger
+        // projects it between plan and implement. It reviews the DAG, not a criterion, so
+        // its spec_criterion is empty; the adjudicator is its representative agent.
+        self.emit_keyed_meta(
+            &format!("{gate_name}/started"),
+            ledger::TYPE_UNIT_STARTED,
+            json!({
+                "id": gate_name,
+                "unit": gate_name,
+                "spec_criterion": "",
+                "criterion": "",
+                "agent": gate_st.adjudicator,
+                "needs": gate_st.needs,
+                "branch": unit_branch(&gate_name),
+            }),
+            &[(META_MODEL_ALIAS, &self.agent_model(&gate_st.adjudicator))],
+        )?;
+        let mut attempts = self.prior_attempts.get(&gate_name).copied().unwrap_or(0);
+        let mut prior_reason = String::new();
+        loop {
+            // The DETECTION half (rule 6): ground each proposed unit and surface the pairs
+            // that share a blast radius as concrete evidence for the reviewers.
+            let radii = self.dag_unit_blast_radii(stages, &gate_name);
+            let conflicts = blast_radius_conflicts(&radii);
+            let prompt = self.build_dag_critique_prompt(stages, &radii, &conflicts, &prior_reason);
+            // TIER 2: the adversary reviews the DAG and emits its findings to the graph
+            // (the REVIEW_PROTOCOL), so the adjudicator - grounding after it - reads them.
+            if !gate_st.adversary.is_empty() {
+                self.run_reviewer(
+                    gate_st,
+                    "adversary",
+                    ROLE_ADVERSARY,
+                    &gate_st.adversary,
+                    dir,
+                    attempts,
+                    false,
+                    false,
+                    &format!("{prompt}{REVIEW_PROTOCOL}"),
+                )?;
+            }
+            // TIER 3: the adjudicator renders the gating verdict over the DAG, fail-closed.
+            let (approved, reason, adj_resolved) = if gate_st.adjudicator.is_empty() {
+                (true, String::new(), String::new())
+            } else {
+                let result = self.run_reviewer(
+                    gate_st,
+                    "adjudicator",
+                    ROLE_ADJUDICATOR,
+                    &gate_st.adjudicator,
+                    dir,
+                    attempts,
+                    false,
+                    true,
+                    &prompt,
+                )?;
+                (
+                    verdict_approves(&result.output),
+                    result.output,
+                    result.resolved_model,
+                )
+            };
+
+            if approved {
+                // Approve RELEASES the fan-out: mark the gate reviewed + integrated (a
+                // review-only unit with no code artifact, like a standalone review stage),
+                // and record it terminal + integrated so the main loop never re-runs it and
+                // the fan-out units that need it become ready.
+                self.emit_keyed_meta(
+                    &format!("{gate_name}/reviewed#{attempts}"),
+                    ledger::TYPE_UNIT_STATUS,
+                    json!({
+                        "id": gate_name,
+                        "status": "reviewed",
+                        "evidence": review_evidence(&reason),
+                    }),
+                    &[
+                        (META_MODEL_ALIAS, &self.agent_model(&gate_st.adjudicator)),
+                        (META_MODEL_RESOLVED, &adj_resolved),
+                    ],
+                )?;
+                self.emit(
+                    ledger::TYPE_UNIT_INTEGRATED,
+                    json!({"id": gate_name, "commit": REVIEW_ONLY_NO_ARTIFACT}),
+                )?;
+                integrated.insert(gate_name.clone());
+                terminal.insert(gate_name.clone());
+                return Ok(true);
+            }
+
+            // Reject: charge a remediation attempt (replay-keyed on the failing attempt so a
+            // replay re-reaching it appends no duplicate) and either escalate or re-plan.
+            let failed_attempt = attempts;
+            let rem = safety::remediate(attempts, self.max_retries());
+            attempts = rem.attempts;
+            self.emit_keyed(
+                &format!("{gate_name}/failed#{failed_attempt}"),
+                ledger::TYPE_UNIT_FAILED,
+                json!({"id": gate_name, "attempts": attempts}),
+            )?;
+            if rem.decision == safety::Decision::Escalate {
+                let why = if reason.trim().is_empty() {
+                    "the adjudicator did not approve the decomposition".to_string()
+                } else {
+                    format!("plan-critique rejected: {}", reason.trim())
+                };
+                self.emit_lesson(
+                    None,
+                    &gate_name,
+                    &format!(
+                        "plan-critique {gate_name:?} escalated after {attempts} attempts; {why}"
+                    ),
+                );
+                self.emit(ledger::TYPE_UNIT_ESCALATED, json!({"id": gate_name}))?;
+                // Terminal but NOT integrated: the fan-out stays gated, so nothing
+                // implements over a decomposition three reviews could not fix.
+                terminal.insert(gate_name.clone());
+                return Ok(false);
+            }
+            // Retry: feed the rejection back to the planner (bounded by remediation depth)
+            // and re-harvest its revised DAG for the next critique iteration.
+            self.re_plan(plan_name, &plan_st, attempts, &reason)?;
+            self.harvest_proposed(stages, proposed, integrated, terminal)?;
+            prior_reason = reason;
+        }
+    }
+
     /// Run a stage's inline gates for its `attempt`, returning whether they all passed
     /// and the compact evidence of any failure. Each gate's verdict is REPLAY-KEYED on
     /// the `(unit, attempt, gate)` coordinate (spec 04, criterion 4): the first step to
@@ -3163,6 +3597,11 @@ impl RunCtx<'_> {
         terminal: &HashSet<String>,
     ) -> Result<(), Error> {
         let events = self.deps.store.read_stream(STREAM, 0, Direction::Forward)?;
+        // The plan-critique gate (Unit 1, spec 10) that HOLDS the fan-out until it
+        // releases, if the workflow wires one. Computed once over the static gate stage
+        // (always present) so it is stable as the loop mutates `stages`; None when no
+        // gate is wired (the historical no-gate shape, untouched).
+        let gate = critique_gate_name(stages);
         // Run-scoped (Gap 11, completing spec-06 unit-1): only THIS run's proposals
         // fold. A prior run's UnitProposed must never resurrect as live work - its
         // terminal states are (correctly) scoped OUT of `terminal`, so an unscoped
@@ -3226,12 +3665,30 @@ impl RunCtx<'_> {
                     stages.remove(&baseline_id);
                 }
             }
+            // Hold the fan-out behind the plan-critique gate (the resume-safety fix, spec
+            // 10 done-when 1: ONLY an approve releases the wave). A conductor-synthesized
+            // baseline inherits `[plan-critique, plan]` from the implement template, so it
+            // is naturally held; a PLANNER-proposed unit's `needs` (PLAN_PROTOCOL) name
+            // only sibling unit ids, NEVER the gate, so without this it would be scheduled
+            // the moment `plan` integrates - and on a RESUME the pre-gate planning wave
+            // fans it out BEFORE the gate renders (or replays) its verdict, implementing a
+            // decomposition three reviews may reject. Give every proposed fan-out unit the
+            // gate as a dependency so `ready_stages` holds it - in the pre-gate wave AND
+            // the main loop - until the gate INTEGRATES (an adjudicator approve); a
+            // terminal-but-unintegrated (escalated) or still-parked (mid-review) gate never
+            // surfaces it. The single hold the baselines already carry, now uniform.
+            let mut needs = u.needs;
+            if let Some(g) = &gate {
+                if u.id != *g && !needs.iter().any(|n| n == g) {
+                    needs.push(g.clone());
+                }
+            }
             stages.insert(
                 u.id.clone(),
                 Stage {
                     name: u.id,
                     agent: u.agent,
-                    needs: u.needs,
+                    needs,
                     coverage: u.coverage,
                     gates: u.gates,
                     ..Default::default()
@@ -3685,6 +4142,39 @@ pub fn partition_by_blast_radius(items: &[(String, Vec<String>)]) -> Vec<Vec<Str
     batches
 }
 
+/// The rule-6 blast-radius conflicts in a proposed decomposition (Unit 1, spec 10;
+/// `docs/handbook/authoring-loops.md` rule 6: "criteria that share a blast radius
+/// belong in ONE unit"). `units` pairs each fan-out unit's id with the distinct
+/// files in its blast radius (the same grounding [`RunCtx::grounded_seed`] /
+/// [`partition_by_blast_radius`] use). It returns every unordered pair of DISTINCT
+/// units whose blast radii INTERSECT, each with the shared files, so a decomposition
+/// that splits one blast radius across two units is surfaced as concrete evidence the
+/// plan-critique reviewers judge. The order is deterministic (input order for the
+/// pairs, sorted+deduped shared files), so the same DAG produces the same critique
+/// prompt across replay steps. A partition that is already disjoint yields no
+/// conflicts. This is the DETECTION half; the adjudicator renders the verdict.
+pub fn blast_radius_conflicts(
+    units: &[(String, Vec<String>)],
+) -> Vec<(String, String, Vec<String>)> {
+    let mut conflicts = Vec::new();
+    for (i, (a_name, a_files)) in units.iter().enumerate() {
+        let a_set: HashSet<&str> = a_files.iter().map(|s| s.as_str()).collect();
+        for (b_name, b_files) in units.iter().skip(i + 1) {
+            let mut shared: Vec<String> = b_files
+                .iter()
+                .filter(|f| a_set.contains(f.as_str()))
+                .cloned()
+                .collect();
+            shared.sort();
+            shared.dedup();
+            if !shared.is_empty() {
+                conflicts.push((a_name.clone(), b_name.clone(), shared));
+            }
+        }
+    }
+    conflicts
+}
+
 /// Whether a stage runs the fan-out (parallel-lens) path rather than the
 /// single-worker path (§3.2). A stage takes the standalone fan-out path ONLY when it
 /// is a standalone review stage: it carries an `agents` lens list (or `strategy:
@@ -3728,6 +4218,24 @@ fn producer_name(stages: &BTreeMap<String, Stage>) -> Option<String> {
     stages
         .iter()
         .find(|(_, st)| is_producer(st))
+        .map(|(name, _)| name.clone())
+}
+
+/// The name of the plan-critique gate stage, if the workflow wires one (Unit 1, spec
+/// 10). The gate is recognized by ROLE, not by a hard-coded name: it is the review-only
+/// stage (no `agent` - it critiques the DAG, it does not implement) that carries an
+/// `adjudicator` (its verdict gates the fan-out) and `needs` the producer (it runs
+/// AFTER the planner refined the DAG, BEFORE any implementer). A downstream standalone
+/// review stage (which needs the implementer, not the producer) is therefore never
+/// mistaken for it. Returns None when the workflow has no producer or no such gate, so
+/// a non-decomposing or ungated workflow runs exactly as before.
+fn critique_gate_name(stages: &BTreeMap<String, Stage>) -> Option<String> {
+    let producer = producer_name(stages)?;
+    stages
+        .iter()
+        .find(|(_, st)| {
+            st.agent.is_empty() && !st.adjudicator.is_empty() && st.needs.contains(&producer)
+        })
         .map(|(name, _)| name.clone())
 }
 
@@ -9502,6 +10010,47 @@ mod tests {
     }
 
     #[test]
+    fn blast_radius_conflicts_flags_units_that_split_one_file_set() {
+        // Unit 1 / rule 6: two proposed units grounding to an OVERLAPPING file set are
+        // a shared-blast-radius split - the exact decomposition the plan-critique gate
+        // must catch. The conflict names both units and the shared file(s); a unit with
+        // a disjoint radius raises nothing.
+        let units = vec![
+            (
+                "u1".to_string(),
+                vec!["a.rs".to_string(), "b.rs".to_string()],
+            ),
+            (
+                "u2".to_string(),
+                vec!["b.rs".to_string(), "c.rs".to_string()], // overlaps u1 on b.rs
+            ),
+            ("u3".to_string(), vec!["d.rs".to_string()]), // disjoint from both
+        ];
+        let conflicts = blast_radius_conflicts(&units);
+        assert_eq!(
+            conflicts,
+            vec![("u1".to_string(), "u2".to_string(), vec!["b.rs".to_string()])],
+            "exactly one conflict: u1 and u2 both touch b.rs"
+        );
+    }
+
+    #[test]
+    fn blast_radius_conflicts_is_empty_for_a_disjoint_partition() {
+        // A clean decomposition (every unit a disjoint file set, or an empty radius that
+        // conflicts with nothing) raises no rule-6 conflict, so the gate has nothing to
+        // reject on.
+        let units = vec![
+            ("u1".to_string(), vec!["a.rs".to_string()]),
+            ("u2".to_string(), vec!["b.rs".to_string()]),
+            ("u3".to_string(), Vec::new()),
+        ];
+        assert!(
+            blast_radius_conflicts(&units).is_empty(),
+            "disjoint units are not a shared-blast-radius split"
+        );
+    }
+
+    #[test]
     fn partitioned_wave_still_integrates_every_stage() {
         // Correctness under partitioning: a wave with a grep grounder and
         // `partition: by-blast-radius` must still integrate EVERY ready stage, even
@@ -11454,6 +12003,639 @@ mod tests {
         assert!(
             crate::worktree::Worktree::branch_has_work(&repo_path, &unit_branch("s")),
             "the escalated unit's work must remain on its own branch for a human to inspect"
+        );
+    }
+
+    // --- Unit 1 (spec 10): the adversarial plan-critique gate ---
+
+    /// A spec-driven workflow with the plan-critique gate wired between `plan` and the
+    /// fan-out `implement` template: `plan` produces the DAG, `plan-critique` reviews it
+    /// with an adversary + adjudicator (no lenses, per the spec), and `implement` fans
+    /// out only after the gate releases. The caller supplies the driver.
+    fn critique_cfg() -> Config {
+        let mut cfg = Config::default();
+        cfg.agents.insert("planner".into(), agent("planner"));
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("adversary".into(), agent("adversary"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "plan".into(),
+            Stage {
+                name: "plan".into(),
+                agent: "planner".into(),
+                produces: "dag".into(),
+                ..Default::default()
+            },
+        );
+        cfg.workflow.stages.insert(
+            "plan-critique".into(),
+            Stage {
+                name: "plan-critique".into(),
+                needs: vec!["plan".into()],
+                adversary: "adversary".into(),
+                adjudicator: "judge".into(),
+                ..Default::default()
+            },
+        );
+        cfg.workflow.stages.insert(
+            "implement".into(),
+            Stage {
+                name: "implement".into(),
+                agent: "worker".into(),
+                strategy: "fan-out".into(),
+                needs: vec!["plan-critique".into()],
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        cfg
+    }
+
+    /// A driver whose adjudicator DRAWS its verdict from the conductor's own rule-6
+    /// detection: it REJECTS a DAG whose critique prompt surfaces a shared-blast-radius
+    /// conflict, and APPROVES one that does not - so the reject is a CONSEQUENCE of the
+    /// split, not a blind script. The planner replays a fixed set of UnitProposed emits
+    /// on every spawn (its original wave spawn and each critique-driven re-plan), and
+    /// every other reviewer returns a benign non-empty result.
+    struct CritiqueDriver {
+        planner: String,
+        adjudicator: String,
+        plan_emits: Vec<(String, Value)>,
+        calls: Mutex<Vec<String>>,
+        adj_prompts: Mutex<Vec<String>>,
+    }
+    impl CritiqueDriver {
+        fn new(plan_emits: Vec<(String, Value)>) -> Self {
+            CritiqueDriver {
+                planner: "planner".into(),
+                adjudicator: "judge".into(),
+                plan_emits,
+                calls: Mutex::new(Vec::new()),
+                adj_prompts: Mutex::new(Vec::new()),
+            }
+        }
+        fn count(&self, id: &str) -> usize {
+            self.calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|c| *c == id)
+                .count()
+        }
+    }
+    impl AgentDriver for CritiqueDriver {
+        fn spawn(
+            &self,
+            a: &AgentDef,
+            prompt: &str,
+            _opts: &SpawnOpts,
+            emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+        ) -> Result<AgentResult, Error> {
+            self.calls.lock().unwrap().push(a.id.clone());
+            if a.id == self.planner {
+                for (t, v) in &self.plan_emits {
+                    emit(t, v.clone())?;
+                }
+                return Ok(AgentResult {
+                    output: "proposed the DAG".into(),
+                    resolved_model: String::new(),
+                });
+            }
+            if a.id == self.adjudicator {
+                self.adj_prompts.lock().unwrap().push(prompt.to_string());
+                // The verdict is DRAWN from the conductor's own rule-6 detection.
+                let verdict = if prompt.contains(BLAST_RADIUS_CONFLICT_MARKER) {
+                    "reject"
+                } else {
+                    "approve"
+                };
+                return Ok(AgentResult {
+                    output: format!("{{\"verdict\":\"{verdict}\"}}"),
+                    resolved_model: String::new(),
+                });
+            }
+            // The adversary (or any other reviewer) emits nothing and returns benignly.
+            Ok(AgentResult {
+                output: format!("{} reviewed the DAG", a.id),
+                resolved_model: String::new(),
+            })
+        }
+    }
+
+    #[test]
+    fn a_decomposition_splitting_one_blast_radius_across_units_draws_a_reject() {
+        // The pinned criterion (spec 10, done-when 1): a decomposition that splits ONE
+        // blast radius across two units must draw a reject from the plan-critique gate,
+        // the reject must feed back to the planner, and the fan-out must NOT release.
+        let dir = tempfile::tempdir().unwrap();
+        let criterion = "the widget renderer is implemented";
+        // The one file both units ground to: the grep grounder matches the whole
+        // criterion text as a line, so two units citing the SAME criterion resolve to the
+        // SAME blast radius - the canonical shared-blast-radius split.
+        std::fs::write(
+            dir.path().join("feature.rs"),
+            format!("// {criterion}\nfn render() {{}}\n"),
+        )
+        .unwrap();
+        let cfg = critique_cfg();
+        let st = Store::open(":memory:").unwrap();
+        // The planner splits the single criterion into TWO units - both citing it, so
+        // both ground to feature.rs and SHARE the entire blast radius (rule 6 violation).
+        let driver = CritiqueDriver::new(vec![
+            (
+                TYPE_UNIT_PROPOSED.to_string(),
+                json!({"id":"u-a","agent":"worker","criterion":criterion,"needs":["plan-critique"]}),
+            ),
+            (
+                TYPE_UNIT_PROPOSED.to_string(),
+                json!({"id":"u-b","agent":"worker","criterion":criterion,"needs":["plan-critique"]}),
+            ),
+        ]);
+        let grep = crate::grounder::Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: None,
+            criteria: vec![criterion.to_string()],
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        // The fan-out never released: no implementer (worker) ran while the gate rejected.
+        assert_eq!(
+            driver.count("worker"),
+            0,
+            "the fan-out must NOT release while plan-critique rejects; calls: {:?}",
+            driver.calls.lock().unwrap()
+        );
+        // The reject fed back to the planner: it was re-spawned beyond its first wave run.
+        assert!(
+            driver.count("planner") > 1,
+            "a reject must feed back to the planner (re-plan); planner ran {}x",
+            driver.count("planner")
+        );
+        // The gate reviewed the DAG with the adversary AND the adjudicator (not lenses).
+        assert!(
+            driver.count("adversary") >= 1 && driver.count("judge") >= 1,
+            "the gate reviews with the existing adversary + adjudicator"
+        );
+        // Unresolved after bounded planner remediation, the gate ESCALATES rather than
+        // releasing the wave.
+        assert_eq!(
+            rs.units["plan-critique"].status,
+            ledger::Status::Escalated,
+            "an unresolved plan-critique escalates rather than releasing the fan-out"
+        );
+    }
+
+    #[test]
+    fn a_clean_decomposition_approves_and_releases_the_fan_out() {
+        // The approve path: a decomposition whose units have DISJOINT blast radii draws
+        // no rule-6 conflict, so the adjudicator approves and the fan-out releases - the
+        // implementers run and integrate.
+        let dir = tempfile::tempdir().unwrap();
+        let crit_a = "the alpha module is implemented";
+        let crit_b = "the beta module is implemented";
+        // Disjoint files: crit_a -> alpha.rs, crit_b -> beta.rs (no overlap).
+        std::fs::write(dir.path().join("alpha.rs"), format!("// {crit_a}\n")).unwrap();
+        std::fs::write(dir.path().join("beta.rs"), format!("// {crit_b}\n")).unwrap();
+        let cfg = critique_cfg();
+        let st = Store::open(":memory:").unwrap();
+        // The planner proposes nothing to refine; the conductor's per-criterion baselines
+        // (one per criterion, disjoint radii) stand.
+        let driver = CritiqueDriver::new(Vec::new());
+        let grep = crate::grounder::Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: None,
+            criteria: vec![crit_a.to_string(), crit_b.to_string()],
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        // The gate approved (one adjudicator pass, no re-plan) and integrated.
+        assert_eq!(
+            rs.units["plan-critique"].status,
+            ledger::Status::Integrated,
+            "a clean DAG approves and the gate integrates (review-only, no artifact)"
+        );
+        assert_eq!(
+            driver.count("planner"),
+            1,
+            "no reject means no re-plan; the planner runs exactly once"
+        );
+        // The gate really reviewed the DAG (the adjudicator rendered the approve).
+        assert!(
+            driver.count("judge") >= 1,
+            "the gate must run the adjudicator to render its verdict, not approve trivially"
+        );
+        // The fan-out released: the implementer ran for each baseline unit.
+        assert!(
+            driver.count("worker") >= 2,
+            "the fan-out releases on approve; worker ran {}x",
+            driver.count("worker")
+        );
+    }
+
+    #[test]
+    fn the_plan_critique_prompt_names_rules_6_through_8() {
+        // The gate prompt must NAME the three decomposition review targets (handbook
+        // rules 6-8): shared blast radius, mitigation ownership, and open dispositions.
+        let dir = tempfile::tempdir().unwrap();
+        let criterion = "the widget renderer is implemented";
+        std::fs::write(dir.path().join("feature.rs"), format!("// {criterion}\n")).unwrap();
+        let cfg = critique_cfg();
+        let st = Store::open(":memory:").unwrap();
+        let driver = CritiqueDriver::new(vec![(
+            TYPE_UNIT_PROPOSED.to_string(),
+            json!({"id":"u-a","agent":"worker","criterion":criterion,"needs":["plan-critique"]}),
+        )]);
+        let grep = crate::grounder::Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: None,
+            criteria: vec![criterion.to_string()],
+        };
+        let _ = run(&cfg, &deps).unwrap();
+
+        let prompts = driver.adj_prompts.lock().unwrap();
+        let prompt = prompts
+            .first()
+            .expect("the adjudicator must have been spawned");
+        for target in ["blast radius", "mitigation", "disposition"] {
+            assert!(
+                prompt.to_lowercase().contains(target),
+                "the plan-critique prompt must name rule targets ({target:?}); got:\n{prompt}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_resolved_plan_critique_gate_does_not_re_run_on_resume() {
+        // Resume-safety: once the gate has RESOLVED (approved + integrated in a prior
+        // step), a later step reads that from the log and releases the fan-out directly -
+        // it must NOT re-spawn its reviewers or re-emit its integration. Two run() calls
+        // over ONE store model the stepwise resume (the second adopts the first's run).
+        let dir = tempfile::tempdir().unwrap();
+        let crit = "the alpha module is implemented";
+        std::fs::write(dir.path().join("alpha.rs"), format!("// {crit}\n")).unwrap();
+        let cfg = critique_cfg();
+        let st = Store::open(":memory:").unwrap();
+        let grep = crate::grounder::Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+
+        // First run: the gate approves and the fan-out integrates.
+        let d1 = CritiqueDriver::new(Vec::new());
+        let deps1 = Deps {
+            store: &st,
+            driver: &d1,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: None,
+            criteria: vec![crit.to_string()],
+        };
+        let rs1 = run(&cfg, &deps1).unwrap();
+        assert_eq!(
+            rs1.units["plan-critique"].status,
+            ledger::Status::Integrated
+        );
+        assert!(
+            d1.count("judge") >= 1,
+            "the first run must run the adjudicator"
+        );
+
+        // Second run over the SAME store (a resume): the gate is already resolved.
+        let d2 = CritiqueDriver::new(Vec::new());
+        let deps2 = Deps {
+            store: &st,
+            driver: &d2,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: None,
+            criteria: vec![crit.to_string()],
+        };
+        let rs2 = run(&cfg, &deps2).unwrap();
+        assert_eq!(
+            d2.count("judge"),
+            0,
+            "a resolved gate must NOT re-spawn its adjudicator on resume"
+        );
+        assert_eq!(
+            d2.count("planner"),
+            0,
+            "a resumed run over a settled DAG must not re-run the planner"
+        );
+        assert_eq!(
+            rs2.units["plan-critique"].status,
+            ledger::Status::Integrated
+        );
+        // Exactly ONE plan-critique UnitIntegrated across the resume - no duplicate.
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let integrated = events
+            .iter()
+            .filter(|e| {
+                e.type_ == ledger::TYPE_UNIT_INTEGRATED
+                    && String::from_utf8_lossy(&e.data).contains("plan-critique")
+            })
+            .count();
+        assert_eq!(
+            integrated, 1,
+            "the gate must integrate exactly once across the resume, not re-emit"
+        );
+    }
+
+    #[test]
+    fn a_resumed_step_holds_the_fan_out_while_the_plan_critique_gate_is_escalated() {
+        // The resume-hold arm the approve-only resume test cannot reach (spec 10,
+        // done-when 1: ONLY an approve releases the wave). A real planner follows
+        // PLAN_PROTOCOL - its proposed units' `needs` name sibling unit ids, NEVER the
+        // gate - so it emits the split with `needs:[]`. Two run() over ONE store model
+        // the stepwise resume the production `rigger step` path runs on: run 1 the gate
+        // ESCALATES (its adjudicator never approves the shared-blast-radius split); run 2
+        // resumes over that settled, TERMINAL-but-not-integrated gate. The fan-out must
+        // stay HELD across the resume - a step after an escalation must NOT implement the
+        // decomposition three reviews rejected, the exact harm the gate exists to prevent.
+        let dir = tempfile::tempdir().unwrap();
+        let criterion = "the widget renderer is implemented";
+        std::fs::write(
+            dir.path().join("feature.rs"),
+            format!("// {criterion}\nfn render() {{}}\n"),
+        )
+        .unwrap();
+        let cfg = critique_cfg();
+        let st = Store::open(":memory:").unwrap();
+        let grep = crate::grounder::Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+        // PLAN_PROTOCOL shape: the split units carry `needs:[]` (only sibling ids ever
+        // appear here, never the gate) - the exact shape that bypassed the pre-gate wave.
+        let split = || {
+            vec![
+                (
+                    TYPE_UNIT_PROPOSED.to_string(),
+                    json!({"id":"u-a","agent":"worker","criterion":criterion,"needs":[]}),
+                ),
+                (
+                    TYPE_UNIT_PROPOSED.to_string(),
+                    json!({"id":"u-b","agent":"worker","criterion":criterion,"needs":[]}),
+                ),
+            ]
+        };
+
+        // Run 1: the gate escalates; the fan-out is held (no worker runs).
+        let d1 = CritiqueDriver::new(split());
+        let deps1 = Deps {
+            store: &st,
+            driver: &d1,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: None,
+            criteria: vec![criterion.to_string()],
+        };
+        let rs1 = run(&cfg, &deps1).unwrap();
+        assert_eq!(
+            rs1.units["plan-critique"].status,
+            ledger::Status::Escalated,
+            "run 1: the shared-blast-radius split must escalate the gate"
+        );
+        assert_eq!(
+            d1.count("worker"),
+            0,
+            "run 1: no implementer runs while the gate is unresolved; calls: {:?}",
+            d1.calls.lock().unwrap()
+        );
+
+        // Run 2 over the SAME store (the resume): the gate is terminal-but-not-integrated.
+        let d2 = CritiqueDriver::new(split());
+        let deps2 = Deps {
+            store: &st,
+            driver: &d2,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: None,
+            criteria: vec![criterion.to_string()],
+        };
+        let _ = run(&cfg, &deps2).unwrap();
+        // The resume short-circuit correctly does NOT re-run the gate...
+        assert_eq!(
+            d2.count("judge"),
+            0,
+            "resume: an already-resolved (escalated) gate must not re-spawn its adjudicator"
+        );
+        // ...and, critically, the pre-gate planning wave must NOT fan the rejected units
+        // out. This is the blocker: before the fix, `harvest_proposed` folds the prior
+        // window's proposals (needs:[]) as READY and the pre-gate wave runs them BEFORE
+        // the terminal-hold arm ever fires.
+        assert_eq!(
+            d2.count("worker"),
+            0,
+            "resume: the fan-out must stay HELD over an ESCALATED gate; workers ran: {:?}",
+            d2.calls.lock().unwrap()
+        );
+    }
+
+    #[test]
+    fn an_approved_gate_releases_planner_proposed_units_not_only_baselines() {
+        // The release direction of the same hold (spec 10, done-when 1: an approve
+        // RELEASES the wave). The fix gives PLANNER-proposed units the gate as a
+        // dependency; this pins that the dependency is SATISFIED on approve, so a proposed
+        // unit (not only a conductor baseline) fans out once the gate integrates. The
+        // planner proposes two DISJOINT units (each `needs:[]`, the PLAN_PROTOCOL shape),
+        // superseding the baselines; disjoint blast radii draw no rule-6 conflict, the
+        // adjudicator approves, and BOTH proposed implementers run.
+        let dir = tempfile::tempdir().unwrap();
+        let crit_a = "the alpha module is implemented";
+        let crit_b = "the beta module is implemented";
+        std::fs::write(dir.path().join("alpha.rs"), format!("// {crit_a}\n")).unwrap();
+        std::fs::write(dir.path().join("beta.rs"), format!("// {crit_b}\n")).unwrap();
+        let cfg = critique_cfg();
+        let st = Store::open(":memory:").unwrap();
+        let grep = crate::grounder::Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+        let driver = CritiqueDriver::new(vec![
+            (
+                TYPE_UNIT_PROPOSED.to_string(),
+                json!({"id":"u-a","agent":"worker","criterion":crit_a,"needs":[]}),
+            ),
+            (
+                TYPE_UNIT_PROPOSED.to_string(),
+                json!({"id":"u-b","agent":"worker","criterion":crit_b,"needs":[]}),
+            ),
+        ]);
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: None,
+            criteria: vec![crit_a.to_string(), crit_b.to_string()],
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        assert_eq!(
+            rs.units["plan-critique"].status,
+            ledger::Status::Integrated,
+            "a disjoint decomposition approves and the gate integrates"
+        );
+        assert_eq!(
+            driver.count("planner"),
+            1,
+            "no reject means no re-plan; the planner runs exactly once"
+        );
+        // The proposed units - held behind the gate by the fix - release on approve.
+        assert_eq!(
+            driver.count("worker"),
+            2,
+            "an approve releases the PROPOSED fan-out units; workers ran: {:?}",
+            driver.calls.lock().unwrap()
+        );
+    }
+
+    /// A driver that answers the PLANNER (emitting a shared-blast-radius split in the
+    /// real PLAN_PROTOCOL `needs:[]` shape) but PARKS every reviewer, so the plan-critique
+    /// gate stays UNRESOLVED (mid-review) across a step boundary - the stepwise shape
+    /// where the gate's adversary and adjudicator each take their own `rigger step`. Any
+    /// implementer (`worker`) spawn is recorded via `calls` before it parks, so a fan-out
+    /// that leaks before the gate resolves is detected even though the worker never runs.
+    struct ParkingGateDriver {
+        plan_emits: Vec<(String, Value)>,
+        calls: Mutex<Vec<String>>,
+    }
+    impl ParkingGateDriver {
+        fn new(plan_emits: Vec<(String, Value)>) -> Self {
+            ParkingGateDriver {
+                plan_emits,
+                calls: Mutex::new(Vec::new()),
+            }
+        }
+        fn count(&self, id: &str) -> usize {
+            self.calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|c| *c == id)
+                .count()
+        }
+    }
+    impl AgentDriver for ParkingGateDriver {
+        fn spawn(
+            &self,
+            a: &AgentDef,
+            _prompt: &str,
+            opts: &SpawnOpts,
+            emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+        ) -> Result<AgentResult, Error> {
+            self.calls.lock().unwrap().push(a.id.clone());
+            if a.id == "planner" {
+                for (t, v) in &self.plan_emits {
+                    emit(t, v.clone())?;
+                }
+                return Ok(AgentResult {
+                    output: "proposed the DAG".into(),
+                    resolved_model: String::new(),
+                });
+            }
+            // Every reviewer (and any leaked implementer) parks: the gate never renders a
+            // verdict, so it stays unresolved (mid-review) across the resume.
+            Err(parked_spawn(&opts.id))
+        }
+    }
+
+    #[test]
+    fn a_resumed_step_holds_the_fan_out_while_the_plan_critique_gate_is_mid_review() {
+        // The OTHER held arm (spec 10, done-when 1): a gate parked MID-REVIEW - the
+        // stepwise dogfood shape where plan integrates on step 1 and the gate's reviewers
+        // park across later steps. On the resume the gate is neither integrated NOR
+        // terminal (its verdict is unrendered), so the fan-out must stay held. Before the
+        // fix the pre-gate planning wave folds the prior window's proposals (needs:[]) as
+        // ready and runs the implementers BEFORE the gate re-reaches its (still parked)
+        // adjudicator - fanning out over a decomposition NO reviewer has approved.
+        let dir = tempfile::tempdir().unwrap();
+        let criterion = "the widget renderer is implemented";
+        std::fs::write(
+            dir.path().join("feature.rs"),
+            format!("// {criterion}\nfn render() {{}}\n"),
+        )
+        .unwrap();
+        let cfg = critique_cfg();
+        let st = Store::open(":memory:").unwrap();
+        let grep = crate::grounder::Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+        let split = || {
+            vec![
+                (
+                    TYPE_UNIT_PROPOSED.to_string(),
+                    json!({"id":"u-a","agent":"worker","criterion":criterion,"needs":[]}),
+                ),
+                (
+                    TYPE_UNIT_PROPOSED.to_string(),
+                    json!({"id":"u-b","agent":"worker","criterion":criterion,"needs":[]}),
+                ),
+            ]
+        };
+
+        // Run 1: the planner emits the split, then the gate parks mid-review.
+        let d1 = ParkingGateDriver::new(split());
+        let deps1 = Deps {
+            store: &st,
+            driver: &d1,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: None,
+            criteria: vec![criterion.to_string()],
+        };
+        run(&cfg, &deps1).unwrap();
+        assert_eq!(
+            d1.count("worker"),
+            0,
+            "run 1: no implementer runs while the gate is mid-review; calls: {:?}",
+            d1.calls.lock().unwrap()
+        );
+
+        // Run 2 over the SAME store (the resume): the gate is STILL unresolved (its
+        // verdict was never recorded), so the fan-out must remain held.
+        let d2 = ParkingGateDriver::new(split());
+        let deps2 = Deps {
+            store: &st,
+            driver: &d2,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: None,
+            criteria: vec![criterion.to_string()],
+        };
+        run(&cfg, &deps2).unwrap();
+        assert_eq!(
+            d2.count("worker"),
+            0,
+            "resume: the fan-out must stay HELD while the gate is mid-review; workers: {:?}",
+            d2.calls.lock().unwrap()
         );
     }
 }

@@ -95,6 +95,21 @@ stages:
     agent: planner
     produces: dag           # refine the spec's unit DAG at runtime
 
+  # 1b. Adversarial plan-critique gate (spec 10, Unit 1). Before ANY implementer
+  #    spawns, the existing adversary + adjudicator review the PROPOSED unit DAG the
+  #    planner produced: the conductor surfaces a deterministic rule-6 blast-radius
+  #    analysis (which units share a blast radius), and the reviewers judge the whole
+  #    decomposition against handbook rules 6-8 (shared blast radius, mitigation
+  #    ownership, open dispositions - docs/handbook/authoring-loops.md). A reject feeds
+  #    back to the planner (bounded by max_retries); only an approve RELEASES the
+  #    fan-out. It is review-only (no `agent`) - it critiques the plan, it does not
+  #    implement - and it needs `plan`, so the conductor runs it between planning and
+  #    the fan-out. Owns: pre-fan-out decomposition review. Per-unit review is untouched.
+  plan-critique:
+    needs: [plan]
+    adversary: adversary        # tier 2: reviews the DAG and refutes it
+    adjudicator: adjudicator    # tier 3: its approve/reject gates the fan-out
+
   # 2. Implement, review, and integrate PER UNIT. One Rust implementer per ready
   #    unit, each in an isolated worktree, partitioned by blast-radius so the waves
   #    stay disjoint. Each unit's complete lifecycle runs inside this one stage:
@@ -106,7 +121,7 @@ stages:
   #    and escalates after the retry bound - it does NOT integrate. Every
   #    planner-proposed unit inherits the same per-unit review via defaults.review.
   implement:
-    needs: [plan]
+    needs: [plan-critique]
     agent: rust-engineer
     strategy: fan-out
     partition: by-blast-radius
