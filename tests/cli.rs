@@ -98,6 +98,19 @@ fn run_rigger_envs(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> (String,
     )
 }
 
+/// Extract a JSON string field's value from a one-line JSON object `line` - a tiny reader
+/// for asserting on `rigger step`'s printed wave without a JSON dependency in the test crate.
+/// Finds `"key":"` and returns everything up to the next `"`. Sufficient for the values these
+/// tests read (deterministic ids and filesystem paths, which carry no embedded quote/backslash
+/// that would need JSON unescaping); returns `None` when the key is absent.
+fn json_string_field(line: &str, key: &str) -> Option<String> {
+    let needle = format!("\"{key}\":\"");
+    let start = line.find(&needle)? + needle.len();
+    let rest = &line[start..];
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
+}
+
 /// Run `git <args...>` in `cwd` and assert it succeeds (for seeding a repo state in a
 /// test - staging and committing scaffolded files so `.rigger/` is tracked+clean).
 fn git_ok(cwd: &Path, args: &[&str]) {
@@ -1175,6 +1188,173 @@ fn step_prints_a_budget_halt_reason_when_the_breaker_trips() {
     assert!(
         line.contains(r#""halted":"budget exhausted: 1/1 spawns""#),
         "a tripped budget must print a halt reason distinct from convergence; got: {line:?}"
+    );
+}
+
+/// The single-stage liveness workflow the end-to-end tests drive: a per-role wall-clock
+/// default so the parked implementer carries a `max_wall_clock` the sweep can time out
+/// against, `isolation: none` (no worktree), and `on_pass: none` (no integrate).
+fn write_liveness_workflow(root: &Path) {
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nDo the unit.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        "name: livetest\ndefaults:\n  grounder: nop\n  budget: 60\n  max_wall_clock: 60\nstages:\n  a:\n    agent: worker\n    on_pass: none\n",
+    )
+    .unwrap();
+}
+
+/// Plant a SYNTHETIC STALE MARKER at exactly `marker` (the path the wave carried), touched
+/// an hour ago - far past the 60s bound. Backdating the mtime removes any dependence on the
+/// test's own wall clock; the sweep reads that mtime.
+fn plant_stale_marker(marker: &Path) {
+    std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+    std::fs::write(marker, b"heartbeat").unwrap();
+    let stale = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+    std::fs::File::options()
+        .write(true)
+        .open(marker)
+        .unwrap()
+        .set_modified(stale)
+        .unwrap();
+}
+
+/// Agent liveness end-to-end (spec 10, unit 3): a spawn carries a `max_wall_clock` bound;
+/// when its per-spawn heartbeat marker goes STALE beyond that bound, `rigger step`
+/// classifies it as an infrastructure fault (a HUNG agent) and SURFACES it as a loud halt -
+/// so a hung agent can no longer stall the wave invisibly - while charging the unit NO
+/// remediation attempt. The marker is planted at the EXACT path the wave carried (the
+/// worker-write path == the sweep-read path, BLOCKER-1), and the test drives the no-charge
+/// re-park across the step boundary AND the operator recovery (follow-up c).
+#[test]
+fn step_surfaces_a_hung_spawn_with_a_stale_marker_as_a_liveness_halt() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_liveness_workflow(root);
+
+    // Step 1: the unit is ready, so its implementer parks in-flight (no result yet). The wave
+    // carries the RESOLVED marker path the worker would touch - the single authority the sweep
+    // also reads, so the test plants the marker exactly where the sweep will look.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the first step must succeed; stderr: {err}");
+    let line = out.trim();
+    assert!(
+        line.contains(r#""id":"a/implementer#0""#),
+        "step 1 parks the implementer in-flight; got: {line:?}"
+    );
+    let marker_str =
+        json_string_field(line, "marker_path").expect("the wave carries the resolved marker path");
+    // Default scratch config: the marker resolves under the repo's own `.rigger/tmp`.
+    assert!(
+        marker_str.contains("/.rigger/tmp/agent-live/"),
+        "the default marker path is under the repo scratch root's agent-live; got: {marker_str:?}"
+    );
+    let marker = std::path::Path::new(&marker_str);
+
+    // Plant the SYNTHETIC STALE MARKER at the wire path (worker-write path == sweep-read path).
+    plant_stale_marker(marker);
+
+    // Step 2: the sweep finds the marker stale beyond the bound, classifies the spawn infra,
+    // records the fault on its id, and surfaces it as a loud halt.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(
+        ok,
+        "a liveness-halted step still prints its result and exits 0; stderr: {err}"
+    );
+    let line = out.trim();
+    assert!(
+        line.contains(r#""halted":"#) && line.contains("a/implementer#0"),
+        "the hung spawn must be surfaced as a halt naming it; got: {line:?}"
+    );
+    assert!(
+        line.contains("infra") && line.contains("no remediation attempt"),
+        "the halt must state infra classification and no-attempt-charged; got: {line:?}"
+    );
+
+    // Step 3: re-step WITHOUT recording a result. The hung spawn is already answered by the
+    // liveness fault, so it is NOT re-parked/re-run (no dup-exec) - its id must NOT reappear as
+    // a fresh wave item - and the halt RE-SURFACES so the stall stays visible every step.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the re-step must succeed; stderr: {err}");
+    let line = out.trim();
+    assert!(
+        line.contains(r#""halted":"#) && line.contains("a/implementer#0"),
+        "the halt must re-surface on a later step, not silently drop; got: {line:?}"
+    );
+    assert!(
+        json_string_field(line, "marker_path").is_none() && !line.contains(r#""wave":[{"#),
+        "the answered hung spawn is not re-run (no fresh wave item / dup-exec); got: {line:?}"
+    );
+
+    // Step 4: the operator re-drives the now-healthy agent and records a REAL result. Being
+    // last-write-wins, it supersedes the liveness fault.
+    let (_o, err, ok) = run_rigger(
+        root,
+        &["result", "a/implementer#0", "recovered by operator"],
+    );
+    assert!(ok, "recording a real result must succeed; stderr: {err}");
+
+    // Step 5: the halt CLEARS (no hung spawn remains) and the run converges - the unit proceeds.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the recovery step must succeed; stderr: {err}");
+    let line = out.trim();
+    assert!(
+        !line.contains(r#""halted":"#),
+        "recording a real result clears the liveness halt; got: {line:?}"
+    );
+    assert!(
+        line.contains(r#""done":true"#),
+        "the recovered run converges to a clean fixpoint; got: {line:?}"
+    );
+}
+
+/// BLOCKER-1 end-to-end: under a NON-default scratch config (`RIGGER_TMPDIR` pointing outside
+/// the repo), the marker path the wave carries - the worker-WRITE path - must be the SAME path
+/// the sweep READS. A driver that re-hardcoded a `${repo}/.rigger/tmp` root would diverge from
+/// the sweep's `scratch_root_from_env` resolution and silently disable liveness. Here the wave's
+/// marker path resolves under `RIGGER_TMPDIR`, and planting the stale marker THERE makes the
+/// sweep - which resolves the same root - find it and halt, proving write-path == read-path off
+/// the non-default root.
+#[test]
+fn the_liveness_marker_path_follows_a_non_default_scratch_root() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_liveness_workflow(root);
+    // A scratch root OUTSIDE the repo - the non-default case the reject named.
+    let scratch = tempfile::tempdir().unwrap();
+    let scratch_path = scratch.path().to_str().unwrap().to_string();
+    let envs: &[(&str, &str)] = &[("RIGGER_TMPDIR", scratch_path.as_str())];
+
+    // Step 1: the wave carries a marker path resolved under RIGGER_TMPDIR, NOT the repo default.
+    let (out, err, ok) = run_rigger_envs(root, &["step"], envs);
+    assert!(ok, "the first step must succeed; stderr: {err}");
+    let line = out.trim();
+    let marker_str =
+        json_string_field(line, "marker_path").expect("the wave carries the resolved marker path");
+    assert!(
+        marker_str.starts_with(&scratch_path) && marker_str.contains("/agent-live/"),
+        "the marker path must follow RIGGER_TMPDIR, not a hardcoded repo root; got: {marker_str:?}"
+    );
+    assert!(
+        !marker_str.contains("/.rigger/tmp/agent-live/"),
+        "under RIGGER_TMPDIR the marker is not under the repo's .rigger/tmp; got: {marker_str:?}"
+    );
+
+    // Planting the stale marker at that wire path and re-stepping with the SAME env: the sweep
+    // resolves the identical root, reads the marker, and halts - so the worker-write path the
+    // wave advertised is exactly the sweep-read path.
+    plant_stale_marker(std::path::Path::new(&marker_str));
+    let (out, err, ok) = run_rigger_envs(root, &["step"], envs);
+    assert!(ok, "the sweep step must succeed; stderr: {err}");
+    let line = out.trim();
+    assert!(
+        line.contains(r#""halted":"#) && line.contains("a/implementer#0"),
+        "a stale marker under RIGGER_TMPDIR halts loudly - write-path == read-path; got: {line:?}"
     );
 }
 

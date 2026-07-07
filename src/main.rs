@@ -1014,6 +1014,42 @@ fn cmd_step(args: &[String]) -> Res {
 
     let graph = Projector::open(&db_path("graph.db"))?;
     let grounder = select_grounder(&cfg.workflow.defaults.grounder)?;
+    // Liveness sweep (spec 10, unit 3): BEFORE the conductor replays the frontier, classify
+    // any IN-FLIGHT spawn whose per-spawn heartbeat marker went stale beyond its
+    // `max_wall_clock` as an infrastructure fault (a HUNG agent) and record it on the
+    // spawn's id. The conductor then re-parks that fault (charging no remediation attempt -
+    // the unit's code is not at fault), and it surfaces as a halt below. Best-effort and
+    // scoped to the current run; a sweep failure never blocks the step.
+    if let Some(root) = &scratch_root {
+        match cfg.workflow.failure_taxonomy() {
+            Ok(taxonomy) => {
+                let pre = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+                // The current run id scopes the marker path (spec 10, unit 3): the sweep reads
+                // markers under this run's subdir, so a slug-colliding re-run never reads a
+                // prior run's leftover mtime. Empty before the first RunStarted (the first
+                // step, where nothing is in-flight to sweep anyway).
+                let run_id = runscope::current_run_id(&pre).unwrap_or_default();
+                match rigger::liveness::sweep(
+                    &store,
+                    runscope::current_run(&pre),
+                    root,
+                    &run_id,
+                    &taxonomy,
+                    std::time::SystemTime::now(),
+                ) {
+                    Ok(stale) if !stale.is_empty() => eprintln!(
+                        "rigger step: liveness swept {} hung spawn(s) (classified infra, no attempt charged): {}",
+                        stale.len(),
+                        stale.iter().map(|s| s.id.clone()).collect::<Vec<_>>().join(", ")
+                    ),
+                    Ok(_) => {}
+                    Err(e) => eprintln!("rigger step: liveness sweep skipped: {e}"),
+                }
+            }
+            Err(e) => eprintln!("rigger step: liveness sweep skipped (taxonomy: {e})"),
+        }
+    }
+
     let driver = ReplayDriver::new(&store);
     let deps = Deps {
         store: &store,
@@ -1033,18 +1069,59 @@ fn cmd_step(args: &[String]) -> Res {
     // run's slice (spec 06, unit 1): a prior run's unanswered spawns sit before this
     // run's RunStarted, so they never reappear in this run's wave (Gap 11).
     let mut step = spawn::step_result(runscope::current_run(&events)).map_err(|e| e.to_string())?;
+    // Stamp each bounded wave item with the RESOLVED absolute path of its liveness marker
+    // (spec 10, unit 3, BLOCKER-1): the thin driver frames both the worker's heartbeat
+    // `touch` and its staleness watchdog around THIS path, never re-deriving a scratch root
+    // of its own. Derived from the SINGLE authority `liveness::marker_path` over the same
+    // resolved scratch root (`RIGGER_TMPDIR` > `defaults.workdir` > repo default) the sweep
+    // above reads and this run's id - so the worker-write path is byte-identical to the
+    // sweep-read path under ANY scratch config. Only a bounded spawn carries a marker.
+    if let Some(root) = &scratch_root {
+        let run_id = runscope::current_run_id(&events).unwrap_or_default();
+        for item in step.wave.iter_mut() {
+            if item.max_wall_clock.is_some() {
+                item.marker_path = Some(
+                    rigger::liveness::marker_path(root, &run_id, &item.id)
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+            }
+        }
+    }
     // Surface a spawn-budget HALT (Gap 13) distinct from convergence: the conductor sets
     // `budget_halt` from its in-process breaker when a trip left ready work unscheduled, so
     // the printed `Step` carries a halt reason (`{"...","done":true,"halted":"..."}`) the
     // thin driver stops LOUDLY on - instead of reading a starved run as a clean completion.
     step.halted = rs.budget_halt;
-    // At the fixpoint, sweep the shared agent-scratch area (probe repos, verification
-    // builds workers park under <scratch-root>/agent-scratch per the driver's scratch
-    // policy): it exists only to serve in-flight spawns, and leaving it is how a run
-    // leaks gigabytes of build debris (Gap 14). Best-effort - never fails the step.
-    if step.done {
+    // Surface hung agents (spec 10, unit 3): any spawn whose LATEST result is a liveness
+    // fault is a hung, unrecovered agent. Halt LOUDLY - like the budget breaker - so the
+    // driver stops on a named reason instead of reading a stalled wave as a clean fixpoint;
+    // a hung agent can no longer stall the wave invisibly. A budget halt already on the
+    // channel takes precedence (it is the harder global rail). Recovery: record a real
+    // result on the named spawn (last-write-wins supersedes the fault), then re-drive.
+    if step.halted.is_none() {
+        let hung = rigger::liveness::hung_spawns(runscope::current_run(&events))
+            .map_err(|e| e.to_string())?;
+        if !hung.is_empty() {
+            step.halted = Some(rigger::liveness::halt_reason(&hung));
+        }
+    }
+    // At a CLEAN fixpoint, reclaim the run's shared scratch areas: `agent-scratch` (probe
+    // repos, verification builds workers park under <scratch-root>/agent-scratch per the
+    // driver's scratch policy) and `agent-live` (the per-spawn liveness markers, spec 10
+    // unit 3) - both exist only to serve in-flight spawns, and leaving them is how a run
+    // leaks gigabytes of build debris (Gap 14) or unbounded stale markers. Gated on
+    // `halted.is_none()`: a liveness halt sets `done` while a spawn is still hung (a
+    // liveness-fault result counts as answered), and an abandoned-but-possibly-alive worker
+    // may still be writing under agent-scratch - so a halted step must NOT wipe the areas out
+    // from under it; only a genuine, unhalted convergence reclaims. Best-effort - never fails
+    // the step.
+    if step.done && step.halted.is_none() {
         if let Some(root) = &scratch_root {
             let _ = std::fs::remove_dir_all(std::path::Path::new(root).join("agent-scratch"));
+            let _ = std::fs::remove_dir_all(
+                std::path::Path::new(root).join(rigger::liveness::MARKER_SUBDIR),
+            );
         }
     }
     println!("{}", serde_json::to_string(&step)?);

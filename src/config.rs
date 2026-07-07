@@ -42,6 +42,14 @@ pub struct AgentDef {
     pub isolation: String,
     #[serde(default)]
     pub recurse: bool,
+    /// The per-spawn wall-clock bound in SECONDS (spec 10, unit 3): a spawn of this
+    /// agent whose liveness marker goes stale for longer than this is treated by
+    /// `rigger step` as a hung/infra fault. `None` (unset in the agent's frontmatter)
+    /// inherits `defaults.max_wall_clock`, folded in at [`load`] time; a resolved `0`
+    /// (or absent default) means unbounded - the agent is never timed out. Per-role by
+    /// construction: each agent's own value overrides the workflow default.
+    #[serde(default)]
+    pub max_wall_clock: Option<u64>,
     #[serde(skip)]
     pub prompt: String,
 }
@@ -221,6 +229,13 @@ pub struct Defaults {
     /// is byte-for-byte back-compatible.
     #[serde(default)]
     pub max_retries: u32,
+    /// The default per-spawn wall-clock bound in SECONDS (spec 10, unit 3): every agent
+    /// inherits this unless its own frontmatter sets `max_wall_clock`. `0` (the default)
+    /// means unbounded - liveness timeouts are opt-in, so an un-set workflow is
+    /// byte-for-byte back-compatible (no spawn is ever timed out). Applied to each agent
+    /// at [`load`] time so a parked spawn carries its resolved bound.
+    #[serde(default)]
+    pub max_wall_clock: u64,
     /// The default partition strategy applied to every wave (§3.2, §8); a stage's
     /// own `partition` overrides it. `by-blast-radius` makes each wave's ready
     /// stages disjoint by blast-radius before they run; empty (the default) leaves
@@ -413,11 +428,28 @@ pub struct Config {
 /// integrity.
 pub fn load(dir: &str) -> Result<Config, Error> {
     let base = Path::new(dir).join(".rigger");
-    let agents = load_agents(&base.join("agents"))?;
+    let mut agents = load_agents(&base.join("agents"))?;
     let workflow = load_workflow(&base.join("workflow.yml"))?;
+    resolve_wall_clocks(&mut agents, &workflow.defaults);
     let cfg = Config { agents, workflow };
     cfg.validate()?;
     Ok(cfg)
+}
+
+/// Fold `defaults.max_wall_clock` onto every agent that did not set its own (spec 10,
+/// unit 3), so an agent's resolved `max_wall_clock` is authoritative wherever a spawn is
+/// built - the replay driver reads it straight off the [`AgentDef`] with no access to the
+/// workflow. Per-role by construction: an agent's own value wins; only an unset agent
+/// inherits the default. A zero default leaves an unset agent unbounded (`None`).
+fn resolve_wall_clocks(agents: &mut BTreeMap<String, AgentDef>, defaults: &Defaults) {
+    if defaults.max_wall_clock == 0 {
+        return;
+    }
+    for agent in agents.values_mut() {
+        if agent.max_wall_clock.is_none() {
+            agent.max_wall_clock = Some(defaults.max_wall_clock);
+        }
+    }
 }
 
 fn load_agents(dir: &Path) -> Result<BTreeMap<String, AgentDef>, Error> {
@@ -695,6 +727,87 @@ mod tests {
         };
         assert_eq!(a.model_for_attempt(0), "sonnet");
         assert_eq!(a.model_for_attempt(1), "opus");
+    }
+
+    #[test]
+    fn parses_agent_max_wall_clock_and_defaults_to_none_when_absent() {
+        let with = parse_agent(b"---\nid: slow\nmax_wall_clock: 1800\n---\nbody\n").unwrap();
+        assert_eq!(
+            with.max_wall_clock,
+            Some(1800),
+            "an explicit per-role max_wall_clock parses through"
+        );
+        let without = parse_agent(b"---\nid: plain\n---\nbody\n").unwrap();
+        assert_eq!(
+            without.max_wall_clock, None,
+            "an absent max_wall_clock is None (inherits the workflow default)"
+        );
+    }
+
+    #[test]
+    fn defaults_max_wall_clock_parses_and_is_zero_when_absent() {
+        let present: Workflow =
+            serde_yaml::from_str("name: w\ndefaults:\n  max_wall_clock: 600\n").unwrap();
+        assert_eq!(present.defaults.max_wall_clock, 600);
+        let absent: Workflow = serde_yaml::from_str("name: w\n").unwrap();
+        assert_eq!(
+            absent.defaults.max_wall_clock, 0,
+            "an absent default is 0 (unbounded - liveness timeouts are opt-in)"
+        );
+    }
+
+    #[test]
+    fn resolve_wall_clocks_folds_the_default_only_onto_unset_agents() {
+        let mut agents = BTreeMap::new();
+        agents.insert(
+            "unset".to_string(),
+            AgentDef {
+                id: "unset".into(),
+                max_wall_clock: None,
+                ..Default::default()
+            },
+        );
+        agents.insert(
+            "override".to_string(),
+            AgentDef {
+                id: "override".into(),
+                max_wall_clock: Some(60),
+                ..Default::default()
+            },
+        );
+        let defaults = Defaults {
+            max_wall_clock: 900,
+            ..Default::default()
+        };
+        resolve_wall_clocks(&mut agents, &defaults);
+        assert_eq!(
+            agents["unset"].max_wall_clock,
+            Some(900),
+            "an unset agent inherits the workflow default"
+        );
+        assert_eq!(
+            agents["override"].max_wall_clock,
+            Some(60),
+            "an agent's own per-role value overrides the default"
+        );
+    }
+
+    #[test]
+    fn resolve_wall_clocks_leaves_agents_unbounded_under_a_zero_default() {
+        let mut agents = BTreeMap::new();
+        agents.insert(
+            "a".to_string(),
+            AgentDef {
+                id: "a".into(),
+                max_wall_clock: None,
+                ..Default::default()
+            },
+        );
+        resolve_wall_clocks(&mut agents, &Defaults::default());
+        assert_eq!(
+            agents["a"].max_wall_clock, None,
+            "a zero (absent) default leaves an unset agent unbounded, back-compatible"
+        );
     }
 
     #[test]
