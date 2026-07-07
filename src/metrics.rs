@@ -76,6 +76,16 @@
 //! [`crate::spawn::spawn_id`] role the per-tier `SpawnResult` cost fold reads) as BOTH the
 //! in-process `META_ACTOR` and the out-of-process `by` means a finding is attributed one
 //! single way regardless of which driver recorded it - not two reconciled schemes.
+//!
+//! There remains a THIRD way an upheld numerator goes unfed even when a verdict IS
+//! recorded: the adjudicator upholds a finding id that carries no attribution on THIS
+//! log - a pre-contract finding emitted without a `by` token, or a historical / cross-log
+//! id the current slice never saw raised. The empty-actor sentinel in the finalize pass
+//! drops those from every per-actor fold (they key on no actor), so an aggregate store can
+//! record a verdict AND raised findings yet fold zero upheld per actor. That drop is
+//! counted as [`ReviewQuality::upheld_unattributed`] and the render discloses it, so an
+//! all-zero-upheld panel with `adjudications > 0` is never misread as "the review tier
+//! upheld nothing" when the truth is "the upheld findings were unattributed here".
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -268,6 +278,17 @@ pub struct ReviewQuality {
     /// verdict on this run's driver to compute survival/precision/cost-per-upheld from -
     /// the render discloses that rather than showing a misleading `0%` survival.
     pub adjudications: u64,
+    /// Of the finding ids the adjudicator UPHELD, how many carry NO attribution the fold
+    /// could key on - the finding either was never recorded on this log, or was recorded
+    /// with neither a conductor-stamped [`META_ACTOR`] nor a `by` role token (a pre-contract
+    /// / historical / cross-log id). These are the upheld findings the empty-actor sentinel
+    /// in the finalize pass silently drops from `finding_survival` (and thus from
+    /// `adversary_only` and `tier_cost`), so they contribute to NO per-actor upheld count.
+    /// When this is `> 0` the upheld-based panels can render all-zero even though the
+    /// adjudicator DID uphold findings - a genuinely UNFED numerator, distinct from the
+    /// adjudicator having upheld nothing (which leaves this `0`). The render keys its
+    /// "unfed on this log" disclosure on this so the drop stops being silent.
+    pub upheld_unattributed: u64,
 }
 
 impl ReviewQuality {
@@ -563,6 +584,15 @@ pub fn project(events: &[Event]) -> Metrics {
 
     // ---- Finalize the review-quality folds from the accumulated findings/verdicts ----
     metrics.review_quality.rejections_by_cause = rejections_by_cause;
+    // Upheld findings the empty-actor sentinel below WILL drop from every per-actor fold:
+    // an id the adjudicator upheld but which carries no attribution (the finding was never
+    // recorded on this log, or was recorded with neither META_ACTOR nor a `by` role token).
+    // Counted BEFORE the sentinel skips them so the render can disclose the dropped
+    // numerator instead of presenting an all-zero-upheld panel as "review upheld nothing".
+    metrics.review_quality.upheld_unattributed = upheld
+        .iter()
+        .filter(|id| finding_actor.get(*id).map(String::is_empty).unwrap_or(true))
+        .count() as u64;
     // Per-actor finding survival and the adversary's unique-catch precision.
     for (id, actor) in &finding_actor {
         if actor.is_empty() {
@@ -1385,5 +1415,58 @@ mod tests {
             (1, 1),
         );
         assert_eq!(rq.tier_cost["adversary"].cost_per_upheld(), 1.0);
+    }
+
+    #[test]
+    fn upheld_finding_without_attribution_is_dropped_by_sentinel_and_counted_unfed() {
+        // The recorded-but-UNATTRIBUTED subcase (spec 11 remediation - the reject this unit
+        // fixes): a verdict IS recorded (adjudications > 0) and it UPHOLDS a finding, but
+        // that finding carries NEITHER a conductor-stamped META_ACTOR NOR a `by` role token -
+        // the shape a pre-contract / historical / cross-log finding takes on a real aggregate
+        // store. The empty-actor sentinel drops it from every per-actor fold, so
+        // finding_survival is empty and the folded upheld total is 0 even though the
+        // adjudicator upheld something. That silent drop MUST be surfaced (upheld_unattributed)
+        // so the render can disclose it rather than render an all-zero-upheld panel that reads
+        // as "review upheld nothing".
+        let unattributed = ev(
+            TYPE_REVIEW_FINDING,
+            r#"{"id":"f1","about":["src/a.rs"]}"#, // NO META_ACTOR, NO `by`
+        );
+        let m = project(&[
+            unattributed,
+            adjudication(
+                "u",
+                0,
+                r#"{"verdict":"reject","upheld":["f1"],"discarded":[],"cause":"genuine-defect"}"#,
+            ),
+        ]);
+        let rq = &m.review_quality;
+        // (a) the sentinel excluded the unattributed finding from the per-actor fold.
+        assert!(
+            rq.finding_survival.is_empty(),
+            "an unattributed finding must not enter finding_survival: {:?}",
+            rq.finding_survival
+        );
+        // A verdict WAS recorded and it upheld a finding, so the numerator is UNFED (dropped),
+        // not absent. The dropped upheld id is surfaced as upheld_unattributed for the render.
+        assert_eq!(rq.adjudications, 1);
+        assert_eq!(rq.upheld_unattributed, 1);
+        // The folded upheld total across the per-actor panels is 0 despite that verdict - the
+        // exact all-zero-upheld state the render must now disclose.
+        let upheld_folded: u64 = rq.finding_survival.values().map(|c| c.upheld).sum();
+        assert_eq!(upheld_folded, 0);
+
+        // Contrast: a verdict that recorded and GENUINELY upheld nothing drops nothing, so
+        // upheld_unattributed stays 0 - the render stays silent, its 0% being honest.
+        let m2 = project(&[
+            finding("g1", "lens:sdet", &["src/b.rs"]),
+            adjudication(
+                "u",
+                0,
+                r#"{"verdict":"reject","upheld":[],"cause":"genuine-defect"}"#,
+            ),
+        ]);
+        assert_eq!(m2.review_quality.upheld_unattributed, 0);
+        assert_eq!(m2.review_quality.finding_survival["lens:sdet"].upheld, 0);
     }
 }
