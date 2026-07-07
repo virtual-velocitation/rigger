@@ -1,6 +1,6 @@
 # Design-intent gaps
 
-Status: assessed 2026-07-01 against [architecture.md](architecture.md) after the three-gap dogfood run (PR #7); updated through 2026-07-03 across the stepwise-conductor campaign's four loop runs (specs 04-07). ALL RECORDED GAPS (1-19) ARE CLOSED. Open work: Gap 21 (integrate does not re-gate the merged tree - surfaced during the spec-10 campaign; fix shape below, natural spec-12 companion since content-addressed verdicts make the post-merge re-gate cheap). The improvement program in docs/research/ drives specs 10-13.
+Status: assessed 2026-07-01 against [architecture.md](architecture.md) after the three-gap dogfood run (PR #7); updated through 2026-07-03 across the stepwise-conductor campaign's four loop runs (specs 04-07). ALL RECORDED GAPS (1-19) ARE CLOSED. Open work: Gap 21 (integrate does not re-gate the merged tree; spec-12 companion) and Gap 22 (plan-critique escalates on resumed runs; below). The improvement program in docs/research/ drives specs 10-13.
 
 This document records where the implementation currently falls short of the design intent, with the evidence that surfaced each gap and the shape of the fix. It is the feed for the next loop runs: each gap is written so it can be lifted into a spec's "Done when" criteria with little editing. Remove entries as they close.
 
@@ -19,6 +19,16 @@ Dogfooding. Rigger ran on its own spec; the run's telemetry (`rigger stats`, `ri
 **Evidence.** 2026-07-03: commits 57baf35 (unit-4) + 07f9f44/95ba133 (unit-1) produced a rigger-run tree failing `cargo build` with E0061/E0063; operator hand-weave repaired it. PR-level CI would have caught it eventually; the run branch was broken and "integrated" in the meantime.
 
 **Fix shape.** The integrate step re-runs the gate suite against the MERGED tree before emitting `UnitIntegrated` (spec 12's content-addressed verdicts make this cheap - an unchanged-input gate is a cache hit, so the post-merge re-gate costs only what the merge actually changed); a red post-merge re-gate blocks integration and feeds remediation with the semantic-conflict evidence.
+
+## Gap 22: the plan-critique gate escalates on a resumed run over baseline-vs-replan duplication
+
+**Intent.** The plan-critique gate (spec 10 unit 1) rejects a decomposition that violates handbook rules 6-8 (duplicate ownership, shared blast radius) BEFORE fan-out, and a reject sends the planner back to fix it.
+
+**Reality.** On a resumed run the planner re-proposes units under FRESH slugs (`u-plancritique`, `u-modelladder`) while the run still holds the earlier waves' baseline/integrated units (`unit-1-a-plan-critique-...`, `unit-4-...`) - so the gate correctly sees TWO units owning one mitigation and rejects, but the planner cannot resolve it: `UnitProposed` only ADDS, and the supersede-the-baseline path needs a verbatim-criterion match the re-slug breaks. The planner itself diagnosed "the plan-critique REJECT is UNRESOLVABLE by any UnitProposed" and the gate escalated after 6 attempts, wedging the fan-out for work that was already done. Introducing the gate MID-RUN (the binary gained it between waves) is what first exposed this.
+
+**Evidence.** 2026-07-07: spec-10 run wf_3db89015 escalated `plan-critique` at event 5522 after 6 replan cycles; findings 5496-5499 name the baseline-vs-replan duplicate pairs. Operator disposition: removed the gate from rigger's OWN workflow.yml (kept in the scaffold, fully tested) so rigger self-hosts; unit-2/3 finished by hand.
+
+**Fix shape.** Two parts: (a) the gate critiques only the CURRENT run's NEWLY-PROPOSED units, treating already-integrated units as settled, not duplicate candidates; (b) definition pinning (spec 13 unit 1) prevents a gate being introduced mid-run at all - the root trigger here. Re-wire plan-critique into rigger's own loop once both land.
 
 ---
 
