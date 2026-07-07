@@ -101,13 +101,18 @@ enum StoreKind {
 }
 
 /// The parsed flags shared by `run` (and the `--driver workflow` path): which
-/// driver, which event store, the connection string for the server backend, and
-/// the positional spec path.
+/// driver, which event store, the connection string for the server backend, the
+/// positional spec path, and whether to force a fresh run.
 struct RunArgs {
     driver: DriverKind,
     store: StoreKind,
     conn: Option<String>,
     spec: Option<String>,
+    /// `--fresh`: begin a NEW run for the spec's criteria even when the latest run in the
+    /// store already matches them (which `ensure_started` would otherwise adopt). The
+    /// evented recovery from a run wedged in a terminal state - e.g. a plan-critique
+    /// escalation - whose spec is unchanged; see [`rigger::run::start_fresh`].
+    fresh: bool,
 }
 
 /// Parse `rigger run`'s flags: `--driver <cli|workflow>`, `--eventstore
@@ -118,9 +123,11 @@ fn parse_run_args(args: &[String]) -> Result<RunArgs, Box<dyn std::error::Error>
     let mut store = StoreKind::Sqlite;
     let mut conn = None;
     let mut spec = None;
+    let mut fresh = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
+            "--fresh" => fresh = true,
             "--driver" => {
                 i += 1;
                 driver = match args.get(i).map(String::as_str) {
@@ -173,6 +180,7 @@ fn parse_run_args(args: &[String]) -> Result<RunArgs, Box<dyn std::error::Error>
         store,
         conn,
         spec,
+        fresh,
     })
 }
 
@@ -665,7 +673,12 @@ run/serve options:\n  \
 workflow: in-Claude-Code MCP server\n  \
 --eventstore <sqlite|kurrentdb>  sqlite (default): embedded file in .rigger/;\n                                   \
 kurrentdb: server (needs the kurrentdb feature)\n  \
---conn <url>                     KurrentDB connection url (or set KURRENTDB_CONN)\n\n\
+--conn <url>                     KurrentDB connection url (or set KURRENTDB_CONN)\n  \
+--fresh                          begin a NEW run even if the latest run matches this\n                                   \
+spec (which is otherwise adopted/resumed). The evented\n                                   \
+restart for a run wedged in a terminal state (e.g. an\n                                   \
+escalated plan-critique) whose spec is unchanged; the\n                                   \
+prior run stays in the log as history and context\n\n\
 storage and graph live in ./.rigger/ (per project, like .git/), scoped to the\n\
 project identity so one backend can hold many projects without their data mixing.\n"
     );
@@ -1356,6 +1369,11 @@ fn run_cli(parsed: &RunArgs) -> Res {
     }
     let backend = open_store(parsed.store, parsed.conn.as_deref())?;
     let store = Namespaced::new(backend.as_ref(), &project_identity());
+    // `--fresh`: begin a NEW run before driving, so the conductor's own `ensure_started`
+    // adopts this just-minted boundary instead of the (possibly wedged) latest run. See
+    // `runscope::start_fresh` - the evented restart for a terminal escalation on an
+    // unchanged spec.
+    fresh_run_if_requested(parsed, &store, &criteria)?;
     let graph = Projector::open(&db_path("graph.db"))?;
     let driver = cli::Driver::default();
     let grounder = select_grounder(&cfg.workflow.defaults.grounder)?;
@@ -1370,6 +1388,22 @@ fn run_cli(parsed: &RunArgs) -> Res {
     };
     let rs = conductor::run(&cfg, &deps)?;
     print_run_state(&rs);
+    Ok(())
+}
+
+/// Honor `--fresh` (shared by both `run` drivers): when set, append a new `RunStarted` for
+/// `criteria` so the run that follows starts a clean slice even if the latest run already
+/// matches (which `ensure_started` would adopt). A no-op when `--fresh` was not passed.
+/// Prints the new run id so the evented restart is visible in the operator's output.
+fn fresh_run_if_requested(
+    parsed: &RunArgs,
+    store: &dyn EventStore,
+    criteria: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    if parsed.fresh {
+        let run = runscope::start_fresh(store, criteria)?;
+        println!("rigger: --fresh: began a new run {run} (the prior run stays in the log)");
+    }
     Ok(())
 }
 
@@ -1388,6 +1422,9 @@ fn run_workflow(parsed: &RunArgs) -> Res {
     }
     let backend = open_store(parsed.store, parsed.conn.as_deref())?;
     let store = Namespaced::new(backend.as_ref(), &project_identity());
+    // `--fresh`: begin a NEW run before the conductor thread starts, so its `ensure_started`
+    // adopts this boundary rather than the latest (possibly wedged) run.
+    fresh_run_if_requested(parsed, &store, &criteria)?;
     let graph = Projector::open(&db_path("graph.db"))?;
     let driver = rigger::driver::workflow::Driver::new();
     let grounder = select_grounder(&cfg.workflow.defaults.grounder)?;
@@ -4850,6 +4887,17 @@ mod tests {
         assert!(a.store == StoreKind::Sqlite);
         assert!(a.conn.is_none());
         assert!(a.spec.is_none());
+        assert!(!a.fresh, "--fresh is off unless asked");
+    }
+
+    #[test]
+    fn parse_run_args_reads_fresh_alongside_a_spec() {
+        // `--fresh` is a bare boolean flag; it composes with a positional spec and the
+        // other run flags without consuming a value.
+        let a = parse_run_args(&["--fresh".to_string(), "spec.md".to_string()]).unwrap();
+        assert!(a.fresh, "--fresh sets the fresh-restart flag");
+        assert_eq!(a.spec.as_deref(), Some("spec.md"));
+        assert!(a.driver == DriverKind::Cli, "--fresh leaves other defaults");
     }
 
     #[test]

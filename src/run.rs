@@ -109,6 +109,28 @@ pub fn ensure_started(store: &dyn EventStore, criteria: &[String]) -> Result<Str
             return Ok(run.run);
         }
     }
+    start_fresh(store, criteria)
+}
+
+/// Begin a FRESH run for `criteria`, UNCONDITIONALLY: mint a new uuid `RunStarted` and
+/// append it, returning the new run id.
+///
+/// Unlike [`ensure_started`], this never adopts the latest run even when its criteria
+/// match. It is the operator's explicit "start over" (`rigger run --fresh`) - the evented
+/// recovery from a run wedged in a terminal state whose spec is UNCHANGED. A plan-critique
+/// escalation is terminal within its run slice (the resume short-circuit holds the fan-out
+/// forever), and the escalation-recovery every other case relies on - fix the spec, so its
+/// criteria change and `ensure_started` mints a fresh run - does not apply when the spec is
+/// correct and the escalation was a defect since fixed. Without this, `ensure_started`
+/// would adopt the wedged run on every relaunch.
+///
+/// This is additive, not destructive: the prior run stays in the log as history and
+/// cross-run context (its decisions and findings remain visible through the whole-stream
+/// graph and `rigger peers`); the new boundary simply begins a clean slice AFTER it, so
+/// the conductor folds ready work from an empty prior state ([`current_run`] scopes to the
+/// new boundary) and the wedged gate runs anew. It does not touch the git run branch, so a
+/// fresh run starts over atop whatever that branch already holds.
+pub fn start_fresh(store: &dyn EventStore, criteria: &[String]) -> Result<String, Error> {
     let started = RunStarted {
         run: uuid::Uuid::new_v4().to_string(),
         criteria: criteria.to_vec(),
@@ -231,6 +253,61 @@ mod tests {
                 .count(),
             1,
             "adopting a run appends no second RunStarted"
+        );
+    }
+
+    #[test]
+    fn start_fresh_mints_a_new_run_even_when_the_criteria_match() {
+        // `rigger run --fresh`: the operator's explicit "start over". Where `ensure_started`
+        // ADOPTS a same-criteria run, `start_fresh` ALWAYS appends a new boundary, so a run
+        // wedged in a terminal state (e.g. an escalated plan-critique) whose spec is
+        // unchanged can be re-run cleanly. The prior run stays in the log; the new slice
+        // begins after it.
+        let store = Store::open(":memory:").unwrap();
+        let first = ensure_started(&store, &["crit".to_string()]).unwrap();
+        // Some residue lands in the first run (a terminal escalation, say).
+        store
+            .append(
+                STREAM,
+                ExpectedRevision::Any,
+                &[ev(
+                    "UnitStatus",
+                    r#"{"id":"plan-critique","status":"escalated"}"#,
+                )],
+            )
+            .unwrap();
+
+        let fresh = start_fresh(&store, &["crit".to_string()]).unwrap();
+        assert_ne!(
+            first, fresh,
+            "start_fresh mints a distinct run even though the criteria are identical"
+        );
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| e.type_ == TYPE_RUN_STARTED)
+                .count(),
+            2,
+            "--fresh appended a second RunStarted rather than adopting the wedged run"
+        );
+        // The current slice is the fresh boundary onward - the prior run's escalated residue
+        // sits BEFORE it and can never seed live work, so the gate runs anew.
+        let slice = current_run(&events);
+        assert_eq!(current_run_id(&events).as_deref(), Some(fresh.as_str()));
+        assert!(
+            !slice
+                .iter()
+                .any(|e| String::from_utf8_lossy(&e.data).contains("escalated")),
+            "the prior run's terminal residue is excluded from the fresh run's slice"
+        );
+        // A subsequent ensure_started (as the conductor calls internally) ADOPTS the fresh
+        // boundary - so `rigger run --fresh` drives the clean run it just began.
+        let adopted = ensure_started(&store, &["crit".to_string()]).unwrap();
+        assert_eq!(
+            adopted, fresh,
+            "the conductor adopts the freshly-started run"
         );
     }
 

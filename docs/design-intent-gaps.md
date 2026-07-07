@@ -64,6 +64,18 @@ Dogfooding. Rigger ran on its own spec; the run's telemetry (`rigger stats`, `ri
 
 **Fix shape.** A trust field on the emit vocabulary, folded into Gap 24's injection ranking. Lower priority than 23/24.
 
+## Gap 26: a plan-critique escalation leaked across runs, and a correct spec had no evented restart
+
+**Intent.** Run scoping (Gap 11) makes each run a self-contained slice: a fresh run folds work from ONLY its own slice, and prior runs stay visible as memory but can never become live work. A run wedged by a since-fixed defect must be re-runnable - an escalation names a problem for a human, and the human's resolution is a NEW event, never a silent overwrite of the old one.
+
+**Reality.** Two coupled defects broke this for the plan-critique gate. (a) The replay driver answered a spawn by reading the WHOLE stream for a recorded result under its deterministic id - but the fixed-stage ids (`plan-critique/adjudicator#N`, `plan/replan#N`) are spec-INDEPENDENT, so a fresh run REPLAYED a prior run's recorded plan-critique reject instead of running its own adjudicator, escalating the gate on an old verdict the new reviewer never produced. Run scoping (Gap 11) had closed the read side for the ledger/spawn/metrics folds but NOT for the replay driver's answer/park lookup. (b) Even once (a) was fixed, the already-escalated run stays terminal within its slice (the resume short-circuit holds the fan-out forever - correct for resume), and `ensure_started` ADOPTS a same-criteria run - so a correct spec whose only problem was the since-fixed bug could never be cleanly re-run: every relaunch re-adopted the wedged run.
+
+**Evidence.** 2026-07-07: the spec-12 run (`f45180e6`, boundary at event 5081-era ids) held `plan` integrated and `plan-critique` escalated at 6 attempts, fan-out never released; the dash showed the spec-10 reject decision `d-plancritique-verdict-1` as the wedging verdict, replayed across the run boundary.
+
+**Fix shape.** (a) Scope the replay driver's answer/park lookup to `runscope::current_run` (commit 389723a), completing Gap 11 for the last fold that read whole-stream; this keeps a prior decision OVERTURNABLE - the new adjudicator runs, grounds on the prior reject as visible context, and supersedes it with a new verdict, rather than freezing the old one by replaying it. (b) `runscope::start_fresh` + `rigger run --fresh`: an explicit, evented restart that appends a new `RunStarted` for the current criteria even when the latest run matches, so the wedged gate runs anew in a clean slice while the prior run stays in the log as history and context. Cross-run decision context is untouched throughout - it flows whole-stream through grounding/`peers`; only execution-replay bookkeeping is run-scoped.
+
+**Status: CLOSED (root-cause) 2026-07-07.** Both fixes carry regression tests (a prior run's recorded result never answers a fresh run's same-id spawn; `start_fresh` mints a new boundary even when criteria match). Distinct from Gap 22 (which removed the WRONG-reject mechanism): this closes the cross-run LEAK of a correct-or-not verdict and the missing recovery affordance.
+
 ---
 
 ## Closed
