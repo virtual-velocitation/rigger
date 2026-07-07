@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rigger dash</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --line: #262b36; --ink: #e6e9ef;
+    --muted: #9aa4b2; --accent: #6ea8fe; --ok: #4ade80; --warn: #fbbf24;
+    --bad: #f87171; --dim: #3a4150;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  header {
+    padding: 14px 20px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap;
+  }
+  header h1 { margin: 0; font-size: 16px; letter-spacing: 0.04em; }
+  header .meta { color: var(--muted); font-size: 12px; }
+  header .live { color: var(--accent); }
+  header .stale { color: var(--warn); }
+  main { padding: 16px 20px; display: grid; gap: 18px; max-width: 1200px; }
+  section.view { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+  section.view > h2 {
+    margin: 0; padding: 10px 14px; font-size: 13px; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--muted); border-bottom: 1px solid var(--line);
+  }
+  .grid { display: grid; gap: 14px; padding: 14px; }
+  @media (min-width: 780px) { .grid.cols2 { grid-template-columns: 1fr 1fr; } }
+  .card { border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; }
+  .card h3 { margin: 0 0 8px; font-size: 12px; color: var(--muted); letter-spacing: 0.06em; }
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 600; }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px; border: 1px solid var(--dim); }
+  .st-integrated { color: var(--ok); border-color: var(--ok); }
+  .st-escalated { color: var(--bad); border-color: var(--bad); }
+  .st-bad { color: var(--bad); border-color: var(--bad); }
+  .st-failed { color: var(--warn); border-color: var(--warn); }
+  .st-pending, .st-grounding { color: var(--muted); }
+  .st-red { color: var(--bad); border-color: var(--bad); }
+  .st-green, .st-verified, .st-reviewed { color: var(--accent); border-color: var(--accent); }
+  .swim { display: flex; gap: 3px; }
+  .swim .cell {
+    width: 12px; height: 14px; border-radius: 2px; background: var(--dim);
+  }
+  .swim .cell.on { background: var(--accent); }
+  .swim .cell.retry { background: var(--warn); outline: 1px dashed var(--warn); }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 14px; }
+  .kv .k { color: var(--muted); }
+  .num { font-size: 22px; }
+  .muted { color: var(--muted); }
+  .struck { text-decoration: line-through; color: var(--muted); }
+  .empty { color: var(--dim); padding: 10px 12px; font-style: italic; }
+  .feed { max-height: 240px; overflow: auto; }
+  .feed .row { border-bottom: 1px solid var(--line); padding: 3px 0; display: flex; gap: 10px; }
+  .feed .pos { color: var(--dim); min-width: 52px; }
+  .feed .ty { color: var(--accent); min-width: 150px; }
+  .inbox .row { color: var(--bad); }
+  .heat td { text-align: center; }
+  .bar { height: 6px; background: var(--dim); border-radius: 3px; overflow: hidden; }
+  .bar > span { display: block; height: 100%; background: var(--ok); }
+</style>
+</head>
+<body>
+<header>
+  <h1>rigger dash</h1>
+  <span class="meta" id="mode"></span>
+  <span class="meta" id="clock"></span>
+</header>
+<main>
+  <section class="view" id="present">
+    <h2>Present - the live wave</h2>
+    <div class="grid cols2">
+      <div class="card">
+        <h3>Pending frontier (ready wave)</h3>
+        <div class="scroll" id="wave"></div>
+      </div>
+      <div class="card">
+        <h3>Action needed</h3>
+        <div class="inbox" id="inbox"></div>
+      </div>
+      <div class="card" style="grid-column: 1 / -1;">
+        <h3>In-flight units</h3>
+        <div class="scroll" id="inflight"></div>
+      </div>
+      <div class="card" style="grid-column: 1 / -1;">
+        <h3>Event feed</h3>
+        <div class="feed" id="feed"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="view" id="past">
+    <h2>Past - what the run has done</h2>
+    <div class="grid cols2">
+      <div class="card">
+        <h3>Unit lifecycle swimlanes</h3>
+        <div class="scroll" id="swimlanes"></div>
+      </div>
+      <div class="card">
+        <h3>Review outcomes (via metrics classification)</h3>
+        <div class="kv" id="review"></div>
+      </div>
+      <div class="card">
+        <h3>Gate remediation heatmap</h3>
+        <div class="scroll" id="gates"></div>
+      </div>
+      <div class="card">
+        <h3>Decision history</h3>
+        <div class="scroll" id="decisions"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="view" id="future">
+    <h2>Future - structural only (no ETAs, no likelihoods)</h2>
+    <div class="grid cols2">
+      <div class="card">
+        <h3>Ready frontier</h3>
+        <div class="scroll" id="ready"></div>
+      </div>
+      <div class="card">
+        <h3>Budget runway</h3>
+        <div id="runway"></div>
+      </div>
+      <div class="card" style="grid-column: 1 / -1;">
+        <h3>Declared DAG (unit dependencies)</h3>
+        <div class="scroll" id="dag"></div>
+      </div>
+      <div class="card" style="grid-column: 1 / -1;">
+        <h3>Uncovered criteria</h3>
+        <div id="uncovered"></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script>
+// One template serves two modes. On `rigger dash --export`, EMBEDDED_STATE is the
+// inlined snapshot and the page is a static, shareable artifact that never fetches.
+// When served live by `rigger dash`, the placeholder is substituted with `null`, so
+// the page polls the read-only JSON endpoints every 1.5s (the store's own subscription
+// primitive is poll-based; SSE is deliberately out).
+const EMBEDDED_STATE = __RIGGER_STATE__;
+const POLL_MS = 1500;
+const LIVE = EMBEDDED_STATE === null;
+
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  }[c]));
+}
+function el(id) { return document.getElementById(id); }
+function pct(x) { return (Number(x || 0) * 100).toFixed(1) + "%"; }
+function stClass(s) { return "st-" + String(s || "pending"); }
+
+function table(cols, rows) {
+  if (!rows.length) return '<div class="empty">none</div>';
+  let h = '<table><thead><tr>' + cols.map(c => '<th>' + esc(c) + '</th>').join("") + '</tr></thead><tbody>';
+  h += rows.map(r => '<tr>' + r.map(c => '<td>' + c + '</td>').join("") + '</tr>').join("");
+  return h + '</tbody></table>';
+}
+
+const TERMINAL = { integrated: 1, escalated: 1 };
+// The status order a unit walks; drives the swimlane cells.
+const STAGES = ["pending", "grounding", "red", "green", "verified", "reviewed", "integrated"];
+
+function render(state) {
+  const run = state.run || { units: [] };
+  const units = run.units || [];
+  const metrics = state.metrics || {};
+  const step = state.step || { wave: [] };
+  const graph = state.graph || { decisions: [], findings: [] };
+
+  // PRESENT: pending frontier (the ready wave the driver runs now).
+  const wave = step.wave || [];
+  el("wave").innerHTML = table(["spawn", "unit", "stage"],
+    wave.map(w => [esc(w.id), esc(w.unit), esc(w.stage)]));
+
+  // PRESENT: action-needed inbox - escalations and units awaiting a human first,
+  // then mid-remediation units.
+  const inbox = units.filter(u => u.status === "escalated")
+    .map(u => "ESCALATED: " + u.id + " (after " + (u.attempts || 0) + " attempts)")
+    .concat((run.manual_review || []).map(id => "MANUAL REVIEW: " + id + " awaits a human"))
+    .concat(units.filter(u => u.status === "failed")
+      .map(u => "remediating: " + u.id));
+  el("inbox").innerHTML = inbox.length
+    ? inbox.map(t => '<div class="row">' + esc(t) + '</div>').join("")
+    : '<div class="empty">nothing needs a human</div>';
+
+  // PRESENT: in-flight units (started but not terminal).
+  const inflight = units.filter(u => !TERMINAL[u.status]);
+  el("inflight").innerHTML = table(["unit", "status", "attempts", "criterion"],
+    inflight.map(u => [esc(u.id),
+      '<span class="pill ' + stClass(u.status) + '">' + esc(u.status) + '</span>',
+      esc(u.attempts || 0), esc(u.spec_criterion)]));
+
+  // PAST: swimlanes - one row per unit, a cell per stage; a retried unit is dashed.
+  el("swimlanes").innerHTML = units.length ? '<table><tbody>' + units.map(u => {
+    const reached = STAGES.indexOf(u.status);
+    const cells = STAGES.map((s, i) => {
+      let cls = "cell";
+      if (u.status === "integrated" || i <= reached) cls += " on";
+      if ((u.attempts || 0) > 1 && i > 0 && i <= reached) cls += " retry";
+      return '<span class="' + cls + '" title="' + esc(s) + '"></span>';
+    }).join("");
+    return '<tr><td>' + esc(u.id) + '</td><td><div class="swim">' + cells + '</div></td>'
+      + '<td><span class="pill ' + stClass(u.status) + '">' + esc(u.status) + '</span></td></tr>';
+  }).join("") + '</tbody></table>' : '<div class="empty">no units yet</div>';
+
+  // PAST: review outcomes - reuse metrics.rs's classification (no verdict event type).
+  el("review").innerHTML =
+    '<div class="k">approved</div><div>' + esc(metrics.review_approve || 0) + '</div>' +
+    '<div class="k">rejected</div><div>' + esc(metrics.review_reject || 0) + '</div>' +
+    '<div class="k">first-pass yield</div><div>' + pct(metrics.first_pass_yield) +
+      ' (' + esc(metrics.first_pass_clean || 0) + '/' + esc(metrics.units_started || 0) + ')</div>' +
+    '<div class="k">escalation rate</div><div>' + pct(metrics.escalation_rate) +
+      ' (' + esc(metrics.units_escalated || 0) + '/' + esc(metrics.units_started || 0) + ')</div>';
+
+  // PAST: gate remediation heatmap (fail is the remediation signal).
+  const gates = metrics.gates || [];
+  el("gates").innerHTML = gates.length ? '<table class="heat"><thead><tr>'
+    + '<th>gate</th><th>pass</th><th>fail</th><th>total</th><th></th></tr></thead><tbody>'
+    + gates.map(g => {
+      const t = g.total || (g.pass + g.fail) || 0;
+      const w = t ? Math.round(100 * g.pass / t) : 0;
+      return '<tr><td style="text-align:left">' + esc(g.gate) + '</td><td>' + esc(g.pass)
+        + '</td><td>' + esc(g.fail) + '</td><td>' + esc(t)
+        + '</td><td><div class="bar"><span style="width:' + w + '%"></span></div></td></tr>';
+    }).join("") + '</tbody></table>' : '<div class="empty">no gate runs recorded</div>';
+
+  // PAST: decision history, superseded entries struck through.
+  const decisions = graph.decisions || [];
+  el("decisions").innerHTML = decisions.length ? '<table><tbody>' + decisions.map(d =>
+    '<tr><td class="' + (d.superseded ? "struck" : "") + '">' + esc(d.id) + '</td>'
+    + '<td class="' + (d.superseded ? "struck" : "") + '">' + esc(d.summary) + '</td></tr>'
+  ).join("") + '</tbody></table>' : '<div class="empty">no decisions recorded</div>';
+
+  // FUTURE: ready frontier (structural - the same wave, no ETA).
+  el("ready").innerHTML = table(["spawn", "unit", "stage"],
+    wave.map(w => [esc(w.id), esc(w.unit), esc(w.stage)]));
+
+  // FUTURE: budget runway (a live halt reason, or a clean fixpoint).
+  const halted = step.halted;
+  el("runway").innerHTML = halted
+    ? '<div class="pill st-bad">HALTED: ' + esc(halted) + '</div>'
+    : (step.done ? '<div class="muted">run converged (fixpoint)</div>'
+                 : '<div class="muted">running; no budget halt</div>');
+
+  // FUTURE: declared DAG (each unit and what blocks it).
+  el("dag").innerHTML = table(["unit", "depends on", "status"],
+    units.map(u => [esc(u.id),
+      esc((u.depends_on || []).join(", ") || "-"),
+      '<span class="pill ' + stClass(u.status) + '">' + esc(u.status) + '</span>']));
+
+  // FUTURE: uncovered criteria (the run flagged a spec defect rather than deviating).
+  el("uncovered").innerHTML = run.spec_defect
+    ? '<div class="pill st-bad">a criterion is uncovered (spec defect flagged)</div>'
+    : '<div class="muted">no uncovered criteria flagged</div>';
+
+  // Event feed (present): the raw tail, newest last.
+  if (state.events) renderFeed(state.events);
+
+  el("clock").textContent = "snapshot @ " + new Date((state.generated_at || 0) * 1000).toLocaleTimeString()
+    + " (pos " + (state.position || 0) + ")";
+}
+
+function renderFeed(events) {
+  el("feed").innerHTML = events.length ? events.slice(-200).map(e =>
+    '<div class="row"><span class="pos">' + esc(e.position) + '</span>'
+    + '<span class="ty">' + esc(e.type) + '</span>'
+    + '<span class="muted">' + esc(e.summary || "") + '</span></div>'
+  ).join("") : '<div class="empty">no events</div>';
+}
+
+async function poll() {
+  try {
+    const s = await (await fetch("/api/state", { cache: "no-store" })).json();
+    // Tail the event feed incrementally through the second endpoint.
+    try {
+      const ev = await (await fetch("/api/events?since=0", { cache: "no-store" })).json();
+      s.events = ev.events || [];
+    } catch (_) { /* feed is best-effort */ }
+    render(s);
+    el("mode").innerHTML = '<span class="live">live</span>';
+  } catch (e) {
+    el("mode").innerHTML = '<span class="stale">disconnected</span>';
+  } finally {
+    if (LIVE) setTimeout(poll, POLL_MS);
+  }
+}
+
+if (LIVE) {
+  el("mode").textContent = "connecting...";
+  poll();
+} else {
+  el("mode").textContent = "exported snapshot (static)";
+  render(EMBEDDED_STATE);
+}
+</script>
+</body>
+</html>
