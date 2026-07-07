@@ -47,16 +47,53 @@
 //! through `emit_with_actor("")`), so a per-tier split would be permanently empty
 //! on any real log - the spec's "otherwise report the aggregate" applies.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Deserialize;
+use serde_json::Value;
 
-use crate::contextgraph::TYPE_GATE_VERDICT;
+use crate::conductor::META_WORKTREE_SHA;
+use crate::contextgraph::{META_ACTOR, TYPE_GATE_VERDICT, TYPE_REVIEW_FINDING};
 use crate::eventstore::Event;
 use crate::ledger::{
     TYPE_UNIT_ESCALATED, TYPE_UNIT_FAILED, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
     TYPE_UNIT_STATUS,
 };
+use crate::spawn::{SpawnResult, ROLE_ADJUDICATOR, ROLE_ADVERSARY, TYPE_SPAWN_RESULT};
+
+/// The tier a review spawn belongs to, recovered from its deterministic
+/// [`spawn_id`](crate::spawn::spawn_id) `{unit}/{role}#{attempt}` (a retry id may add a
+/// `~retryN` suffix, which is trimmed here). Returns the tier label the fold keys cost
+/// under - `"lens"`, `"adversary"`, `"adjudicator"` - or `None` for a non-review spawn
+/// (the implementer). The `lens:` role prefix mirrors [`crate::spawn::lens_role`].
+fn review_tier(spawn_id: &str) -> Option<&'static str> {
+    let role = spawn_id
+        .rsplit_once('/')
+        .map(|(_, r)| r)
+        .unwrap_or(spawn_id);
+    let role = role.split(['#', '~']).next().unwrap_or(role);
+    if role == ROLE_ADVERSARY {
+        Some("adversary")
+    } else if role == ROLE_ADJUDICATOR {
+        Some("adjudicator")
+    } else if role.starts_with("lens:") {
+        Some("lens")
+    } else {
+        None
+    }
+}
+
+/// The tier a finding's ACTOR belongs to for cost/precision accounting: the adversary
+/// role token is the adversary tier; every other finding-raising actor is a lens (the
+/// adjudicator raises no findings). Single-sources the lens-vs-adversary split the
+/// per-tier cost and adversary-precision folds share.
+fn actor_tier(actor: &str) -> &'static str {
+    if actor == ROLE_ADVERSARY {
+        "adversary"
+    } else {
+        "lens"
+    }
+}
 
 /// Pass/fail tallies for one gate id across a run.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -104,6 +141,101 @@ pub struct Metrics {
     /// for the known/accepted false positive (an agentless gated stage's bare gate
     /// failure).
     pub review_reject: u64,
+    /// The spec-11 unit-1 review-QUALITY telemetry (is the review tier RIGHT, not just
+    /// how often it rejects), folded from the sha-stamped review-boundary events, the
+    /// `ReviewFinding`s the tiers raise, and the adjudicator `SpawnResult` verdicts.
+    pub review_quality: ReviewQuality,
+}
+
+/// Raised-vs-upheld tally for one review actor's (or tier's) findings. `survival` is the
+/// fraction the adjudicator upheld - the review-quality signal the aggregate reject
+/// count cannot see.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FindingCounts {
+    /// Findings this actor RAISED (distinct `ReviewFinding` ids attributed to it).
+    pub raised: u64,
+    /// Of those, how many an adjudicator listed in its `upheld` verdict field.
+    pub upheld: u64,
+}
+
+impl FindingCounts {
+    /// The fraction of this actor's raised findings the adjudicator upheld, in
+    /// `[0.0, 1.0]`; `0.0` when it raised none (never `NaN`).
+    pub fn survival(&self) -> f64 {
+        ratio(self.upheld, self.raised)
+    }
+}
+
+/// Per-tier review cost proxy: how many review spawns that tier ran against how many of
+/// its findings survived adjudication. A spawn-count proxy (not a dollar figure): the
+/// Gap-6 model stamps that would price each spawn ride the same events, but weighting
+/// them by a price table is Wave-4 acting-on-measurements, out of this read-model.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TierCost {
+    /// `SpawnResult`s recorded for this tier's role (the cost incurred).
+    pub spawns: u64,
+    /// Findings this tier raised that were upheld (the value delivered).
+    pub upheld: u64,
+}
+
+impl TierCost {
+    /// Review spawns per upheld finding for this tier - lower is cheaper review. `0.0`
+    /// when the tier upheld nothing (the ratio is undefined; render it as "not yet
+    /// earning" rather than a division by zero).
+    pub fn cost_per_upheld(&self) -> f64 {
+        if self.upheld == 0 {
+            0.0
+        } else {
+            self.spawns as f64 / self.upheld as f64
+        }
+    }
+}
+
+/// Review-quality telemetry (spec 11, unit 1 - "the cheap six"): measures whether the
+/// review tier is RIGHT, folded from the same run stream as the rest of [`Metrics`].
+/// Every field is an integer count so [`Metrics`] keeps deriving [`Eq`]; the rates are
+/// derived on demand.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ReviewQuality {
+    /// Review REJECTIONS later APPROVED on the SAME worktree sha (spec 11): the tiers
+    /// flipped their verdict on unchanged code, so this is reviewer noise. Paired via the
+    /// [`META_WORKTREE_SHA`] stamp on the review-reject `UnitFailed` and the `reviewed`.
+    pub flip_flops: u64,
+    /// Per-actor finding survival (upheld / raised), keyed by the conductor-stamped
+    /// [`META_ACTOR`] (falling back to the finding's `by`), sorted for stable reporting.
+    pub finding_survival: BTreeMap<String, FindingCounts>,
+    /// Files carrying findings from TWO OR MORE distinct actors - the same defect flagged
+    /// by more than one lens. The numerator of the lens-overlap rate (retroactive over
+    /// all history).
+    pub overlap_files: u64,
+    /// Files carrying at least one finding - the denominator of the lens-overlap rate.
+    pub finding_files: u64,
+    /// Review rejections split by the adjudicator-declared `cause`
+    /// (`genuine-defect` / `spec-ambiguity` / `decomposition-conflict` / `infra-fault`),
+    /// sorted by cause.
+    pub rejections_by_cause: BTreeMap<String, u64>,
+    /// Escalations split by the `cause` of the escalating unit's FINAL rejection.
+    pub escalations_by_cause: BTreeMap<String, u64>,
+    /// Adversary-ONLY findings (raised by the adversary about files no lens also flagged)
+    /// upheld vs raised - the adversary's unique catch rate, its precision.
+    pub adversary_only: FindingCounts,
+    /// Per-tier cost proxy (`"lens"` / `"adversary"` / `"adjudicator"`): review spawns vs
+    /// upheld findings, sorted by tier.
+    pub tier_cost: BTreeMap<String, TierCost>,
+}
+
+impl ReviewQuality {
+    /// The lens-overlap rate in `[0.0, 1.0]`: files flagged by two or more actors over
+    /// files flagged at all. `0.0` when no findings touched any file.
+    pub fn lens_overlap_rate(&self) -> f64 {
+        ratio(self.overlap_files, self.finding_files)
+    }
+
+    /// Adversary precision in `[0.0, 1.0]`: adversary-only findings upheld over
+    /// adversary-only findings raised. `0.0` when the adversary raised no unique finding.
+    pub fn adversary_precision(&self) -> f64 {
+        self.adversary_only.survival()
+    }
 }
 
 impl Metrics {
@@ -117,6 +249,13 @@ impl Metrics {
     /// units started. Zero when no units started.
     pub fn escalation_rate(&self) -> f64 {
         ratio(self.units_escalated, self.units_started)
+    }
+
+    /// Rejection flip-flop rate in `[0.0, 1.0]`: rejections later approved on the SAME
+    /// worktree sha over all review rejections. Zero when nothing was rejected. This is
+    /// the share of rejects that were reviewer noise (a verdict flip on unchanged code).
+    pub fn flip_flop_rate(&self) -> f64 {
+        ratio(self.review_quality.flip_flops, self.review_reject)
     }
 }
 
@@ -150,6 +289,13 @@ struct UnitFold {
     /// This unit's escalation has already been tallied (idempotency guard against
     /// a malformed double-emit; the conductor emits `UnitEscalated` once per id).
     escalated: bool,
+    /// Worktree shas this unit was review-REJECTED on. A later `reviewed` (approve)
+    /// on any sha in this set is a flip-flop (spec 11): a verdict reversal on the same
+    /// code the tiers already rejected.
+    rejected_shas: BTreeSet<String>,
+    /// The adjudicator-declared `cause` of this unit's most recent review rejection,
+    /// carried so a subsequent `UnitEscalated` can attribute the escalation to it.
+    last_reject_cause: Option<String>,
 }
 
 /// Fold an ordered event slice into the operator [`Metrics`], mirroring
@@ -159,6 +305,25 @@ struct UnitFold {
 pub fn project(events: &[Event]) -> Metrics {
     let mut units: BTreeMap<String, UnitFold> = BTreeMap::new();
     let mut metrics = Metrics::default();
+
+    // Review-quality accumulators (spec 11, unit 1), resolved into `metrics.review_quality`
+    // after the pass. Findings are folded as they are raised; the adjudicator verdicts that
+    // uphold them and stamp a rejection `cause` arrive later in the same forward stream.
+    // finding id -> the actor that raised it (empty when unattributed).
+    let mut finding_actor: BTreeMap<String, String> = BTreeMap::new();
+    // finding id -> the files it concerns (for adversary-only attribution).
+    let mut finding_about: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    // file -> the distinct non-empty actors that raised a finding about it (lens overlap).
+    let mut file_actors: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    // finding ids an adjudicator upheld (union across all verdicts).
+    let mut upheld: BTreeSet<String> = BTreeSet::new();
+    // review rejections split by adjudicator-declared cause.
+    let mut rejections_by_cause: BTreeMap<String, u64> = BTreeMap::new();
+    // per-unit rejection cause stashed by the adjudicator verdict, consumed by the
+    // matching review-reject `UnitFailed` (the verdict precedes the failure in-stream).
+    let mut pending_cause: BTreeMap<String, String> = BTreeMap::new();
+    // review spawns recorded per tier (the cost side of cost-per-upheld).
+    let mut tier_spawns: BTreeMap<String, u64> = BTreeMap::new();
 
     for e in events {
         match e.type_.as_str() {
@@ -195,7 +360,17 @@ pub fn project(events: &[Event]) -> Metrics {
                     // A `reviewed` status is the standalone/fan-out approve signal,
                     // exact. Gate the increment on a started unit so the count stays
                     // a subset of units_started.
-                    "reviewed" if u.started => metrics.review_approve += 1,
+                    "reviewed" if u.started => {
+                        metrics.review_approve += 1;
+                        // Flip-flop (spec 11): an approve on a sha this unit was already
+                        // REJECTED on is a verdict reversal over unchanged code - reviewer
+                        // noise. Matched by the worktree-sha meta stamped on both events.
+                        if let Some(sha) = e.meta.get(META_WORKTREE_SHA).filter(|s| !s.is_empty()) {
+                            if u.rejected_shas.contains(sha) {
+                                metrics.review_quality.flip_flops += 1;
+                            }
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -203,7 +378,7 @@ pub fn project(events: &[Event]) -> Metrics {
                 let Some(id) = field_str(e, "id") else {
                     continue;
                 };
-                let u = units.entry(id).or_default();
+                let u = units.entry(id.clone()).or_default();
                 u.failed = true;
                 // Classify the failure as a review reject on either review path,
                 // gated on a started unit so review_reject stays a subset of
@@ -215,6 +390,18 @@ pub fn project(events: &[Event]) -> Metrics {
                 // neither arm and is correctly not counted.
                 if u.started && (u.armed || u.review_only) {
                     metrics.review_reject += 1;
+                    // Record the rejected sha so a later approve on it reads as a
+                    // flip-flop (spec 11).
+                    if let Some(sha) = e.meta.get(META_WORKTREE_SHA).filter(|s| !s.is_empty()) {
+                        u.rejected_shas.insert(sha.clone());
+                    }
+                    // Attribute the reject to the cause the adjudicator's verdict stashed
+                    // for this unit (cause-split rejection rate); carry it so an escalation
+                    // of this unit can inherit its final cause.
+                    if let Some(cause) = pending_cause.remove(&id) {
+                        *rejections_by_cause.entry(cause.clone()).or_default() += 1;
+                        u.last_reject_cause = Some(cause);
+                    }
                 }
                 // The reject (or remediation) is consumed; disarm so a later retry's
                 // gate failure on the same id is not double-counted.
@@ -228,6 +415,15 @@ pub fn project(events: &[Event]) -> Metrics {
                 if !u.escalated {
                     u.escalated = true;
                     metrics.units_escalated += 1;
+                    // Cause-split escalation rate (spec 11): attribute this escalation to
+                    // the cause of the unit's final review rejection, when one was recorded.
+                    if let Some(cause) = &u.last_reject_cause {
+                        *metrics
+                            .review_quality
+                            .escalations_by_cause
+                            .entry(cause.clone())
+                            .or_default() += 1;
+                    }
                 }
             }
             TYPE_UNIT_INTEGRATED => {
@@ -254,11 +450,119 @@ pub fn project(events: &[Event]) -> Metrics {
                     counts.fail += 1;
                 }
             }
+            TYPE_REVIEW_FINDING => {
+                // A finding a lens or the adversary raised. Attribute it to the
+                // conductor-stamped META_ACTOR (falling back to the payload `by`, exactly
+                // as the context-graph fold resolves provenance), and record the files it
+                // concerns for the lens-overlap and adversary-only folds. First sighting
+                // per id wins (a defensive dedup against a replayed finding).
+                let Some(id) = field_str(e, "id") else {
+                    continue;
+                };
+                if finding_actor.contains_key(&id) {
+                    continue;
+                }
+                let actor = e
+                    .meta
+                    .get(META_ACTOR)
+                    .filter(|a| !a.is_empty())
+                    .cloned()
+                    .or_else(|| field_str(e, "by").filter(|b| !b.is_empty()))
+                    .unwrap_or_default();
+                let about = field_str_vec(e, "about");
+                if !actor.is_empty() {
+                    for f in &about {
+                        file_actors
+                            .entry(f.clone())
+                            .or_default()
+                            .insert(actor.clone());
+                    }
+                }
+                finding_about.insert(id.clone(), about);
+                finding_actor.insert(id, actor);
+            }
+            TYPE_SPAWN_RESULT => {
+                // A recorded review spawn: count it under its tier (cost side), and - for
+                // the adjudicator - parse the grown verdict JSON for the findings it upheld
+                // and the rejection cause (spec 11's already-durably-logged raw output).
+                let Ok(res) = SpawnResult::from_event(e) else {
+                    continue;
+                };
+                let Some(tier) = review_tier(&res.id) else {
+                    continue;
+                };
+                *tier_spawns.entry(tier.to_string()).or_default() += 1;
+                if tier == "adjudicator" {
+                    if let Some(adj) = parse_adjudication(&res.output) {
+                        for fid in adj.upheld {
+                            upheld.insert(fid);
+                        }
+                        // The cause rides only a REJECT verdict (contract); stash it for the
+                        // matching review-reject UnitFailed, keyed by this spawn's unit.
+                        if let Some(cause) = adj.cause {
+                            let unit = res.id.split('/').next().unwrap_or(&res.id).to_string();
+                            pending_cause.insert(unit, cause);
+                        }
+                    }
+                }
+            }
             // Unknown / foreign event types (DecisionMade, LessonLearned, ...) are
             // ignored so the same shared log feeds every read-model.
             _ => {}
         }
     }
+
+    // ---- Finalize the review-quality folds from the accumulated findings/verdicts ----
+    metrics.review_quality.rejections_by_cause = rejections_by_cause;
+    // Per-actor finding survival and the adversary's unique-catch precision.
+    for (id, actor) in &finding_actor {
+        if actor.is_empty() {
+            continue;
+        }
+        let is_upheld = upheld.contains(id);
+        let c = metrics
+            .review_quality
+            .finding_survival
+            .entry(actor.clone())
+            .or_default();
+        c.raised += 1;
+        if is_upheld {
+            c.upheld += 1;
+        }
+        // Adversary-ONLY: an adversary finding about files NO lens also flagged.
+        if actor == ROLE_ADVERSARY {
+            let files = finding_about.get(id).cloned().unwrap_or_default();
+            let shared_with_a_lens = files.iter().any(|f| {
+                file_actors
+                    .get(f)
+                    .is_some_and(|acts| acts.iter().any(|a| !a.is_empty() && a != ROLE_ADVERSARY))
+            });
+            if !shared_with_a_lens {
+                metrics.review_quality.adversary_only.raised += 1;
+                if is_upheld {
+                    metrics.review_quality.adversary_only.upheld += 1;
+                }
+            }
+        }
+    }
+    // Lens overlap: files flagged by two or more distinct actors, over files flagged at
+    // all (retroactive across the whole slice).
+    metrics.review_quality.finding_files = file_actors.len() as u64;
+    metrics.review_quality.overlap_files =
+        file_actors.values().filter(|acts| acts.len() >= 2).count() as u64;
+    // Per-tier cost: the spawn count for each tier joined with the upheld findings that
+    // tier delivered (lens actors roll up to "lens", the adversary to "adversary").
+    let mut tier_cost: BTreeMap<String, TierCost> = BTreeMap::new();
+    for (tier, &spawns) in &tier_spawns {
+        tier_cost.entry(tier.clone()).or_default().spawns = spawns;
+    }
+    for (actor, counts) in &metrics.review_quality.finding_survival {
+        tier_cost
+            .entry(actor_tier(actor).to_string())
+            .or_default()
+            .upheld += counts.upheld;
+    }
+    metrics.review_quality.tier_cost = tier_cost;
 
     // First-pass-clean numerator: integrated with zero failures, gated on a real
     // UnitStarted so the numerator stays a subset of units_started.
@@ -294,6 +598,65 @@ fn gate_verdict(e: &Event) -> Option<GateVerdictView> {
 fn field_str(e: &Event, key: &str) -> Option<String> {
     let value: serde_json::Value = serde_json::from_slice(&e.data).ok()?;
     value.get(key)?.as_str().map(str::to_owned)
+}
+
+/// Pull a string-array field out of an event's JSON payload as a `Vec<String>`; empty
+/// when the payload is malformed, the field is absent, or it is not an array of strings.
+/// The `about` files of a `ReviewFinding` are read this way.
+fn field_str_vec(e: &Event, key: &str) -> Vec<String> {
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&e.data) else {
+        return Vec::new();
+    };
+    value
+        .get(key)
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The review-quality fields this fold reads off an adjudicator's grown verdict line.
+struct Adjudication {
+    /// The finding ids the adjudicator upheld (its `upheld` array).
+    upheld: Vec<String>,
+    /// The rejection `cause`, present only on a reject verdict (`None` on approve or when
+    /// the adjudicator declared none).
+    cause: Option<String>,
+}
+
+/// Parse an adjudicator's raw output for its grown JSON verdict line (spec 11): the LAST
+/// JSON object line carrying a `verdict`, `upheld`, or `discarded` field. Returns the
+/// upheld finding ids and the rejection cause, or `None` when no verdict line is present
+/// (an old-contract adjudicator, or unparseable output) - the fold then attributes
+/// nothing, exactly like the empty per-tier reject split on a log that never stamped it.
+fn parse_adjudication(output: &str) -> Option<Adjudication> {
+    for line in output.lines().rev() {
+        let Ok(v) = serde_json::from_str::<Value>(line.trim()) else {
+            continue;
+        };
+        if v.get("verdict").is_none() && v.get("upheld").is_none() && v.get("discarded").is_none() {
+            continue;
+        }
+        let upheld = v
+            .get("upheld")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let cause = v
+            .get("cause")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .filter(|s| !s.is_empty());
+        return Some(Adjudication { upheld, cause });
+    }
+    None
 }
 
 #[cfg(test)]
@@ -451,6 +814,9 @@ mod tests {
             units_escalated: 1, // `esc`
             review_approve: 2,  // `clean` + `reject` (the retry approved)
             review_reject: 1,   // `reject`'s verified-then-UnitFailed
+            // This slice carries no findings, adjudicator results, or sha stamps, so every
+            // review-quality fold is empty - the new fields never disturb the existing ones.
+            review_quality: ReviewQuality::default(),
         };
 
         let m = project(&events);
@@ -631,5 +997,236 @@ mod tests {
         assert_eq!(m.gates.get("build").unwrap().pass, 1);
         // The gate-less malformed verdict must not have created an entry.
         assert_eq!(m.gates.len(), 1);
+    }
+
+    // ---- spec-11 unit-1 review-quality folds (each pinned by a synthetic log) ----
+
+    /// A `verified`/`reviewed`/reject-`UnitFailed` event carrying the worktree-sha stamp.
+    fn status_sha(id: &str, status_val: &str, sha: &str) -> Event {
+        status(id, status_val).with_meta(META_WORKTREE_SHA, sha)
+    }
+    fn failed_sha(id: &str, sha: &str) -> Event {
+        failed(id).with_meta(META_WORKTREE_SHA, sha)
+    }
+    /// A `ReviewFinding` a lens/adversary raised, attributed via the conductor-stamped
+    /// META_ACTOR and concerning `about` files.
+    fn finding(id: &str, actor: &str, about: &[&str]) -> Event {
+        let about_json = about
+            .iter()
+            .map(|f| format!("\"{f}\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        ev(
+            TYPE_REVIEW_FINDING,
+            &format!(r#"{{"id":"{id}","about":[{about_json}]}}"#),
+        )
+        .with_meta(META_ACTOR, actor)
+    }
+    /// An adjudicator `SpawnResult` whose `output` carries the grown verdict JSON line.
+    fn adjudication(unit: &str, attempt: u32, output: &str) -> Event {
+        SpawnResult::ok(format!("{unit}/adjudicator#{attempt}"), output)
+            .to_event()
+            .unwrap()
+    }
+    /// A bare review `SpawnResult` of a given role, for per-tier spawn counting.
+    fn review_spawn(unit: &str, role: &str, attempt: u32) -> Event {
+        SpawnResult::ok(format!("{unit}/{role}#{attempt}"), "")
+            .to_event()
+            .unwrap()
+    }
+
+    #[test]
+    fn flip_flop_counts_a_reject_then_approve_on_the_same_sha() {
+        let events = vec![
+            // `noise`: rejected on sha aaa, then APPROVED on the SAME sha aaa (the code
+            // never changed) - a reviewer flip-flop.
+            started("noise", "impl"),
+            status_sha("noise", "verified", "aaa"),
+            failed_sha("noise", "aaa"),
+            status_sha("noise", "verified", "aaa"),
+            status_sha("noise", "reviewed", "aaa"),
+            integrated("noise"),
+            // `real`: rejected on bbb, re-implemented, approved on a NEW sha ccc - a
+            // legitimate remediation, NOT a flip-flop.
+            started("real", "impl"),
+            status_sha("real", "verified", "bbb"),
+            failed_sha("real", "bbb"),
+            status_sha("real", "verified", "ccc"),
+            status_sha("real", "reviewed", "ccc"),
+            integrated("real"),
+        ];
+        let m = project(&events);
+        assert_eq!(m.review_reject, 2);
+        assert_eq!(m.review_quality.flip_flops, 1);
+        assert!((m.flip_flop_rate() - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn finding_survival_is_upheld_over_raised_per_actor() {
+        let events = vec![
+            finding("f1", "architecture-reviewer", &["src/a.rs"]),
+            finding("f2", "architecture-reviewer", &["src/b.rs"]),
+            finding("f3", "sdet", &["src/c.rs"]),
+            // The adjudicator upholds f1 and f3, discards f2.
+            adjudication(
+                "u",
+                0,
+                r#"{"verdict":"reject","upheld":["f1","f3"],"discarded":["f2"],"cause":"genuine-defect"}"#,
+            ),
+        ];
+        let m = project(&events);
+        let arch = m.review_quality.finding_survival["architecture-reviewer"];
+        assert_eq!((arch.raised, arch.upheld), (2, 1));
+        assert!((arch.survival() - 0.5).abs() < 1e-9);
+        let sdet = m.review_quality.finding_survival["sdet"];
+        assert_eq!((sdet.raised, sdet.upheld), (1, 1));
+        assert_eq!(sdet.survival(), 1.0);
+    }
+
+    #[test]
+    fn lens_overlap_counts_files_flagged_by_two_or_more_actors() {
+        let events = vec![
+            finding("f1", "architecture-reviewer", &["src/shared.rs"]),
+            finding("f2", "sdet", &["src/shared.rs"]), // same file, a second actor => overlap
+            finding("f3", "sdet", &["src/solo.rs"]),   // one actor only
+        ];
+        let m = project(&events);
+        assert_eq!(m.review_quality.finding_files, 2); // shared.rs + solo.rs
+        assert_eq!(m.review_quality.overlap_files, 1); // shared.rs
+        assert!((m.review_quality.lens_overlap_rate() - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn rejections_and_escalations_split_by_adjudicator_cause() {
+        let events = vec![
+            started("u", "impl"),
+            status("u", "verified"),
+            adjudication(
+                "u",
+                0,
+                r#"{"verdict":"reject","upheld":[],"discarded":[],"cause":"spec-ambiguity"}"#,
+            ),
+            failed("u"), // reject #1: spec-ambiguity
+            status("u", "verified"),
+            adjudication(
+                "u",
+                1,
+                r#"{"verdict":"reject","upheld":[],"discarded":[],"cause":"genuine-defect"}"#,
+            ),
+            failed("u"), // reject #2 (final): genuine-defect
+            escalated("u"),
+        ];
+        let m = project(&events);
+        assert_eq!(m.review_quality.rejections_by_cause["spec-ambiguity"], 1);
+        assert_eq!(m.review_quality.rejections_by_cause["genuine-defect"], 1);
+        // The escalation inherits the cause of the unit's FINAL rejection only.
+        assert_eq!(m.review_quality.escalations_by_cause["genuine-defect"], 1);
+        assert_eq!(
+            m.review_quality.escalations_by_cause.get("spec-ambiguity"),
+            None
+        );
+    }
+
+    #[test]
+    fn adversary_precision_is_over_adversary_only_findings() {
+        let events = vec![
+            // Adversary-only, on a file no lens flagged - UPHELD.
+            finding("a1", "adversary", &["src/only.rs"]),
+            // Adversary finding on a file a lens ALSO flagged - NOT adversary-only.
+            finding("a2", "adversary", &["src/shared.rs"]),
+            finding("l1", "sdet", &["src/shared.rs"]),
+            // Adversary-only, on its own file - DISCARDED (not upheld).
+            finding("a3", "adversary", &["src/other.rs"]),
+            adjudication(
+                "u",
+                0,
+                r#"{"verdict":"approve","upheld":["a1","a2"],"discarded":["a3"]}"#,
+            ),
+        ];
+        let m = project(&events);
+        // adversary-only set = {a1 upheld, a3 not}; a2 is excluded (shared with a lens).
+        let adv = m.review_quality.adversary_only;
+        assert_eq!((adv.raised, adv.upheld), (2, 1));
+        assert!((m.review_quality.adversary_precision() - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn cost_per_upheld_finding_is_spawns_over_upheld_per_tier() {
+        let events = vec![
+            review_spawn("u", "lens:architecture-reviewer", 0),
+            review_spawn("u", "lens:sdet", 0),
+            review_spawn("u", "adversary", 0),
+            finding("f1", "architecture-reviewer", &["src/a.rs"]),
+            finding("f2", "sdet", &["src/b.rs"]),
+            finding("f3", "adversary", &["src/c.rs"]),
+            // Upholds one lens finding (f1) and the adversary's (f3); discards f2.
+            adjudication(
+                "u",
+                0,
+                r#"{"verdict":"reject","upheld":["f1","f3"],"discarded":["f2"],"cause":"genuine-defect"}"#,
+            ),
+        ];
+        let m = project(&events);
+        let lens = m.review_quality.tier_cost["lens"];
+        assert_eq!((lens.spawns, lens.upheld), (2, 1)); // 2 lens spawns, only f1 upheld
+        assert!((lens.cost_per_upheld() - 2.0).abs() < 1e-9);
+        let adv = m.review_quality.tier_cost["adversary"];
+        assert_eq!((adv.spawns, adv.upheld), (1, 1));
+        assert_eq!(adv.cost_per_upheld(), 1.0);
+        // The adjudicator SpawnResult is counted as a tier spawn too - it judges, it raises
+        // no findings, so its upheld is 0 (a cost with no findings of its own to survive).
+        let adj = m.review_quality.tier_cost["adjudicator"];
+        assert_eq!((adj.spawns, adj.upheld), (1, 0));
+    }
+
+    #[test]
+    fn old_contract_log_without_shas_or_grown_verdicts_folds_empty_and_never_nan() {
+        // Backward compatibility: a pre-spec-11 run stamps no worktree sha and its
+        // adjudicator emits only `{"verdict":...}` (no upheld/discarded/cause). Every
+        // review-quality fold degrades to empty - never a panic, never a NaN rate.
+        let events = vec![
+            started("u", "impl"),
+            status("u", "verified"),
+            failed("u"), // reject, but no sha to pair - no flip-flop bookkeeping
+            status("u", "verified"),
+            status("u", "reviewed"), // approve, no sha
+            integrated("u"),
+            adjudication("u", 2, r#"{"verdict":"approve"}"#),
+        ];
+        let m = project(&events);
+        assert_eq!(m.review_quality.flip_flops, 0);
+        assert!(m.review_quality.finding_survival.is_empty());
+        assert!(m.review_quality.rejections_by_cause.is_empty());
+        assert_eq!(m.review_quality.finding_files, 0);
+        assert_eq!(m.flip_flop_rate(), 0.0);
+        assert_eq!(m.review_quality.lens_overlap_rate(), 0.0);
+        assert_eq!(m.review_quality.adversary_precision(), 0.0);
+        // Only the adjudicator spawn is tallied as a tier cost (no findings to survive).
+        assert_eq!(
+            m.review_quality.tier_cost.get("adjudicator"),
+            Some(&TierCost {
+                spawns: 1,
+                upheld: 0
+            })
+        );
+    }
+
+    #[test]
+    fn finding_by_field_attributes_actor_when_no_meta_actor_stamp() {
+        // The actor resolves from the payload `by` when META_ACTOR is absent, mirroring
+        // the context-graph fold's provenance rule.
+        let f = ev(
+            TYPE_REVIEW_FINDING,
+            r#"{"id":"f1","by":"sdet","about":["src/a.rs"]}"#,
+        );
+        let m = project(&[
+            f,
+            adjudication(
+                "u",
+                0,
+                r#"{"verdict":"reject","upheld":["f1"],"cause":"genuine-defect"}"#,
+            ),
+        ]);
+        assert_eq!(m.review_quality.finding_survival["sdet"].upheld, 1);
     }
 }

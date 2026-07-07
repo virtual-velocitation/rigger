@@ -22,7 +22,7 @@ use crate::safety;
 use crate::spawn::{
     self, lens_role, spawn_id, spawn_retry_id, ROLE_ADJUDICATOR, ROLE_ADVERSARY, ROLE_IMPLEMENTER,
 };
-use crate::worktree::Worktree;
+use crate::worktree::{self, Worktree};
 
 /// The run's event stream name.
 pub const STREAM: &str = "run";
@@ -97,6 +97,16 @@ pub const META_MODEL_ALIAS: &str = "model_alias";
 /// for the implementer, reviewed for the adjudicator). Empty (and so omitted) when the
 /// worker reported none.
 pub const META_MODEL_RESOLVED: &str = "model_resolved";
+
+/// The metadata key carrying the WORKTREE HEAD sha the review tiers judged (spec 11,
+/// unit 1). Stamped on the review-boundary events - the `verified` status, the
+/// review-reject `UnitFailed`, and the `reviewed` status - mirroring the commit sha
+/// [`ledger::TYPE_UNIT_INTEGRATED`] already carries, so the metrics fold can tell a
+/// genuine reject-then-approve-on-NEW-code from a flip-flop (two verdicts on the SAME
+/// sha = reviewer noise). Like [`META_MODEL_ALIAS`] it is audit metadata on events that
+/// already exist - no new event type (spec 11's Global constraints) - so folds and
+/// projections ignore it. Empty (and so omitted) on a repo-less run with no worktree.
+pub const META_WORKTREE_SHA: &str = "worktree_sha";
 
 /// The replay key for a gate's verdict, keyed by the `(unit, attempt, gate)` coordinate
 /// the gate ran under - so a step re-reaching an already-run gate REPLAYS its recorded
@@ -1108,6 +1118,24 @@ impl RunCtx<'_> {
         self.append_and_fold(ev)
     }
 
+    /// [`emit`](RunCtx::emit) plus arbitrary EXTRA metadata (each `(key, value)` pair
+    /// with a non-empty value; empties omitted, exactly as
+    /// [`emit_keyed_meta`](RunCtx::emit_keyed_meta) omits them). Unlike `emit_keyed_meta`
+    /// this appends UNCONDITIONALLY - it carries no replay key - so it is only for events
+    /// that are already emitted at most once per reach (the review-reject `UnitFailed`,
+    /// which the per-unit loop appends once per failing attempt). It exists so that
+    /// [`META_WORKTREE_SHA`] can ride an un-keyed lifecycle event without a second event
+    /// type, the same way `emit_keyed_meta` rides the model stamps on the keyed ones.
+    fn emit_meta(&self, type_: &str, payload: Value, extra: &[(&str, &str)]) -> Result<(), Error> {
+        let mut ev = Event::new(type_, serde_json::to_vec(&payload)?);
+        for (k, v) in extra {
+            if !v.is_empty() {
+                ev = ev.with_meta(*k, *v);
+            }
+        }
+        self.append_and_fold(ev)
+    }
+
     /// Emit an event IDEMPOTENTLY under a deterministic replay `key` (spec 04, criterion
     /// 4): if the key was already recorded in the log (a prior step emitted it) or has
     /// already been emitted this process, the event is a REPLAY and the append is
@@ -1863,6 +1891,9 @@ impl RunCtx<'_> {
                 &[
                     (META_MODEL_ALIAS, &self.agent_model(&adjudicator, attempt)),
                     (META_MODEL_RESOLVED, &adj_resolved),
+                    // The approved worktree sha (spec 11, unit 1): pairs with a prior
+                    // reject on the SAME sha to surface reviewer flip-flop.
+                    (META_WORKTREE_SHA, &worktree::head_sha_of(dir)),
                 ],
             )?;
             Ok(ReviewOutcome::approved(reason))
@@ -2100,6 +2131,11 @@ impl RunCtx<'_> {
                     // recorded gates does not re-append it (spec 04, criterion 4). It is
                     // still an event of the implementer spawn, so it carries the same
                     // requested alias and resolved id as the green status (spec 05 line 52).
+                    // The worktree HEAD the tiers are about to judge (spec 11, unit 1):
+                    // the implementer's committed tree (committed above, before gating),
+                    // stamped so a later reject/approve on the SAME sha reads as a
+                    // flip-flop. Empty (omitted) on a repo-less unit with no worktree.
+                    let reviewed_sha = worktree::head_sha_of(dir);
                     self.emit_keyed_meta(
                         &format!("{}/verified#{attempts}", st.name),
                         ledger::TYPE_UNIT_STATUS,
@@ -2111,6 +2147,7 @@ impl RunCtx<'_> {
                         &[
                             (META_MODEL_ALIAS, &impl_alias),
                             (META_MODEL_RESOLVED, &resolved_model),
+                            (META_WORKTREE_SHA, &reviewed_sha),
                         ],
                     )?;
                     let review = self.review_unit(st, dir, attempts)?;
@@ -2161,9 +2198,15 @@ impl RunCtx<'_> {
 
             let rem = safety::remediate(attempts, self.max_retries());
             attempts = rem.attempts;
-            self.emit(
+            // Stamp the reviewed worktree sha (spec 11, unit 1): on a review reject this
+            // is the sha the tiers judged, so the flip-flop fold can pair it with a later
+            // approve on the SAME sha. Harmless on a gate/spawn failure (the fold only
+            // reads it for a detected review reject); empty (omitted) on a repo-less unit.
+            let failed_sha = worktree::head_sha_of(dir);
+            self.emit_meta(
                 ledger::TYPE_UNIT_FAILED,
                 json!({"id": st.name, "attempts": attempts}),
+                &[(META_WORKTREE_SHA, &failed_sha)],
             )?;
             if rem.decision == safety::Decision::Escalate {
                 // The escalation lesson carries the CONCRETE final failure (spec 02):
@@ -2313,6 +2356,11 @@ impl RunCtx<'_> {
                             &self.agent_model(&st.adjudicator, attempts),
                         ),
                         (META_MODEL_RESOLVED, &adj_resolved),
+                        // The reviewed base-HEAD sha of the throwaway review worktree
+                        // (spec 11, unit 1): a standalone review re-judging the SAME sha
+                        // and flipping its verdict is reviewer noise the flip-flop fold
+                        // surfaces.
+                        (META_WORKTREE_SHA, &worktree::head_sha_of(dir)),
                     ],
                 )?;
                 self.emit(
@@ -2329,10 +2377,13 @@ impl RunCtx<'_> {
             let failed_attempt = attempts;
             let rem = safety::remediate(attempts, self.max_retries());
             attempts = rem.attempts;
-            self.emit_keyed(
+            self.emit_keyed_meta(
                 &format!("{}/failed#{failed_attempt}", st.name),
                 ledger::TYPE_UNIT_FAILED,
                 json!({"id": st.name, "attempts": attempts}),
+                // The reviewed base-HEAD sha (spec 11, unit 1): a standalone-review reject
+                // pairs with a later approve on the SAME sha for the flip-flop fold.
+                &[(META_WORKTREE_SHA, &worktree::head_sha_of(dir))],
             )?;
             if rem.decision == safety::Decision::Escalate {
                 let why = if approved {
@@ -6676,6 +6727,130 @@ mod tests {
         assert!(
             repo.path().join("feature.rs").exists(),
             "the prior window's committed file must land in the base on resume-integrate"
+        );
+    }
+
+    /// Build a single implement+review stage `s` (worker implements, one lens, one
+    /// adjudicator), returning the config. The adjudicator's canned verdict is `verdict`.
+    fn sha_stamp_cfg() -> Config {
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                review: crate::config::ReviewPanel {
+                    lenses: vec!["lens".into()],
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        cfg
+    }
+
+    #[test]
+    fn review_boundary_events_carry_the_worktree_sha() {
+        // spec 11, unit 1: the `verified` and `reviewed` review-boundary statuses carry the
+        // reviewed worktree HEAD sha as metadata (mirroring the commit UnitIntegrated
+        // carries), so the flip-flop fold can tell a verdict reversal on the SAME code from
+        // a legitimate remediation on new code.
+        let repo = init_repo();
+        let cfg = sha_stamp_cfg();
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            write_file: Some("feature.rs".into()),
+            output_by_agent: HashMap::from([
+                ("judge".to_string(), r#"{"verdict":"approve"}"#.to_string()),
+                ("lens".to_string(), "reviewed: no blocker".to_string()),
+            ]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo.path().to_str().unwrap().to_string(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let sha_of = |status: &str| -> Option<String> {
+            events
+                .iter()
+                .find(|e| {
+                    e.type_ == ledger::TYPE_UNIT_STATUS
+                        && String::from_utf8_lossy(&e.data)
+                            .contains(&format!("\"status\":\"{status}\""))
+                })
+                .and_then(|e| e.meta.get(META_WORKTREE_SHA).cloned())
+        };
+        let verified_sha = sha_of("verified").expect("verified carries a worktree sha");
+        let reviewed_sha = sha_of("reviewed").expect("reviewed carries a worktree sha");
+        assert_eq!(
+            verified_sha.len(),
+            40,
+            "the stamp is a full git sha: {verified_sha:?}"
+        );
+        assert!(verified_sha.chars().all(|c| c.is_ascii_hexdigit()));
+        // Both boundary events stamp the SAME committed tree the tiers judged this attempt.
+        assert_eq!(
+            verified_sha, reviewed_sha,
+            "verified and reviewed must stamp the same reviewed sha"
+        );
+    }
+
+    #[test]
+    fn a_review_reject_unitfailed_carries_the_worktree_sha() {
+        // spec 11, unit 1: the review-reject `UnitFailed` also carries the reviewed sha, so
+        // the fold can pair a reject with a later approve on the same sha.
+        let repo = init_repo();
+        let cfg = sha_stamp_cfg();
+        let st = Store::open(":memory:").unwrap();
+        // The adjudicator rejects every attempt, so the unit fails (and eventually
+        // escalates); each review-reject UnitFailed must carry the sha.
+        let driver = Stub {
+            write_file: Some("feature.rs".into()),
+            output_by_agent: HashMap::from([
+                ("judge".to_string(), r#"{"verdict":"reject"}"#.to_string()),
+                (
+                    "lens".to_string(),
+                    "reviewed: a blocker remains".to_string(),
+                ),
+            ]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo.path().to_str().unwrap().to_string(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let reject_with_sha = events.iter().find(|e| {
+            e.type_ == ledger::TYPE_UNIT_FAILED
+                && e.meta
+                    .get(META_WORKTREE_SHA)
+                    .is_some_and(|s| s.len() == 40 && s.chars().all(|c| c.is_ascii_hexdigit()))
+        });
+        assert!(
+            reject_with_sha.is_some(),
+            "a review-reject UnitFailed must carry the reviewed worktree sha"
         );
     }
 

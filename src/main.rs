@@ -1708,7 +1708,80 @@ fn format_stats(m: &Metrics) -> Vec<String> {
             ));
         }
     }
+    append_review_quality(&mut lines, m);
     lines
+}
+
+/// Append the spec-11 unit-1 review-QUALITY section to `rigger stats` (the cheap six):
+/// flip-flop rate, per-lens finding survival, lens overlap, cause-split rejections,
+/// adversary precision, and cost-per-upheld-finding per tier. This is APPENDED after the
+/// existing metric lines so scripts that parse the first four stay unbroken (spec 11's
+/// backward-compatibility constraint); every rate is a guarded fraction, never `NaN`, and
+/// an empty fold prints a "(none)" line rather than a blank or a divide-by-zero.
+fn append_review_quality(lines: &mut Vec<String>, m: &Metrics) {
+    let rq = &m.review_quality;
+    lines.push("  review quality:".to_string());
+    lines.push(format!(
+        "    flip-flop rate     {:.1}% ({}/{} rejects reversed on the same sha)",
+        m.flip_flop_rate() * 100.0,
+        rq.flip_flops,
+        m.review_reject,
+    ));
+    lines.push(format!(
+        "    lens overlap       {:.1}% ({}/{} flagged files hit by 2+ actors)",
+        rq.lens_overlap_rate() * 100.0,
+        rq.overlap_files,
+        rq.finding_files,
+    ));
+    lines.push(format!(
+        "    adversary precision {:.1}% ({}/{} adversary-only findings upheld)",
+        rq.adversary_precision() * 100.0,
+        rq.adversary_only.upheld,
+        rq.adversary_only.raised,
+    ));
+    if rq.finding_survival.is_empty() {
+        lines.push("    finding survival   (no review findings recorded)".to_string());
+    } else {
+        lines.push("    finding survival per actor (upheld/raised):".to_string());
+        for (actor, c) in &rq.finding_survival {
+            lines.push(format!(
+                "      {actor:<20} {}/{} ({:.0}%)",
+                c.upheld,
+                c.raised,
+                c.survival() * 100.0,
+            ));
+        }
+    }
+    if rq.rejections_by_cause.is_empty() {
+        lines.push("    rejections by cause (none recorded)".to_string());
+    } else {
+        lines.push("    rejections by cause:".to_string());
+        for (cause, n) in &rq.rejections_by_cause {
+            lines.push(format!("      {cause:<24} {n}"));
+        }
+    }
+    if !rq.escalations_by_cause.is_empty() {
+        lines.push("    escalations by cause:".to_string());
+        for (cause, n) in &rq.escalations_by_cause {
+            lines.push(format!("      {cause:<24} {n}"));
+        }
+    }
+    if rq.tier_cost.is_empty() {
+        lines.push("    tier cost          (no review spawns recorded)".to_string());
+    } else {
+        lines.push("    cost per upheld finding per tier (spawns/upheld):".to_string());
+        for (tier, tc) in &rq.tier_cost {
+            let ratio = if tc.upheld == 0 {
+                "-".to_string()
+            } else {
+                format!("{:.1}", tc.cost_per_upheld())
+            };
+            lines.push(format!(
+                "      {tier:<12} {} spawns / {} upheld ({ratio})",
+                tc.spawns, tc.upheld,
+            ));
+        }
+    }
 }
 
 /// `rigger ground "<query>" [<k>]` - run the project's configured grounder (the
@@ -5968,6 +6041,7 @@ mod tests {
             units_escalated: 1,
             review_approve: 5,
             review_reject: 2,
+            ..Default::default()
         };
         let out = format_stats(&m).join("\n");
 
