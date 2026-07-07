@@ -360,9 +360,38 @@ pub fn live_page() -> String {
 
 /// The `--export` page: the template with the snapshot (including its event feed) inlined,
 /// yielding a self-contained static file that renders offline and never fetches.
+///
+/// The serialized snapshot is neutralized ([`escape_for_script`]) before it is spliced into
+/// the `<script>` element, so no string field it carries can break out of that container.
 pub fn render_export(events: &[Event], graph: &Graph) -> Result<String, serde_json::Error> {
     let json = serde_json::to_string(&build_state(events, graph, true)?)?;
-    Ok(PAGE_TEMPLATE.replace(STATE_PLACEHOLDER, &json))
+    Ok(PAGE_TEMPLATE.replace(STATE_PLACEHOLDER, &escape_for_script(&json)))
+}
+
+/// Neutralize a serialized-JSON payload for safe inlining inside an HTML `<script>` element.
+///
+/// `serde_json` escapes none of `<`, `>`, `&`, so a string field carrying `</script>` - an
+/// agent-authored `DecisionMade`/`ReviewFinding` summary, a unit `spec_criterion`, or a raw
+/// event payload, all of which flow verbatim into an exported snapshot's inlined feed - would
+/// close the script element and inject executing markup into the shared file. Rewriting each to
+/// its `\uXXXX` JSON escape - plus the U+2028/U+2029 line separators, which are valid inside a
+/// JSON string but terminate a JavaScript statement - keeps the value byte-identical once the
+/// browser parses the object literal while making a `</script>` breakout impossible. These five
+/// characters only ever occur inside JSON string content (structural JSON uses none of them), so
+/// a blanket rewrite of the serialized form stays valid JSON.
+fn escape_for_script(json: &str) -> String {
+    let mut out = String::with_capacity(json.len());
+    for c in json.chars() {
+        match c {
+            '<' => out.push_str("\\u003c"),
+            '>' => out.push_str("\\u003e"),
+            '&' => out.push_str("\\u0026"),
+            '\u{2028}' => out.push_str("\\u2028"),
+            '\u{2029}' => out.push_str("\\u2029"),
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -707,6 +736,52 @@ mod tests {
         assert!(
             html.contains("UnitIntegrated"),
             "the exported feed is inlined so the static page renders without fetching"
+        );
+    }
+
+    /// Regression (adjudicator-blocked stored XSS): an agent-authored string field - a
+    /// finding/decision summary or a raw event payload, all of which flow verbatim into the
+    /// exported snapshot's inlined event feed - must never break out of the `<script>`
+    /// container. serde_json escapes none of `< > /`, so a payload carrying `</script>` would
+    /// close the script element and inject executing markup into the shared export file.
+    #[test]
+    fn export_neutralizes_a_script_breakout_in_the_inlined_state() {
+        // A realistic malicious payload: it inlines verbatim into the feed summary.
+        let payload = r#"{"id":"u1","note":"</script><img src=x onerror=alert(1)>"}"#;
+        let events = positioned(vec![ev("DecisionMade", payload)]);
+        let html = render_export(&events, &Graph::default()).unwrap();
+
+        // The template carries exactly ONE real `</script>` (its own script close). Were the
+        // inlined snapshot left raw, the payload's `</script>` would add a second and break the
+        // container; neutralization keeps the count at one.
+        assert_eq!(
+            html.matches("</script>").count(),
+            1,
+            "the inlined snapshot must carry no raw </script> that escapes the script container"
+        );
+        // The breakout markup must not survive verbatim anywhere in the file.
+        assert!(
+            !html.contains("</script><img"),
+            "the </script>-prefixed injection must be neutralized, not inlined raw"
+        );
+        // Neutralized, not dropped: the `<` is escaped to its < JSON form, so the browser
+        // still parses the state back to the original string value.
+        assert!(
+            html.contains(r"\u003c/script\u003e"),
+            "the payload's < is escaped to its \\u003c JSON form, preserving the value while defanging the tag"
+        );
+        // The escaped state is still valid JSON that round-trips to the original string.
+        let start = html.find("EMBEDDED_STATE = ").unwrap() + "EMBEDDED_STATE = ".len();
+        let rest = &html[start..];
+        let end = rest.find(";\n").unwrap();
+        let state: serde_json::Value = serde_json::from_str(&rest[..end]).unwrap();
+        let feed = state["events"].as_array().unwrap();
+        assert!(
+            feed.iter().any(|e| e["summary"]
+                .as_str()
+                .unwrap_or("")
+                .contains("</script><img")),
+            "the round-tripped value is the original payload, unharmed by the transport escaping"
         );
     }
 
