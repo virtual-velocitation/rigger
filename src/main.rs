@@ -1708,7 +1708,126 @@ fn format_stats(m: &Metrics) -> Vec<String> {
             ));
         }
     }
+    append_review_quality(&mut lines, m);
     lines
+}
+
+/// Append the spec-11 unit-1 review-QUALITY section to `rigger stats` (the cheap six):
+/// flip-flop rate, per-lens finding survival, lens overlap, cause-split rejections,
+/// adversary precision, and cost-per-upheld-finding per tier. This is APPENDED after the
+/// existing metric lines so scripts that parse the first four stay unbroken (spec 11's
+/// backward-compatibility constraint); every rate is a guarded fraction, never `NaN`, and
+/// an empty fold prints a "(none)" line rather than a blank or a divide-by-zero.
+fn append_review_quality(lines: &mut Vec<String>, m: &Metrics) {
+    let rq = &m.review_quality;
+    lines.push("  review quality:".to_string());
+    // Disclose an UNFED upheld numerator honestly (spec 11 remediation): the upheld-based
+    // folds - finding survival, adversary precision, cost per upheld - only take a non-zero
+    // value when a finding's attribution AND the adjudicator's recorded verdict meet on this
+    // log. An all-zero-upheld panel is therefore ambiguous: it can mean the review tier
+    // genuinely upheld nothing, OR that the numerator was never fed here. Distinguish and
+    // disclose the UNFED case so a reader never misreads "0 upheld" as proven reviewer
+    // failure. Two unfed shapes leave the folded upheld total at 0 while findings/spawns
+    // exist:
+    //   - NO verdict recorded on this run's driver (the in-process cli path records none), or
+    //   - a verdict WAS recorded but the findings it upheld carry no attribution to fold onto
+    //     (`upheld_unattributed > 0` - the empty-actor sentinel dropped them). This is the
+    //     dominant case on a real aggregate store, which the adjudications==0 guard missed.
+    // A verdict that recorded and genuinely upheld nothing (upheld set empty, so
+    // `upheld_unattributed == 0`) is NOT unfed - its 0% is honest, so it stays silent.
+    let upheld_folded: u64 = rq.finding_survival.values().map(|c| c.upheld).sum();
+    let has_upheld_panel = !rq.finding_survival.is_empty() || !rq.tier_cost.is_empty();
+    if has_upheld_panel
+        && upheld_folded == 0
+        && (rq.adjudications == 0 || rq.upheld_unattributed > 0)
+    {
+        let why = if rq.adjudications == 0 {
+            "no adjudicator verdict recorded on this run's driver - the upheld set rides the courier SpawnResult the in-process cli path never writes".to_string()
+        } else {
+            format!(
+                "a verdict WAS recorded, but {} upheld finding(s) carry no attribution to fold onto (unattributed on this log)",
+                rq.upheld_unattributed,
+            )
+        };
+        lines.push(format!(
+            "    (unfed upheld numerator: the folds below - survival, adversary precision, cost per upheld - render 0/- and do NOT mean the review tier upheld nothing; {why})"
+        ));
+    }
+    lines.push(format!(
+        "    flip-flop rate     {:.1}% ({}/{} rejects reversed on the same sha)",
+        m.flip_flop_rate() * 100.0,
+        rq.flip_flops,
+        m.review_reject,
+    ));
+    lines.push(format!(
+        "    lens overlap       {:.1}% ({}/{} flagged files hit by 2+ actors)",
+        rq.lens_overlap_rate() * 100.0,
+        rq.overlap_files,
+        rq.finding_files,
+    ));
+    lines.push(format!(
+        "    adversary precision {:.1}% ({}/{} adversary-only findings upheld)",
+        rq.adversary_precision() * 100.0,
+        rq.adversary_only.upheld,
+        rq.adversary_only.raised,
+    ));
+    if rq.finding_survival.is_empty() {
+        lines.push("    finding survival   (no review findings recorded)".to_string());
+    } else {
+        lines.push("    finding survival per actor (upheld/raised):".to_string());
+        for (actor, c) in &rq.finding_survival {
+            lines.push(format!(
+                "      {actor:<20} {}/{} ({:.0}%)",
+                c.upheld,
+                c.raised,
+                c.survival() * 100.0,
+            ));
+        }
+    }
+    if rq.rejections_by_cause.is_empty() {
+        lines.push("    rejections by cause (none recorded)".to_string());
+    } else {
+        lines.push("    rejections by cause:".to_string());
+        for (cause, n) in &rq.rejections_by_cause {
+            lines.push(format!("      {cause:<24} {n}"));
+        }
+    }
+    // A rejection's cause rides a RECORDED adjudicator reject verdict; the in-process cli
+    // path records none, so on that path - and on any aggregate store mixing the two - the
+    // folded causes account for FEWER rejects than review_reject. Disclose the unfed
+    // remainder so the cause panel is never misread as the full reject breakdown (the count
+    // never underflows: each cause fold is paired with a review_reject in the same arm).
+    let causes_folded: u64 = rq.rejections_by_cause.values().sum();
+    if causes_folded < m.review_reject {
+        lines.push(format!(
+            "    (cause folded for {}/{} review rejects; the other {} carry no recorded verdict cause on this log)",
+            causes_folded,
+            m.review_reject,
+            m.review_reject - causes_folded,
+        ));
+    }
+    if !rq.escalations_by_cause.is_empty() {
+        lines.push("    escalations by cause:".to_string());
+        for (cause, n) in &rq.escalations_by_cause {
+            lines.push(format!("      {cause:<24} {n}"));
+        }
+    }
+    if rq.tier_cost.is_empty() {
+        lines.push("    tier cost          (no review spawns recorded)".to_string());
+    } else {
+        lines.push("    cost per upheld finding per tier (spawns/upheld):".to_string());
+        for (tier, tc) in &rq.tier_cost {
+            let ratio = if tc.upheld == 0 {
+                "-".to_string()
+            } else {
+                format!("{:.1}", tc.cost_per_upheld())
+            };
+            lines.push(format!(
+                "      {tier:<12} {} spawns / {} upheld ({ratio})",
+                tc.spawns, tc.upheld,
+            ));
+        }
+    }
 }
 
 /// `rigger ground "<query>" [<k>]` - run the project's configured grounder (the
@@ -5968,6 +6087,7 @@ mod tests {
             units_escalated: 1,
             review_approve: 5,
             review_reject: 2,
+            ..Default::default()
         };
         let out = format_stats(&m).join("\n");
 
@@ -6020,6 +6140,187 @@ mod tests {
         assert!(
             !out.to_lowercase().contains("nan"),
             "rates must be guarded, never NaN:\n{out}"
+        );
+    }
+
+    /// spec 11 remediation: an in-process (cli) run has findings but records NO adjudicator
+    /// verdict (no SpawnResult), so the upheld-based folds are unfed. The render must
+    /// DISCLOSE that honestly rather than let a reader misread the 0% survival as the
+    /// adjudicator having discarded every finding.
+    #[test]
+    fn stats_discloses_when_no_verdict_was_recorded_on_this_driver() {
+        let mut finding_survival = BTreeMap::new();
+        finding_survival.insert(
+            "lens:sdet".to_string(),
+            metrics::FindingCounts {
+                raised: 3,
+                upheld: 0,
+            },
+        );
+        let m = Metrics {
+            review_quality: metrics::ReviewQuality {
+                finding_survival,
+                adjudications: 0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let out = format_stats(&m).join("\n");
+        assert!(
+            out.contains("no adjudicator verdict recorded on this run's driver"),
+            "an in-process run with findings but no recorded verdict must disclose the unfed numerator:\n{out}"
+        );
+
+        // With a verdict recorded (the courier path), the disclosure is suppressed.
+        let mut finding_survival = BTreeMap::new();
+        finding_survival.insert(
+            "lens:sdet".to_string(),
+            metrics::FindingCounts {
+                raised: 3,
+                upheld: 2,
+            },
+        );
+        let m = Metrics {
+            review_quality: metrics::ReviewQuality {
+                finding_survival,
+                adjudications: 1,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let out = format_stats(&m).join("\n");
+        assert!(
+            !out.contains("no adjudicator verdict recorded"),
+            "a run WITH a recorded verdict must not print the disclosure:\n{out}"
+        );
+    }
+
+    /// spec 11 remediation (the reject this unit fixes): a run RECORDS an adjudicator verdict
+    /// (adjudications > 0) yet folds ZERO upheld per actor because the upheld findings carry
+    /// no attribution on this log (the empty-actor sentinel dropped them - the dominant shape
+    /// on a real aggregate store). The prior guard keyed the disclosure on `adjudications == 0`
+    /// only, so this case rendered an all-zero survival / "-" cost panel with NO disclosure -
+    /// the exact "review upheld nothing" misread this unit exists to prevent. The render must
+    /// now DISCLOSE the unfed numerator whenever an all-zero-upheld panel hides a dropped
+    /// numerator, and stay SILENT only when the adjudicator genuinely upheld nothing.
+    #[test]
+    fn stats_discloses_unfed_numerator_when_verdict_recorded_but_findings_unattributed() {
+        let mut finding_survival = BTreeMap::new();
+        finding_survival.insert(
+            "lens:sdet".to_string(),
+            metrics::FindingCounts {
+                raised: 3,
+                upheld: 0,
+            },
+        );
+        let mut tier_cost = BTreeMap::new();
+        tier_cost.insert(
+            "lens".to_string(),
+            metrics::TierCost {
+                spawns: 2,
+                upheld: 0,
+            },
+        );
+        tier_cost.insert(
+            "adjudicator".to_string(),
+            metrics::TierCost {
+                spawns: 1,
+                upheld: 0,
+            },
+        );
+        let m = Metrics {
+            review_reject: 5,
+            review_quality: metrics::ReviewQuality {
+                finding_survival,
+                tier_cost,
+                adjudications: 1,       // a verdict WAS recorded ...
+                upheld_unattributed: 2, // ... but the findings it upheld are unattributed here
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let out = format_stats(&m).join("\n");
+        assert!(
+            out.contains("unfed upheld numerator"),
+            "an all-zero-upheld panel with a recorded verdict but unattributed upheld findings must disclose the unfed numerator:\n{out}"
+        );
+        assert!(
+            out.contains("2 upheld finding(s) carry no attribution"),
+            "the disclosure must name the count of dropped upheld findings:\n{out}"
+        );
+        assert!(
+            !out.contains("no adjudicator verdict recorded"),
+            "with a verdict recorded, the disclosure must not claim none was recorded:\n{out}"
+        );
+
+        // A verdict that recorded and GENUINELY upheld nothing (nothing dropped) is NOT unfed;
+        // its 0% is honest, so the render must stay silent rather than cry an unfed numerator.
+        let mut finding_survival = BTreeMap::new();
+        finding_survival.insert(
+            "lens:sdet".to_string(),
+            metrics::FindingCounts {
+                raised: 3,
+                upheld: 0,
+            },
+        );
+        let m = Metrics {
+            review_quality: metrics::ReviewQuality {
+                finding_survival,
+                adjudications: 1,
+                upheld_unattributed: 0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let out = format_stats(&m).join("\n");
+        assert!(
+            !out.contains("unfed upheld numerator"),
+            "a genuine all-discard verdict (nothing upheld, nothing dropped) must not claim an unfed numerator:\n{out}"
+        );
+    }
+
+    /// spec 11 remediation (adv-u1r-cause-split-folds-undisclosed-on-cli): a rejection's cause
+    /// folds only from a RECORDED adjudicator reject verdict, so on a real aggregate store the
+    /// cause panel accounts for far fewer rejects than `review_reject` (e.g. `spec-ambiguity 1`
+    /// beside `64 rejected`). The render must disclose the unfed remainder so the cause panel
+    /// is never misread as the full reject breakdown.
+    #[test]
+    fn stats_discloses_cause_split_remainder_when_fewer_causes_than_rejects() {
+        let mut rejections_by_cause = BTreeMap::new();
+        rejections_by_cause.insert("spec-ambiguity".to_string(), 1u64);
+        let m = Metrics {
+            review_reject: 64,
+            review_quality: metrics::ReviewQuality {
+                rejections_by_cause,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let out = format_stats(&m).join("\n");
+        assert!(
+            out.contains("cause folded for 1/64 review rejects"),
+            "a cause panel accounting for fewer rejects than review_reject must disclose the remainder:\n{out}"
+        );
+        assert!(
+            out.contains("the other 63 carry no recorded verdict cause"),
+            "the disclosure must name the unfed remainder count:\n{out}"
+        );
+
+        // When every reject carries a folded cause, no remainder disclosure fires.
+        let mut rejections_by_cause = BTreeMap::new();
+        rejections_by_cause.insert("genuine-defect".to_string(), 2u64);
+        let m = Metrics {
+            review_reject: 2,
+            review_quality: metrics::ReviewQuality {
+                rejections_by_cause,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let out = format_stats(&m).join("\n");
+        assert!(
+            !out.contains("carry no recorded verdict cause"),
+            "with every reject's cause folded, no remainder disclosure should fire:\n{out}"
         );
     }
 

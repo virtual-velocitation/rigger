@@ -588,6 +588,24 @@ fn clear_worktree_dir(repo: &str, dir: &str) -> Result<(), Error> {
     Ok(())
 }
 
+/// The current HEAD sha of the git checkout at `dir`, or `""` when `dir` is empty
+/// (a repo-less run, which has no worktree to stamp) or git cannot resolve it.
+///
+/// This is the seam spec-11 unit-1 uses to stamp the reviewed sha as metadata on the
+/// review-boundary events (`verified`, the review-reject `UnitFailed`, `reviewed`),
+/// mirroring the commit `UnitIntegrated` already carries: two review verdicts on the
+/// SAME sha are reviewer noise (the flip-flop metric), so the fold needs the sha the
+/// tiers actually judged. It is deliberately non-failing - an unresolvable HEAD yields
+/// an empty stamp that the emit path then omits, never an error that fails the run.
+pub fn head_sha_of(dir: &str) -> String {
+    if dir.is_empty() {
+        return String::new();
+    }
+    run_git(dir, &["rev-parse", "HEAD"])
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default()
+}
+
 fn git(dir: &str, args: &[&str]) -> Result<String, Error> {
     run_git(dir, args).map_err(|out| Error(format!("git {}: {out}", args.join(" "))))
 }

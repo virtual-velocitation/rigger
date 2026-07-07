@@ -22,7 +22,7 @@ use crate::safety;
 use crate::spawn::{
     self, lens_role, spawn_id, spawn_retry_id, ROLE_ADJUDICATOR, ROLE_ADVERSARY, ROLE_IMPLEMENTER,
 };
-use crate::worktree::Worktree;
+use crate::worktree::{self, Worktree};
 
 /// The run's event stream name.
 pub const STREAM: &str = "run";
@@ -97,6 +97,16 @@ pub const META_MODEL_ALIAS: &str = "model_alias";
 /// for the implementer, reviewed for the adjudicator). Empty (and so omitted) when the
 /// worker reported none.
 pub const META_MODEL_RESOLVED: &str = "model_resolved";
+
+/// The metadata key carrying the WORKTREE HEAD sha the review tiers judged (spec 11,
+/// unit 1). Stamped on the review-boundary events - the `verified` status, the
+/// review-reject `UnitFailed`, and the `reviewed` status - mirroring the commit sha
+/// [`ledger::TYPE_UNIT_INTEGRATED`] already carries, so the metrics fold can tell a
+/// genuine reject-then-approve-on-NEW-code from a flip-flop (two verdicts on the SAME
+/// sha = reviewer noise). Like [`META_MODEL_ALIAS`] it is audit metadata on events that
+/// already exist - no new event type (spec 11's Global constraints) - so folds and
+/// projections ignore it. Empty (and so omitted) on a repo-less run with no worktree.
+pub const META_WORKTREE_SHA: &str = "worktree_sha";
 
 /// The replay key for a gate's verdict, keyed by the `(unit, attempt, gate)` coordinate
 /// the gate ran under - so a step re-reaching an already-run gate REPLAYS its recorded
@@ -1108,6 +1118,24 @@ impl RunCtx<'_> {
         self.append_and_fold(ev)
     }
 
+    /// [`emit`](RunCtx::emit) plus arbitrary EXTRA metadata (each `(key, value)` pair
+    /// with a non-empty value; empties omitted, exactly as
+    /// [`emit_keyed_meta`](RunCtx::emit_keyed_meta) omits them). Unlike `emit_keyed_meta`
+    /// this appends UNCONDITIONALLY - it carries no replay key - so it is only for events
+    /// that are already emitted at most once per reach (the review-reject `UnitFailed`,
+    /// which the per-unit loop appends once per failing attempt). It exists so that
+    /// [`META_WORKTREE_SHA`] can ride an un-keyed lifecycle event without a second event
+    /// type, the same way `emit_keyed_meta` rides the model stamps on the keyed ones.
+    fn emit_meta(&self, type_: &str, payload: Value, extra: &[(&str, &str)]) -> Result<(), Error> {
+        let mut ev = Event::new(type_, serde_json::to_vec(&payload)?);
+        for (k, v) in extra {
+            if !v.is_empty() {
+                ev = ev.with_meta(*k, *v);
+            }
+        }
+        self.append_and_fold(ev)
+    }
+
     /// Emit an event IDEMPOTENTLY under a deterministic replay `key` (spec 04, criterion
     /// 4): if the key was already recorded in the log (a prior step emitted it) or has
     /// already been emitted this process, the event is a REPLAY and the append is
@@ -1803,7 +1831,7 @@ impl RunCtx<'_> {
     /// tiers communicate THROUGH THE CONTEXT GRAPH - the system's actual cross-agent
     /// memory - not through the conductor hand-threading one agent's stdout into the
     /// next agent's prompt. TIER 1: the expert lenses review the diff in parallel and
-    /// EMIT each finding as a ReviewFinding (the REVIEW_PROTOCOL); the projector folds
+    /// EMIT each finding as a ReviewFinding (the review_protocol); the projector folds
     /// each finding ABOUT the unit's files live. TIER 2: the adversary GROUNDS after
     /// the lenses, so `graph_context` already surfaces their findings, and it tries to
     /// prove them wrong, emitting its own findings the same way. TIER 3: the
@@ -1828,7 +1856,7 @@ impl RunCtx<'_> {
         let lenses = panel.lenses.clone();
         let adversary = panel.adversary.clone();
         let adjudicator = panel.adjudicator.clone();
-        // TIER 1: the lenses emit their findings to the graph (REVIEW_PROTOCOL); the
+        // TIER 1: the lenses emit their findings to the graph (review_protocol); the
         // projector folds them ABOUT the unit's files live.
         if !lenses.is_empty() {
             self.run_review_agents_concurrently(st, &lenses, dir, attempt)?;
@@ -1863,6 +1891,9 @@ impl RunCtx<'_> {
                 &[
                     (META_MODEL_ALIAS, &self.agent_model(&adjudicator, attempt)),
                     (META_MODEL_RESOLVED, &adj_resolved),
+                    // The approved worktree sha (spec 11, unit 1): pairs with a prior
+                    // reject on the SAME sha to surface reviewer flip-flop.
+                    (META_WORKTREE_SHA, &worktree::head_sha_of(dir)),
                 ],
             )?;
             Ok(ReviewOutcome::approved(reason))
@@ -2100,6 +2131,11 @@ impl RunCtx<'_> {
                     // recorded gates does not re-append it (spec 04, criterion 4). It is
                     // still an event of the implementer spawn, so it carries the same
                     // requested alias and resolved id as the green status (spec 05 line 52).
+                    // The worktree HEAD the tiers are about to judge (spec 11, unit 1):
+                    // the implementer's committed tree (committed above, before gating),
+                    // stamped so a later reject/approve on the SAME sha reads as a
+                    // flip-flop. Empty (omitted) on a repo-less unit with no worktree.
+                    let reviewed_sha = worktree::head_sha_of(dir);
                     self.emit_keyed_meta(
                         &format!("{}/verified#{attempts}", st.name),
                         ledger::TYPE_UNIT_STATUS,
@@ -2111,6 +2147,7 @@ impl RunCtx<'_> {
                         &[
                             (META_MODEL_ALIAS, &impl_alias),
                             (META_MODEL_RESOLVED, &resolved_model),
+                            (META_WORKTREE_SHA, &reviewed_sha),
                         ],
                     )?;
                     let review = self.review_unit(st, dir, attempts)?;
@@ -2161,9 +2198,15 @@ impl RunCtx<'_> {
 
             let rem = safety::remediate(attempts, self.max_retries());
             attempts = rem.attempts;
-            self.emit(
+            // Stamp the reviewed worktree sha (spec 11, unit 1): on a review reject this
+            // is the sha the tiers judged, so the flip-flop fold can pair it with a later
+            // approve on the SAME sha. Harmless on a gate/spawn failure (the fold only
+            // reads it for a detected review reject); empty (omitted) on a repo-less unit.
+            let failed_sha = worktree::head_sha_of(dir);
+            self.emit_meta(
                 ledger::TYPE_UNIT_FAILED,
                 json!({"id": st.name, "attempts": attempts}),
+                &[(META_WORKTREE_SHA, &failed_sha)],
             )?;
             if rem.decision == safety::Decision::Escalate {
                 // The escalation lesson carries the CONCRETE final failure (spec 02):
@@ -2313,6 +2356,11 @@ impl RunCtx<'_> {
                             &self.agent_model(&st.adjudicator, attempts),
                         ),
                         (META_MODEL_RESOLVED, &adj_resolved),
+                        // The reviewed base-HEAD sha of the throwaway review worktree
+                        // (spec 11, unit 1): a standalone review re-judging the SAME sha
+                        // and flipping its verdict is reviewer noise the flip-flop fold
+                        // surfaces.
+                        (META_WORKTREE_SHA, &worktree::head_sha_of(dir)),
                     ],
                 )?;
                 self.emit(
@@ -2329,10 +2377,13 @@ impl RunCtx<'_> {
             let failed_attempt = attempts;
             let rem = safety::remediate(attempts, self.max_retries());
             attempts = rem.attempts;
-            self.emit_keyed(
+            self.emit_keyed_meta(
                 &format!("{}/failed#{failed_attempt}", st.name),
                 ledger::TYPE_UNIT_FAILED,
                 json!({"id": st.name, "attempts": attempts}),
+                // The reviewed base-HEAD sha (spec 11, unit 1): a standalone-review reject
+                // pairs with a later approve on the SAME sha for the flip-flop fold.
+                &[(META_WORKTREE_SHA, &worktree::head_sha_of(dir))],
             )?;
             if rem.decision == safety::Decision::Escalate {
                 let why = if approved {
@@ -2358,7 +2409,7 @@ impl RunCtx<'_> {
 
     /// Run the expert lenses (tier 1) concurrently. Each lens REVIEWS the diff and
     /// EMITS its findings to the shared context graph as ReviewFindings (the
-    /// REVIEW_PROTOCOL), so the later tiers and concurrent lenses retrieve them via
+    /// review_protocol), so the later tiers and concurrent lenses retrieve them via
     /// grounding + the side-car rather than via the conductor splicing one lens's
     /// stdout into another agent's prompt. The lenses produce no code to integrate, so
     /// they own NO worktree of their own and never integrate (item 6: a reviewing lens
@@ -2394,7 +2445,7 @@ impl RunCtx<'_> {
     /// worktree (`dir`) so it reads the actual code under review and any stray write
     /// (every lens has Bash; the sdet lens has Edit/Write) lands in the throwaway
     /// worktree, never the live main checkout. It is prompted with the grounded base
-    /// prompt plus the REVIEW_PROTOCOL, so it EMITS each finding it raises to the
+    /// prompt plus the review_protocol, so it EMITS each finding it raises to the
     /// shared context graph (the cross-agent memory), where the adversary, the
     /// adjudicator, and its fellow lenses retrieve it. Its stdout is no longer captured
     /// to thread into another agent's prompt - the graph is the channel. Budget-refused
@@ -2402,8 +2453,9 @@ impl RunCtx<'_> {
     fn run_lens(&self, st: &Stage, agent_id: &str, dir: &str, attempt: u32) -> Result<(), Error> {
         // A lens's output is not a verdict - it emits its findings to the graph - so the
         // substantive result is discarded here; the shared `run_reviewer` loop only needs
-        // it to be non-degenerate (Gap 18) before the review proceeds.
-        let prompt = self.build_review_prompt(st);
+        // it to be non-degenerate (Gap 18) before the review proceeds. The lens attributes
+        // each finding to its ROLE token so the courier path carries attribution too.
+        let prompt = self.build_review_prompt(st, &lens_role(agent_id));
         self.run_reviewer(
             st,
             "lens",
@@ -2481,7 +2533,7 @@ impl RunCtx<'_> {
                 return Err(budget_refused(&st.name, tier, agent_id));
             }
             // Count the ReviewFindings this spawn emits to the graph - a lens/adversary's
-            // REAL work channel (the REVIEW_PROTOCOL). A reviewer that emitted its findings
+            // REAL work channel (the review_protocol). A reviewer that emitted its findings
             // but self-reported an empty stdout DID its work and must not be misread as
             // degenerate (Gap 18, adv-u2gap18-empty-success-is-a-valid-outcome-misread-as-
             // degenerate). The callback fires only while the agent runs IN-PROCESS.
@@ -2490,7 +2542,13 @@ impl RunCtx<'_> {
                 if t == contextgraph::TYPE_REVIEW_FINDING {
                     findings.set(findings.get() + 1);
                 }
-                self.emit_with_actor(agent_id, t, v)
+                // Stamp the reviewer's ROLE token (not its raw agent id) as the actor, so
+                // the in-process attribution matches the `by` role token the same reviewer
+                // carries on the out-of-process courier path (see `review_protocol`): a
+                // finding is attributed the ONE same way (`lens:<id>` / adversary) on both
+                // driver paths, which is what lets the review-quality folds key an upheld
+                // finding to its tier regardless of which driver recorded it.
+                self.emit_with_actor(role, t, v)
             };
             let result = self
                 .deps
@@ -2573,7 +2631,7 @@ impl RunCtx<'_> {
     /// the lenses' ReviewFindings are already folded into the graph and its grounded
     /// prompt (via `graph_context`) surfaces them - it retrieves the lenses' findings
     /// through the graph, not from a hand-threaded block. It then EMITS its own
-    /// findings (the REVIEW_PROTOCOL) so the adjudicator reads them the same way. Like
+    /// findings (the review_protocol) so the adjudicator reads them the same way. Like
     /// the adjudicator it reviews - it produces no code to integrate, so it owns no
     /// worktree of its own; it runs IN the unit's worktree (`dir`), never the live
     /// main checkout - and unlike the adjudicator its output does NOT gate the stage;
@@ -2587,8 +2645,9 @@ impl RunCtx<'_> {
     ) -> Result<(), Error> {
         // Like a lens, the adversary emits its findings to the graph rather than
         // returning a verdict, so its substantive result is discarded; `run_reviewer`
-        // only needs it non-degenerate (Gap 18) before the adjudicator grounds.
-        let prompt = self.build_review_prompt(st);
+        // only needs it non-degenerate (Gap 18) before the adjudicator grounds. It
+        // attributes each finding to ROLE_ADVERSARY so the courier path carries attribution.
+        let prompt = self.build_review_prompt(st, ROLE_ADVERSARY);
         self.run_reviewer(
             st,
             "adversary",
@@ -2679,7 +2738,7 @@ impl RunCtx<'_> {
     /// targets NAMED in the prompt (handbook rules 6-8: shared blast radius, mitigation
     /// ownership, open dispositions). On a re-plan it leads with the prior rejection so
     /// the reviewer judges the revised DAG against what was wrong before. The same prompt
-    /// feeds the adversary (which appends the REVIEW_PROTOCOL and emits findings) and the
+    /// feeds the adversary (which appends the review_protocol and emits findings) and the
     /// adjudicator (whose stdout verdict gates the fan-out).
     fn build_dag_critique_prompt(
         &self,
@@ -2911,7 +2970,7 @@ impl RunCtx<'_> {
             let conflicts = blast_radius_conflicts(&radii);
             let prompt = self.build_dag_critique_prompt(stages, &radii, &conflicts, &prior_reason);
             // TIER 2: the adversary reviews the DAG and emits its findings to the graph
-            // (the REVIEW_PROTOCOL), so the adjudicator - grounding after it - reads them.
+            // (the review_protocol), so the adjudicator - grounding after it - reads them.
             if !gate_st.adversary.is_empty() {
                 self.run_reviewer(
                     gate_st,
@@ -2922,7 +2981,7 @@ impl RunCtx<'_> {
                     attempts,
                     false,
                     false,
-                    &format!("{prompt}{REVIEW_PROTOCOL}"),
+                    &format!("{prompt}{}", review_protocol(ROLE_ADVERSARY)),
                 )?;
             }
             // TIER 3: the adjudicator renders the gating verdict over the DAG, fail-closed.
@@ -3600,13 +3659,15 @@ impl RunCtx<'_> {
 
     /// Build a REVIEW agent's prompt: the grounded base prompt (which already
     /// surfaces, via `graph_context`, the decisions, lessons, AND findings other
-    /// reviewers raised about the unit's files) plus the REVIEW_PROTOCOL telling this
-    /// reviewer to emit each finding it raises as a ReviewFinding. This is how the
-    /// three tiers communicate THROUGH the graph: a lens emits findings, the adversary
-    /// and adjudicator (which ground after it) read them back from the graph, and a
-    /// reviewer who emits its own findings feeds the next tier the same way.
-    fn build_review_prompt(&self, st: &Stage) -> String {
-        format!("{}{REVIEW_PROTOCOL}", self.build_prompt(st))
+    /// reviewers raised about the unit's files) plus the [`review_protocol`] telling this
+    /// reviewer to emit each finding it raises as a ReviewFinding attributed to `actor`
+    /// (its ROLE token). This is how the three tiers communicate THROUGH the graph: a lens
+    /// emits findings, the adversary and adjudicator (which ground after it) read them back
+    /// from the graph, and a reviewer who emits its own findings feeds the next tier the
+    /// same way; the `by`-carried `actor` also lets the review-quality folds attribute the
+    /// finding on the out-of-process path (see [`review_protocol`]).
+    fn build_review_prompt(&self, st: &Stage, actor: &str) -> String {
+        format!("{}{}", self.build_prompt(st), review_protocol(actor))
     }
 
     /// Build a stage's prompt, optionally prepending a first-class prior-failure
@@ -3998,7 +4059,7 @@ const PLAN_PROTOCOL: &str = "You are the planner. The conductor has ALREADY crea
 /// Rigger's communication discipline, appended to EVERY spawned agent's SYSTEM
 /// prompt (after its persona) by [`RunCtx::build_system_prompt`], so every agent on
 /// every driver path receives it. It REINFORCES the cadence the user-prompt
-/// protocols (`EMIT_PROTOCOL` / `REVIEW_PROTOCOL`) carry the exact JSON shapes for:
+/// protocols (`EMIT_PROTOCOL` / `review_protocol`) carry the exact JSON shapes for:
 /// emit decisions and findings the MOMENT you make them, check peers between
 /// actions, and never silently contradict a peer - so concurrent agents stay
 /// coordinated through the shared log instead of running blind. This is the single
@@ -4039,7 +4100,27 @@ fn build_system_prompt(persona: &str) -> String {
 /// moment it raises it; the projector folds it ABOUT the files it concerns, and the
 /// later tiers (and concurrent lenses) retrieve it via grounding + rigger_peers,
 /// never via the conductor splicing one agent's stdout into another's prompt.
-const REVIEW_PROTOCOL: &str = "Record each review finding you raise by calling the rigger_emit tool the moment you raise it, with type \"ReviewFinding\" and data:\n{\"id\":\"<short-id>\",\"summary\":\"<one line>\",\"about\":[\"<file>\"]}\nThis writes it to the shared context graph live, so the adversary, the adjudicator, and your fellow reviewers see it immediately (via grounding and rigger_peers) and address or refute it.";
+///
+/// `actor` is the reviewer's ROLE token ([`lens_role`]`(agent)` for a lens,
+/// [`ROLE_ADVERSARY`] for the adversary) that the finding's `by` field carries. This is
+/// what makes finding attribution reach the SAME log the adjudicator's `SpawnResult`
+/// lands on: the in-process (cli) driver stamps [`contextgraph::META_ACTOR`] on the
+/// finding for us, but an OUT-OF-PROCESS reviewer (the courier / workflow path) emits
+/// its finding through `rigger emit`, which stamps no actor - so on THAT path, where the
+/// adjudicator's upheld/cause `SpawnResult` is the only place the verdict is recorded,
+/// the `by` field is the sole attribution the review-quality folds (finding survival,
+/// adversary precision, per-tier cost) can key an upheld finding on. Carrying the role
+/// token (not the raw agent id) keeps it consistent with the [`spawn_id`] role the
+/// per-tier `SpawnResult` cost fold reads, so both driver paths attribute a finding the
+/// same single way. See [`crate::metrics`].
+fn review_protocol(actor: &str) -> String {
+    format!(
+        "Record each review finding you raise by calling the rigger_emit tool the moment you raise it, with type \"ReviewFinding\" and data:\n\
+         {{\"id\":\"<short-id>\",\"by\":\"{actor}\",\"summary\":\"<one line>\",\"about\":[\"<file>\"]}}\n\
+         The `by` field ATTRIBUTES the finding to you - keep it EXACTLY as \"{actor}\" so the review-quality metrics can measure your findings' survival even when you run out-of-process (where the conductor stamps no actor for you). \
+         This writes the finding to the shared context graph live, so the adversary, the adjudicator, and your fellow reviewers see it immediately (via grounding and rigger_peers) and address or refute it."
+    )
+}
 
 /// Gap-15 prompt budget: the most-recent governing decisions kept VERBATIM in a
 /// prompt. Older ones collapse into a single visible elision note. The store keeps
@@ -6676,6 +6757,130 @@ mod tests {
         assert!(
             repo.path().join("feature.rs").exists(),
             "the prior window's committed file must land in the base on resume-integrate"
+        );
+    }
+
+    /// Build a single implement+review stage `s` (worker implements, one lens, one
+    /// adjudicator), returning the config. The adjudicator's canned verdict is `verdict`.
+    fn sha_stamp_cfg() -> Config {
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                review: crate::config::ReviewPanel {
+                    lenses: vec!["lens".into()],
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        cfg
+    }
+
+    #[test]
+    fn review_boundary_events_carry_the_worktree_sha() {
+        // spec 11, unit 1: the `verified` and `reviewed` review-boundary statuses carry the
+        // reviewed worktree HEAD sha as metadata (mirroring the commit UnitIntegrated
+        // carries), so the flip-flop fold can tell a verdict reversal on the SAME code from
+        // a legitimate remediation on new code.
+        let repo = init_repo();
+        let cfg = sha_stamp_cfg();
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            write_file: Some("feature.rs".into()),
+            output_by_agent: HashMap::from([
+                ("judge".to_string(), r#"{"verdict":"approve"}"#.to_string()),
+                ("lens".to_string(), "reviewed: no blocker".to_string()),
+            ]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo.path().to_str().unwrap().to_string(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let sha_of = |status: &str| -> Option<String> {
+            events
+                .iter()
+                .find(|e| {
+                    e.type_ == ledger::TYPE_UNIT_STATUS
+                        && String::from_utf8_lossy(&e.data)
+                            .contains(&format!("\"status\":\"{status}\""))
+                })
+                .and_then(|e| e.meta.get(META_WORKTREE_SHA).cloned())
+        };
+        let verified_sha = sha_of("verified").expect("verified carries a worktree sha");
+        let reviewed_sha = sha_of("reviewed").expect("reviewed carries a worktree sha");
+        assert_eq!(
+            verified_sha.len(),
+            40,
+            "the stamp is a full git sha: {verified_sha:?}"
+        );
+        assert!(verified_sha.chars().all(|c| c.is_ascii_hexdigit()));
+        // Both boundary events stamp the SAME committed tree the tiers judged this attempt.
+        assert_eq!(
+            verified_sha, reviewed_sha,
+            "verified and reviewed must stamp the same reviewed sha"
+        );
+    }
+
+    #[test]
+    fn a_review_reject_unitfailed_carries_the_worktree_sha() {
+        // spec 11, unit 1: the review-reject `UnitFailed` also carries the reviewed sha, so
+        // the fold can pair a reject with a later approve on the same sha.
+        let repo = init_repo();
+        let cfg = sha_stamp_cfg();
+        let st = Store::open(":memory:").unwrap();
+        // The adjudicator rejects every attempt, so the unit fails (and eventually
+        // escalates); each review-reject UnitFailed must carry the sha.
+        let driver = Stub {
+            write_file: Some("feature.rs".into()),
+            output_by_agent: HashMap::from([
+                ("judge".to_string(), r#"{"verdict":"reject"}"#.to_string()),
+                (
+                    "lens".to_string(),
+                    "reviewed: a blocker remains".to_string(),
+                ),
+            ]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo.path().to_str().unwrap().to_string(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let reject_with_sha = events.iter().find(|e| {
+            e.type_ == ledger::TYPE_UNIT_FAILED
+                && e.meta
+                    .get(META_WORKTREE_SHA)
+                    .is_some_and(|s| s.len() == 40 && s.chars().all(|c| c.is_ascii_hexdigit()))
+        });
+        assert!(
+            reject_with_sha.is_some(),
+            "a review-reject UnitFailed must carry the reviewed worktree sha"
         );
     }
 
@@ -10488,7 +10693,7 @@ mod tests {
 
     #[test]
     fn review_agents_emit_findings_via_the_review_protocol() {
-        // Item 3: a lens / adversary prompt must carry the REVIEW_PROTOCOL telling it
+        // Item 3: a lens / adversary prompt must carry the review_protocol telling it
         // to record each finding as a ReviewFinding; the adjudicator's must NOT (it
         // ends with its verdict line, not a finding emit).
         let mut cfg = Config::default();
@@ -10525,10 +10730,23 @@ mod tests {
             lens_prompt.contains("ReviewFinding"),
             "a lens must be told to emit findings as ReviewFindings; prompt was:\n{lens_prompt}"
         );
+        // spec 11, unit 1: the lens must carry its ROLE token in the finding's `by` field so
+        // its findings are attributed on the out-of-process courier path (where the conductor
+        // stamps no META_ACTOR). Its role is `lens:<agent-id>`.
+        assert!(
+            lens_prompt.contains(r#""by":"lens:lens""#),
+            "a lens must be told to attribute each finding to its role via `by`; prompt was:\n{lens_prompt}"
+        );
         let adv_prompt = driver.prompts_for("adversary").pop().unwrap();
         assert!(
             adv_prompt.contains("ReviewFinding"),
             "the adversary must be told to emit its findings as ReviewFindings; prompt was:\n{adv_prompt}"
+        );
+        // The adversary attributes its findings to the ROLE_ADVERSARY token, so adversary
+        // precision / cost-per-upheld can key its findings on the courier path.
+        assert!(
+            adv_prompt.contains(r#""by":"adversary""#),
+            "the adversary must be told to attribute each finding to `adversary` via `by`; prompt was:\n{adv_prompt}"
         );
         let adj_prompt = driver.prompts_for("adj").pop().unwrap();
         assert!(
