@@ -83,10 +83,19 @@ impl AgentDriver for ReplayDriver<'_> {
         // Read the run stream fresh on every spawn: the whole run's state lives in the
         // log, and a concurrent sibling spawn in the same wave may have appended a park
         // since this call started.
-        let events = self
+        let all = self
             .store
             .read_stream(STREAM, 0, Direction::Forward)
             .map_err(|e| Error(e.to_string()))?;
+        // Scope the spawn lookup to the CURRENT run (completes Gap 11): spawn ids for the
+        // fixed stages (`plan/...`, `plan-critique/adjudicator#N`, `plan/replan#N`) are
+        // spec-INDEPENDENT, so without run-scoping a fresh run REPLAYS a prior run's
+        // recorded result for the same id - e.g. a stale plan-critique REJECT - and the
+        // gate escalates by replaying an old verdict instead of running the new reviewer
+        // (observed: a spec-12 run replayed the spec-10 plan-critique reject). Answering
+        // and park-dedup must see only THIS run's events; the park itself is already
+        // run-stamped (`park_in_run`).
+        let events = crate::run::current_run(&all);
 
         // ANSWER an already-recorded spawn (replay): a recorded RESULT for this id means
         // the agent already ran, so return its outcome without re-running it. A recorded
@@ -99,7 +108,7 @@ impl AgentDriver for ReplayDriver<'_> {
         // fall through to RE-PARK it (idempotent, the request is already recorded), so the
         // unit unwinds cleanly like any parked spawn. A real worker result recorded later
         // (last-write-wins) is a genuine answer and supersedes it here.
-        if let Some(res) = spawn::result_of(&events, &opts.id).map_err(|e| Error(e.to_string()))? {
+        if let Some(res) = spawn::result_of(events, &opts.id).map_err(|e| Error(e.to_string()))? {
             if !res.is_liveness_fault() {
                 if res.is_error() {
                     return Err(Error(res.error));
@@ -119,7 +128,7 @@ impl AgentDriver for ReplayDriver<'_> {
         // next step replays its result. IDEMPOTENT (finding adv-park-not-idempotent): a
         // step re-running the conductor over recorded history must append NO duplicate
         // SpawnRequested, so park only an id that is not already recorded.
-        if !spawn::is_recorded(&events, &opts.id) {
+        if !spawn::is_recorded(events, &opts.id) {
             let req = spawn_request(agent, prompt, opts);
             // Park stamped with the run this spawn belongs to (spec 06, unit 1): the
             // conductor threaded the current run id onto `opts`, so the persisted
@@ -478,6 +487,52 @@ mod tests {
     }
 
     #[test]
+    fn a_prior_runs_recorded_result_never_answers_a_fresh_runs_same_id_spawn() {
+        // Gap 11 completion: the fixed-stage spawn ids (`plan/...`, `plan-critique/
+        // adjudicator#N`, `plan/replan#N`) are spec-INDEPENDENT, so the SAME id recurs
+        // across runs over one store. The replay lookup is scoped to the CURRENT run, so a
+        // fresh run NEVER replays a prior run's recorded result for that id - the observed
+        // bug was a spec-12 run answering its plan-critique adjudicator with a spec-10 run's
+        // stale REJECT, escalating the gate on an old verdict instead of running the new
+        // reviewer. Scoping keeps the prior decision OVERTURNABLE: the new adjudicator must
+        // actually run (park) and emit a NEW verdict event, not be short-circuited by the
+        // old answer. (Cross-run decision CONTEXT is unaffected - it flows whole-stream
+        // through grounding/peers; only this execution-replay lookup is run-scoped.)
+        let store = Store::open(":memory:").unwrap();
+        let id = "plan-critique/adjudicator#1";
+
+        // Run 1 recorded a REJECT for the spec-independent adjudicator id.
+        crate::run::ensure_started(&store, &["spec-10-crit".into()]).unwrap();
+        spawn::record_result(&store, &spawn::SpawnResult::ok(id, "reject")).unwrap();
+
+        // A FRESH run begins over the SAME store (distinct criteria => a new RunStarted
+        // boundary, so the prior REJECT falls before the current run's slice).
+        crate::run::ensure_started(&store, &["spec-12-crit".into()]).unwrap();
+
+        // The same-id adjudicator spawn in the new run PARKS (runs its new reviewer), it
+        // does NOT replay run 1's stale "reject".
+        let driver = ReplayDriver::new(&store);
+        let err = driver
+            .spawn(&worker(), "critique the dag", &opts_for(id), &no_emit)
+            .expect_err("a prior run's result must not answer a fresh run's same-id spawn");
+        assert!(
+            is_parked(&err),
+            "the fresh run's adjudicator parks (runs anew), never replays the prior verdict"
+        );
+
+        // And once the fresh run records its OWN verdict, THAT answers within the run: the
+        // new event overturns the old, and within-run replay is unbroken by the scoping.
+        spawn::record_result(&store, &spawn::SpawnResult::ok(id, "approve")).unwrap();
+        let answered = driver
+            .spawn(&worker(), "critique the dag", &opts_for(id), &no_emit)
+            .expect("the fresh run's own recorded verdict answers within the run");
+        assert_eq!(
+            answered.output, "approve",
+            "the new run is answered by its OWN verdict, never the prior run's"
+        );
+    }
+
+    #[test]
     fn replaying_a_recorded_result_appends_no_duplicate_lifecycle_events() {
         // spec 04, criterion 4: once the implementer's result is recorded, re-running the
         // conductor over that history any number of times appends no UnitStarted / green
@@ -487,6 +542,11 @@ mod tests {
         let store = Store::open(":memory:").unwrap();
         let cfg = config_with(vec![stage("u", "worker")]);
         let id = spawn_id("u", ROLE_IMPLEMENTER, 0);
+        // Begin the run BEFORE recording the result, exactly as production does (`run`
+        // calls `ensure_started` before any spawn is parked): the run-scoped replay lookup
+        // only answers results INSIDE the current run's slice, so a recorded result must
+        // sit after the RunStarted boundary - which it always does live.
+        crate::run::ensure_started(&store, &[]).unwrap();
         spawn::record_result(&store, &spawn::SpawnResult::ok(&id, "implemented")).unwrap();
 
         // Three consecutive steps replay the SAME recorded history (the implementer is
@@ -551,6 +611,9 @@ mod tests {
         let store = Store::open(":memory:").unwrap();
         let cfg = config_with(vec![stage("u", "worker")]);
         let id = spawn_id("u", ROLE_IMPLEMENTER, 0);
+        // Begin the run before recording (production ordering): the run-scoped replay lookup
+        // answers only results inside the current run's slice - see the sibling replay test.
+        crate::run::ensure_started(&store, &[]).unwrap();
         spawn::record_result(
             &store,
             &spawn::SpawnResult::ok(&id, "implemented")
@@ -1261,6 +1324,9 @@ mod tests {
         // replay step must reach `reviewed` with NO lens respawn and NO halt.
         let store = Store::open(":memory:").unwrap();
         let cfg = reviewed_unit_cfg();
+        // Begin the run before the couriers record (production ordering): the run-scoped
+        // replay lookup answers only results inside the current run's slice.
+        crate::run::ensure_started(&store, &[]).unwrap();
         courier_records(&store, &spawn_id("u", ROLE_IMPLEMENTER, 0), "implemented");
         courier_records(&store, &spawn_id("u", &lens_role("sdet"), 0), "");
         courier_records(

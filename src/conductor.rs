@@ -11972,6 +11972,10 @@ mod tests {
         );
 
         let st = Store::open(":memory:").unwrap();
+        // Begin the run before recording, as production does (`run` calls `ensure_started`
+        // before any spawn is parked): the run-scoped replay lookup answers only results
+        // inside the current run's slice, so the recorded result must follow the boundary.
+        crate::run::ensure_started(&st, &[]).unwrap();
         // A courier already recorded the implementer's result, so the replay driver
         // ANSWERS the implementer spawn (never parks it) and the gate is reached both
         // steps.
@@ -12078,6 +12082,9 @@ mod tests {
         );
 
         let st = Store::open(":memory:").unwrap();
+        // Begin the run before recording (production ordering): the run-scoped replay lookup
+        // answers only results inside the current run's slice.
+        crate::run::ensure_started(&st, &[]).unwrap();
         crate::spawn::record_result(
             &st,
             &crate::spawn::SpawnResult::ok(spawn_id("u", ROLE_IMPLEMENTER, 0), "done"),
@@ -12642,6 +12649,9 @@ mod tests {
         );
 
         let st = Store::open(":memory:").unwrap();
+        // Begin the run before recording (production ordering): the run-scoped replay lookup
+        // answers only results inside the current run's slice.
+        crate::run::ensure_started(&st, &[]).unwrap();
         // The adjudicator's attempt-0 verdict is recorded as a REJECT, so the replay
         // driver answers it (the review runs to a reject) instead of parking it.
         crate::spawn::record_result(
