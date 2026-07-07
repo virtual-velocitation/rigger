@@ -3,7 +3,7 @@
 //! call the in-process emit callback WHILE it runs (it has no live MCP channel),
 //! so this driver bridges emission AFTER the run: it parses the agent's stdout for
 //! the emit-protocol lines (DecisionMade / ReviewFinding / UnitProposed JSON, the
-//! same shape the EMIT_PROTOCOL / REVIEW_PROTOCOL instruct the agent to print) and
+//! same shape the EMIT_PROTOCOL / review_protocol instruct the agent to print) and
 //! replays each through `emit`. So the cli path also records decisions, extends the
 //! living DAG (UnitProposed), and feeds the side-car - the only difference from the
 //! workflow driver is that emission is post-hoc, not live mid-run.
@@ -53,7 +53,7 @@ impl AgentDriver for Driver {
         let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
         // Bridge emission: a subprocess agent has no live MCP channel, so its
         // decisions/findings are printed to stdout per the EMIT_PROTOCOL /
-        // REVIEW_PROTOCOL. Replay each through `emit` so the cli path also records
+        // review_protocol. Replay each through `emit` so the cli path also records
         // decisions, extends the living DAG (UnitProposed), and feeds the side-car -
         // exactly what the workflow driver does live. Done BEFORE the exit-status
         // check so a partially-failed run still records what the agent decided.

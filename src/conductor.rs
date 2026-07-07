@@ -1831,7 +1831,7 @@ impl RunCtx<'_> {
     /// tiers communicate THROUGH THE CONTEXT GRAPH - the system's actual cross-agent
     /// memory - not through the conductor hand-threading one agent's stdout into the
     /// next agent's prompt. TIER 1: the expert lenses review the diff in parallel and
-    /// EMIT each finding as a ReviewFinding (the REVIEW_PROTOCOL); the projector folds
+    /// EMIT each finding as a ReviewFinding (the review_protocol); the projector folds
     /// each finding ABOUT the unit's files live. TIER 2: the adversary GROUNDS after
     /// the lenses, so `graph_context` already surfaces their findings, and it tries to
     /// prove them wrong, emitting its own findings the same way. TIER 3: the
@@ -1856,7 +1856,7 @@ impl RunCtx<'_> {
         let lenses = panel.lenses.clone();
         let adversary = panel.adversary.clone();
         let adjudicator = panel.adjudicator.clone();
-        // TIER 1: the lenses emit their findings to the graph (REVIEW_PROTOCOL); the
+        // TIER 1: the lenses emit their findings to the graph (review_protocol); the
         // projector folds them ABOUT the unit's files live.
         if !lenses.is_empty() {
             self.run_review_agents_concurrently(st, &lenses, dir, attempt)?;
@@ -2409,7 +2409,7 @@ impl RunCtx<'_> {
 
     /// Run the expert lenses (tier 1) concurrently. Each lens REVIEWS the diff and
     /// EMITS its findings to the shared context graph as ReviewFindings (the
-    /// REVIEW_PROTOCOL), so the later tiers and concurrent lenses retrieve them via
+    /// review_protocol), so the later tiers and concurrent lenses retrieve them via
     /// grounding + the side-car rather than via the conductor splicing one lens's
     /// stdout into another agent's prompt. The lenses produce no code to integrate, so
     /// they own NO worktree of their own and never integrate (item 6: a reviewing lens
@@ -2445,7 +2445,7 @@ impl RunCtx<'_> {
     /// worktree (`dir`) so it reads the actual code under review and any stray write
     /// (every lens has Bash; the sdet lens has Edit/Write) lands in the throwaway
     /// worktree, never the live main checkout. It is prompted with the grounded base
-    /// prompt plus the REVIEW_PROTOCOL, so it EMITS each finding it raises to the
+    /// prompt plus the review_protocol, so it EMITS each finding it raises to the
     /// shared context graph (the cross-agent memory), where the adversary, the
     /// adjudicator, and its fellow lenses retrieve it. Its stdout is no longer captured
     /// to thread into another agent's prompt - the graph is the channel. Budget-refused
@@ -2453,8 +2453,9 @@ impl RunCtx<'_> {
     fn run_lens(&self, st: &Stage, agent_id: &str, dir: &str, attempt: u32) -> Result<(), Error> {
         // A lens's output is not a verdict - it emits its findings to the graph - so the
         // substantive result is discarded here; the shared `run_reviewer` loop only needs
-        // it to be non-degenerate (Gap 18) before the review proceeds.
-        let prompt = self.build_review_prompt(st);
+        // it to be non-degenerate (Gap 18) before the review proceeds. The lens attributes
+        // each finding to its ROLE token so the courier path carries attribution too.
+        let prompt = self.build_review_prompt(st, &lens_role(agent_id));
         self.run_reviewer(
             st,
             "lens",
@@ -2532,7 +2533,7 @@ impl RunCtx<'_> {
                 return Err(budget_refused(&st.name, tier, agent_id));
             }
             // Count the ReviewFindings this spawn emits to the graph - a lens/adversary's
-            // REAL work channel (the REVIEW_PROTOCOL). A reviewer that emitted its findings
+            // REAL work channel (the review_protocol). A reviewer that emitted its findings
             // but self-reported an empty stdout DID its work and must not be misread as
             // degenerate (Gap 18, adv-u2gap18-empty-success-is-a-valid-outcome-misread-as-
             // degenerate). The callback fires only while the agent runs IN-PROCESS.
@@ -2541,7 +2542,13 @@ impl RunCtx<'_> {
                 if t == contextgraph::TYPE_REVIEW_FINDING {
                     findings.set(findings.get() + 1);
                 }
-                self.emit_with_actor(agent_id, t, v)
+                // Stamp the reviewer's ROLE token (not its raw agent id) as the actor, so
+                // the in-process attribution matches the `by` role token the same reviewer
+                // carries on the out-of-process courier path (see `review_protocol`): a
+                // finding is attributed the ONE same way (`lens:<id>` / adversary) on both
+                // driver paths, which is what lets the review-quality folds key an upheld
+                // finding to its tier regardless of which driver recorded it.
+                self.emit_with_actor(role, t, v)
             };
             let result = self
                 .deps
@@ -2624,7 +2631,7 @@ impl RunCtx<'_> {
     /// the lenses' ReviewFindings are already folded into the graph and its grounded
     /// prompt (via `graph_context`) surfaces them - it retrieves the lenses' findings
     /// through the graph, not from a hand-threaded block. It then EMITS its own
-    /// findings (the REVIEW_PROTOCOL) so the adjudicator reads them the same way. Like
+    /// findings (the review_protocol) so the adjudicator reads them the same way. Like
     /// the adjudicator it reviews - it produces no code to integrate, so it owns no
     /// worktree of its own; it runs IN the unit's worktree (`dir`), never the live
     /// main checkout - and unlike the adjudicator its output does NOT gate the stage;
@@ -2638,8 +2645,9 @@ impl RunCtx<'_> {
     ) -> Result<(), Error> {
         // Like a lens, the adversary emits its findings to the graph rather than
         // returning a verdict, so its substantive result is discarded; `run_reviewer`
-        // only needs it non-degenerate (Gap 18) before the adjudicator grounds.
-        let prompt = self.build_review_prompt(st);
+        // only needs it non-degenerate (Gap 18) before the adjudicator grounds. It
+        // attributes each finding to ROLE_ADVERSARY so the courier path carries attribution.
+        let prompt = self.build_review_prompt(st, ROLE_ADVERSARY);
         self.run_reviewer(
             st,
             "adversary",
@@ -2730,7 +2738,7 @@ impl RunCtx<'_> {
     /// targets NAMED in the prompt (handbook rules 6-8: shared blast radius, mitigation
     /// ownership, open dispositions). On a re-plan it leads with the prior rejection so
     /// the reviewer judges the revised DAG against what was wrong before. The same prompt
-    /// feeds the adversary (which appends the REVIEW_PROTOCOL and emits findings) and the
+    /// feeds the adversary (which appends the review_protocol and emits findings) and the
     /// adjudicator (whose stdout verdict gates the fan-out).
     fn build_dag_critique_prompt(
         &self,
@@ -2962,7 +2970,7 @@ impl RunCtx<'_> {
             let conflicts = blast_radius_conflicts(&radii);
             let prompt = self.build_dag_critique_prompt(stages, &radii, &conflicts, &prior_reason);
             // TIER 2: the adversary reviews the DAG and emits its findings to the graph
-            // (the REVIEW_PROTOCOL), so the adjudicator - grounding after it - reads them.
+            // (the review_protocol), so the adjudicator - grounding after it - reads them.
             if !gate_st.adversary.is_empty() {
                 self.run_reviewer(
                     gate_st,
@@ -2973,7 +2981,7 @@ impl RunCtx<'_> {
                     attempts,
                     false,
                     false,
-                    &format!("{prompt}{REVIEW_PROTOCOL}"),
+                    &format!("{prompt}{}", review_protocol(ROLE_ADVERSARY)),
                 )?;
             }
             // TIER 3: the adjudicator renders the gating verdict over the DAG, fail-closed.
@@ -3651,13 +3659,15 @@ impl RunCtx<'_> {
 
     /// Build a REVIEW agent's prompt: the grounded base prompt (which already
     /// surfaces, via `graph_context`, the decisions, lessons, AND findings other
-    /// reviewers raised about the unit's files) plus the REVIEW_PROTOCOL telling this
-    /// reviewer to emit each finding it raises as a ReviewFinding. This is how the
-    /// three tiers communicate THROUGH the graph: a lens emits findings, the adversary
-    /// and adjudicator (which ground after it) read them back from the graph, and a
-    /// reviewer who emits its own findings feeds the next tier the same way.
-    fn build_review_prompt(&self, st: &Stage) -> String {
-        format!("{}{REVIEW_PROTOCOL}", self.build_prompt(st))
+    /// reviewers raised about the unit's files) plus the [`review_protocol`] telling this
+    /// reviewer to emit each finding it raises as a ReviewFinding attributed to `actor`
+    /// (its ROLE token). This is how the three tiers communicate THROUGH the graph: a lens
+    /// emits findings, the adversary and adjudicator (which ground after it) read them back
+    /// from the graph, and a reviewer who emits its own findings feeds the next tier the
+    /// same way; the `by`-carried `actor` also lets the review-quality folds attribute the
+    /// finding on the out-of-process path (see [`review_protocol`]).
+    fn build_review_prompt(&self, st: &Stage, actor: &str) -> String {
+        format!("{}{}", self.build_prompt(st), review_protocol(actor))
     }
 
     /// Build a stage's prompt, optionally prepending a first-class prior-failure
@@ -4049,7 +4059,7 @@ const PLAN_PROTOCOL: &str = "You are the planner. The conductor has ALREADY crea
 /// Rigger's communication discipline, appended to EVERY spawned agent's SYSTEM
 /// prompt (after its persona) by [`RunCtx::build_system_prompt`], so every agent on
 /// every driver path receives it. It REINFORCES the cadence the user-prompt
-/// protocols (`EMIT_PROTOCOL` / `REVIEW_PROTOCOL`) carry the exact JSON shapes for:
+/// protocols (`EMIT_PROTOCOL` / `review_protocol`) carry the exact JSON shapes for:
 /// emit decisions and findings the MOMENT you make them, check peers between
 /// actions, and never silently contradict a peer - so concurrent agents stay
 /// coordinated through the shared log instead of running blind. This is the single
@@ -4090,7 +4100,27 @@ fn build_system_prompt(persona: &str) -> String {
 /// moment it raises it; the projector folds it ABOUT the files it concerns, and the
 /// later tiers (and concurrent lenses) retrieve it via grounding + rigger_peers,
 /// never via the conductor splicing one agent's stdout into another's prompt.
-const REVIEW_PROTOCOL: &str = "Record each review finding you raise by calling the rigger_emit tool the moment you raise it, with type \"ReviewFinding\" and data:\n{\"id\":\"<short-id>\",\"summary\":\"<one line>\",\"about\":[\"<file>\"]}\nThis writes it to the shared context graph live, so the adversary, the adjudicator, and your fellow reviewers see it immediately (via grounding and rigger_peers) and address or refute it.";
+///
+/// `actor` is the reviewer's ROLE token ([`lens_role`]`(agent)` for a lens,
+/// [`ROLE_ADVERSARY`] for the adversary) that the finding's `by` field carries. This is
+/// what makes finding attribution reach the SAME log the adjudicator's `SpawnResult`
+/// lands on: the in-process (cli) driver stamps [`contextgraph::META_ACTOR`] on the
+/// finding for us, but an OUT-OF-PROCESS reviewer (the courier / workflow path) emits
+/// its finding through `rigger emit`, which stamps no actor - so on THAT path, where the
+/// adjudicator's upheld/cause `SpawnResult` is the only place the verdict is recorded,
+/// the `by` field is the sole attribution the review-quality folds (finding survival,
+/// adversary precision, per-tier cost) can key an upheld finding on. Carrying the role
+/// token (not the raw agent id) keeps it consistent with the [`spawn_id`] role the
+/// per-tier `SpawnResult` cost fold reads, so both driver paths attribute a finding the
+/// same single way. See [`crate::metrics`].
+fn review_protocol(actor: &str) -> String {
+    format!(
+        "Record each review finding you raise by calling the rigger_emit tool the moment you raise it, with type \"ReviewFinding\" and data:\n\
+         {{\"id\":\"<short-id>\",\"by\":\"{actor}\",\"summary\":\"<one line>\",\"about\":[\"<file>\"]}}\n\
+         The `by` field ATTRIBUTES the finding to you - keep it EXACTLY as \"{actor}\" so the review-quality metrics can measure your findings' survival even when you run out-of-process (where the conductor stamps no actor for you). \
+         This writes the finding to the shared context graph live, so the adversary, the adjudicator, and your fellow reviewers see it immediately (via grounding and rigger_peers) and address or refute it."
+    )
+}
 
 /// Gap-15 prompt budget: the most-recent governing decisions kept VERBATIM in a
 /// prompt. Older ones collapse into a single visible elision note. The store keeps
@@ -10663,7 +10693,7 @@ mod tests {
 
     #[test]
     fn review_agents_emit_findings_via_the_review_protocol() {
-        // Item 3: a lens / adversary prompt must carry the REVIEW_PROTOCOL telling it
+        // Item 3: a lens / adversary prompt must carry the review_protocol telling it
         // to record each finding as a ReviewFinding; the adjudicator's must NOT (it
         // ends with its verdict line, not a finding emit).
         let mut cfg = Config::default();
@@ -10700,10 +10730,23 @@ mod tests {
             lens_prompt.contains("ReviewFinding"),
             "a lens must be told to emit findings as ReviewFindings; prompt was:\n{lens_prompt}"
         );
+        // spec 11, unit 1: the lens must carry its ROLE token in the finding's `by` field so
+        // its findings are attributed on the out-of-process courier path (where the conductor
+        // stamps no META_ACTOR). Its role is `lens:<agent-id>`.
+        assert!(
+            lens_prompt.contains(r#""by":"lens:lens""#),
+            "a lens must be told to attribute each finding to its role via `by`; prompt was:\n{lens_prompt}"
+        );
         let adv_prompt = driver.prompts_for("adversary").pop().unwrap();
         assert!(
             adv_prompt.contains("ReviewFinding"),
             "the adversary must be told to emit its findings as ReviewFindings; prompt was:\n{adv_prompt}"
+        );
+        // The adversary attributes its findings to the ROLE_ADVERSARY token, so adversary
+        // precision / cost-per-upheld can key its findings on the courier path.
+        assert!(
+            adv_prompt.contains(r#""by":"adversary""#),
+            "the adversary must be told to attribute each finding to `adversary` via `by`; prompt was:\n{adv_prompt}"
         );
         let adj_prompt = driver.prompts_for("adj").pop().unwrap();
         assert!(

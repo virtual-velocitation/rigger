@@ -1721,6 +1721,18 @@ fn format_stats(m: &Metrics) -> Vec<String> {
 fn append_review_quality(lines: &mut Vec<String>, m: &Metrics) {
     let rq = &m.review_quality;
     lines.push("  review quality:".to_string());
+    // Disclose the in-process (cli) driver's limitation honestly (spec 11 remediation): the
+    // upheld-based folds - finding survival, adversary precision, cost per upheld - need an
+    // adjudicator verdict RECORDED as a SpawnResult, which only the out-of-process courier
+    // path writes. When this run has findings but NO recorded verdict, their 0 / "-" values
+    // mean "no verdict on this driver to fold", not "nothing upheld"; say so rather than let
+    // a reader misread an unfed numerator as the adjudicator having discarded everything.
+    if rq.adjudications == 0 && (!rq.finding_survival.is_empty() || !rq.tier_cost.is_empty()) {
+        lines.push(
+            "    (no adjudicator verdict recorded on this run's driver; the upheld-based folds below - survival, adversary precision, cost per upheld - need the courier path)"
+                .to_string(),
+        );
+    }
     lines.push(format!(
         "    flip-flop rate     {:.1}% ({}/{} rejects reversed on the same sha)",
         m.flip_flop_rate() * 100.0,
@@ -6094,6 +6106,58 @@ mod tests {
         assert!(
             !out.to_lowercase().contains("nan"),
             "rates must be guarded, never NaN:\n{out}"
+        );
+    }
+
+    /// spec 11 remediation: an in-process (cli) run has findings but records NO adjudicator
+    /// verdict (no SpawnResult), so the upheld-based folds are unfed. The render must
+    /// DISCLOSE that honestly rather than let a reader misread the 0% survival as the
+    /// adjudicator having discarded every finding.
+    #[test]
+    fn stats_discloses_when_no_verdict_was_recorded_on_this_driver() {
+        let mut finding_survival = BTreeMap::new();
+        finding_survival.insert(
+            "lens:sdet".to_string(),
+            metrics::FindingCounts {
+                raised: 3,
+                upheld: 0,
+            },
+        );
+        let m = Metrics {
+            review_quality: metrics::ReviewQuality {
+                finding_survival,
+                adjudications: 0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let out = format_stats(&m).join("\n");
+        assert!(
+            out.contains("no adjudicator verdict recorded on this run's driver"),
+            "an in-process run with findings but no recorded verdict must disclose the unfed numerator:\n{out}"
+        );
+
+        // With a verdict recorded (the courier path), the disclosure is suppressed.
+        let mut finding_survival = BTreeMap::new();
+        finding_survival.insert(
+            "lens:sdet".to_string(),
+            metrics::FindingCounts {
+                raised: 3,
+                upheld: 2,
+            },
+        );
+        let m = Metrics {
+            review_quality: metrics::ReviewQuality {
+                finding_survival,
+                adjudications: 1,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let out = format_stats(&m).join("\n");
+        assert!(
+            !out.contains("no adjudicator verdict recorded"),
+            "a run WITH a recorded verdict must not print the disclosure:\n{out}"
         );
     }
 

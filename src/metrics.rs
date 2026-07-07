@@ -46,6 +46,36 @@
 //! conductor stamps no `META_ACTOR` on either `UnitFailed` emit site (both route
 //! through `emit_with_actor("")`), so a per-tier split would be permanently empty
 //! on any real log - the spec's "otherwise report the aggregate" applies.
+//!
+//! # Review-quality attribution across the two driver paths
+//!
+//! The actor-keyed review-quality folds - **finding survival**, **adversary
+//! precision**, and the **per-tier cost-per-upheld** - join two signals that must
+//! meet on ONE log: a finding's *attribution* (who raised it) and the adjudicator's
+//! *verdict* (which findings it upheld, recorded as its `SpawnResult`). Those signals
+//! reach the log by different mechanisms on the two drivers, so attribution is carried
+//! the SAME way on both:
+//!
+//! - **In-process (`rigger run`, cli driver):** the conductor stamps `META_ACTOR` on
+//!   each finding as the reviewer emits it, but the live drivers record **no**
+//!   adjudicator `SpawnResult` (the verdict gates the stage in-memory). So `upheld` is
+//!   0 on this path - the `raised` and overlap signals are exact, but a finding's
+//!   survival cannot be computed without a recorded verdict. This is a real per-driver
+//!   limitation, not a defect: the render discloses it (an all-zero-upheld panel over a
+//!   run with findings but no recorded verdicts is the cli path, not reviewer failure).
+//! - **Out-of-process (the courier / workflow path):** the reviewer runs as its own
+//!   process and emits its finding through `rigger emit`, which stamps no `META_ACTOR`;
+//!   the adjudicator's verdict IS recorded, as the `SpawnResult` the courier writes with
+//!   `rigger result`. So the finding's own **`by`** field is the attribution, and the
+//!   conductor's `review_protocol` makes every out-of-process reviewer carry its ROLE
+//!   token there. On THIS path attribution and the verdict co-occur, so all three folds
+//!   produce real values - which is the single production path the folds are measured on
+//!   (see `courier_path_single_log_feeds_all_three_actor_keyed_folds`).
+//!
+//! Carrying the reviewer's **role token** (`lens:<agent-id>` / `adversary`, the same
+//! [`crate::spawn::spawn_id`] role the per-tier `SpawnResult` cost fold reads) as BOTH the
+//! in-process `META_ACTOR` and the out-of-process `by` means a finding is attributed one
+//! single way regardless of which driver recorded it - not two reconciled schemes.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -201,8 +231,18 @@ pub struct ReviewQuality {
     /// flipped their verdict on unchanged code, so this is reviewer noise. Paired via the
     /// [`META_WORKTREE_SHA`] stamp on the review-reject `UnitFailed` and the `reviewed`.
     pub flip_flops: u64,
-    /// Per-actor finding survival (upheld / raised), keyed by the conductor-stamped
-    /// [`META_ACTOR`] (falling back to the finding's `by`), sorted for stable reporting.
+    /// Per-actor finding survival (upheld / raised), keyed by the finding's raiser (its
+    /// ROLE token, e.g. `lens:<agent-id>` or `adversary`), sorted for stable reporting.
+    /// The raiser resolves from the conductor-stamped [`META_ACTOR`] when present, else the
+    /// finding's `by` field. The `raised` side is fed on EITHER driver path, but the
+    /// `upheld` numerator is fed only when the finding's attribution AND the adjudicator's
+    /// `SpawnResult` (which carries `upheld`) land on the SAME log: the out-of-process
+    /// courier path records the `SpawnResult` but stamps no `META_ACTOR`, so the reviewer's
+    /// `by`-carried role token (the conductor's `review_protocol` puts it there) is what
+    /// supplies attribution on THAT path; the in-process cli path stamps
+    /// `META_ACTOR` but records no adjudicator `SpawnResult`, so its `upheld` stays 0 (no
+    /// verdict to fold) - a genuine per-driver limitation, disclosed here and rendered as
+    /// such, not a silent always-zero.
     pub finding_survival: BTreeMap<String, FindingCounts>,
     /// Files carrying findings from TWO OR MORE distinct actors - the same defect flagged
     /// by more than one lens. The numerator of the lens-overlap rate (retroactive over
@@ -222,6 +262,12 @@ pub struct ReviewQuality {
     /// Per-tier cost proxy (`"lens"` / `"adversary"` / `"adjudicator"`): review spawns vs
     /// upheld findings, sorted by tier.
     pub tier_cost: BTreeMap<String, TierCost>,
+    /// Adjudicator verdicts RECORDED as a `SpawnResult` and parsed for their upheld/cause
+    /// (the courier path records these; the in-process cli path does not). This is the
+    /// numerator source for every upheld-based fold, so when it is `0` there simply is no
+    /// verdict on this run's driver to compute survival/precision/cost-per-upheld from -
+    /// the render discloses that rather than showing a misleading `0%` survival.
+    pub adjudications: u64,
 }
 
 impl ReviewQuality {
@@ -494,6 +540,9 @@ pub fn project(events: &[Event]) -> Metrics {
                 *tier_spawns.entry(tier.to_string()).or_default() += 1;
                 if tier == "adjudicator" {
                     if let Some(adj) = parse_adjudication(&res.output) {
+                        // A verdict was RECORDED on this run's driver (the courier path):
+                        // the upheld-based folds have a numerator source to fold from.
+                        metrics.review_quality.adjudications += 1;
                         for fid in adj.upheld {
                             upheld.insert(fid);
                         }
@@ -1022,6 +1071,21 @@ mod tests {
         )
         .with_meta(META_ACTOR, actor)
     }
+    /// A `ReviewFinding` as the OUT-OF-PROCESS courier path records it: the reviewer emits
+    /// it through `rigger emit`, which stamps NO `META_ACTOR`, so its attribution rides the
+    /// payload `by` role token the conductor's `review_protocol` told the reviewer to carry.
+    /// This is the shape a real single-driver-path (courier) run produces.
+    fn courier_finding(id: &str, by: &str, about: &[&str]) -> Event {
+        let about_json = about
+            .iter()
+            .map(|f| format!("\"{f}\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        ev(
+            TYPE_REVIEW_FINDING,
+            &format!(r#"{{"id":"{id}","by":"{by}","about":[{about_json}]}}"#),
+        )
+    }
     /// An adjudicator `SpawnResult` whose `output` carries the grown verdict JSON line.
     fn adjudication(unit: &str, attempt: u32, output: &str) -> Event {
         SpawnResult::ok(format!("{unit}/adjudicator#{attempt}"), output)
@@ -1063,10 +1127,14 @@ mod tests {
 
     #[test]
     fn finding_survival_is_upheld_over_raised_per_actor() {
+        // The realistic single-driver-path (courier) shape: findings carry their `by` role
+        // token (no META_ACTOR) on the SAME log the adjudicator SpawnResult lands on, so the
+        // upheld numerator is genuinely fed - not the production-impossible META_ACTOR +
+        // SpawnResult co-location.
         let events = vec![
-            finding("f1", "architecture-reviewer", &["src/a.rs"]),
-            finding("f2", "architecture-reviewer", &["src/b.rs"]),
-            finding("f3", "sdet", &["src/c.rs"]),
+            courier_finding("f1", "lens:architecture-reviewer", &["src/a.rs"]),
+            courier_finding("f2", "lens:architecture-reviewer", &["src/b.rs"]),
+            courier_finding("f3", "lens:sdet", &["src/c.rs"]),
             // The adjudicator upholds f1 and f3, discards f2.
             adjudication(
                 "u",
@@ -1075,10 +1143,10 @@ mod tests {
             ),
         ];
         let m = project(&events);
-        let arch = m.review_quality.finding_survival["architecture-reviewer"];
+        let arch = m.review_quality.finding_survival["lens:architecture-reviewer"];
         assert_eq!((arch.raised, arch.upheld), (2, 1));
         assert!((arch.survival() - 0.5).abs() < 1e-9);
-        let sdet = m.review_quality.finding_survival["sdet"];
+        let sdet = m.review_quality.finding_survival["lens:sdet"];
         assert_eq!((sdet.raised, sdet.upheld), (1, 1));
         assert_eq!(sdet.survival(), 1.0);
     }
@@ -1129,14 +1197,16 @@ mod tests {
 
     #[test]
     fn adversary_precision_is_over_adversary_only_findings() {
+        // Realistic courier shape: `by` role tokens (no META_ACTOR) alongside the recorded
+        // adjudicator verdict, so the adversary-only upheld numerator is genuinely fed.
         let events = vec![
             // Adversary-only, on a file no lens flagged - UPHELD.
-            finding("a1", "adversary", &["src/only.rs"]),
+            courier_finding("a1", "adversary", &["src/only.rs"]),
             // Adversary finding on a file a lens ALSO flagged - NOT adversary-only.
-            finding("a2", "adversary", &["src/shared.rs"]),
-            finding("l1", "sdet", &["src/shared.rs"]),
+            courier_finding("a2", "adversary", &["src/shared.rs"]),
+            courier_finding("l1", "lens:sdet", &["src/shared.rs"]),
             // Adversary-only, on its own file - DISCARDED (not upheld).
-            finding("a3", "adversary", &["src/other.rs"]),
+            courier_finding("a3", "adversary", &["src/other.rs"]),
             adjudication(
                 "u",
                 0,
@@ -1152,13 +1222,15 @@ mod tests {
 
     #[test]
     fn cost_per_upheld_finding_is_spawns_over_upheld_per_tier() {
+        // Realistic courier shape: the per-tier spawns and the `by`-attributed findings ride
+        // one log with the recorded adjudicator verdict, so each tier's upheld count is fed.
         let events = vec![
             review_spawn("u", "lens:architecture-reviewer", 0),
             review_spawn("u", "lens:sdet", 0),
             review_spawn("u", "adversary", 0),
-            finding("f1", "architecture-reviewer", &["src/a.rs"]),
-            finding("f2", "sdet", &["src/b.rs"]),
-            finding("f3", "adversary", &["src/c.rs"]),
+            courier_finding("f1", "lens:architecture-reviewer", &["src/a.rs"]),
+            courier_finding("f2", "lens:sdet", &["src/b.rs"]),
+            courier_finding("f3", "adversary", &["src/c.rs"]),
             // Upholds one lens finding (f1) and the adversary's (f3); discards f2.
             adjudication(
                 "u",
@@ -1228,5 +1300,90 @@ mod tests {
             ),
         ]);
         assert_eq!(m.review_quality.finding_survival["sdet"].upheld, 1);
+    }
+
+    #[test]
+    fn courier_path_single_log_feeds_all_three_actor_keyed_folds() {
+        // The REALISTIC production shape (spec 11 remediation): a single OUT-OF-PROCESS
+        // (courier / workflow) driver run. Every finding is emitted through `rigger emit`
+        // so it carries NO `META_ACTOR` - only the `by` role token the conductor's
+        // `review_protocol` told the reviewer to stamp - and the adjudicator's verdict is
+        // recorded as its `SpawnResult` (the ONLY place the verdict lands out-of-process).
+        // Attribution (`by`) and the upheld set (`SpawnResult`) therefore co-occur on the
+        // SAME log, so all three actor-keyed folds - finding survival, adversary precision,
+        // and per-tier cost-per-upheld - take REAL non-trivial values. This is the log a
+        // real run produces; the earlier META_ACTOR-stamped-finding + SpawnResult tests
+        // co-located two signals no single live driver path emits together.
+        let events = vec![
+            // The review spawns the courier recorded (cost side of cost-per-upheld).
+            review_spawn("u", "lens:architecture-reviewer", 0),
+            review_spawn("u", "lens:sdet", 0),
+            review_spawn("u", "adversary", 0),
+            // Findings as the courier records them: `by` role token, NO META_ACTOR.
+            courier_finding("f1", "lens:architecture-reviewer", &["src/a.rs"]),
+            courier_finding("f2", "lens:sdet", &["src/shared.rs"]),
+            // The adversary also flags src/shared.rs (a lens hit it too -> NOT adversary-only)
+            courier_finding("a1", "adversary", &["src/shared.rs"]),
+            // ...and uniquely flags src/solo.rs (adversary-only) - this one is upheld.
+            courier_finding("a2", "adversary", &["src/solo.rs"]),
+            // The adjudicator's verdict, recorded as its SpawnResult on the courier log.
+            adjudication(
+                "u",
+                0,
+                r#"{"verdict":"reject","upheld":["f1","a2"],"discarded":["f2","a1"],"cause":"genuine-defect"}"#,
+            ),
+        ];
+        let m = project(&events);
+        let rq = &m.review_quality;
+
+        // A verdict WAS recorded on this (courier) driver, so the upheld-based folds have a
+        // numerator source and the render suppresses its "no verdict recorded" disclosure.
+        assert_eq!(rq.adjudications, 1);
+
+        // finding survival: keyed by the courier `by` role token, with a REAL upheld
+        // numerator (not the always-zero the pre-remediation production path yielded).
+        assert_eq!(
+            (
+                rq.finding_survival["lens:architecture-reviewer"].raised,
+                rq.finding_survival["lens:architecture-reviewer"].upheld,
+            ),
+            (1, 1),
+        );
+        assert_eq!(
+            (
+                rq.finding_survival["lens:sdet"].raised,
+                rq.finding_survival["lens:sdet"].upheld,
+            ),
+            (1, 0),
+        );
+        assert_eq!(
+            (
+                rq.finding_survival["adversary"].raised,
+                rq.finding_survival["adversary"].upheld,
+            ),
+            (2, 1),
+        );
+
+        // adversary precision: adversary-only set = {a1 excluded (shared with a lens),
+        // a2 unique and upheld} -> 1/1 = 100%, a real value on the single courier log.
+        assert_eq!((rq.adversary_only.raised, rq.adversary_only.upheld), (1, 1),);
+        assert_eq!(rq.adversary_precision(), 1.0);
+
+        // per-tier cost-per-upheld: lens tier ran 2 spawns and had 1 upheld (f1); the
+        // adversary tier ran 1 spawn and had 1 upheld (a2). Both ratios are computable
+        // (not the "-" the pre-remediation production log rendered for every tier).
+        assert_eq!(
+            (rq.tier_cost["lens"].spawns, rq.tier_cost["lens"].upheld),
+            (2, 1),
+        );
+        assert_eq!(rq.tier_cost["lens"].cost_per_upheld(), 2.0);
+        assert_eq!(
+            (
+                rq.tier_cost["adversary"].spawns,
+                rq.tier_cost["adversary"].upheld,
+            ),
+            (1, 1),
+        );
+        assert_eq!(rq.tier_cost["adversary"].cost_per_upheld(), 1.0);
     }
 }
