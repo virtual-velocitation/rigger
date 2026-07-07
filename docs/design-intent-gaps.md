@@ -1,6 +1,6 @@
 # Design-intent gaps
 
-Status: assessed 2026-07-01 against [architecture.md](architecture.md) after the three-gap dogfood run (PR #7); updated through 2026-07-03 across the stepwise-conductor campaign's four loop runs (specs 04-07). ALL RECORDED GAPS (1-19) ARE CLOSED. Open work: Gaps 21-22 (below; fold into specs 12/13), and Gaps 23-25 (memory retrieval-boundary gaps from the 2026-07-07 context-vs-memory eval - placement, projection maintenance, trust weighting; all fold into the existing injection-ranking machinery). The improvement program in docs/research/ drives specs 10-13.
+Status: assessed 2026-07-01 against [architecture.md](architecture.md) after the three-gap dogfood run (PR #7); updated through 2026-07-03 across the stepwise-conductor campaign's four loop runs (specs 04-07). ALL RECORDED GAPS (1-19) ARE CLOSED. Open work: Gap 21 (below; spec-12 companion), and Gaps 23-25 (memory retrieval-boundary gaps from the 2026-07-07 context-vs-memory eval - placement, projection maintenance, trust weighting; all fold into the existing injection-ranking machinery). The improvement program in docs/research/ drives specs 10-13.
 
 This document records where the implementation currently falls short of the design intent, with the evidence that surfaced each gap and the shape of the fix. It is the feed for the next loop runs: each gap is written so it can be lifted into a spec's "Done when" criteria with little editing. Remove entries as they close.
 
@@ -28,7 +28,9 @@ Dogfooding. Rigger ran on its own spec; the run's telemetry (`rigger stats`, `ri
 
 **Evidence.** 2026-07-07: spec-10 run wf_3db89015 escalated `plan-critique` at event 5522 after 6 replan cycles; findings 5496-5499 name the baseline-vs-replan duplicate pairs. Operator disposition: removed the gate from rigger's OWN workflow.yml (kept in the scaffold, fully tested) so rigger self-hosts; unit-2/3 finished by hand.
 
-**Fix shape.** Two parts: (a) the gate critiques only the CURRENT run's NEWLY-PROPOSED units, treating already-integrated units as settled, not duplicate candidates; (b) definition pinning (spec 13 unit 1) prevents a gate being introduced mid-run at all - the root trigger here. Re-wire plan-critique into rigger's own loop once both land.
+**Fix shape.** Two parts: (a) the gate critiques only units that will actually FAN OUT, excluding already-integrated and terminal units, treating them as settled not duplicate candidates; (b) definition pinning (spec 13 unit 1) prevents a gate being introduced mid-run at all.
+
+**Status: CLOSED (root-cause) 2026-07-07.** Part (a) landed by hand: `dag_unit_blast_radii` excludes integrated+terminal units, pinned by `an_already_integrated_unit_is_not_a_duplicate_the_gate_can_flag`. plan-critique is RE-WIRED into rigger's own workflow.yml - the gate is now safe even when introduced mid-run. Part (b) (definition pinning, spec 13) remains as defense-in-depth against mid-run definition drift generally, but is no longer required for plan-critique.
 
 ## Gap 23: the budgeted prompt injection controls amount but not placement
 

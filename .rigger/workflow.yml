@@ -136,17 +136,24 @@ stages:
     agent: planner
     produces: dag           # refine the spec's unit DAG at runtime
 
-  # NOTE (2026-07-07): the adversarial plan-critique gate (spec 10, Unit 1) ships in the
-  #    SCAFFOLD workflow and is fully tested, but is deliberately NOT wired into rigger's
-  #    OWN self-hosted loop here. Reason (Gap 22): on a resumed run the planner re-proposes
-  #    units under fresh slugs while the run still holds the earlier waves' (or a mid-run-
-  #    introduced gate's) baseline units, so the gate flags baseline-vs-replan DUPLICATE
-  #    ownership - a rule-6 violation the planner cannot resolve via UnitProposed (it can
-  #    only ADD; supersede needs a verbatim-criterion match) - and escalates, wedging the
-  #    fan-out. rigger's own specs are hand-authored under handbook rules 6-8, so the gate
-  #    adds no value on this loop while adding that risk. Re-wire once Gap 22's fix (run-
-  #    scoped DAG critique + definition pinning, spec 13) lands. `implement` needs `plan`
-  #    directly in the meantime.
+  # 1b. Adversarial plan-critique gate (spec 10, Unit 1). Before ANY implementer
+  #    spawns, the existing adversary + adjudicator review the PROPOSED unit DAG the
+  #    planner produced: the conductor surfaces a deterministic rule-6 blast-radius
+  #    analysis (which units share a blast radius), and the reviewers judge the whole
+  #    decomposition against handbook rules 6-8 (shared blast radius, mitigation
+  #    ownership, open dispositions - docs/handbook/authoring-loops.md). A reject feeds
+  #    back to the planner (bounded by max_retries); only an approve RELEASES the
+  #    fan-out. It is review-only (no `agent`) - it critiques the plan, it does not
+  #    implement - and it needs `plan`, so the conductor runs it between planning and
+  #    the fan-out. Owns: pre-fan-out decomposition review. Per-unit review is untouched.
+  #    Gap 22 root-cause fix (2026-07-07): the critique excludes already-integrated and
+  #    terminal units (`dag_unit_blast_radii`), so an integrated unit is never flagged as
+  #    a duplicate the planner cannot resolve - the gate is safe even when introduced
+  #    mid-run and stays wired into rigger's own loop.
+  plan-critique:
+    needs: [plan]
+    adversary: adversary        # tier 2: reviews the DAG and refutes it
+    adjudicator: adjudicator    # tier 3: its approve/reject gates the fan-out
 
   # 2. Implement, review, and integrate PER UNIT. One Rust implementer per ready
   #    unit, each in an isolated worktree, partitioned by blast-radius so the waves
@@ -159,7 +166,7 @@ stages:
   #    and escalates after the retry bound - it does NOT integrate. Every
   #    planner-proposed unit inherits the same per-unit review via defaults.review.
   implement:
-    needs: [plan]
+    needs: [plan-critique]
     agent: rust-engineer
     strategy: fan-out
     partition: by-blast-radius

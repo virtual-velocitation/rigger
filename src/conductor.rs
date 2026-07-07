@@ -2717,10 +2717,21 @@ impl RunCtx<'_> {
     /// the SAME grounding [`grounded_seed`](Self::grounded_seed) uses (so rule-6 conflicts
     /// are computed against exactly the files the implementer will be grounded on), in the
     /// stages' stable (BTreeMap) name order so the analysis is deterministic across steps.
+    /// The units the plan-critique gate critiques: the implement-lifecycle units that will
+    /// actually FAN OUT this run. An already-INTEGRATED or TERMINAL (escalated/superseded)
+    /// unit is EXCLUDED (Gap 22): it is settled, not a decomposition candidate, so its blast
+    /// radius overlapping a fresh planner proposal is a resume artifact - not a rule-6
+    /// split the planner could fix (it cannot un-integrate). Including them made the gate
+    /// flag baseline-vs-replan "duplicates" and escalate on every resumed run, wedging the
+    /// fan-out. Critiquing only the not-yet-run units keeps the gate catching REAL
+    /// duplicate-among-pending decompositions (which the planner CAN fix by superseding)
+    /// while never re-litigating settled work.
     fn dag_unit_blast_radii(
         &self,
         stages: &BTreeMap<String, Stage>,
         gate_name: &str,
+        integrated: &HashSet<String>,
+        terminal: &HashSet<String>,
     ) -> Vec<(String, Vec<String>)> {
         let mut units = Vec::new();
         for (name, st) in stages {
@@ -2728,6 +2739,8 @@ impl RunCtx<'_> {
                 || is_producer(st)
                 || name == gate_name
                 || st.strategy.eq_ignore_ascii_case("fan-out")
+                || integrated.contains(name)
+                || terminal.contains(name)
             {
                 continue;
             }
@@ -2969,7 +2982,7 @@ impl RunCtx<'_> {
         loop {
             // The DETECTION half (rule 6): ground each proposed unit and surface the pairs
             // that share a blast radius as concrete evidence for the reviewers.
-            let radii = self.dag_unit_blast_radii(stages, &gate_name);
+            let radii = self.dag_unit_blast_radii(stages, &gate_name, integrated, terminal);
             let conflicts = blast_radius_conflicts(&radii);
             let prompt = self.build_dag_critique_prompt(stages, &radii, &conflicts, &prior_reason);
             // TIER 2: the adversary reviews the DAG and emits its findings to the graph
@@ -13142,6 +13155,88 @@ mod tests {
             driver.count("worker") >= 2,
             "the fan-out releases on approve; worker ran {}x",
             driver.count("worker")
+        );
+    }
+
+    #[test]
+    fn an_already_integrated_unit_is_not_a_duplicate_the_gate_can_flag() {
+        // Gap 22 (root-cause fix): the plan-critique gate critiques only the units that
+        // will FAN OUT, excluding already-integrated ones. Two criteria that ground to
+        // the SAME file would be a rule-6 conflict IF both were pending - but here the
+        // first criterion's baseline is ALREADY INTEGRATED (a prior wave did it, e.g. a
+        // gate introduced mid-run). An integrated unit is settled, not a decomposition
+        // candidate the planner could fix by superseding (it cannot un-integrate). So the
+        // gate must NOT see it as a duplicate: it critiques only the pending baseline,
+        // finds no conflict, approves, and releases the fan-out. Before the fix the gate
+        // flagged the integrated-vs-pending overlap, escalated on the unresolvable
+        // "duplicate," and wedged the run (the exact spec-10 resume failure).
+        let dir = tempfile::tempdir().unwrap();
+        let crit_a = "the shared alpha behavior is implemented";
+        let crit_b = "the shared beta behavior is implemented";
+        // BOTH criteria ground to the SAME file (overlapping blast radius): shared.rs
+        // mentions both criterion strings, so the grep grounder returns it for each.
+        std::fs::write(
+            dir.path().join("shared.rs"),
+            format!("// {crit_a}\n// {crit_b}\n"),
+        )
+        .unwrap();
+        let cfg = critique_cfg();
+        let st = Store::open(":memory:").unwrap();
+
+        // Seed the run so crit_a's baseline is ALREADY INTEGRATED. The RunStarted carries
+        // the same criteria this run drives, so ensure_started ADOPTS it (no new run) and
+        // the fold sees the integration in scope.
+        let baseline_a = unit_slug(1, crit_a);
+        st.append(
+            STREAM,
+            ExpectedRevision::Any,
+            &[
+                Event::new(
+                    crate::run::TYPE_RUN_STARTED,
+                    serde_json::to_vec(&json!({
+                        "run": "run-resume-fixture",
+                        "criteria": [crit_a, crit_b],
+                    }))
+                    .unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_STARTED,
+                    serde_json::to_vec(&json!({"id": baseline_a})).unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_INTEGRATED,
+                    serde_json::to_vec(&json!({"id": baseline_a, "commit": "prior-wave"})).unwrap(),
+                ),
+            ],
+        )
+        .unwrap();
+
+        let driver = CritiqueDriver::new(Vec::new());
+        let grep = crate::grounder::Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: None,
+            criteria: vec![crit_a.to_string(), crit_b.to_string()],
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        // The gate APPROVED (integrated, review-only) rather than escalating on a false
+        // integrated-vs-pending duplicate.
+        assert_eq!(
+            rs.units["plan-critique"].status,
+            ledger::Status::Integrated,
+            "the gate must approve: an integrated unit is not a duplicate it can flag"
+        );
+        assert_eq!(
+            rs.units[&baseline_a].status,
+            ledger::Status::Integrated,
+            "the seeded prior-wave unit stays integrated, untouched"
         );
     }
 
