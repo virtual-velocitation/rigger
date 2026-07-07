@@ -1,6 +1,6 @@
 # Design-intent gaps
 
-Status: assessed 2026-07-01 against [architecture.md](architecture.md) after the three-gap dogfood run (PR #7); updated through 2026-07-03 across the stepwise-conductor campaign's four loop runs (specs 04-07). ALL RECORDED GAPS (1-19) ARE CLOSED. Open work: Gap 21 (integrate does not re-gate the merged tree; spec-12 companion) and Gap 22 (plan-critique escalates on resumed runs; below). The improvement program in docs/research/ drives specs 10-13.
+Status: assessed 2026-07-01 against [architecture.md](architecture.md) after the three-gap dogfood run (PR #7); updated through 2026-07-03 across the stepwise-conductor campaign's four loop runs (specs 04-07). ALL RECORDED GAPS (1-19) ARE CLOSED. Open work: Gaps 21-22 (below; fold into specs 12/13), and Gaps 23-25 (memory retrieval-boundary gaps from the 2026-07-07 context-vs-memory eval - placement, projection maintenance, trust weighting; all fold into the existing injection-ranking machinery). The improvement program in docs/research/ drives specs 10-13.
 
 This document records where the implementation currently falls short of the design intent, with the evidence that surfaced each gap and the shape of the fix. It is the feed for the next loop runs: each gap is written so it can be lifted into a spec's "Done when" criteria with little editing. Remove entries as they close.
 
@@ -29,6 +29,36 @@ Dogfooding. Rigger ran on its own spec; the run's telemetry (`rigger stats`, `ri
 **Evidence.** 2026-07-07: spec-10 run wf_3db89015 escalated `plan-critique` at event 5522 after 6 replan cycles; findings 5496-5499 name the baseline-vs-replan duplicate pairs. Operator disposition: removed the gate from rigger's OWN workflow.yml (kept in the scaffold, fully tested) so rigger self-hosts; unit-2/3 finished by hand.
 
 **Fix shape.** Two parts: (a) the gate critiques only the CURRENT run's NEWLY-PROPOSED units, treating already-integrated units as settled, not duplicate candidates; (b) definition pinning (spec 13 unit 1) prevents a gate being introduced mid-run at all - the root trigger here. Re-wire plan-critique into rigger's own loop once both land.
+
+## Gap 23: the budgeted prompt injection controls amount but not placement
+
+**Intent.** Retrieved memory that is critical to the current reasoning should sit where the model attends most - near the generation point (the "lost in the middle" effect).
+
+**Reality.** Spec 07 budgets the AMOUNT of each injected section (decisions/findings/lessons) but assembles them in a fixed section order, most-recent-first within a section - not positioned by relevance to the current task. The most load-bearing decision can land in the low-attention middle.
+
+**Evidence.** The context-vs-memory-engineering evaluation (docs/research/2026-07-07-context-vs-memory-eval.md, Failure Mode #2), corroborated by the review-calibration research's position-bias finding.
+
+**Fix shape.** Rank the budgeted items by relevance-to-this-task and place the highest-relevance last (nearest the prompt tail); keep the byte budgets. Composes with Gap 24's ranking.
+
+## Gap 24: the injected projection has no maintenance (decay, dedup, TTL)
+
+**Intent.** Retrieval quality holds as a project accumulates history: stale facts do not crowd out current ones.
+
+**Reality.** The event log correctly never forgets (R2), but the PROJECTION into a prompt is recency-N with no confidence decay on volatile decisions, no semantic dedup of near-duplicate findings, and no TTL - so signal-to-noise of the injection drops over a long project (the article's "memory degradation"). Spec 13's playbook distillation dedups lessons only.
+
+**Evidence.** docs/research/2026-07-07-context-vs-memory-eval.md, "memory maintenance."
+
+**Fix shape.** A maintenance pass over the injected projection (NOT the log): decay confidence on volatile decisions, dedup semantically-near findings before budgeting, rank by importance x recency x finding-survival-rate rather than pure recency. Folds the review-calibration finding-survival telemetry into the ranking.
+
+## Gap 25: memory retrieval is not weighted by source trust
+
+**Intent.** A ratified adjudicator decision and a refuted adversary finding should not carry equal weight when injected.
+
+**Reality.** Events record WHO emitted them (META_ACTOR) but retrieval/injection does not WEIGHT by source trust (internal vs user vs external). Low impact while the fleet is all-internal; real once external content (imported fleets, web-grounded facts) enters the graph.
+
+**Evidence.** docs/research/2026-07-07-context-vs-memory-eval.md, trust-level weighting (article: 1.0 internal / 0.5 user / 0.0 external).
+
+**Fix shape.** A trust field on the emit vocabulary, folded into Gap 24's injection ranking. Lower priority than 23/24.
 
 ---
 
