@@ -78,7 +78,8 @@ pub struct RunView {
     pub deferred_gate_failed: bool,
     pub units: Vec<UnitView>,
     /// Unit ids currently awaiting a human (a `ManualReview` with the unit not yet
-    /// terminal) - the other half of the action-needed inbox alongside escalations.
+    /// terminal) - the other half of the action-needed inbox alongside escalations. Read
+    /// verbatim from [`ledger::RunState::manual_review`]; the dash does not fold it.
     pub manual_review: Vec<String>,
 }
 
@@ -212,19 +213,6 @@ pub fn build_state(
         gates,
     };
 
-    // The action-needed inbox's manual-review half: distinct units with a `ManualReview`
-    // that the ledger does not yet class terminal. Deduped and ordered for a stable page.
-    let mut manual_review: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    for e in events {
-        if e.type_ == crate::conductor::TYPE_MANUAL_REVIEW {
-            if let Some(id) = field_str(e, "unit").or_else(|| field_str(e, "id")) {
-                if !id.is_empty() && !run.is_terminal(&id) {
-                    manual_review.insert(id);
-                }
-            }
-        }
-    }
-
     let events_view = if include_events {
         Some(events.iter().map(event_view).collect())
     } else {
@@ -238,7 +226,9 @@ pub fn build_state(
             spec_defect: run.spec_defect,
             deferred_gate_failed: run.deferred_gate_failed,
             units,
-            manual_review: manual_review.into_iter().collect(),
+            // Read straight from the ledger projection (folded by `ledger::project`); the
+            // dash does not re-derive the inbox, keeping this a thin adapter.
+            manual_review: run.manual_review,
         },
         metrics: metrics_view,
         step,
