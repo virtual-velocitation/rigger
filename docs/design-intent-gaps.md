@@ -20,6 +20,8 @@ Dogfooding. Rigger ran on its own spec; the run's telemetry (`rigger stats`, `ri
 
 **Fix shape.** The integrate step re-runs the gate suite against the MERGED tree before emitting `UnitIntegrated` (spec 12's content-addressed verdicts make this cheap - an unchanged-input gate is a cache hit, so the post-merge re-gate costs only what the merge actually changed); a red post-merge re-gate blocks integration and feeds remediation with the semantic-conflict evidence.
 
+**Status: assigned to spec 12 unit 5** (2026-07-07). Note the scope is narrow: `partition: by-blast-radius` already serializes units whose GROUNDED radii overlap (batch-2 units gate against batch-1's integrated tree), so this catches only the UNPREDICTED-overlap case - two units the grounder mis-placed in one batch that merge into a broken tree.
+
 ## Gap 22: the plan-critique gate escalates on a resumed run over baseline-vs-replan duplication
 
 **Intent.** The plan-critique gate (spec 10 unit 1) rejects a decomposition that violates handbook rules 6-8 (duplicate ownership, shared blast radius) BEFORE fan-out, and a reject sends the planner back to fix it.
@@ -30,7 +32,7 @@ Dogfooding. Rigger ran on its own spec; the run's telemetry (`rigger stats`, `ri
 
 **Fix shape.** Two parts: (a) the gate critiques only units that will actually FAN OUT, excluding already-integrated and terminal units, treating them as settled not duplicate candidates; (b) definition pinning (spec 13 unit 1) prevents a gate being introduced mid-run at all.
 
-**Status: CLOSED (root-cause) 2026-07-07.** Part (a) landed by hand: `dag_unit_blast_radii` excludes integrated+terminal units, pinned by `an_already_integrated_unit_is_not_a_duplicate_the_gate_can_flag`. plan-critique is RE-WIRED into rigger's own workflow.yml - the gate is now safe even when introduced mid-run. Part (b) (definition pinning, spec 13) remains as defense-in-depth against mid-run definition drift generally, but is no longer required for plan-critique.
+**Status: CLOSED (root-cause, architecture-aligned) 2026-07-07.** Deeper analysis against the reference architecture showed the gate's whole rule-6 mechanism was the defect: `partition: by-blast-radius` is the architecture's stated handling of shared blast radius ("disjoint batches -> safe parallelism"), and worktree isolation keeps reviewers on their own diff - so a shared blast radius is NOT a decomposition defect, and the gate's `blast_radius_conflicts -> reject` both duplicated and contradicted the partitioner (rejecting at plan-time what the partitioner serializes safely at run-time, and pre-empting it by holding the fan-out). Resolution: the gate's mechanical blast-radius auto-reject is REMOVED; overlap is presented to the adjudicator as informational context; the gate keeps its genuinely-unique value - cross-unit OWNERSHIP (rule 7) and open DISPOSITIONS (rule 8), the actual spec-05 cause, which per-unit review cannot see. Handbook rule 6 corrected. plan-critique stays wired into rigger's own loop. (The earlier integrated/terminal exclusion in `dag_unit_blast_radii` remains, now just keeping settled units out of the informational context.)
 
 ## Gap 23: the budgeted prompt injection controls amount but not placement
 

@@ -154,12 +154,6 @@ fn deferred_gate_failed_key(gate: &str) -> String {
 /// "this stage reviewed; it produced no artifact to commit".
 pub const REVIEW_ONLY_NO_ARTIFACT: &str = "(review-only: no integrated artifact)";
 
-/// The phrase the plan-critique prompt uses to flag a rule-6 shared-blast-radius
-/// conflict between two proposed units (Unit 1, spec 10). It is stable so the gate's
-/// deterministic detection reads the SAME way to the adversary/adjudicator across
-/// replay steps, and so a test can assert the split is surfaced as concrete evidence.
-const BLAST_RADIUS_CONFLICT_MARKER: &str = "share a blast radius";
-
 /// The deterministic-id role token for a plan-critique planner RE-SPAWN (Unit 1, spec
 /// 10). Distinct from [`ROLE_IMPLEMENTER`] (which the plan stage's first-wave spawn
 /// uses), so a re-plan spawn id (`plan/replan#<critique-attempt>`) never collides with
@@ -2772,17 +2766,22 @@ impl RunCtx<'_> {
         b.push_str(
             "You are the plan-critique gate. Review the PROPOSED unit DAG below - the \
              decomposition the planner produced - BEFORE any implementer runs, and judge \
-             it against the decomposition rules (docs/handbook/authoring-loops.md rules \
-             6-8):\n\
-             - Rule 6 (shared blast radius): criteria whose blast radii overlap belong in \
-             ONE unit. Two units whose file footprints overlap make each reviewer see its \
-             sibling's half-landed changes and cannot converge independently - reject such \
-             a split.\n\
+             it against the CROSS-UNIT decomposition rules (docs/handbook/authoring-loops.md \
+             rules 7-8) that per-unit review cannot see:\n\
              - Rule 7 (mitigation ownership): every demanded mitigation must be owned by \
              exactly one unit, with the exclusion named on its neighbors; an unassigned or \
-             ambiguously-owned mitigation is a reject.\n\
+             ambiguously-owned mitigation - two units that will fight over the same concern \
+             through the shared context graph - is a reject.\n\
              - Rule 8 (open dispositions): a unit must not leave a disposition open for a \
-             reviewer to re-litigate; an undecided disposition is a reject.\n\n",
+             reviewer to re-litigate; an undecided disposition is a reject.\n\n\
+             NOTE on shared blast radius: units whose file footprints OVERLAP are NOT a \
+             defect. `partition: by-blast-radius` runs them in SEPARATE sequential batches \
+             (each branches off the prior batch's integrated tree), and per-unit worktree \
+             isolation keeps every reviewer on its own diff - so overlap integrates cleanly \
+             and reviews independently. Do NOT reject merely because two units touch the \
+             same file. Reject a shared-file split ONLY when it is a genuine OWNERSHIP or \
+             COHERENCE defect (rule 7) - two units that cannot own their concern cleanly - \
+             not for mechanical overlap the partitioner already serializes.\n\n",
         );
         b.push_str("Proposed units:\n");
         for (name, files) in radii {
@@ -2808,14 +2807,17 @@ impl RunCtx<'_> {
         }
         if conflicts.is_empty() {
             b.push_str(
-                "\nBlast-radius analysis (rule 6): every proposed unit has a DISJOINT \
-                 blast radius (no overlap detected).\n",
+                "\nBlast-radius overlap (informational): every proposed unit has a DISJOINT \
+                 blast radius.\n",
             );
         } else {
-            b.push_str("\nBlast-radius analysis (rule 6):\n");
+            b.push_str(
+                "\nBlast-radius overlap (informational - the partitioner serializes these \
+                 into sequential batches; judge ownership/coherence, not the overlap):\n",
+            );
             for (a, other, shared) in conflicts {
                 b.push_str(&format!(
-                    "- units `{a}` and `{other}` {BLAST_RADIUS_CONFLICT_MARKER} (both touch: {})\n",
+                    "- units `{a}` and `{other}` both touch: {}\n",
                     shared.join(", ")
                 ));
             }
@@ -2823,7 +2825,8 @@ impl RunCtx<'_> {
         b.push_str(
             "\nRender your final verdict as a JSON line: {\"verdict\":\"approve\"} to \
              release the fan-out, or {\"verdict\":\"reject\"} to send the decomposition \
-             back to the planner. Reject if any rule above is violated.\n",
+             back to the planner. Reject ONLY for a rule 7 (ownership) or rule 8 \
+             (open disposition) defect - never for mechanical blast-radius overlap alone.\n",
         );
         b
     }
@@ -2980,18 +2983,15 @@ impl RunCtx<'_> {
         let mut attempts = self.prior_attempts.get(&gate_name).copied().unwrap_or(0);
         let mut prior_reason = String::new();
         loop {
-            // The DETECTION half (rule 6): ground each proposed unit and surface the pairs
-            // that share a blast radius as concrete evidence for the reviewers. Rule 6
-            // permits a shared blast radius for "an explicitly sequenced chain", so a pair
-            // where one unit transitively `needs` the other is NOT a conflict: sequenced
-            // units never run concurrently (no reviewer sees a half-landed sibling change)
-            // and each builds on the prior's integrated tree (no integrate collision). Only
-            // CONCURRENT overlapping units - neither depending on the other - are flagged.
+            // Ground each not-yet-run unit and surface the pairs that share a blast radius
+            // as INFORMATIONAL context for the reviewers - NOT a reject trigger. A shared
+            // blast radius is safely serialized by `partition: by-blast-radius` (disjoint
+            // sequential batches, each off the prior's integrated tree) and reviewed under
+            // per-unit worktree isolation, so mechanical overlap is not a defect; the gate
+            // judges cross-unit OWNERSHIP (rule 7) and open DISPOSITIONS (rule 8), which the
+            // partitioner does not address and per-unit review cannot see.
             let radii = self.dag_unit_blast_radii(stages, &gate_name, integrated, terminal);
-            let conflicts: Vec<_> = blast_radius_conflicts(&radii)
-                .into_iter()
-                .filter(|(a, b, _)| !sequenced(stages, a, b))
-                .collect();
+            let conflicts = blast_radius_conflicts(&radii);
             let prompt = self.build_dag_critique_prompt(stages, &radii, &conflicts, &prior_reason);
             // TIER 2: the adversary reviews the DAG and emits its findings to the graph
             // (the review_protocol), so the adjudicator - grounding after it - reads them.
@@ -4485,32 +4485,6 @@ pub fn partition_by_blast_radius(items: &[(String, Vec<String>)]) -> Vec<Vec<Str
 /// pairs, sorted+deduped shared files), so the same DAG produces the same critique
 /// prompt across replay steps. A partition that is already disjoint yields no
 /// conflicts. This is the DETECTION half; the adjudicator renders the verdict.
-/// Whether `a` and `b` are in an explicitly sequenced chain: one transitively `needs`
-/// the other through the stage DAG. Sequenced units never run in the same wave, so a
-/// shared blast radius between them is what rule 6 permits ("one unit OR an explicitly
-/// sequenced chain") - not a concurrent-review or integrate-collision hazard. Symmetric:
-/// direction does not matter, only that a dependency path exists between them.
-fn sequenced(stages: &BTreeMap<String, Stage>, a: &str, b: &str) -> bool {
-    fn reaches(stages: &BTreeMap<String, Stage>, from: &str, target: &str) -> bool {
-        let mut stack = vec![from.to_string()];
-        let mut seen = HashSet::new();
-        while let Some(cur) = stack.pop() {
-            if !seen.insert(cur.clone()) {
-                continue;
-            }
-            let Some(st) = stages.get(&cur) else { continue };
-            for need in &st.needs {
-                if need == target {
-                    return true;
-                }
-                stack.push(need.clone());
-            }
-        }
-        false
-    }
-    reaches(stages, a, b) || reaches(stages, b, a)
-}
-
 pub fn blast_radius_conflicts(
     units: &[(String, Vec<String>)],
 ) -> Vec<(String, String, Vec<String>)> {
@@ -10537,38 +10511,6 @@ mod tests {
     }
 
     #[test]
-    fn sequenced_units_sharing_a_blast_radius_are_not_a_conflict() {
-        // Rule 6 permits a shared blast radius for "an explicitly sequenced chain": a pair
-        // where one unit transitively `needs` the other is sequenced (never concurrent), so
-        // the plan-critique gate must NOT flag it - the exact case that escalated spec 12
-        // (four units chained on conductor.rs). Two CONCURRENT overlapping units (neither
-        // needing the other) remain a conflict.
-        let mut stages = BTreeMap::new();
-        let stage = |needs: &[&str]| Stage {
-            needs: needs.iter().map(|s| s.to_string()).collect(),
-            ..Default::default()
-        };
-        stages.insert("u1".to_string(), stage(&["plan"]));
-        stages.insert("u2".to_string(), stage(&["u1"])); // u2 -> u1 (direct)
-        stages.insert("u3".to_string(), stage(&["u2"])); // u3 -> u2 -> u1 (transitive)
-        stages.insert("u4".to_string(), stage(&["plan"])); // concurrent with u1 (siblings)
-
-        assert!(sequenced(&stages, "u1", "u2"), "direct need is sequenced");
-        assert!(
-            sequenced(&stages, "u1", "u3"),
-            "transitive need (u3 -> u2 -> u1) is sequenced"
-        );
-        assert!(
-            sequenced(&stages, "u3", "u1"),
-            "sequencing is symmetric on the pair"
-        );
-        assert!(
-            !sequenced(&stages, "u1", "u4"),
-            "two siblings both needing plan are CONCURRENT, not sequenced - still a conflict"
-        );
-    }
-
-    #[test]
     fn blast_radius_conflicts_is_empty_for_a_disjoint_partition() {
         // A clean decomposition (every unit a disjoint file set, or an empty radius that
         // conflicts with nothing) raises no rule-6 conflict, so the gate has nothing to
@@ -13039,6 +12981,14 @@ mod tests {
         planner: String,
         adjudicator: String,
         plan_emits: Vec<(String, Value)>,
+        // The adjudicator's verdict, modelled directly: the gate rejects a decomposition
+        // for a rule 7/8 defect (ownership/disposition) - a JUDGMENT, not a mechanical
+        // blast-radius trip. These flags drive the verdict independently of blast-radius
+        // overlap (which no longer drives the gate at all): `reject_dag` rejects the first
+        // DAG then approves the revision; `reject_always` never approves (models an
+        // unresolvable defect that escalates).
+        reject_dag: bool,
+        reject_always: bool,
         calls: Mutex<Vec<String>>,
         adj_prompts: Mutex<Vec<String>>,
     }
@@ -13048,8 +12998,26 @@ mod tests {
                 planner: "planner".into(),
                 adjudicator: "judge".into(),
                 plan_emits,
+                reject_dag: false,
+                reject_always: false,
                 calls: Mutex::new(Vec::new()),
                 adj_prompts: Mutex::new(Vec::new()),
+            }
+        }
+        /// A driver whose adjudicator REJECTS the DAG (models a rule 7/8 ownership or
+        /// open-disposition defect the gate must catch), then approves the revised DAG.
+        fn rejecting(plan_emits: Vec<(String, Value)>) -> Self {
+            CritiqueDriver {
+                reject_dag: true,
+                ..Self::new(plan_emits)
+            }
+        }
+        /// A driver whose adjudicator NEVER approves (models an unresolvable rule 7/8
+        /// defect): the planner re-plans to the retry bound and the gate escalates.
+        fn always_rejecting(plan_emits: Vec<(String, Value)>) -> Self {
+            CritiqueDriver {
+                reject_always: true,
+                ..Self::new(plan_emits)
             }
         }
         fn count(&self, id: &str) -> usize {
@@ -13081,8 +13049,19 @@ mod tests {
             }
             if a.id == self.adjudicator {
                 self.adj_prompts.lock().unwrap().push(prompt.to_string());
-                // The verdict is DRAWN from the conductor's own rule-6 detection.
-                let verdict = if prompt.contains(BLAST_RADIUS_CONFLICT_MARKER) {
+                // The verdict models a rule 7/8 JUDGMENT (ownership/disposition), NOT a
+                // mechanical blast-radius trip: a rejecting driver rejects the first DAG
+                // and approves the planner's revision; otherwise it approves. Blast-radius
+                // overlap never drives this - the partitioner handles overlap safely.
+                let already_rejected = self
+                    .calls
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|c| c.as_str() == self.adjudicator)
+                    .count()
+                    > 1;
+                let verdict = if self.reject_always || (self.reject_dag && !already_rejected) {
                     "reject"
                 } else {
                     "approve"
@@ -13101,10 +13080,13 @@ mod tests {
     }
 
     #[test]
-    fn a_decomposition_splitting_one_blast_radius_across_units_draws_a_reject() {
-        // The pinned criterion (spec 10, done-when 1): a decomposition that splits ONE
-        // blast radius across two units must draw a reject from the plan-critique gate,
-        // the reject must feed back to the planner, and the fan-out must NOT release.
+    fn a_blast_radius_overlap_alone_does_not_reject() {
+        // Architecture alignment (2026-07-07): a shared blast radius is NOT a defect. The
+        // reference architecture handles overlap with `partition: by-blast-radius` ->
+        // disjoint sequential batches ("safe parallelism"), so the plan-critique gate must
+        // NOT reject two units merely for touching the same file - it judges cross-unit
+        // ownership (rule 7) and open dispositions (rule 8), which the partitioner and
+        // per-unit review do not cover.
         let dir = tempfile::tempdir().unwrap();
         let criterion = "the widget renderer is implemented";
         // The one file both units ground to: the grep grounder matches the whole
@@ -13118,7 +13100,11 @@ mod tests {
         let cfg = critique_cfg();
         let st = Store::open(":memory:").unwrap();
         // The planner splits the single criterion into TWO units - both citing it, so
-        // both ground to feature.rs and SHARE the entire blast radius (rule 6 violation).
+        // both ground to feature.rs and SHARE the entire blast radius. This is NOT a
+        // defect: `partition: by-blast-radius` serializes them into sequential batches
+        // and per-unit worktree isolation keeps each reviewer on its own diff, so overlap
+        // integrates cleanly. The gate (no ownership/disposition defect here) APPROVES and
+        // the fan-out releases - the architecture-aligned behavior (overlap != reject).
         let driver = CritiqueDriver::new(vec![
             (
                 TYPE_UNIT_PROPOSED.to_string(),
@@ -13143,30 +13129,65 @@ mod tests {
         };
         let rs = run(&cfg, &deps).unwrap();
 
-        // The fan-out never released: no implementer (worker) ran while the gate rejected.
-        assert_eq!(
-            driver.count("worker"),
-            0,
-            "the fan-out must NOT release while plan-critique rejects; calls: {:?}",
-            driver.calls.lock().unwrap()
-        );
-        // The reject fed back to the planner: it was re-spawned beyond its first wave run.
-        assert!(
-            driver.count("planner") > 1,
-            "a reject must feed back to the planner (re-plan); planner ran {}x",
-            driver.count("planner")
-        );
-        // The gate reviewed the DAG with the adversary AND the adjudicator (not lenses).
-        assert!(
-            driver.count("adversary") >= 1 && driver.count("judge") >= 1,
-            "the gate reviews with the existing adversary + adjudicator"
-        );
-        // Unresolved after bounded planner remediation, the gate ESCALATES rather than
-        // releasing the wave.
+        // The gate APPROVED despite the shared blast radius (overlap is not a defect).
         assert_eq!(
             rs.units["plan-critique"].status,
-            ledger::Status::Escalated,
-            "an unresolved plan-critique escalates rather than releasing the fan-out"
+            ledger::Status::Integrated,
+            "a shared blast radius alone must NOT reject - the partitioner serializes it"
+        );
+        // The fan-out released: the overlapping units run (the partitioner serializes them
+        // into separate batches, so they integrate cleanly).
+        assert!(
+            driver.count("worker") >= 1,
+            "the fan-out must release on approve; worker ran {}x",
+            driver.count("worker")
+        );
+        // No re-plan: an approve on the first pass means the planner runs exactly once.
+        assert_eq!(
+            driver.count("planner"),
+            1,
+            "no reject means no re-plan; planner ran {}x",
+            driver.count("planner")
+        );
+    }
+
+    #[test]
+    fn a_rule_7_or_8_defect_rejects_then_releases_on_the_revision() {
+        // The gate's REAL value: a cross-unit ownership (rule 7) or open-disposition (rule
+        // 8) defect - which per-unit review cannot see and the partitioner does not address
+        // - draws a reject that feeds back to the planner; the revised DAG then approves and
+        // releases. Modelled with a rejecting adjudicator (rule 7/8 is a judgment, not a
+        // mechanical trip), independent of blast radius.
+        let dir = tempfile::tempdir().unwrap();
+        let crit = "the alpha module is implemented";
+        std::fs::write(dir.path().join("alpha.rs"), format!("// {crit}\n")).unwrap();
+        let cfg = critique_cfg();
+        let st = Store::open(":memory:").unwrap();
+        let driver = CritiqueDriver::rejecting(Vec::new());
+        let grep = crate::grounder::Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: None,
+            criteria: vec![crit.to_string()],
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        // The reject fed back to the planner (re-plan), then the revised DAG approved.
+        assert!(
+            driver.count("planner") > 1,
+            "a rule 7/8 reject must feed back to the planner; planner ran {}x",
+            driver.count("planner")
+        );
+        assert_eq!(
+            rs.units["plan-critique"].status,
+            ledger::Status::Integrated,
+            "the gate approves the revised DAG and releases the fan-out"
         );
     }
 
@@ -13225,17 +13246,13 @@ mod tests {
     }
 
     #[test]
-    fn an_already_integrated_unit_is_not_a_duplicate_the_gate_can_flag() {
-        // Gap 22 (root-cause fix): the plan-critique gate critiques only the units that
-        // will FAN OUT, excluding already-integrated ones. Two criteria that ground to
-        // the SAME file would be a rule-6 conflict IF both were pending - but here the
-        // first criterion's baseline is ALREADY INTEGRATED (a prior wave did it, e.g. a
-        // gate introduced mid-run). An integrated unit is settled, not a decomposition
-        // candidate the planner could fix by superseding (it cannot un-integrate). So the
-        // gate must NOT see it as a duplicate: it critiques only the pending baseline,
-        // finds no conflict, approves, and releases the fan-out. Before the fix the gate
-        // flagged the integrated-vs-pending overlap, escalated on the unresolvable
-        // "duplicate," and wedged the run (the exact spec-10 resume failure).
+    fn the_gate_critiques_only_not_yet_run_units_and_approves() {
+        // The critique excludes already-integrated and terminal units (`dag_unit_blast_radii`):
+        // a settled unit is not a decomposition candidate, so it never clutters the critique
+        // context. Combined with the architecture alignment (overlap is not a defect - the
+        // partitioner serializes it), a run that adopts a prior wave's integrated unit and
+        // grounds a fresh pending unit to the SAME file approves cleanly and releases the
+        // fan-out (the exact spec-10 resume scenario, now handled at the root).
         let dir = tempfile::tempdir().unwrap();
         let crit_a = "the shared alpha behavior is implemented";
         let crit_b = "the shared beta behavior is implemented";
@@ -13307,9 +13324,10 @@ mod tests {
     }
 
     #[test]
-    fn the_plan_critique_prompt_names_rules_6_through_8() {
-        // The gate prompt must NAME the three decomposition review targets (handbook
-        // rules 6-8): shared blast radius, mitigation ownership, and open dispositions.
+    fn the_plan_critique_prompt_names_the_cross_unit_rules() {
+        // The gate prompt must NAME its review targets: mitigation ownership (rule 7) and
+        // open dispositions (rule 8) as REJECT criteria, plus the shared-blast-radius note
+        // (informational - the partitioner serializes overlap; not a reject trigger).
         let dir = tempfile::tempdir().unwrap();
         let criterion = "the widget renderer is implemented";
         std::fs::write(dir.path().join("feature.rs"), format!("// {criterion}\n")).unwrap();
@@ -13487,8 +13505,10 @@ mod tests {
             ]
         };
 
-        // Run 1: the gate escalates; the fan-out is held (no worker runs).
-        let d1 = CritiqueDriver::new(split());
+        // Run 1: the gate escalates (an unresolvable rule 7/8 defect - modelled by an
+        // always-rejecting adjudicator, since blast-radius overlap no longer rejects); the
+        // fan-out is held (no worker runs).
+        let d1 = CritiqueDriver::always_rejecting(split());
         let deps1 = Deps {
             store: &st,
             driver: &d1,
@@ -13502,7 +13522,7 @@ mod tests {
         assert_eq!(
             rs1.units["plan-critique"].status,
             ledger::Status::Escalated,
-            "run 1: the shared-blast-radius split must escalate the gate"
+            "run 1: an unresolvable rule 7/8 defect must escalate the gate"
         );
         assert_eq!(
             d1.count("worker"),
