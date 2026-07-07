@@ -10,10 +10,12 @@ pub mod config;
 pub mod contextgraph;
 pub mod driver;
 pub mod eventstore;
+pub mod failure;
 pub mod gate;
 pub mod grounder;
 pub mod hooks;
 pub mod ledger;
+pub mod liveness;
 pub mod mcpserver;
 pub mod metrics;
 /// Points `ort` at a CUDA-enabled ONNX Runtime `.so` to `dlopen` (`load-dynamic`), so

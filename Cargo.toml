@@ -34,6 +34,11 @@ kurrentdb = ["dep:kurrentdb", "dep:tokio", "dep:testcontainers"]
 [dependencies]
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
+# The declarative failure taxonomy (spec 10, unit 2) matches a failure's captured
+# output against a rule's `output_regex`. Pure-Rust, already in the default build's
+# tree transitively (via fastembed); made a direct dependency so the light
+# (`--no-default-features`) lane compiles it too.
+regex = "1"
 serde_json = "1"
 serde_yaml = "0.9"
 uuid = { version = "1", features = ["v4"] }

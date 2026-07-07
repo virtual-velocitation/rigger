@@ -3485,6 +3485,7 @@ dependencies = [
  "libc",
  "ort",
  "ort-sys",
+ "regex",
  "rusqlite",
  "serde",
  "serde_json",

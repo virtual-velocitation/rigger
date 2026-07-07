@@ -123,6 +123,17 @@ const STEP = {
   },
 }
 
+// The shape the liveness PROBE returns (spec 10, unit 3): the whole seconds since a spawn's
+// marker was last touched (its idle time), or -1 when the marker does not exist. The
+// marker-staleness watchdog runs this probe because the Workflow sandbox cannot stat a file
+// itself - it can only spawn an agent that reads the mtime via Bash.
+const IDLE = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['idle_seconds'],
+  properties: { idle_seconds: { type: 'integer' } },
+}
+
 // phaseOf builds a worker's per-unit `opts.phase` progress-group label from the wave item,
 // exactly per the documented `unit + stage` contract on spawn::SpawnRequest. The conductor
 // currently sets both to the unit id, so a unit's whole wave (implementer + reviewers)
@@ -146,11 +157,87 @@ function phaseOf(req) {
 // `fatal` is a shared sink: if the death courier ITSELF dies, we can no longer guarantee a
 // result was recorded for this spawn, so we push it here and the loop stops loudly after the
 // wave drains rather than swallowing the failure (which would hang the run on resume).
+// runWorker and its liveness helpers are defined below (the helpers first, so runWorker can
+// reference them).
+
+// markerIdleSeconds reads a spawn's liveness-marker IDLE time - the whole seconds since it was
+// last touched - via a short haiku PROBE (spec 10, unit 3). The Workflow sandbox cannot stat a
+// file, so the only way to observe the marker is to spawn an agent that reads its mtime through
+// Bash. Returns the integer idle seconds, or null when the marker is missing/unreadable OR the
+// probe itself failed - all of which the caller treats CONSERVATIVELY as not-stale (never
+// abandon a worker on a missing marker or a flaky probe). The `stat` form falls back from GNU
+// (`-c %Y`) to BSD/macOS (`-f %m`) so the probe is portable.
+async function markerIdleSeconds(marker, ph, id) {
+  try {
+    const probe = await agent(
+      `You are a rigger LIVENESS PROBE. Report how many whole seconds ago the file ${marker} was last modified. Run EXACTLY this, from a shell, using Bash, and read its single line of output:\n` +
+        `  if [ -e "${marker}" ]; then m=$(stat -c %Y "${marker}" 2>/dev/null || stat -f %m "${marker}" 2>/dev/null); echo $(( $(date +%s) - m )); else echo -1; fi\n` +
+        `Return ONLY that integer in idle_seconds - a non-negative idle-seconds count, or -1 if the file does not exist. Report nothing else.`,
+      { phase: ph, model: 'haiku', schema: IDLE, label: `liveness-probe:${id}` },
+    )
+    const n = probe && typeof probe.idle_seconds === 'number' ? probe.idle_seconds : -1
+    return n < 0 ? null : n
+  } catch {
+    // The probe agent itself died: treat the marker as unknown (conservative). A flaky probe
+    // must never manufacture a false liveness halt by abandoning a worker that may be alive.
+    return null
+  }
+}
+
+// raceMarkerStaleness is the per-worker MARKER-STALENESS watchdog (spec 10, unit 3; decision
+// d-u3r2-js-watchdog-marker-staleness, which SUPERSEDES d-u3-liveness-design(5)). It races the
+// worker's own outcome against the marker going stale, and returns whichever happens first:
+// the worker's {kind:'done'|'error'} if it finishes, or {kind:'hung'} once the marker has been
+// IDLE (untouched) longer than boundSec.
+//
+// It is NOT a total-runtime cap. It polls the marker's IDLE time - now minus its last touch -
+// which is the SAME staleness the Rust sweep judges (`liveness::is_stale`), so the JS and the
+// sweep share ONE definition of hung. A slow-but-ALIVE worker that keeps its marker fresh is
+// therefore LEFT IN-FLIGHT indefinitely, never abandoned-and-re-run (the exact dup-exec the
+// old wall-clock cap caused). Only a genuinely stale marker - which a hung worker leaves stale -
+// makes it abandon, and because the marker IS stale at that moment, the very next `rigger step`
+// sweep records the infra fault and halts LOUDLY (and the answered spawn is not re-run).
+//
+// A worker that finishes within its bound triggers ZERO probes (the common case: the first
+// window has not even elapsed). A MISSING/unreadable marker is conservatively not-stale: a
+// worker that never heartbeats is dead-worker-EXIT territory (its own agent timeout / the death
+// courier), unchanged here per this unit's exclusion - so the loop keeps waiting on it.
+async function raceMarkerStaleness(ran, boundSec, marker, ph, id) {
+  for (;;) {
+    // Wait one bound-length window, but wake immediately if the worker resolves first.
+    let timer = null
+    const window = new Promise((resolve) => {
+      timer = setTimeout(() => resolve({ kind: 'tick' }), boundSec * 1000)
+    })
+    const tick = await Promise.race([ran, window])
+    if (timer) clearTimeout(timer) // never leave a bound-long timer dangling once the race is decided
+    if (tick.kind !== 'tick') return tick // the worker finished/errored inside the window
+    // A full window elapsed with the worker still running: probe the marker's idle time.
+    const idle = await markerIdleSeconds(marker, ph, id)
+    if (idle !== null && idle > boundSec) return { kind: 'hung' }
+    // Fresh (or unknown/missing): slow-but-alive, leave in-flight and probe again next window.
+  }
+}
+
 async function runWorker(req, fatal) {
   const ph = phaseOf(req)
   const workdir = req.dir
     ? `Do all your file edits, cargo, and any git commit inside your isolated worktree ${req.dir} (the conductor assigned it and owns its lifecycle; run \`rigger ...\` commands from ${REPO}).`
     : `Work in ${REPO}.`
+  // The driver-framed liveness heartbeat (spec 10, unit 3), same mechanism family as the
+  // SCRATCH POLICY: only when this spawn carries a wall-clock bound AND `rigger step` resolved
+  // a marker path for it. The worker keeps THAT EXACT per-spawn marker fresh - the path the
+  // step stamped on the wire from the single `liveness::marker_path` authority, so the
+  // worker-write path is identical to the sweep-read path under any scratch config (never a
+  // re-hardcoded root). A HUNG agent (one that stops touching it) is then caught by `rigger
+  // step`'s liveness sweep as an infrastructure fault - never charging the unit.
+  const marker = req.marker_path
+  const heartbeat =
+    req.max_wall_clock && marker
+      ? `LIVENESS HEARTBEAT (spec 10): your spawn carries a ${req.max_wall_clock}s wall-clock bound. Prove you are alive by TOUCHING your per-spawn marker at the START of your work and again after each significant step (a tool call, a build, a commit), using Bash:\n` +
+        `  mkdir -p "$(dirname "${marker}")" && touch "${marker}"\n` +
+        `\`rigger step\` treats this marker going stale (left untouched) beyond your ${req.max_wall_clock}s bound as a HUNG agent - an infrastructure fault that charges you NO remediation attempt - so keep it fresh while you work. It stops mattering the instant you self-report your result.\n`
+      : ''
   const prompt =
     `You are the rigger worker for spawn ${req.id} (unit ${req.unit}). ` +
     `Your persona and full task are recorded in the run log - FETCH THEM FIRST by running, from ${REPO}, using Bash:\n` +
@@ -159,6 +246,7 @@ async function runWorker(req, fatal) {
     `--- rigger driver instructions ---\n` +
     `${workdir}\n` +
     `SCRATCH POLICY (hard rule): any scratch YOU create - probe repos, verification worktrees, test builds, setup rehearsals - lives under ${REPO}/.rigger/tmp/agent-scratch/, NEVER under /tmp or your own session scratchpad (those are on the operator's small OS partition, and a single cargo target or \`rigger setup\` shim install there fills the disk). For any cargo you run outside your assigned worktree, export CARGO_TARGET_DIR=${REPO}/.rigger/tmp/cargo-target first. agent-scratch is swept when the run completes - do not store anything durable there.\n` +
+    heartbeat +
     `The rigger context tools your task refers to (rigger_emit, rigger_peers) are available here as the CLI commands \`rigger emit <Type> '<json>'\` and \`rigger peers <file>...\`, run from ${REPO}.\n` +
     `When you finish, SELF-REPORT your result by running, from ${REPO}:\n` +
     `  rigger result ${req.id} "<your result: a one-line summary, or your full verdict/findings>"\n` +
@@ -168,9 +256,43 @@ async function runWorker(req, fatal) {
     `--error means YOU were unable to perform your task (blocked, crashed, missing tools) - NEVER a negative conclusion: a reviewer whose verdict is REJECT, or a gate that found failures, COMPLETED its task and reports that verdict/finding as its NORMAL result (an --error replays as a dead worker and aborts the run, not as your verdict). ` +
     `Reporting your result is mandatory - the run cannot advance past this spawn until you do.`
 
-  try {
-    await agent(prompt, { phase: ph, model: req.model || undefined, label: req.id })
-  } catch (e) {
+  // Run the worker, but do not await it FOREVER when it carries a wall-clock bound: a HUNG
+  // agent must not stall the whole wave (spec 10, unit 3). Map agent() to a never-rejecting
+  // outcome so abandoning it can never surface as an unhandled rejection after we stop
+  // awaiting it, then race it against the per-worker MARKER-STALENESS watchdog.
+  const ran = agent(prompt, { phase: ph, model: req.model || undefined, label: req.id }).then(
+    () => ({ kind: 'done' }),
+    (e) => ({ kind: 'error', e }),
+  )
+  // The watchdog decides on MARKER STALENESS (idle-since-last-touch), NOT total runtime, so a
+  // slow-but-alive worker that keeps its marker fresh is left in-flight and only a genuinely
+  // stale marker is abandoned (see raceMarkerStaleness). Opt-in: only a bounded spawn whose
+  // step-resolved marker path is on the wire, and only where setTimeout exists.
+  const outcome =
+    req.max_wall_clock && marker && typeof setTimeout === 'function'
+      ? await raceMarkerStaleness(ran, req.max_wall_clock, marker, ph, req.id)
+      : await ran
+
+  if (outcome.kind === 'hung') {
+    // The worker's marker went STALE beyond its bound (idle-since-last-touch): presume it HUNG
+    // and STOP awaiting it. Do NOT run the death courier - that is the dead-worker-EXIT path and
+    // would CHARGE the unit, whereas a hung agent is an INFRASTRUCTURE fault. We just return, so
+    // parallel() resolves and the loop reaches the next `rigger step`, whose liveness sweep sees
+    // the SAME stale marker (a hung worker leaves it stale), records an infra fault (no attempt
+    // charged), and halts the wave LOUDLY. Because that fault ANSWERS the spawn, it is not
+    // re-run - no dup-exec. A worker that was merely slow but kept its marker fresh never
+    // reaches here (raceMarkerStaleness left it in-flight). The abandoned agent() promise
+    // (`ran`) is inert - it resolves to an ignored value.
+    log(
+      `worker ${req.id}: liveness marker idle past its ${req.max_wall_clock}s bound - presuming HUNG and abandoning it; the next \`rigger step\` sweep records an infra fault (no attempt charged) and halts loudly`,
+    )
+    return
+  }
+  if (outcome.kind === 'done') {
+    return
+  }
+  {
+    const e = outcome.e
     // The worker's agent() REJECTED (max turns, a crash, an execution error). That rejection
     // does NOT prove it died before reporting - a worker (or a reviewer that already emitted
     // an approve verdict) can self-report and THEN run on to max-turns. So record its failure

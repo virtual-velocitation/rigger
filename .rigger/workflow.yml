@@ -52,6 +52,20 @@ defaults:
   # default). Bounded by `budget` above, so it can never spin unboundedly.
   max_retries: 6
 
+  # The per-spawn wall-clock bound in SECONDS (spec 10, unit 3): the liveness ceiling
+  # every spawn inherits unless its agent's frontmatter sets its own `max_wall_clock`
+  # (per-role override). A worker keeps a per-spawn heartbeat marker fresh under
+  # <scratch>/agent-live while it works; `rigger step`'s liveness sweep treats a marker
+  # stale beyond this bound as a HUNG agent - an INFRASTRUCTURE fault routed through the
+  # failure taxonomy (infra), recorded on the spawn's id and charging the unit NO
+  # remediation attempt (its code is not at fault) - so a hung agent halts the wave
+  # VISIBLY instead of stalling it invisibly. Recover by recording a real result on the
+  # named spawn (last-write-wins) and re-driving. 0 (absent) means unbounded - liveness
+  # timeouts are opt-in and an un-set workflow is byte-for-byte back-compatible. 3600s
+  # (1h) is a deliberately generous "definitely hung" ceiling for this repo's cargo-heavy
+  # workers; a fast reviewer role can pin a tighter bound in its own frontmatter.
+  max_wall_clock: 3600
+
   # The three-tier review panel applied to EVERY implementer unit (§3.2). TIER 1:
   # the expert lenses (architecture + sdet) review the unit's diff in parallel.
   # TIER 2: the adversary reviews THE LENSES' findings and tries to prove them
@@ -65,6 +79,33 @@ defaults:
     lenses: [architecture-reviewer, sdet]   # tier 1: the expert lenses
     adversary: adversary                    # tier 2: refutes the lenses
     adjudicator: adjudicator                # tier 3: neutral judge; verdict gates
+
+  # The declarative failure taxonomy (spec 10, unit 2). An ORDERED, first-match-wins
+  # list of rules that classify a failure signal (a process's `exit_status`, terminating
+  # `signal`, and/or an `output_regex` over its captured output) into a `class` -
+  # `infra` | `product` | `flaky` - with a per-rule rerun `limit` and exponential
+  # `backoff` ({duration_ms, factor, max_ms}). It replaces the infra-vs-product split the
+  # conductor hand-coded across its gate/spawn sites (R1). At an inline gate the class
+  # drives the three-way outcome: a `product` failure fails immediately and demotes the
+  # autonomy ratchet (today's behavior); a `flaky`/`infra` failure is rerun up to `limit`
+  # and a MIXED result (it passed on a rerun) is a FlakyVerdict pass-with-warning that
+  # NEVER demotes; a `flaky` that stays red demotes, an `infra` that stays red does not.
+  #
+  # OMITTED (as here) means the shipped code default (`failure::Taxonomy::default`) is
+  # used, whose rules preserve spec-07 semantics: recognised transient infra faults
+  # (out of disk, refused/reset connection, DNS failure) classify `infra` and reran;
+  # everything else is `product` (no rerun). Uncomment to author your own, e.g.:
+  #
+  # failure_rules:
+  #   - match: {output_regex: "SIGSEGV|thread panicked while panicking"}
+  #     class: flaky
+  #     limit: 2
+  #     backoff: {duration_ms: 1000, factor: 2.0, max_ms: 30000}
+  #   - match: {exit_status: 137}          # OOM-killed worker
+  #     class: infra
+  #     limit: 1
+  #   - match: {}                          # catch-all: any other failure is a defect
+  #     class: product
 
 gates:                      # the project's verification library, referenced by name
   fmt:    { run: "cargo fmt --check",                        kind: core }
