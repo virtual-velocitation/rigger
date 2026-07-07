@@ -2981,9 +2981,17 @@ impl RunCtx<'_> {
         let mut prior_reason = String::new();
         loop {
             // The DETECTION half (rule 6): ground each proposed unit and surface the pairs
-            // that share a blast radius as concrete evidence for the reviewers.
+            // that share a blast radius as concrete evidence for the reviewers. Rule 6
+            // permits a shared blast radius for "an explicitly sequenced chain", so a pair
+            // where one unit transitively `needs` the other is NOT a conflict: sequenced
+            // units never run concurrently (no reviewer sees a half-landed sibling change)
+            // and each builds on the prior's integrated tree (no integrate collision). Only
+            // CONCURRENT overlapping units - neither depending on the other - are flagged.
             let radii = self.dag_unit_blast_radii(stages, &gate_name, integrated, terminal);
-            let conflicts = blast_radius_conflicts(&radii);
+            let conflicts: Vec<_> = blast_radius_conflicts(&radii)
+                .into_iter()
+                .filter(|(a, b, _)| !sequenced(stages, a, b))
+                .collect();
             let prompt = self.build_dag_critique_prompt(stages, &radii, &conflicts, &prior_reason);
             // TIER 2: the adversary reviews the DAG and emits its findings to the graph
             // (the review_protocol), so the adjudicator - grounding after it - reads them.
@@ -4477,6 +4485,32 @@ pub fn partition_by_blast_radius(items: &[(String, Vec<String>)]) -> Vec<Vec<Str
 /// pairs, sorted+deduped shared files), so the same DAG produces the same critique
 /// prompt across replay steps. A partition that is already disjoint yields no
 /// conflicts. This is the DETECTION half; the adjudicator renders the verdict.
+/// Whether `a` and `b` are in an explicitly sequenced chain: one transitively `needs`
+/// the other through the stage DAG. Sequenced units never run in the same wave, so a
+/// shared blast radius between them is what rule 6 permits ("one unit OR an explicitly
+/// sequenced chain") - not a concurrent-review or integrate-collision hazard. Symmetric:
+/// direction does not matter, only that a dependency path exists between them.
+fn sequenced(stages: &BTreeMap<String, Stage>, a: &str, b: &str) -> bool {
+    fn reaches(stages: &BTreeMap<String, Stage>, from: &str, target: &str) -> bool {
+        let mut stack = vec![from.to_string()];
+        let mut seen = HashSet::new();
+        while let Some(cur) = stack.pop() {
+            if !seen.insert(cur.clone()) {
+                continue;
+            }
+            let Some(st) = stages.get(&cur) else { continue };
+            for need in &st.needs {
+                if need == target {
+                    return true;
+                }
+                stack.push(need.clone());
+            }
+        }
+        false
+    }
+    reaches(stages, a, b) || reaches(stages, b, a)
+}
+
 pub fn blast_radius_conflicts(
     units: &[(String, Vec<String>)],
 ) -> Vec<(String, String, Vec<String>)> {
@@ -10499,6 +10533,38 @@ mod tests {
             conflicts,
             vec![("u1".to_string(), "u2".to_string(), vec!["b.rs".to_string()])],
             "exactly one conflict: u1 and u2 both touch b.rs"
+        );
+    }
+
+    #[test]
+    fn sequenced_units_sharing_a_blast_radius_are_not_a_conflict() {
+        // Rule 6 permits a shared blast radius for "an explicitly sequenced chain": a pair
+        // where one unit transitively `needs` the other is sequenced (never concurrent), so
+        // the plan-critique gate must NOT flag it - the exact case that escalated spec 12
+        // (four units chained on conductor.rs). Two CONCURRENT overlapping units (neither
+        // needing the other) remain a conflict.
+        let mut stages = BTreeMap::new();
+        let stage = |needs: &[&str]| Stage {
+            needs: needs.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
+        };
+        stages.insert("u1".to_string(), stage(&["plan"]));
+        stages.insert("u2".to_string(), stage(&["u1"])); // u2 -> u1 (direct)
+        stages.insert("u3".to_string(), stage(&["u2"])); // u3 -> u2 -> u1 (transitive)
+        stages.insert("u4".to_string(), stage(&["plan"])); // concurrent with u1 (siblings)
+
+        assert!(sequenced(&stages, "u1", "u2"), "direct need is sequenced");
+        assert!(
+            sequenced(&stages, "u1", "u3"),
+            "transitive need (u3 -> u2 -> u1) is sequenced"
+        );
+        assert!(
+            sequenced(&stages, "u3", "u1"),
+            "sequencing is symmetric on the pair"
+        );
+        assert!(
+            !sequenced(&stages, "u1", "u4"),
+            "two siblings both needing plan are CONCURRENT, not sequenced - still a conflict"
         );
     }
 
