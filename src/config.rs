@@ -4,8 +4,11 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
+use std::time::Duration;
 
 use serde::Deserialize;
+
+use crate::failure;
 
 #[derive(Debug, thiserror::Error)]
 #[error("config: {0}")]
@@ -50,6 +53,102 @@ pub struct Gate {
     pub run: String,
     #[serde(default)]
     pub kind: String,
+}
+
+/// One declarative failure rule (spec 10, unit 2), authored under
+/// `defaults.failure_rules`. It matches a failure signal (a process's exit status,
+/// terminating signal, and/or captured output) and classifies it, with a per-rule rerun
+/// `limit` and exponential `backoff`. The runtime form is [`failure::FailureRule`]; this
+/// is only the declarative surface. Rules are evaluated first-match-wins.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct FailureRuleDef {
+    /// The match predicate. `match` is a Rust keyword, so it is deserialized under the
+    /// field name `match` into `match_`.
+    #[serde(default, rename = "match")]
+    pub match_: MatchDef,
+    /// One of `infra` | `product` | `flaky`. An unknown value fails validation.
+    #[serde(default)]
+    pub class: String,
+    /// The rerun budget for a matching gate failure (the Bazel flaky-attempts count):
+    /// how many additional times the gate is rerun before the failure is believed.
+    /// 0 (the default) never reruns.
+    #[serde(default)]
+    pub limit: u32,
+    #[serde(default)]
+    pub backoff: BackoffDef,
+}
+
+/// The declarative match predicate of a [`FailureRuleDef`]. Every PRESENT field must
+/// match (logical AND); an absent field is a wildcard, so an all-absent `match` is the
+/// catch-all a final `product` rule uses.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct MatchDef {
+    #[serde(default)]
+    pub exit_status: Option<i32>,
+    #[serde(default)]
+    pub signal: Option<i32>,
+    /// A regular expression matched against the failure's captured output.
+    #[serde(default)]
+    pub output_regex: Option<String>,
+}
+
+/// The declarative exponential backoff of a [`FailureRuleDef`]. The spec's
+/// `{duration, factor, max}` is expressed as unambiguous MILLISECONDS
+/// (`duration_ms` / `max_ms`) so a value like `1000` never reads as an ambiguous
+/// bare "duration".
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct BackoffDef {
+    /// Base delay before the first rerun, in milliseconds. 0 = no wait.
+    #[serde(default)]
+    pub duration_ms: u64,
+    /// Multiplier applied per rerun. Absent / non-positive is treated as `1.0` (a flat
+    /// backoff), never `0` (which would collapse every delay after the first to zero).
+    #[serde(default)]
+    pub factor: f64,
+    /// Cap on the computed delay, in milliseconds. 0 = uncapped.
+    #[serde(default)]
+    pub max_ms: u64,
+}
+
+impl FailureRuleDef {
+    /// Convert this declarative rule into its runtime [`failure::FailureRule`], compiling
+    /// the `output_regex` and validating the class. Errors (a bad regex, an unknown
+    /// class) surface at config load so a misauthored rule fails fast rather than at the
+    /// first classification.
+    pub fn to_rule(&self) -> Result<failure::FailureRule, Error> {
+        let class = failure::FailureClass::parse(&self.class).ok_or_else(|| {
+            err(format!(
+                "failure rule has unknown class {:?} (want infra | product | flaky)",
+                self.class
+            ))
+        })?;
+        let output_regex = match &self.match_.output_regex {
+            Some(pat) => Some(
+                regex::Regex::new(pat)
+                    .map_err(|e| err(format!("failure rule output_regex {pat:?}: {e}")))?,
+            ),
+            None => None,
+        };
+        let factor = if self.backoff.factor > 0.0 {
+            self.backoff.factor
+        } else {
+            1.0
+        };
+        Ok(failure::FailureRule {
+            matcher: failure::Matcher {
+                exit_status: self.match_.exit_status,
+                signal: self.match_.signal,
+                output_regex,
+            },
+            class,
+            limit: self.limit,
+            backoff: failure::Backoff {
+                duration: Duration::from_millis(self.backoff.duration_ms),
+                factor,
+                max: Duration::from_millis(self.backoff.max_ms),
+            },
+        })
+    }
 }
 
 /// ReviewPanel is the three-tier review roster a unit reviews ITSELF with: the
@@ -138,6 +237,13 @@ pub struct Defaults {
     /// disk (design-intent Gap 14).
     #[serde(default)]
     pub workdir: String,
+    /// The declarative failure taxonomy (spec 10, unit 2): an ordered list of rules,
+    /// matched first-wins, that classify a failure into `infra` | `product` | `flaky`
+    /// with a per-rule rerun `limit` and `backoff`. Empty (the default) means the
+    /// conductor uses [`failure::Taxonomy::default`], whose shipped rules preserve
+    /// spec-07 infra-vs-product semantics.
+    #[serde(default)]
+    pub failure_rules: Vec<FailureRuleDef>,
 }
 
 /// Stage is one node of the workflow DAG.
@@ -272,6 +378,27 @@ pub struct Workflow {
     pub gates: BTreeMap<String, Gate>,
     #[serde(default)]
     pub stages: BTreeMap<String, Stage>,
+}
+
+impl Workflow {
+    /// Build the runtime failure taxonomy this workflow classifies failures through
+    /// (spec 10, unit 2). When `defaults.failure_rules` is authored, it is the ordered,
+    /// first-match-wins rule set (each rule's `output_regex` compiled and `class`
+    /// validated here - the SINGLE conversion the conductor and [`Config::validate`] both
+    /// call, so a bad rule fails at load). When it is empty (the common case), the
+    /// shipped [`failure::Taxonomy::default`] is used, preserving spec-07 semantics.
+    pub fn failure_taxonomy(&self) -> Result<failure::Taxonomy, Error> {
+        if self.defaults.failure_rules.is_empty() {
+            return Ok(failure::Taxonomy::default());
+        }
+        let rules = self
+            .defaults
+            .failure_rules
+            .iter()
+            .map(FailureRuleDef::to_rule)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(failure::Taxonomy::new(rules))
+    }
 }
 
 /// Config is a fully loaded, validated harness configuration.
@@ -426,6 +553,10 @@ impl Config {
                 "workflow has a dependency cycle involving stage {cyc:?}"
             )));
         }
+        // Fail fast on a misauthored failure rule (an unknown class, an uncompilable
+        // output_regex) at load rather than at the first classification, through the
+        // SAME conversion the conductor uses.
+        wf.failure_taxonomy()?;
         Ok(())
     }
 }
@@ -749,6 +880,99 @@ agent: worker\n";
             review.adjudicator, "adjudicator",
             "tier 3: the neutral adjudicator's verdict gates"
         );
+    }
+
+    #[test]
+    fn failure_rules_parse_into_an_ordered_taxonomy() {
+        // An authored `defaults.failure_rules` block parses into a first-match-wins
+        // taxonomy: the matcher fields, the class, the per-rule limit, and the backoff
+        // all convert to the runtime form (spec 10, unit 2).
+        let yaml = "name: w\n\
+defaults:\n  \
+failure_rules:\n    \
+- match: {output_regex: \"segfault|SIGSEGV\"}\n      \
+class: flaky\n      \
+limit: 3\n      \
+backoff: {duration_ms: 500, factor: 2.0, max_ms: 8000}\n    \
+- match: {exit_status: 137}\n      \
+class: infra\n      \
+limit: 1\n    \
+- match: {}\n      \
+class: product\n";
+        let wf: Workflow = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(wf.defaults.failure_rules.len(), 3);
+        let tax = wf.failure_taxonomy().expect("authored rules must convert");
+        assert_eq!(tax.rules().len(), 3);
+        // First-match-wins: the segfault signal hits the flaky rule with its limit and
+        // a non-zero backoff, not the product catch-all.
+        let flaky = tax
+            .classify(&failure::Signal::from_output("thread panicked: SIGSEGV"))
+            .unwrap();
+        assert_eq!(flaky.class, failure::FailureClass::Flaky);
+        assert_eq!(flaky.limit, 3);
+        assert_eq!(flaky.backoff.duration, Duration::from_millis(500));
+        // The exit-status rule matches a killed worker (137) as infra.
+        let infra = tax
+            .classify(&failure::Signal {
+                exit_status: Some(137),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(infra.class, failure::FailureClass::Infra);
+        // Anything else falls through to the product catch-all.
+        assert_eq!(
+            tax.classify(&failure::Signal::from_output("assertion failed"))
+                .unwrap()
+                .class,
+            failure::FailureClass::Product
+        );
+    }
+
+    #[test]
+    fn absent_failure_rules_fall_back_to_the_spec07_preserving_defaults() {
+        // The common case: a workflow authors no failure_rules, so the taxonomy is the
+        // shipped default (infra faults reran, everything else product) - preserving
+        // spec-07 semantics and every existing gate test.
+        let wf: Workflow = serde_yaml::from_str("name: w\ndefaults:\n  budget: 10\n").unwrap();
+        assert!(wf.defaults.failure_rules.is_empty());
+        let tax = wf.failure_taxonomy().unwrap();
+        assert!(!tax.is_empty(), "the default taxonomy ships rules");
+        assert_eq!(
+            tax.classify(&failure::Signal::from_output("FAIL\nassertion failed"))
+                .unwrap()
+                .class,
+            failure::FailureClass::Product,
+            "a plain gate failure classifies product by default (no rerun, today's behavior)"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_an_unknown_failure_class_and_a_bad_regex() {
+        let base = |rules: &str| -> Config {
+            let wf: Workflow =
+                serde_yaml::from_str(&format!("name: w\ndefaults:\n  failure_rules:\n{rules}"))
+                    .unwrap();
+            Config {
+                workflow: wf,
+                ..Default::default()
+            }
+        };
+        // An unknown class is rejected at validation.
+        assert!(base("    - match: {}\n      class: bogus\n")
+            .validate()
+            .is_err());
+        // An uncompilable regex is rejected at validation.
+        assert!(
+            base("    - match: {output_regex: \"(\"}\n      class: flaky\n")
+                .validate()
+                .is_err()
+        );
+        // A well-formed rule validates.
+        assert!(base(
+            "    - match: {output_regex: \"flake\"}\n      class: flaky\n      limit: 2\n"
+        )
+        .validate()
+        .is_ok());
     }
 
     #[test]
