@@ -3770,8 +3770,10 @@ agent: planner\n    \
 produces: dag           # refine the spec's unit DAG at runtime\n\
 \n  \
 # The adversarial plan-critique gate: BEFORE any implementer spawns, the adversary +\n  \
-# adjudicator review the PROPOSED unit DAG against the decomposition rules (shared\n  \
-# blast radius, mitigation ownership, open dispositions). A reject feeds back to the\n  \
+# adjudicator review the PROPOSED unit DAG for the cross-unit hazards per-unit review\n  \
+# cannot see: ambiguous mitigation ownership and open dispositions (a shared blast\n  \
+# radius is informational only - partition: by-blast-radius serializes it). A reject\n  \
+# feeds back to the\n  \
 # planner (bounded by max_retries); an approve releases the fan-out. Review-only (no\n  \
 # agent) - it critiques the plan, it does not implement.\n  \
 plan-critique:\n    \

@@ -138,18 +138,20 @@ stages:
 
   # 1b. Adversarial plan-critique gate (spec 10, Unit 1). Before ANY implementer
   #    spawns, the existing adversary + adjudicator review the PROPOSED unit DAG the
-  #    planner produced: the conductor surfaces a deterministic rule-6 blast-radius
-  #    analysis (which units share a blast radius), and the reviewers judge the whole
-  #    decomposition against handbook rules 6-8 (shared blast radius, mitigation
-  #    ownership, open dispositions - docs/handbook/authoring-loops.md). A reject feeds
-  #    back to the planner (bounded by max_retries); only an approve RELEASES the
-  #    fan-out. It is review-only (no `agent`) - it critiques the plan, it does not
-  #    implement - and it needs `plan`, so the conductor runs it between planning and
-  #    the fan-out. Owns: pre-fan-out decomposition review. Per-unit review is untouched.
-  #    Gap 22 root-cause fix (2026-07-07): the critique excludes already-integrated and
-  #    terminal units (`dag_unit_blast_radii`), so an integrated unit is never flagged as
-  #    a duplicate the planner cannot resolve - the gate is safe even when introduced
-  #    mid-run and stays wired into rigger's own loop.
+  #    planner produced. The gate judges the decomposition for the two cross-unit hazards
+  #    a per-unit review cannot see: ambiguous mitigation OWNERSHIP (rule 7 - one demanded
+  #    fix owned by two units with no exclusion named) and open DISPOSITIONS (rule 8 - a
+  #    criterion a reviewer can re-litigate). A shared blast radius is NOT one of them: it
+  #    is surfaced as INFORMATIONAL context only, because `partition: by-blast-radius`
+  #    serializes overlapping units into disjoint sequential batches and worktree
+  #    isolation keeps every reviewer on its own diff, so overlap integrates cleanly (see
+  #    handbook rule 6). A reject feeds back to the planner (bounded by max_retries); only
+  #    an approve RELEASES the fan-out. It is review-only (no `agent`) - it critiques the
+  #    plan, it does not implement - and it needs `plan`, so the conductor runs it between
+  #    planning and the fan-out. The informational blast-radius context excludes
+  #    already-integrated and terminal units (`dag_unit_blast_radii`), so a settled unit
+  #    is never presented as a live overlap the planner cannot resolve. Owns: pre-fan-out
+  #    decomposition review. Per-unit review is untouched.
   plan-critique:
     needs: [plan]
     adversary: adversary        # tier 2: reviews the DAG and refutes it
