@@ -47,8 +47,11 @@ pub const TYPE_BUDGET_EXHAUSTED: &str = "BudgetExhausted";
 pub const TYPE_SPEC_DEFECT: &str = "SpecDefect";
 /// The run aborted: un-integrated work is dropped, integrated work is kept (§4.4).
 pub const TYPE_TASK_ABORTED: &str = "TaskAborted";
-/// A Manual-autonomy gate pauses its unit awaiting human review (§4.3).
-pub const TYPE_MANUAL_REVIEW: &str = "ManualReview";
+/// A Manual-autonomy gate pauses its unit awaiting human review (§4.3). The ledger folds
+/// it into `RunState::manual_review` (the action-needed inbox), so the string lives there
+/// as the single source and this is a re-export. Kept in sync with
+/// `ledger::TYPE_MANUAL_REVIEW`.
+pub const TYPE_MANUAL_REVIEW: &str = ledger::TYPE_MANUAL_REVIEW;
 /// A deferred gate FAILED when it ran at the run's phase boundary (§4.3). Surfaced
 /// truthfully: the ledger folds it (`RunState::deferred_gate_failed`) so the run is
 /// never reported fully done with a red deferred gate. Kept in sync with

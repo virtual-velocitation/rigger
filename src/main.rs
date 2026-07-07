@@ -5,12 +5,14 @@
 //! (`--eventstore sqlite|kurrentdb`) are selected by flag; `rigger graph` inspects
 //! the context graph; `rigger init`/`setup` scaffold a project.
 
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use rigger::conductor::{self, Deps};
 use rigger::config;
 use rigger::contextgraph::{self, sqlite::Projector, Projection};
+use rigger::dash;
 use rigger::driver::cli;
 use rigger::driver::replay::ReplayDriver;
 use rigger::eventstore::namespace::Namespaced;
@@ -538,6 +540,7 @@ fn main() {
         "workflow" => cmd_workflow(&args[2..]),
         "graph" => cmd_graph(&args[2..]),
         "stats" => cmd_stats(&args[2..]),
+        "dash" => cmd_dash(&args[2..]),
         "ground" => cmd_ground(&args[2..]),
         "reindex" => cmd_reindex(&args[2..]),
         "emit" => cmd_emit(&args[2..]),
@@ -630,6 +633,9 @@ rigger graph --around <id>  print the context subgraph around a node\n  \
 rigger stats                print the run's operator metrics: first-pass yield,\n                              \
 per-gate remediation counts, escalation rate, and\n                              \
 review approve/reject counts\n  \
+rigger dash [--port <n>]    serve the read-only observability page on 127.0.0.1\n                              \
+(default port 7420) with live past/present/future views;\n                              \
+--export <path> writes the equivalent static snapshot\n  \
 rigger ground <query> [k]   print up to k (default 8) repo references the project's\n                              \
 configured grounder finds for <query>, as `file:line: text`\n  \
 rigger reindex <file>...    incrementally re-embed the named files in the project's\n                              \
@@ -1712,12 +1718,6 @@ fn format_stats(m: &Metrics) -> Vec<String> {
     lines
 }
 
-/// Append the spec-11 unit-1 review-QUALITY section to `rigger stats` (the cheap six):
-/// flip-flop rate, per-lens finding survival, lens overlap, cause-split rejections,
-/// adversary precision, and cost-per-upheld-finding per tier. This is APPENDED after the
-/// existing metric lines so scripts that parse the first four stay unbroken (spec 11's
-/// backward-compatibility constraint); every rate is a guarded fraction, never `NaN`, and
-/// an empty fold prints a "(none)" line rather than a blank or a divide-by-zero.
 fn append_review_quality(lines: &mut Vec<String>, m: &Metrics) {
     let rq = &m.review_quality;
     lines.push("  review quality:".to_string());
@@ -1830,6 +1830,111 @@ fn append_review_quality(lines: &mut Vec<String>, m: &Metrics) {
     }
 }
 
+/// `rigger dash` - serve or export the embedded observability page (spec 11, unit 2).
+///
+/// A READ-ONLY window over the existing projections: the conductor stays the sole mutation
+/// authority, so the dash has no write or control surface (enforced in [`dash::route`],
+/// which answers only `GET`). `rigger dash` serves the live-polling single-file page on
+/// loopback (`127.0.0.1`, default [`dash::DEFAULT_PORT`], override with `--port`);
+/// `rigger dash --export <path>` writes the equivalent static, shareable snapshot.
+///
+/// Composition mirrors the sibling operator reads (`stats`, `graph`): it resolves this
+/// project's `.rigger/events.db` + `.rigger/graph.db` by cwd (via [`db_path`] /
+/// [`project_identity`]) and re-reads them on EACH request, so the page reflects the run
+/// as it advances. An ABSENT `events.db` reads as an empty run (guarded BEFORE
+/// [`Store::open`], which would otherwise create it), so an operator can launch the dash
+/// first and watch the run populate it. The context graph is best-effort: a grep-only run
+/// never builds one, and an absent or unreadable `graph.db` yields an empty graph rather
+/// than failing the whole page.
+fn cmd_dash(args: &[String]) -> Res {
+    // `--export <path>` and/or `--port <n>`; loopback only (no host flag by design).
+    let mut export: Option<String> = None;
+    let mut port: u16 = dash::DEFAULT_PORT;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--export" => {
+                i += 1;
+                export = Some(
+                    args.get(i)
+                        .cloned()
+                        .ok_or("dash: --export expects a path")?,
+                );
+            }
+            "--port" => {
+                i += 1;
+                port = args
+                    .get(i)
+                    .and_then(|p| p.parse().ok())
+                    .ok_or("dash: --port expects a port number (1-65535)")?;
+            }
+            other => return Err(format!("dash: unknown argument {other:?}").into()),
+        }
+        i += 1;
+    }
+
+    let events_db = db_path("events.db");
+    let graph_db = db_path("graph.db");
+    let identity = project_identity();
+
+    // Fresh projection inputs on every request. Reading (not holding an open handle) is
+    // what lets the dash start before the store exists and pick the run up once it does.
+    let provider = move || -> Result<(Vec<Event>, contextgraph::Graph), String> {
+        let events = dash_read_run(&events_db, &identity).map_err(|e| e.to_string())?;
+        let graph = dash_read_graph(&graph_db, &events);
+        Ok((events, graph))
+    };
+
+    match export {
+        Some(path) => {
+            let (events, graph) =
+                provider().map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+            let html = dash::render_export(&events, &graph)?;
+            std::fs::write(&path, html)?;
+            println!("wrote dash snapshot to {path}");
+            Ok(())
+        }
+        None => {
+            let addr = SocketAddr::from(([127, 0, 0, 1], port));
+            dash::serve(addr, provider)?;
+            Ok(())
+        }
+    }
+}
+
+/// Read this project's CURRENT-run events from `events_db` under `identity`, scoped to the
+/// latest run exactly as [`stats_lines`] does. An absent db is an empty run and NO file is
+/// created (the guard precedes [`Store::open`], which would otherwise fabricate one).
+fn dash_read_run(
+    events_db: &str,
+    identity: &str,
+) -> Result<Vec<Event>, Box<dyn std::error::Error>> {
+    if !Path::new(events_db).exists() {
+        return Ok(Vec::new());
+    }
+    let backend = Store::open(events_db)?;
+    let store = Namespaced::new(&backend, identity);
+    let all = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+    Ok(runscope::current_run(&all).to_vec())
+}
+
+/// Build the context subgraph around the run's own units/decisions/findings from
+/// `graph_db` (seeds via [`dash::graph_seeds`]). Best-effort: an absent graph (a grep-only
+/// run never builds one) or any query error yields an empty graph, so the rest of the dash
+/// still serves.
+fn dash_read_graph(graph_db: &str, events: &[Event]) -> contextgraph::Graph {
+    if !Path::new(graph_db).exists() {
+        return contextgraph::Graph::default();
+    }
+    let seeds = dash::graph_seeds(events);
+    if seeds.is_empty() {
+        return contextgraph::Graph::default();
+    }
+    match Projector::open(graph_db) {
+        Ok(p) => p.subgraph(&seeds, 2).unwrap_or_default(),
+        Err(_) => contextgraph::Graph::default(),
+    }
+}
 /// `rigger ground "<query>" [<k>]` - run the project's configured grounder (the
 /// same one the `run`/`serve` paths build from `defaults.grounder` via
 /// [`select_grounder`]) over the repo and print up to `k` (default 8) relevant

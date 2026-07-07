@@ -8,6 +8,7 @@
 pub mod conductor;
 pub mod config;
 pub mod contextgraph;
+pub mod dash;
 pub mod driver;
 pub mod eventstore;
 pub mod failure;
