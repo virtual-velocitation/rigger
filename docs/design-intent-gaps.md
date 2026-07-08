@@ -76,6 +76,18 @@ Dogfooding. Rigger ran on its own spec; the run's telemetry (`rigger stats`, `ri
 
 **Status: CLOSED (root-cause) 2026-07-07.** Both fixes carry regression tests (a prior run's recorded result never answers a fresh run's same-id spawn; `start_fresh` mints a new boundary even when criteria match). Distinct from Gap 22 (which removed the WRONG-reject mechanism): this closes the cross-run LEAK of a correct-or-not verdict and the missing recovery affordance.
 
+## Gap 27: rigger does not present live agent activity - the event log only records milestones
+
+**Intent.** Rigger is the authority on what every agent is doing; an operator (and the driver) should be able to see, at any moment, each in-flight agent's current activity and that it is alive - not just the discrete decisions it has committed.
+
+**Reality.** Agents emit events only at MILESTONES - `DecisionMade`, `SpawnResult`, `GateVerdict`. Everything between them (grounding, reading, editing, running cargo) emits nothing, so an agent can work 20-30 minutes with the event store - rigger's own observability substrate, read by `rigger dash`/`stats`/`peers` - showing a blackout. The only liveness signal is a bare per-spawn file marker the worker voluntarily touches (spec 10 unit 3), read by an ad-hoc haiku PROBE the JS driver spawns to `stat` it (the Workflow-tool script sandbox has no filesystem access - only `agent()`), and never surfaced to any observability surface. So the best rigger can say about a live agent is "its marker was touched N seconds ago", and even that is invisible to the operator. Spec 11's observability work covered the past/present/future of the event LOG, not live agent progress - a different, missing thing.
+
+**Evidence.** 2026-07-08: during the spec-12 dogfood run, unit-4's implementer worked continuously for ~26 minutes (30+ grep/read commands, transcript never idle >2.6 min) before recording its first store event; every store-reading monitor saw a stall where the agent was in fact busy. The pattern was initially misread as a machine sleep before the transcript timeline proved the agent had been working the whole time.
+
+**Fix shape (spec 14, Wave 5).** Rigger becomes the authority that CONSOLIDATES its signals and PRESENTS a live per-agent view; consumers receive it rather than reassembling it. Agents emit fine-grained `AgentProgress` events to a SEPARATE non-replayed store (`.rigger/progress.db`, a sibling of `graph.db`, so no run fold can read it and replay is structurally untouched) via a new `rigger progress <id> "<activity>"` verb. A Rust consolidator folds the current run's milestones + progress + marker-mtime into a live view exposed by `rigger status`, a `rigger_activity` MCP tool (so the real-Node shim gets up-to-the-second state over its existing connection), and the dash's present view. The driver-side haiku `stat` probe is retired - it was the sandboxed driver reconstructing, badly, what rigger already knows; the spec-10 marker itself stays (Rust reads it and presents the liveness age).
+
+**Status: assigned to spec 14** (2026-07-08).
+
 ---
 
 ## Closed
