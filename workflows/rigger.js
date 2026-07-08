@@ -55,7 +55,7 @@ export const meta = {
   ],
 }
 
-// args: a spec path string, or { repo, spec, base }.
+// args: a spec path string, or { repo, spec, base, fresh }.
 let A = args
 if (typeof A === 'string') {
   try {
@@ -73,6 +73,13 @@ const SPEC = A.spec || 'spec.md'
 // applied to an existing branch draws a stderr advisory, so the steady state (no base
 // given, branch reused) stays silent instead of alarming the courier every step.
 const BASEFLAG = A.base ? ` --base ${A.base}` : ''
+// `fresh`: begin a NEW run for this spec even if the latest run already matches it (which
+// `rigger step` would otherwise adopt/resume). The evented restart for a run wedged in a
+// terminal state whose spec is unchanged - e.g. an escalated plan-critique from a
+// since-fixed defect. Passed ONLY on the FIRST step (see the loop): that step just parks
+// the planner (no gates, so it is fast and will not time out into a courier re-run), and
+// every step after it adopts the boundary it began. The prior run stays in the log.
+const FRESH = !!A.fresh
 
 // The JSON shape `rigger step` prints (see spawn::Step / spawn::SpawnRequest): the wave it
 // newly parked and a `done` fixpoint flag. The wave items carry everything the driver needs
@@ -349,6 +356,9 @@ phase('Plan')
 // stuck/failed run must never be reported as a clean completion, and a courier that itself
 // dies must be a controlled, visible stop - not an uncaught rejection that aborts the driver.
 let waves = 0
+// `--fresh` is a ONE-SHOT: it begins a new run, so it rides the FIRST step only; every step
+// after it must ADOPT that boundary, not mint another. Flipped false the moment it is used.
+let firstStep = true
 
 // stop the driver LOUDLY: throw a clear, single Error so the anomalous exit surfaces as a
 // workflow failure with an actionable message (decision `thin-driver-loud-stops`), instead of
@@ -366,11 +376,14 @@ for (;;) {
   //    frontier. If `rigger step` errors, the courier returns it in `error` (not a faked wave);
   //    if the COURIER AGENT itself dies (max turns / crash), agent() rejects and the try/catch
   //    turns that into the same clean, loud stop instead of aborting the whole driver uncaught.
+  // `--fresh` rides the FIRST step only (a one-shot new-run boundary); adopt it thereafter.
+  const FRESHFLAG = firstStep && FRESH ? ' --fresh' : ''
+  firstStep = false
   let step
   try {
     step = await agent(
       `You are a rigger COURIER. Advance the run one frontier and return the wave, verbatim. Run EXACTLY this, from ${REPO}, using Bash with the timeout parameter set to 600000 (a step runs cargo gates inline and can take many minutes; the default timeout kills it mid-work):\n` +
-        `  cd ${REPO} && CARGO_TARGET_DIR=${REPO}/.rigger/tmp/cargo-target rigger step --spec ${SPEC}${BASEFLAG}\n` +
+        `  cd ${REPO} && CARGO_TARGET_DIR=${REPO}/.rigger/tmp/cargo-target rigger step --spec ${SPEC}${BASEFLAG}${FRESHFLAG}\n` +
         `(the CARGO_TARGET_DIR prefix makes every gate share one build cache instead of cold-building per worktree - keep it exactly as written). ` +
         `It prints ONE line of JSON on stdout: {"wave":[...],"done":<bool>} (a halted run also carries a "halted":"<reason>" field). Return that JSON object EXACTLY as printed, INLINE and IN FULL, in your structured output - no matter how large it is. NEVER write it to a file, return a path, a reference, a summary, or a truncation: the driver can only read your returned JSON, so anything but the verbatim object (all wave items, all their fields) LOSES the wave and stalls the run. Do not drop fields or run anything else. ` +
         `If the Bash call TIMES OUT, re-run the exact same command - as many times as needed: the step's gate results are recorded durably as they complete, so every re-run resumes past the recorded ones and gets strictly further; return the JSON from the run that prints it. ` +
