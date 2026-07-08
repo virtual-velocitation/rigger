@@ -111,6 +111,25 @@ pub const META_MODEL_RESOLVED: &str = "model_resolved";
 /// projections ignore it. Empty (and so omitted) on a repo-less run with no worktree.
 pub const META_WORKTREE_SHA: &str = "worktree_sha";
 
+/// The metadata key carrying a gate verdict's INPUT DIGEST (spec 12, unit 1): the content
+/// address of the gate run, [`input_digest`]`(command, tree-sha)` over the gate command
+/// and the git tree-SHA of its inputs (the whole committed tree by default). Every inline
+/// [`GateVerdict`](contextgraph::TYPE_GATE_VERDICT) a unit's worktree gate records carries
+/// it, so a later gate whose command + tree digest matches a prior GREEN verdict is
+/// answered as a logged cache-hit instead of re-running the command. It is audit metadata
+/// on an event that already exists - no new event type (spec 12's Global constraints) - so
+/// folds and projections ignore it. Empty (and so omitted) when there is no tree to address
+/// (a repo-less / worktree-less gate run), which simply disables content-addressing there.
+pub const META_INPUT_DIGEST: &str = "input_digest";
+
+/// The metadata key a content-addressed CACHE-HIT verdict carries (spec 12, unit 1): the
+/// LOG POSITION of the prior GREEN [`GateVerdict`](contextgraph::TYPE_GATE_VERDICT) whose
+/// matching [`META_INPUT_DIGEST`] answered this gate. A cache-hit is a logged, annotated
+/// verdict citing its source - provenance, not a silent shortcut - so an auditor can walk
+/// from the hit to the exact green it reused. Present ONLY on cache-hit verdicts; a
+/// freshly-run gate's verdict omits it.
+pub const META_CACHE_HIT: &str = "cache_hit_of";
+
 /// The replay key for a gate's verdict, keyed by the `(unit, attempt, gate)` coordinate
 /// the gate ran under - so a step re-reaching an already-run gate REPLAYS its recorded
 /// verdict instead of re-running the command (spec 04, criterion 4). Distinct attempts
@@ -118,6 +137,45 @@ pub const META_WORKTREE_SHA: &str = "worktree_sha";
 /// SAME attempt's gate is a replay.
 fn gate_verdict_key(unit: &str, attempt: u32, gate: &str) -> String {
     format!("{unit}/gate:{gate}#{attempt}")
+}
+
+/// The producing UNIT of a gate-verdict replay key (`{unit}/gate:{gate}#{attempt}`), used
+/// when seeding the content-address cache from prior GREEN verdicts so the cache value
+/// carries which unit earned the green (the coordinate a downstream staleness pass keys
+/// off). A deferred key (`deferred/gate:{gate}`) yields `"deferred"`; a key with no
+/// `/gate:` marker yields `None`. Pure string parse - the single place the key's unit
+/// segment is recovered.
+fn unit_of_gate_key(key: &str) -> Option<&str> {
+    key.split_once("/gate:").map(|(unit, _)| unit)
+}
+
+/// The content address of a gate run (spec 12, unit 1): a stable digest over the gate
+/// `command` and the git `tree_sha` of its inputs (the whole committed tree by default -
+/// [`worktree::tree_sha_of`]). The verbatim tree-SHA is kept in the digest so two DIFFERENT
+/// trees are always distinct addresses - the tree is what determines the gate outcome, so
+/// it must never collide - while the command is folded to a compact FNV-1a hash (the same
+/// fixed-seed stable hash the rest of the crate uses for content oracles: identical bytes ->
+/// identical hash across processes, machines, and builds, unlike `DefaultHasher`). So the
+/// address is a pure function of `(command, tree bytes)`: replay-deterministic, and a gate
+/// re-run over an unchanged tree with the same command reproduces the SAME digest (a hit),
+/// while any change to either side changes it (a miss). Empty `tree_sha` (no worktree tree
+/// to address) yields an empty digest, which the caller reads as "addressing disabled here".
+fn input_digest(command: &str, tree_sha: &str) -> String {
+    if tree_sha.is_empty() {
+        return String::new();
+    }
+    // FNV-1a over the command bytes - the SAME fixed constants `main::fnv1a_64` and the
+    // turbovec staleness oracle use, so the crate has one stable-hash idiom. The
+    // collision-sensitive input (the tree) rides verbatim, so this 64-bit fold covers
+    // only the short, config-authored command string.
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = OFFSET;
+    for &b in command.as_bytes() {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(PRIME);
+    }
+    format!("{hash:016x}:{tree_sha}")
 }
 
 /// The payload of a `GateVerdict` event, for seeding the gate-verdict replay cache and
@@ -652,6 +710,38 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
             Some((key, (v.pass, v.evidence)))
         })
         .collect();
+    // Content-address cache (spec 12, unit 1): seed `input_digest -> (position, unit)` from
+    // the prior log's GREEN gate verdicts (those carrying a META_INPUT_DIGEST), so a fresh
+    // gate whose command + tree-sha digest matches is answered as a logged cache-hit citing
+    // that position. prior_events is ascending by position, and we insert only-if-absent, so
+    // the EARLIEST green for a digest is the cited source (a later cache-hit re-emit under
+    // the same digest is a no-op). Failures are excluded here (a red must re-prove), and the
+    // integrate-time GATED_BY artifact verdicts carry no replay key / digest so they never
+    // seed the cache. The unit is recovered once from the verdict's replay key.
+    let mut green_digests: HashMap<String, (u64, String)> = HashMap::new();
+    for e in prior_events
+        .iter()
+        .filter(|e| e.type_ == contextgraph::TYPE_GATE_VERDICT)
+    {
+        let Some(digest) = e.meta.get(META_INPUT_DIGEST) else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_slice::<GateVerdictData>(&e.data) else {
+            continue;
+        };
+        if !v.pass {
+            continue;
+        }
+        let unit = e
+            .meta
+            .get(META_REPLAY_KEY)
+            .and_then(|k| unit_of_gate_key(k))
+            .unwrap_or_default()
+            .to_string();
+        green_digests
+            .entry(digest.clone())
+            .or_insert((e.position, unit));
+    }
 
     // The RunCtx is created BEFORE the coverage check so a coverage gap can be
     // flagged as a spec defect through the event log (item 2 / §4.4) instead of
@@ -692,6 +782,7 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         prior_attempts,
         replayed_keys: Mutex::new(replayed_keys),
         gate_verdicts: Mutex::new(gate_verdicts),
+        green_digests: Mutex::new(green_digests),
         // The failure taxonomy is built ONCE here from the same validated config the run
         // loads (its regexes were compiled and classes checked at `Config::validate`), so
         // every gate-failure classification this run makes reads one rule set.
@@ -1021,6 +1112,18 @@ struct RunCtx<'a> {
     /// arch-gate-verdict-redundant-scan): gate-verdict replay is O(1) per lookup, seeded
     /// from the same `prior_events` read that already seeded `replayed_keys`.
     gate_verdicts: Mutex<HashMap<String, (bool, String)>>,
+    /// The content-address cache (spec 12, unit 1): `input_digest -> (position, unit)` of
+    /// each GREEN gate verdict, seeded ONCE at run start from the prior log's GateVerdicts
+    /// that carry a [`META_INPUT_DIGEST`] and extended as this process records fresh greens.
+    /// [`cached_green_verdict`](RunCtx::cached_green_verdict) consults it at the ONE
+    /// run_gates hit-site so a gate whose `(command, tree-sha)` digest matches a prior green
+    /// is answered as a logged cache-hit citing that `position` instead of re-running the
+    /// command. Only GREEN verdicts enter it (a red must always re-prove), and the EARLIEST
+    /// green for a digest wins (insert-if-absent in ascending position), so a cache-hit
+    /// re-emit under the same digest cites the original green, never a chain of hits. The
+    /// stored `unit` is the coordinate a downstream staleness pass (unit 2) keys off; this
+    /// unit only PROVIDES the cache and the hit - it marks nothing stale.
+    green_digests: Mutex<HashMap<String, (u64, String)>>,
     /// The declarative failure taxonomy (spec 10, unit 2): the SINGLE authority the
     /// conductor folds its gate-failure classification from, built once from
     /// `defaults.failure_rules` (or the shipped spec-07-preserving default when none are
@@ -1065,6 +1168,7 @@ impl<'a> RunCtx<'a> {
             prior_attempts: HashMap::new(),
             replayed_keys: Mutex::new(HashSet::new()),
             gate_verdicts: Mutex::new(HashMap::new()),
+            green_digests: Mutex::new(HashMap::new()),
             // The pure-helper test context builds no gates through the taxonomy; the
             // shipped default is a harmless placeholder. The gate-behavior tests drive the
             // full `run`, which builds the taxonomy from the config under test.
@@ -1085,7 +1189,7 @@ impl RunCtx<'_> {
     /// expected-revision handling, the position stamp, and the post-append graph fold
     /// live in ONE place and can never silently diverge (finding
     /// arch-emit-keyed-dup-authority).
-    fn append_and_fold(&self, mut ev: Event) -> Result<(), Error> {
+    fn append_and_fold(&self, mut ev: Event) -> Result<u64, Error> {
         // Stamp the run id on every conductor-emitted event (spec 06, unit 1): the one
         // chokepoint every emit path routes through, so unit/status/gate-verdict/spec-
         // defect events are all attributable to their run. Skipped only when the run id
@@ -1101,7 +1205,10 @@ impl RunCtx<'_> {
             ev.position = pos;
             let _ = g.apply(&ev);
         }
-        Ok(())
+        // Return the appended log position so a caller that must CITE this event later
+        // (the content-address cache's green-verdict provenance, spec 12 unit 1) can
+        // record it; the un-citing emit wrappers discard it.
+        Ok(pos)
     }
 
     /// Emit an event, optionally stamping the acting agent in its metadata (the
@@ -1112,7 +1219,7 @@ impl RunCtx<'_> {
         if !actor.is_empty() {
             ev = ev.with_meta(contextgraph::META_ACTOR, actor);
         }
-        self.append_and_fold(ev)
+        self.append_and_fold(ev).map(|_| ())
     }
 
     /// [`emit`](RunCtx::emit) plus arbitrary EXTRA metadata (each `(key, value)` pair
@@ -1130,7 +1237,7 @@ impl RunCtx<'_> {
                 ev = ev.with_meta(*k, *v);
             }
         }
-        self.append_and_fold(ev)
+        self.append_and_fold(ev).map(|_| ())
     }
 
     /// Emit an event IDEMPOTENTLY under a deterministic replay `key` (spec 04, criterion
@@ -1181,7 +1288,7 @@ impl RunCtx<'_> {
                 ev = ev.with_meta(*k, *v);
             }
         }
-        self.append_and_fold(ev)
+        self.append_and_fold(ev).map(|_| ())
     }
 
     /// The requested model ALIAS an agent is spawned with for `attempt` - the cascade rung
@@ -1216,32 +1323,88 @@ impl RunCtx<'_> {
         self.gate_verdicts.lock().unwrap().get(key).cloned()
     }
 
-    /// Emit a gate's `GateVerdict` under its replay `key` (idempotent via
-    /// [`emit_keyed`](RunCtx::emit_keyed)) and cache its outcome so a later
-    /// [`recorded_gate_verdict`](RunCtx::recorded_gate_verdict) - this process or a
-    /// re-step - replays it without re-running the command. The append and the cache
-    /// insert are paired here so they can never drift.
+    /// The content-address cache-hit for a gate whose `(command, tree-sha)` `digest`
+    /// matches a prior GREEN verdict: its `(position, unit)`, or `None` when no green
+    /// carries this digest (spec 12, unit 1). This is the ONE site the content cache is
+    /// consulted - the gate is answered from the log instead of re-run - so it is also the
+    /// single seam a downstream staleness pass (unit 2) would gate the hit at (by the
+    /// `(position, unit)` it exposes) and the merged-tree re-gate (unit 5) reuses. Only
+    /// GREEN verdicts ever populate the cache, so a red is never cache-answered here.
+    fn cached_green_verdict(&self, digest: &str) -> Option<(u64, String)> {
+        self.green_digests.lock().unwrap().get(digest).cloned()
+    }
+
+    /// Emit a gate's `GateVerdict` under its replay `key`, stamping its content address and
+    /// caching its outcome so both the exact-key replay
+    /// ([`recorded_gate_verdict`](RunCtx::recorded_gate_verdict)) and the content-address
+    /// cache ([`cached_green_verdict`](RunCtx::cached_green_verdict)) can answer a later
+    /// gate without re-running the command. The append and the two cache inserts are paired
+    /// here so they can never drift.
+    ///
+    /// `digest` is the gate's [`input_digest`] (`""` when there is no tree to address, e.g.
+    /// a repo-less / worktree-less gate run - then content-addressing is simply off).
+    /// `cache_hit_of` is `Some(position)` when THIS verdict is itself a content-addressed
+    /// cache-hit answering from that prior green (its provenance citation), `None` for a
+    /// freshly-run gate. On a GREEN with a non-empty digest the `(position, unit)` is
+    /// recorded in the content cache insert-if-absent, so the earliest green for a digest
+    /// stays the cited source and a red never enters the cache.
+    #[allow(clippy::too_many_arguments)]
     fn emit_gate_verdict(
         &self,
         key: &str,
+        unit: &str,
         gid: &str,
         pass: bool,
         flaky: bool,
         evidence: &str,
+        digest: &str,
+        cache_hit_of: Option<u64>,
     ) -> Result<(), Error> {
+        {
+            // Idempotency guard, identical to `emit_keyed_meta`: a key already recorded
+            // (seeded at run start or emitted this process) is a replay - append nothing.
+            // The run_gates hit-site already checks the exact-key replay before calling
+            // here, so on the live path the key is always new; the guard keeps a
+            // double-call safe.
+            let mut keys = self.replayed_keys.lock().unwrap();
+            if !keys.insert(key.to_string()) {
+                return Ok(());
+            }
+        }
         // `flaky` is the FlakyVerdict annotation (spec 10, unit 2, NO new event type): a
         // gate that failed then passed on a rerun is recorded as a PASS carrying
         // `flaky: true`, a pass-with-warning the ledger can surface without it demoting
-        // the ratchet. A clean pass or a real failure carries `flaky: false`.
-        self.emit_keyed(
-            key,
+        // the ratchet. A clean pass or a real failure carries `flaky: false`. The input
+        // digest and any cache-hit citation ride as metadata (spec 12: no new event type).
+        let mut ev = Event::new(
             contextgraph::TYPE_GATE_VERDICT,
-            json!({"gate": gid, "pass": pass, "flaky": flaky, "evidence": evidence}),
-        )?;
+            serde_json::to_vec(&json!({
+                "gate": gid, "pass": pass, "flaky": flaky, "evidence": evidence
+            }))?,
+        )
+        .with_meta(META_REPLAY_KEY, key);
+        if !digest.is_empty() {
+            ev = ev.with_meta(META_INPUT_DIGEST, digest);
+        }
+        if let Some(pos) = cache_hit_of {
+            ev = ev.with_meta(META_CACHE_HIT, pos.to_string());
+        }
+        let pos = self.append_and_fold(ev)?;
         self.gate_verdicts
             .lock()
             .unwrap()
             .insert(key.to_string(), (pass, evidence.to_string()));
+        // Only a GREEN with a real content address enters the cache, and only if no
+        // earlier green already claimed this digest - so the cited source is stable and a
+        // red must always re-prove. A cache-hit re-emit carries the same digest, so this
+        // is a no-op for it (the original green stays the source).
+        if pass && !digest.is_empty() {
+            self.green_digests
+                .lock()
+                .unwrap()
+                .entry(digest.to_string())
+                .or_insert((pos, unit.to_string()));
+        }
         Ok(())
     }
 
@@ -3122,6 +3285,13 @@ impl RunCtx<'_> {
         // `isolation: none` agent or a repo-less run) has no per-unit tree to isolate, so
         // `unit_cache_sibling` returns None and the gate inherits the ambient/shared target.
         let target = crate::worktree::unit_cache_sibling(dir).unwrap_or_default();
+        // The content address of this attempt's gate inputs (spec 12, unit 1): the git
+        // tree-SHA of the committed worktree (the whole tree by default - unit 3 narrows it
+        // to a gate's `inputs:`). Computed ONCE - every gate this attempt reads the same
+        // committed tree, and each gate folds its own command over it in `input_digest`.
+        // Empty when there is no worktree tree (a repo-less / `isolation: none` run), which
+        // simply disables content-addressing for this attempt's gates.
+        let tree_sha = crate::worktree::tree_sha_of(dir);
         for gid in &st.gates {
             let gc = self
                 .cfg
@@ -3151,6 +3321,35 @@ impl RunCtx<'_> {
                 }
                 continue;
             }
+            // Content-addressed cache-hit (spec 12, unit 1): this gate has not run at THIS
+            // (unit, attempt, gate) coordinate, but a prior GREEN verdict may already have
+            // proven the SAME command over the SAME tree. If so, answer the gate as a
+            // logged cache-hit citing that green's position - the command is not run and the
+            // ratchet does not move, exactly like an exact-key replay - so an unchanged tree
+            // re-verifies near-free. Failures never enter the cache, so a red is never
+            // cache-answered (it must always re-prove). An empty digest (no worktree tree)
+            // disables the hit and the gate runs fresh below.
+            let digest = input_digest(&gc.run, &tree_sha);
+            if !digest.is_empty() {
+                if let Some((pos, cached_unit)) = self.cached_green_verdict(&digest) {
+                    let evidence = format!(
+                        "cache-hit: gate {gid:?} was proven green at log position {pos} \
+                         (unit {cached_unit:?}) for the same command and input digest \
+                         {digest}; not re-run"
+                    );
+                    self.emit_gate_verdict(
+                        &key,
+                        &st.name,
+                        gid,
+                        true,
+                        false,
+                        &evidence,
+                        &digest,
+                        Some(pos),
+                    )?;
+                    continue;
+                }
+            }
             let g = Gate {
                 id: gid.clone(),
                 run: gc.run,
@@ -3167,8 +3366,10 @@ impl RunCtx<'_> {
             // (item 3): a real run otherwise discarded it, so neither the ledger nor the
             // workflow driver ever saw WHY a gate passed or failed. `flaky` rides as the
             // FlakyVerdict annotation (no new event type). Replay-keyed (and cached) so a
-            // re-step replays this verdict instead of re-running.
-            self.emit_gate_verdict(&key, gid, pass, flaky, &evidence)?;
+            // re-step replays this verdict instead of re-running; the `digest` addresses it
+            // by content so a later gate over the same command + tree is a cache-hit (a
+            // GREEN populates the content cache; a red records the digest but never caches).
+            self.emit_gate_verdict(&key, &st.name, gid, pass, flaky, &evidence, &digest, None)?;
             let (promoted, demoted, autonomy) = self.record_gate(gid, kind, ratchet, &st.autonomy);
             if promoted {
                 self.emit(
@@ -3374,7 +3575,21 @@ impl RunCtx<'_> {
                     // folded through the SAME single classification authority the inline
                     // gate uses (self.taxonomy) - one fault earns one demotion policy
                     // regardless of gate SITE.
-                    self.emit_gate_verdict(&key, gid, res.pass, false, &res.evidence)?;
+                    // A deferred gate runs in the BASE repo with no worktree dir, so there is
+                    // no per-tree address to compute (dir "" -> empty digest): it keeps its
+                    // once-per-run replay semantics and is NOT content-addressed by unit 1
+                    // (the owning unit is empty and the cache is untouched at an empty
+                    // digest). Its verdict still records normally.
+                    self.emit_gate_verdict(
+                        &key,
+                        "",
+                        gid,
+                        res.pass,
+                        false,
+                        &res.evidence,
+                        "",
+                        None,
+                    )?;
                     // Feed the ratchet the same way an inline gate does, so a deferred
                     // gate's trust still moves on its history (its ceiling is Silent,
                     // like Core). Only the fresh run feeds it; a replay must not re-emit
@@ -10030,6 +10245,7 @@ mod tests {
             prior_attempts: HashMap::new(),
             replayed_keys: Mutex::new(HashSet::new()),
             gate_verdicts: Mutex::new(HashMap::new()),
+            green_digests: Mutex::new(HashMap::new()),
             taxonomy: failure::Taxonomy::default(),
         };
         ctx.record_gate("ok", gate::Kind::Core, GateRatchet::CleanPass, "silent");
@@ -10091,6 +10307,33 @@ mod tests {
         );
     }
 
+    /// A driver whose implementer commits the UNIT'S OWN id as its file content, so two
+    /// independent units write DIVERGENT trees. Real independent units have divergent blast
+    /// radii - never byte-identical trees - and a fixture that wrote identical content would,
+    /// under the content-address cache (spec 12, unit 1), let one unit's gate be answered by
+    /// the other's green as a (correct) content-hit, so only ONE gate would run. Writing the
+    /// unit id keeps the trees - and thus the input digests - distinct, so both gates
+    /// genuinely run and the Gap-19 target-isolation assertion stays meaningful.
+    struct UnitDistinctWriter;
+    impl AgentDriver for UnitDistinctWriter {
+        fn spawn(
+            &self,
+            _a: &AgentDef,
+            _prompt: &str,
+            opts: &SpawnOpts,
+            _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+        ) -> Result<AgentResult, Error> {
+            if !opts.dir.is_empty() {
+                std::fs::write(
+                    Path::new(&opts.dir).join("work.rs"),
+                    format!("// unit {}\n", opts.unit),
+                )
+                .unwrap();
+            }
+            Ok(AgentResult::default())
+        }
+    }
+
     #[test]
     fn two_units_gate_environments_never_share_a_target_dir() {
         // Gap 19 (criterion 3): a gate that runs INSIDE a unit's worktree must build into
@@ -10120,10 +10363,9 @@ mod tests {
             );
         }
         let store = Store::open(":memory:").unwrap();
-        let driver = Stub {
-            write_file: Some("work.rs".into()),
-            ..Stub::new()
-        };
+        // Each unit writes its OWN id as content, so their trees (and input digests) differ
+        // and both gates genuinely run - never one content-hitting the other (spec 12, u1).
+        let driver = UnitDistinctWriter;
         let runner = RecordingRunner::new(&[]);
         let deps = Deps {
             store: &store,
@@ -11702,6 +11944,314 @@ mod tests {
                 },
             }
         }
+    }
+
+    /// A single implement + review stage `s` (worker implements, one lens, one
+    /// adjudicator, `on_pass: merge`) over gate `g`, for the content-address cache tests.
+    fn content_cache_cfg() -> Config {
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert("g".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                gates: vec!["g".into()],
+                on_pass: "merge".into(),
+                review: crate::config::ReviewPanel {
+                    lenses: vec!["lens".into()],
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        cfg
+    }
+
+    /// The `#{attempt}` ordinal of a deterministic spawn id (`{unit}/{role}#{attempt}`,
+    /// possibly `~retry{n}`-suffixed), for a driver that must vary its behavior per attempt.
+    fn attempt_of(id: &str) -> u32 {
+        id.rsplit('#')
+            .next()
+            .and_then(|s| s.split('~').next())
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0)
+    }
+
+    /// A driver for the content-address cache tests: the IMPLEMENTER writes `work.rs` with
+    /// the content for its attempt (`contents[attempt]`, falling back to the last entry), so
+    /// a test controls whether attempt 1's tree is IDENTICAL to attempt 0's (a cache hit) or
+    /// CHANGED (a miss); the ADJUDICATOR rejects until `approve_at` then approves, driving
+    /// exactly one remediation loop; lenses narrate non-degenerately.
+    struct CacheDriver {
+        contents: Vec<String>,
+        approve_at: u32,
+    }
+    impl AgentDriver for CacheDriver {
+        fn spawn(
+            &self,
+            _a: &AgentDef,
+            _prompt: &str,
+            opts: &SpawnOpts,
+            _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+        ) -> Result<AgentResult, Error> {
+            let attempt = attempt_of(&opts.id);
+            if opts.id.contains("/implementer#") {
+                if !opts.dir.is_empty() {
+                    let content = self
+                        .contents
+                        .get(attempt as usize)
+                        .or_else(|| self.contents.last())
+                        .cloned()
+                        .unwrap_or_default();
+                    std::fs::write(Path::new(&opts.dir).join("work.rs"), content).unwrap();
+                }
+                return Ok(AgentResult::default());
+            }
+            if opts.id.contains("/adjudicator#") {
+                let out = if attempt >= self.approve_at {
+                    r#"{"verdict":"approve"}"#
+                } else {
+                    r#"{"verdict":"reject","issues":[]}"#
+                };
+                return Ok(AgentResult {
+                    output: out.into(),
+                    resolved_model: String::new(),
+                });
+            }
+            // A lens (or any other reviewer): its stdout is not a verdict, but must be
+            // non-degenerate so the Gap-18 respawn loop does not treat it as an infra fault.
+            Ok(AgentResult {
+                output: "reviewed the diff".into(),
+                resolved_model: String::new(),
+            })
+        }
+    }
+
+    /// A gate runner that FAILS the first call to `gate` then passes every later call, and
+    /// records every gate id it was asked to run - so a test can prove a red verdict is
+    /// never cache-answered (the same gate, over the same tree, must run a SECOND time).
+    struct FailFirstRunner {
+        gate: String,
+        calls: Mutex<Vec<String>>,
+    }
+    impl FailFirstRunner {
+        fn new(gate: &str) -> Self {
+            FailFirstRunner {
+                gate: gate.to_string(),
+                calls: Mutex::new(Vec::new()),
+            }
+        }
+        fn calls(&self) -> Vec<String> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+    impl gate::Runner for FailFirstRunner {
+        fn run(&self, g: &Gate, _dir: &str, _target: &str) -> gate::GateResult {
+            let mut calls = self.calls.lock().unwrap();
+            let prior = calls.iter().filter(|c| **c == g.id).count();
+            calls.push(g.id.clone());
+            let pass = !(g.id == self.gate && prior == 0);
+            gate::GateResult {
+                pass,
+                evidence: if pass { "PASS" } else { "FAIL: transient" }.into(),
+            }
+        }
+    }
+
+    /// Find the GateVerdict recorded under `s/gate:g#{attempt}` in the log.
+    fn gate_verdict_event(events: &[Event], attempt: u32) -> &Event {
+        let key = format!("s/gate:g#{attempt}");
+        events
+            .iter()
+            .find(|e| {
+                e.type_ == contextgraph::TYPE_GATE_VERDICT
+                    && e.meta.get(META_REPLAY_KEY) == Some(&key)
+            })
+            .unwrap_or_else(|| panic!("no gate verdict recorded for {key}"))
+    }
+
+    fn verdict_passed(e: &Event) -> bool {
+        serde_json::from_slice::<GateVerdictData>(&e.data)
+            .map(|v| v.pass)
+            .unwrap()
+    }
+
+    #[test]
+    fn a_matching_input_digest_answers_a_gate_as_a_logged_cache_hit_citing_the_prior_green() {
+        // spec 12, unit 1 (HIT): a gate whose (command, tree-sha) input digest matches a
+        // prior GREEN verdict is answered as a LOGGED cache-hit citing that green's position
+        // - the command is NOT re-run. The unit gates GREEN on attempt 0, its review
+        // REJECTS, and on attempt 1 the implementer reproduces the IDENTICAL tree. Attempt
+        // 1's gate has a fresh (unit, attempt) key so the exact-key replay misses, but the
+        // content cache holds attempt 0's green for the identical digest - so the gate is a
+        // cache-hit, not a second command run.
+        let repo = init_repo();
+        let cfg = content_cache_cfg();
+        let store = Store::open(":memory:").unwrap();
+        let runner = RecordingRunner::new(&[]);
+        let driver = CacheDriver {
+            contents: vec!["same\n".into()],
+            approve_at: 1,
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo.path().to_str().unwrap().to_string(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "the unit integrates after the attempt-1 approve"
+        );
+        assert_eq!(
+            runner.calls().iter().filter(|c| c.as_str() == "g").count(),
+            1,
+            "the gate command ran ONCE (attempt 0); attempt 1 was a content-addressed cache-hit, not a re-run: {:?}",
+            runner.calls()
+        );
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let v0 = gate_verdict_event(&events, 0);
+        let v1 = gate_verdict_event(&events, 1);
+        let d0 = v0
+            .meta
+            .get(META_INPUT_DIGEST)
+            .expect("attempt 0 carries a digest");
+        let d1 = v1
+            .meta
+            .get(META_INPUT_DIGEST)
+            .expect("attempt 1 carries a digest");
+        assert_eq!(
+            d0, d1,
+            "identical trees + command yield the same input digest"
+        );
+        assert!(
+            !v0.meta.contains_key(META_CACHE_HIT),
+            "attempt 0 is a fresh run, not a cache-hit"
+        );
+        assert_eq!(
+            v1.meta.get(META_CACHE_HIT),
+            Some(&v0.position.to_string()),
+            "the attempt-1 cache-hit cites attempt 0's green verdict position (provenance)"
+        );
+        assert!(
+            verdict_passed(v1),
+            "a cache-hit is recorded as a passing verdict"
+        );
+    }
+
+    #[test]
+    fn a_content_change_misses_the_cache_and_re_runs_the_gate() {
+        // spec 12, unit 1 (MISS on content change): when attempt 1 CHANGES the tree, its
+        // input digest differs from attempt 0's green, so the content cache MISSES and the
+        // gate RUNS AGAIN - a stale green never answers changed inputs.
+        let repo = init_repo();
+        let cfg = content_cache_cfg();
+        let store = Store::open(":memory:").unwrap();
+        let runner = RecordingRunner::new(&[]);
+        let driver = CacheDriver {
+            contents: vec!["one\n".into(), "two\n".into()],
+            approve_at: 1,
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo.path().to_str().unwrap().to_string(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(rs.units["s"].status, ledger::Status::Integrated);
+        assert_eq!(
+            runner.calls().iter().filter(|c| c.as_str() == "g").count(),
+            2,
+            "a changed tree misses the cache, so the gate ran on BOTH attempts: {:?}",
+            runner.calls()
+        );
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let v0 = gate_verdict_event(&events, 0);
+        let v1 = gate_verdict_event(&events, 1);
+        assert_ne!(
+            v0.meta.get(META_INPUT_DIGEST),
+            v1.meta.get(META_INPUT_DIGEST),
+            "the changed tree must produce a different input digest"
+        );
+        assert!(
+            !v1.meta.contains_key(META_CACHE_HIT),
+            "attempt 1 was a FRESH run over the changed tree, not a cache-hit"
+        );
+    }
+
+    #[test]
+    fn a_red_verdict_is_never_cache_answered_and_the_gate_re_runs() {
+        // spec 12, unit 1 (red never cached): a FAILING gate never enters the content cache,
+        // so a later gate over the SAME tree must RE-RUN rather than reuse the red. The gate
+        // fails on attempt 0 (red); remediation re-runs it on attempt 1 over the IDENTICAL
+        // tree, and the red does NOT answer it - the gate runs a second time (and passes).
+        let repo = init_repo();
+        let cfg = content_cache_cfg();
+        let store = Store::open(":memory:").unwrap();
+        let runner = FailFirstRunner::new("g");
+        let driver = CacheDriver {
+            contents: vec!["same\n".into()],
+            approve_at: 1,
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo.path().to_str().unwrap().to_string(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "attempt 1's re-run passes and the unit integrates"
+        );
+        assert_eq!(
+            runner.calls().iter().filter(|c| c.as_str() == "g").count(),
+            2,
+            "the red at attempt 0 is never cached, so the gate RE-RAN over the identical tree at attempt 1: {:?}",
+            runner.calls()
+        );
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let v0 = gate_verdict_event(&events, 0);
+        let v1 = gate_verdict_event(&events, 1);
+        assert!(!verdict_passed(v0), "attempt 0 is the red verdict");
+        assert!(verdict_passed(v1), "attempt 1's re-run passes");
+        let d0 = v0
+            .meta
+            .get(META_INPUT_DIGEST)
+            .expect("the red verdict still carries its content address");
+        let d1 = v1
+            .meta
+            .get(META_INPUT_DIGEST)
+            .expect("attempt 1 carries its content address");
+        assert_eq!(
+            d0, d1,
+            "both attempts address the SAME tree - yet the red did not answer attempt 1"
+        );
+        assert!(
+            !v1.meta.contains_key(META_CACHE_HIT),
+            "attempt 1 was a real re-run, never a cache-hit off the red"
+        );
     }
 
     #[test]

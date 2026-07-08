@@ -606,6 +606,28 @@ pub fn head_sha_of(dir: &str) -> String {
         .unwrap_or_default()
 }
 
+/// The git TREE-SHA of the committed HEAD tree in `dir` - the content address of the
+/// whole worktree (spec 12, unit 1: content-addressed gate verdicts). Unlike
+/// [`head_sha_of`] (the COMMIT sha, which changes on every commit even when the tree is
+/// byte-identical), this is the TREE object sha, so two commits carrying the same file
+/// content hash EQUAL: it is a pure function of the tree's bytes, which is exactly the
+/// property the gate cache needs (a gate re-run over an unchanged tree is a hit; a
+/// changed tree misses). It is the whole-tree default; unit 3 narrows the addressed
+/// inputs to a gate's `inputs:` paths.
+///
+/// Deliberately non-failing, mirroring [`head_sha_of`]: an empty `dir` (a repo-less /
+/// worktree-less gate run) or an unresolvable HEAD yields an empty string, which the
+/// caller reads as "no tree to address" and simply skips content-addressing - never an
+/// error that fails the run.
+pub fn tree_sha_of(dir: &str) -> String {
+    if dir.is_empty() {
+        return String::new();
+    }
+    run_git(dir, &["rev-parse", "HEAD^{tree}"])
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default()
+}
+
 fn git(dir: &str, args: &[&str]) -> Result<String, Error> {
     run_git(dir, args).map_err(|out| Error(format!("git {}: {out}", args.join(" "))))
 }
@@ -699,6 +721,48 @@ mod tests {
         // A second commit with nothing new returns "" (idempotent).
         assert!(wt.commit("rigger: noop").unwrap().is_empty());
         wt.remove().unwrap();
+    }
+
+    #[test]
+    fn tree_sha_of_addresses_tree_content_not_the_commit() {
+        // spec 12, unit 1: tree_sha_of is the content address of the committed tree. Two
+        // DISTINCT commits (different message / parent / time, so a different COMMIT sha)
+        // that carry byte-identical trees must yield the SAME tree sha - so a gate re-run
+        // over an unchanged input is a cache hit - while a real content change must yield a
+        // DIFFERENT sha - so a changed input misses.
+        let repo = init_repo();
+        let p = repo.path().to_str().unwrap().to_string();
+
+        std::fs::write(repo.path().join("a.txt"), "one\n").unwrap();
+        run_git(&p, &["add", "-A"]).unwrap();
+        run_git(&p, &["commit", "-q", "-m", "first"]).unwrap();
+        let t1 = tree_sha_of(&p);
+        assert_eq!(t1.len(), 40, "a git tree sha is 40 hex chars: {t1:?}");
+        assert!(t1.chars().all(|c| c.is_ascii_hexdigit()));
+
+        // A fresh EMPTY commit advances the COMMIT sha but leaves the tree bytes unchanged,
+        // so the TREE sha is stable - the exact property head_sha_of does NOT have.
+        let head1 = head_sha_of(&p);
+        run_git(&p, &["commit", "--allow-empty", "-q", "-m", "empty"]).unwrap();
+        assert_ne!(head_sha_of(&p), head1, "the commit sha advances");
+        assert_eq!(
+            tree_sha_of(&p),
+            t1,
+            "an empty commit leaves the tree bytes unchanged, so the tree sha is stable"
+        );
+
+        // A real content change must move the tree sha.
+        std::fs::write(repo.path().join("a.txt"), "two\n").unwrap();
+        run_git(&p, &["add", "-A"]).unwrap();
+        run_git(&p, &["commit", "-q", "-m", "second"]).unwrap();
+        assert_ne!(
+            tree_sha_of(&p),
+            t1,
+            "changed content must change the tree sha"
+        );
+
+        // A worktree-less (empty) dir yields no address, so the caller skips addressing.
+        assert!(tree_sha_of("").is_empty());
     }
 
     #[test]
