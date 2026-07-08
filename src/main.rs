@@ -552,6 +552,7 @@ fn main() {
         "ground" => cmd_ground(&args[2..]),
         "reindex" => cmd_reindex(&args[2..]),
         "emit" => cmd_emit(&args[2..]),
+        "progress" => cmd_progress(&args[2..]),
         "result" => cmd_result(&args[2..]),
         "peers" => cmd_peers(&args[2..]),
         "validate" => cmd_validate(),
@@ -653,6 +654,10 @@ persisted grounding index (the grounder's reindex), so a\n                      
 later `rigger ground` reflects just-landed changes\n  \
 rigger emit <type> <json>   append {{type, data:<json>}} to the event store and fold\n                              \
 it into the context graph (the CLI form of rigger_emit)\n  \
+rigger progress <id> <act>  record one live progress line for spawn <id> to the\n                              \
+separate .rigger/progress.db (never the run stream), so an\n                              \
+observer can see what a working agent is doing between\n                              \
+milestones - `rigger status` and the dash present it\n  \
 rigger result <id> [out]    record a parked spawn's outcome to the run log so the next\n                              \
 step advances past it: <out> (or stdin) is the agent's output\n                              \
 (with --error, its failure message); --if-absent records only\n                              \
@@ -2110,6 +2115,47 @@ fn cmd_emit(args: &[String]) -> Res {
     let tool_args = serde_json::json!({ "type": typ, "data": data });
     let pos = mcpserver::emit_event(&store, conductor::STREAM, Some(&graph), &tool_args)?;
     println!("emitted {typ} (position {pos}) and folded it into the context graph");
+    Ok(())
+}
+
+/// `rigger progress <id> "<activity>"` - record one live progress report for spawn `<id>`
+/// to the SEPARATE progress store (`.rigger/progress.db`), stamped with the current run
+/// (spec 14, Gap 27). `<activity>` is a short one-line description of what the agent just
+/// did (a grep, a build, a commit, a decision). The report NEVER touches the run stream -
+/// it lands in its own store, so replay stays byte-identical - and rigger reads it back
+/// (the consolidator) to PRESENT a live per-agent view. A pure append: the run is resolved
+/// read-only from the run store to scope the report, and only the progress store is written.
+/// Routed through [`require_store_dir`] like the other courier commands, so a worker running
+/// it from a nested worktree records into the project's real store, never a misfiled one.
+fn cmd_progress(args: &[String]) -> Res {
+    let id = args
+        .first()
+        .ok_or("progress: expected a spawn id: rigger progress <id> \"<activity>\"")?;
+    let activity = args
+        .get(1)
+        .ok_or("progress: expected an activity: rigger progress <id> \"<activity>\"")?;
+    if args.len() > 2 {
+        return Err(format!(
+            "progress: expected an id and a single activity string, got {} arguments",
+            args.len()
+        )
+        .into());
+    }
+    if activity.trim().is_empty() {
+        return Err("progress: <activity> must be non-empty".into());
+    }
+
+    let loc = require_store_dir()?;
+    // Resolve the current run READ-ONLY from the run store, only to scope the report.
+    let run_backend = Store::open(&loc.file("events.db"))?;
+    let run_store = Namespaced::new(&run_backend, &loc.identity());
+    let events = run_store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+    let run_id = runscope::current_run_id(&events).unwrap_or_default();
+    // Append to the SEPARATE progress store - never the run stream.
+    let prog_backend = Store::open(&loc.file("progress.db"))?;
+    let prog_store = Namespaced::new(&prog_backend, &loc.identity());
+    let pos = rigger::progress::record(&prog_store, &run_id, id, activity)?;
+    println!("progress recorded for {id} (position {pos})");
     Ok(())
 }
 
