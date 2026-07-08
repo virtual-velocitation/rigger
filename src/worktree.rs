@@ -152,6 +152,37 @@ impl Worktree {
         Ok(())
     }
 
+    /// REVERT `commit` on the run branch checked out in `repo` (spec 12, unit 4): apply the
+    /// inverse of the commit's diff and record it as a NEW commit carrying `message` (the
+    /// compensation provenance) - never a history rewrite, so the reverse gear is evented and
+    /// auditable exactly like the forward [`Self::integrate`] merge. Returns the revert
+    /// commit's sha.
+    ///
+    /// A `--no-commit` revert then an explicit commit lets `message` name the compensation
+    /// (git's own revert subject would only echo the reverted commit's subject). A revert
+    /// that CONFLICTS is aborted so the run branch is left unchanged and the error surfaces -
+    /// the compensation then fails loudly rather than landing a half-reverted tree. A revert
+    /// that yields NO change (the commit's effect is already gone) commits nothing and
+    /// returns the current HEAD, so it is safely idempotent at the git layer too.
+    pub fn revert_on_base(repo: &str, commit: &str, message: &str) -> Result<String, Error> {
+        // Reverse-apply the commit's diff to the index/worktree WITHOUT committing, so the
+        // compensation message records the rollback instead of git's default "Revert ...".
+        if let Err(out) = run_git(repo, &["revert", "--no-commit", commit]) {
+            // A conflicting revert leaves partial changes staged; abort so the run branch is
+            // untouched and the failure is not silently half-applied.
+            let _ = run_git(repo, &["revert", "--abort"]);
+            return Err(Error(format!("revert {commit}: {out}")));
+        }
+        match run_git(repo, &["commit", "--no-edit", "-m", message]) {
+            Ok(_) => {}
+            // The commit's effect was already absent, so there is nothing to revert: leave
+            // HEAD where it is (idempotent), never an error.
+            Err(out) if out.contains("nothing to commit") => {}
+            Err(out) => return Err(Error(format!("commit revert of {commit}: {out}"))),
+        }
+        Ok(git(repo, &["rev-parse", "HEAD"])?.trim().to_string())
+    }
+
     /// Discard any leftover worktree at `dir` AND any existing `branch`, so a following
     /// [`Self::create`] checks out a FRESH worktree off the repo's CURRENT HEAD.
     ///
@@ -686,6 +717,50 @@ mod tests {
             "the agent's work must be merged into the repo"
         );
         wt.remove().unwrap();
+    }
+
+    #[test]
+    fn revert_on_base_rolls_back_an_integrated_commit_with_a_provenance_message() {
+        // spec 12, unit 4: revert_on_base reverses an integrated commit's diff on the run
+        // branch as a NEW, message-carrying commit (an evented rollback, not a rewrite), so a
+        // compensated unit's change is undone with auditable provenance.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let wt_path = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wt = Worktree::create(&repo_path, wt_path.to_str().unwrap(), "rigger/revert").unwrap();
+        std::fs::write(wt_path.join("wrong.txt"), "buggy\n").unwrap();
+        let commit = wt.integrate("rigger: integrate wrong").unwrap();
+        wt.remove().unwrap();
+        assert!(
+            repo.path().join("wrong.txt").exists(),
+            "precondition: the integrated file lands in the repo"
+        );
+
+        let revert = Worktree::revert_on_base(
+            &repo_path,
+            &commit,
+            "rigger: compensate unit-a (revert the buggy change)",
+        )
+        .unwrap();
+        assert_ne!(
+            revert, commit,
+            "the revert is a new commit, not the original"
+        );
+        assert!(
+            !repo.path().join("wrong.txt").exists(),
+            "reverting the integrating commit removes its change from the run branch"
+        );
+        let subjects = run_git(&repo_path, &["log", "--pretty=%s"]).unwrap();
+        assert!(
+            subjects.lines().any(|l| l.contains("compensate unit-a")),
+            "the rollback is evented with the compensation provenance message; log:\n{subjects}"
+        );
+        // The original integrating commit is still in history (an evented revert never
+        // rewrites the past), so the rollback is fully auditable.
+        assert!(
+            run_git(&repo_path, &["cat-file", "-t", &commit]).is_ok(),
+            "the reverted commit remains reachable in history"
+        );
     }
 
     #[test]

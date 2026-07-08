@@ -143,6 +143,24 @@ pub const META_CACHE_HIT: &str = "cache_hit_of";
 /// that touches no downstream blast radius omits it.
 pub const META_STALE: &str = "staled_units";
 
+/// The metadata key naming the integrating commit(s) a COMPENSATION reverted (spec 12,
+/// unit 4): a comma-separated list of the reverted commit shas, stamped on the `UnitFailed`
+/// event that re-enters a compensated unit into remediation. This is the `UnitCompensated`
+/// record - it rides the EXISTING `UnitFailed` vocabulary as metadata (no new event type,
+/// spec 12's Global constraints), naming exactly which integrating commits were rolled back
+/// so the rollback is self-provenanced and a stepwise resume re-reads them (and so never
+/// re-reverts a commit already compensated - the replay-idempotency guard). Present ONLY on
+/// a compensation's `UnitFailed`; an ordinary remediation `UnitFailed` omits it.
+pub const META_COMPENSATED: &str = "compensated_commits";
+
+/// The metadata key carrying the CONTRADICTION a compensation fed back (spec 12, unit 4):
+/// the reason a later unit's review proved the integrated unit wrong (the adjudicator's
+/// verdict output), stamped on the same `UnitFailed` event so the re-entered unit's next
+/// attempt is prompted with the specific contradiction rather than blindly restarting, and
+/// so a stepwise resume recovers the feedback from the log. Rides existing vocabulary as
+/// metadata - no new event type.
+pub const META_CONTRADICTION: &str = "contradiction";
+
 /// The replay key for a gate's verdict, keyed by the `(unit, attempt, gate)` coordinate
 /// the gate ran under - so a step re-reaching an already-run gate REPLAYS its recorded
 /// verdict instead of re-running the command (spec 04, criterion 4). Distinct attempts
@@ -404,6 +422,12 @@ impl GateRatchet {
 struct ReviewOutcome {
     approved: bool,
     reason: String,
+    /// The ALREADY-INTEGRATED unit this review named as the defect source (spec 12, unit
+    /// 4): a later unit's review can prove a prior integrated unit wrong (the adjudicator's
+    /// `compensate` field), which the run loop rolls back and re-enters. Parsed
+    /// INDEPENDENTLY of `approved` - a review may approve the current unit yet still name an
+    /// integrated unit as the real defect source. `None` when the verdict names no target.
+    compensate: Option<String>,
 }
 
 impl ReviewOutcome {
@@ -411,14 +435,28 @@ impl ReviewOutcome {
         ReviewOutcome {
             approved: true,
             reason,
+            compensate: None,
         }
     }
     fn rejected(reason: String) -> Self {
         ReviewOutcome {
             approved: false,
             reason,
+            compensate: None,
         }
     }
+}
+
+/// A queued post-integration ROLLBACK (spec 12, unit 4): a later unit's review named
+/// `target` - an ALREADY-INTEGRATED unit - as the defect source, so the run loop must
+/// revert its integrating commit(s) on the run branch, record the compensation, and
+/// re-enter it into remediation with `reason` (the contradiction) as feedback. Queued
+/// during a wave at a (possibly concurrent) review site and DRAINED by the single-threaded
+/// run loop after the wave, so the git revert and the scheduler-set mutation never race a
+/// concurrent integration - the same discipline the integrate lock gives the forward door.
+struct Compensation {
+    target: String,
+    reason: String,
 }
 
 /// The proof, carried into [`RunCtx::integrate_and_emit`], that a unit's three-tier
@@ -456,11 +494,18 @@ struct PriorFailure {
     gate_evidence: Vec<String>,
     /// The adjudicator's rejection reasoning (its raw output) when review rejected.
     review_reason: String,
+    /// A later unit's review proved this unit's ALREADY-INTEGRATED change wrong (spec 12,
+    /// unit 4): the contradiction reason, threaded into the RE-ENTERED unit's next prompt so
+    /// it fixes the specific defect its (now reverted) integrating commit introduced, rather
+    /// than blindly re-implementing. Empty except on a compensation re-entry.
+    contradiction: String,
 }
 
 impl PriorFailure {
     fn is_empty(&self) -> bool {
-        self.gate_evidence.is_empty() && self.review_reason.trim().is_empty()
+        self.gate_evidence.is_empty()
+            && self.review_reason.trim().is_empty()
+            && self.contradiction.trim().is_empty()
     }
 
     /// A one-line summary of the failure, for the escalation lesson (spec 02: the
@@ -472,6 +517,9 @@ impl PriorFailure {
         }
         if !self.review_reason.trim().is_empty() {
             parts.push(format!("review rejected: {}", self.review_reason.trim()));
+        }
+        if !self.contradiction.trim().is_empty() {
+            parts.push(format!("compensated: {}", self.contradiction.trim()));
         }
         parts.join("; ")
     }
@@ -494,6 +542,17 @@ impl PriorFailure {
         if !self.review_reason.trim().is_empty() {
             b.push_str("Your previous attempt was rejected by review: ");
             b.push_str(self.review_reason.trim());
+            b.push('\n');
+        }
+        if !self.contradiction.trim().is_empty() {
+            // Compensation re-entry (spec 12, unit 4): a later unit's work proved this
+            // unit's integrated change wrong, so your integrating commit was REVERTED off
+            // the run branch. Fix the specific contradiction, do not blindly restart.
+            b.push_str(
+                "A later unit's work proved your integrated change wrong; your integrating \
+                 commit was REVERTED off the run branch. Fix exactly this contradiction: ",
+            );
+            b.push_str(self.contradiction.trim());
             b.push('\n');
         }
         b.push('\n');
@@ -851,6 +910,33 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     // marking process. Extended live below each time a unit integrates this process.
     let stale_units = stale_units_from_log(prior_events);
 
+    // Compensation replay state (spec 12, unit 4): the integrating commits a PRIOR step
+    // already reverted (so a resume never re-reverts them - the reverse gear is
+    // replay-deterministic over the log) and the contradiction fed back to each re-entered
+    // unit (so its resumed first attempt is still prompted with the specific contradiction).
+    // Both recovered from the `UnitFailed` events a compensation stamped: [`META_COMPENSATED`]
+    // names the reverted commits, [`META_CONTRADICTION`] the reason. An already-re-integrated
+    // unit is terminal and never reads its feedback, so seeding the last one per unit is safe.
+    let mut compensated_commits: HashSet<String> = HashSet::new();
+    let mut compensation_feedback: HashMap<String, String> = HashMap::new();
+    for e in prior_events
+        .iter()
+        .filter(|e| e.type_ == ledger::TYPE_UNIT_FAILED)
+    {
+        if let Some(list) = e.meta.get(META_COMPENSATED) {
+            for c in list.split(',').filter(|s| !s.is_empty()) {
+                compensated_commits.insert(c.to_string());
+            }
+        }
+        if let Some(reason) = e.meta.get(META_CONTRADICTION) {
+            if let Ok(v) = serde_json::from_slice::<Value>(&e.data) {
+                if let Some(id) = v.get("id").and_then(Value::as_str) {
+                    compensation_feedback.insert(id.to_string(), reason.clone());
+                }
+            }
+        }
+    }
+
     // The RunCtx is created BEFORE the coverage check so a coverage gap can be
     // flagged as a spec defect through the event log (item 2 / §4.4) instead of
     // returning a bare error with no audit trail. It carries the per-unit prior
@@ -892,6 +978,9 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         gate_verdicts: Mutex::new(gate_verdicts),
         green_digests: Mutex::new(green_digests),
         stale_units: Mutex::new(stale_units),
+        compensations: Mutex::new(Vec::new()),
+        compensation_feedback: Mutex::new(compensation_feedback),
+        compensated_commits: Mutex::new(compensated_commits),
         // The failure taxonomy is built ONCE here from the same validated config the run
         // loads (its regexes were compiled and classes checked at `Config::validate`), so
         // every gate-failure classification this run makes reads one rule set.
@@ -1065,6 +1154,13 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
                 break;
             }
             ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)?;
+            // Post-integration compensation (spec 12, unit 4): a review this wave may have
+            // proven a PRIOR integrated unit wrong. Drain the queued rollbacks now, between
+            // waves (single-threaded), reverting the condemned unit's integrating commit(s)
+            // on the run branch and re-entering it into remediation - so the next
+            // `wave_ready` re-schedules it. The forward door stays untouched; this is its
+            // evented reverse gear.
+            ctx.drain_compensations(&mut integrated, &mut terminal)?;
         }
     }
 
@@ -1246,6 +1342,27 @@ struct RunCtx<'a> {
     /// mark on one is harmless; a still-pending stale unit re-verifies its gates until it
     /// lands (re-running a gate is never wrong, only the cache benefit is withheld).
     stale_units: Mutex<HashSet<String>>,
+    /// The queued post-integration compensations (spec 12, unit 4): each is an
+    /// already-integrated unit a later unit's review named as the defect source. A review
+    /// site (inside a possibly-concurrent wave) PUSHES here; the single-threaded run loop
+    /// DRAINS it after the wave via [`drain_compensations`](RunCtx::drain_compensations),
+    /// reverting the unit's integrating commit(s) on the run branch and re-entering it into
+    /// remediation. Queue-then-drain keeps the git revert and the scheduler-set mutation off
+    /// the concurrent path, exactly as the integrate lock serializes the forward door.
+    compensations: Mutex<Vec<Compensation>>,
+    /// The contradiction fed back to each RE-ENTERED unit (spec 12, unit 4): unit id -> the
+    /// reason a later unit's review proved it wrong. Seeded at run start from the prior log's
+    /// compensation marks (so a resumed re-entry is still prompted with the contradiction)
+    /// and set live when a compensation drains. `run_single_stage` reads it once to seed the
+    /// re-entered unit's first-attempt prompt; an already-re-integrated (terminal) unit never
+    /// reads it, so a stale entry is harmless.
+    compensation_feedback: Mutex<HashMap<String, String>>,
+    /// The integrating commits already REVERTED by a compensation (spec 12, unit 4): the
+    /// replay-idempotency guard. Seeded at run start from the prior log's [`META_COMPENSATED`]
+    /// marks and extended as this process reverts, so a stepwise resume (or a re-reached
+    /// review) never applies the same git revert twice - the reverse gear is deterministic
+    /// over the log exactly like the forward integrate.
+    compensated_commits: Mutex<HashSet<String>>,
     /// The declarative failure taxonomy (spec 10, unit 2): the SINGLE authority the
     /// conductor folds its gate-failure classification from, built once from
     /// `defaults.failure_rules` (or the shipped spec-07-preserving default when none are
@@ -1292,6 +1409,9 @@ impl<'a> RunCtx<'a> {
             gate_verdicts: Mutex::new(HashMap::new()),
             green_digests: Mutex::new(HashMap::new()),
             stale_units: Mutex::new(HashSet::new()),
+            compensations: Mutex::new(Vec::new()),
+            compensation_feedback: Mutex::new(HashMap::new()),
+            compensated_commits: Mutex::new(HashSet::new()),
             // The pure-helper test context builds no gates through the taxonomy; the
             // shipped default is a harmless placeholder. The gate-behavior tests drive the
             // full `run`, which builds the taxonomy from the config under test.
@@ -1487,6 +1607,127 @@ impl RunCtx<'_> {
             }
         }
         staled
+    }
+
+    /// Drain the queued post-integration COMPENSATIONS (spec 12, unit 4), single-threaded
+    /// after a wave: for each ALREADY-INTEGRATED unit a later unit's review named as the
+    /// defect source, REVERT its integrating commit(s) on the run branch in reverse
+    /// integration order, RECORD the compensation as `UnitFailed` metadata (existing
+    /// vocabulary, no new event type), and RE-ENTER it into remediation - dropping it from
+    /// the integrated/terminal sets so the next wave re-schedules it, and seeding the
+    /// contradiction as its next-attempt feedback. This is the one-way integrate door's
+    /// principled, evented reverse gear.
+    ///
+    /// Idempotent over the log: a commit already recorded as compensated (seeded at run
+    /// start / stamped here) is never reverted twice, so a stepwise replay - or a re-reached
+    /// review - applies no second git revert and the run branch stays deterministic. A
+    /// named unit that never integrated (a typo, or one already superseded) is a no-op: there
+    /// is nothing to revert.
+    fn drain_compensations(
+        &self,
+        integrated: &mut HashSet<String>,
+        terminal: &mut HashSet<String>,
+    ) -> Result<(), Error> {
+        let queued: Vec<Compensation> = std::mem::take(&mut *self.compensations.lock().unwrap());
+        for comp in queued {
+            // Only an integrated unit can be rolled back; anything else has no integrating
+            // commit on the run branch to revert.
+            if !integrated.contains(&comp.target) {
+                continue;
+            }
+            let commits = self.commits_to_compensate(&comp.target);
+            if commits.is_empty() {
+                continue;
+            }
+            // Revert each commit newest-first UNDER the integrate lock, so the rollback is
+            // serialized with any concurrent forward integration exactly as a merge is.
+            let reverted = {
+                let _lock = self.integrate_mu.lock().unwrap();
+                let mut done: Vec<String> = Vec::new();
+                for commit in &commits {
+                    Worktree::revert_on_base(
+                        &self.deps.repo,
+                        commit,
+                        &format!("rigger: compensate {} (revert {commit})", comp.target),
+                    )?;
+                    done.push(commit.clone());
+                }
+                done
+            };
+            {
+                let mut set = self.compensated_commits.lock().unwrap();
+                for c in &reverted {
+                    set.insert(c.clone());
+                }
+            }
+            // Record the compensation AND re-enter remediation on the EXISTING `UnitFailed`
+            // vocabulary (no new event type): the reverted commits + the contradiction ride
+            // as metadata for provenance and replay recovery. Un-keyed, appended once per
+            // drained compensation (the `compensated_commits` guard bounds re-reaches).
+            let compensated = reverted.join(",");
+            let contradiction = comp.reason.trim();
+            let attempts = self.prior_attempts.get(&comp.target).copied().unwrap_or(0) + 1;
+            self.emit_meta(
+                ledger::TYPE_UNIT_FAILED,
+                json!({"id": comp.target, "attempts": attempts}),
+                &[
+                    (META_COMPENSATED, &compensated),
+                    (META_CONTRADICTION, contradiction),
+                ],
+            )?;
+            self.compensation_feedback
+                .lock()
+                .unwrap()
+                .insert(comp.target.clone(), comp.reason.clone());
+            // Re-enter the unit into remediation: drop the integrated/terminal marks so the
+            // next wave re-schedules it fresh (its branch was deleted on its integrate, so
+            // it re-implements off the now-reverted run branch).
+            integrated.remove(&comp.target);
+            terminal.remove(&comp.target);
+        }
+        Ok(())
+    }
+
+    /// The integrating commit(s) of `unit` to REVERT for a compensation (spec 12, unit 4):
+    /// the REAL git commits its `UnitIntegrated` events recorded in THIS run, in REVERSE
+    /// integration order (newest first, so reverting the newest never conflicts with an
+    /// older commit it sits on top of), excluding empty / review-only-marker commits and any
+    /// commit already compensated (the replay-idempotency guard). A unit that integrated once
+    /// yields exactly one commit; the reverse order is the general contract for a unit that
+    /// integrated more than once across compensation cycles.
+    fn commits_to_compensate(&self, unit: &str) -> Vec<String> {
+        let all = match self.deps.store.read_stream(STREAM, 0, Direction::Forward) {
+            Ok(e) => e,
+            Err(_) => return Vec::new(),
+        };
+        let events = crate::run::current_run(&all);
+        let already = self.compensated_commits.lock().unwrap();
+        let mut commits: Vec<String> = Vec::new();
+        for e in events
+            .iter()
+            .filter(|e| e.type_ == ledger::TYPE_UNIT_INTEGRATED)
+        {
+            let Ok(v) = serde_json::from_slice::<Value>(&e.data) else {
+                continue;
+            };
+            if v.get("id").and_then(Value::as_str) != Some(unit) {
+                continue;
+            }
+            let Some(commit) = v.get("commit").and_then(Value::as_str) else {
+                continue;
+            };
+            if commit.is_empty()
+                || commit == REVIEW_ONLY_NO_ARTIFACT
+                || already.contains(commit)
+                || commits.iter().any(|c| c == commit)
+            {
+                continue;
+            }
+            commits.push(commit.to_string());
+        }
+        // Recorded ascending by integration order; reverse to revert newest-first.
+        commits.reverse();
+        commits
     }
 
     /// Log a blast-radius SKIP (spec 12, unit 3): the inner loop did not run `gid` because its
@@ -2234,6 +2475,10 @@ impl RunCtx<'_> {
         // findings from the graph, and renders the gating verdict.
         let (approved, reason, adj_resolved) =
             self.run_adjudicator(st, &adjudicator, dir, attempt)?;
+        // A COMPENSATION target (spec 12, unit 4): the verdict may name a PRIOR integrated
+        // unit as the real defect source, INDEPENDENTLY of whether it approves this unit.
+        // Carried on the outcome so the run loop can roll that unit back after the wave.
+        let compensate = verdict_compensates(&reason);
         if approved {
             // The adjudicator's verdict reason is folded into the unit's `reviewed`
             // evidence (item 4). Replay-keyed on unit + attempt: a repo-less unit that
@@ -2257,9 +2502,13 @@ impl RunCtx<'_> {
                     (META_WORKTREE_SHA, &worktree::head_sha_of(dir)),
                 ],
             )?;
-            Ok(ReviewOutcome::approved(reason))
+            let mut outcome = ReviewOutcome::approved(reason);
+            outcome.compensate = compensate;
+            Ok(outcome)
         } else {
-            Ok(ReviewOutcome::rejected(reason))
+            let mut outcome = ReviewOutcome::rejected(reason);
+            outcome.compensate = compensate;
+            Ok(outcome)
         }
     }
 
@@ -2334,6 +2583,19 @@ impl RunCtx<'_> {
         // prompt (item 3 + 5 / spec 02). Empty on the first attempt, so that prompt
         // is unchanged.
         let mut prior = PriorFailure::default();
+        // Compensation re-entry (spec 12, unit 4): a unit that a later unit's review proved
+        // wrong was reverted and re-entered here; its FIRST re-attempt is prompted with the
+        // recorded contradiction so it fixes the specific defect, not blindly restart. Read
+        // once at the top; a subsequent re-review reject then carries its own reason instead.
+        if let Some(reason) = self
+            .compensation_feedback
+            .lock()
+            .unwrap()
+            .get(&st.name)
+            .cloned()
+        {
+            prior.contradiction = reason;
+        }
         // Resume-continuity, Implemented phase: the unit was implemented in a prior
         // window and its branch carries the committed code, but it was not yet
         // approved+merged. Skip the implementer spawn on the FIRST iteration and pick
@@ -2549,6 +2811,19 @@ impl RunCtx<'_> {
                         ],
                     )?;
                     let review = self.review_unit(st, dir, attempts)?;
+                    // A contradiction against a PRIOR integrated unit (spec 12, unit 4): the
+                    // adjudicator named another, already-integrated unit as the real defect
+                    // source. QUEUE the rollback for the run loop to drain after this wave
+                    // (single-threaded, so the git revert never races a concurrent merge). A
+                    // unit never compensates ITSELF (that is ordinary remediation below).
+                    if let Some(target) = &review.compensate {
+                        if target != &st.name {
+                            self.compensations.lock().unwrap().push(Compensation {
+                                target: target.clone(),
+                                reason: review.reason.clone(),
+                            });
+                        }
+                    }
                     if review.approved {
                         // on_pass governs integration (§3.2): empty or `merge` lands
                         // the work; any other value (e.g. `none`) runs the gates but
@@ -4582,6 +4857,28 @@ fn verdict_approves(output: &str) -> bool {
         }
     }
     false
+}
+
+/// The ALREADY-INTEGRATED unit an adjudicator's verdict names as the COMPENSATION target
+/// (spec 12, unit 4): the `compensate` field (a unit id) on the last JSON verdict line that
+/// carries a non-empty one, or `None`. A later unit's review that proves a PRIOR integrated
+/// unit wrong names it here; the conductor then reverts that unit's integrating commit(s)
+/// and re-enters it into remediation. Parsed INDEPENDENTLY of the approve/reject verdict -
+/// a review may approve the CURRENT unit's own work yet still name an integrated unit as the
+/// real defect source. A missing or unparseable field is simply no compensation, never a
+/// silent one.
+fn verdict_compensates(output: &str) -> Option<String> {
+    for line in output.lines().rev() {
+        if let Ok(v) = serde_json::from_str::<Value>(line.trim()) {
+            if let Some(target) = v.get("compensate").and_then(|x| x.as_str()) {
+                let target = target.trim();
+                if !target.is_empty() {
+                    return Some(target.to_string());
+                }
+            }
+        }
+    }
+    None
 }
 
 const EMIT_PROTOCOL: &str = "Record each decision you make by calling the rigger_emit tool the moment you make it, with type \"DecisionMade\" and data:\n{\"id\":\"<short-id>\",\"summary\":\"<one line>\",\"governs\":[\"<file>\"],\"supersedes\":\"<prior-id-or-empty>\"}\nThis writes it to the shared event log live, so other agents see it immediately.";
@@ -10634,6 +10931,9 @@ mod tests {
             gate_verdicts: Mutex::new(HashMap::new()),
             green_digests: Mutex::new(HashMap::new()),
             stale_units: Mutex::new(HashSet::new()),
+            compensations: Mutex::new(Vec::new()),
+            compensation_feedback: Mutex::new(HashMap::new()),
+            compensated_commits: Mutex::new(HashSet::new()),
             taxonomy: failure::Taxonomy::default(),
         };
         ctx.record_gate("ok", gate::Kind::Core, GateRatchet::CleanPass, "silent");
@@ -13258,6 +13558,239 @@ mod tests {
             far_runs >= 2,
             "the integrate-door red must feed remediation: far re-runs at the door on the retry \
              (saw {far_runs} far runs)"
+        );
+    }
+
+    #[test]
+    fn verdict_compensates_names_a_prior_unit_independent_of_approval() {
+        // spec 12, unit 4: the `compensate` field on the last JSON verdict line naming a
+        // prior integrated unit is parsed INDEPENDENTLY of approve/reject - a review may
+        // approve its own unit yet still name an integrated unit as the defect source.
+        assert_eq!(
+            verdict_compensates(r#"{"verdict":"approve","compensate":"unit-a"}"#).as_deref(),
+            Some("unit-a"),
+            "an approving verdict can still name a prior unit for compensation"
+        );
+        assert_eq!(
+            verdict_compensates(r#"{"verdict":"reject","compensate":"unit-x"}"#).as_deref(),
+            Some("unit-x"),
+            "a rejecting verdict can name a prior unit for compensation too"
+        );
+        // The LAST json line with a `compensate` field wins, mirroring verdict_approves.
+        assert_eq!(
+            verdict_compensates(
+                "{\"compensate\":\"first\"}\n{\"verdict\":\"approve\",\"compensate\":\"last\"}"
+            )
+            .as_deref(),
+            Some("last")
+        );
+        // No field, empty field, or non-JSON is simply no compensation - never a silent one.
+        assert_eq!(verdict_compensates(r#"{"verdict":"approve"}"#), None);
+        assert_eq!(
+            verdict_compensates(r#"{"verdict":"reject","compensate":"  "}"#),
+            None
+        );
+        assert_eq!(verdict_compensates("no json here"), None);
+    }
+
+    /// A driver for the compensation e2e test (spec 12, unit 4): each unit's IMPLEMENTER
+    /// writes its OWN file (so the two units touch disjoint paths and revert cleanly), and
+    /// the driver records every implementer prompt per unit so the test can prove the
+    /// RE-ENTERED unit was prompted with the contradiction. `unit-a`'s adjudicator always
+    /// approves; `unit-b`'s adjudicator approves ITS OWN work but names `unit-a` as the
+    /// defect source (`compensate`) - the seeded two-unit contradiction (a later unit's work
+    /// proves a prior integrated unit wrong).
+    struct CompDriver {
+        impl_prompts: Mutex<HashMap<String, Vec<String>>>,
+    }
+    impl AgentDriver for CompDriver {
+        fn spawn(
+            &self,
+            _a: &AgentDef,
+            prompt: &str,
+            opts: &SpawnOpts,
+            _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+        ) -> Result<AgentResult, Error> {
+            let unit = opts.id.split('/').next().unwrap_or_default();
+            if opts.id.contains("/implementer#") {
+                self.impl_prompts
+                    .lock()
+                    .unwrap()
+                    .entry(unit.to_string())
+                    .or_default()
+                    .push(prompt.to_string());
+                if !opts.dir.is_empty() {
+                    let (file, content) = match unit {
+                        "unit-a" => ("a.rs", "fn a() {}\n"),
+                        _ => ("b.rs", "fn b() {}\n"),
+                    };
+                    std::fs::write(Path::new(&opts.dir).join(file), content).unwrap();
+                }
+                return Ok(AgentResult::default());
+            }
+            if opts.id.contains("/adjudicator#") {
+                // unit-b's own work is fine (approve), but its work PROVES unit-a wrong, so it
+                // names unit-a for compensation. unit-a's own re-review approves cleanly (no
+                // further compensation), so the run converges.
+                let out = if unit == "unit-b" {
+                    r#"{"verdict":"approve","compensate":"unit-a"}"#
+                } else {
+                    r#"{"verdict":"approve"}"#
+                };
+                return Ok(AgentResult {
+                    output: out.into(),
+                    resolved_model: String::new(),
+                });
+            }
+            Ok(AgentResult {
+                output: "reviewed the diff".into(),
+                resolved_model: String::new(),
+            })
+        }
+    }
+
+    #[test]
+    fn a_contradiction_compensates_reverts_and_re_enters_the_integrated_unit() {
+        // spec 12, unit 4 (end-to-end, seeded two-unit contradiction - done-when line 26):
+        // `unit-a` integrates; then `unit-b`'s review proves it wrong (its adjudicator names
+        // unit-a as the defect source). The conductor RECORDS the compensation (as
+        // `UnitCompensated` metadata on the existing `UnitFailed` vocabulary), REVERTS unit-a's
+        // integrating commit on the run branch, and RE-ENTERS unit-a into remediation with the
+        // contradiction as feedback - whereupon unit-a re-implements (now PROMPTED with the
+        // contradiction) and re-integrates, so the run converges.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert("g".into(), gate_def("true"));
+        let panel = crate::config::ReviewPanel {
+            lenses: vec!["lens".into()],
+            adjudicator: "judge".into(),
+            ..Default::default()
+        };
+        let mk = |name: &str, needs: Vec<String>| Stage {
+            name: name.into(),
+            agent: "worker".into(),
+            gates: vec!["g".into()],
+            on_pass: "merge".into(),
+            needs,
+            review: panel.clone(),
+            ..Default::default()
+        };
+        // unit-b needs unit-a, so unit-a integrates FIRST and then unit-b's review can prove
+        // that already-integrated unit-a wrong.
+        cfg.workflow
+            .stages
+            .insert("unit-a".into(), mk("unit-a", vec![]));
+        cfg.workflow
+            .stages
+            .insert("unit-b".into(), mk("unit-b", vec!["unit-a".into()]));
+
+        let store = Store::open(":memory:").unwrap();
+        let driver = CompDriver {
+            impl_prompts: Mutex::new(HashMap::new()),
+        };
+        let runner = RecordingRunner::new(&[]);
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        // CONVERGENCE: unit-a re-integrated after its rollback; unit-b integrated.
+        assert_eq!(
+            rs.units["unit-a"].status,
+            ledger::Status::Integrated,
+            "unit-a re-integrates after its compensation rollback"
+        );
+        assert_eq!(
+            rs.units["unit-b"].status,
+            ledger::Status::Integrated,
+            "unit-b integrates"
+        );
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let unit_of = |e: &Event| -> Option<String> {
+            serde_json::from_slice::<Value>(&e.data)
+                .ok()
+                .and_then(|v| v.get("id").and_then(Value::as_str).map(str::to_string))
+        };
+        // unit-a's FIRST integrating commit - the one the contradiction condemns.
+        let first_a_commit = events
+            .iter()
+            .find(|e| {
+                e.type_ == ledger::TYPE_UNIT_INTEGRATED && unit_of(e).as_deref() == Some("unit-a")
+            })
+            .and_then(|e| serde_json::from_slice::<Value>(&e.data).ok())
+            .and_then(|v| v.get("commit").and_then(Value::as_str).map(str::to_string))
+            .filter(|c| !c.is_empty())
+            .expect("unit-a integrated with a real commit");
+
+        // (1) COMPENSATION RECORDED on existing vocabulary: a `UnitFailed` for unit-a carries
+        // the reverted commit in META_COMPENSATED - the `UnitCompensated` record, no new event
+        // type - naming exactly unit-a's first integrating commit for provenance.
+        let compensated = events
+            .iter()
+            .find(|e| {
+                e.type_ == ledger::TYPE_UNIT_FAILED
+                    && unit_of(e).as_deref() == Some("unit-a")
+                    && e.meta.contains_key(META_COMPENSATED)
+            })
+            .expect("a UnitCompensated (UnitFailed + META_COMPENSATED) records unit-a's rollback");
+        assert_eq!(
+            compensated.meta.get(META_COMPENSATED).map(String::as_str),
+            Some(first_a_commit.as_str()),
+            "the compensation names unit-a's reverted integrating commit"
+        );
+        assert!(
+            compensated
+                .meta
+                .get(META_CONTRADICTION)
+                .is_some_and(|r| r.contains("compensate")),
+            "the compensation carries the contradiction reason for provenance and feedback"
+        );
+
+        // (2) REVERTED ON THE RUN BRANCH, in an EVENTED (not history-rewriting) rollback: the
+        // run branch carries a compensation revert commit for unit-a.
+        let log = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo_path)
+            .args(["log", "--pretty=%s"])
+            .output()
+            .unwrap();
+        let log = String::from_utf8_lossy(&log.stdout);
+        assert!(
+            log.lines().any(|l| l.contains("compensate unit-a")),
+            "the run branch carries an evented revert of unit-a's integrating commit; log:\n{log}"
+        );
+
+        // (3) RE-ENTERED INTO REMEDIATION WITH THE CONTRADICTION AS FEEDBACK: unit-a's
+        // implementer ran a SECOND time, and its re-entry prompt names the reverted commit as
+        // the contradiction to fix - not a blind restart.
+        let prompts = driver
+            .impl_prompts
+            .lock()
+            .unwrap()
+            .get("unit-a")
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(
+            prompts.len(),
+            2,
+            "unit-a implements once, then RE-implements after being compensated"
+        );
+        assert!(
+            prompts[1].contains("your integrating commit was REVERTED"),
+            "the re-entered unit-a is prompted with the contradiction as feedback; prompt:\n{}",
+            prompts[1]
         );
     }
 
