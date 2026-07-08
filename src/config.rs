@@ -61,6 +61,16 @@ pub struct Gate {
     pub run: String,
     #[serde(default)]
     pub kind: String,
+    /// Optional blast-radius scope (spec 12, unit 3): the glob patterns naming the files
+    /// this gate verifies. During the implement/remediate INNER LOOP the conductor runs
+    /// only the gates whose `inputs` intersect the unit's grounded blast radius and logs a
+    /// skip for the rest (never silent); the integrate step still runs the FULL library, so
+    /// "done" is asserted against the exhaustive suite. An EMPTY `inputs` (the default) means
+    /// the gate is UNSCOPED - it verifies the whole tree (e.g. a crate-wide `cargo test`) and
+    /// so always runs, never narrowed away. Globs support `**` (any path segments), `*` (one
+    /// segment), and `?` (one non-`/` char), matched against repo-relative paths.
+    #[serde(default)]
+    pub inputs: Vec<String>,
 }
 
 /// One declarative failure rule (spec 10, unit 2), authored under

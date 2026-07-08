@@ -507,7 +507,7 @@ pub fn project(events: &[Event]) -> Metrics {
                 let Some(v) = gate_verdict(e) else {
                     continue;
                 };
-                if !v.artifact.is_empty() {
+                if !v.artifact.is_empty() || v.skipped {
                     continue;
                 }
                 let counts = metrics.gates.entry(v.gate).or_default();
@@ -663,6 +663,11 @@ struct GateVerdictView {
     pass: bool,
     #[serde(default)]
     artifact: String,
+    /// A blast-radius SKIP verdict (spec 12, unit 3): the inner loop logged that it did NOT
+    /// run this gate (its `inputs:` miss the blast radius). A skip is not a gate run, so it is
+    /// excluded from the pass/fail counts exactly like the artifact-tagged bookkeeping below.
+    #[serde(default)]
+    skipped: bool,
 }
 
 /// Decode a `GateVerdict` payload, or `None` for a malformed one (the sentinel arm

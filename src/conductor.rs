@@ -152,6 +152,69 @@ fn gate_verdict_key(unit: &str, attempt: u32, gate: &str) -> String {
     format!("{unit}/gate:{gate}#{attempt}")
 }
 
+/// The replay key for a blast-radius SKIP verdict (spec 12, unit 3), DISTINCT from the
+/// gate-RUN key [`gate_verdict_key`] produces (`{unit}/gate:{gate}#{attempt}`). The skip
+/// is a logged provenance record ("the inner loop did not run this gate because its
+/// `inputs:` miss the blast radius"), NOT a gate outcome: keying it apart means
+/// [`recorded_gate_verdict`](RunCtx::recorded_gate_verdict) never treats a skip as a
+/// recorded verdict, so the exhaustive integrate pass still RUNS the skipped gate. The
+/// `gate-skip:` infix contains no `/gate:` substring, so [`unit_of_gate_key`] never
+/// mis-parses it. Keyed so a stepwise resume re-emits the skip exactly once.
+fn gate_skip_key(unit: &str, attempt: u32, gate: &str) -> String {
+    format!("{unit}/gate-skip:{gate}#{attempt}")
+}
+
+/// Whether a gate RUNS during the blast-radius-narrowed inner loop (spec 12, unit 3): a
+/// gate with no `inputs:` globs is UNSCOPED (it verifies the whole tree, so it can never be
+/// safely narrowed away) and always runs; a gate WITH `inputs:` runs iff at least one glob
+/// matches at least one file in the unit's `blast_radius` - otherwise the unit touches
+/// nothing this gate checks, so the inner loop skips it (the exhaustive integrate pass still
+/// runs it, preserving R6 even when grounding under-approximates).
+fn gate_intersects_radius(inputs: &[String], blast_radius: &[String]) -> bool {
+    if inputs.is_empty() {
+        return true;
+    }
+    inputs
+        .iter()
+        .any(|pat| blast_radius.iter().any(|f| glob_matches(pat, f)))
+}
+
+/// Match a glob `pattern` against a repo-relative `path` (spec 12, unit 3). `**` matches any
+/// run of characters INCLUDING `/` (any number of path segments, and a trailing `/` is
+/// optional so `a/**/b` also matches `a/b`); `*` matches any run EXCLUDING `/` (one path
+/// segment); `?` matches a single non-`/` character; every other character is literal. Built
+/// by translating the glob to an anchored regex; a malformed translation matches nothing.
+fn glob_matches(pattern: &str, path: &str) -> bool {
+    let mut re = String::from("^");
+    let mut chars = pattern.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '*' => {
+                if chars.peek() == Some(&'*') {
+                    chars.next();
+                    re.push_str(".*");
+                    // Swallow the separator after `**` so `a/**/b` matches `a/b` (zero dirs).
+                    if chars.peek() == Some(&'/') {
+                        chars.next();
+                    }
+                } else {
+                    re.push_str("[^/]*");
+                }
+            }
+            '?' => re.push_str("[^/]"),
+            '.' | '+' | '(' | ')' | '|' | '[' | ']' | '{' | '}' | '^' | '$' | '\\' => {
+                re.push('\\');
+                re.push(c);
+            }
+            _ => re.push(c),
+        }
+    }
+    re.push('$');
+    regex::Regex::new(&re)
+        .map(|r| r.is_match(path))
+        .unwrap_or(false)
+}
+
 /// The producing UNIT of a gate-verdict replay key (`{unit}/gate:{gate}#{attempt}`), used
 /// when seeding the content-address cache from prior GREEN verdicts so the cache value
 /// carries which unit earned the green (the coordinate a downstream staleness pass keys
@@ -270,6 +333,21 @@ pub struct AgentResult {
 struct GateOutcome {
     pass: bool,
     evidence: Vec<String>,
+}
+
+/// Which gates a [`run_gates`](RunCtx::run_gates) pass runs (spec 12, unit 3).
+///
+/// - [`GateSelection::Narrowed`] is the implement/remediate INNER LOOP: a gate whose
+///   `inputs:` globs do NOT intersect the unit's grounded blast radius is SKIPPED and
+///   logged (never silent), so a remediation iteration re-verifies only what its change
+///   could have touched. A gate with no `inputs:` is unscoped and always runs.
+/// - [`GateSelection::Exhaustive`] is the INTEGRATE step: the FULL gate library runs, so
+///   "done" is asserted against the exhaustive suite (R6). Nothing is skipped. Cheap via
+///   unit-1's content cache - the gates the inner loop already ran replay from the log,
+///   so only the gates it SKIPPED actually run here.
+enum GateSelection<'a> {
+    Narrowed(&'a [String]),
+    Exhaustive,
 }
 
 /// The result of integrating a unit ([`RunCtx::integrate_and_emit`]): the merge commit
@@ -1411,6 +1489,47 @@ impl RunCtx<'_> {
         staled
     }
 
+    /// Log a blast-radius SKIP (spec 12, unit 3): the inner loop did not run `gid` because its
+    /// `inputs:` globs miss the unit's grounded blast radius. Recorded as a `GateVerdict`
+    /// carrying `skipped: true` and the reason (no new event type - the skip rides the existing
+    /// vocabulary), under the distinct [`gate_skip_key`] so it never shadows the gate-RUN key
+    /// the exhaustive integrate pass records, and with NO content digest so it never seeds the
+    /// cache. The metrics fold excludes `skipped` verdicts exactly as it excludes the
+    /// integrate-time artifact bookkeeping, so a skip is never counted as a gate pass. Keyed so
+    /// a stepwise resume re-appends it exactly once.
+    fn emit_gate_skip(
+        &self,
+        unit: &str,
+        gid: &str,
+        attempt: u32,
+        inputs: &[String],
+        blast_radius: &[String],
+    ) -> Result<(), Error> {
+        let key = gate_skip_key(unit, attempt, gid);
+        {
+            // Idempotency guard, identical to `emit_gate_verdict`: a re-step that already
+            // recorded this skip re-appends nothing.
+            let mut keys = self.replayed_keys.lock().unwrap();
+            if !keys.insert(key.clone()) {
+                return Ok(());
+            }
+        }
+        let reason = format!(
+            "skipped: gate {gid:?} inputs {inputs:?} do not intersect the unit's blast radius \
+             {blast_radius:?}; the inner loop runs only blast-radius gates (spec 12, unit 3), and \
+             the exhaustive integrate pass still runs this gate"
+        );
+        let ev = Event::new(
+            contextgraph::TYPE_GATE_VERDICT,
+            serde_json::to_vec(&json!({
+                "gate": gid, "pass": true, "skipped": true, "evidence": reason
+            }))?,
+        )
+        .with_meta(META_REPLAY_KEY, &key);
+        self.append_and_fold(ev)?;
+        Ok(())
+    }
+
     /// Emit a gate's `GateVerdict` under its replay `key`, stamping its content address and
     /// caching its outcome so both the exact-key replay
     /// ([`recorded_gate_verdict`](RunCtx::recorded_gate_verdict)) and the content-address
@@ -2163,6 +2282,27 @@ impl RunCtx<'_> {
             if !integrates(st) {
                 return Ok(false);
             }
+            // The exhaustive integrate door still gates a RESUMED merge (spec 12, unit 3): a
+            // prior window recorded `reviewed` after its blast-radius-narrowed inner loop and
+            // the approve, but may have crashed BEFORE the integrate-time exhaustive suite ran.
+            // So re-assert the FULL library here before merging - "done" is measured against the
+            // exhaustive suite, never the narrowed subset (R6). Cheap: every gate the prior
+            // window already ran replays its recorded verdict; only gates it skipped run now.
+            let attempts = self.prior_attempts.get(&st.name).copied().unwrap_or(0);
+            let full = self.run_gates(st, dir, attempts, GateSelection::Exhaustive)?;
+            if !full.pass {
+                // The exhaustive suite is red on a resumed approve (a skipped gate fails):
+                // do NOT integrate a failing tree. Record the failure so the unit re-enters
+                // its lifecycle next step rather than wedging forever on a `reviewed` status
+                // it can never safely merge.
+                let failed_sha = worktree::head_sha_of(dir);
+                self.emit_meta(
+                    ledger::TYPE_UNIT_FAILED,
+                    json!({"id": st.name, "attempts": attempts + 1}),
+                    &[(META_WORKTREE_SHA, &failed_sha)],
+                )?;
+                return Ok(false);
+            }
             // The prior window recorded `reviewed` - which is emitted ONLY on an
             // explicit adjudicator approve (`review_unit` / the fan-out review stage) -
             // so this resumed merge carries a real approval.
@@ -2208,6 +2348,12 @@ impl RunCtx<'_> {
             // (spec 10 unit 4) escalates one rung per remediation attempt - the same rung
             // the driver spawns on for `attempts`. Empty for an agentless stage.
             let impl_alias = self.agent_model(&st.agent, attempts);
+            // The unit's grounded blast radius for THIS attempt, computed ONCE (the SAME
+            // grounding `grounded_seed` returns): it seeds the implementer spawn's
+            // `blast_radius` AND selects which gates the blast-radius-narrowed inner loop runs
+            // (spec 12, unit 3), so the gates a remediation iteration re-verifies are exactly
+            // the files the implementer was grounded on.
+            let blast_radius = self.grounded_seed(st);
             let mut spawn_err: Option<String> = None;
             // The RESOLVED model id the implementer reported for THIS attempt, surfaced by
             // the replay driver from the worker's `--meta` report. Empty until the spawn's
@@ -2277,7 +2423,7 @@ impl RunCtx<'_> {
                             dir: dir.to_string(),
                             isolation: wt.is_some(),
                             parallel: false,
-                            blast_radius: self.grounded_seed(st),
+                            blast_radius: blast_radius.clone(),
                             id: implementer_id.clone(),
                             unit: st.name.clone(),
                             stage: st.name.clone(),
@@ -2368,7 +2514,14 @@ impl RunCtx<'_> {
                 if let Some(w) = wt {
                     w.commit(&format!("rigger: {} attempt {}", st.name, attempts + 1))?;
                 }
-                let gate_outcome = self.run_gates(st, dir, attempts)?;
+                // Blast-radius gate selection (spec 12, unit 3): the implement/remediate
+                // INNER LOOP runs only the gates whose `inputs:` intersect the unit's grounded
+                // blast radius (its `grounded_seed`, the SAME radius the spawn/partition/
+                // staleness passes use), skipping and logging the rest. A remediation iteration
+                // then re-verifies only what its change could have touched; the exhaustive suite
+                // is asserted once at the integrate door below.
+                let gate_outcome =
+                    self.run_gates(st, dir, attempts, GateSelection::Narrowed(&blast_radius))?;
                 if gate_outcome.pass {
                     // The verified status carries the gate evidence (item 4): each
                     // gate that ran summarized for the ledger's per-unit evidence.
@@ -2404,38 +2557,55 @@ impl RunCtx<'_> {
                         if !integrates(st) {
                             return Ok(false);
                         }
-                        // The gates passed AND the review explicitly approved: the only
-                        // path that mints an `IntegrationApproval`, so the only path that
-                        // can merge. The reject branch below has no approval to hand to
-                        // `integrate_and_emit`, so it cannot land the unit's code.
-                        //
-                        // Gap 16 invariant (spec 06 unit 3): the verdict is folded and
-                        // acted on HERE, and an approve returns before the `remediate`
-                        // terminal check below ever runs. So an approval on a unit's
-                        // FINAL permitted attempt integrates - `max_retries` gates only
-                        // STARTING another attempt, it never overrides an approval. This
-                        // ordering (verdict-fold before attempt-counter) is load-bearing;
-                        // reversing it re-opens the bug where unit-2's approved-on-
-                        // attempt-6 review was recorded as UnitFailed/UnitEscalated.
-                        let Integration { commit, staled } = self.integrate_and_emit(
-                            stages,
-                            wt,
-                            &st.agent,
-                            &st.name,
-                            &st.gates,
-                            IntegrationApproval::approved(),
-                        )?;
-                        self.emit_meta(
-                            ledger::TYPE_UNIT_INTEGRATED,
-                            json!({"id": st.name, "commit": commit}),
-                            &[(META_STALE, &staled.join(","))],
-                        )?;
-                        return Ok(true);
+                        // The integrate door's EXHAUSTIVE gate (spec 12, unit 3): "done" is
+                        // asserted against the FULL gate library, never the blast-radius-narrowed
+                        // inner-loop subset, so a unit never lands on a partial suite (R6). Cheap
+                        // via unit-1's content cache - the gates the inner loop already ran replay
+                        // from the log, so only the gates it SKIPPED actually run here. A red here
+                        // (a skipped gate the merged-to-be tree fails) BLOCKS the merge and feeds
+                        // remediation, exactly like an inner-loop gate failure. `integrate_and_emit`
+                        // itself is untouched - the exhaustive suite gates whether it is CALLED.
+                        let full = self.run_gates(st, dir, attempts, GateSelection::Exhaustive)?;
+                        if full.pass {
+                            // The gates passed AND the review explicitly approved: the only
+                            // path that mints an `IntegrationApproval`, so the only path that
+                            // can merge. The reject branch below has no approval to hand to
+                            // `integrate_and_emit`, so it cannot land the unit's code.
+                            //
+                            // Gap 16 invariant (spec 06 unit 3): the verdict is folded and
+                            // acted on HERE, and an approve returns before the `remediate`
+                            // terminal check below ever runs. So an approval on a unit's
+                            // FINAL permitted attempt integrates - `max_retries` gates only
+                            // STARTING another attempt, it never overrides an approval. This
+                            // ordering (verdict-fold before attempt-counter) is load-bearing;
+                            // reversing it re-opens the bug where unit-2's approved-on-
+                            // attempt-6 review was recorded as UnitFailed/UnitEscalated.
+                            let Integration { commit, staled } = self.integrate_and_emit(
+                                stages,
+                                wt,
+                                &st.agent,
+                                &st.name,
+                                &st.gates,
+                                IntegrationApproval::approved(),
+                            )?;
+                            self.emit_meta(
+                                ledger::TYPE_UNIT_INTEGRATED,
+                                json!({"id": st.name, "commit": commit}),
+                                &[(META_STALE, &staled.join(","))],
+                            )?;
+                            return Ok(true);
+                        }
+                        // The exhaustive suite went red on an approved unit (a gate the inner
+                        // loop had skipped fails against the merged-to-be tree): treat it like
+                        // any gate failure - capture the evidence and fall through to
+                        // remediation, do NOT integrate a tree that fails the full suite.
+                        next.gate_evidence = full.evidence;
+                    } else {
+                        // A rejecting adjudicator is treated exactly like a gate failure:
+                        // capture its reasoning for the next attempt's prompt (item 5) and
+                        // fall through to remediation, do NOT integrate.
+                        next.review_reason = review.reason;
                     }
-                    // A rejecting adjudicator is treated exactly like a gate failure:
-                    // capture its reasoning for the next attempt's prompt (item 5) and
-                    // fall through to remediation, do NOT integrate.
-                    next.review_reason = review.reason;
                 } else {
                     // Capture the failing gates' evidence for the next attempt's
                     // prompt (item 3 / spec 02).
@@ -2561,7 +2731,13 @@ impl RunCtx<'_> {
                 self.run_adjudicator(st, &st.adjudicator, dir, attempts)?
             };
 
-            let gates_pass = approved && self.run_gates(st, dir, attempts)?.pass;
+            // A standalone review stage integrates no code of its own, so there is nothing to
+            // narrow by blast radius: it runs the EXHAUSTIVE gate library (spec 12, unit 3),
+            // exactly as before.
+            let gates_pass = approved
+                && self
+                    .run_gates(st, dir, attempts, GateSelection::Exhaustive)?
+                    .pass;
             if gates_pass {
                 // Gap 16 invariant (spec 06 unit 3): the adjudicator's verdict is folded
                 // and acted on HERE - an approve (with green gates) integrates and returns
@@ -3356,7 +3532,13 @@ impl RunCtx<'_> {
     /// duration once, not once per step) and appends no duplicate verdict. Distinct
     /// attempts are distinct gate runs - a re-implementation must re-gate - so only
     /// re-reaching the SAME attempt's gate is a replay.
-    fn run_gates(&self, st: &Stage, dir: &str, attempt: u32) -> Result<GateOutcome, Error> {
+    fn run_gates(
+        &self,
+        st: &Stage,
+        dir: &str,
+        attempt: u32,
+        selection: GateSelection,
+    ) -> Result<GateOutcome, Error> {
         let mut outcome = GateOutcome {
             pass: true,
             evidence: Vec::new(),
@@ -3407,6 +3589,20 @@ impl RunCtx<'_> {
                     outcome.evidence.push(format!("{gid}: {evidence}"));
                 }
                 continue;
+            }
+            // Blast-radius gate SELECTION (spec 12, unit 3): in the implement/remediate INNER
+            // LOOP, a gate whose `inputs:` globs do not intersect the unit's grounded blast
+            // radius verifies nothing this change could have touched, so it is SKIPPED - logged
+            // (never silent) and not run. An unscoped gate (no `inputs:`) always runs. This is
+            // gated AFTER the exact-key replay above, so a re-step that already recorded this
+            // gate's real verdict replays it rather than re-deciding a skip; and it uses the
+            // distinct skip key, so the EXHAUSTIVE integrate pass (which selects every gate)
+            // still runs the skipped gate below. `Exhaustive` skips nothing.
+            if let GateSelection::Narrowed(blast_radius) = selection {
+                if !gate_intersects_radius(&gc.inputs, blast_radius) {
+                    self.emit_gate_skip(&st.name, gid, attempt, &gc.inputs, blast_radius)?;
+                    continue;
+                }
             }
             // Content-addressed cache-hit (spec 12, unit 1): this gate has not run at THIS
             // (unit, attempt, gate) coordinate, but a prior GREEN verdict may already have
@@ -5445,6 +5641,18 @@ mod tests {
         config::Gate {
             run: run.to_string(),
             kind: "core".to_string(),
+            inputs: Vec::new(),
+        }
+    }
+
+    /// A `core` gate over `run` scoped to the given blast-radius `inputs` globs (spec 12,
+    /// unit 3): the inner loop runs it only when its globs intersect the unit's grounded
+    /// blast radius.
+    fn gate_def_inputs(run: &str, inputs: &[&str]) -> config::Gate {
+        config::Gate {
+            run: run.to_string(),
+            kind: "core".to_string(),
+            inputs: inputs.iter().map(|s| s.to_string()).collect(),
         }
     }
 
@@ -12723,6 +12931,206 @@ mod tests {
     }
 
     #[test]
+    fn glob_matches_supports_star_doublestar_and_literals() {
+        // `*` is one path segment; `**` spans segments (with an optional separator); `?` is one
+        // non-`/` char; a bare path is an exact match. These are the semantics gate `inputs:`
+        // globs are selected by (spec 12, unit 3).
+        assert!(glob_matches("src/conductor.rs", "src/conductor.rs"));
+        assert!(!glob_matches("src/conductor.rs", "src/gate.rs"));
+        assert!(glob_matches("src/*.rs", "src/gate.rs"));
+        assert!(
+            !glob_matches("src/*.rs", "src/contextgraph/mod.rs"),
+            "* does not cross /"
+        );
+        assert!(
+            glob_matches("src/**/*.rs", "src/contextgraph/mod.rs"),
+            "** crosses /"
+        );
+        assert!(glob_matches("src/**", "src/anything/deep.rs"));
+        assert!(
+            glob_matches("a/**/b.rs", "a/b.rs"),
+            "** matches zero directories"
+        );
+        assert!(glob_matches("a/**/b.rs", "a/x/y/b.rs"));
+        assert!(glob_matches("gate?.rs", "gate1.rs"));
+        assert!(!glob_matches("gate?.rs", "gate12.rs"));
+        // A regex metacharacter in the pattern is a literal, not a wildcard.
+        assert!(glob_matches("a.b", "a.b"));
+        assert!(!glob_matches("a.b", "axb"), ". is escaped to a literal dot");
+    }
+
+    #[test]
+    fn gate_intersects_radius_runs_unscoped_and_intersecting_gates_only() {
+        // A gate with NO inputs is unscoped and always runs; a scoped gate runs iff a glob hits a
+        // blast-radius file (spec 12, unit 3).
+        let radius = vec!["src/conductor.rs".to_string(), "src/gate.rs".to_string()];
+        assert!(
+            gate_intersects_radius(&[], &radius),
+            "an unscoped gate (no inputs) always runs"
+        );
+        assert!(gate_intersects_radius(
+            &["src/gate.rs".to_string()],
+            &radius
+        ));
+        assert!(gate_intersects_radius(
+            &["src/**/*.rs".to_string()],
+            &radius
+        ));
+        assert!(
+            !gate_intersects_radius(&["docs/**".to_string()], &radius),
+            "a gate whose inputs miss every blast-radius file is skipped"
+        );
+        assert!(
+            !gate_intersects_radius(&["src/gate.rs".to_string()], &[]),
+            "an empty blast radius intersects no scoped gate"
+        );
+    }
+
+    #[test]
+    fn blast_radius_narrows_the_inner_loop_and_the_integrate_step_runs_the_full_library() {
+        // spec 12, unit 3 (end-to-end): during the implement/remediate INNER LOOP only the gates
+        // whose `inputs:` intersect the unit's grounded blast radius run; the rest are SKIPPED and
+        // LOGGED (never silent). The INTEGRATE step then runs the EXHAUSTIVE library, so "done" is
+        // asserted against the full suite. Unit `s` grounds onto `src/near.rs`; gate `near`
+        // (`inputs: [src/near.rs]`) intersects and runs inline, while gate `far`
+        // (`inputs: [docs/far.md]`) does NOT - it is skipped inline and run only at integrate.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+
+        // A canned blast radius for unit `s`, so the intersection is deterministic regardless of
+        // what the implementer's stub actually writes.
+        let grounder = StubGrounder {
+            by_query: HashMap::from([("s".to_string(), vec!["src/near.rs".to_string()])]),
+        };
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        // Distinct commands so the two gates have DISTINCT content addresses (spec 12, unit 1):
+        // otherwise `far` would content-cache-hit `near`'s green over the identical tree and
+        // never actually run - the test would not prove the integrate step EXECUTES the gate the
+        // inner loop skipped.
+        cfg.workflow.gates.insert(
+            "near".into(),
+            gate_def_inputs("near-check", &["src/near.rs"]),
+        );
+        cfg.workflow
+            .gates
+            .insert("far".into(), gate_def_inputs("far-check", &["docs/far.md"]));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                coverage: "s".into(),
+                gates: vec!["near".into(), "far".into()],
+                on_pass: "merge".into(),
+                review: crate::config::ReviewPanel {
+                    lenses: vec!["lens".into()],
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let store = Store::open(":memory:").unwrap();
+        let driver = CacheDriver {
+            contents: vec!["work\n".into()],
+            approve_at: 0,
+        };
+        let runner = RecordingRunner::new(&[]);
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo_path,
+            grounder: Some(&grounder),
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "the unit integrates once its exhaustive suite is green"
+        );
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let find_key = |key: &str| -> Option<&Event> {
+            events.iter().find(|e| {
+                e.type_ == contextgraph::TYPE_GATE_VERDICT
+                    && e.meta.get(META_REPLAY_KEY) == Some(&key.to_string())
+            })
+        };
+
+        // (1) INNER-LOOP NARROWING + SKIP LOGGING: `far` (its inputs miss the blast radius) is
+        // SKIPPED in the inner loop and logged as a `skipped` GateVerdict carrying a reason;
+        // `near` (its inputs intersect) is NOT skipped.
+        let skip = find_key("s/gate-skip:far#0")
+            .expect("far is skipped-and-logged in the blast-radius-narrowed inner loop");
+        let skip_v: Value = serde_json::from_slice(&skip.data).unwrap();
+        assert_eq!(
+            skip_v["skipped"],
+            json!(true),
+            "the skip verdict is explicitly marked skipped"
+        );
+        assert!(
+            skip_v["evidence"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("skipped"),
+            "the skip carries its reason (never silent): {skip_v}"
+        );
+        assert!(
+            !skip.meta.contains_key(META_INPUT_DIGEST),
+            "a skip carries no content digest, so it never seeds the content cache"
+        );
+        assert!(
+            find_key("s/gate-skip:near#0").is_none(),
+            "near intersects the blast radius, so the inner loop does NOT skip it"
+        );
+
+        // (2) EXHAUSTIVE INTEGRATE: by integration the FULL library ran - `far`, skipped inline,
+        // has a REAL run verdict (distinct from its skip), and the runner executed both gates.
+        let far_run =
+            find_key("s/gate:far#0").expect("far RUNS at the exhaustive integrate step (R6)");
+        let far_run_v: Value = serde_json::from_slice(&far_run.data).unwrap();
+        assert!(
+            far_run_v.get("skipped").is_none(),
+            "the integrate-step run of far is a REAL verdict, not a skip: {far_run_v}"
+        );
+        assert!(
+            skip.position < far_run.position,
+            "far was SKIPPED in the inner loop first, then RUN at the integrate step"
+        );
+        assert!(
+            find_key("s/gate:near#0").is_some(),
+            "near ran inline in the inner loop"
+        );
+        let calls = runner.calls();
+        assert!(
+            calls.contains(&"near".to_string()) && calls.contains(&"far".to_string()),
+            "both gates ran by integrate time - the integrate step runs the full library: {calls:?}"
+        );
+        assert_eq!(
+            calls.iter().filter(|c| c.as_str() == "far").count(),
+            1,
+            "far ran exactly once - only at the integrate step, never in the inner loop: {calls:?}"
+        );
+
+        // (3) A skip is not a gate run: the operator metrics never count it as a `far` pass.
+        let m = crate::metrics::project(&events);
+        assert_eq!(
+            m.gates.get("far").map(|c| c.pass).unwrap_or_default(),
+            1,
+            "the metrics count only far's one REAL run, never its skip (excluded like the \
+             artifact-tagged integrate bookkeeping)"
+        );
+    }
+
+    #[test]
     fn a_deferred_gate_runs_once_at_the_phase_boundary_not_inline() {
         // A stage with both an inline (core) gate and a deferred gate. The deferred
         // gate must NOT run during the unit's inline lifecycle - the unit integrates on
@@ -12736,6 +13144,7 @@ mod tests {
             config::Gate {
                 run: "true".into(),
                 kind: "deferred".into(),
+                inputs: Vec::new(),
             },
         );
         cfg.workflow.stages.insert(
@@ -12812,6 +13221,7 @@ mod tests {
             config::Gate {
                 run: "false".into(),
                 kind: "deferred".into(),
+                inputs: Vec::new(),
             },
         );
         cfg.workflow.stages.insert(
@@ -12912,6 +13322,7 @@ mod tests {
             config::Gate {
                 run: "false".into(),
                 kind: "deferred".into(),
+                inputs: Vec::new(),
             },
         );
         cfg.workflow.stages.insert(
@@ -13086,6 +13497,7 @@ mod tests {
             config::Gate {
                 run: "true".into(),
                 kind: "deferred".into(),
+                inputs: Vec::new(),
             },
         );
         cfg.workflow.stages.insert(
@@ -13178,6 +13590,7 @@ mod tests {
             config::Gate {
                 run: "true".into(),
                 kind: "deferred".into(),
+                inputs: Vec::new(),
             },
         );
         cfg.workflow.stages.insert(
@@ -13326,6 +13739,7 @@ mod tests {
             config::Gate {
                 run: "true".into(),
                 kind: "deferred".into(),
+                inputs: Vec::new(),
             },
         );
         // A Manual-autonomy stage pauses on its gate awaiting a human (§4.3). It also
@@ -13414,6 +13828,7 @@ mod tests {
             config::Gate {
                 run: "true".into(),
                 kind: "deferred".into(),
+                inputs: Vec::new(),
             },
         );
         cfg.workflow.defaults.review = config::ReviewPanel {
@@ -13543,6 +13958,7 @@ mod tests {
             config::Gate {
                 run: "false".into(),
                 kind: "deferred".into(),
+                inputs: Vec::new(),
             },
         );
         cfg.workflow.stages.insert(
