@@ -203,6 +203,19 @@ fn gate_skip_key(unit: &str, attempt: u32, gate: &str) -> String {
     format!("{unit}/gate-skip:{gate}#{attempt}")
 }
 
+/// The replay key for a POST-MERGE re-gate verdict (spec 12, unit 5), DISTINCT from the
+/// pre-merge gate-RUN key [`gate_verdict_key`] produces (`{unit}/gate:{gate}#{attempt}`) at
+/// the SAME `(unit, attempt)`. Keying the post-merge re-gate apart is what lets it re-verify
+/// the MERGED tree instead of REPLAYING the pre-merge isolation green via the content-blind
+/// exact-key replay ([`recorded_gate_verdict`](RunCtx::recorded_gate_verdict)) - the merged
+/// tree runs (or content-cache-hits) under its own key. The `postmerge-gate:` infix carries
+/// no `/gate:` substring, so [`unit_of_gate_key`] never mis-parses it as a pre-merge gate key
+/// (it neither pollutes unit-4's attempt high-water scan nor seeds the cache with a unit).
+/// Keyed so a stepwise resume re-emits the post-merge verdict exactly once.
+fn postmerge_gate_verdict_key(unit: &str, attempt: u32, gate: &str) -> String {
+    format!("{unit}/postmerge-gate:{gate}#{attempt}")
+}
+
 /// The replay key for a durable compensation-QUEUED mark (spec 12, unit 4), keyed by the
 /// `(triggering unit, target, triggering attempt)` coordinate so the SAME review naming the
 /// SAME target at the SAME attempt re-appends the mark exactly once on a stepwise resume
@@ -393,9 +406,16 @@ struct GateOutcome {
 ///   "done" is asserted against the exhaustive suite (R6). Nothing is skipped. Cheap via
 ///   unit-1's content cache - the gates the inner loop already ran replay from the log,
 ///   so only the gates it SKIPPED actually run here.
+/// - [`GateSelection::PostMerge`] is the POST-MERGE re-gate (spec 12, unit 5): the FULL
+///   library runs against the MERGED run-branch tree, keyed apart (`{unit}/postmerge-gate:`)
+///   from the pre-merge `{unit}/gate:` verdict so it never REPLAYS the isolation green but
+///   still consults unit-1's CONTENT cache - a merge that changed nothing a gate reads is a
+///   near-free cache-hit, while an unpredicted merge break misses and RUNS on the merged
+///   tree. Skips nothing, exactly like `Exhaustive`.
 enum GateSelection<'a> {
     Narrowed(&'a [String]),
     Exhaustive,
+    PostMerge,
 }
 
 /// The result of integrating a unit ([`RunCtx::integrate_and_emit`]): the merge commit
@@ -407,6 +427,11 @@ enum GateSelection<'a> {
 struct Integration {
     commit: String,
     staled: Vec<String>,
+    /// The post-merge re-gate went RED (spec 12, unit 5): the merge was ROLLED BACK (nothing
+    /// landed, no `UnitIntegrated`) and this carries the merge-break gate evidence, so the
+    /// caller falls to remediation exactly like a pre-merge gate failure. `None` on a clean
+    /// integration (or a read-only / no-change unit).
+    blocked: Option<Vec<String>>,
 }
 
 /// The ratchet effect of a single gate run, resolved by the failure taxonomy's three-way
@@ -2723,18 +2748,27 @@ impl RunCtx<'_> {
             // The prior window recorded `reviewed` - which is emitted ONLY on an
             // explicit adjudicator approve (`review_unit` / the fan-out review stage) -
             // so this resumed merge carries a real approval.
-            let Integration { commit, staled } = self.integrate_and_emit(
-                stages,
-                wt,
-                &st.agent,
-                &st.name,
-                &st.gates,
-                IntegrationApproval::approved(),
-            )?;
+            let integration =
+                self.integrate_and_emit(stages, wt, st, attempts, IntegrationApproval::approved())?;
+            if integration.blocked.is_some() {
+                // spec 12, unit 5: the MERGED tree failed the post-merge re-gate on a RESUMED
+                // merge (a batch-mate integrated onto the run branch since this unit was
+                // reviewed, and the two auto-merged into a broken tree). The merge was rolled
+                // back; record the failure so the unit re-enters its lifecycle next step and
+                // re-implements against the changed world, rather than wedging on a `reviewed`
+                // status it can never safely merge.
+                let failed_sha = worktree::head_sha_of(dir);
+                self.emit_meta(
+                    ledger::TYPE_UNIT_FAILED,
+                    json!({"id": st.name, "attempts": attempts + 1}),
+                    &[(META_WORKTREE_SHA, &failed_sha)],
+                )?;
+                return Ok(false);
+            }
             self.emit_meta(
                 ledger::TYPE_UNIT_INTEGRATED,
-                json!({"id": st.name, "commit": commit}),
-                &[(META_STALE, &staled.join(","))],
+                json!({"id": st.name, "commit": integration.commit}),
+                &[(META_STALE, &integration.staled.join(","))],
             )?;
             return Ok(true);
         }
@@ -3060,26 +3094,40 @@ impl RunCtx<'_> {
                             // ordering (verdict-fold before attempt-counter) is load-bearing;
                             // reversing it re-opens the bug where unit-2's approved-on-
                             // attempt-6 review was recorded as UnitFailed/UnitEscalated.
-                            let Integration { commit, staled } = self.integrate_and_emit(
+                            let integration = self.integrate_and_emit(
                                 stages,
                                 wt,
-                                &st.agent,
-                                &st.name,
-                                &st.gates,
+                                st,
+                                attempts,
                                 IntegrationApproval::approved(),
                             )?;
-                            self.emit_meta(
-                                ledger::TYPE_UNIT_INTEGRATED,
-                                json!({"id": st.name, "commit": commit}),
-                                &[(META_STALE, &staled.join(","))],
-                            )?;
-                            return Ok(true);
+                            match integration.blocked {
+                                None => {
+                                    self.emit_meta(
+                                        ledger::TYPE_UNIT_INTEGRATED,
+                                        json!({"id": st.name, "commit": integration.commit}),
+                                        &[(META_STALE, &integration.staled.join(","))],
+                                    )?;
+                                    return Ok(true);
+                                }
+                                // The post-merge re-gate went RED (spec 12, unit 5): the pre-
+                                // merge gates passed in this unit's OWN worktree, but the MERGED
+                                // tree failed - an unpredicted batch-mate overlap auto-merged
+                                // into a broken tree. The merge was ROLLED BACK (nothing
+                                // landed), so capture the merge-break evidence and fall through
+                                // to remediation, exactly like the exhaustive pre-merge red
+                                // below - never integrate a broken merged tree.
+                                Some(evidence) => {
+                                    next.gate_evidence = evidence;
+                                }
+                            }
+                        } else {
+                            // The exhaustive suite went red on an approved unit (a gate the
+                            // inner loop had skipped fails against the merged-to-be tree): treat
+                            // it like any gate failure - capture the evidence and fall through
+                            // to remediation, do NOT integrate a tree that fails the full suite.
+                            next.gate_evidence = full.evidence;
                         }
-                        // The exhaustive suite went red on an approved unit (a gate the inner
-                        // loop had skipped fails against the merged-to-be tree): treat it like
-                        // any gate failure - capture the evidence and fall through to
-                        // remediation, do NOT integrate a tree that fails the full suite.
-                        next.gate_evidence = full.evidence;
                     } else {
                         // A rejecting adjudicator is treated exactly like a gate failure:
                         // capture its reasoning for the next attempt's prompt (item 5) and
@@ -4057,7 +4105,14 @@ impl RunCtx<'_> {
             if !kind.runs_inline() {
                 continue;
             }
-            let key = gate_verdict_key(&st.name, attempt, gid);
+            // The post-merge re-gate (spec 12, unit 5) keys apart from the pre-merge
+            // `{unit}/gate:` verdict at the SAME `(unit, attempt)`, so it re-verifies the
+            // MERGED tree under its own key instead of REPLAYING the isolation green; every
+            // other selection uses the canonical gate-run key.
+            let key = match selection {
+                GateSelection::PostMerge => postmerge_gate_verdict_key(&st.name, attempt, gid),
+                _ => gate_verdict_key(&st.name, attempt, gid),
+            };
             // REPLAY a recorded verdict (spec 04, criterion 4): this gate already ran in
             // a prior step, so reuse its recorded pass/evidence and re-run NOTHING - not
             // the command, not the GateVerdict emit, not the ratchet. The recorded
@@ -4518,9 +4573,13 @@ impl RunCtx<'_> {
         // so staleness measures against every current unit, not just the authored config.
         stages: &BTreeMap<String, Stage>,
         wt: Option<&Worktree>,
-        agent_id: &str,
-        unit_name: &str,
-        gates: &[String],
+        // The unit being integrated: its name, agent, and gate library drive the FILE_TOUCHED
+        // / GATED_BY edges AND the post-merge re-gate (spec 12, unit 5), which re-runs the full
+        // library `st.gates` against the merged tree.
+        st: &Stage,
+        // The unit's current attempt: the post-merge re-gate records its verdicts at this
+        // attempt under the `postmerge-gate:` key, so a stepwise resume replays them.
+        attempt: u32,
         // The fail-closed merge guard: an `IntegrationApproval` exists ONLY when the
         // unit's review EXPLICITLY APPROVED it (and its gates passed). Taking it by
         // value here makes "approved" a precondition of the merge seam itself, not an
@@ -4541,28 +4600,56 @@ impl RunCtx<'_> {
         if files.is_empty() {
             return Ok(Integration::default());
         }
+        let _lock = self.integrate_mu.lock().unwrap();
+        // spec 12, unit 5 (Gap 21): record the run-branch tip BEFORE the merge so a RED
+        // post-merge re-gate can roll the merge back. The whole merge -> re-gate -> land/undo
+        // sequence runs UNDER the integrate lock, so no concurrent integration mutates the run
+        // branch between the merge and the re-gate that judges it.
+        let pre_merge = worktree::head_sha_of(&self.deps.repo);
+        let commit = wt.integrate(&format!("rigger: integrate {}", st.name))?;
+        // spec 12, unit 5: re-run the FULL gate suite against the MERGED run-branch tree
+        // BEFORE emitting UnitIntegrated. A unit's pre-merge gates ran in its OWN worktree, so
+        // an UNPREDICTED overlap - two batch-mates the grounder placed together that edit the
+        // same region - can auto-merge textually into a broken tree neither unit gated. The
+        // re-gate is content-addressed (unit 1): a merge that changed nothing a gate reads (a
+        // clean fast-forward) replays the pre-merge green as a cache-hit - near-free - while a
+        // merge that combined divergent trees misses the cache and the gate RUNS on the merged
+        // tree. A RED here BLOCKS integration: the merge is rolled back so NOTHING lands (no
+        // UnitIntegrated over a broken tree) and the caller re-enters remediation fed the
+        // merge-break evidence, exactly like a pre-merge gate failure.
+        if !commit.is_empty() {
+            let merged = self.run_gates(st, &self.deps.repo, attempt, GateSelection::PostMerge)?;
+            if !merged.pass {
+                Worktree::reset_to(&self.deps.repo, &pre_merge)?;
+                return Ok(Integration {
+                    blocked: Some(merged.evidence),
+                    ..Default::default()
+                });
+            }
+        }
+        // The merged tree passed (or there was nothing to merge): the integration LANDS. Only
+        // NOW - once the tree the run branch carries is the verified one - record the artifact
+        // graph edges, reindex, and propagate staleness. A blocked integration emits none of
+        // these, so a rolled-back merge leaves no phantom FILE_TOUCHED / staleness for a unit
+        // whose work never landed.
         for f in &files {
             self.emit(
                 contextgraph::TYPE_FILE_TOUCHED,
-                json!({"path": f, "by": agent_id}),
+                json!({"path": f, "by": &st.agent}),
             )?;
         }
-        // GATED_BY (§7): record which gates govern each artifact this unit changed.
-        // The changed-file list must be captured BEFORE integrate commits it (after
-        // the commit the worktree is clean), so emit here while `files` is in scope.
-        // Each (file, gate) GateVerdict carries the artifact, which the projector
-        // folds into GATED_BY(artifact -> gate) - the edge a real run otherwise
-        // never produced (Phase 2 carryover).
+        // GATED_BY (§7): record which gates govern each artifact this unit changed. Each
+        // (file, gate) GateVerdict carries the artifact, which the projector folds into
+        // GATED_BY(artifact -> gate) - the edge a real run otherwise never produced (Phase 2
+        // carryover). `files` was captured before the merge, so it is the real artifact set.
         for f in &files {
-            for gid in gates {
+            for gid in &st.gates {
                 self.emit(
                     contextgraph::TYPE_GATE_VERDICT,
                     json!({"gate": gid, "pass": true, "artifact": f}),
                 )?;
             }
         }
-        let _lock = self.integrate_mu.lock().unwrap();
-        let commit = wt.integrate(&format!("rigger: integrate {unit_name}"))?;
         if !commit.is_empty() {
             if let Some(g) = self.deps.grounder {
                 g.reindex(&self.deps.repo, &files);
@@ -4574,8 +4661,12 @@ impl RunCtx<'_> {
         // marked ids ride back on the `UnitIntegrated` event (META_STALE) for provenance +
         // resume seeding. Computed under the integrate lock so a concurrent integration's
         // staleness view is serialized with the merge it observes.
-        let staled = self.mark_stale_downstream(stages, unit_name, &files);
-        Ok(Integration { commit, staled })
+        let staled = self.mark_stale_downstream(stages, &st.name, &files);
+        Ok(Integration {
+            commit,
+            staled,
+            blocked: None,
+        })
     }
 
     /// Build the SYSTEM prompt the conductor threads into every spawn: the agent's
@@ -13623,16 +13714,24 @@ mod tests {
         assert_eq!(
             calls.iter().filter(|c| c.as_str() == "far").count(),
             1,
-            "far ran exactly once - only at the integrate step, never in the inner loop: {calls:?}"
+            "far's COMMAND ran exactly once - the exhaustive integrate step; the inner loop \
+             skipped it and unit 5's post-merge re-gate CACHE-HIT its green (a clean \
+             fast-forward changed nothing), so the runner was never invoked a second time: \
+             {calls:?}"
         );
 
-        // (3) A skip is not a gate run: the operator metrics never count it as a `far` pass.
+        // (3) A skip is not a gate run: the operator metrics never count the `gate-skip:far#0`
+        // verdict as a `far` pass. `far` tallies TWO green verdicts - the exhaustive integrate
+        // RUN and unit 5's post-merge re-gate, which cache-hit the same green and is logged with
+        // provenance (spec 12 global: cache-hits are ALWAYS logged) - both real `pass:true`
+        // verdicts the metrics count, exactly like unit 1's cache-hits elsewhere. The SKIP is
+        // excluded (like the artifact-tagged integrate bookkeeping), which is what this asserts.
         let m = crate::metrics::project(&events);
         assert_eq!(
             m.gates.get("far").map(|c| c.pass).unwrap_or_default(),
-            1,
-            "the metrics count only far's one REAL run, never its skip (excluded like the \
-             artifact-tagged integrate bookkeeping)"
+            2,
+            "the metrics count far's REAL integrate run and its logged post-merge cache-hit, \
+             but NEVER its skip"
         );
     }
 
@@ -14581,6 +14680,251 @@ mod tests {
                 .first()
                 .is_some_and(|p| p.contains("your integrating commit was REVERTED")),
             "the re-entered unit-a is prompted with the recovered contradiction; prompts:\n{prompts:?}"
+        );
+    }
+
+    /// The base `m.rs` content the merge-break fixture below starts from: six MARK-free
+    /// lines so `unit-a`'s top insert and `unit-b`'s bottom append land in NON-overlapping
+    /// hunks that git auto-merges cleanly (no conflict) into a tree carrying BOTH marks.
+    const MERGE_BREAK_BASE: &str = "l1\nl2\nl3\nl4\nl5\nl6\n";
+
+    /// A driver for the post-merge re-gate fixture (spec 12, unit 5): `unit-a` and `unit-b`
+    /// are two batch-mates with NO dependency between them (the grounder placed them in one
+    /// wave), each editing the SAME file `m.rs`. `unit-a` PREPENDS one `MARK` line, `unit-b`
+    /// APPENDS one - so each unit's OWN tree carries exactly one MARK (its gate passes in
+    /// isolation), but the textual auto-merge combines both into a two-MARK tree the gate
+    /// REJECTS. Both writes are recomputed from the fixed base each attempt (idempotent), so
+    /// a remediation re-attempt never doubles a unit's own mark. A barrier makes both
+    /// worktrees branch from the SAME base commit (neither integrates before the other's
+    /// branch exists), which is what creates the unpredicted overlap.
+    struct MergeBreakDriver {
+        repo: String,
+    }
+    impl AgentDriver for MergeBreakDriver {
+        fn spawn(
+            &self,
+            _a: &AgentDef,
+            _prompt: &str,
+            opts: &SpawnOpts,
+            _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+        ) -> Result<AgentResult, Error> {
+            let unit = opts.id.split('/').next().unwrap_or_default();
+            if opts.id.contains("/implementer#") {
+                if !opts.dir.is_empty() {
+                    // Barrier: block until BOTH unit branches exist, so both worktrees were
+                    // cut from the SAME base commit (neither has integrated yet - an
+                    // implementer runs strictly before its unit's integrate). This is the
+                    // UNPREDICTED-overlap case unit 5 targets: two batch-mates that actually
+                    // edit the same region, each green alone, broken when merged.
+                    for _ in 0..400 {
+                        let n = std::process::Command::new("git")
+                            .arg("-C")
+                            .arg(&self.repo)
+                            .args(["branch", "--list", "rigger/u/*"])
+                            .output()
+                            .map(|o| String::from_utf8_lossy(&o.stdout).lines().count())
+                            .unwrap_or(0);
+                        if n >= 2 {
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(25));
+                    }
+                    // Idempotent per attempt: always the fixed base plus this unit's ONE mark.
+                    let content = if unit == "unit-a" {
+                        format!("MARK\n{MERGE_BREAK_BASE}")
+                    } else {
+                        format!("{MERGE_BREAK_BASE}MARK\n")
+                    };
+                    std::fs::write(Path::new(&opts.dir).join("m.rs"), content).unwrap();
+                }
+                return Ok(AgentResult::default());
+            }
+            if opts.id.contains("/adjudicator#") {
+                return Ok(AgentResult {
+                    output: r#"{"verdict":"approve"}"#.into(),
+                    resolved_model: String::new(),
+                });
+            }
+            Ok(AgentResult {
+                output: "reviewed the diff".into(),
+                resolved_model: String::new(),
+            })
+        }
+    }
+
+    #[test]
+    fn integrate_re_gates_the_merged_tree_and_a_merge_break_blocks_the_second_unit() {
+        // spec 12, unit 5 (Gap 21): two units each PASS their gate in isolation but merge into
+        // a FAILING tree. The grounder placed them in one batch (no dependency), so both cut
+        // their worktree from the same base and each gates only its OWN one-MARK tree green.
+        // The FIRST to win the integrate lock merges cleanly (a fast-forward over the base) and
+        // its post-merge re-gate is a CONTENT-CACHE HIT of the pre-merge green - near-free - so
+        // it integrates. The SECOND merges into a TWO-MARK tree the grounder never predicted:
+        // its post-merge re-gate MISSES the cache, RUNS on the merged tree, goes RED, and BLOCKS
+        // the integration - the merge is rolled back (nothing lands) and the unit re-enters
+        // remediation fed the merge-break evidence. The broken two-MARK tree is NEVER recorded
+        // with an UnitIntegrated.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        // Seed the shared file at the base so both units branch from a tree that already holds
+        // it (their edits are a top prepend / bottom append of one MARK line each).
+        std::fs::write(Path::new(&repo_path).join("m.rs"), MERGE_BREAK_BASE).unwrap();
+        for args in [
+            &["add", "m.rs"][..],
+            &["commit", "-q", "-m", "base m.rs"][..],
+        ] {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo_path)
+                .args(args)
+                .output()
+                .unwrap();
+        }
+
+        let mut cfg = Config::default();
+        // Bound the losing unit's merge/rollback cascade: it re-breaks every attempt, so cap
+        // remediation low and let it escalate.
+        cfg.workflow.defaults.max_retries = 2;
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        // A real shell gate over the tree: PASS with at most one MARK line, RED (with a
+        // greppable reason) once the merge introduces a second.
+        cfg.workflow.gates.insert(
+            "g".into(),
+            gate_def(
+                "c=$(grep -c MARK m.rs 2>/dev/null); c=${c:-0}; \
+                 if [ \"$c\" -le 1 ]; then exit 0; else \
+                 echo 'gate g failed: merge introduced duplicate MARK'; exit 1; fi",
+            ),
+        );
+        let panel = crate::config::ReviewPanel {
+            lenses: vec!["lens".into()],
+            adjudicator: "judge".into(),
+            ..Default::default()
+        };
+        let mk = |name: &str| Stage {
+            name: name.into(),
+            agent: "worker".into(),
+            gates: vec!["g".into()],
+            on_pass: "merge".into(),
+            needs: vec![],
+            review: panel.clone(),
+            ..Default::default()
+        };
+        cfg.workflow.stages.insert("unit-a".into(), mk("unit-a"));
+        cfg.workflow.stages.insert("unit-b".into(), mk("unit-b"));
+
+        let store = Store::open(":memory:").unwrap();
+        let driver = MergeBreakDriver {
+            repo: repo_path.clone(),
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        // Exactly one unit integrated; the other was BLOCKED by the post-merge re-gate and
+        // escalated (it re-breaks the merge every attempt). Order between them is a lock race,
+        // so the assertions are order-independent.
+        let statuses: Vec<_> = ["unit-a", "unit-b"]
+            .iter()
+            .map(|u| (*u, rs.units[*u].status))
+            .collect();
+        let winner = statuses
+            .iter()
+            .find(|(_, s)| *s == ledger::Status::Integrated)
+            .map(|(u, _)| *u)
+            .expect("exactly one unit must integrate its merged tree");
+        let loser = if winner == "unit-a" {
+            "unit-b"
+        } else {
+            "unit-a"
+        };
+        assert_eq!(
+            rs.units[loser].status,
+            ledger::Status::Escalated,
+            "the merge-broken unit never integrates a failing tree; it escalates after the block"
+        );
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+
+        // (1) The broken TWO-MARK tree never landed: the run branch's m.rs carries exactly ONE
+        // MARK (the winner's), and there is exactly ONE UnitIntegrated (for the winner).
+        let merged = std::fs::read_to_string(Path::new(&repo_path).join("m.rs")).unwrap();
+        assert_eq!(
+            merged.matches("MARK").count(),
+            1,
+            "the run branch holds only the winner's one MARK; the broken merged tree was rolled back:\n{merged}"
+        );
+        let integrations: Vec<String> = events
+            .iter()
+            .filter(|e| e.type_ == ledger::TYPE_UNIT_INTEGRATED)
+            .filter_map(|e| {
+                serde_json::from_slice::<Value>(&e.data)
+                    .ok()
+                    .and_then(|v| v.get("id").and_then(Value::as_str).map(str::to_string))
+            })
+            .collect();
+        assert_eq!(
+            integrations,
+            vec![winner.to_string()],
+            "only the winner records an UnitIntegrated; the merge-broken unit never does"
+        );
+
+        // (2) The loser's post-merge re-gate RAN on the merged tree and went RED, carrying the
+        // merge-break evidence - keyed apart from the pre-merge `{unit}/gate:` verdict so it did
+        // NOT replay the isolation green.
+        let postmerge_red = events.iter().any(|e| {
+            e.type_ == contextgraph::TYPE_GATE_VERDICT
+                && e.meta
+                    .get(META_REPLAY_KEY)
+                    .is_some_and(|k| k.starts_with(&format!("{loser}/postmerge-gate:g#")))
+                && serde_json::from_slice::<Value>(&e.data).ok().map(|v| {
+                    v.get("pass").and_then(Value::as_bool) == Some(false)
+                        && v.get("evidence")
+                            .and_then(Value::as_str)
+                            .is_some_and(|s| s.contains("merge introduced duplicate MARK"))
+                }) == Some(true)
+        });
+        assert!(
+            postmerge_red,
+            "the loser's merged tree records a RED post-merge re-gate verdict carrying the merge-break evidence"
+        );
+
+        // (3) The winner's post-merge re-gate was NEAR-FREE: a content-addressed cache-hit of
+        // its pre-merge green (its clean fast-forward merge changed nothing the gate reads), not
+        // a fresh run.
+        let winner_hit = events.iter().any(|e| {
+            e.type_ == contextgraph::TYPE_GATE_VERDICT
+                && e.meta
+                    .get(META_REPLAY_KEY)
+                    .is_some_and(|k| k.starts_with(&format!("{winner}/postmerge-gate:g#")))
+                && e.meta.contains_key(META_CACHE_HIT)
+        });
+        assert!(
+            winner_hit,
+            "the winner's post-merge re-gate is a content-cache hit of its pre-merge green (near-free)"
+        );
+
+        // (4) The loser re-entered remediation after the block (a UnitFailed at an advanced
+        // attempt), proving the merge-break fed its lifecycle rather than wedging.
+        let loser_remediated = events.iter().any(|e| {
+            e.type_ == ledger::TYPE_UNIT_FAILED
+                && serde_json::from_slice::<Value>(&e.data).ok().map(|v| {
+                    v.get("id").and_then(Value::as_str) == Some(loser)
+                        && v.get("attempts").and_then(Value::as_u64).unwrap_or(0) >= 1
+                }) == Some(true)
+        });
+        assert!(
+            loser_remediated,
+            "the blocked unit re-enters remediation (UnitFailed at an advanced attempt) fed the merge-break"
         );
     }
 

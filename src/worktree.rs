@@ -183,6 +183,23 @@ impl Worktree {
         Ok(git(repo, &["rev-parse", "HEAD"])?.trim().to_string())
     }
 
+    /// Reset the run branch checked out in `repo` HARD back to `sha` (spec 12, unit 5): used
+    /// to UNDO a merge whose POST-MERGE re-gate went RED, so the broken merged tree never
+    /// lands. Unlike [`Self::revert_on_base`] (which reverses an ALREADY-integrated commit as
+    /// a new, evented commit - unit 4), this removes a merge that was NEVER recorded with an
+    /// `UnitIntegrated`: nothing in the log ever claimed it landed, so discarding it is not a
+    /// history rewrite of recorded work, it is aborting a failed integration attempt. The
+    /// caller holds the integrate lock, so no concurrent integration observes the reset, and a
+    /// following remediation re-attempt re-merges against this same restored tip. An empty
+    /// `sha` (no resolvable pre-merge tip) is a no-op rather than an error.
+    pub fn reset_to(repo: &str, sha: &str) -> Result<(), Error> {
+        if sha.is_empty() {
+            return Ok(());
+        }
+        git(repo, &["reset", "--hard", sha])?;
+        Ok(())
+    }
+
     /// Discard any leftover worktree at `dir` AND any existing `branch`, so a following
     /// [`Self::create`] checks out a FRESH worktree off the repo's CURRENT HEAD.
     ///
