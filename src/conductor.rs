@@ -1687,15 +1687,29 @@ impl RunCtx<'_> {
         self.stale_units.lock().unwrap().contains(unit)
     }
 
-    /// The attempt counter `unit` RE-ENTERS its lifecycle at (spec 12, unit 4): the MAX of its
-    /// run-start folded [`prior_attempts`](RunCtx::prior_attempts) (which carries a RESUMED
-    /// unit's accumulated count) and any LIVE compensation bump
-    /// [`compensation_attempts`](RunCtx::compensation_attempts) this process recorded (which
-    /// carries an IN-RUN compensation's count, since `prior_attempts` is an immutable
-    /// snapshot). Taking the max makes an in-run reverse-gear re-entry advance the attempt
-    /// exactly as a resume's folded `UnitFailed(attempts:N)` would, so its re-implemented tree
-    /// gates under a FRESH `(unit, attempt, gate)` key instead of replaying the condemned
-    /// pass's verdict, and repeated compensation accumulates toward the escalation bound.
+    /// The HIGH-WATER attempt `unit` RE-ENTERS its lifecycle at (spec 12, unit 4): the highest
+    /// attempt at which the unit has ANY recorded evidence, reconciled by MAX across every live
+    /// source so it equals what a resume would fold from the log even for a unit whose WHOLE
+    /// lifecycle ran in THIS process. Three sources:
+    ///
+    /// - [`prior_attempts`](RunCtx::prior_attempts): the run-start folded `UnitFailed(attempts:N)`
+    ///   count. Carries a RESUMED unit's accumulated remediation, but is an IMMUTABLE run-start
+    ///   snapshot - it is `0` for a unit that first failed/integrated IN this process.
+    /// - [`compensation_attempts`](RunCtx::compensation_attempts): the LIVE bump the drain
+    ///   recorded, so a second in-run compensation advances past the first.
+    /// - [`gate_verdict_high_water`](RunCtx::gate_verdict_high_water): the highest attempt at
+    ///   which the unit has a LIVE recorded gate verdict in [`gate_verdicts`](RunCtx::gate_verdicts)
+    ///   (seeded from the log at run start AND extended as this process runs gates). THIS is the
+    ///   source `prior_attempts` misses in-run: a unit that took >=1 remediation before it
+    ///   integrated recorded a green gate verdict at its approving attempt, and the reverse gear
+    ///   must clear THAT attempt - not the compensation count over a stale `0` snapshot.
+    ///
+    /// Taking the max of all three makes an in-run reverse-gear re-entry advance the attempt
+    /// EXACTLY as a resume's fold would, so [`drain_compensations`](RunCtx::drain_compensations)
+    /// stamps `high-water + 1` and the re-implemented tree gates under a FRESH
+    /// `(unit, attempt, gate)` key instead of replaying the condemned pass's verdict via the
+    /// content-blind exact-key replay - and repeated compensation accumulates toward the
+    /// escalation bound.
     fn effective_attempts(&self, unit: &str) -> u32 {
         let prior = self.prior_attempts.get(unit).copied().unwrap_or(0);
         let bumped = self
@@ -1705,7 +1719,27 @@ impl RunCtx<'_> {
             .get(unit)
             .copied()
             .unwrap_or(0);
-        prior.max(bumped)
+        let gate_high_water = self.gate_verdict_high_water(unit).unwrap_or(0);
+        prior.max(bumped).max(gate_high_water)
+    }
+
+    /// The highest attempt at which `unit` has a recorded gate verdict in the LIVE
+    /// [`gate_verdicts`](RunCtx::gate_verdicts) cache (spec 12, unit 4). The cache is keyed by
+    /// [`gate_verdict_key`] (`{unit}/gate:{gate}#{attempt}`), seeded once at run start from the
+    /// prior log and extended by [`emit_gate_verdict`](RunCtx::emit_gate_verdict) as this
+    /// process runs gates, so unlike the immutable `prior_attempts` snapshot it reflects an
+    /// IN-RUN unit's true attempt reach. Recovers the `{unit}` segment via [`unit_of_gate_key`]
+    /// (which matches only the `/gate:` gate-RUN infix, so a `/gate-skip:` provenance key or a
+    /// `deferred/gate:` key never contributes) and the trailing `#{attempt}` via `rsplit_once`;
+    /// returns the max over the unit's keys, or `None` when it has recorded no gate verdict yet.
+    fn gate_verdict_high_water(&self, unit: &str) -> Option<u32> {
+        self.gate_verdicts
+            .lock()
+            .unwrap()
+            .keys()
+            .filter(|k| unit_of_gate_key(k) == Some(unit))
+            .filter_map(|k| k.rsplit_once('#').and_then(|(_, a)| a.parse::<u32>().ok()))
+            .max()
     }
 
     /// Mark every DOWNSTREAM unit a just-integrated `unit`'s `touched` files render stale
@@ -1787,13 +1821,15 @@ impl RunCtx<'_> {
             // drained compensation (the `compensated_commits` guard bounds re-reaches).
             let compensated = reverted.join(",");
             let contradiction = comp.reason.trim();
-            // ADVANCE the attempt counter (spec 12, unit 4): one past the unit's effective
-            // attempts (its resume-folded `prior_attempts` OR a live earlier compensation this
-            // run), so the re-entered unit re-implements and re-gates under a FRESH attempt key
-            // rather than replaying the CONDEMNED pass's verdict, and repeated compensation
-            // accumulates toward escalation. Recorded LIVE in `compensation_attempts` so the
-            // in-process re-entry (`effective_attempts`) reads it, matching the durable
-            // `UnitFailed(attempts:N)` a resume would fold.
+            // ADVANCE the attempt counter (spec 12, unit 4): one past the unit's HIGH-WATER
+            // attempt (`effective_attempts` = the max of its resume-folded `prior_attempts`, any
+            // live earlier compensation this run, AND the highest attempt at which it recorded a
+            // live gate verdict - the attempts its OWN prior in-run remediation already consumed),
+            // so the re-entered unit re-implements and re-gates under a FRESH attempt key rather
+            // than replaying the CONDEMNED pass's verdict, and repeated compensation accumulates
+            // toward escalation. Recorded LIVE in `compensation_attempts` so the in-process
+            // re-entry (`effective_attempts`) reads it, matching the durable `UnitFailed(attempts:N)`
+            // a resume would fold from the same high-water mark.
             let attempts = self.effective_attempts(&comp.target) + 1;
             self.compensation_attempts
                 .lock()
@@ -2712,12 +2748,14 @@ impl RunCtx<'_> {
         // A unit with no prior failure (fresh, or never failed) starts at 0, unchanged.
         //
         // Compensation re-entry (spec 12, unit 4): a unit a later unit's review proved wrong
-        // was reverted and re-entered here at ONE PAST its condemned attempt (via
-        // `effective_attempts`, which folds the live compensation bump the drain recorded).
-        // Starting at the advanced attempt is what makes its re-implemented tree gate under a
-        // FRESH `(unit, attempt, gate)` key instead of REPLAYING the condemned pass's stale
-        // verdict - the reverse gear genuinely re-verifies the fix, never a content-blind
-        // false green.
+        // was reverted and re-entered here at ONE PAST its HIGH-WATER attempt (via
+        // `effective_attempts`, which reconciles the run-start `prior_attempts`, the live
+        // compensation bump the drain recorded, AND the highest attempt it already recorded a
+        // gate verdict at - so the value clears every attempt key its OWN prior in-run
+        // remediation consumed). Starting at the advanced attempt is what makes its
+        // re-implemented tree gate under a FRESH `(unit, attempt, gate)` key instead of
+        // REPLAYING the condemned pass's stale verdict - the reverse gear genuinely re-verifies
+        // the fix, never a content-blind false green.
         let mut attempts = self.effective_attempts(&st.name);
         // The last attempt's concrete failure, threaded into the NEXT attempt's
         // prompt (item 3 + 5 / spec 02). Empty on the first attempt, so that prompt
@@ -14212,6 +14250,164 @@ mod tests {
         assert!(
             regate,
             "the re-implemented tree records a fresh gate:ga#1 RUN verdict (not a replay/cache-hit/skip)"
+        );
+    }
+
+    /// A driver for the reverse-gear re-gate test on the REMEDIATED lifecycle (spec 12,
+    /// unit 4): unlike [`CompRegateDriver`] (which lets `unit-a` approve its FIRST pass),
+    /// `unit-a`'s adjudicator here REJECTS attempt 0 and only approves attempt 1, so `unit-a`
+    /// integrates having ALREADY recorded a green gate verdict at attempt 1. When `unit-b`
+    /// then condemns it, the reverse gear must clear that attempt-1 key. Each `unit-a` attempt
+    /// writes DISTINCT content (`fn a_v{attempt}`) so every one of its trees is a genuinely
+    /// different content address; `unit-b` approves its own work but names `unit-a`.
+    struct CompRegateRemediatedDriver;
+    impl AgentDriver for CompRegateRemediatedDriver {
+        fn spawn(
+            &self,
+            _a: &AgentDef,
+            _prompt: &str,
+            opts: &SpawnOpts,
+            _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+        ) -> Result<AgentResult, Error> {
+            let unit = opts.id.split('/').next().unwrap_or_default();
+            let attempt = attempt_of(&opts.id);
+            if opts.id.contains("/implementer#") {
+                if !opts.dir.is_empty() {
+                    let (file, content) = match unit {
+                        // A distinct body per attempt so no two of unit-a's trees are
+                        // byte-identical - each gate run is a distinct content address, so a
+                        // fresh key genuinely re-runs the command rather than content-cache
+                        // hitting an earlier tree's green.
+                        "unit-a" => ("a.rs", format!("fn a_v{attempt}() {{}}\n")),
+                        _ => ("b.rs", "fn b() {}\n".to_string()),
+                    };
+                    std::fs::write(Path::new(&opts.dir).join(file), content).unwrap();
+                }
+                return Ok(AgentResult::default());
+            }
+            if opts.id.contains("/adjudicator#") {
+                let out = if unit == "unit-b" {
+                    // unit-b approves its own work but proves unit-a wrong (names it).
+                    r#"{"verdict":"approve","compensate":"unit-a"}"#
+                } else if attempt == 0 {
+                    // unit-a's FIRST pass is rejected: it consumes attempt 0 and re-implements,
+                    // so it records its GREEN gate verdict at attempt 1 when it approves. This
+                    // is the attempt key the reverse gear must NOT collide with. Its re-review
+                    // after the rollback (attempt >= 1) approves cleanly so the run converges.
+                    r#"{"verdict":"reject"}"#
+                } else {
+                    r#"{"verdict":"approve"}"#
+                };
+                return Ok(AgentResult {
+                    output: out.into(),
+                    resolved_model: String::new(),
+                });
+            }
+            Ok(AgentResult {
+                output: "reviewed the diff".into(),
+                resolved_model: String::new(),
+            })
+        }
+    }
+
+    #[test]
+    fn a_compensated_unit_that_remediated_before_integrating_re_gates_at_a_fresh_key() {
+        // spec 12, unit 4 (the reverse gear's RE-VERIFY half on the REMEDIATED lifecycle - the
+        // blocking regression sdet-s12u4-reentry-collides-with-prior-lifecycle-attempt-key /
+        // adv-s12u4-collision-proven-by-run): unit-a REJECTS its own attempt 0 and only approves
+        // on attempt 1, so it integrates having ALREADY recorded a green gate verdict at
+        // attempt 1. When unit-b then condemns it, the reverse gear must re-enter it ONE PAST
+        // its HIGH-WATER attempt (attempt 2) - NOT at attempt 1 where its OWN prior remediation
+        // already recorded a green. Advancing only compensation-count+1 over the run-start
+        // prior_attempts snapshot (=0 in-run) lands it back on attempt 1, where the
+        // content-BLIND exact-key replay answers the re-implemented tree from the condemned
+        // green and the gate COMMAND never runs (a live false green). Proven by the gate-run
+        // count: unit-a's gate `ga` must run THREE times (attempt 0, the attempt-1
+        // re-implementation, and the attempt-2 reverse-gear re-implementation), not two.
+        //
+        // The zero-remediation sibling (a_compensated_unit_re_gates_its_re_implemented_tree_...)
+        // only drives unit-a approving its first pass, so a fixed +1 advance passes it; this
+        // case is the mutation-distinguishing one it missed.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        // Distinct gates per unit so a gate-run count is attributable to one unit.
+        cfg.workflow.gates.insert("ga".into(), gate_def("true"));
+        cfg.workflow.gates.insert("gb".into(), gate_def("true"));
+        let panel = crate::config::ReviewPanel {
+            lenses: vec!["lens".into()],
+            adjudicator: "judge".into(),
+            ..Default::default()
+        };
+        let mk = |name: &str, gate: &str, needs: Vec<String>| Stage {
+            name: name.into(),
+            agent: "worker".into(),
+            gates: vec![gate.into()],
+            on_pass: "merge".into(),
+            needs,
+            review: panel.clone(),
+            ..Default::default()
+        };
+        cfg.workflow
+            .stages
+            .insert("unit-a".into(), mk("unit-a", "ga", vec![]));
+        cfg.workflow
+            .stages
+            .insert("unit-b".into(), mk("unit-b", "gb", vec!["unit-a".into()]));
+
+        let store = Store::open(":memory:").unwrap();
+        let driver = CompRegateRemediatedDriver;
+        let runner = RecordingRunner::new(&[]);
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        assert_eq!(
+            rs.units["unit-a"].status,
+            ledger::Status::Integrated,
+            "unit-a re-integrates its re-implemented tree after the rollback"
+        );
+        assert_eq!(rs.units["unit-b"].status, ledger::Status::Integrated);
+
+        // The crux: `ga` RAN on ALL THREE of unit-a's trees (attempt 0, the attempt-1
+        // re-implementation, and the reverse-gear attempt-2 re-implementation). Under the
+        // stale-key collision it runs only twice - the reverse-gear re-entry lands on attempt 1
+        // and replays unit-a's OWN prior-remediation green without re-running the command.
+        let ga_runs = runner.calls().into_iter().filter(|c| c == "ga").count();
+        assert_eq!(
+            ga_runs, 3,
+            "unit-a's gate must RE-RUN on the re-implemented tree at a FRESH attempt key, not \
+             replay the attempt-1 green its own prior remediation recorded; ga runs={ga_runs}"
+        );
+
+        // And the reverse-gear verdict is recorded under the HIGH-WATER-advanced attempt key
+        // (`#2`, one past the attempt-1 green), a real gate RUN (no cache-hit / skip citation).
+        // A `#1` re-run here would be the collision: that key was already green from unit-a's
+        // own remediation.
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let regate = events.iter().any(|e| {
+            e.meta.get(META_REPLAY_KEY).map(String::as_str) == Some("unit-a/gate:ga#2")
+                && !e.meta.contains_key(META_CACHE_HIT)
+                && serde_json::from_slice::<Value>(&e.data)
+                    .ok()
+                    .and_then(|v| v.get("skipped").and_then(Value::as_bool))
+                    != Some(true)
+        });
+        assert!(
+            regate,
+            "the reverse-gear re-implemented tree records a fresh gate:ga#2 RUN verdict at the \
+             high-water-advanced key (not a replay/cache-hit/skip, and not a colliding #1)"
         );
     }
 
