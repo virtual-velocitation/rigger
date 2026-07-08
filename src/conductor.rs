@@ -161,6 +161,27 @@ pub const META_COMPENSATED: &str = "compensated_commits";
 /// metadata - no new event type.
 pub const META_CONTRADICTION: &str = "contradiction";
 
+/// The metadata key naming a DURABLE compensation-QUEUED mark's target (spec 12, unit 4):
+/// the already-integrated unit a review named for rollback, stamped the MOMENT the trigger
+/// fires - BEFORE the post-wave drain reverts anything - so the reverse gear's INTENT is
+/// evented, not held only in the in-memory queue. A crash between the naming review and the
+/// drain would otherwise silently drop the rollback (the target stays folded Integrated and
+/// the queue dies with the process); with this mark a resume re-derives the still-pending
+/// compensation and re-drives the drain. Rides the existing `UnitStatus` vocabulary as a
+/// fold-neutral marker (no new event type), paired at run start against the DRAINED
+/// [`META_COMPENSATED`] record so a completed compensation is never re-queued. Present ONLY
+/// on a compensation-queued mark; ordinary `UnitStatus` events omit it.
+pub const META_COMPENSATE_TARGET: &str = "compensate_target";
+
+/// The `UnitStatus.status` token a durable compensation-QUEUED mark carries (spec 12,
+/// unit 4). It is deliberately NOT a [`ledger::Status`] variant, so the ledger fold
+/// ([`ledger::State::apply`]) leaves the target's status untouched (`Status::parse` returns
+/// `None`) and the metrics fold ignores it (its `match` has no arm for it): the mark records
+/// the compensation INTENT for crash-resume recovery WITHOUT prematurely folding the target
+/// out of `Integrated` (it must stay integrated until the drain actually reverts it). The
+/// real re-derivation signal is [`META_COMPENSATE_TARGET`], not this string.
+const STATUS_COMPENSATION_QUEUED: &str = "compensation-queued";
+
 /// The replay key for a gate's verdict, keyed by the `(unit, attempt, gate)` coordinate
 /// the gate ran under - so a step re-reaching an already-run gate REPLAYS its recorded
 /// verdict instead of re-running the command (spec 04, criterion 4). Distinct attempts
@@ -180,6 +201,15 @@ fn gate_verdict_key(unit: &str, attempt: u32, gate: &str) -> String {
 /// mis-parses it. Keyed so a stepwise resume re-emits the skip exactly once.
 fn gate_skip_key(unit: &str, attempt: u32, gate: &str) -> String {
     format!("{unit}/gate-skip:{gate}#{attempt}")
+}
+
+/// The replay key for a durable compensation-QUEUED mark (spec 12, unit 4), keyed by the
+/// `(triggering unit, target, triggering attempt)` coordinate so the SAME review naming the
+/// SAME target at the SAME attempt re-appends the mark exactly once on a stepwise resume
+/// ([`emit_keyed_meta`](RunCtx::emit_keyed_meta)'s guard). The `compensate-queued:` infix
+/// carries no `/gate:` substring, so [`unit_of_gate_key`] never mis-parses it as a gate key.
+fn compensation_queued_key(triggerer: &str, target: &str, attempt: u32) -> String {
+    format!("{triggerer}/compensate-queued:{target}#{attempt}")
 }
 
 /// Whether a gate RUNS during the blast-radius-narrowed inner loop (spec 12, unit 3): a
@@ -457,6 +487,50 @@ impl ReviewOutcome {
 struct Compensation {
     target: String,
     reason: String,
+}
+
+/// The compensations STILL PENDING at run start (spec 12, unit 4): a durable
+/// compensation-QUEUED mark ([`META_COMPENSATE_TARGET`], stamped the moment a review named
+/// the target) that has NOT yet been DRAINED (no matching `UnitFailed` + [`META_COMPENSATED`]
+/// for that target). A crash between the naming review and the drain leaves the mark
+/// un-completed, so a resume re-derives it here, re-seeds the queue, and the next drain
+/// re-drives the rollback - the reverse gear's intent survives the process that queued it.
+///
+/// Paired per target by COUNT in log order: the first N queued marks for a target are
+/// consumed by its N drained records, and only the surplus (queued but never drained) is
+/// re-emitted as pending. So a fully-drained compensation is never re-queued (idempotent
+/// over the log), while a re-integrated-then-re-condemned unit's SECOND queue (one mark, no
+/// second drain yet) correctly stays pending. The in-process path emits both a mark AND its
+/// drain, so within one run every mark is balanced and this returns nothing for it.
+fn pending_compensations_from_log(prior_events: &[Event]) -> Vec<Compensation> {
+    // Queue marks in log order, then how many drains each target already has.
+    let mut marks: Vec<(String, String)> = Vec::new();
+    let mut drained: HashMap<String, usize> = HashMap::new();
+    for e in prior_events {
+        if let Some(target) = e.meta.get(META_COMPENSATE_TARGET) {
+            let reason = e.meta.get(META_CONTRADICTION).cloned().unwrap_or_default();
+            marks.push((target.clone(), reason));
+        } else if e.type_ == ledger::TYPE_UNIT_FAILED && e.meta.contains_key(META_COMPENSATED) {
+            if let Ok(v) = serde_json::from_slice::<Value>(&e.data) {
+                if let Some(id) = v.get("id").and_then(Value::as_str) {
+                    *drained.entry(id.to_string()).or_default() += 1;
+                }
+            }
+        }
+    }
+    // Consume the first `drained[target]` marks per target; the rest are still pending.
+    let mut consumed: HashMap<String, usize> = HashMap::new();
+    let mut pending = Vec::new();
+    for (target, reason) in marks {
+        let done = drained.get(&target).copied().unwrap_or(0);
+        let seen = consumed.entry(target.clone()).or_default();
+        if *seen < done {
+            *seen += 1;
+        } else {
+            pending.push(Compensation { target, reason });
+        }
+    }
+    pending
 }
 
 /// The proof, carried into [`RunCtx::integrate_and_emit`], that a unit's three-tier
@@ -936,6 +1010,12 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
             }
         }
     }
+    // Crash-resume recovery of the reverse gear (spec 12, unit 4): re-derive any compensation
+    // that was durably QUEUED (a review named the target) but never DRAINED (its rollback did
+    // not complete) in a prior window, so a resume re-drives it. Empty on a fresh run and on a
+    // resume of a fully-drained run. Seeds the in-memory queue below; the pre-loop drain then
+    // reverts them before the first wave re-schedules the re-entered units.
+    let pending_compensations = pending_compensations_from_log(prior_events);
 
     // The RunCtx is created BEFORE the coverage check so a coverage gap can be
     // flagged as a spec defect through the event log (item 2 / §4.4) instead of
@@ -978,8 +1058,9 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         gate_verdicts: Mutex::new(gate_verdicts),
         green_digests: Mutex::new(green_digests),
         stale_units: Mutex::new(stale_units),
-        compensations: Mutex::new(Vec::new()),
+        compensations: Mutex::new(pending_compensations),
         compensation_feedback: Mutex::new(compensation_feedback),
+        compensation_attempts: Mutex::new(HashMap::new()),
         compensated_commits: Mutex::new(compensated_commits),
         // The failure taxonomy is built ONCE here from the same validated config the run
         // loads (its regexes were compiled and classes checked at `Config::validate`), so
@@ -1133,6 +1214,13 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         // lenses have no worktree - the empty-cwd isolation refusal that killed the first
         // adopted spec-10 run (lesson-plan-critique-996e0010).
         let gate = critique_gate_name(&stages);
+        // Crash-resume of the reverse gear (spec 12, unit 4): drain any compensation the
+        // prior window durably QUEUED but never completed (re-derived into the queue at run
+        // start) BEFORE the first `wave_ready` - the per-wave drain below runs only AFTER a
+        // wave, but a resume whose units are all already terminal schedules no wave, so
+        // without this the seeded rollback would never re-drive. On a fresh run (or a resume
+        // with nothing pending) the queue is empty and this is a no-op.
+        ctx.drain_compensations(&mut integrated, &mut terminal)?;
         loop {
             let ready = wave_ready(&stages, &integrated, &terminal, gate.as_deref());
             if ready.is_empty() {
@@ -1357,6 +1445,17 @@ struct RunCtx<'a> {
     /// re-entered unit's first-attempt prompt; an already-re-integrated (terminal) unit never
     /// reads it, so a stale entry is harmless.
     compensation_feedback: Mutex<HashMap<String, String>>,
+    /// The attempt counter a compensated unit RE-ENTERS at (spec 12, unit 4): unit id -> the
+    /// attempt its LAST compensation stamped. A compensation drain writes it (the same count
+    /// its `UnitFailed` records) and `run_single_stage` reads it (via
+    /// [`effective_attempts`](RunCtx::effective_attempts)) so an IN-RUN re-entry advances the
+    /// attempt exactly as a resume's folded `UnitFailed(attempts:N)` would - without it the
+    /// re-implemented tree would gate under the CONDEMNED pass's attempt key and REPLAY its
+    /// stale verdict (a content-blind false green) instead of re-gating, and repeated in-run
+    /// compensation would never accumulate toward escalation. Empty on a run with no
+    /// compensation; `prior_attempts` (the immutable run-start snapshot) covers the resume
+    /// case, and `effective_attempts` takes the max of the two.
+    compensation_attempts: Mutex<HashMap<String, u32>>,
     /// The integrating commits already REVERTED by a compensation (spec 12, unit 4): the
     /// replay-idempotency guard. Seeded at run start from the prior log's [`META_COMPENSATED`]
     /// marks and extended as this process reverts, so a stepwise resume (or a re-reached
@@ -1411,6 +1510,7 @@ impl<'a> RunCtx<'a> {
             stale_units: Mutex::new(HashSet::new()),
             compensations: Mutex::new(Vec::new()),
             compensation_feedback: Mutex::new(HashMap::new()),
+            compensation_attempts: Mutex::new(HashMap::new()),
             compensated_commits: Mutex::new(HashSet::new()),
             // The pure-helper test context builds no gates through the taxonomy; the
             // shipped default is a harmless placeholder. The gate-behavior tests drive the
@@ -1587,6 +1687,27 @@ impl RunCtx<'_> {
         self.stale_units.lock().unwrap().contains(unit)
     }
 
+    /// The attempt counter `unit` RE-ENTERS its lifecycle at (spec 12, unit 4): the MAX of its
+    /// run-start folded [`prior_attempts`](RunCtx::prior_attempts) (which carries a RESUMED
+    /// unit's accumulated count) and any LIVE compensation bump
+    /// [`compensation_attempts`](RunCtx::compensation_attempts) this process recorded (which
+    /// carries an IN-RUN compensation's count, since `prior_attempts` is an immutable
+    /// snapshot). Taking the max makes an in-run reverse-gear re-entry advance the attempt
+    /// exactly as a resume's folded `UnitFailed(attempts:N)` would, so its re-implemented tree
+    /// gates under a FRESH `(unit, attempt, gate)` key instead of replaying the condemned
+    /// pass's verdict, and repeated compensation accumulates toward the escalation bound.
+    fn effective_attempts(&self, unit: &str) -> u32 {
+        let prior = self.prior_attempts.get(unit).copied().unwrap_or(0);
+        let bumped = self
+            .compensation_attempts
+            .lock()
+            .unwrap()
+            .get(unit)
+            .copied()
+            .unwrap_or(0);
+        prior.max(bumped)
+    }
+
     /// Mark every DOWNSTREAM unit a just-integrated `unit`'s `touched` files render stale
     /// (spec 12, unit 2), returning the marked ids for the `UnitIntegrated` provenance
     /// mark. The set is decided by [`stale_downstream_units`] (the single staleness
@@ -1666,7 +1787,18 @@ impl RunCtx<'_> {
             // drained compensation (the `compensated_commits` guard bounds re-reaches).
             let compensated = reverted.join(",");
             let contradiction = comp.reason.trim();
-            let attempts = self.prior_attempts.get(&comp.target).copied().unwrap_or(0) + 1;
+            // ADVANCE the attempt counter (spec 12, unit 4): one past the unit's effective
+            // attempts (its resume-folded `prior_attempts` OR a live earlier compensation this
+            // run), so the re-entered unit re-implements and re-gates under a FRESH attempt key
+            // rather than replaying the CONDEMNED pass's verdict, and repeated compensation
+            // accumulates toward escalation. Recorded LIVE in `compensation_attempts` so the
+            // in-process re-entry (`effective_attempts`) reads it, matching the durable
+            // `UnitFailed(attempts:N)` a resume would fold.
+            let attempts = self.effective_attempts(&comp.target) + 1;
+            self.compensation_attempts
+                .lock()
+                .unwrap()
+                .insert(comp.target.clone(), attempts);
             self.emit_meta(
                 ledger::TYPE_UNIT_FAILED,
                 json!({"id": comp.target, "attempts": attempts}),
@@ -2578,7 +2710,15 @@ impl RunCtx<'_> {
         // default bound), and ESCALATES at the configured `max_retries` bound TOTAL - not
         // a fresh `max_retries` every window forever.
         // A unit with no prior failure (fresh, or never failed) starts at 0, unchanged.
-        let mut attempts = self.prior_attempts.get(&st.name).copied().unwrap_or(0);
+        //
+        // Compensation re-entry (spec 12, unit 4): a unit a later unit's review proved wrong
+        // was reverted and re-entered here at ONE PAST its condemned attempt (via
+        // `effective_attempts`, which folds the live compensation bump the drain recorded).
+        // Starting at the advanced attempt is what makes its re-implemented tree gate under a
+        // FRESH `(unit, attempt, gate)` key instead of REPLAYING the condemned pass's stale
+        // verdict - the reverse gear genuinely re-verifies the fix, never a content-blind
+        // false green.
+        let mut attempts = self.effective_attempts(&st.name);
         // The last attempt's concrete failure, threaded into the NEXT attempt's
         // prompt (item 3 + 5 / spec 02). Empty on the first attempt, so that prompt
         // is unchanged.
@@ -2818,6 +2958,33 @@ impl RunCtx<'_> {
                     // unit never compensates ITSELF (that is ordinary remediation below).
                     if let Some(target) = &review.compensate {
                         if target != &st.name {
+                            // DURABLY record the compensation INTENT here, the MOMENT the
+                            // review names the target - BEFORE this unit integrates and before
+                            // the post-wave drain reverts anything - so a crash between now and
+                            // the drain does not silently drop the rollback. A resume
+                            // re-derives this un-drained mark (`pending_compensations_from_log`)
+                            // and the pre-loop drain re-drives it. Rides the existing
+                            // `UnitStatus` vocabulary as a fold-neutral marker (no new event
+                            // type, spec 12 G2): `META_COMPENSATE_TARGET` names the unit to roll
+                            // back and `META_CONTRADICTION` the reason; keyed so a stepwise
+                            // resume re-appends it exactly once. The mark's `id` is the TARGET
+                            // and its status token is not a real lifecycle status, so folding it
+                            // leaves the target `Integrated` until the drain reverts it.
+                            self.emit_keyed_meta(
+                                &compensation_queued_key(&st.name, target, attempts),
+                                ledger::TYPE_UNIT_STATUS,
+                                json!({
+                                    "id": target,
+                                    "status": STATUS_COMPENSATION_QUEUED,
+                                    "evidence": {
+                                        "compensation-queued": review.reason.trim(),
+                                    },
+                                }),
+                                &[
+                                    (META_COMPENSATE_TARGET, target),
+                                    (META_CONTRADICTION, review.reason.trim()),
+                                ],
+                            )?;
                             self.compensations.lock().unwrap().push(Compensation {
                                 target: target.clone(),
                                 reason: review.reason.clone(),
@@ -10933,6 +11100,7 @@ mod tests {
             stale_units: Mutex::new(HashSet::new()),
             compensations: Mutex::new(Vec::new()),
             compensation_feedback: Mutex::new(HashMap::new()),
+            compensation_attempts: Mutex::new(HashMap::new()),
             compensated_commits: Mutex::new(HashSet::new()),
             taxonomy: failure::Taxonomy::default(),
         };
@@ -13791,6 +13959,432 @@ mod tests {
             prompts[1].contains("your integrating commit was REVERTED"),
             "the re-entered unit-a is prompted with the contradiction as feedback; prompt:\n{}",
             prompts[1]
+        );
+
+        // (4) THE TRIGGER IS DURABLE (spec 12, unit 4): the compensation is queued via an
+        // evented, fold-neutral UnitStatus mark (META_COMPENSATE_TARGET) the MOMENT the review
+        // names unit-a - not held only in the in-memory queue - so a crash before the drain
+        // does not drop the rollback. Exactly one such mark names unit-a, and it is BALANCED by
+        // the drained UnitFailed, so a resume re-derives NOTHING still pending.
+        let queued_marks: Vec<&Event> = events
+            .iter()
+            .filter(|e| e.meta.get(META_COMPENSATE_TARGET).map(String::as_str) == Some("unit-a"))
+            .collect();
+        assert_eq!(
+            queued_marks.len(),
+            1,
+            "the compensation trigger records exactly one durable compensation-queued mark for unit-a"
+        );
+        assert_eq!(
+            queued_marks[0].type_,
+            ledger::TYPE_UNIT_STATUS,
+            "the durable trigger rides the existing UnitStatus vocabulary (no new event type)"
+        );
+        assert!(
+            pending_compensations_from_log(&events).is_empty(),
+            "the in-run drain balances the queued mark, so a resume re-derives no pending compensation"
+        );
+    }
+
+    #[test]
+    fn pending_compensations_from_log_re_derives_only_undrained_marks() {
+        // spec 12, unit 4 (crash-resume recovery): a durable compensation-queued mark
+        // (META_COMPENSATE_TARGET) that has NOT been drained (no matching UnitFailed +
+        // META_COMPENSATED for the target) is re-derived as PENDING so a resume re-drives the
+        // reverse gear; a mark already balanced by its drain is NOT re-derived (idempotent over
+        // the log). This pins the crash-window recovery the ephemeral in-memory queue missed.
+        let queued = |target: &str, reason: &str| {
+            Event::new(
+                ledger::TYPE_UNIT_STATUS,
+                serde_json::to_vec(&json!({"id": target, "status": STATUS_COMPENSATION_QUEUED}))
+                    .unwrap(),
+            )
+            .with_meta(META_COMPENSATE_TARGET, target)
+            .with_meta(META_CONTRADICTION, reason)
+        };
+        let drained = |target: &str| {
+            Event::new(
+                ledger::TYPE_UNIT_FAILED,
+                serde_json::to_vec(&json!({"id": target, "attempts": 1})).unwrap(),
+            )
+            .with_meta(META_COMPENSATED, "deadbeef")
+            .with_meta(META_CONTRADICTION, "x")
+        };
+
+        // A queued-but-never-drained mark (the crash window) is pending, carrying its reason.
+        let pending = pending_compensations_from_log(&[queued("unit-a", "the contradiction")]);
+        assert_eq!(
+            pending.len(),
+            1,
+            "an undrained queue mark is re-derived as pending"
+        );
+        assert_eq!(pending[0].target, "unit-a");
+        assert_eq!(
+            pending[0].reason, "the contradiction",
+            "the re-derived compensation carries the recorded contradiction for feedback"
+        );
+
+        // A mark BALANCED by its drain is not re-derived - a completed compensation never
+        // re-runs on resume.
+        assert!(
+            pending_compensations_from_log(&[queued("unit-a", "r"), drained("unit-a")]).is_empty(),
+            "a drained compensation is not re-queued"
+        );
+
+        // Two cycles for one target: mark, drain, re-integrate, mark again, crash before the
+        // second drain -> exactly ONE (the second) is pending, the first stays consumed.
+        let two_cycles = pending_compensations_from_log(&[
+            queued("unit-a", "first"),
+            drained("unit-a"),
+            queued("unit-a", "second"),
+        ]);
+        assert_eq!(
+            two_cycles.len(),
+            1,
+            "only the unconsumed second cycle is pending"
+        );
+        assert_eq!(two_cycles[0].reason, "second");
+
+        // No marks at all -> nothing pending (a fresh run / a run with no compensation).
+        assert!(pending_compensations_from_log(&[drained("unit-a")]).is_empty());
+    }
+
+    #[test]
+    fn a_durable_compensation_queued_mark_is_fold_neutral_on_the_target() {
+        // spec 12, unit 4: the compensation-queued mark must NOT fold the target out of
+        // `Integrated` - it must stay integrated until the drain actually reverts it, else a
+        // resume would re-schedule it BEFORE the revert and re-implement on the un-reverted
+        // branch. Guards the fold-neutrality of STATUS_COMPENSATION_QUEUED against a future
+        // Status variant silently capturing it.
+        let mut state = ledger::RunState::default();
+        state
+            .apply(&Event::new(
+                ledger::TYPE_UNIT_INTEGRATED,
+                serde_json::to_vec(&json!({"id": "unit-a", "commit": "c0"})).unwrap(),
+            ))
+            .unwrap();
+        assert_eq!(state.units["unit-a"].status, ledger::Status::Integrated);
+        state
+            .apply(
+                &Event::new(
+                    ledger::TYPE_UNIT_STATUS,
+                    serde_json::to_vec(
+                        &json!({"id": "unit-a", "status": STATUS_COMPENSATION_QUEUED}),
+                    )
+                    .unwrap(),
+                )
+                .with_meta(META_COMPENSATE_TARGET, "unit-a"),
+            )
+            .unwrap();
+        assert_eq!(
+            state.units["unit-a"].status,
+            ledger::Status::Integrated,
+            "a compensation-queued mark leaves the target Integrated (fold-neutral) until the drain reverts it"
+        );
+    }
+
+    /// A driver for the reverse-gear re-gate test (spec 12, unit 4): `unit-a`'s implementer
+    /// writes DIFFERENT content per attempt (so its re-implemented tree is not byte-identical
+    /// to the condemned one), `unit-b` condemns `unit-a`, and `unit-a`'s own review approves
+    /// each time so the run converges after one rollback.
+    struct CompRegateDriver;
+    impl AgentDriver for CompRegateDriver {
+        fn spawn(
+            &self,
+            _a: &AgentDef,
+            _prompt: &str,
+            opts: &SpawnOpts,
+            _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+        ) -> Result<AgentResult, Error> {
+            let unit = opts.id.split('/').next().unwrap_or_default();
+            let attempt = attempt_of(&opts.id);
+            if opts.id.contains("/implementer#") {
+                if !opts.dir.is_empty() {
+                    let (file, content) = match unit {
+                        // A distinct body per attempt: the re-implementation (attempt 1) is a
+                        // genuinely different tree from the condemned attempt-0 one.
+                        "unit-a" if attempt == 0 => ("a.rs", "fn a_v0() {}\n"),
+                        "unit-a" => ("a.rs", "fn a_v1() {}\n"),
+                        _ => ("b.rs", "fn b() {}\n"),
+                    };
+                    std::fs::write(Path::new(&opts.dir).join(file), content).unwrap();
+                }
+                return Ok(AgentResult::default());
+            }
+            if opts.id.contains("/adjudicator#") {
+                let out = if unit == "unit-b" {
+                    r#"{"verdict":"approve","compensate":"unit-a"}"#
+                } else {
+                    r#"{"verdict":"approve"}"#
+                };
+                return Ok(AgentResult {
+                    output: out.into(),
+                    resolved_model: String::new(),
+                });
+            }
+            Ok(AgentResult {
+                output: "reviewed the diff".into(),
+                resolved_model: String::new(),
+            })
+        }
+    }
+
+    #[test]
+    fn a_compensated_unit_re_gates_its_re_implemented_tree_not_the_condemned_verdict() {
+        // spec 12, unit 4 (the reverse gear's RE-VERIFY half): a compensated unit re-enters at
+        // an ADVANCED attempt, so its re-implemented tree runs the gate under a FRESH
+        // (unit, attempt, gate) key instead of REPLAYING the condemned pass's verdict. Without
+        // the attempt advance the unit re-enters at attempt 0 and the content-BLIND exact-key
+        // replay answers the gate from the condemned green - the gate COMMAND never runs on the
+        // re-implemented code (a live false green). Proven by the gate-run count: unit-a's gate
+        // `ga` must run TWICE (once per implemented tree), not once.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        // Distinct gates per unit so a gate-run count is attributable to one unit.
+        cfg.workflow.gates.insert("ga".into(), gate_def("true"));
+        cfg.workflow.gates.insert("gb".into(), gate_def("true"));
+        let panel = crate::config::ReviewPanel {
+            lenses: vec!["lens".into()],
+            adjudicator: "judge".into(),
+            ..Default::default()
+        };
+        let mk = |name: &str, gate: &str, needs: Vec<String>| Stage {
+            name: name.into(),
+            agent: "worker".into(),
+            gates: vec![gate.into()],
+            on_pass: "merge".into(),
+            needs,
+            review: panel.clone(),
+            ..Default::default()
+        };
+        cfg.workflow
+            .stages
+            .insert("unit-a".into(), mk("unit-a", "ga", vec![]));
+        cfg.workflow
+            .stages
+            .insert("unit-b".into(), mk("unit-b", "gb", vec!["unit-a".into()]));
+
+        let store = Store::open(":memory:").unwrap();
+        let driver = CompRegateDriver;
+        let runner = RecordingRunner::new(&[]);
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        assert_eq!(
+            rs.units["unit-a"].status,
+            ledger::Status::Integrated,
+            "unit-a re-integrates its re-implemented tree after the rollback"
+        );
+        assert_eq!(rs.units["unit-b"].status, ledger::Status::Integrated);
+
+        // The crux: `ga` RAN on BOTH of unit-a's trees. Under the stale-replay bug it runs once
+        // (attempt 0) and the re-implemented tree replays that green without re-running.
+        let ga_runs = runner.calls().into_iter().filter(|c| c == "ga").count();
+        assert_eq!(
+            ga_runs, 2,
+            "unit-a's gate must RE-RUN on the re-implemented tree, not replay the condemned attempt-0 verdict; ga runs={ga_runs}"
+        );
+
+        // And the re-run verdict is recorded under the ADVANCED attempt key, a real gate RUN
+        // (no cache-hit / skip citation) on the re-implemented tree.
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let regate = events.iter().any(|e| {
+            e.meta.get(META_REPLAY_KEY).map(String::as_str) == Some("unit-a/gate:ga#1")
+                && !e.meta.contains_key(META_CACHE_HIT)
+                && serde_json::from_slice::<Value>(&e.data)
+                    .ok()
+                    .and_then(|v| v.get("skipped").and_then(Value::as_bool))
+                    != Some(true)
+        });
+        assert!(
+            regate,
+            "the re-implemented tree records a fresh gate:ga#1 RUN verdict (not a replay/cache-hit/skip)"
+        );
+    }
+
+    /// A driver for the crash-resume compensation test (spec 12, unit 4): unit-a's implementer
+    /// writes its file and records each prompt (to prove the re-entry carries the seeded
+    /// contradiction); its adjudicator approves with no further compensation, so the resumed
+    /// rollback converges.
+    struct ResumeCompDriver {
+        impl_prompts: Mutex<Vec<String>>,
+    }
+    impl AgentDriver for ResumeCompDriver {
+        fn spawn(
+            &self,
+            _a: &AgentDef,
+            prompt: &str,
+            opts: &SpawnOpts,
+            _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+        ) -> Result<AgentResult, Error> {
+            if opts.id.contains("/implementer#") {
+                self.impl_prompts.lock().unwrap().push(prompt.to_string());
+                if !opts.dir.is_empty() {
+                    std::fs::write(Path::new(&opts.dir).join("a.rs"), "fn a_fixed() {}\n").unwrap();
+                }
+                return Ok(AgentResult::default());
+            }
+            if opts.id.contains("/adjudicator#") {
+                return Ok(AgentResult {
+                    output: r#"{"verdict":"approve"}"#.into(),
+                    resolved_model: String::new(),
+                });
+            }
+            Ok(AgentResult {
+                output: "reviewed the diff".into(),
+                resolved_model: String::new(),
+            })
+        }
+    }
+
+    #[test]
+    fn a_resume_re_drives_a_durably_queued_but_undrained_compensation() {
+        // spec 12, unit 4 (crash-resume of the reverse gear): a prior window durably QUEUED a
+        // compensation of the integrated unit-a (a review named it) but CRASHED before the
+        // drain reverted it - so the log carries unit-a Integrated + a compensation-queued mark
+        // but NO drained UnitFailed. On resume the conductor must re-derive the still-pending
+        // compensation, REVERT unit-a's integrating commit, and re-enter unit-a - never leave a
+        // converged run with a green ledger over a tree that still holds the condemned work.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+
+        // The prior window's integrating commit of unit-a, on the run branch (HEAD).
+        std::fs::write(Path::new(&repo_path).join("a.rs"), "fn a_condemned() {}\n").unwrap();
+        let commit_c = {
+            for args in [
+                &["add", "a.rs"][..],
+                &["commit", "-q", "-m", "unit-a integrates"][..],
+            ] {
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(&repo_path)
+                    .args(args)
+                    .output()
+                    .unwrap();
+            }
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo_path)
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert("g".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "unit-a".into(),
+            Stage {
+                name: "unit-a".into(),
+                agent: "worker".into(),
+                gates: vec!["g".into()],
+                on_pass: "merge".into(),
+                review: crate::config::ReviewPanel {
+                    lenses: vec!["lens".into()],
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let store = Store::open(":memory:").unwrap();
+        // Seed the crash state: unit-a integrated at commit C, a durable compensation-queued
+        // mark naming unit-a, and NO drained UnitFailed - the trigger fired, the drain did not.
+        let contradiction = r#"{"verdict":"approve","compensate":"unit-a"}"#;
+        seed_events_in_run(
+            &store,
+            &[],
+            &[
+                Event::new(
+                    ledger::TYPE_UNIT_INTEGRATED,
+                    serde_json::to_vec(&json!({"id": "unit-a", "commit": commit_c})).unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_STATUS,
+                    serde_json::to_vec(
+                        &json!({"id": "unit-a", "status": STATUS_COMPENSATION_QUEUED}),
+                    )
+                    .unwrap(),
+                )
+                .with_meta(META_COMPENSATE_TARGET, "unit-a")
+                .with_meta(META_CONTRADICTION, contradiction),
+            ],
+        );
+
+        let driver = ResumeCompDriver {
+            impl_prompts: Mutex::new(Vec::new()),
+        };
+        let runner = RecordingRunner::new(&[]);
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        // The resume re-drove the rollback: unit-a re-implemented and re-integrated.
+        assert_eq!(
+            rs.units["unit-a"].status,
+            ledger::Status::Integrated,
+            "the resumed run re-integrates unit-a after re-driving the queued compensation"
+        );
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        // The seeded queue mark was DRAINED on resume: a UnitFailed for unit-a now names the
+        // reverted commit C in META_COMPENSATED (the rollback completed, not dropped).
+        let drained = events.iter().any(|e| {
+            e.type_ == ledger::TYPE_UNIT_FAILED
+                && e.meta.get(META_COMPENSATED).map(String::as_str) == Some(commit_c.as_str())
+        });
+        assert!(
+            drained,
+            "on resume the queued compensation is drained: a UnitFailed reverts unit-a's commit C"
+        );
+
+        // The condemned commit was reverted on the run branch (an evented rollback), so the
+        // final tree does NOT still carry unit-a's condemned artifact under a green ledger.
+        let log = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo_path)
+            .args(["log", "--pretty=%s"])
+            .output()
+            .unwrap();
+        let log = String::from_utf8_lossy(&log.stdout);
+        assert!(
+            log.lines().any(|l| l.contains("compensate unit-a")),
+            "the resume reverts unit-a's condemned commit on the run branch; log:\n{log}"
+        );
+
+        // The re-entered unit-a's first prompt carries the SEEDED contradiction (recovered from
+        // the durable mark), so the re-implementation fixes the specific defect.
+        let prompts = driver.impl_prompts.lock().unwrap().clone();
+        assert!(
+            prompts
+                .first()
+                .is_some_and(|p| p.contains("your integrating commit was REVERTED")),
+            "the re-entered unit-a is prompted with the recovered contradiction; prompts:\n{prompts:?}"
         );
     }
 

@@ -784,7 +784,11 @@ mod tests {
         wt.remove().unwrap();
         std::fs::write(repo.path().join("shared.txt"), "changed later\n").unwrap();
         run_git(&repo_path, &["add", "shared.txt"]).unwrap();
-        run_git(&repo_path, &["commit", "-m", "later change to the same line"]).unwrap();
+        run_git(
+            &repo_path,
+            &["commit", "-m", "later change to the same line"],
+        )
+        .unwrap();
         let head_before = run_git(&repo_path, &["rev-parse", "HEAD"]).unwrap();
         let head_before = head_before.trim();
 
