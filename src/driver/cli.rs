@@ -43,7 +43,20 @@ impl AgentDriver for Driver {
             &self.bin
         };
         let mut cmd = Command::new(bin);
-        cmd.args(build_args(agent, prompt, &opts.system_prompt, opts.attempt));
+        // Live progress (spec 14): frame the same per-step progress instruction the workflow
+        // drivers give, so a worker on this path also reports what it is doing between
+        // milestones. (This synchronous, non-parking path has no parked frontier entry, so the
+        // current consolidator does not surface it - the emit is recorded and future-proof.)
+        let framed = format!(
+            "{prompt}\n\n--- rigger driver ---\nLIVE PROGRESS: after each significant step (a search, a build, a commit, a decision) report ONE short line of what you just did by running (Bash): rigger progress '{}' '<one line: what you just did>'. Keep it flowing while you work.",
+            opts.id
+        );
+        cmd.args(build_args(
+            agent,
+            &framed,
+            &opts.system_prompt,
+            opts.attempt,
+        ));
         if !opts.dir.is_empty() {
             cmd.current_dir(&opts.dir);
         }

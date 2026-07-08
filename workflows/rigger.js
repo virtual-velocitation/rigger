@@ -130,15 +130,17 @@ const STEP = {
   },
 }
 
-// The shape the liveness PROBE returns (spec 10, unit 3): the whole seconds since a spawn's
-// marker was last touched (its idle time), or -1 when the marker does not exist. The
-// marker-staleness watchdog runs this probe because the Workflow sandbox cannot stat a file
-// itself - it can only spawn an agent that reads the mtime via Bash.
-const IDLE = {
+// The shape the LIVENESS READER courier returns (spec 14): the one line `rigger status --json`
+// prints, verbatim - a JSON array of the in-flight agents. The watchdog couriers `rigger
+// status` (not a raw `stat`) because the Workflow SCRIPT sandbox has no filesystem access -
+// only `agent()` - so it consumes rigger's PRESENTED liveness, which rigger read from the
+// marker in Rust, rather than reconstructing one file's mtime by proxy. rigger.js JSON-parses
+// `stdout` itself (JSON is a sandbox built-in).
+const STATUS = {
   type: 'object',
   additionalProperties: false,
-  required: ['idle_seconds'],
-  properties: { idle_seconds: { type: 'integer' } },
+  required: ['stdout'],
+  properties: { stdout: { type: 'string' } },
 }
 
 // phaseOf builds a worker's per-unit `opts.phase` progress-group label from the wave item,
@@ -167,26 +169,29 @@ function phaseOf(req) {
 // runWorker and its liveness helpers are defined below (the helpers first, so runWorker can
 // reference them).
 
-// markerIdleSeconds reads a spawn's liveness-marker IDLE time - the whole seconds since it was
-// last touched - via a short haiku PROBE (spec 10, unit 3). The Workflow sandbox cannot stat a
-// file, so the only way to observe the marker is to spawn an agent that reads its mtime through
-// Bash. Returns the integer idle seconds, or null when the marker is missing/unreadable OR the
-// probe itself failed - all of which the caller treats CONSERVATIVELY as not-stale (never
-// abandon a worker on a missing marker or a flaky probe). The `stat` form falls back from GNU
-// (`-c %Y`) to BSD/macOS (`-f %m`) so the probe is portable.
-async function markerIdleSeconds(marker, ph, id) {
+// livenessAgeSeconds asks RIGGER for a spawn's liveness age - the whole seconds since it last
+// touched its marker - by COURIERING `rigger status --json` (spec 14) and reading this spawn's
+// `liveness_age_s` from the presented view. rigger stats the marker in Rust and PRESENTS the
+// age, so the driver consumes rigger's consolidated view instead of reconstructing one file's
+// mtime with a raw `stat` (the RETIRED haiku probe). Returns the integer age, or null when the
+// spawn is absent from the view (no marker / not in flight), the JSON does not parse, or the
+// courier itself failed - all treated CONSERVATIVELY as not-stale (never abandon a worker on a
+// missing or flaky signal). The whole in-flight wave rides in ONE presented view, so a shared
+// poll could serve every worker; kept per-worker here to match the existing watchdog shape.
+async function livenessAgeSeconds(ph, id) {
   try {
-    const probe = await agent(
-      `You are a rigger LIVENESS PROBE. Report how many whole seconds ago the file ${marker} was last modified. Run EXACTLY this, from a shell, using Bash, and read its single line of output:\n` +
-        `  if [ -e "${marker}" ]; then m=$(stat -c %Y "${marker}" 2>/dev/null || stat -f %m "${marker}" 2>/dev/null); echo $(( $(date +%s) - m )); else echo -1; fi\n` +
-        `Return ONLY that integer in idle_seconds - a non-negative idle-seconds count, or -1 if the file does not exist. Report nothing else.`,
-      { phase: ph, model: 'haiku', schema: IDLE, label: `liveness-probe:${id}` },
+    const out = await agent(
+      `You are a rigger LIVENESS READER. Run EXACTLY this from ${REPO} using Bash and return its single line of stdout VERBATIM in \`stdout\`:\n` +
+        `  cd ${REPO} && rigger status --json\n` +
+        `It prints ONE line: a JSON array of the in-flight agents. Return that line EXACTLY as printed - do not summarize, reformat, or truncate it.`,
+      { phase: ph, model: 'haiku', schema: STATUS, label: `liveness:${id}` },
     )
-    const n = probe && typeof probe.idle_seconds === 'number' ? probe.idle_seconds : -1
-    return n < 0 ? null : n
+    const arr = JSON.parse(out.stdout)
+    const me = Array.isArray(arr) ? arr.find((a) => a && a.id === id) : null
+    return me && typeof me.liveness_age_s === 'number' ? me.liveness_age_s : null
   } catch {
-    // The probe agent itself died: treat the marker as unknown (conservative). A flaky probe
-    // must never manufacture a false liveness halt by abandoning a worker that may be alive.
+    // The courier died, the JSON did not parse, or the spawn is absent: unknown, so treat as
+    // not-stale. A flaky reader must never manufacture a false liveness halt.
     return null
   }
 }
@@ -209,7 +214,7 @@ async function markerIdleSeconds(marker, ph, id) {
 // window has not even elapsed). A MISSING/unreadable marker is conservatively not-stale: a
 // worker that never heartbeats is dead-worker-EXIT territory (its own agent timeout / the death
 // courier), unchanged here per this unit's exclusion - so the loop keeps waiting on it.
-async function raceMarkerStaleness(ran, boundSec, marker, ph, id) {
+async function raceMarkerStaleness(ran, boundSec, ph, id) {
   for (;;) {
     // Wait one bound-length window, but wake immediately if the worker resolves first.
     let timer = null
@@ -219,10 +224,10 @@ async function raceMarkerStaleness(ran, boundSec, marker, ph, id) {
     const tick = await Promise.race([ran, window])
     if (timer) clearTimeout(timer) // never leave a bound-long timer dangling once the race is decided
     if (tick.kind !== 'tick') return tick // the worker finished/errored inside the window
-    // A full window elapsed with the worker still running: probe the marker's idle time.
-    const idle = await markerIdleSeconds(marker, ph, id)
+    // A full window elapsed with the worker still running: ask rigger for its liveness age.
+    const idle = await livenessAgeSeconds(ph, id)
     if (idle !== null && idle > boundSec) return { kind: 'hung' }
-    // Fresh (or unknown/missing): slow-but-alive, leave in-flight and probe again next window.
+    // Fresh (or unknown/missing): slow-but-alive, leave in-flight and read again next window.
   }
 }
 
@@ -245,6 +250,13 @@ async function runWorker(req, fatal) {
         `  mkdir -p "$(dirname "${marker}")" && touch "${marker}"\n` +
         `\`rigger step\` treats this marker going stale (left untouched) beyond your ${req.max_wall_clock}s bound as a HUNG agent - an infrastructure fault that charges you NO remediation attempt - so keep it fresh while you work. It stops mattering the instant you self-report your result.\n`
       : ''
+  // Live progress (spec 14): every worker reports one short line after each significant step,
+  // additive to the marker heartbeat above. This is what turns a 26-minute silent stretch of
+  // real work into a visible stream an observer (and `rigger status` / the dash) can follow.
+  const progressNote =
+    `LIVE PROGRESS (spec 14): after each significant step - a search, a file read, a build, a commit, a decision - report ONE short line of what you just did, from ${REPO}, using Bash:\n` +
+    `  rigger progress '${req.id}' '<one line: what you just did>'\n` +
+    `This is how an observer sees you working between the milestones you record, so a long silent stretch is never mistaken for a stall. Keep it flowing WHILE you work; do not batch it at the end.\n`
   const prompt =
     `You are the rigger worker for spawn ${req.id} (unit ${req.unit}). ` +
     `Your persona and full task are recorded in the run log - FETCH THEM FIRST by running, from ${REPO}, using Bash:\n` +
@@ -254,6 +266,7 @@ async function runWorker(req, fatal) {
     `${workdir}\n` +
     `SCRATCH POLICY (hard rule): any scratch YOU create - probe repos, verification worktrees, test builds, setup rehearsals - lives under ${REPO}/.rigger/tmp/agent-scratch/, NEVER under /tmp or your own session scratchpad (those are on the operator's small OS partition, and a single cargo target or \`rigger setup\` shim install there fills the disk). For any cargo you run outside your assigned worktree, export CARGO_TARGET_DIR=${REPO}/.rigger/tmp/cargo-target first. agent-scratch is swept when the run completes - do not store anything durable there.\n` +
     heartbeat +
+    progressNote +
     `The rigger context tools your task refers to (rigger_emit, rigger_peers) are available here as the CLI commands \`rigger emit <Type> '<json>'\` and \`rigger peers <file>...\`, run from ${REPO}.\n` +
     `When you finish, SELF-REPORT your result by running, from ${REPO}:\n` +
     `  rigger result ${req.id} "<your result: a one-line summary, or your full verdict/findings>"\n` +
@@ -277,7 +290,7 @@ async function runWorker(req, fatal) {
   // step-resolved marker path is on the wire, and only where setTimeout exists.
   const outcome =
     req.max_wall_clock && marker && typeof setTimeout === 'function'
-      ? await raceMarkerStaleness(ran, req.max_wall_clock, marker, ph, req.id)
+      ? await raceMarkerStaleness(ran, req.max_wall_clock, ph, req.id)
       : await ran
 
   if (outcome.kind === 'hung') {
