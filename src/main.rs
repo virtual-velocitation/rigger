@@ -624,7 +624,9 @@ rigger step [--spec <path>]      advance the run one frontier via the replay dri
 [--base <ref>]        and print the newly parked spawn wave + a done flag\n                              \
 as JSON. --base (default origin/main) anchors a NEW run\n                              \
 branch; if it is unresolvable the branch is created off\n                              \
-HEAD. An existing run branch is reused, never reset\n  \
+HEAD. An existing run branch is reused, never reset.\n                              \
+--fresh begins a NEW run for the spec even if the latest\n                              \
+matches (pass on the first step to restart a wedged run)\n  \
 rigger reported <id>        exit 0 iff spawn <id> already has a recorded result in\n                              \
 this project's run stream (else non-zero). A read-only check\n                              \
 of whether a spawn reported yet; the death courier records\n                              \
@@ -1021,6 +1023,17 @@ fn cmd_step(args: &[String]) -> Res {
     let backend = Store::open(&db_path("events.db"))?;
     let store = Namespaced::new(&backend, &project_identity());
 
+    // `--fresh`: begin a NEW run BEFORE this step (and before the liveness sweep reads the
+    // current run), so the conductor's own `ensure_started` adopts this just-minted
+    // boundary instead of the latest (possibly wedged) run. A one-shot the DRIVER passes
+    // on the first step of an explicit restart; plain steps after it adopt the boundary it
+    // began. The notice goes to STDERR - stdout carries only the `{wave,done}` JSON the
+    // driver parses. See `runscope::start_fresh`.
+    if args.fresh {
+        let run = runscope::start_fresh(&store, &criteria)?;
+        eprintln!("rigger step: --fresh: began a new run {run} (the prior run stays in the log)");
+    }
+
     // Captured before `repo` moves into Deps: the fixpoint sweep below needs it.
     let scratch_root = if repo.is_empty() {
         None
@@ -1277,6 +1290,12 @@ struct StepArgs {
     /// an operator's EXPLICIT base is ignored because the run branch already exists -
     /// the steady-state default reuse is silent, an explicit-but-ignored base is not.
     base_explicit: bool,
+    /// `--fresh`: begin a NEW run for the spec's criteria before this step, even when the
+    /// latest run matches (which the conductor's `ensure_started` would adopt). A ONE-SHOT
+    /// the DRIVER passes on the first step of an explicit restart - the evented recovery
+    /// from a run wedged in a terminal state whose spec is unchanged; see
+    /// [`rigger::run::start_fresh`]. Plain steps after it adopt the boundary it began.
+    fresh: bool,
 }
 
 /// Parse `rigger step`'s flags: an optional `--spec <path>` (the spec whose Done-when
@@ -1287,9 +1306,11 @@ struct StepArgs {
 fn parse_step_args(args: &[String]) -> Result<StepArgs, Box<dyn std::error::Error>> {
     let mut spec = None;
     let mut base = None;
+    let mut fresh = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
+            "--fresh" => fresh = true,
             "--spec" => {
                 i += 1;
                 spec = match args.get(i) {
@@ -1320,6 +1341,7 @@ fn parse_step_args(args: &[String]) -> Result<StepArgs, Box<dyn std::error::Erro
         spec,
         base_explicit: base.is_some(),
         base: base.unwrap_or_else(|| DEFAULT_BASE_REF.to_string()),
+        fresh,
     })
 }
 
@@ -4965,6 +4987,12 @@ mod tests {
         assert!(s(&["--spec"]).is_err(), "--spec without a value must error");
         assert!(s(&["--nope"]).is_err(), "an unknown flag must error");
         assert!(s(&["bare"]).is_err(), "a bare positional must error");
+
+        // `--fresh` is a bare boolean flag (off by default), composing with the others.
+        assert!(!s(&[]).unwrap().fresh, "--fresh is off unless asked");
+        let a = s(&["--fresh", "--spec", "specs/12.md"]).unwrap();
+        assert!(a.fresh, "--fresh sets the fresh-restart flag on a step");
+        assert_eq!(a.spec.as_deref(), Some("specs/12.md"));
     }
 
     /// With the default build (no `kurrentdb` feature), requesting the server store
