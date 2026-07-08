@@ -13131,6 +13131,137 @@ mod tests {
     }
 
     #[test]
+    fn a_gate_skipped_inline_but_red_at_the_exhaustive_integrate_door_blocks_the_merge() {
+        // spec 12, unit 3 - the R6 safety property (done-when line 25: "integrate ALWAYS runs
+        // the full library"). The e2e happy-path test proves the exhaustive integrate step RUNS
+        // a gate the inner loop skipped; this test proves the OTHER half - that a RED there
+        // BLOCKS the merge and feeds remediation. Without it the `if full.pass` guard at the
+        // integrate door is unpinned: a mutation that integrates regardless of the exhaustive
+        // result survives the whole suite, because no other test fails a gate at the integrate
+        // step. Here gate `far` (`inputs: [docs/far.md]`) misses unit `s`'s blast radius
+        // (`src/near.rs`), so the inner loop SKIPS it every attempt - it is red ONLY at the
+        // exhaustive integrate door, which is exactly where R6 must catch it.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+
+        let grounder = StubGrounder {
+            by_query: HashMap::from([("s".to_string(), vec!["src/near.rs".to_string()])]),
+        };
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        // Bound the remediation loop: attempt 0 fails the integrate door and RETRIES, attempt 1
+        // fails it again and escalates (`remediate` escalates when attempts >= max), so the unit
+        // terminates deterministically without integrating and the integrate door is exercised
+        // on a genuine retry.
+        cfg.workflow.defaults.max_retries = 2;
+        cfg.workflow.gates.insert(
+            "near".into(),
+            gate_def_inputs("near-check", &["src/near.rs"]),
+        );
+        cfg.workflow
+            .gates
+            .insert("far".into(), gate_def_inputs("far-check", &["docs/far.md"]));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                coverage: "s".into(),
+                gates: vec!["near".into(), "far".into()],
+                on_pass: "merge".into(),
+                review: crate::config::ReviewPanel {
+                    lenses: vec!["lens".into()],
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let store = Store::open(":memory:").unwrap();
+        let driver = CacheDriver {
+            contents: vec!["work\n".into()],
+            approve_at: 0,
+        };
+        // `far` FAILS every run; `near` (and everything else) passes. So the inner loop is
+        // GREEN (it skips far), the adjudicator APPROVES, and the ONLY thing standing between
+        // the unit and a merge is the exhaustive integrate door running the skipped `far`.
+        let runner = RecordingRunner::new(&["far"]);
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo_path,
+            grounder: Some(&grounder),
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        // (1) THE MERGE IS BLOCKED: the exhaustive integrate door went red, so the unit never
+        // integrates - it exhausts its retries and escalates. A mutation that integrated on a
+        // red exhaustive suite would land the unit as Integrated here.
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Escalated,
+            "a red exhaustive integrate door must BLOCK the merge, not land the unit"
+        );
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.type_ == ledger::TYPE_UNIT_INTEGRATED),
+            "no UnitIntegrated may be emitted - a tree that fails the full suite never lands"
+        );
+
+        let find_key = |key: &str| -> Option<&Event> {
+            events.iter().find(|e| {
+                e.type_ == contextgraph::TYPE_GATE_VERDICT
+                    && e.meta.get(META_REPLAY_KEY) == Some(&key.to_string())
+            })
+        };
+
+        // (2) IT WAS THE SKIPPED GATE, RUN AT INTEGRATE, THAT BLOCKED IT: `far` is skipped in
+        // the inner loop (only a skip verdict inline) yet has a REAL, RED run verdict from the
+        // exhaustive integrate pass. This is the whole point of R6 - a gate the narrowed inner
+        // loop never ran still gets asserted before the unit can land.
+        assert!(
+            find_key("s/gate-skip:far#0").is_some(),
+            "far is skipped in the blast-radius-narrowed inner loop"
+        );
+        let far_run =
+            find_key("s/gate:far#0").expect("far RUNS at the exhaustive integrate door (R6)");
+        let far_run_v: Value = serde_json::from_slice(&far_run.data).unwrap();
+        assert_eq!(
+            far_run_v["pass"],
+            json!(false),
+            "the integrate-door run of far is REAL and RED - its failure is what blocks the merge"
+        );
+        assert!(
+            far_run_v.get("skipped").is_none(),
+            "the integrate-door run of far is a real verdict, not a skip: {far_run_v}"
+        );
+
+        // (3) THE RED FED REMEDIATION: the unit re-entered its lifecycle (a second attempt ran
+        // far at the integrate door again) before escalating - the failure is not swallowed, it
+        // drives another attempt exactly like an inner-loop gate failure.
+        let far_runs = runner
+            .calls()
+            .iter()
+            .filter(|c| c.as_str() == "far")
+            .count();
+        assert!(
+            far_runs >= 2,
+            "the integrate-door red must feed remediation: far re-runs at the door on the retry \
+             (saw {far_runs} far runs)"
+        );
+    }
+
+    #[test]
     fn a_deferred_gate_runs_once_at_the_phase_boundary_not_inline() {
         // A stage with both an inline (core) gate and a deferred gate. The deferred
         // gate must NOT run during the unit's inline lifecycle - the unit integrates on
