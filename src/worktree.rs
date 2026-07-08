@@ -764,6 +764,96 @@ mod tests {
     }
 
     #[test]
+    fn revert_on_base_aborts_and_errors_on_a_conflicting_revert() {
+        // spec 12, unit 4 (the reverse gear's FAILURE path, which the happy-path test never
+        // drives): a compensation whose revert CONFLICTS - a later commit rewrote the same
+        // region the condemned commit introduced, the REALISTIC case since a unit that proves
+        // a prior unit wrong usually built ON it - must ABORT and surface an error, leaving the
+        // run branch UNCHANGED rather than a half-reverted tree. drain_compensations propagates
+        // this Err and the run aborts loudly instead of landing a partial rollback.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+
+        // C1 introduces `shared.txt`; a later commit rewrites the SAME line, so reverting C1
+        // (which wants to delete the line C1 added) conflicts with the later modification.
+        let wt_path = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wt =
+            Worktree::create(&repo_path, wt_path.to_str().unwrap(), "rigger/conflict").unwrap();
+        std::fs::write(wt_path.join("shared.txt"), "original\n").unwrap();
+        let c1 = wt.integrate("rigger: integrate original").unwrap();
+        wt.remove().unwrap();
+        std::fs::write(repo.path().join("shared.txt"), "changed later\n").unwrap();
+        run_git(&repo_path, &["add", "shared.txt"]).unwrap();
+        run_git(&repo_path, &["commit", "-m", "later change to the same line"]).unwrap();
+        let head_before = run_git(&repo_path, &["rev-parse", "HEAD"]).unwrap();
+        let head_before = head_before.trim();
+
+        let result =
+            Worktree::revert_on_base(&repo_path, &c1, "rigger: compensate unit-a (revert c1)");
+        assert!(
+            result.is_err(),
+            "a conflicting revert surfaces as an error, never a silent half-apply"
+        );
+        // The run branch is UNCHANGED: same HEAD, the later content stands, and the abort
+        // cleaned the sequencer so no revert is left in progress for the next operation.
+        let head_after = run_git(&repo_path, &["rev-parse", "HEAD"]).unwrap();
+        assert_eq!(
+            head_after.trim(),
+            head_before,
+            "an aborted revert leaves the run branch HEAD untouched"
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join("shared.txt")).unwrap(),
+            "changed later\n",
+            "the conflicting file keeps the branch content, not a half-reverted tree"
+        );
+        assert!(
+            !repo.path().join(".git/REVERT_HEAD").exists(),
+            "the abort clears the in-progress revert so the branch is clean for the next op"
+        );
+    }
+
+    #[test]
+    fn revert_on_base_is_idempotent_when_the_effect_is_already_gone() {
+        // spec 12, unit 4 (the reverse gear's git-layer idempotency, the last-line defense
+        // behind the `compensated_commits` replay guard): reverting a commit whose effect is
+        // ALREADY absent from the run branch commits NOTHING and returns the current HEAD -
+        // never an error, never a spurious empty commit - so a re-reached rollback is safe.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+
+        let wt_path = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wt = Worktree::create(&repo_path, wt_path.to_str().unwrap(), "rigger/idem").unwrap();
+        std::fs::write(wt_path.join("gone.txt"), "effect\n").unwrap();
+        let c1 = wt.integrate("rigger: integrate effect").unwrap();
+        wt.remove().unwrap();
+
+        // First revert removes the effect and lands a real compensation commit.
+        let r1 =
+            Worktree::revert_on_base(&repo_path, &c1, "rigger: compensate (revert c1)").unwrap();
+        assert!(
+            !repo.path().join("gone.txt").exists(),
+            "the first revert removes the effect from the run branch"
+        );
+        let count_after_r1 = run_git(&repo_path, &["rev-list", "--count", "HEAD"]).unwrap();
+
+        // A SECOND revert of the SAME commit - its effect already gone - is a no-op: the
+        // `nothing to commit` branch returns the unchanged HEAD without adding an empty commit.
+        let r2 = Worktree::revert_on_base(&repo_path, &c1, "rigger: compensate again (revert c1)")
+            .unwrap();
+        assert_eq!(
+            r2, r1,
+            "the idempotent second revert returns the unchanged HEAD"
+        );
+        let count_after_r2 = run_git(&repo_path, &["rev-list", "--count", "HEAD"]).unwrap();
+        assert_eq!(
+            count_after_r2.trim(),
+            count_after_r1.trim(),
+            "the idempotent revert adds no spurious empty commit"
+        );
+    }
+
+    #[test]
     fn commit_cleans_the_tree_so_a_gate_sees_the_committed_artifact() {
         // FIX 2: the conductor commits the worktree BEFORE gating, so a gate runs
         // against the committed state, not the dirty worktree. After `commit` the
