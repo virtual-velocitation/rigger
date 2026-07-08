@@ -11,10 +11,14 @@
 //! not any progress was ever emitted. Agents WRITE it via `rigger progress <id>
 //! "<activity>"`; rigger READS it (unit 2's consolidator) to PRESENT a live per-agent view.
 
+use std::collections::HashMap;
+use std::time::SystemTime;
+
 use serde::{Deserialize, Serialize};
 
 use crate::eventstore::{Error, Event, EventStore, ExpectedRevision, Position};
 use crate::run::META_RUN_ID;
+use crate::spawn::{self, WaveItem};
 
 /// The stream the progress store's events live on WITHIN its own db file. Its file already
 /// isolates it from the run stream; the dedicated stream name keeps the store
@@ -69,6 +73,108 @@ pub fn record(
         .to_event(run_id)
         .map_err(|e| Error::Backend(format!("serialize AgentProgress: {e}")))?;
     store.append(STREAM, ExpectedRevision::Any, std::slice::from_ref(&ev))
+}
+
+/// A live per-agent view (spec 14, unit 2): for one in-flight spawn, what stage it is at,
+/// what it is currently doing (the latest progress report), how long since it last reported
+/// activity and last touched its liveness marker, and its last run-stream milestone with its
+/// age. The blackout this feature closes is exactly `milestone_age_s` >> `activity_age_s`:
+/// the run store went quiet while the agent kept working.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentActivity {
+    /// The deterministic spawn id.
+    pub id: String,
+    /// The unit the spawn belongs to.
+    pub unit: String,
+    /// The lifecycle stage the spawn is (implementer, adversary, adjudicator, ...).
+    pub stage: String,
+    /// The agent's latest reported activity, or `None` if it has reported none yet.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latest_activity: Option<String>,
+    /// Whole seconds since that latest activity was reported.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub activity_age_s: Option<u64>,
+    /// Whole seconds since the spawn last touched its spec-10 liveness marker (rigger reads
+    /// the marker in Rust and PRESENTS this, so no consumer stats the file).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub liveness_age_s: Option<u64>,
+    /// The type of the most recent run-stream milestone for this spawn's unit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_milestone: Option<String>,
+    /// Whole seconds since that milestone - the size of the current event-store blackout.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub milestone_age_s: Option<u64>,
+}
+
+/// Consolidate rigger's signals into a live per-agent view for the current run's in-flight
+/// frontier. PURE (no IO): `run_events` is the current run's slice, `progress_events` the
+/// progress store's events for this run, `liveness_ages` the seconds-since-touch per spawn id
+/// the caller read from the markers, and `now` fixes the clock for the age arithmetic
+/// (deterministic in tests). One entry per in-flight spawn - a parked spawn with no recorded
+/// result, the [`spawn::step_result`] frontier - ordered as that frontier is.
+pub fn consolidate(
+    run_events: &[Event],
+    progress_events: &[Event],
+    liveness_ages: &HashMap<String, u64>,
+    now: SystemTime,
+) -> Result<Vec<AgentActivity>, serde_json::Error> {
+    let frontier = spawn::step_result(run_events)?.wave;
+
+    // Latest progress per spawn id: the store appends in order, so a later event for the same
+    // id overwrites the earlier one, leaving the most recent activity + when it was reported.
+    let mut latest_prog: HashMap<String, (String, SystemTime)> = HashMap::new();
+    for e in progress_events {
+        if e.type_ != TYPE_AGENT_PROGRESS {
+            continue;
+        }
+        if let Ok(ap) = serde_json::from_slice::<AgentProgress>(&e.data) {
+            latest_prog.insert(ap.id, (ap.activity, e.recorded_at));
+        }
+    }
+
+    // Latest run-stream milestone per unit: the most recent event whose data `id` is the unit
+    // id (UnitStarted / UnitStatus / UnitIntegrated and the like - the unit's own lifecycle).
+    let mut latest_ms: HashMap<String, (String, SystemTime)> = HashMap::new();
+    for e in run_events {
+        if let Some(uid) = event_unit_id(e) {
+            latest_ms.insert(uid, (e.type_.clone(), e.recorded_at));
+        }
+    }
+
+    let age = |t: SystemTime| now.duration_since(t).ok().map(|d| d.as_secs());
+    Ok(frontier
+        .into_iter()
+        .map(|w: WaveItem| {
+            let (latest_activity, activity_age_s) = match latest_prog.get(&w.id) {
+                Some((a, t)) => (Some(a.clone()), age(*t)),
+                None => (None, None),
+            };
+            let (last_milestone, milestone_age_s) = match latest_ms.get(&w.unit) {
+                Some((ty, t)) => (Some(ty.clone()), age(*t)),
+                None => (None, None),
+            };
+            AgentActivity {
+                liveness_age_s: liveness_ages.get(&w.id).copied(),
+                id: w.id,
+                unit: w.unit,
+                stage: w.stage,
+                latest_activity,
+                activity_age_s,
+                last_milestone,
+                milestone_age_s,
+            }
+        })
+        .collect())
+}
+
+/// The `id` field of a lifecycle event's JSON data - the unit id for `UnitStarted` /
+/// `UnitStatus` / `UnitIntegrated` and the like - or `None` for an event carrying no such
+/// field (or non-JSON data). A minimal parse: just enough to attribute a run event to a unit
+/// for the "last milestone" view; events keyed on something else (a decision id, a spawn id)
+/// simply do not contribute a unit milestone.
+fn event_unit_id(e: &Event) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_slice(&e.data).ok()?;
+    v.get("id")?.as_str().map(str::to_string)
 }
 
 #[cfg(test)]
@@ -137,6 +243,77 @@ mod tests {
         let ap: AgentProgress = serde_json::from_slice(&p[0].data).unwrap();
         assert_eq!(ap.id, "u/implementer#0");
         assert_eq!(ap.activity, "grep #3: conductor.rs");
+    }
+
+    #[test]
+    fn consolidate_joins_frontier_progress_liveness_and_milestone() {
+        // spec 14, criterion 2: for each in-flight spawn the consolidator yields its stage +
+        // latest activity + activity-age + liveness-age + last milestone (and the milestone's
+        // age - the blackout). The clock is passed in, so the ages are deterministic.
+        use crate::spawn::SpawnRequest;
+        use std::time::Duration;
+
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
+
+        // The unit started 5 min ago; its implementer is parked (in-flight, no result).
+        let mut started = Event::new("UnitStarted", b"{\"id\":\"u\"}".to_vec());
+        started.recorded_at = now - Duration::from_secs(300);
+        let req = SpawnRequest::new("u", "u", "implementer", 0, "do it");
+        let run_events = vec![started, req.to_event().unwrap()];
+
+        // Two progress reports; the later one (20s ago) is the current activity.
+        let mut p1 = AgentProgress {
+            id: req.id.clone(),
+            activity: "grep #1".into(),
+        }
+        .to_event("run-1")
+        .unwrap();
+        p1.recorded_at = now - Duration::from_secs(200);
+        let mut p2 = AgentProgress {
+            id: req.id.clone(),
+            activity: "grep #12: conductor.rs".into(),
+        }
+        .to_event("run-1")
+        .unwrap();
+        p2.recorded_at = now - Duration::from_secs(20);
+        let progress_events = vec![p1, p2];
+
+        let liveness = HashMap::from([(req.id.clone(), 20u64)]);
+
+        let view = consolidate(&run_events, &progress_events, &liveness, now).unwrap();
+        assert_eq!(view.len(), 1, "one in-flight spawn");
+        let a = &view[0];
+        assert_eq!(a.id, req.id);
+        assert_eq!(a.unit, "u");
+        assert_eq!(a.stage, "u");
+        assert_eq!(
+            a.latest_activity.as_deref(),
+            Some("grep #12: conductor.rs"),
+            "the LATEST report wins"
+        );
+        assert_eq!(a.activity_age_s, Some(20));
+        assert_eq!(a.liveness_age_s, Some(20));
+        assert_eq!(a.last_milestone.as_deref(), Some("UnitStarted"));
+        assert_eq!(
+            a.milestone_age_s,
+            Some(300),
+            "the blackout: 5 min since the last store event, vs 20s of live activity"
+        );
+    }
+
+    #[test]
+    fn consolidate_reports_none_for_a_spawn_that_has_not_yet_progressed() {
+        // An in-flight spawn with no progress and no marker yet: it still appears (from the
+        // frontier), with the activity/liveness fields absent rather than fabricated.
+        use crate::spawn::SpawnRequest;
+        let now = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1);
+        let req = SpawnRequest::new("u", "u", "adjudicator", 0, "judge");
+        let view = consolidate(&[req.to_event().unwrap()], &[], &HashMap::new(), now).unwrap();
+        assert_eq!(view.len(), 1);
+        assert_eq!(view[0].latest_activity, None);
+        assert_eq!(view[0].activity_age_s, None);
+        assert_eq!(view[0].liveness_age_s, None);
+        assert_eq!(view[0].last_milestone, None);
     }
 
     #[test]

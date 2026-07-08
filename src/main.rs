@@ -24,7 +24,7 @@ use rigger::metrics::{self, Metrics};
 use rigger::run as runscope;
 use rigger::sidecar::{PeerDecision, Sidecar};
 use rigger::worktree::{RunBranchSetup, Worktree};
-use rigger::{hooks, mcpserver, spawn, spec};
+use rigger::{hooks, mcpserver, progress, spawn, spec};
 
 const RIGGER_DIR: &str = ".rigger";
 
@@ -548,6 +548,7 @@ fn main() {
         "workflow" => cmd_workflow(&args[2..]),
         "graph" => cmd_graph(&args[2..]),
         "stats" => cmd_stats(&args[2..]),
+        "status" => cmd_status(&args[2..]),
         "dash" => cmd_dash(&args[2..]),
         "ground" => cmd_ground(&args[2..]),
         "reindex" => cmd_reindex(&args[2..]),
@@ -644,6 +645,10 @@ rigger graph --around <id>  print the context subgraph around a node\n  \
 rigger stats                print the run's operator metrics: first-pass yield,\n                              \
 per-gate remediation counts, escalation rate, and\n                              \
 review approve/reject counts\n  \
+rigger status [--json]      present the live per-agent view of the current run: for\n                              \
+each in-flight agent, what it is doing (latest progress),\n                              \
+its heartbeat age, and how long since its last store event\n                              \
+(the blackout). --json prints the shim/dash machine shape\n  \
 rigger dash [--port <n>]    serve the read-only observability page on 127.0.0.1\n                              \
 (default port 7420) with live past/present/future views;\n                              \
 --export <path> writes the equivalent static snapshot\n  \
@@ -1457,6 +1462,22 @@ fn run_workflow(parsed: &RunArgs) -> Res {
     let grounder = select_grounder(&cfg.workflow.defaults.grounder)?;
     let peers = rigger::sidecar::Sidecar::start(&store, 0, Filter::default())?;
 
+    // Spec 14: the SEPARATE progress store + scratch root, so the MCP `rigger_activity` tool
+    // presents the live per-agent view (this run's progress joined with the frontier and the
+    // liveness-marker ages rigger reads in Rust) to the shim over its existing connection -
+    // the shim never touches the filesystem. Progress is always the local sqlite sibling of
+    // the run store, regardless of the run store's backend.
+    let prog_backend = Store::open(&db_path("progress.db"))?;
+    let prog_store = Namespaced::new(&prog_backend, &project_identity());
+    let scratch_root = {
+        let repo = git_repo();
+        if repo.is_empty() {
+            String::new()
+        } else {
+            rigger::worktree::scratch_root_from_env(&repo, &cfg.workflow.defaults.workdir)
+        }
+    };
+
     // The conductor orchestrates in the background; this thread serves the MCP
     // bridge over stdio. The shim drains spawns via rigger_next/result; closing
     // stdin ends the session.
@@ -1485,7 +1506,8 @@ fn run_workflow(parsed: &RunArgs) -> Res {
         // `graph_context` (the cross-agent memory the review tiers communicate
         // through), not via the conductor hand-threading prompts.
         let server = rigger::mcpserver::Server::new(&driver, &store, conductor::STREAM, &peers)
-            .with_graph(&graph);
+            .with_graph(&graph)
+            .with_progress(&prog_store, &scratch_root);
         let _ = server.run(std::io::stdin().lock(), std::io::stdout().lock());
     });
     Ok(())
@@ -2156,6 +2178,104 @@ fn cmd_progress(args: &[String]) -> Res {
     let prog_store = Namespaced::new(&prog_backend, &loc.identity());
     let pos = rigger::progress::record(&prog_store, &run_id, id, activity)?;
     println!("progress recorded for {id} (position {pos})");
+    Ok(())
+}
+
+/// `rigger status [--json]` - present the live per-agent view of the current run (spec 14,
+/// unit 2). Rigger CONSOLIDATES its three signals for every in-flight spawn - the run-stream
+/// milestone, the latest progress report, and the liveness-marker age it reads in Rust here
+/// (so no consumer stats a file) - into one view: what each agent is at, what it is doing,
+/// how long since its last activity and heartbeat, and how long since its last store event
+/// (the blackout this closes). `--json` prints the machine shape the shim and the dash also
+/// consume; the default is a readable table. Read-only over the run store, the separate
+/// progress store, and the liveness markers.
+fn cmd_status(args: &[String]) -> Res {
+    let mut json = false;
+    for a in args {
+        match a.as_str() {
+            "--json" => json = true,
+            other => return Err(format!("status: unknown argument {other:?} (only --json)").into()),
+        }
+    }
+    let loc = require_store_dir()?;
+    let now = std::time::SystemTime::now();
+
+    // The current run's slice of the run stream, and its id.
+    let run_backend = Store::open(&loc.file("events.db"))?;
+    let run_store = Namespaced::new(&run_backend, &loc.identity());
+    let all = run_store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+    let run_events = runscope::current_run(&all);
+    let run_id = runscope::current_run_id(&all).unwrap_or_default();
+
+    // This run's progress, from the SEPARATE store (absent/empty is fine - the store is
+    // created lazily by the first `rigger progress`).
+    let prog_events: Vec<Event> = match Store::open(&loc.file("progress.db")) {
+        Ok(backend) => {
+            let store = Namespaced::new(&backend, &loc.identity());
+            store
+                .read_stream(progress::STREAM, 0, Direction::Forward)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|e| {
+                    run_id.is_empty()
+                        || e.meta.get(runscope::META_RUN_ID).map(String::as_str)
+                            == Some(run_id.as_str())
+                })
+                .collect()
+        }
+        Err(_) => Vec::new(),
+    };
+
+    // Liveness ages: rigger stats each in-flight spawn's marker IN RUST here (this is what
+    // the JS driver's haiku probe was reconstructing by proxy - unit 3 retires it).
+    let workdir = config::load(".")
+        .map(|c| c.workflow.defaults.workdir)
+        .unwrap_or_default();
+    let repo = git_repo();
+    let mut liveness_ages: std::collections::HashMap<String, u64> =
+        std::collections::HashMap::new();
+    if !repo.is_empty() {
+        let root = rigger::worktree::scratch_root_from_env(&repo, &workdir);
+        for w in &spawn::step_result(run_events)?.wave {
+            let path = rigger::liveness::marker_path(&root, &run_id, &w.id);
+            if let Ok(age) = std::fs::metadata(&path)
+                .and_then(|md| md.modified())
+                .map(|mtime| now.duration_since(mtime).map(|d| d.as_secs()).unwrap_or(0))
+            {
+                liveness_ages.insert(w.id.clone(), age);
+            }
+        }
+    }
+
+    let view = progress::consolidate(run_events, &prog_events, &liveness_ages, now)?;
+    if json {
+        println!("{}", serde_json::to_string(&view)?);
+        return Ok(());
+    }
+
+    // Readable table. The blackout is visible as `last store event` age >> activity age.
+    let short = |s: &str| s.chars().take(12).collect::<String>();
+    if view.is_empty() {
+        println!("run {}: no agents in flight", short(&run_id));
+        return Ok(());
+    }
+    let age = |s: Option<u64>| s.map(|s| format!("{s}s ago")).unwrap_or_else(|| "-".into());
+    println!("run {}: {} agent(s) in flight", short(&run_id), view.len());
+    for a in &view {
+        println!("  {} [{}]", a.id, a.stage);
+        println!(
+            "      doing: {} ({}) | heartbeat {} | last store event: {} ({})",
+            a.latest_activity
+                .as_deref()
+                .unwrap_or("(none reported yet)"),
+            age(a.activity_age_s),
+            a.liveness_age_s
+                .map(|s| format!("{s}s ago"))
+                .unwrap_or_else(|| "-".into()),
+            a.last_milestone.as_deref().unwrap_or("-"),
+            age(a.milestone_age_s),
+        );
+    }
     Ok(())
 }
 

@@ -67,6 +67,15 @@ pub struct Server<'a> {
     /// workflow-driver path would write findings only to the log and the side-car, and
     /// the graph - the system's cross-agent memory - would never see them.
     graph: Option<&'a dyn Projection>,
+    /// The SEPARATE progress store (spec 14, unit 2). When set, `rigger_activity` reads this
+    /// run's `AgentProgress` from it to present the live per-agent view. `None` on a server
+    /// started without one - `rigger_activity` then reports the frontier with no activity
+    /// detail (the frontier alone is still useful).
+    progress: Option<&'a dyn EventStore>,
+    /// The scratch root whose `agent-live/` holds the liveness markers, so `rigger_activity`
+    /// stats each in-flight spawn's marker IN RUST and PRESENTS the age (retiring the JS
+    /// driver's `stat` probe). Empty when unknown - the view then omits liveness ages.
+    scratch_root: String,
 }
 
 impl<'a> Server<'a> {
@@ -82,7 +91,19 @@ impl<'a> Server<'a> {
             stream: stream.to_string(),
             peers,
             graph: None,
+            progress: None,
+            scratch_root: String::new(),
         }
+    }
+
+    /// Wire the progress store + scratch root so `rigger_activity` can present the live
+    /// per-agent view (spec 14): the current run's progress joined with the frontier and the
+    /// liveness-marker ages rigger reads here. Absent, the tool still answers - just without
+    /// activity or liveness detail.
+    pub fn with_progress(mut self, progress: &'a dyn EventStore, scratch_root: &str) -> Self {
+        self.progress = Some(progress);
+        self.scratch_root = scratch_root.to_string();
+        self
     }
 
     /// Wire the live context-graph projector so emitted events fold into the graph as
@@ -184,6 +205,7 @@ impl<'a> Server<'a> {
             "rigger_result" => self.tool_result(args),
             "rigger_emit" => self.tool_emit(args),
             "rigger_peers" => Ok(self.tool_peers(args)),
+            "rigger_activity" => self.tool_activity(),
             _ => return err(id, -32602, &format!("unknown tool {name}")),
         };
         match result {
@@ -263,6 +285,62 @@ impl<'a> Server<'a> {
             })
             .unwrap_or_default();
         peers_json(self.peers, &files)
+    }
+
+    /// `rigger_activity` (spec 14, unit 2): present the live per-agent view of the current
+    /// run - for every in-flight agent, what it is doing, its heartbeat age, and its last
+    /// store milestone - so the shim gets up-to-the-second agent state over MCP with NO
+    /// filesystem access of its own. Rigger CONSOLIDATES the run stream, this run's progress,
+    /// and the marker ages it stats HERE in Rust, and returns the same shape `rigger status
+    /// --json` prints. Read-only; the progress store and markers are optional (a server
+    /// started without them still returns the frontier).
+    fn tool_activity(&self) -> Result<Value, ToolError> {
+        let all = self
+            .store
+            .read_stream(&self.stream, 0, crate::eventstore::Direction::Forward)
+            .map_err(|e| ToolError::internal(e.to_string()))?;
+        let run_events = crate::run::current_run(&all);
+        let run_id = crate::run::current_run_id(&all).unwrap_or_default();
+
+        let prog_events: Vec<Event> = match self.progress {
+            Some(store) => store
+                .read_stream(
+                    crate::progress::STREAM,
+                    0,
+                    crate::eventstore::Direction::Forward,
+                )
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|e| {
+                    run_id.is_empty()
+                        || e.meta.get(crate::run::META_RUN_ID).map(String::as_str)
+                            == Some(run_id.as_str())
+                })
+                .collect(),
+            None => Vec::new(),
+        };
+
+        let now = SystemTime::now();
+        let mut liveness_ages: std::collections::HashMap<String, u64> =
+            std::collections::HashMap::new();
+        if !self.scratch_root.is_empty() {
+            let frontier = crate::spawn::step_result(run_events)
+                .map_err(|e| ToolError::internal(e.to_string()))?
+                .wave;
+            for w in &frontier {
+                let path = crate::liveness::marker_path(&self.scratch_root, &run_id, &w.id);
+                if let Ok(age) = std::fs::metadata(&path)
+                    .and_then(|md| md.modified())
+                    .map(|mtime| now.duration_since(mtime).map(|d| d.as_secs()).unwrap_or(0))
+                {
+                    liveness_ages.insert(w.id.clone(), age);
+                }
+            }
+        }
+
+        let view = crate::progress::consolidate(run_events, &prog_events, &liveness_ages, now)
+            .map_err(|e| ToolError::internal(e.to_string()))?;
+        serde_json::to_value(view).map_err(|e| ToolError::internal(e.to_string()))
     }
 }
 
@@ -460,6 +538,7 @@ fn tool_list() -> Value {
         {"name": "rigger_result", "description": "Report an agent's final result by spawn id.", "inputSchema": {"type": "object", "properties": {"id": {"type": "string"}, "output": {"type": "string"}, "error": {"type": "string"}}, "required": ["id"]}},
         {"name": "rigger_emit", "description": "Record a decision on the shared event log, live, so other agents see it immediately. Optionally set meta (e.g. the acting agent, which stamps the graph's DECIDED edge) and valid_from (the bi-temporal time the fact became true).", "inputSchema": {"type": "object", "properties": {"type": {"type": "string"}, "data": {"type": "object"}, "meta": {"type": "object", "description": "Metadata entries (string->string), e.g. {\"actor\": \"<agent-id>\"}.", "additionalProperties": {"type": "string"}}, "valid_from": {"description": "When the fact became true: unix nanoseconds (integer) or an RFC3339 timestamp string.", "type": ["integer", "string"]}}, "required": ["type", "data"]}},
         {"name": "rigger_peers", "description": "List the decisions, lessons, AND review findings other agents have raised so far this run, so you do not work blind to them (concurrent reviewers see each other's findings live; lessons recover what a capped prompt section elided). Pass `files` (your blast-radius) to scope the result to decisions, lessons, and findings that touch those files; omit it to see every one.", "inputSchema": {"type": "object", "properties": {"files": {"type": "array", "items": {"type": "string"}, "description": "The agent's blast-radius: only decisions whose `governs`, and lessons and findings whose `about`, intersect these files are returned. Omit for all."}}}},
+        {"name": "rigger_activity", "description": "The live per-agent view of the current run: one entry per in-flight agent with its stage, latest activity, how long since that activity and its last heartbeat, and its last event-store milestone (and how long ago - the blackout this fills). Rigger consolidates the run stream, the progress store, and the liveness markers and presents them here, so you get up-to-the-second agent state with no filesystem access of your own.", "inputSchema": {"type": "object", "properties": {}}},
     ])
 }
 
@@ -496,6 +575,52 @@ mod tests {
         let resp: Value = serde_json::from_str(String::from_utf8(output).unwrap().trim()).unwrap();
         assert_eq!(resp["id"], 1);
         assert!(resp.get("result").is_some());
+    }
+
+    #[test]
+    fn activity_tool_presents_the_live_per_agent_view() {
+        // spec 14, criterion 3 (MCP half): `rigger_activity` returns the consolidated view
+        // over MCP, so the shim gets each in-flight agent's activity + milestone with no
+        // filesystem access of its own.
+        let store = Store::open(":memory:").unwrap();
+        let progress = Store::open(":memory:").unwrap();
+        let driver = Driver::new();
+        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
+
+        // A run: a unit started, its implementer parked (in-flight, no result yet).
+        let run_id = crate::run::ensure_started(&store, &["crit".to_string()]).unwrap();
+        store
+            .append(
+                "run",
+                ExpectedRevision::Any,
+                &[Event::new("UnitStarted", b"{\"id\":\"u\"}".to_vec())],
+            )
+            .unwrap();
+        let req = crate::spawn::SpawnRequest::new("u", "u", "implementer", 0, "do it");
+        store
+            .append("run", ExpectedRevision::Any, &[req.to_event().unwrap()])
+            .unwrap();
+
+        // Its latest activity, in the SEPARATE progress store, scoped to the run.
+        crate::progress::record(&progress, &run_id, &req.id, "grep #12: conductor.rs").unwrap();
+
+        // No scratch root in a unit test, so liveness ages are simply omitted from the view.
+        let server = Server::new(&driver, &store, "run", &peers).with_progress(&progress, "");
+        let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_activity","arguments":{}}}"#;
+        let mut output = Vec::new();
+        server.run(Cursor::new(input), &mut output).unwrap();
+
+        let resp: Value = serde_json::from_str(String::from_utf8(output).unwrap().trim()).unwrap();
+        let view = &resp["result"]["structuredContent"];
+        assert_eq!(
+            view.as_array().map(|a| a.len()),
+            Some(1),
+            "one in-flight agent"
+        );
+        assert_eq!(view[0]["id"], req.id);
+        assert_eq!(view[0]["stage"], "u");
+        assert_eq!(view[0]["latest_activity"], "grep #12: conductor.rs");
+        assert_eq!(view[0]["last_milestone"], "UnitStarted");
     }
 
     /// The shared `emit_event` core (which the CLI `rigger emit` calls directly)
