@@ -1961,21 +1961,38 @@ fn cmd_dash(args: &[String]) -> Res {
 
     let events_db = db_path("events.db");
     let graph_db = db_path("graph.db");
+    let progress_db = db_path("progress.db");
     let identity = project_identity();
+    // The scratch root whose markers rigger stats to present each agent's liveness age (spec
+    // 14). Resolved once; a repo-less invocation leaves it empty and the view omits ages.
+    let workdir = config::load(".")
+        .map(|c| c.workflow.defaults.workdir)
+        .unwrap_or_default();
+    let scratch_root = {
+        let repo = git_repo();
+        if repo.is_empty() {
+            String::new()
+        } else {
+            rigger::worktree::scratch_root_from_env(&repo, &workdir)
+        }
+    };
 
     // Fresh projection inputs on every request. Reading (not holding an open handle) is
     // what lets the dash start before the store exists and pick the run up once it does.
-    let provider = move || -> Result<(Vec<Event>, contextgraph::Graph), String> {
+    let provider = move || -> Result<dash::DashInputs, String> {
         let events = dash_read_run(&events_db, &identity).map_err(|e| e.to_string())?;
         let graph = dash_read_graph(&graph_db, &events);
-        Ok((events, graph))
+        let run_id = runscope::current_run_id(&events).unwrap_or_default();
+        let progress = dash_read_progress(&progress_db, &identity, &run_id);
+        let liveness = dash_read_liveness(&events, &scratch_root, &run_id);
+        Ok((events, graph, progress, liveness))
     };
 
     match export {
         Some(path) => {
-            let (events, graph) =
+            let (events, graph, progress, liveness) =
                 provider().map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
-            let html = dash::render_export(&events, &graph)?;
+            let html = dash::render_export(&events, &graph, &progress, &liveness)?;
             std::fs::write(&path, html)?;
             println!("wrote dash snapshot to {path}");
             Ok(())
@@ -2020,6 +2037,57 @@ fn dash_read_graph(graph_db: &str, events: &[Event]) -> contextgraph::Graph {
         Ok(p) => p.subgraph(&seeds, 2).unwrap_or_default(),
         Err(_) => contextgraph::Graph::default(),
     }
+}
+
+/// This run's progress from the SEPARATE progress store (spec 14), for the dash's live
+/// per-agent view. Absent/empty is fine (the store is created lazily by the first
+/// `rigger progress`), and only the current run's reports (by `run_id`) are returned.
+fn dash_read_progress(progress_db: &str, identity: &str, run_id: &str) -> Vec<Event> {
+    if !Path::new(progress_db).exists() {
+        return Vec::new();
+    }
+    let Ok(backend) = Store::open(progress_db) else {
+        return Vec::new();
+    };
+    let store = Namespaced::new(&backend, identity);
+    store
+        .read_stream(progress::STREAM, 0, Direction::Forward)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|e| {
+            run_id.is_empty()
+                || e.meta.get(runscope::META_RUN_ID).map(String::as_str) == Some(run_id)
+        })
+        .collect()
+}
+
+/// The liveness-marker age (whole seconds since last touch) for each in-flight spawn in
+/// `events` (the current run's slice), read HERE in Rust so the dash PRESENTS it (spec 14) -
+/// the same stat the retired probe did, done by rigger rather than a spawned agent. Empty
+/// when there is no scratch root (a repo-less invocation).
+fn dash_read_liveness(
+    events: &[Event],
+    scratch_root: &str,
+    run_id: &str,
+) -> std::collections::HashMap<String, u64> {
+    let mut ages = std::collections::HashMap::new();
+    if scratch_root.is_empty() {
+        return ages;
+    }
+    let Ok(step) = spawn::step_result(events) else {
+        return ages;
+    };
+    let now = std::time::SystemTime::now();
+    for w in &step.wave {
+        let path = rigger::liveness::marker_path(scratch_root, run_id, &w.id);
+        if let Ok(age) = std::fs::metadata(&path)
+            .and_then(|md| md.modified())
+            .map(|mtime| now.duration_since(mtime).map(|d| d.as_secs()).unwrap_or(0))
+        {
+            ages.insert(w.id.clone(), age);
+        }
+    }
+    ages
 }
 /// `rigger ground "<query>" [<k>]` - run the project's configured grounder (the
 /// same one the `run`/`serve` paths build from `defaults.grounder` via

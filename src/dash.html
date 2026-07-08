@@ -90,6 +90,10 @@
         <div class="scroll" id="inflight"></div>
       </div>
       <div class="card" style="grid-column: 1 / -1;">
+        <h3>Live agent activity</h3>
+        <div class="scroll" id="activity"></div>
+      </div>
+      <div class="card" style="grid-column: 1 / -1;">
         <h3>Event feed</h3>
         <div class="feed" id="feed"></div>
       </div>
@@ -182,6 +186,20 @@ function render(state) {
   const wave = step.wave || [];
   el("wave").innerHTML = table(["spawn", "unit", "stage"],
     wave.map(w => [esc(w.id), esc(w.unit), esc(w.stage)]));
+
+  // PRESENT: live per-agent activity (spec 14) - what each in-flight agent is doing NOW, and
+  // how long since its last store event (the blackout) versus its last activity / heartbeat.
+  const activity = state.activity || [];
+  el("activity").innerHTML = activity.length
+    ? table(["agent", "stage", "doing", "activity age", "heartbeat", "last store event"],
+        activity.map(a => [
+          esc(a.id), esc(a.stage),
+          esc(a.latest_activity || "(none reported yet)"),
+          a.activity_age_s != null ? a.activity_age_s + "s" : "-",
+          a.liveness_age_s != null ? a.liveness_age_s + "s" : "-",
+          esc(a.last_milestone || "-") + (a.milestone_age_s != null ? " (" + a.milestone_age_s + "s)" : ""),
+        ]))
+    : '<div class="muted">no agents in flight</div>';
 
   // PRESENT: action-needed inbox - escalations and units awaiting a human first,
   // then mid-remediation units.

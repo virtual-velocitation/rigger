@@ -18,7 +18,7 @@
 //!     on every path, is refused with `405`. The conductor stays the sole mutation
 //!     authority - control goes through the CLI, never the dash.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -27,6 +27,7 @@ use serde::Serialize;
 
 use crate::contextgraph::{Graph, KIND_DECISION, KIND_FINDING, REL_SUPERSEDES};
 use crate::eventstore::{Event, Position};
+use crate::progress::{self, AgentActivity};
 use crate::{ledger, metrics, spawn};
 
 /// The single-file page, embedded at compile time (vanilla HTML/CSS/JS, no build step).
@@ -41,6 +42,12 @@ const STATE_PLACEHOLDER: &str = "__RIGGER_STATE__";
 
 /// The default loopback port for `rigger dash` when `--port` is not given.
 pub const DEFAULT_PORT: u16 = 7420;
+
+/// What the dash's data provider yields per request: the run's events, its context subgraph,
+/// this run's progress reports (spec 14), and each in-flight spawn's liveness-marker age.
+/// Factored into a `type` so the provider signature stays readable across the server, its
+/// callers, and the tests.
+pub type DashInputs = (Vec<Event>, Graph, Vec<Event>, HashMap<String, u64>);
 
 // ---------------------------------------------------------------------------
 // View DTOs. These live HERE, not on the projection types: adding `Serialize` to
@@ -64,6 +71,11 @@ pub struct StateView {
     /// The live pending frontier + fixpoint/halt, reused verbatim from
     /// [`spawn::step_result`] (already `Serialize`).
     pub step: spawn::Step,
+    /// The live per-agent view (spec 14): for each in-flight spawn, what it is doing now, how
+    /// long since its last activity and heartbeat, and its last store milestone - the present
+    /// view that fills the milestone-to-milestone blackout. Empty when nothing is in flight or
+    /// no progress store was supplied.
+    pub activity: Vec<AgentActivity>,
     pub graph: GraphView,
     /// Present only in an exported snapshot, so the static page can render its event feed
     /// without a network fetch.
@@ -171,10 +183,17 @@ pub fn build_state(
     events: &[Event],
     graph: &Graph,
     include_events: bool,
+    progress_events: &[Event],
+    liveness_ages: &HashMap<String, u64>,
 ) -> Result<StateView, serde_json::Error> {
     let run = ledger::project(events)?;
     let m = metrics::project(events);
     let step = spawn::step_result(events)?;
+    // The live per-agent view, folded from the frontier + this run's progress + the marker
+    // ages the caller read. `now` is the wall clock (like `generated_at` below), so the
+    // snapshot's activity ages are as of when it was built.
+    let activity =
+        progress::consolidate(events, progress_events, liveness_ages, SystemTime::now())?;
 
     let units = run
         .units
@@ -232,6 +251,7 @@ pub fn build_state(
         },
         metrics: metrics_view,
         step,
+        activity,
         graph: build_graph_view(graph),
         events: events_view,
     })
@@ -333,9 +353,22 @@ fn now_unix() -> u64 {
 // JSON endpoint bodies.
 // ---------------------------------------------------------------------------
 
-/// The `/api/state` body: the full projected snapshot as JSON.
-pub fn state_json(events: &[Event], graph: &Graph) -> Result<String, serde_json::Error> {
-    serde_json::to_string(&build_state(events, graph, false)?)
+/// The `/api/state` body: the full projected snapshot as JSON. `progress_events` (this run's
+/// slice of the separate progress store) and `liveness_ages` (marker ages the caller read)
+/// feed the live per-agent `activity` view; both empty is fine (the view is then empty).
+pub fn state_json(
+    events: &[Event],
+    graph: &Graph,
+    progress_events: &[Event],
+    liveness_ages: &HashMap<String, u64>,
+) -> Result<String, serde_json::Error> {
+    serde_json::to_string(&build_state(
+        events,
+        graph,
+        false,
+        progress_events,
+        liveness_ages,
+    )?)
 }
 
 /// The `/api/events?since=<position>` body: every event whose global position is strictly
@@ -363,8 +396,19 @@ pub fn live_page() -> String {
 ///
 /// The serialized snapshot is neutralized ([`escape_for_script`]) before it is spliced into
 /// the `<script>` element, so no string field it carries can break out of that container.
-pub fn render_export(events: &[Event], graph: &Graph) -> Result<String, serde_json::Error> {
-    let json = serde_json::to_string(&build_state(events, graph, true)?)?;
+pub fn render_export(
+    events: &[Event],
+    graph: &Graph,
+    progress_events: &[Event],
+    liveness_ages: &HashMap<String, u64>,
+) -> Result<String, serde_json::Error> {
+    let json = serde_json::to_string(&build_state(
+        events,
+        graph,
+        true,
+        progress_events,
+        liveness_ages,
+    )?)?;
     Ok(PAGE_TEMPLATE.replace(STATE_PLACEHOLDER, &escape_for_script(&json)))
 }
 
@@ -460,7 +504,14 @@ impl Response {
 /// The single routing authority. Answers only `GET`; every other method - on every path -
 /// is a `405`, which is the structural guarantee that the dash exposes NO mutating
 /// endpoint. Pure over the projected inputs, so it is unit-testable without a socket.
-pub fn route(method: &str, target: &str, events: &[Event], graph: &Graph) -> Response {
+pub fn route(
+    method: &str,
+    target: &str,
+    events: &[Event],
+    graph: &Graph,
+    progress_events: &[Event],
+    liveness_ages: &HashMap<String, u64>,
+) -> Response {
     if method != "GET" {
         return Response::text(
             405,
@@ -471,7 +522,7 @@ pub fn route(method: &str, target: &str, events: &[Event], graph: &Graph) -> Res
     let path = target.split('?').next().unwrap_or(target);
     match path {
         "/" | "/index.html" => Response::html(200, live_page()),
-        "/api/state" => match state_json(events, graph) {
+        "/api/state" => match state_json(events, graph, progress_events, liveness_ages) {
             Ok(body) => Response::json(200, body),
             Err(e) => Response::text(500, &format!("dash: state projection failed: {e}")),
         },
@@ -517,7 +568,7 @@ fn parse_request_line(line: &str) -> Option<(String, String)> {
 /// created the store.
 pub fn serve<F>(addr: SocketAddr, provider: F) -> io::Result<()>
 where
-    F: Fn() -> Result<(Vec<Event>, Graph), String>,
+    F: Fn() -> Result<DashInputs, String>,
 {
     let listener = TcpListener::bind(addr)?;
     let bound = listener.local_addr()?;
@@ -540,7 +591,7 @@ where
 /// never the static page.
 fn handle_conn<F>(stream: TcpStream, provider: &F) -> io::Result<()>
 where
-    F: Fn() -> Result<(Vec<Event>, Graph), String>,
+    F: Fn() -> Result<DashInputs, String>,
 {
     // Bound how long a slow or broken client can hold the single serving slot.
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
@@ -567,12 +618,21 @@ where
             let needs_data = method == "GET" && target.starts_with("/api/");
             if needs_data {
                 match provider() {
-                    Ok((events, graph)) => route(&method, &target, &events, &graph),
+                    Ok((events, graph, progress, liveness)) => {
+                        route(&method, &target, &events, &graph, &progress, &liveness)
+                    }
                     Err(e) => Response::text(500, &format!("dash: reading the store failed: {e}")),
                 }
             } else {
                 // The page, 404, and the 405 read-only guard need no projection input.
-                route(&method, &target, &[], &Graph::default())
+                route(
+                    &method,
+                    &target,
+                    &[],
+                    &Graph::default(),
+                    &[],
+                    &HashMap::new(),
+                )
             }
         }
     };
@@ -614,7 +674,7 @@ mod tests {
 
     #[test]
     fn root_serves_the_embedded_page_with_the_placeholder_resolved() {
-        let r = route("GET", "/", &[], &Graph::default());
+        let r = route("GET", "/", &[], &Graph::default(), &[], &HashMap::new());
         assert_eq!(r.status, 200);
         assert_eq!(r.content_type, "text/html; charset=utf-8");
         let body = String::from_utf8(r.body).unwrap();
@@ -632,7 +692,14 @@ mod tests {
     #[test]
     fn state_endpoint_projects_the_seeded_run() {
         let events = seeded_run();
-        let r = route("GET", "/api/state", &events, &Graph::default());
+        let r = route(
+            "GET",
+            "/api/state",
+            &events,
+            &Graph::default(),
+            &[],
+            &HashMap::new(),
+        );
         assert_eq!(r.status, 200);
         assert_eq!(r.content_type, "application/json");
         let v: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
@@ -649,6 +716,59 @@ mod tests {
         assert!(v.get("events").is_none() || v["events"].is_null());
     }
 
+    #[test]
+    fn state_carries_the_live_agent_activity() {
+        // spec 14, unit 4: the present view carries each in-flight agent's live activity +
+        // ages, folded by the consolidator from the frontier + this run's progress + the
+        // marker ages the caller read, and it appears in the /api/state body the page consumes.
+        use crate::spawn::SpawnRequest;
+        let req = SpawnRequest::new("u", "u", "implementer", 0, "do it");
+        // A run: a unit started, its implementer parked (in-flight, no result).
+        let events = positioned(vec![
+            ev("UnitStarted", r#"{"id":"u"}"#),
+            req.to_event().unwrap(),
+        ]);
+        // A recent progress report (small age) + a known marker age.
+        let ap = progress::AgentProgress {
+            id: req.id.clone(),
+            activity: "grep #12: conductor.rs".into(),
+        };
+        let mut prog = Event::new(
+            progress::TYPE_AGENT_PROGRESS,
+            serde_json::to_vec(&ap).unwrap(),
+        );
+        prog.recorded_at = SystemTime::now();
+        let progress_events = vec![prog];
+        let liveness = HashMap::from([(req.id.clone(), 15u64)]);
+
+        let state = build_state(
+            &events,
+            &Graph::default(),
+            false,
+            &progress_events,
+            &liveness,
+        )
+        .unwrap();
+        assert_eq!(
+            state.activity.len(),
+            1,
+            "the one in-flight agent appears in the present view"
+        );
+        let a = &state.activity[0];
+        assert_eq!(a.id, req.id);
+        assert_eq!(a.stage, "u");
+        assert_eq!(a.latest_activity.as_deref(), Some("grep #12: conductor.rs"));
+        assert_eq!(a.liveness_age_s, Some(15));
+        assert_eq!(a.last_milestone.as_deref(), Some("UnitStarted"));
+
+        // And the activity serializes into the /api/state body the page renders.
+        let body = state_json(&events, &Graph::default(), &progress_events, &liveness).unwrap();
+        assert!(
+            body.contains("grep #12: conductor.rs"),
+            "the live activity appears in the emitted state"
+        );
+    }
+
     /// Review verdicts on the wire are exactly `metrics::project`'s classification, never a
     /// second derivation in the dash. Locks the reuse the spec mandates.
     #[test]
@@ -663,7 +783,7 @@ mod tests {
             ev("UnitStatus", r#"{"id":"b","status":"reviewed"}"#),
         ]);
         let m = metrics::project(&events);
-        let state = build_state(&events, &Graph::default(), false).unwrap();
+        let state = build_state(&events, &Graph::default(), false, &[], &HashMap::new()).unwrap();
         assert_eq!(state.metrics.review_reject, m.review_reject);
         assert_eq!(state.metrics.review_approve, m.review_approve);
         assert_eq!(
@@ -701,7 +821,14 @@ mod tests {
                 "/api/run",
                 "/anything",
             ] {
-                let r = route(method, path, &events, &Graph::default());
+                let r = route(
+                    method,
+                    path,
+                    &events,
+                    &Graph::default(),
+                    &[],
+                    &HashMap::new(),
+                );
                 assert_eq!(
                     r.status, 405,
                     "{method} {path} must be refused: the dash has no write surface"
@@ -712,14 +839,21 @@ mod tests {
 
     #[test]
     fn unknown_get_path_is_404() {
-        let r = route("GET", "/does/not/exist", &[], &Graph::default());
+        let r = route(
+            "GET",
+            "/does/not/exist",
+            &[],
+            &Graph::default(),
+            &[],
+            &HashMap::new(),
+        );
         assert_eq!(r.status, 404);
     }
 
     #[test]
     fn export_inlines_the_snapshot_as_a_static_page() {
         let events = seeded_run();
-        let html = render_export(&events, &Graph::default()).unwrap();
+        let html = render_export(&events, &Graph::default(), &[], &HashMap::new()).unwrap();
         assert!(
             !html.contains(STATE_PLACEHOLDER),
             "export must resolve the placeholder"
@@ -749,7 +883,7 @@ mod tests {
         // A realistic malicious payload: it inlines verbatim into the feed summary.
         let payload = r#"{"id":"u1","note":"</script><img src=x onerror=alert(1)>"}"#;
         let events = positioned(vec![ev("DecisionMade", payload)]);
-        let html = render_export(&events, &Graph::default()).unwrap();
+        let html = render_export(&events, &Graph::default(), &[], &HashMap::new()).unwrap();
 
         // The template carries exactly ONE real `</script>` (its own script close). Were the
         // inlined snapshot left raw, the payload's `</script>` would add a second and break the
@@ -830,7 +964,7 @@ mod tests {
 
     #[test]
     fn build_state_on_an_empty_run_is_empty_not_a_panic() {
-        let state = build_state(&[], &Graph::default(), false).unwrap();
+        let state = build_state(&[], &Graph::default(), false, &[], &HashMap::new()).unwrap();
         assert!(state.run.units.is_empty());
         assert_eq!(state.metrics.units_started, 0);
         assert_eq!(state.position, 0);
@@ -890,13 +1024,13 @@ mod tests {
 
         // The same shape of read cmd_dash's provider performs (store -> run events).
         let db_for_provider = db_str.clone();
-        let provider = move || -> Result<(Vec<Event>, Graph), String> {
+        let provider = move || -> Result<DashInputs, String> {
             let backend = Store::open(&db_for_provider).map_err(|e| e.to_string())?;
             let store = Namespaced::new(&backend, "proj-dash");
             let events = store
                 .read_stream(conductor::STREAM, 0, Direction::Forward)
                 .map_err(|e| e.to_string())?;
-            Ok((events, Graph::default()))
+            Ok((events, Graph::default(), Vec::new(), HashMap::new()))
         };
 
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
@@ -934,7 +1068,7 @@ mod tests {
         use std::io::{Read, Write};
         use std::net::{TcpListener, TcpStream};
 
-        let provider = || -> Result<(Vec<Event>, Graph), String> {
+        let provider = || -> Result<DashInputs, String> {
             panic!("a non-GET request must never read the store");
         };
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
