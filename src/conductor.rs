@@ -430,7 +430,13 @@ fn route_review_tier<'a>(
 /// off). A deferred key (`deferred/gate:{gate}`) yields `"deferred"`; a key with no
 /// `/gate:` marker yields `None`. Pure string parse - the single place the key's unit
 /// segment is recovered.
-fn unit_of_gate_key(key: &str) -> Option<&str> {
+///
+/// Also the one authority `rigger replay` reuses to re-scope the candidate "gate runs"
+/// column to the gates the re-drive actually reaches: it recovers the STAGE a seeded
+/// gate verdict ran under so the composition root can ask whether the candidate config
+/// still declares that gate (a post-merge / skip / artifact key carries no `/gate:` infix,
+/// so it yields `None` and is left as recorded).
+pub fn unit_of_gate_key(key: &str) -> Option<&str> {
     key.split_once("/gate:").map(|(unit, _)| unit)
 }
 
@@ -1079,6 +1085,43 @@ struct UnitProposed {
     coverage: String,
     #[serde(default)]
     gates: Vec<String>,
+}
+
+/// The replayable TRAJECTORY of a completed run (spec 13, unit 2 - trajectory replay/eval):
+/// the events recording what the WORLD did during the run - each agent's recorded
+/// [`SpawnResult`](spawn::TYPE_SPAWN_RESULT) (the OUTPUT the [`ReplayDriver`] answers a
+/// spawn from) and each gate's recorded [`GateVerdict`](contextgraph::TYPE_GATE_VERDICT)
+/// (the pass/fail [`run_gates`](RunCtx::run_gates) replays) - and NOTHING the conductor
+/// DERIVES from the config (unit lifecycle, review routing, escalation, decisions).
+///
+/// Re-driving exactly these under a CANDIDATE config in an isolated namespace lets the
+/// conductor re-derive the run's SHAPE (which stages, which review tier, which budget,
+/// which gates it reaches) over the SAME agent behaviour and gate outcomes - so a config
+/// edit's effect on first-pass yield / escalation / review is measurable against the
+/// recorded baseline without re-running a live campaign. A spawn the candidate config
+/// introduces that the trajectory never recorded simply parks (no answer to replay), so
+/// the re-drive honestly stops where the recorded behaviour runs out rather than
+/// fabricating one.
+///
+/// Each event is cloned with its run-scoping [`crate::run::META_RUN_ID`] stamp stripped:
+/// the caller seeds these AFTER a fresh `RunStarted` for the candidate criteria, so run
+/// scoping is by that boundary's POSITION ([`crate::run::current_run`]) and a stale
+/// foreign run id on a seeded input would only mislead a reader. Every other stamp is
+/// preserved - crucially the gate-verdict replay key ([`META_REPLAY_KEY`]) so the re-drive
+/// REPLAYS the recorded verdict rather than re-running the gate command. Order is
+/// preserved (the stream is already in append order).
+pub fn replay_trajectory(baseline: &[Event]) -> Vec<Event> {
+    baseline
+        .iter()
+        .filter(|e| {
+            e.type_ == spawn::TYPE_SPAWN_RESULT || e.type_ == contextgraph::TYPE_GATE_VERDICT
+        })
+        .map(|e| {
+            let mut e = e.clone();
+            e.meta.remove(crate::run::META_RUN_ID);
+            e
+        })
+        .collect()
 }
 
 /// Run executes the workflow and returns the final run state, projected from the
@@ -8612,6 +8655,63 @@ mod tests {
         )
         .unwrap();
         st.append(STREAM, ExpectedRevision::Any, events).unwrap();
+    }
+
+    #[test]
+    fn replay_trajectory_keeps_only_the_world_inputs_and_restrips_the_run_id() {
+        // The trajectory is what the WORLD did - agent SpawnResults and gate GateVerdicts -
+        // NOT the conductor-derived lifecycle (UnitStarted / UnitStatus / DecisionMade),
+        // which the candidate config must re-derive. Order is preserved, the gate-verdict
+        // replay key survives (so the re-drive replays the verdict), and the baseline run's
+        // run-id stamp is stripped (the caller re-scopes under a fresh RunStarted).
+        let spawn_result = Event::new(
+            spawn::TYPE_SPAWN_RESULT,
+            serde_json::to_vec(&json!({"id": "s/implementer#0", "output": "did it"})).unwrap(),
+        )
+        .with_meta(crate::run::META_RUN_ID, "old-run");
+        let gate_verdict = Event::new(
+            contextgraph::TYPE_GATE_VERDICT,
+            serde_json::to_vec(&json!({"pass": true, "evidence": "PASS"})).unwrap(),
+        )
+        .with_meta(META_REPLAY_KEY, "s/gate:check#0")
+        .with_meta(crate::run::META_RUN_ID, "old-run");
+        let baseline = vec![
+            Event::new(
+                crate::run::TYPE_RUN_STARTED,
+                serde_json::to_vec(&json!({"run": "old-run", "criteria": []})).unwrap(),
+            ),
+            Event::new(
+                ledger::TYPE_UNIT_STARTED,
+                serde_json::to_vec(&json!({"id": "s", "agent": "worker"})).unwrap(),
+            ),
+            spawn_result,
+            Event::new(
+                ledger::TYPE_UNIT_STATUS,
+                serde_json::to_vec(&json!({"id": "s", "status": "green"})).unwrap(),
+            ),
+            gate_verdict,
+            Event::new(
+                contextgraph::TYPE_DECISION_MADE,
+                serde_json::to_vec(&json!({"id": "d", "summary": "x"})).unwrap(),
+            ),
+        ];
+
+        let traj = replay_trajectory(&baseline);
+        assert_eq!(
+            traj.iter().map(|e| e.type_.as_str()).collect::<Vec<_>>(),
+            [spawn::TYPE_SPAWN_RESULT, contextgraph::TYPE_GATE_VERDICT],
+            "only the world inputs survive, in order - no derived lifecycle event"
+        );
+        assert!(
+            traj.iter()
+                .all(|e| !e.meta.contains_key(crate::run::META_RUN_ID)),
+            "the baseline run-id stamp is stripped so the caller re-scopes freely"
+        );
+        assert_eq!(
+            traj[1].meta.get(META_REPLAY_KEY).map(String::as_str),
+            Some("s/gate:check#0"),
+            "the gate-verdict replay key survives so the re-drive replays the verdict"
+        );
     }
 
     /// Commit a file on a unit's DETERMINISTIC branch exactly as a prior window would:
