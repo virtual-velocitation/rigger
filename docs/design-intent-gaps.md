@@ -100,6 +100,18 @@ Dogfooding. Rigger ran on its own spec; the run's telemetry (`rigger stats`, `ri
 
 **Status: CLOSED (root-cause) 2026-07-09.** Pinned by a worktree test (an add/add conflict aborts, leaves the run branch untouched with no merge in progress, and reports Conflict). The partitioner's under-grounding (the trigger) is a separate grounder-accuracy concern; this closes the AMPLIFIER that turned a recoverable conflict into a run-wedge.
 
+## Gap 29: a gate's test run can pollute and HIJACK the live run store
+
+**Intent.** A gate (`cargo test`) verifies a unit; it must have NO side effect on the live run store. A run's `RunStarted` boundaries are the spine of run-scoping - nothing outside the run's own driver may append one.
+
+**Reality.** Unit worktrees live UNDER the main repo (`.rigger/tmp/rigger-wt-<unit>/`, Byran's partition layout keeps scratch on the big `/home` partition there), so a courier command's `require_store_dir` walk-up from a worktree reaches the MAIN `.rigger/events.db`. An integration test that is NOT store-isolated (it runs the conductor / a `rigger` subcommand that resolves to the live store) therefore appends `RunStarted` boundaries to the LIVE store when the unit's `cargo test` gate runs. Because run-scoping ([`current_run`]) follows the LATEST boundary, those stray boundaries HIJACK the live run: the driver's next step adopts the pollution boundary and orphans the real run.
+
+**Evidence.** 2026-07-09: spec-13 dogfood run 5507b914 (2 units integrated, review-tiers re-mediated). Unit-2 (trajectory-replay) had a `tests/cli.rs` test that was not store-isolated; when its gate ran, it appended a `solo`-config run AND a fresh 7-criteria spec-13 run (both carrying unit-1's definition hash) to the live store. Run-scoping switched to them and the real run was buried - the driver could no longer find it.
+
+**Fix shape.** Two independent lines. (a) TEST DISCIPLINE: an integration test must NEVER resolve to the live store - it uses a temp repo/store; the review's SDET lens should enforce this as a test-authoring rule. (b) STRUCTURAL (the robust one): sandbox a gate run from the live store - place unit worktrees OUTSIDE the main repo so a walk-up cannot reach it, or bind the store path explicitly for gate runs - so that even an unisolated test can never corrupt a run.
+
+**Status: recorded 2026-07-09.** Hand-implementing spec 13 sidesteps it (no loop gates against the live store); the structural fix is deferred to a follow-up (a gate-sandbox spec).
+
 ---
 
 ## Closed
