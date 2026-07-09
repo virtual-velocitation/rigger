@@ -25,7 +25,7 @@ use rigger::metrics::{self, Metrics};
 use rigger::run as runscope;
 use rigger::sidecar::{PeerDecision, Sidecar};
 use rigger::worktree::{RunBranchSetup, Worktree};
-use rigger::{hooks, mcpserver, progress, spawn, spec};
+use rigger::{hooks, mcpserver, playbooks, progress, spawn, spec};
 
 const RIGGER_DIR: &str = ".rigger";
 
@@ -663,6 +663,7 @@ fn main() {
         "graph" => cmd_graph(&args[2..]),
         "stats" => cmd_stats(&args[2..]),
         "canary" => cmd_canary(&args[2..]),
+        "playbooks" => cmd_playbooks(&args[2..]),
         "replay" => cmd_replay(&args[2..]),
         "status" => cmd_status(&args[2..]),
         "dash" => cmd_dash(&args[2..]),
@@ -769,6 +770,11 @@ rigger canary               run the review panel against the seeded-defect corpu
 adjudicator correctness, and verdict stability under\n                              \
 finding-order shuffle, into the project's canary stream\n                              \
 (read back with `rigger stats --canary`)\n  \
+rigger playbooks --rebuild  reconstruct the distilled playbook pool under\n                              \
+.rigger/playbooks/ from the recorded LessonLearned\n                              \
+stream: deduplicated, trigger-scoped agent-files the\n                              \
+lessons injector ranks by blast-radius relevance (a\n                              \
+rebuildable projection of the log, never hand-edited)\n  \
 rigger replay <run|latest>  re-drive a completed run's recorded trajectory under a\n            \
 --against <rev>          candidate config (workflow + prompts at git <rev>) in an\n                              \
 isolated scratch namespace, and print the stats diff\n                              \
@@ -2366,6 +2372,49 @@ fn cmd_canary(args: &[String]) -> Res {
     for line in format_canary_stats(&metrics::project_canary(&events)) {
         println!("{line}");
     }
+    Ok(())
+}
+
+/// `rigger playbooks --rebuild` (spec 13b, unit 2) - reconstruct the distilled playbook pool
+/// under `.rigger/playbooks/` from this project's recorded `LessonLearned` stream. The pool is
+/// a rebuildable PROJECTION of the log (never hand-edited state): [`playbooks::rebuild`] clears
+/// the rigger-managed pool files and re-derives every deduplicated, trigger-scoped playbook, so
+/// this command is the operator's way to regenerate the pool after new lessons land (or to
+/// recover a hand-corrupted pool). It only READS the run stream (never writes it), scoped to
+/// this project's namespace exactly as `rigger stats`/`rigger canary` read it; an absent store
+/// (a never-run project) has no lessons, so the pool rebuilds empty rather than fabricating one.
+fn cmd_playbooks(args: &[String]) -> Res {
+    match args {
+        [flag] if flag == "--rebuild" => {}
+        _ => {
+            return Err("playbooks: expected --rebuild (usage: rigger playbooks --rebuild)".into())
+        }
+    }
+
+    // Migrate a pre-spec-09 namespace once so the lessons stream lands under the same
+    // identity the conductor wrote, then READ (never fabricate) this project's run stream.
+    migrate_local_identity()?;
+    let db = db_path("events.db");
+    let events = if Path::new(&db).exists() {
+        let backend = Store::open(&db)?;
+        let store = Namespaced::new(&backend, &project_identity());
+        store.read_stream(conductor::STREAM, 0, Direction::Forward)?
+    } else {
+        Vec::new()
+    };
+
+    let pool_dir = Path::new(RIGGER_DIR).join(playbooks::POOL_SUBDIR);
+    let pool = playbooks::rebuild(&events, &pool_dir)?;
+    let lessons = events
+        .iter()
+        .filter(|e| e.type_ == contextgraph::TYPE_LESSON_LEARNED)
+        .count();
+    println!(
+        "playbooks: rebuilt {} playbook(s) under {} from {} recorded lesson event(s)",
+        pool.len(),
+        pool_dir.display(),
+        lessons,
+    );
     Ok(())
 }
 
