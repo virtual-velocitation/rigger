@@ -43,6 +43,15 @@ serde_json = "1"
 serde_yaml = "0.9"
 uuid = { version = "1", features = ["v4"] }
 thiserror = "2"
+# Cross-process advisory file lock (`flock` under the hood) that SERIALIZES `rigger step`
+# (see `acquire_step_lock`). Two steps running at once run two `cargo test` gates whose
+# grounder subprocesses construct ORT/CUDA sessions CONCURRENTLY ACROSS PROCESSES - the
+# documented heap-corruption/deadlock hazard (see the turbovec test-serial note below). A
+# single step's gate already serializes its own construction, so overlapping steps are the
+# only source of cross-process concurrency. Non-optional: the lock must hold in BOTH feature
+# lanes. `fs2` releases the lock when the file drops OR the process dies (even on kill), so a
+# crashed step never leaves a stale lock wedging the run.
+fs2 = "0.4"
 turbovec = { git = "https://github.com/RyanCodrai/turbovec", optional = true }
 fastembed = { version = "4", optional = true }
 # Pinned to the exact ONNX Runtime version fastembed 4.9 resolves. The `cuda` feature

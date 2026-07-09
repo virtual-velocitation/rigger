@@ -1119,11 +1119,59 @@ fn cmd_run(args: &[String]) -> Res {
 /// once [`RUN_BRANCH`] exists, an explicit `--base` is ignored (re-anchoring would orphan
 /// the integrated units), and the step says so on stderr rather than silently. A
 /// repo-less invocation skips run-branch setup entirely.
+/// The busy-refusal token a second concurrent `rigger step` prints (see
+/// [`acquire_step_lock`]). A DRIVER couriering steps keys on this exact substring to tell a
+/// benign "wait, another step holds the lock" from a real step failure - so it backs off
+/// and retries `rigger step` instead of tearing the run down. Kept as a named constant so
+/// the conductor side and the driver prompt can never drift apart.
+const STEP_BUSY_TOKEN: &str = "another `rigger step` is already running";
+
+/// Acquire the exclusive advisory lock that SERIALIZES `rigger step`, returning the held
+/// [`File`](std::fs::File) as an RAII guard (the OS releases the flock when it drops or the
+/// process dies). A NON-blocking `try_lock`: if another step already holds it, refuse fast
+/// and loudly ([`STEP_BUSY_TOKEN`]) rather than blocking - a driver whose courier gets the
+/// refusal backs off and retries, which keeps the run flowing without ever running two
+/// steps (and thus two cross-process ORT/CUDA gate builds) at once. See the call site for
+/// why concurrent steps deadlock the GPU.
+fn acquire_step_lock() -> Result<std::fs::File, Box<dyn std::error::Error>> {
+    use fs2::FileExt;
+    let path = Path::new(RIGGER_DIR).join("step.lock");
+    let f = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(&path)?;
+    f.try_lock_exclusive()
+        .map_err(|_| -> Box<dyn std::error::Error> {
+            format!(
+                "rigger step: {STEP_BUSY_TOKEN} in this repo (lock {}). Refusing to run \
+             concurrently: two steps run two `cargo test` gates whose grounder subprocesses \
+             build ORT/CUDA sessions concurrently across processes, which deadlocks the GPU. \
+             Wait for the running step to finish (or kill it) and retry.",
+                path.display()
+            )
+            .into()
+        })?;
+    Ok(f)
+}
+
 fn cmd_step(args: &[String]) -> Res {
     let args = parse_step_args(args)?;
     let cfg = config::load(".")?;
     let criteria = load_criteria(args.spec.as_deref())?;
     std::fs::create_dir_all(RIGGER_DIR)?;
+
+    // Serialize concurrent `rigger step` invocations (root-cause fix for the ORT/CUDA
+    // GPU deadlock). Two steps at once run two `cargo test` gates whose grounder
+    // subprocesses build ORT/CUDA sessions CONCURRENTLY ACROSS PROCESSES - the documented
+    // heap-corruption/deadlock hazard (Cargo.toml turbovec test-serial note). A single
+    // step's own gate is already serialized internally (the grounder's CONSTRUCT_MU +
+    // the tests' `file_serial`), which is why one gate runs clean; the ONLY source of
+    // cross-process concurrency is OVERLAPPING steps - e.g. a driver re-couriering a step
+    // while the first's minutes-long gate still runs. Held for the whole step and released
+    // when this process exits (even on crash/kill), so a dead step never wedges the run.
+    // The guard binds a name so it is not dropped early.
+    let _step_lock = acquire_step_lock()?;
 
     // Anchor + check out the run branch before the conductor branches any unit worktree
     // off HEAD. Guarded on a real repo so the repo-less unit-test path is untouched. A
@@ -7498,6 +7546,41 @@ mod tests {
             !dir.path().join(RIGGER_DIR).join("events.db").exists(),
             "stats on a never-run project must not create events.db"
         );
+    }
+
+    /// `rigger step` SERIALIZES: while one step holds the lock, a second concurrent step
+    /// REFUSES (with the driver-recognizable busy token) instead of running - the root-cause
+    /// fix for the cross-process ORT/CUDA deadlock two overlapping gate builds cause. And the
+    /// refusal is not permanent: once the first releases, a later step acquires cleanly.
+    #[test]
+    #[serial_test::serial(cwd)]
+    fn a_second_concurrent_rigger_step_refuses_and_the_lock_frees_on_release() {
+        let dir = tempfile::tempdir().unwrap();
+        let prev = std::env::current_dir().unwrap();
+        struct Restore(std::path::PathBuf);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                let _ = std::env::set_current_dir(&self.0);
+            }
+        }
+        let _restore = Restore(prev);
+        std::env::set_current_dir(dir.path()).unwrap();
+        std::fs::create_dir_all(RIGGER_DIR).unwrap();
+
+        // First step holds the exclusive lock for its whole duration.
+        let held = acquire_step_lock().expect("the first step must acquire the lock");
+        // A second concurrent step must REFUSE fast (not block, not double-run) and carry the
+        // token the driver keys on to back off rather than tear the run down.
+        let err = acquire_step_lock().expect_err("a second concurrent step must refuse");
+        assert!(
+            err.to_string().contains(STEP_BUSY_TOKEN),
+            "the refusal must carry the busy token for the driver: {err}"
+        );
+        // Releasing the first frees the lock so a later step proceeds - the refusal is
+        // transient, not a wedge.
+        drop(held);
+        let _reacquired =
+            acquire_step_lock().expect("after the first releases, a later step acquires cleanly");
     }
 
     /// The no-runs message single-sourced for both the absent-db and empty-stream
