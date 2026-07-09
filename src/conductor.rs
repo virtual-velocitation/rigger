@@ -2878,6 +2878,14 @@ impl RunCtx<'_> {
     /// `ResumePhase::Reviewed` path on the canonical lane. The single-lane path passes FALSE and
     /// emits inline, byte-for-byte unchanged.
     ///
+    /// `flapped` (spec 03 / spec 13 unit 4) is the gate-outcome risk signal: TRUE when this
+    /// unit needed remediation to reach green, forcing the FULL panel even on a small radius.
+    /// The caller derives it, because it does NOT coincide with `attempt` on every path: the
+    /// single-lane path passes `attempts > 0` (a genuine remediation flap), but the speculation
+    /// path passes FALSE - a candidate's `lane` index is a parallel FIRST attempt in its own
+    /// worktree, not a remediation, so reusing `attempt > 0` there would force every lane>0 to
+    /// the FULL panel and fold a bogus `flapped=true` into the shared unit's evidence.
+    ///
     /// `blast_radius` is the unit's grounded seed - the SAME set spawn/partition/staleness use -
     /// threaded in so the risk-tier routing (spec 03 / spec 13 unit 4) selects the LIGHT or FULL
     /// panel from the observable risk (blast-radius size, a high-risk-path hit, an empty radius,
@@ -2889,17 +2897,18 @@ impl RunCtx<'_> {
         st: &Stage,
         dir: &str,
         attempt: u32,
+        flapped: bool,
         defer_reviewed: bool,
         blast_radius: &[String],
     ) -> Result<ReviewOutcome, Error> {
         // Risk-tiered review depth (spec 03 / spec 13 unit 4): route this unit to the
         // LIGHT or FULL panel from its observable risk - the grounded blast-radius size,
-        // any high-risk-path hit, and whether the gates flapped (it needed remediation to
-        // reach green, `attempt > 0`) - BEFORE running any tier. When a depth policy is
+        // any high-risk-path hit, and whether the gates `flapped` (the caller-supplied
+        // gate-outcome signal) - BEFORE running any tier. When a depth policy is
         // configured, LOG the decision with its inputs; when it is not, `routing.panel`
         // IS the effective panel and nothing is logged, so behavior is byte-for-byte
         // unchanged (tiering is opt-in).
-        let routing = self.select_review_panel(st, blast_radius, attempt > 0);
+        let routing = self.select_review_panel(st, blast_radius, flapped);
         if routing.policy {
             self.log_review_tier(st, attempt, &routing)?;
         }
@@ -3295,7 +3304,8 @@ impl RunCtx<'_> {
                             (META_WORKTREE_SHA, &reviewed_sha),
                         ],
                     )?;
-                    let review = self.review_unit(st, dir, attempts, false, &blast_radius)?;
+                    let review =
+                        self.review_unit(st, dir, attempts, attempts > 0, false, &blast_radius)?;
                     // A contradiction against a PRIOR integrated unit (spec 12, unit 4): the
                     // adjudicator named another, already-integrated unit as the real defect
                     // source. QUEUE the rollback for the run loop to drain after this wave
@@ -3640,7 +3650,10 @@ impl RunCtx<'_> {
             // statuses are ALL DEFERRED to the winner path below (`defer_reviewed: true`) so a
             // candidate that is approved but does NOT win never folds the shared unit out of
             // `Fresh`, and the review tiers park across steps while the unit stays `Fresh`.
-            let review = self.review_unit(st, &dir, lane, true, &blast_radius)?;
+            // `flapped: false` - a candidate `lane` is a parallel FIRST attempt, NOT a
+            // remediation, so the review tier routes by RISK per lane rather than force-routing
+            // every lane>0 to the FULL panel (sdet-u13rt-flapped-conflates-lane-in-speculation).
+            let review = self.review_unit(st, &dir, lane, false, true, &blast_radius)?;
             // A candidate's review may name a PRIOR integrated unit as the real defect source
             // (spec 12, unit 4), independent of whether it approves this candidate: queue the
             // rollback exactly as the single-lane path does, so the reverse gear is not lost.
@@ -11362,6 +11375,127 @@ mod tests {
         assert!(
             !has_key("s/green#0") && !has_key("s/verified#0") && !has_key("s/reviewed#0"),
             "the rejected lane 0 emits no lifecycle status (it never won)"
+        );
+    }
+
+    #[test]
+    fn speculation_low_risk_later_lane_winner_routes_light_not_falsely_flapped() {
+        // The COMPOSITION of risk-tiering (spec 13 unit 4) with first-green-wins speculation
+        // (unit 3) - closing sdet-u13rt-speculation-tiers-composition-untested and the
+        // sdet-u13rt-flapped-conflates-lane-in-speculation defect. A speculation candidate's
+        // `lane` index is NOT a remediation flap: each lane is a parallel FIRST attempt in its
+        // own worktree. Lane 0 is adjudicator-REJECTED and the LOW-RISK lane 1 wins; its review
+        // must route by observable RISK (LIGHT - no adversary), and no review-tier marker may
+        // record flapped=true. A regression that reuses `attempt>0` as the flapped signal on the
+        // speculation path force-routes lane 1 FULL (spawning the full-only adversary on a
+        // low-risk change) and folds a bogus flapped=true into the shared unit's evidence: the
+        // adversary-absence and no-false-flap assertions below FAIL.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        // A small, non-high-risk grounded radius so the unit is LOW risk by size AND path:
+        // one file, under threshold 3, not under the high_risk_paths prefix.
+        let gdir = tempfile::tempdir().unwrap();
+        std::fs::write(gdir.path().join("leaf.rs"), "fn widget() {}\n").unwrap();
+        let grep = crate::grounder::Grep {
+            root: gdir.path().to_string_lossy().into_owned(),
+        };
+        let light = config::ReviewPanel {
+            lenses: vec!["lensA".into()],
+            adjudicator: "adj".into(),
+            ..Default::default()
+        };
+        let mut cfg = Config::default();
+        for id in ["worker", "lensA", "lensB", "adversary", "adj"] {
+            cfg.agents.insert(id.into(), agent(id));
+        }
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.defaults.review =
+            full_panel_with_tiers(depth_tiers(light, 3, &["src/conductor.rs"]));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                coverage: "widget".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                speculation_width: 2,
+                ..Default::default()
+            },
+        );
+        let store = Store::open(":memory:").unwrap();
+        // Per-lane divergent adjudicator: lane 0's adjudicator spawn REJECTS, lane 1's (the
+        // default `output`) APPROVES - keyed on the deterministic adjudicator spawn id, which
+        // keys by lane. The adjudicator runs on BOTH tiers, so this holds whether lane 0 routes
+        // light or full.
+        let driver = Stub {
+            write_file: Some("feature.rs".into()),
+            output: r#"{"verdict":"approve"}"#.into(),
+            output_by_spawn_id: HashMap::from([(
+                spawn_id("s", ROLE_ADJUDICATOR, 0),
+                r#"{"verdict":"reject","issues":["lane 0 rejected by the adjudicator"]}"#.into(),
+            )]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path,
+            grounder: Some(&grep),
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "the low-risk lane 1 wins after lane 0 is rejected"
+        );
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let integrated = events
+            .iter()
+            .find(|e| {
+                e.type_ == ledger::TYPE_UNIT_INTEGRATED
+                    && String::from_utf8_lossy(&e.data).contains("\"id\":\"s\"")
+            })
+            .expect("the unit integrated");
+        assert_eq!(
+            integrated.meta.get(META_SPEC_WINNER).map(String::as_str),
+            Some(spawn_id("s", ROLE_IMPLEMENTER, 1).as_str()),
+            "lane 1 (NOT lane 0) is the recorded winner"
+        );
+        // The low-risk lane-1 winner routed LIGHT: its full-only adversary NEVER spawned. This
+        // is the discriminator - reusing `attempt>0` for flapped force-routes lane 1 FULL and
+        // this adversary spawn appears.
+        let ids = driver.spawn_ids();
+        assert!(
+            !ids.contains(&spawn_id("s", ROLE_ADVERSARY, 1)),
+            "the low-risk lane-1 winner must route LIGHT - the adversary must NOT spawn on lane 1: {ids:?}"
+        );
+        // No lane flapped: a lane index is not a remediation attempt, so no review-tier marker
+        // may fold a bogus flapped=true.
+        let tier_markers: Vec<String> = events
+            .iter()
+            .filter(|e| {
+                e.type_ == ledger::TYPE_UNIT_STATUS
+                    && String::from_utf8_lossy(&e.data).contains("\"status\":\"review-tier\"")
+            })
+            .map(|e| String::from_utf8_lossy(&e.data).into_owned())
+            .collect();
+        assert!(
+            !tier_markers.is_empty(),
+            "the tiers policy logs a routing decision per reviewed lane"
+        );
+        assert!(
+            tier_markers
+                .iter()
+                .all(|m| !m.contains("\"flapped\":\"true\"")),
+            "no speculation lane flapped - the lane index must not fold a bogus flapped=true: {tier_markers:?}"
+        );
+        assert!(
+            logged_review_tier(&store, "light"),
+            "the low-risk lanes routed to the light panel"
         );
     }
 
