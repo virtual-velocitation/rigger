@@ -86,7 +86,19 @@ Dogfooding. Rigger ran on its own spec; the run's telemetry (`rigger stats`, `ri
 
 **Fix shape (spec 14, Wave 5).** Rigger becomes the authority that CONSOLIDATES its signals and PRESENTS a live per-agent view; consumers receive it rather than reassembling it. Agents emit fine-grained `AgentProgress` events to a SEPARATE non-replayed store (`.rigger/progress.db`, a sibling of `graph.db`, so no run fold can read it and replay is structurally untouched) via a new `rigger progress <id> "<activity>"` verb. A Rust consolidator folds the current run's milestones + progress + marker-mtime into a live view exposed by `rigger status`, a `rigger_activity` MCP tool (so the real-Node shim gets up-to-the-second state over its existing connection), and the dash's present view. The driver-side haiku `stat` probe is retired - it was the sandboxed driver reconstructing, badly, what rigger already knows; the spec-10 marker itself stays (Rust reads it and presents the liveness age).
 
-**Status: assigned to spec 14** (2026-07-08).
+**Status: CLOSED (spec 14, Wave 5) 2026-07-08.** All four units landed: the progress store + `rigger progress`; the consolidator + `rigger status` + `rigger_activity` MCP tool; per-step emission in all three drivers + retirement of the haiku probe; the dash present-view. Validated live on the spec-13 dogfood run - `rigger status` showed each in-flight agent's activity filling a 161s store blackout. (Follow-up caught by the same dogfood: agents reliably emit progress but skip the SEPARATE spec-10 marker touch, so the two write-side actions want unifying - `rigger progress` should also touch the marker; tracked for a spec-14 refinement.)
+
+## Gap 28: the conductor's integrate wedges the whole run on a git merge conflict
+
+**Intent.** A unit's integration must never wedge the run or leave the run branch broken. `partition: by-blast-radius` serializes PREDICTED overlaps into separate batches, but the grounder's blast-radius prediction is imperfect - an UNPREDICTED overlap (two batch-mates that actually edit the same region) must be RECOVERED like any other failure, not fatal.
+
+**Reality.** `Worktree::integrate` was a bare `git merge --no-edit`. When an unpredicted-overlap unit's merge CONFLICTED, the conductor errored MID-MERGE, left the run branch with unmerged files, and wedged `rigger step` for the ENTIRE run - a broken branch no subsequent step could advance past. Spec-12 unit-5 (Gap 21) re-gates a SUCCESSFUL merge for SEMANTIC breaks, but a textual merge CONFLICT is an earlier failure it never reaches.
+
+**Evidence.** 2026-07-09: spec-13 dogfood run wf_8ba0cd57. The grounder placed three `src/conductor.rs`-editing units (definition-pinning, review-tiers, speculation-width) in ONE batch; two integrated, then review-tiers's merge conflicted on `src/conductor.rs`, left the run branch mid-merge (`UU src/conductor.rs`), and `rigger step` failed exit 1 with no JSON - the whole run stopped.
+
+**Fix shape.** `integrate()` returns `IntegrateOutcome::{Merged, Conflict}`; a Conflict ABORTS the merge (the run branch is left exactly as it was) and the conductor RESETS the unit's branch to the run-branch tip and re-enters remediation - so the unit re-implements off the current integrated tree and its next merge rebases cleanly - EXACTLY like spec-12 unit-5's post-merge-RED rollback (the textual-conflict sibling of that semantic-break path). Never wedges the run.
+
+**Status: CLOSED (root-cause) 2026-07-09.** Pinned by a worktree test (an add/add conflict aborts, leaves the run branch untouched with no merge in progress, and reports Conflict). The partitioner's under-grounding (the trigger) is a separate grounder-accuracy concern; this closes the AMPLIFIER that turned a recoverable conflict into a run-wedge.
 
 ---
 

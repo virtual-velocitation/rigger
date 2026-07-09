@@ -36,6 +36,33 @@ pub enum RunBranchSetup {
     CreatedFromHead,
 }
 
+/// The outcome of merging a unit's branch into the run branch ([`Worktree::integrate`]).
+pub enum IntegrateOutcome {
+    /// The branch merged cleanly; carries the integrated commit sha (empty for a read-only
+    /// stage that merged nothing).
+    Merged(String),
+    /// The merge CONFLICTED and was ABORTED, so the run branch is left EXACTLY as it was.
+    /// Carries the conflict detail for the unit's remediation feedback. The conductor treats
+    /// this like a failed gate - the unit re-enters remediation off the current integrated
+    /// tree so its next merge rebases cleanly - instead of the run wedging on a broken branch.
+    /// This is the textual-conflict sibling of spec-12-unit-5's semantic-break rollback: that
+    /// one re-gates a SUCCESSFUL merge; this one never gets a clean merge to gate.
+    Conflict(String),
+}
+
+impl IntegrateOutcome {
+    /// The merged commit sha; panics on a conflict. A convenience for a caller that has
+    /// already established a clean merge is expected (the happy-path tests).
+    pub fn expect_merged(self) -> String {
+        match self {
+            IntegrateOutcome::Merged(sha) => sha,
+            IntegrateOutcome::Conflict(detail) => {
+                panic!("expected a clean merge, got a conflict: {detail}")
+            }
+        }
+    }
+}
+
 impl Worktree {
     /// Add a worktree at dir (which must not already exist), on `branch`.
     ///
@@ -200,6 +227,20 @@ impl Worktree {
         Ok(())
     }
 
+    /// Reset THIS worktree's branch HARD to `sha` (the run-branch tip), discarding the unit's
+    /// current commits so its NEXT remediation attempt re-implements off that tree. Used when
+    /// a unit's integration merge CONFLICTED (an unpredicted overlap): its work was based on a
+    /// tree a batch-mate has since changed, so re-doing it off the integrated tree lets its
+    /// next merge rebase cleanly - the recovery from the conflict, not a wedge. Resetting a
+    /// branch checked out in its OWN worktree is allowed (unlike deleting it).
+    pub fn reset_branch_to(&self, sha: &str) -> Result<(), Error> {
+        if sha.is_empty() {
+            return Ok(());
+        }
+        git(&self.dir, &["reset", "--hard", sha])?;
+        Ok(())
+    }
+
     /// Discard any leftover worktree at `dir` AND any existing `branch`, so a following
     /// [`Self::create`] checks out a FRESH worktree off the repo's CURRENT HEAD.
     ///
@@ -354,7 +395,7 @@ impl Worktree {
     /// nothing new, so we resolve the branch's existing HEAD and merge that exact
     /// commit. The gate-green artifact and the merged artifact are therefore the
     /// same commit, by construction.
-    pub fn integrate(&self, message: &str) -> Result<String, Error> {
+    pub fn integrate(&self, message: &str) -> Result<IntegrateOutcome, Error> {
         let committed = self.commit(message)?;
         // Resolve the commit to merge: a fresh commit from this call, otherwise the
         // branch's current HEAD (the pre-committed, already-gated artifact). When the
@@ -363,14 +404,36 @@ impl Worktree {
             let head = git(&self.dir, &["rev-parse", "HEAD"])?.trim().to_string();
             let base = git(&self.repo, &["rev-parse", "HEAD"])?.trim().to_string();
             if head == base {
-                return Ok(String::new());
+                return Ok(IntegrateOutcome::Merged(String::new()));
             }
             head
         } else {
             committed
         };
-        git(&self.repo, &["merge", "--no-edit", &self.branch])?;
-        Ok(commit)
+        // A merge that fails leaves the run branch mid-merge with unmerged files. A CONFLICT
+        // (an unpredicted overlap the partitioner did not serialize into separate batches) is
+        // a RECOVERABLE outcome: ABORT the merge so the run branch is left untouched, and
+        // report it so the conductor re-mediates the unit rather than wedging the whole run on
+        // a broken branch. Any OTHER merge failure is a genuine error and still surfaces.
+        match run_git(&self.repo, &["merge", "--no-edit", &self.branch]) {
+            Ok(_) => Ok(IntegrateOutcome::Merged(commit)),
+            Err(out) => {
+                // Unmerged files are the definitive conflict signal (git-version-independent);
+                // the phrasing checks are a belt-and-braces backup. Read BEFORE the abort.
+                let conflicted = run_git(&self.repo, &["ls-files", "--unmerged"])
+                    .map(|u| !u.trim().is_empty())
+                    .unwrap_or(false)
+                    || out.contains("CONFLICT")
+                    || out.contains("Automatic merge failed")
+                    || out.contains("unmerged files");
+                let _ = run_git(&self.repo, &["merge", "--abort"]);
+                if conflicted {
+                    Ok(IntegrateOutcome::Conflict(out))
+                } else {
+                    Err(Error(format!("git merge --no-edit {}: {out}", self.branch)))
+                }
+            }
+        }
     }
 
     /// Delete the worktree (its branch is left for the caller to clean up), and reclaim its
@@ -727,13 +790,73 @@ mod tests {
         std::fs::write(wt_path.join("feature.txt"), "work\n").unwrap();
         assert_eq!(wt.changed_files().unwrap(), ["feature.txt"]);
 
-        let commit = wt.integrate("rigger: integrate test").unwrap();
+        let commit = wt
+            .integrate("rigger: integrate test")
+            .unwrap()
+            .expect_merged();
         assert!(!commit.is_empty(), "a commit hash should be returned");
         assert!(
             repo.path().join("feature.txt").exists(),
             "the agent's work must be merged into the repo"
         );
         wt.remove().unwrap();
+    }
+
+    #[test]
+    fn integrate_reports_a_merge_conflict_and_leaves_the_run_branch_untouched() {
+        // The unpredicted-overlap case the spec-13 dogfood hit: two units the partitioner
+        // placed in ONE batch both add the SAME file with DIFFERENT content off the same base.
+        // The first merges; the second's merge CONFLICTS. integrate() must ABORT the merge,
+        // leave the run branch EXACTLY as the first unit left it, and report Conflict - so the
+        // conductor re-mediates the second unit instead of the run wedging on a broken branch.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+
+        // Both worktrees branch off the SAME base, as concurrent batch-mates do.
+        let wa = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wb = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let a = Worktree::create(&repo_path, wa.to_str().unwrap(), "rigger/u/a").unwrap();
+        let b = Worktree::create(&repo_path, wb.to_str().unwrap(), "rigger/u/b").unwrap();
+
+        // A adds shared.txt and integrates cleanly.
+        std::fs::write(wa.join("shared.txt"), "A version\n").unwrap();
+        a.integrate("rigger: integrate a").unwrap().expect_merged();
+        let head_after_a = run_git(&repo_path, &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
+
+        // B adds the SAME file with DIFFERENT content off the same base: an add/add conflict.
+        std::fs::write(wb.join("shared.txt"), "B version\n").unwrap();
+        match b.integrate("rigger: integrate b").unwrap() {
+            IntegrateOutcome::Conflict(detail) => assert!(
+                detail.to_lowercase().contains("conflict"),
+                "the conflict detail names the conflict; got: {detail}"
+            ),
+            IntegrateOutcome::Merged(_) => {
+                panic!("a divergent add/add merge must conflict, not merge")
+            }
+        }
+
+        // The run branch is UNTOUCHED: A's content stands, HEAD is unchanged, and no merge is
+        // left in progress (the abort cleaned it) - so the next `rigger step` runs clean.
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join("shared.txt")).unwrap(),
+            "A version\n",
+            "the aborted conflict must not alter the run branch"
+        );
+        let head_now = run_git(&repo_path, &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
+        assert_eq!(
+            head_now, head_after_a,
+            "HEAD is unchanged after the aborted merge"
+        );
+        assert!(
+            !repo.path().join(".git").join("MERGE_HEAD").exists(),
+            "no merge is left in progress after the abort"
+        );
     }
 
     #[test]
@@ -746,7 +869,10 @@ mod tests {
         let wt_path = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
         let wt = Worktree::create(&repo_path, wt_path.to_str().unwrap(), "rigger/revert").unwrap();
         std::fs::write(wt_path.join("wrong.txt"), "buggy\n").unwrap();
-        let commit = wt.integrate("rigger: integrate wrong").unwrap();
+        let commit = wt
+            .integrate("rigger: integrate wrong")
+            .unwrap()
+            .expect_merged();
         wt.remove().unwrap();
         assert!(
             repo.path().join("wrong.txt").exists(),
@@ -797,7 +923,10 @@ mod tests {
         let wt =
             Worktree::create(&repo_path, wt_path.to_str().unwrap(), "rigger/conflict").unwrap();
         std::fs::write(wt_path.join("shared.txt"), "original\n").unwrap();
-        let c1 = wt.integrate("rigger: integrate original").unwrap();
+        let c1 = wt
+            .integrate("rigger: integrate original")
+            .unwrap()
+            .expect_merged();
         wt.remove().unwrap();
         std::fs::write(repo.path().join("shared.txt"), "changed later\n").unwrap();
         run_git(&repo_path, &["add", "shared.txt"]).unwrap();
@@ -846,7 +975,10 @@ mod tests {
         let wt_path = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
         let wt = Worktree::create(&repo_path, wt_path.to_str().unwrap(), "rigger/idem").unwrap();
         std::fs::write(wt_path.join("gone.txt"), "effect\n").unwrap();
-        let c1 = wt.integrate("rigger: integrate effect").unwrap();
+        let c1 = wt
+            .integrate("rigger: integrate effect")
+            .unwrap()
+            .expect_merged();
         wt.remove().unwrap();
 
         // First revert removes the effect and lands a real compensation commit.
@@ -965,7 +1097,7 @@ mod tests {
         let committed = wt.commit("rigger: pre-commit").unwrap();
         assert!(!wt.is_dirty().unwrap());
 
-        let merged = wt.integrate("rigger: integrate").unwrap();
+        let merged = wt.integrate("rigger: integrate").unwrap().expect_merged();
         assert_eq!(
             merged, committed,
             "integrate must merge the same commit that was gated, not a new one"

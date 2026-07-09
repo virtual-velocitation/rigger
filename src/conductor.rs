@@ -5129,7 +5129,29 @@ impl RunCtx<'_> {
         // sequence runs UNDER the integrate lock, so no concurrent integration mutates the run
         // branch between the merge and the re-gate that judges it.
         let pre_merge = worktree::head_sha_of(&self.deps.repo);
-        let commit = wt.integrate(&format!("rigger: integrate {}", st.name))?;
+        let commit = match wt.integrate(&format!("rigger: integrate {}", st.name))? {
+            worktree::IntegrateOutcome::Merged(c) => c,
+            worktree::IntegrateOutcome::Conflict(detail) => {
+                // A merge CONFLICT: an unpredicted overlap the partitioner did not serialize
+                // (two batch-mates the grounder placed together that edit the same region).
+                // `wt.integrate` already ABORTED the merge, so the run branch is untouched -
+                // NOTHING landed. RESET this unit's branch to the run-branch tip (`pre_merge`,
+                // unchanged by the aborted merge) so its NEXT remediation attempt re-implements
+                // off the INTEGRATED tree (with the batch-mate's change) and rebases cleanly,
+                // then re-enter remediation fed the conflict - EXACTLY like a RED post-merge
+                // re-gate below - instead of wedging the run on a broken branch.
+                wt.reset_branch_to(&pre_merge)?;
+                return Ok(Integration {
+                    blocked: Some(vec![format!(
+                        "integrate merge conflict (unpredicted overlap; the partitioner did \
+                         not serialize this unit against a batch-mate editing the same region) \
+                         - re-implement off the current run-branch tree so your change merges \
+                         cleanly:\n{detail}"
+                    )]),
+                    ..Default::default()
+                });
+            }
+        };
         // spec 12, unit 5: re-run the FULL gate suite against the MERGED run-branch tree
         // BEFORE emitting UnitIntegrated. A unit's pre-merge gates ran in its OWN worktree, so
         // an UNPREDICTED overlap - two batch-mates the grounder placed together that edit the
