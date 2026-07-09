@@ -9,3 +9,8 @@
 //! `symbols` feature, confined to `extract` (and, in later units, the registry).
 
 pub mod model;
+
+/// Tags-based extraction over an INJECTED `(grammar, tag query)` pair - the ONE place
+/// tree-sitter is touched. Feature-gated: the light lane drops it entirely.
+#[cfg(feature = "symbols")]
+pub mod extract;
