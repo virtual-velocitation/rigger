@@ -239,6 +239,14 @@ pub struct Defaults {
     /// is byte-for-byte back-compatible.
     #[serde(default)]
     pub max_retries: u32,
+    /// First-green-wins speculation width (spec 13, unit 3): how many parallel
+    /// implementer candidates a unit parks in one deterministic speculation group.
+    /// The first candidate to pass its gates AND the adjudicator wins and integrates;
+    /// the rest are cancelled. `0`/`1` (the default) means OFF - one candidate, the
+    /// historical single-implementer path byte-for-byte. A stage's own
+    /// `speculation_width` overrides this default.
+    #[serde(default)]
+    pub speculation_width: u32,
     /// The default per-spawn wall-clock bound in SECONDS (spec 10, unit 3): every agent
     /// inherits this unless its own frontmatter sets `max_wall_clock`. `0` (the default)
     /// means unbounded - liveness timeouts are opt-in, so an un-set workflow is
@@ -310,6 +318,14 @@ pub struct Stage {
     pub coverage: String,
     #[serde(default)]
     pub on_pass: String,
+    /// This unit class's first-green-wins speculation width (spec 13, unit 3): when
+    /// `> 1`, the conductor parks this many parallel implementer candidates in one
+    /// deterministic speculation group and integrates the first gate-green
+    /// adjudicator-approved one, cancelling the rest. Unset (`0`) inherits
+    /// `defaults.speculation_width`; the effective width `1` is the historical
+    /// single-implementer path unchanged (speculation defaults OFF).
+    #[serde(default)]
+    pub speculation_width: u32,
     /// Set by the conductor (never authored, hence `serde(skip)`) on the deterministic
     /// per-criterion BASELINE units it synthesizes from the fan-out implement template.
     /// It marks a stage as the conductor's fallback decomposition for one criterion, so

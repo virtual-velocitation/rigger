@@ -117,6 +117,24 @@ pub fn spawn_retry_id(unit: &str, role: &str, attempt: u32, retry: u32) -> Strin
     }
 }
 
+/// The deterministic id of a unit's first-green-wins speculation GROUP (spec 13, unit 3):
+/// the single correlation handle that ties a unit's K parallel implementer candidates
+/// together. The winner's `UnitIntegrated` and every cancelled candidate's status carry
+/// it, so the group / winner / losers are recoverable from the log without a new event
+/// type. The K candidates themselves keep ordinary per-attempt implementer ids
+/// ([`spawn_id`]`(unit, `[`ROLE_IMPLEMENTER`]`, lane)`) - candidate `lane` runs at
+/// attempt `lane`, so each candidate's gates, statuses, and review tiers key apart while
+/// remaining a PURE function of the run structure (no wall clock, no randomness), the
+/// same replay-determinism [`spawn_id`] guarantees.
+///
+/// ```
+/// # use rigger::spawn::speculation_group_id;
+/// assert_eq!(speculation_group_id("u"), "u/spec-group");
+/// ```
+pub fn speculation_group_id(unit: &str) -> String {
+    format!("{unit}/spec-group")
+}
+
 /// A single spawn request: one agent to run, plus the deterministic id that names it
 /// and the display labels the thin driver groups its progress under.
 ///
