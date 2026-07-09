@@ -47,8 +47,13 @@ impl<'a> ReplayDriver<'a> {
 /// Reconstruct the full [`SpawnRequest`] this call would park, from the trait's spawn
 /// arguments: its deterministic id, unit, and stage come from `opts` (the conductor
 /// set them from the run structure); its persona, dir, and blast-radius from `opts`;
-/// its model alias and granted tools from the agent (already fan-out-stripped by
-/// [`AgentDef::allowed_tools`]); and its task prompt from `prompt`.
+/// its granted tools from the agent (already fan-out-stripped by
+/// [`AgentDef::allowed_tools`]); and its task prompt from `prompt`. Its model is the
+/// cascade rung this attempt resolves ([`AgentDef::model_for_attempt`], spec 10 unit 4),
+/// so a `model_ladder` agent parks a request naming the rung it escalated to for
+/// `opts.attempt` - the same rung the conductor stamps as the requested alias. Its
+/// `max_wall_clock` (resolved from `defaults.max_wall_clock` at config load) rides along
+/// too, so the parked spawn also carries its per-role liveness bound (spec 10, unit 3).
 fn spawn_request(agent: &AgentDef, prompt: &str, opts: &SpawnOpts) -> SpawnRequest {
     SpawnRequest {
         id: opts.id.clone(),
@@ -56,10 +61,11 @@ fn spawn_request(agent: &AgentDef, prompt: &str, opts: &SpawnOpts) -> SpawnReque
         stage: opts.stage.clone(),
         prompt: prompt.to_string(),
         system_prompt: opts.system_prompt.clone(),
-        model: agent.model.clone(),
+        model: agent.model_for_attempt(opts.attempt),
         tools: agent.allowed_tools(),
         dir: opts.dir.clone(),
         blast_radius: opts.blast_radius.clone(),
+        max_wall_clock: agent.max_wall_clock,
     }
 }
 
@@ -77,33 +83,52 @@ impl AgentDriver for ReplayDriver<'_> {
         // Read the run stream fresh on every spawn: the whole run's state lives in the
         // log, and a concurrent sibling spawn in the same wave may have appended a park
         // since this call started.
-        let events = self
+        let all = self
             .store
             .read_stream(STREAM, 0, Direction::Forward)
             .map_err(|e| Error(e.to_string()))?;
+        // Scope the spawn lookup to the CURRENT run (completes Gap 11): spawn ids for the
+        // fixed stages (`plan/...`, `plan-critique/adjudicator#N`, `plan/replan#N`) are
+        // spec-INDEPENDENT, so without run-scoping a fresh run REPLAYS a prior run's
+        // recorded result for the same id - e.g. a stale plan-critique REJECT - and the
+        // gate escalates by replaying an old verdict instead of running the new reviewer
+        // (observed: a spec-12 run replayed the spec-10 plan-critique reject). Answering
+        // and park-dedup must see only THIS run's events; the park itself is already
+        // run-stamped (`park_in_run`).
+        let events = crate::run::current_run(&all);
 
         // ANSWER an already-recorded spawn (replay): a recorded RESULT for this id means
         // the agent already ran, so return its outcome without re-running it. A recorded
         // failure replays AS a failure (never a fabricated success), so a step sees the
         // identical outcome the live run saw and remediates it exactly the same way.
-        if let Some(res) = spawn::result_of(&events, &opts.id).map_err(|e| Error(e.to_string()))? {
-            if res.is_error() {
-                return Err(Error(res.error));
+        //
+        // EXCEPT a step-synthesized LIVENESS fault (spec 10, unit 3): the agent HUNG and
+        // `rigger step` recorded an infra fault on its id to make the stall visible. That
+        // is NOT the unit's code failing, so it must charge no remediation attempt - we
+        // fall through to RE-PARK it (idempotent, the request is already recorded), so the
+        // unit unwinds cleanly like any parked spawn. A real worker result recorded later
+        // (last-write-wins) is a genuine answer and supersedes it here.
+        if let Some(res) = spawn::result_of(events, &opts.id).map_err(|e| Error(e.to_string()))? {
+            if !res.is_liveness_fault() {
+                if res.is_error() {
+                    return Err(Error(res.error));
+                }
+                // Surface the RESOLVED model the worker reported through `rigger result
+                // --meta` (spec 05 line 52), so the conductor can copy it onto this spawn's
+                // unit events.
+                let resolved_model = res.resolved_model();
+                return Ok(AgentResult {
+                    output: res.output,
+                    resolved_model,
+                });
             }
-            // Surface the RESOLVED model the worker reported through `rigger result --meta`
-            // (spec 05 line 52), so the conductor can copy it onto this spawn's unit events.
-            let resolved_model = res.resolved_model();
-            return Ok(AgentResult {
-                output: res.output,
-                resolved_model,
-            });
         }
 
         // PARK an unrecorded spawn: persist the request so a courier can drain it and the
         // next step replays its result. IDEMPOTENT (finding adv-park-not-idempotent): a
         // step re-running the conductor over recorded history must append NO duplicate
         // SpawnRequested, so park only an id that is not already recorded.
-        if !spawn::is_recorded(&events, &opts.id) {
+        if !spawn::is_recorded(events, &opts.id) {
             let req = spawn_request(agent, prompt, opts);
             // Park stamped with the run this spawn belongs to (spec 06, unit 1): the
             // conductor threaded the current run id onto `opts`, so the persisted
@@ -150,6 +175,50 @@ mod tests {
     }
 
     #[test]
+    fn a_parked_spawn_carries_the_model_ladder_rung_for_its_attempt() {
+        // Spec 10 unit 4: the ACTUAL model a spawn runs on is the cascade rung its attempt
+        // resolves, so the parked SpawnRequest names that rung - not a fixed `model`. A
+        // laddered agent parked at attempt 0 carries rung 0; parked at a later remediation
+        // attempt it carries the higher rung it escalated to, clamped at the last.
+        let agent = AgentDef {
+            id: "worker".into(),
+            model_ladder: vec!["haiku".into(), "sonnet".into(), "opus".into()],
+            ..Default::default()
+        };
+        let parked_model = |attempt: u32, id: &str| -> String {
+            let store = Store::open(":memory:").unwrap();
+            let driver = ReplayDriver::new(&store);
+            let opts = SpawnOpts {
+                id: id.to_string(),
+                unit: "u".into(),
+                stage: "u".into(),
+                attempt,
+                ..Default::default()
+            };
+            // An unrecorded spawn parks (and signals the parked frontier).
+            let err = driver.spawn(&agent, "do it", &opts, &no_emit).unwrap_err();
+            assert!(is_parked(&err), "an unrecorded spawn must park");
+            let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            spawn::recorded(&events).unwrap()[id].model.clone()
+        };
+        assert_eq!(
+            parked_model(0, "u/implementer#0"),
+            "haiku",
+            "attempt 0 parks on the cheap first rung"
+        );
+        assert_eq!(
+            parked_model(1, "u/implementer#1"),
+            "sonnet",
+            "the first remediation parks one rung higher"
+        );
+        assert_eq!(
+            parked_model(9, "u/implementer#9"),
+            "opus",
+            "past the top clamps at the strongest rung"
+        );
+    }
+
+    #[test]
     fn answers_an_already_recorded_success_from_the_log() {
         let store = Store::open(":memory:").unwrap();
         spawn::record_result(
@@ -189,6 +258,167 @@ mod tests {
         // A recorded failure is a real failure, NOT a park - so the conductor remediates
         // it exactly as it did live.
         assert!(!is_parked(&err));
+    }
+
+    #[test]
+    fn re_parks_a_liveness_fault_instead_of_charging_it_as_a_failure() {
+        // A step recorded a liveness fault on a hung spawn (spec 10, unit 3). Unlike a
+        // worker-reported failure, this must NOT replay as a charged error - the agent's
+        // process hung, not the unit's code. The driver RE-PARKS it (a clean unwind, no
+        // remediation), and appends no duplicate request.
+        let store = Store::open(":memory:").unwrap();
+        // The spawn was parked, then a liveness fault was recorded on it.
+        spawn::park(
+            &store,
+            &spawn::SpawnRequest::new("u", "u", ROLE_IMPLEMENTER, 0, "task"),
+        )
+        .unwrap();
+        spawn::record_result(
+            &store,
+            &spawn::SpawnResult::liveness_fault("u/implementer#0", "the agent hung", "infra"),
+        )
+        .unwrap();
+
+        let driver = ReplayDriver::new(&store);
+        let err = driver
+            .spawn(&worker(), "do it", &opts_for("u/implementer#0"), &no_emit)
+            .expect_err("a liveness fault re-parks (a clean unwind), never a charged error");
+        assert!(
+            is_parked(&err),
+            "it re-parks, so the conductor charges no attempt"
+        );
+
+        // Re-parking is idempotent: no DUPLICATE spawn request is appended (the request
+        // was already recorded when it first parked).
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let requested = spawn::recorded(&events).unwrap();
+        assert_eq!(requested.len(), 1, "no duplicate spawn request is parked");
+
+        // A real result recorded LATER (last-write-wins) IS a terminal answer again.
+        spawn::record_result(
+            &store,
+            &spawn::SpawnResult::ok("u/implementer#0", "recovered output"),
+        )
+        .unwrap();
+        let got = driver
+            .spawn(&worker(), "do it", &opts_for("u/implementer#0"), &no_emit)
+            .expect("a real result superseding the liveness fault is answered normally");
+        assert_eq!(got.output, "recovered output");
+    }
+
+    #[test]
+    fn a_non_infra_labeled_liveness_fault_is_still_re_parked_no_charge() {
+        // Follow-up (b) / sdet-u3-classify-hung-reclassification-cosmetic: the taxonomy class
+        // on a liveness fault is a DISPLAY LABEL only; the no-charge re-park is UNIFORM. A
+        // hung spawn a workflow deliberately RELABELED (here "product", not the infra
+        // default) must STILL re-park (a clean unwind), never replay as a charged error - a
+        // hung agent PROCESS is infrastructure regardless of the label, so the unit is never
+        // charged. This pins the corrected module doc (class is a label, treatment is uniform).
+        let store = Store::open(":memory:").unwrap();
+        spawn::park(
+            &store,
+            &spawn::SpawnRequest::new("u", "u", ROLE_IMPLEMENTER, 0, "task"),
+        )
+        .unwrap();
+        spawn::record_result(
+            &store,
+            &spawn::SpawnResult::liveness_fault("u/implementer#0", "the agent hung", "product"),
+        )
+        .unwrap();
+
+        let driver = ReplayDriver::new(&store);
+        let err = driver
+            .spawn(&worker(), "do it", &opts_for("u/implementer#0"), &no_emit)
+            .expect_err("a liveness fault re-parks whatever class labels it, never a charge");
+        assert!(
+            is_parked(&err),
+            "a 'product'-labeled liveness fault re-parks no-charge, exactly like infra"
+        );
+        // The label still rides the recorded fault for the operator (display/audit).
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert_eq!(
+            spawn::result_of(&events, "u/implementer#0")
+                .unwrap()
+                .unwrap()
+                .liveness_class(),
+            "product",
+            "the class rides the fault as a display label even though treatment ignores it"
+        );
+    }
+
+    #[test]
+    fn a_liveness_fault_re_parks_no_charge_across_run_boundaries_then_recovers() {
+        // sdet-u3-nocharge-repark-secondstep-and-recovery-untested (follow-up c): drive the
+        // no-charge re-park through conductor::run ACROSS the replay boundary (several run()
+        // over one store, as successive `rigger step` processes do) AND the recovery - not the
+        // isolated single-driver.spawn the other test covers. A liveness fault (as the sweep
+        // records) must, on EVERY subsequent run, re-park the spawn (a clean unwind) and
+        // append NO UnitFailed - a hung agent never charges the unit - and append no duplicate
+        // SpawnRequested; then a real result recorded later supersedes it and the unit advances.
+        let store = Store::open(":memory:").unwrap();
+        let cfg = config_with(vec![stage("u", "worker")]);
+        let id = spawn_id("u", ROLE_IMPLEMENTER, 0);
+
+        // Step 1: conductor::run parks the implementer frontier.
+        replay_step(&store, &cfg).expect("a parked frontier is not a run failure");
+        assert!(spawn::is_recorded(
+            &store.read_stream(STREAM, 0, Direction::Forward).unwrap(),
+            &id
+        ));
+
+        // The sweep records a liveness fault on the hung spawn (a SpawnResult, never a
+        // UnitFailed) - exactly what liveness::sweep does on a stale marker.
+        spawn::record_result(
+            &store,
+            &spawn::SpawnResult::liveness_fault(&id, "the agent hung", "infra"),
+        )
+        .unwrap();
+
+        // Steps 2 and 3: each run REPLAYS the fault, re-parks (no UnitFailed, no duplicate
+        // SpawnRequested), and the unit never advances past implement to `verified`.
+        for _ in 0..2 {
+            replay_step(&store, &cfg).expect("re-parking a liveness fault is a clean unwind");
+            let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            assert!(
+                !events
+                    .iter()
+                    .any(|e| e.type_ == crate::ledger::TYPE_UNIT_FAILED),
+                "a hung spawn charges no remediation attempt across the boundary (no UnitFailed)"
+            );
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|e| e.type_ == spawn::TYPE_SPAWN_REQUESTED)
+                    .count(),
+                1,
+                "re-parking the same id appends no duplicate SpawnRequested"
+            );
+            assert!(
+                !events.iter().any(|e| {
+                    e.type_ == crate::ledger::TYPE_UNIT_STATUS
+                        && String::from_utf8_lossy(&e.data).contains("\"status\":\"verified\"")
+                }),
+                "the unit stays parked at the hung spawn, never advancing while it is hung"
+            );
+        }
+
+        // Recovery: a real result recorded later (last-write-wins) supersedes the fault.
+        spawn::record_result(&store, &spawn::SpawnResult::ok(&id, "implemented")).unwrap();
+        replay_step(&store, &cfg).expect("a recovered spawn replays and the run advances");
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(
+            events.iter().any(|e| {
+                e.type_ == crate::ledger::TYPE_UNIT_STATUS
+                    && String::from_utf8_lossy(&e.data).contains("\"status\":\"verified\"")
+            }),
+            "the real result supersedes the fault and the unit advances past implement"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.type_ == crate::ledger::TYPE_UNIT_FAILED),
+            "no UnitFailed is ever appended - the hung spawn charged nothing, even on recovery"
+        );
     }
 
     #[test]
@@ -257,6 +487,52 @@ mod tests {
     }
 
     #[test]
+    fn a_prior_runs_recorded_result_never_answers_a_fresh_runs_same_id_spawn() {
+        // Gap 11 completion: the fixed-stage spawn ids (`plan/...`, `plan-critique/
+        // adjudicator#N`, `plan/replan#N`) are spec-INDEPENDENT, so the SAME id recurs
+        // across runs over one store. The replay lookup is scoped to the CURRENT run, so a
+        // fresh run NEVER replays a prior run's recorded result for that id - the observed
+        // bug was a spec-12 run answering its plan-critique adjudicator with a spec-10 run's
+        // stale REJECT, escalating the gate on an old verdict instead of running the new
+        // reviewer. Scoping keeps the prior decision OVERTURNABLE: the new adjudicator must
+        // actually run (park) and emit a NEW verdict event, not be short-circuited by the
+        // old answer. (Cross-run decision CONTEXT is unaffected - it flows whole-stream
+        // through grounding/peers; only this execution-replay lookup is run-scoped.)
+        let store = Store::open(":memory:").unwrap();
+        let id = "plan-critique/adjudicator#1";
+
+        // Run 1 recorded a REJECT for the spec-independent adjudicator id.
+        crate::run::ensure_started(&store, &["spec-10-crit".into()]).unwrap();
+        spawn::record_result(&store, &spawn::SpawnResult::ok(id, "reject")).unwrap();
+
+        // A FRESH run begins over the SAME store (distinct criteria => a new RunStarted
+        // boundary, so the prior REJECT falls before the current run's slice).
+        crate::run::ensure_started(&store, &["spec-12-crit".into()]).unwrap();
+
+        // The same-id adjudicator spawn in the new run PARKS (runs its new reviewer), it
+        // does NOT replay run 1's stale "reject".
+        let driver = ReplayDriver::new(&store);
+        let err = driver
+            .spawn(&worker(), "critique the dag", &opts_for(id), &no_emit)
+            .expect_err("a prior run's result must not answer a fresh run's same-id spawn");
+        assert!(
+            is_parked(&err),
+            "the fresh run's adjudicator parks (runs anew), never replays the prior verdict"
+        );
+
+        // And once the fresh run records its OWN verdict, THAT answers within the run: the
+        // new event overturns the old, and within-run replay is unbroken by the scoping.
+        spawn::record_result(&store, &spawn::SpawnResult::ok(id, "approve")).unwrap();
+        let answered = driver
+            .spawn(&worker(), "critique the dag", &opts_for(id), &no_emit)
+            .expect("the fresh run's own recorded verdict answers within the run");
+        assert_eq!(
+            answered.output, "approve",
+            "the new run is answered by its OWN verdict, never the prior run's"
+        );
+    }
+
+    #[test]
     fn replaying_a_recorded_result_appends_no_duplicate_lifecycle_events() {
         // spec 04, criterion 4: once the implementer's result is recorded, re-running the
         // conductor over that history any number of times appends no UnitStarted / green
@@ -266,6 +542,11 @@ mod tests {
         let store = Store::open(":memory:").unwrap();
         let cfg = config_with(vec![stage("u", "worker")]);
         let id = spawn_id("u", ROLE_IMPLEMENTER, 0);
+        // Begin the run BEFORE recording the result, exactly as production does (`run`
+        // calls `ensure_started` before any spawn is parked): the run-scoped replay lookup
+        // only answers results INSIDE the current run's slice, so a recorded result must
+        // sit after the RunStarted boundary - which it always does live.
+        crate::run::ensure_started(&store, &[]).unwrap();
         spawn::record_result(&store, &spawn::SpawnResult::ok(&id, "implemented")).unwrap();
 
         // Three consecutive steps replay the SAME recorded history (the implementer is
@@ -330,6 +611,9 @@ mod tests {
         let store = Store::open(":memory:").unwrap();
         let cfg = config_with(vec![stage("u", "worker")]);
         let id = spawn_id("u", ROLE_IMPLEMENTER, 0);
+        // Begin the run before recording (production ordering): the run-scoped replay lookup
+        // answers only results inside the current run's slice - see the sibling replay test.
+        crate::run::ensure_started(&store, &[]).unwrap();
         spawn::record_result(
             &store,
             &spawn::SpawnResult::ok(&id, "implemented")
@@ -1040,6 +1324,9 @@ mod tests {
         // replay step must reach `reviewed` with NO lens respawn and NO halt.
         let store = Store::open(":memory:").unwrap();
         let cfg = reviewed_unit_cfg();
+        // Begin the run before the couriers record (production ordering): the run-scoped
+        // replay lookup answers only results inside the current run's slice.
+        crate::run::ensure_started(&store, &[]).unwrap();
         courier_records(&store, &spawn_id("u", ROLE_IMPLEMENTER, 0), "implemented");
         courier_records(&store, &spawn_id("u", &lens_role("sdet"), 0), "");
         courier_records(

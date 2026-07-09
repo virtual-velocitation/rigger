@@ -55,7 +55,7 @@ export const meta = {
   ],
 }
 
-// args: a spec path string, or { repo, spec, base }.
+// args: a spec path string, or { repo, spec, base, fresh }.
 let A = args
 if (typeof A === 'string') {
   try {
@@ -73,6 +73,13 @@ const SPEC = A.spec || 'spec.md'
 // applied to an existing branch draws a stderr advisory, so the steady state (no base
 // given, branch reused) stays silent instead of alarming the courier every step.
 const BASEFLAG = A.base ? ` --base ${A.base}` : ''
+// `fresh`: begin a NEW run for this spec even if the latest run already matches it (which
+// `rigger step` would otherwise adopt/resume). The evented restart for a run wedged in a
+// terminal state whose spec is unchanged - e.g. an escalated plan-critique from a
+// since-fixed defect. Passed ONLY on the FIRST step (see the loop): that step just parks
+// the planner (no gates, so it is fast and will not time out into a courier re-run), and
+// every step after it adopts the boundary it began. The prior run stays in the log.
+const FRESH = !!A.fresh
 
 // The JSON shape `rigger step` prints (see spawn::Step / spawn::SpawnRequest): the wave it
 // newly parked and a `done` fixpoint flag. The wave items carry everything the driver needs
@@ -123,6 +130,19 @@ const STEP = {
   },
 }
 
+// The shape the LIVENESS READER courier returns (spec 14): the one line `rigger status --json`
+// prints, verbatim - a JSON array of the in-flight agents. The watchdog couriers `rigger
+// status` (not a raw `stat`) because the Workflow SCRIPT sandbox has no filesystem access -
+// only `agent()` - so it consumes rigger's PRESENTED liveness, which rigger read from the
+// marker in Rust, rather than reconstructing one file's mtime by proxy. rigger.js JSON-parses
+// `stdout` itself (JSON is a sandbox built-in).
+const STATUS = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['stdout'],
+  properties: { stdout: { type: 'string' } },
+}
+
 // phaseOf builds a worker's per-unit `opts.phase` progress-group label from the wave item,
 // exactly per the documented `unit + stage` contract on spawn::SpawnRequest. The conductor
 // currently sets both to the unit id, so a unit's whole wave (implementer + reviewers)
@@ -146,11 +166,97 @@ function phaseOf(req) {
 // `fatal` is a shared sink: if the death courier ITSELF dies, we can no longer guarantee a
 // result was recorded for this spawn, so we push it here and the loop stops loudly after the
 // wave drains rather than swallowing the failure (which would hang the run on resume).
+// runWorker and its liveness helpers are defined below (the helpers first, so runWorker can
+// reference them).
+
+// livenessAgeSeconds asks RIGGER for a spawn's liveness age - the whole seconds since it last
+// touched its marker - by COURIERING `rigger status --json` (spec 14) and reading this spawn's
+// `liveness_age_s` from the presented view. rigger stats the marker in Rust and PRESENTS the
+// age, so the driver consumes rigger's consolidated view instead of reconstructing one file's
+// mtime with a raw `stat` (the RETIRED haiku probe). Returns the integer age, or null when the
+// spawn is absent from the view (no marker / not in flight), the JSON does not parse, or the
+// courier itself failed - all treated CONSERVATIVELY as not-stale (never abandon a worker on a
+// missing or flaky signal). The whole in-flight wave rides in ONE presented view, so a shared
+// poll could serve every worker; kept per-worker here to match the existing watchdog shape.
+async function livenessAgeSeconds(ph, id) {
+  try {
+    const out = await agent(
+      `You are a rigger LIVENESS READER. Run EXACTLY this from ${REPO} using Bash and return its single line of stdout VERBATIM in \`stdout\`:\n` +
+        `  cd ${REPO} && rigger status --json\n` +
+        `It prints ONE line: a JSON array of the in-flight agents. Return that line EXACTLY as printed - do not summarize, reformat, or truncate it.`,
+      { phase: ph, model: 'haiku', schema: STATUS, label: `liveness:${id}` },
+    )
+    const arr = JSON.parse(out.stdout)
+    const me = Array.isArray(arr) ? arr.find((a) => a && a.id === id) : null
+    return me && typeof me.liveness_age_s === 'number' ? me.liveness_age_s : null
+  } catch {
+    // The courier died, the JSON did not parse, or the spawn is absent: unknown, so treat as
+    // not-stale. A flaky reader must never manufacture a false liveness halt.
+    return null
+  }
+}
+
+// raceMarkerStaleness is the per-worker MARKER-STALENESS watchdog (spec 10, unit 3; decision
+// d-u3r2-js-watchdog-marker-staleness, which SUPERSEDES d-u3-liveness-design(5)). It races the
+// worker's own outcome against the marker going stale, and returns whichever happens first:
+// the worker's {kind:'done'|'error'} if it finishes, or {kind:'hung'} once the marker has been
+// IDLE (untouched) longer than boundSec.
+//
+// It is NOT a total-runtime cap. It polls the marker's IDLE time - now minus its last touch -
+// which is the SAME staleness the Rust sweep judges (`liveness::is_stale`), so the JS and the
+// sweep share ONE definition of hung. A slow-but-ALIVE worker that keeps its marker fresh is
+// therefore LEFT IN-FLIGHT indefinitely, never abandoned-and-re-run (the exact dup-exec the
+// old wall-clock cap caused). Only a genuinely stale marker - which a hung worker leaves stale -
+// makes it abandon, and because the marker IS stale at that moment, the very next `rigger step`
+// sweep records the infra fault and halts LOUDLY (and the answered spawn is not re-run).
+//
+// A worker that finishes within its bound triggers ZERO probes (the common case: the first
+// window has not even elapsed). A MISSING/unreadable marker is conservatively not-stale: a
+// worker that never heartbeats is dead-worker-EXIT territory (its own agent timeout / the death
+// courier), unchanged here per this unit's exclusion - so the loop keeps waiting on it.
+async function raceMarkerStaleness(ran, boundSec, ph, id) {
+  for (;;) {
+    // Wait one bound-length window, but wake immediately if the worker resolves first.
+    let timer = null
+    const window = new Promise((resolve) => {
+      timer = setTimeout(() => resolve({ kind: 'tick' }), boundSec * 1000)
+    })
+    const tick = await Promise.race([ran, window])
+    if (timer) clearTimeout(timer) // never leave a bound-long timer dangling once the race is decided
+    if (tick.kind !== 'tick') return tick // the worker finished/errored inside the window
+    // A full window elapsed with the worker still running: ask rigger for its liveness age.
+    const idle = await livenessAgeSeconds(ph, id)
+    if (idle !== null && idle > boundSec) return { kind: 'hung' }
+    // Fresh (or unknown/missing): slow-but-alive, leave in-flight and read again next window.
+  }
+}
+
 async function runWorker(req, fatal) {
   const ph = phaseOf(req)
   const workdir = req.dir
     ? `Do all your file edits, cargo, and any git commit inside your isolated worktree ${req.dir} (the conductor assigned it and owns its lifecycle; run \`rigger ...\` commands from ${REPO}).`
     : `Work in ${REPO}.`
+  // The driver-framed liveness heartbeat (spec 10, unit 3), same mechanism family as the
+  // SCRATCH POLICY: only when this spawn carries a wall-clock bound AND `rigger step` resolved
+  // a marker path for it. The worker keeps THAT EXACT per-spawn marker fresh - the path the
+  // step stamped on the wire from the single `liveness::marker_path` authority, so the
+  // worker-write path is identical to the sweep-read path under any scratch config (never a
+  // re-hardcoded root). A HUNG agent (one that stops touching it) is then caught by `rigger
+  // step`'s liveness sweep as an infrastructure fault - never charging the unit.
+  const marker = req.marker_path
+  const heartbeat =
+    req.max_wall_clock && marker
+      ? `LIVENESS HEARTBEAT (spec 10): your spawn carries a ${req.max_wall_clock}s wall-clock bound. Prove you are alive by TOUCHING your per-spawn marker at the START of your work and again after each significant step (a tool call, a build, a commit), using Bash:\n` +
+        `  mkdir -p "$(dirname "${marker}")" && touch "${marker}"\n` +
+        `\`rigger step\` treats this marker going stale (left untouched) beyond your ${req.max_wall_clock}s bound as a HUNG agent - an infrastructure fault that charges you NO remediation attempt - so keep it fresh while you work. It stops mattering the instant you self-report your result.\n`
+      : ''
+  // Live progress (spec 14): every worker reports one short line after each significant step,
+  // additive to the marker heartbeat above. This is what turns a 26-minute silent stretch of
+  // real work into a visible stream an observer (and `rigger status` / the dash) can follow.
+  const progressNote =
+    `LIVE PROGRESS (spec 14): after each significant step - a search, a file read, a build, a commit, a decision - report ONE short line of what you just did, from ${REPO}, using Bash:\n` +
+    `  rigger progress '${req.id}' '<one line: what you just did>'\n` +
+    `This is how an observer sees you working between the milestones you record, so a long silent stretch is never mistaken for a stall. Keep it flowing WHILE you work; do not batch it at the end.\n`
   const prompt =
     `You are the rigger worker for spawn ${req.id} (unit ${req.unit}). ` +
     `Your persona and full task are recorded in the run log - FETCH THEM FIRST by running, from ${REPO}, using Bash:\n` +
@@ -159,6 +265,8 @@ async function runWorker(req, fatal) {
     `--- rigger driver instructions ---\n` +
     `${workdir}\n` +
     `SCRATCH POLICY (hard rule): any scratch YOU create - probe repos, verification worktrees, test builds, setup rehearsals - lives under ${REPO}/.rigger/tmp/agent-scratch/, NEVER under /tmp or your own session scratchpad (those are on the operator's small OS partition, and a single cargo target or \`rigger setup\` shim install there fills the disk). For any cargo you run outside your assigned worktree, export CARGO_TARGET_DIR=${REPO}/.rigger/tmp/cargo-target first. agent-scratch is swept when the run completes - do not store anything durable there.\n` +
+    heartbeat +
+    progressNote +
     `The rigger context tools your task refers to (rigger_emit, rigger_peers) are available here as the CLI commands \`rigger emit <Type> '<json>'\` and \`rigger peers <file>...\`, run from ${REPO}.\n` +
     `When you finish, SELF-REPORT your result by running, from ${REPO}:\n` +
     `  rigger result ${req.id} "<your result: a one-line summary, or your full verdict/findings>"\n` +
@@ -168,9 +276,43 @@ async function runWorker(req, fatal) {
     `--error means YOU were unable to perform your task (blocked, crashed, missing tools) - NEVER a negative conclusion: a reviewer whose verdict is REJECT, or a gate that found failures, COMPLETED its task and reports that verdict/finding as its NORMAL result (an --error replays as a dead worker and aborts the run, not as your verdict). ` +
     `Reporting your result is mandatory - the run cannot advance past this spawn until you do.`
 
-  try {
-    await agent(prompt, { phase: ph, model: req.model || undefined, label: req.id })
-  } catch (e) {
+  // Run the worker, but do not await it FOREVER when it carries a wall-clock bound: a HUNG
+  // agent must not stall the whole wave (spec 10, unit 3). Map agent() to a never-rejecting
+  // outcome so abandoning it can never surface as an unhandled rejection after we stop
+  // awaiting it, then race it against the per-worker MARKER-STALENESS watchdog.
+  const ran = agent(prompt, { phase: ph, model: req.model || undefined, label: req.id }).then(
+    () => ({ kind: 'done' }),
+    (e) => ({ kind: 'error', e }),
+  )
+  // The watchdog decides on MARKER STALENESS (idle-since-last-touch), NOT total runtime, so a
+  // slow-but-alive worker that keeps its marker fresh is left in-flight and only a genuinely
+  // stale marker is abandoned (see raceMarkerStaleness). Opt-in: only a bounded spawn whose
+  // step-resolved marker path is on the wire, and only where setTimeout exists.
+  const outcome =
+    req.max_wall_clock && marker && typeof setTimeout === 'function'
+      ? await raceMarkerStaleness(ran, req.max_wall_clock, ph, req.id)
+      : await ran
+
+  if (outcome.kind === 'hung') {
+    // The worker's marker went STALE beyond its bound (idle-since-last-touch): presume it HUNG
+    // and STOP awaiting it. Do NOT run the death courier - that is the dead-worker-EXIT path and
+    // would CHARGE the unit, whereas a hung agent is an INFRASTRUCTURE fault. We just return, so
+    // parallel() resolves and the loop reaches the next `rigger step`, whose liveness sweep sees
+    // the SAME stale marker (a hung worker leaves it stale), records an infra fault (no attempt
+    // charged), and halts the wave LOUDLY. Because that fault ANSWERS the spawn, it is not
+    // re-run - no dup-exec. A worker that was merely slow but kept its marker fresh never
+    // reaches here (raceMarkerStaleness left it in-flight). The abandoned agent() promise
+    // (`ran`) is inert - it resolves to an ignored value.
+    log(
+      `worker ${req.id}: liveness marker idle past its ${req.max_wall_clock}s bound - presuming HUNG and abandoning it; the next \`rigger step\` sweep records an infra fault (no attempt charged) and halts loudly`,
+    )
+    return
+  }
+  if (outcome.kind === 'done') {
+    return
+  }
+  {
+    const e = outcome.e
     // The worker's agent() REJECTED (max turns, a crash, an execution error). That rejection
     // does NOT prove it died before reporting - a worker (or a reviewer that already emitted
     // an approve verdict) can self-report and THEN run on to max-turns. So record its failure
@@ -227,6 +369,9 @@ phase('Plan')
 // stuck/failed run must never be reported as a clean completion, and a courier that itself
 // dies must be a controlled, visible stop - not an uncaught rejection that aborts the driver.
 let waves = 0
+// `--fresh` is a ONE-SHOT: it begins a new run, so it rides the FIRST step only; every step
+// after it must ADOPT that boundary, not mint another. Flipped false the moment it is used.
+let firstStep = true
 
 // stop the driver LOUDLY: throw a clear, single Error so the anomalous exit surfaces as a
 // workflow failure with an actionable message (decision `thin-driver-loud-stops`), instead of
@@ -244,15 +389,19 @@ for (;;) {
   //    frontier. If `rigger step` errors, the courier returns it in `error` (not a faked wave);
   //    if the COURIER AGENT itself dies (max turns / crash), agent() rejects and the try/catch
   //    turns that into the same clean, loud stop instead of aborting the whole driver uncaught.
+  // `--fresh` rides the FIRST step only (a one-shot new-run boundary); adopt it thereafter.
+  const FRESHFLAG = firstStep && FRESH ? ' --fresh' : ''
+  firstStep = false
   let step
   try {
     step = await agent(
       `You are a rigger COURIER. Advance the run one frontier and return the wave, verbatim. Run EXACTLY this, from ${REPO}, using Bash with the timeout parameter set to 600000 (a step runs cargo gates inline and can take many minutes; the default timeout kills it mid-work):\n` +
-        `  cd ${REPO} && CARGO_TARGET_DIR=${REPO}/.rigger/tmp/cargo-target rigger step --spec ${SPEC}${BASEFLAG}\n` +
+        `  cd ${REPO} && CARGO_TARGET_DIR=${REPO}/.rigger/tmp/cargo-target rigger step --spec ${SPEC}${BASEFLAG}${FRESHFLAG}\n` +
         `(the CARGO_TARGET_DIR prefix makes every gate share one build cache instead of cold-building per worktree - keep it exactly as written). ` +
         `It prints ONE line of JSON on stdout: {"wave":[...],"done":<bool>} (a halted run also carries a "halted":"<reason>" field). Return that JSON object EXACTLY as printed, INLINE and IN FULL, in your structured output - no matter how large it is. NEVER write it to a file, return a path, a reference, a summary, or a truncation: the driver can only read your returned JSON, so anything but the verbatim object (all wave items, all their fields) LOSES the wave and stalls the run. Do not drop fields or run anything else. ` +
         `If the Bash call TIMES OUT, re-run the exact same command - as many times as needed: the step's gate results are recorded durably as they complete, so every re-run resumes past the recorded ones and gets strictly further; return the JSON from the run that prints it. ` +
-        `NEVER fabricate or guess the JSON: if you cannot obtain it after many re-runs, or the command prints no JSON / exits non-zero (not a timeout), return {"wave":[],"done":true,"error":"<the stderr / failure message, or 'step did not complete within my attempts'>"} so the loop stops cleanly and the error is visible.`,
+        `If it exits non-zero and stderr says "another \`rigger step\` is already running" (a TRANSIENT concurrent step - e.g. an earlier step orphaned by a Bash timeout is still finishing its gate, and steps are serialized so two never run at once), WAIT ~60 seconds and re-run the exact same command; repeat until it returns the JSON. This is normal back-off, NOT a failure. ` +
+        `NEVER fabricate or guess the JSON: if you cannot obtain it after many re-runs, or the command prints no JSON / exits non-zero for a DIFFERENT reason (not a timeout and not the "already running" back-off), return {"wave":[],"done":true,"error":"<the stderr / failure message, or 'step did not complete within my attempts'>"} so the loop stops cleanly and the error is visible.`,
       // sonnet, not haiku: the courier's one job is a verbatim relay of a possibly
       // large JSON object, and haiku demonstrably "helps" by externalizing big waves
       // to a file reference - which loses the wave (the driver reads only the

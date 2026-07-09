@@ -4,8 +4,11 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
+use std::time::Duration;
 
 use serde::Deserialize;
+
+use crate::failure;
 
 #[derive(Debug, thiserror::Error)]
 #[error("config: {0}")]
@@ -22,12 +25,31 @@ pub struct AgentDef {
     pub id: String,
     #[serde(default)]
     pub model: String,
+    /// A cheap-first model cascade (spec 10 unit 4): the successive model aliases this
+    /// agent runs on across remediation attempts. Attempt 0 resolves rung 0 and each
+    /// remediation attempt advances one rung, CLAMPED at the last rung once the ladder is
+    /// exhausted, so a persistently-failing unit escalates from a cheap model to a strong
+    /// one. Empty (the common case) means no cascade: the single [`model`](Self::model)
+    /// alias is used on every attempt, exactly as before this field existed. When a ladder
+    /// IS declared it takes precedence and `model` is ignored - `model` is the implicit
+    /// one-rung ladder only when `model_ladder` is empty. Resolution lives in the single
+    /// authority [`model_for_attempt`](Self::model_for_attempt).
+    #[serde(default)]
+    pub model_ladder: Vec<String>,
     #[serde(default)]
     pub tools: Vec<String>,
     #[serde(default)]
     pub isolation: String,
     #[serde(default)]
     pub recurse: bool,
+    /// The per-spawn wall-clock bound in SECONDS (spec 10, unit 3): a spawn of this
+    /// agent whose liveness marker goes stale for longer than this is treated by
+    /// `rigger step` as a hung/infra fault. `None` (unset in the agent's frontmatter)
+    /// inherits `defaults.max_wall_clock`, folded in at [`load`] time; a resolved `0`
+    /// (or absent default) means unbounded - the agent is never timed out. Per-role by
+    /// construction: each agent's own value overrides the workflow default.
+    #[serde(default)]
+    pub max_wall_clock: Option<u64>,
     #[serde(skip)]
     pub prompt: String,
 }
@@ -39,6 +61,112 @@ pub struct Gate {
     pub run: String,
     #[serde(default)]
     pub kind: String,
+    /// Optional blast-radius scope (spec 12, unit 3): the glob patterns naming the files
+    /// this gate verifies. During the implement/remediate INNER LOOP the conductor runs
+    /// only the gates whose `inputs` intersect the unit's grounded blast radius and logs a
+    /// skip for the rest (never silent); the integrate step still runs the FULL library, so
+    /// "done" is asserted against the exhaustive suite. An EMPTY `inputs` (the default) means
+    /// the gate is UNSCOPED - it verifies the whole tree (e.g. a crate-wide `cargo test`) and
+    /// so always runs, never narrowed away. Globs support `**` (any path segments), `*` (one
+    /// segment), and `?` (one non-`/` char), matched against repo-relative paths.
+    #[serde(default)]
+    pub inputs: Vec<String>,
+}
+
+/// One declarative failure rule (spec 10, unit 2), authored under
+/// `defaults.failure_rules`. It matches a failure signal (a process's exit status,
+/// terminating signal, and/or captured output) and classifies it, with a per-rule rerun
+/// `limit` and exponential `backoff`. The runtime form is [`failure::FailureRule`]; this
+/// is only the declarative surface. Rules are evaluated first-match-wins.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct FailureRuleDef {
+    /// The match predicate. `match` is a Rust keyword, so it is deserialized under the
+    /// field name `match` into `match_`.
+    #[serde(default, rename = "match")]
+    pub match_: MatchDef,
+    /// One of `infra` | `product` | `flaky`. An unknown value fails validation.
+    #[serde(default)]
+    pub class: String,
+    /// The rerun budget for a matching gate failure (the Bazel flaky-attempts count):
+    /// how many additional times the gate is rerun before the failure is believed.
+    /// 0 (the default) never reruns.
+    #[serde(default)]
+    pub limit: u32,
+    #[serde(default)]
+    pub backoff: BackoffDef,
+}
+
+/// The declarative match predicate of a [`FailureRuleDef`]. Every PRESENT field must
+/// match (logical AND); an absent field is a wildcard, so an all-absent `match` is the
+/// catch-all a final `product` rule uses.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct MatchDef {
+    #[serde(default)]
+    pub exit_status: Option<i32>,
+    #[serde(default)]
+    pub signal: Option<i32>,
+    /// A regular expression matched against the failure's captured output.
+    #[serde(default)]
+    pub output_regex: Option<String>,
+}
+
+/// The declarative exponential backoff of a [`FailureRuleDef`]. The spec's
+/// `{duration, factor, max}` is expressed as unambiguous MILLISECONDS
+/// (`duration_ms` / `max_ms`) so a value like `1000` never reads as an ambiguous
+/// bare "duration".
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct BackoffDef {
+    /// Base delay before the first rerun, in milliseconds. 0 = no wait.
+    #[serde(default)]
+    pub duration_ms: u64,
+    /// Multiplier applied per rerun. Absent / non-positive is treated as `1.0` (a flat
+    /// backoff), never `0` (which would collapse every delay after the first to zero).
+    #[serde(default)]
+    pub factor: f64,
+    /// Cap on the computed delay, in milliseconds. 0 = uncapped.
+    #[serde(default)]
+    pub max_ms: u64,
+}
+
+impl FailureRuleDef {
+    /// Convert this declarative rule into its runtime [`failure::FailureRule`], compiling
+    /// the `output_regex` and validating the class. Errors (a bad regex, an unknown
+    /// class) surface at config load so a misauthored rule fails fast rather than at the
+    /// first classification.
+    pub fn to_rule(&self) -> Result<failure::FailureRule, Error> {
+        let class = failure::FailureClass::parse(&self.class).ok_or_else(|| {
+            err(format!(
+                "failure rule has unknown class {:?} (want infra | product | flaky)",
+                self.class
+            ))
+        })?;
+        let output_regex = match &self.match_.output_regex {
+            Some(pat) => Some(
+                regex::Regex::new(pat)
+                    .map_err(|e| err(format!("failure rule output_regex {pat:?}: {e}")))?,
+            ),
+            None => None,
+        };
+        let factor = if self.backoff.factor > 0.0 {
+            self.backoff.factor
+        } else {
+            1.0
+        };
+        Ok(failure::FailureRule {
+            matcher: failure::Matcher {
+                exit_status: self.match_.exit_status,
+                signal: self.match_.signal,
+                output_regex,
+            },
+            class,
+            limit: self.limit,
+            backoff: failure::Backoff {
+                duration: Duration::from_millis(self.backoff.duration_ms),
+                factor,
+                max: Duration::from_millis(self.backoff.max_ms),
+            },
+        })
+    }
 }
 
 /// ReviewPanel is the three-tier review roster a unit reviews ITSELF with: the
@@ -55,17 +183,40 @@ pub struct ReviewPanel {
     pub adversary: String,
     #[serde(default)]
     pub adjudicator: String,
+    /// The OPT-IN risk-tiered review-depth policy (spec 03 "adaptive review depth",
+    /// spec 13 unit 4). When set, THIS panel is the FULL panel and `tiers.light` is
+    /// the reduced roster a LOW-RISK unit reviews itself with; the conductor routes
+    /// each unit to light-or-full by its observable risk before running the tiers
+    /// (see `select_review_panel`). Absent (the shipped default and every existing
+    /// workflow) means every unit runs this full panel and behavior is byte-for-byte
+    /// unchanged - tiering is opt-in. Carried here (not on `Defaults`) so BOTH
+    /// `defaults.review` and a per-stage `review` override inherit tiering through the
+    /// one panel abstraction. Boxed to break the ReviewPanel -> ReviewDepth ->
+    /// ReviewPanel type recursion (a fixed-size pointer instead of an infinite value).
+    #[serde(default)]
+    pub tiers: Option<Box<ReviewDepth>>,
 }
 
 impl ReviewPanel {
     /// Whether this panel has any review tier configured. An empty panel runs no
-    /// per-unit review (the historical implement-then-integrate behavior).
+    /// per-unit review (the historical implement-then-integrate behavior). A
+    /// `tiers` policy alone (no roster) is meaningless - there is no full panel to
+    /// reduce from - so it does not make a panel non-empty.
     pub fn is_empty(&self) -> bool {
         self.lenses.is_empty() && self.adversary.is_empty() && self.adjudicator.is_empty()
     }
 
+    /// The configured risk-tiered depth policy, if any.
+    pub fn depth(&self) -> Option<&ReviewDepth> {
+        self.tiers.as_deref()
+    }
+
     /// Every agent id this panel references (the lenses, the adversary, the
-    /// adjudicator), for referential validation.
+    /// adjudicator, AND the light-tier roster when a depth policy is configured),
+    /// for referential validation. Extending this to the light panel is what makes
+    /// an unknown light-panel lens/adversary/adjudicator fail `config::load` like any
+    /// other unresolved reference (spec 03: the light panel's agent ids are validated
+    /// too). Terminates: the light panel's own `tiers` is `None` in every real config.
     pub fn agent_ids(&self) -> Vec<String> {
         let mut ids = self.lenses.clone();
         if !self.adversary.is_empty() {
@@ -74,8 +225,93 @@ impl ReviewPanel {
         if !self.adjudicator.is_empty() {
             ids.push(self.adjudicator.clone());
         }
+        if let Some(depth) = self.depth() {
+            ids.extend(depth.light.agent_ids());
+        }
         ids
     }
+
+    /// Validate the depth policy's structural invariant: the gating verdict is mandatory
+    /// on EVERY tier - only the adversary (and the extra lenses) flex (spec 03 / spec 13
+    /// unit 4) - so BOTH the reduced LIGHT tier AND the enclosing FULL panel this depth
+    /// policy sits on MUST name an adjudicator.
+    ///
+    /// The full-panel check closes the inverted-guarantee hole: a high-risk unit routes
+    /// to THIS (full) panel, and an empty full roster (or one that names no adjudicator)
+    /// would let `review_unit` approve it trivially via `panel.is_empty()` - so the
+    /// highest-risk units would get NO adjudicator while low-risk units got the light one.
+    /// A full panel that names an adjudicator is necessarily non-empty, so this one check
+    /// rejects both the empty-full-panel and the adjudicator-less-full-panel cases (and a
+    /// per-stage `review:` that declares ONLY a `tiers:` policy with no roster - which
+    /// `effective_review_panel` would otherwise silently discard back to defaults - now
+    /// fails `config::load` loudly instead). The light-panel check likewise guards the
+    /// low-risk route. Both fail `config::load` rather than silently, returning a bare
+    /// message the caller wraps into its `Error` with the offending scope.
+    pub fn validate_depth(&self) -> Result<(), String> {
+        if let Some(depth) = self.depth() {
+            // The enclosing FULL panel (this one) must name an adjudicator: a high-risk
+            // unit routes here, and an empty/adjudicator-less full panel would approve it
+            // trivially. A panel that names an adjudicator is necessarily non-empty, so
+            // this rejects both the empty-full-panel and the adjudicator-less cases.
+            if self.adjudicator.is_empty() {
+                return Err(
+                    "a review.tiers policy requires its enclosing (full) panel to name an \
+                     adjudicator (the gating verdict is mandatory on every review tier - a \
+                     high-risk unit routes to the full panel, so an empty/adjudicator-less \
+                     full panel would approve it with no verdict)"
+                        .to_string(),
+                );
+            }
+            // ...and the reduced LIGHT tier a low-risk unit routes to must name one too.
+            if depth.light.adjudicator.is_empty() {
+                return Err(
+                    "review.tiers.light must name an adjudicator (the gating verdict is \
+                     mandatory on every review tier - only the adversary flexes)"
+                        .to_string(),
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+/// ReviewDepth is the OPT-IN risk-tiered review policy (spec 03 "adaptive review
+/// depth", spec 13 unit 4). Declared under a `review` block's `tiers:`, it routes
+/// each implementer unit to the reduced `light` panel or the enclosing full panel by
+/// the unit's OBSERVABLE risk - the exact signals the loop already computes: the
+/// unit's grounded blast-radius file count against `threshold`, whether any
+/// blast-radius file matches a `high_risk_paths` prefix/glob, and whether the unit's
+/// gates FLAPPED (it needed remediation to reach green). The adjudicator and the full
+/// gate suite stay mandatory on every tier - only the adversary and the extra lenses
+/// flex - so the light route still gates integration.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct ReviewDepth {
+    /// The reduced roster a LOW-RISK unit reviews itself with (typically fewer lenses
+    /// and no adversary). It must name an adjudicator (`validate_depth`), and its
+    /// agent ids are validated like the full panel's (`agent_ids`).
+    #[serde(default)]
+    pub light: ReviewPanel,
+    /// The maximum grounded blast-radius file count for a unit to stay "low risk": a
+    /// unit whose blast radius exceeds this runs the full panel. `0` (the default)
+    /// means no unit qualifies as low-risk by size alone, so a workflow that declares
+    /// `tiers` but forgets `threshold` keeps the full panel for every non-empty unit -
+    /// tiering never silently weakens review.
+    ///
+    /// CEILING: the grounded blast radius is capped at the grounder's `k` (the conductor
+    /// grounds at most 8 distinct files - `grounded_seed`), so `blast_radius.len() <= 8`
+    /// always and a `threshold >= 8` is INERT by size alone - it can never be exceeded, so
+    /// only `high_risk_paths` (or a flapped gate, or an empty radius) can then force the
+    /// full panel. Author size thresholds below the grounder cap; use `high_risk_paths`
+    /// for breadth the size signal cannot express. (The cap also means the count reflects
+    /// grep-hit spread within the first 8 line-matches, not the change's full breadth.)
+    #[serde(default)]
+    pub threshold: usize,
+    /// Path prefixes / globs that force the FULL panel even for a small change: a unit
+    /// whose blast radius touches any of these is high-risk regardless of size (e.g. a
+    /// core trait or a spec file). An entry matches a blast-radius file by literal
+    /// prefix OR by the same glob semantics gate `inputs:` use.
+    #[serde(default)]
+    pub high_risk_paths: Vec<String>,
 }
 
 /// Defaults are workflow-wide fallbacks for stages that do not set their own.
@@ -111,6 +347,21 @@ pub struct Defaults {
     /// is byte-for-byte back-compatible.
     #[serde(default)]
     pub max_retries: u32,
+    /// First-green-wins speculation width (spec 13, unit 3): how many parallel
+    /// implementer candidates a unit parks in one deterministic speculation group.
+    /// The first candidate to pass its gates AND the adjudicator wins and integrates;
+    /// the rest are cancelled. `0`/`1` (the default) means OFF - one candidate, the
+    /// historical single-implementer path byte-for-byte. A stage's own
+    /// `speculation_width` overrides this default.
+    #[serde(default)]
+    pub speculation_width: u32,
+    /// The default per-spawn wall-clock bound in SECONDS (spec 10, unit 3): every agent
+    /// inherits this unless its own frontmatter sets `max_wall_clock`. `0` (the default)
+    /// means unbounded - liveness timeouts are opt-in, so an un-set workflow is
+    /// byte-for-byte back-compatible (no spawn is ever timed out). Applied to each agent
+    /// at [`load`] time so a parked spawn carries its resolved bound.
+    #[serde(default)]
+    pub max_wall_clock: u64,
     /// The default partition strategy applied to every wave (§3.2, §8); a stage's
     /// own `partition` overrides it. `by-blast-radius` makes each wave's ready
     /// stages disjoint by blast-radius before they run; empty (the default) leaves
@@ -127,6 +378,13 @@ pub struct Defaults {
     /// disk (design-intent Gap 14).
     #[serde(default)]
     pub workdir: String,
+    /// The declarative failure taxonomy (spec 10, unit 2): an ordered list of rules,
+    /// matched first-wins, that classify a failure into `infra` | `product` | `flaky`
+    /// with a per-rule rerun `limit` and `backoff`. Empty (the default) means the
+    /// conductor uses [`failure::Taxonomy::default`], whose shipped rules preserve
+    /// spec-07 infra-vs-product semantics.
+    #[serde(default)]
+    pub failure_rules: Vec<FailureRuleDef>,
 }
 
 /// Stage is one node of the workflow DAG.
@@ -168,6 +426,14 @@ pub struct Stage {
     pub coverage: String,
     #[serde(default)]
     pub on_pass: String,
+    /// This unit class's first-green-wins speculation width (spec 13, unit 3): when
+    /// `> 1`, the conductor parks this many parallel implementer candidates in one
+    /// deterministic speculation group and integrates the first gate-green
+    /// adjudicator-approved one, cancelling the rest. Unset (`0`) inherits
+    /// `defaults.speculation_width`; the effective width `1` is the historical
+    /// single-implementer path unchanged (speculation defaults OFF).
+    #[serde(default)]
+    pub speculation_width: u32,
     /// Set by the conductor (never authored, hence `serde(skip)`) on the deterministic
     /// per-criterion BASELINE units it synthesizes from the fan-out implement template.
     /// It marks a stage as the conductor's fallback decomposition for one criterion, so
@@ -185,6 +451,26 @@ impl AgentDef {
     /// empty or `worktree` opts in (§3.1, §6).
     pub fn isolated(&self) -> bool {
         !self.isolation.eq_ignore_ascii_case("none")
+    }
+
+    /// The model alias this agent runs on for `attempt` (the 0-based remediation attempt),
+    /// resolving the cheap-first cascade (spec 10 unit 4). This is the SINGLE model-selection
+    /// authority: every driver (which sets the actual spawn model) and the conductor (which
+    /// stamps the requested alias onto the spawn's unit events) resolve through it, so the
+    /// model that runs and the model recorded agree by construction for every attempt.
+    ///
+    /// With a [`model_ladder`](Self::model_ladder) declared, attempt `n` resolves rung `n`,
+    /// CLAMPED at the last rung once the ladder is exhausted (a unit that keeps failing stays
+    /// on the strongest rung). Absent a ladder, the single [`model`](Self::model) alias is a
+    /// one-rung ladder returned on every attempt - so an agent that only sets `model` behaves
+    /// exactly as it did before the cascade existed. Empty when the agent declares neither
+    /// (the driver's default model is inherited).
+    pub fn model_for_attempt(&self, attempt: u32) -> String {
+        if self.model_ladder.is_empty() {
+            return self.model.clone();
+        }
+        let last = self.model_ladder.len() - 1;
+        self.model_ladder[(attempt as usize).min(last)].clone()
     }
 
     /// The tools this agent is actually granted. When `recurse` is false (the
@@ -243,6 +529,27 @@ pub struct Workflow {
     pub stages: BTreeMap<String, Stage>,
 }
 
+impl Workflow {
+    /// Build the runtime failure taxonomy this workflow classifies failures through
+    /// (spec 10, unit 2). When `defaults.failure_rules` is authored, it is the ordered,
+    /// first-match-wins rule set (each rule's `output_regex` compiled and `class`
+    /// validated here - the SINGLE conversion the conductor and [`Config::validate`] both
+    /// call, so a bad rule fails at load). When it is empty (the common case), the
+    /// shipped [`failure::Taxonomy::default`] is used, preserving spec-07 semantics.
+    pub fn failure_taxonomy(&self) -> Result<failure::Taxonomy, Error> {
+        if self.defaults.failure_rules.is_empty() {
+            return Ok(failure::Taxonomy::default());
+        }
+        let rules = self
+            .defaults
+            .failure_rules
+            .iter()
+            .map(FailureRuleDef::to_rule)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(failure::Taxonomy::new(rules))
+    }
+}
+
 /// Config is a fully loaded, validated harness configuration.
 #[derive(Clone, Debug, Default)]
 pub struct Config {
@@ -255,11 +562,28 @@ pub struct Config {
 /// integrity.
 pub fn load(dir: &str) -> Result<Config, Error> {
     let base = Path::new(dir).join(".rigger");
-    let agents = load_agents(&base.join("agents"))?;
+    let mut agents = load_agents(&base.join("agents"))?;
     let workflow = load_workflow(&base.join("workflow.yml"))?;
+    resolve_wall_clocks(&mut agents, &workflow.defaults);
     let cfg = Config { agents, workflow };
     cfg.validate()?;
     Ok(cfg)
+}
+
+/// Fold `defaults.max_wall_clock` onto every agent that did not set its own (spec 10,
+/// unit 3), so an agent's resolved `max_wall_clock` is authoritative wherever a spawn is
+/// built - the replay driver reads it straight off the [`AgentDef`] with no access to the
+/// workflow. Per-role by construction: an agent's own value wins; only an unset agent
+/// inherits the default. A zero default leaves an unset agent unbounded (`None`).
+fn resolve_wall_clocks(agents: &mut BTreeMap<String, AgentDef>, defaults: &Defaults) {
+    if defaults.max_wall_clock == 0 {
+        return;
+    }
+    for agent in agents.values_mut() {
+        if agent.max_wall_clock.is_none() {
+            agent.max_wall_clock = Some(defaults.max_wall_clock);
+        }
+    }
 }
 
 fn load_agents(dir: &Path) -> Result<BTreeMap<String, AgentDef>, Error> {
@@ -363,7 +687,9 @@ impl Config {
     /// Validate checks that every reference resolves and the stage graph is acyclic.
     pub fn validate(&self) -> Result<(), Error> {
         let wf = &self.workflow;
-        // The default review panel (applied to every unit) must reference real agents.
+        // The default review panel (applied to every unit) must reference real agents,
+        // including its light-tier roster, and its depth policy must be structurally
+        // sound (a configured light tier names an adjudicator).
         for aid in wf.defaults.review.agent_ids() {
             if !self.agents.contains_key(&aid) {
                 return Err(err(format!(
@@ -371,6 +697,10 @@ impl Config {
                 )));
             }
         }
+        wf.defaults
+            .review
+            .validate_depth()
+            .map_err(|m| err(format!("defaults.{m}")))?;
         for (name, st) in &wf.stages {
             for need in &st.needs {
                 if !wf.stages.contains_key(need) {
@@ -389,12 +719,21 @@ impl Config {
                     return Err(err(format!("stage {name:?} references unknown gate {g:?}")));
                 }
             }
+            // A per-stage `review` override that declares a depth policy must satisfy the
+            // same light-tier-names-an-adjudicator invariant as the default panel.
+            st.review
+                .validate_depth()
+                .map_err(|m| err(format!("stage {name:?} {m}")))?;
         }
         if let Some(cyc) = find_cycle(&wf.stages) {
             return Err(err(format!(
                 "workflow has a dependency cycle involving stage {cyc:?}"
             )));
         }
+        // Fail fast on a misauthored failure rule (an unknown class, an uncompilable
+        // output_regex) at load rather than at the first classification, through the
+        // SAME conversion the conductor uses.
+        wf.failure_taxonomy()?;
         Ok(())
     }
 }
@@ -458,6 +797,162 @@ mod tests {
     #[test]
     fn rejects_missing_frontmatter() {
         assert!(parse_agent(b"no frontmatter here").is_err());
+    }
+
+    #[test]
+    fn model_ladder_parses_from_frontmatter() {
+        // Agent frontmatter accepts a `model_ladder` list (spec 10 unit 4): the cheap-first
+        // cascade the agent escalates through under remediation.
+        let b = b"---\nid: worker\nmodel_ladder: [haiku, sonnet, opus]\n---\nImplement.\n";
+        let a = parse_agent(b).unwrap();
+        assert_eq!(a.id, "worker");
+        assert_eq!(a.model_ladder, ["haiku", "sonnet", "opus"]);
+        // Absent a `model:` line, the single-model field stays empty (the ladder is authority).
+        assert_eq!(a.model, "");
+    }
+
+    #[test]
+    fn model_for_attempt_advances_one_rung_per_attempt_and_clamps_at_the_last() {
+        // A unit's first attempt resolves the first rung and each remediation attempt advances
+        // one rung, CLAMPED at the last once exhausted (spec 10 unit 4).
+        let a = AgentDef {
+            id: "worker".into(),
+            model_ladder: vec!["haiku".into(), "sonnet".into(), "opus".into()],
+            ..Default::default()
+        };
+        assert_eq!(a.model_for_attempt(0), "haiku", "attempt 0 -> rung 0");
+        assert_eq!(a.model_for_attempt(1), "sonnet", "attempt 1 -> rung 1");
+        assert_eq!(a.model_for_attempt(2), "opus", "attempt 2 -> rung 2 (last)");
+        assert_eq!(
+            a.model_for_attempt(3),
+            "opus",
+            "past the end clamps at the last rung"
+        );
+        assert_eq!(
+            a.model_for_attempt(99),
+            "opus",
+            "far past the end still clamps"
+        );
+    }
+
+    #[test]
+    fn a_single_model_is_a_one_rung_ladder_used_on_every_attempt() {
+        // With no ladder, the single `model` alias is returned on every attempt - so an agent
+        // that only sets `model` behaves EXACTLY as before the cascade existed (back-compat).
+        let one = AgentDef {
+            id: "worker".into(),
+            model: "sonnet".into(),
+            ..Default::default()
+        };
+        for attempt in [0, 1, 5, 42] {
+            assert_eq!(
+                one.model_for_attempt(attempt),
+                "sonnet",
+                "a lone model: does not ladder - attempt {attempt} still resolves it"
+            );
+        }
+        // Neither declared: empty (the driver's default model is inherited), on every attempt.
+        let none = AgentDef {
+            id: "worker".into(),
+            ..Default::default()
+        };
+        assert_eq!(none.model_for_attempt(0), "");
+        assert_eq!(none.model_for_attempt(3), "");
+    }
+
+    #[test]
+    fn a_declared_ladder_takes_precedence_over_a_lone_model() {
+        // When both are set the ladder is authority and `model` is ignored, so the resolved
+        // rung is never silently overridden by the shorthand field.
+        let a = AgentDef {
+            id: "worker".into(),
+            model: "haiku".into(),
+            model_ladder: vec!["sonnet".into(), "opus".into()],
+            ..Default::default()
+        };
+        assert_eq!(a.model_for_attempt(0), "sonnet");
+        assert_eq!(a.model_for_attempt(1), "opus");
+    }
+
+    #[test]
+    fn parses_agent_max_wall_clock_and_defaults_to_none_when_absent() {
+        let with = parse_agent(b"---\nid: slow\nmax_wall_clock: 1800\n---\nbody\n").unwrap();
+        assert_eq!(
+            with.max_wall_clock,
+            Some(1800),
+            "an explicit per-role max_wall_clock parses through"
+        );
+        let without = parse_agent(b"---\nid: plain\n---\nbody\n").unwrap();
+        assert_eq!(
+            without.max_wall_clock, None,
+            "an absent max_wall_clock is None (inherits the workflow default)"
+        );
+    }
+
+    #[test]
+    fn defaults_max_wall_clock_parses_and_is_zero_when_absent() {
+        let present: Workflow =
+            serde_yaml::from_str("name: w\ndefaults:\n  max_wall_clock: 600\n").unwrap();
+        assert_eq!(present.defaults.max_wall_clock, 600);
+        let absent: Workflow = serde_yaml::from_str("name: w\n").unwrap();
+        assert_eq!(
+            absent.defaults.max_wall_clock, 0,
+            "an absent default is 0 (unbounded - liveness timeouts are opt-in)"
+        );
+    }
+
+    #[test]
+    fn resolve_wall_clocks_folds_the_default_only_onto_unset_agents() {
+        let mut agents = BTreeMap::new();
+        agents.insert(
+            "unset".to_string(),
+            AgentDef {
+                id: "unset".into(),
+                max_wall_clock: None,
+                ..Default::default()
+            },
+        );
+        agents.insert(
+            "override".to_string(),
+            AgentDef {
+                id: "override".into(),
+                max_wall_clock: Some(60),
+                ..Default::default()
+            },
+        );
+        let defaults = Defaults {
+            max_wall_clock: 900,
+            ..Default::default()
+        };
+        resolve_wall_clocks(&mut agents, &defaults);
+        assert_eq!(
+            agents["unset"].max_wall_clock,
+            Some(900),
+            "an unset agent inherits the workflow default"
+        );
+        assert_eq!(
+            agents["override"].max_wall_clock,
+            Some(60),
+            "an agent's own per-role value overrides the default"
+        );
+    }
+
+    #[test]
+    fn resolve_wall_clocks_leaves_agents_unbounded_under_a_zero_default() {
+        let mut agents = BTreeMap::new();
+        agents.insert(
+            "a".to_string(),
+            AgentDef {
+                id: "a".into(),
+                max_wall_clock: None,
+                ..Default::default()
+            },
+        );
+        resolve_wall_clocks(&mut agents, &Defaults::default());
+        assert_eq!(
+            agents["a"].max_wall_clock, None,
+            "a zero (absent) default leaves an unset agent unbounded, back-compatible"
+        );
     }
 
     #[test]
@@ -580,6 +1075,186 @@ agent: worker\n";
         assert!(cfg.validate().is_ok());
     }
 
+    #[test]
+    fn review_tiers_depth_policy_parses_from_yaml() {
+        // spec 03 / spec 13 unit 4: `defaults.review` carries an OPT-IN `tiers` depth
+        // policy - a light panel, a blast-radius threshold, and a high-risk path list -
+        // that parse from the workflow YAML alongside the full panel.
+        let yaml = "name: w\n\
+defaults:\n  \
+review:\n    \
+lenses: [archlens, techlens]\n    \
+adversary: adv\n    \
+adjudicator: adj\n    \
+tiers:\n      \
+threshold: 3\n      \
+high_risk_paths: [\"src/conductor.rs\", \"specs/**\"]\n      \
+light:\n        \
+lenses: [archlens]\n        \
+adjudicator: adj\n\
+stages:\n  \
+implement:\n    \
+agent: worker\n";
+        let wf: Workflow = serde_yaml::from_str(yaml).unwrap();
+        let review = &wf.defaults.review;
+        let depth = review.depth().expect("the tiers depth policy must parse");
+        assert_eq!(depth.threshold, 3);
+        assert_eq!(depth.high_risk_paths, ["src/conductor.rs", "specs/**"]);
+        assert_eq!(depth.light.lenses, ["archlens"]);
+        assert_eq!(depth.light.adjudicator, "adj");
+        assert!(
+            depth.light.adversary.is_empty(),
+            "the light panel typically omits the adversary"
+        );
+    }
+
+    #[test]
+    fn validate_catches_an_unknown_light_panel_agent() {
+        // The light panel's agent ids are validated exactly like the full panel's: an
+        // unknown light-panel lens/adversary/adjudicator fails `config::load` (spec 03).
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent_def("a"));
+        cfg.workflow.defaults.review = ReviewPanel {
+            lenses: vec!["a".into()],
+            adjudicator: "a".into(),
+            tiers: Some(Box::new(ReviewDepth {
+                light: ReviewPanel {
+                    lenses: vec!["ghost".into()],
+                    adjudicator: "a".into(),
+                    ..Default::default()
+                },
+                threshold: 2,
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        assert!(
+            cfg.validate().is_err(),
+            "an unknown light-panel lens must fail validation"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_a_light_panel_with_no_adjudicator() {
+        // The adjudicator's gating verdict is mandatory on every tier - only the
+        // adversary flexes (spec 03 / spec 13 unit 4). A configured light panel that
+        // names no adjudicator would let a low-risk unit approve trivially, so it fails
+        // `config::load` loudly.
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent_def("a"));
+        cfg.workflow.defaults.review = ReviewPanel {
+            lenses: vec!["a".into()],
+            adjudicator: "a".into(),
+            tiers: Some(Box::new(ReviewDepth {
+                light: ReviewPanel {
+                    lenses: vec!["a".into()],
+                    ..Default::default()
+                },
+                threshold: 2,
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        assert!(
+            cfg.validate().is_err(),
+            "a light panel with no adjudicator must fail validation"
+        );
+    }
+
+    #[test]
+    fn validate_accepts_a_well_formed_depth_policy() {
+        // A depth policy whose light panel names a known adjudicator and only known
+        // agents validates cleanly.
+        let mut cfg = Config::default();
+        for id in ["arch", "tech", "adv", "judge"] {
+            cfg.agents.insert(id.into(), agent_def(id));
+        }
+        cfg.workflow.defaults.review = ReviewPanel {
+            lenses: vec!["arch".into(), "tech".into()],
+            adversary: "adv".into(),
+            adjudicator: "judge".into(),
+            tiers: Some(Box::new(ReviewDepth {
+                light: ReviewPanel {
+                    lenses: vec!["arch".into()],
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                threshold: 3,
+                high_risk_paths: vec!["src/conductor.rs".into()],
+            })),
+        };
+        assert!(
+            cfg.validate().is_ok(),
+            "a well-formed depth policy must validate"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_a_tiers_policy_on_a_full_panel_with_no_adjudicator() {
+        // The gating verdict is mandatory on EVERY tier, including the FULL one a high-risk
+        // unit routes to (remediation of sdet-u13-empty-full-tiers-skips-adjudicator). A
+        // tiers policy whose ENCLOSING full panel names no adjudicator - even with a
+        // perfectly valid light tier - would let a high-risk unit route to a panel that
+        // approves trivially via `is_empty()`, skipping the adjudicator. So it must fail
+        // `config::load` loudly. Before the fix, `validate_depth` guarded only the light
+        // tier, so `{empty full roster + valid tiers.light}` was ACCEPTED.
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent_def("a"));
+        cfg.workflow.defaults.review = ReviewPanel {
+            // A full panel that names NO adjudicator (here, no roster at all).
+            tiers: Some(Box::new(ReviewDepth {
+                light: ReviewPanel {
+                    lenses: vec!["a".into()],
+                    adjudicator: "a".into(),
+                    ..Default::default()
+                },
+                threshold: 2,
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        assert!(
+            cfg.validate().is_err(),
+            "a tiers policy on a full panel that names no adjudicator must fail validation"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_a_stage_review_declaring_only_a_tiers_policy() {
+        // A per-stage `review:` that declares ONLY a tiers policy (no roster, so no
+        // adjudicator on the full panel) is malformed the same way: the per-stage
+        // `validate_depth` branch (remediation of sdet-u13-stage-override-tiers-untested,
+        // part a) now rejects it loudly instead of the runtime silently discarding it back
+        // to defaults. This pins the stage-level validation branch that was untested.
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent_def("a"));
+        cfg.workflow.stages.insert(
+            "implement".into(),
+            Stage {
+                name: "implement".into(),
+                agent: "a".into(),
+                review: ReviewPanel {
+                    // Only a tiers policy, no enclosing roster/adjudicator.
+                    tiers: Some(Box::new(ReviewDepth {
+                        light: ReviewPanel {
+                            lenses: vec!["a".into()],
+                            adjudicator: "a".into(),
+                            ..Default::default()
+                        },
+                        threshold: 2,
+                        ..Default::default()
+                    })),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        assert!(
+            cfg.validate().is_err(),
+            "a stage review declaring only a tiers policy (no full adjudicator) must fail validation"
+        );
+    }
+
     fn agent_def(id: &str) -> AgentDef {
         AgentDef {
             id: id.to_string(),
@@ -643,6 +1318,99 @@ agent: worker\n";
             review.adjudicator, "adjudicator",
             "tier 3: the neutral adjudicator's verdict gates"
         );
+    }
+
+    #[test]
+    fn failure_rules_parse_into_an_ordered_taxonomy() {
+        // An authored `defaults.failure_rules` block parses into a first-match-wins
+        // taxonomy: the matcher fields, the class, the per-rule limit, and the backoff
+        // all convert to the runtime form (spec 10, unit 2).
+        let yaml = "name: w\n\
+defaults:\n  \
+failure_rules:\n    \
+- match: {output_regex: \"segfault|SIGSEGV\"}\n      \
+class: flaky\n      \
+limit: 3\n      \
+backoff: {duration_ms: 500, factor: 2.0, max_ms: 8000}\n    \
+- match: {exit_status: 137}\n      \
+class: infra\n      \
+limit: 1\n    \
+- match: {}\n      \
+class: product\n";
+        let wf: Workflow = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(wf.defaults.failure_rules.len(), 3);
+        let tax = wf.failure_taxonomy().expect("authored rules must convert");
+        assert_eq!(tax.rules().len(), 3);
+        // First-match-wins: the segfault signal hits the flaky rule with its limit and
+        // a non-zero backoff, not the product catch-all.
+        let flaky = tax
+            .classify(&failure::Signal::from_output("thread panicked: SIGSEGV"))
+            .unwrap();
+        assert_eq!(flaky.class, failure::FailureClass::Flaky);
+        assert_eq!(flaky.limit, 3);
+        assert_eq!(flaky.backoff.duration, Duration::from_millis(500));
+        // The exit-status rule matches a killed worker (137) as infra.
+        let infra = tax
+            .classify(&failure::Signal {
+                exit_status: Some(137),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(infra.class, failure::FailureClass::Infra);
+        // Anything else falls through to the product catch-all.
+        assert_eq!(
+            tax.classify(&failure::Signal::from_output("assertion failed"))
+                .unwrap()
+                .class,
+            failure::FailureClass::Product
+        );
+    }
+
+    #[test]
+    fn absent_failure_rules_fall_back_to_the_spec07_preserving_defaults() {
+        // The common case: a workflow authors no failure_rules, so the taxonomy is the
+        // shipped default (infra faults reran, everything else product) - preserving
+        // spec-07 semantics and every existing gate test.
+        let wf: Workflow = serde_yaml::from_str("name: w\ndefaults:\n  budget: 10\n").unwrap();
+        assert!(wf.defaults.failure_rules.is_empty());
+        let tax = wf.failure_taxonomy().unwrap();
+        assert!(!tax.is_empty(), "the default taxonomy ships rules");
+        assert_eq!(
+            tax.classify(&failure::Signal::from_output("FAIL\nassertion failed"))
+                .unwrap()
+                .class,
+            failure::FailureClass::Product,
+            "a plain gate failure classifies product by default (no rerun, today's behavior)"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_an_unknown_failure_class_and_a_bad_regex() {
+        let base = |rules: &str| -> Config {
+            let wf: Workflow =
+                serde_yaml::from_str(&format!("name: w\ndefaults:\n  failure_rules:\n{rules}"))
+                    .unwrap();
+            Config {
+                workflow: wf,
+                ..Default::default()
+            }
+        };
+        // An unknown class is rejected at validation.
+        assert!(base("    - match: {}\n      class: bogus\n")
+            .validate()
+            .is_err());
+        // An uncompilable regex is rejected at validation.
+        assert!(
+            base("    - match: {output_regex: \"(\"}\n      class: flaky\n")
+                .validate()
+                .is_err()
+        );
+        // A well-formed rule validates.
+        assert!(base(
+            "    - match: {output_regex: \"flake\"}\n      class: flaky\n      limit: 2\n"
+        )
+        .validate()
+        .is_ok());
     }
 
     #[test]

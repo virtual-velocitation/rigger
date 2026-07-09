@@ -1,0 +1,27 @@
+# 12 - Wave 3: verify only what changed
+
+**Goal:** stop re-earning verdicts the log already holds: content-addressed gate caching, staleness-driven re-verification, blast-radius gate selection, and compensation for integrated-but-wrong units. Program Wave 3.
+
+## Design
+
+**Unit 1 - content-addressed gate verdicts.** Every `GateVerdict` gains `input_digest = hash(gate command + git tree-SHA of the gate's input paths [default: whole tree])` as metadata. Before spending a gate run, the conductor consults the log: a prior GREEN verdict with the same `(command, input_digest)` answers the gate as a logged cache-hit (an annotated verdict citing the prior event's position - provenance, not silence). Failures are never cache-answered (a red must re-prove). Owns: verdict addressing and hit semantics. Exclusion: which gates run is unit 3's; when cached verdicts die is unit 2's.
+
+**Unit 2 - staleness propagation, after unit 1.** On `UnitIntegrated`, downstream units whose gate inputs (or blast radius) intersect the integrated unit's touched files are marked stale (metadata event on the existing vocabulary): their cached verdicts stop hitting and their next lifecycle step re-gates. Exactly the transitively-affected set re-verifies; everything else's green stands. Owns: cache invalidation. Exclusion: it never re-opens review verdicts - only gate verdicts.
+
+**Unit 3 - blast-radius gate selection, after unit 1.** Gates accept optional `inputs: [globs]`. During implement/remediate iterations, only gates whose inputs intersect the unit's blast radius run; skipped gates are logged with the reason (never silent). The integrate step ALWAYS runs the full gate library - "done" is asserted only against the exhaustive suite (R6 preserved at the point that matters). Owns: inner-loop selection. Exclusion: integrate-time behavior is deliberately untouched.
+
+**Unit 4 - compensation for integrated-but-wrong units, after unit 2.** When a later unit's work proves an integrated unit wrong (the adjudicator names a prior unit's integrating commit as the defect source, or a stale re-gate goes red on an integrated unit), the conductor records `UnitCompensated{commit}` metadata (existing vocabulary), reverts the integrating commit(s) in reverse integration order on the run branch, and re-enters the unit into remediation with the contradiction as feedback. The one-way integrate door gets a principled, evented reverse gear. Owns: post-integration rollback. Exclusion: pre-integration remediation is unchanged.
+
+**Unit 5 - integrate re-gates the MERGED tree, after unit 1 (Gap 21).** A unit's gates run in its pre-merge worktree; `partition: by-blast-radius` serializes units whose GROUNDED blast radii overlap, so a batch-2 unit already gates against batch-1's integrated tree. The residual hazard is UNPREDICTED overlap - two units the grounder placed in the SAME batch that actually edit the same region - which can auto-merge textually into a tree that is broken (the spec-10 one-arg-vs-two-arg signature break that compiled in isolation but not merged). So the integrate step, AFTER merging the unit's branch onto the run branch and BEFORE emitting `UnitIntegrated`, re-runs the gate suite against the MERGED tree; content-addressed verdicts (unit 1) make this near-free when the merge changed nothing a gate reads (a cache hit), so the cost is only what the merge actually touched. A red post-merge re-gate BLOCKS integration and feeds the unit's remediation with the merge-break evidence (it never lands a broken tree with an `UnitIntegrated`). Owns: post-merge verification. Exclusion: the pre-merge unit gates (spec 06) and compensation of an ALREADY-integrated unit (unit 4) are unchanged; this catches the break BEFORE it lands.
+
+## Global constraints
+
+- Hyphens, not em dashes. New event types: NONE (digests, staleness marks, and compensation ride as metadata on existing types). Cache hits, skips, staleness, and compensations are ALWAYS logged with provenance - no silent shortcuts. Both lanes green; replay determinism preserved (digest computation is pure over tree state).
+
+## Done when
+
+- [ ] gate verdicts carry an input digest and a prior green verdict with a matching digest answers the gate as a logged cache-hit citing the prior position (failures never cache) - pinned by tests covering hit, miss-on-content-change, and red-never-cached
+- [ ] integrating a unit marks exactly the downstream units whose inputs intersect its touched files as stale, their cached verdicts stop hitting, and unaffected units' greens stand - pinned with a three-unit dependency fixture
+- [ ] gates with `inputs:` globs are selected by blast-radius intersection during the inner loop with skips logged, while integrate always runs the full library - pinned including the skip-logging and the exhaustive-integrate assertions
+- [ ] a contradiction against an integrated unit records compensation metadata, reverts the integrating commits in reverse order on the run branch, and re-enters the unit into remediation with the contradiction as feedback - pinned end-to-end with a seeded two-unit contradiction
+- [ ] the integrate step re-runs the gate suite against the MERGED tree before emitting `UnitIntegrated`; a green re-gate (cheap via the content-addressed cache) integrates, a red one blocks integration and feeds remediation with the merge-break evidence - pinned with two units that each pass in isolation but merge into a failing tree

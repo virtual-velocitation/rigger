@@ -158,7 +158,9 @@ impl AgentDriver for Driver {
                 // passes it to query() as the system prompt, so a workflow agent gets
                 // its role exactly as the cli path does.
                 system_prompt: opts.system_prompt.clone(),
-                model: agent.model.clone(),
+                // The cascade rung this attempt resolves (spec 10 unit 4): a `model_ladder`
+                // agent escalates one rung per remediation attempt, clamped at the last.
+                model: agent.model_for_attempt(opts.attempt),
                 // recurse: false strips any fan-out (Agent/Task) tool so the agent
                 // cannot spawn sub-agents - runaway-proof by construction (§3.1, §6).
                 tools: agent.allowed_tools(),

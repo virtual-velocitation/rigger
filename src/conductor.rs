@@ -4,7 +4,7 @@
 //! stream that both the ledger and the context graph project from. It is the
 //! top-level use case; it depends only on ports and domain, never on an adapter.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Mutex;
 
@@ -14,14 +14,16 @@ use serde_json::{json, Value};
 use crate::config::{AgentDef, Config, Stage};
 use crate::contextgraph::{self, Graph, Projection};
 use crate::eventstore::{Direction, Event, EventStore, ExpectedRevision};
+use crate::failure::{self, Signal};
 use crate::gate::{self, Gate};
 use crate::grounder::Grounder;
 use crate::ledger::{self, RunState};
 use crate::safety;
 use crate::spawn::{
-    self, lens_role, spawn_id, spawn_retry_id, ROLE_ADJUDICATOR, ROLE_ADVERSARY, ROLE_IMPLEMENTER,
+    self, lens_role, spawn_id, spawn_retry_id, speculation_group_id, ROLE_ADJUDICATOR,
+    ROLE_ADVERSARY, ROLE_IMPLEMENTER,
 };
-use crate::worktree::Worktree;
+use crate::worktree::{self, Worktree};
 
 /// The run's event stream name.
 pub const STREAM: &str = "run";
@@ -46,8 +48,11 @@ pub const TYPE_BUDGET_EXHAUSTED: &str = "BudgetExhausted";
 pub const TYPE_SPEC_DEFECT: &str = "SpecDefect";
 /// The run aborted: un-integrated work is dropped, integrated work is kept (§4.4).
 pub const TYPE_TASK_ABORTED: &str = "TaskAborted";
-/// A Manual-autonomy gate pauses its unit awaiting human review (§4.3).
-pub const TYPE_MANUAL_REVIEW: &str = "ManualReview";
+/// A Manual-autonomy gate pauses its unit awaiting human review (§4.3). The ledger folds
+/// it into `RunState::manual_review` (the action-needed inbox), so the string lives there
+/// as the single source and this is a re-export. Kept in sync with
+/// `ledger::TYPE_MANUAL_REVIEW`.
+pub const TYPE_MANUAL_REVIEW: &str = ledger::TYPE_MANUAL_REVIEW;
 /// A deferred gate FAILED when it ran at the run's phase boundary (§4.3). Surfaced
 /// truthfully: the ledger folds it (`RunState::deferred_gate_failed`) so the run is
 /// never reported fully done with a red deferred gate. Kept in sync with
@@ -97,6 +102,142 @@ pub const META_MODEL_ALIAS: &str = "model_alias";
 /// worker reported none.
 pub const META_MODEL_RESOLVED: &str = "model_resolved";
 
+/// The metadata key carrying the WORKTREE HEAD sha the review tiers judged (spec 11,
+/// unit 1). Stamped on the review-boundary events - the `verified` status, the
+/// review-reject `UnitFailed`, and the `reviewed` status - mirroring the commit sha
+/// [`ledger::TYPE_UNIT_INTEGRATED`] already carries, so the metrics fold can tell a
+/// genuine reject-then-approve-on-NEW-code from a flip-flop (two verdicts on the SAME
+/// sha = reviewer noise). Like [`META_MODEL_ALIAS`] it is audit metadata on events that
+/// already exist - no new event type (spec 11's Global constraints) - so folds and
+/// projections ignore it. Empty (and so omitted) on a repo-less run with no worktree.
+pub const META_WORKTREE_SHA: &str = "worktree_sha";
+
+/// The metadata key carrying a gate verdict's INPUT DIGEST (spec 12, unit 1): the content
+/// address of the gate run, [`input_digest`]`(command, tree-sha)` over the gate command
+/// and the git tree-SHA of its inputs (the whole committed tree by default). Every inline
+/// [`GateVerdict`](contextgraph::TYPE_GATE_VERDICT) a unit's worktree gate records carries
+/// it, so a later gate whose command + tree digest matches a prior GREEN verdict is
+/// answered as a logged cache-hit instead of re-running the command. It is audit metadata
+/// on an event that already exists - no new event type (spec 12's Global constraints) - so
+/// folds and projections ignore it. Empty (and so omitted) when there is no tree to address
+/// (a repo-less / worktree-less gate run), which simply disables content-addressing there.
+pub const META_INPUT_DIGEST: &str = "input_digest";
+
+/// The metadata key a content-addressed CACHE-HIT verdict carries (spec 12, unit 1): the
+/// LOG POSITION of the prior GREEN [`GateVerdict`](contextgraph::TYPE_GATE_VERDICT) whose
+/// matching [`META_INPUT_DIGEST`] answered this gate. A cache-hit is a logged, annotated
+/// verdict citing its source - provenance, not a silent shortcut - so an auditor can walk
+/// from the hit to the exact green it reused. Present ONLY on cache-hit verdicts; a
+/// freshly-run gate's verdict omits it.
+pub const META_CACHE_HIT: &str = "cache_hit_of";
+
+/// The metadata key a `UnitIntegrated` event carries to mark the DOWNSTREAM units its
+/// integration rendered STALE (spec 12, unit 2): a comma-separated list of the unit ids
+/// whose grounded blast radius intersects this integration's touched files. A stale
+/// unit's cached gate verdicts stop hitting - its next gate re-runs against the changed
+/// world instead of reusing a green earned before this integration (see
+/// [`RunCtx::is_stale`] and the run_gates hit-site). The staleness ride is metadata on an
+/// event that ALREADY exists - no new event type (spec 12's Global constraints) - and it
+/// is self-provenanced: the mark names exactly which downstream units were invalidated,
+/// carried on the integrating unit's own integration event (its position + id are the
+/// citation). Present ONLY when at least one downstream unit was staled; an integration
+/// that touches no downstream blast radius omits it.
+pub const META_STALE: &str = "staled_units";
+
+/// The metadata key naming the integrating commit(s) a COMPENSATION reverted (spec 12,
+/// unit 4): a comma-separated list of the reverted commit shas, stamped on the `UnitFailed`
+/// event that re-enters a compensated unit into remediation. This is the `UnitCompensated`
+/// record - it rides the EXISTING `UnitFailed` vocabulary as metadata (no new event type,
+/// spec 12's Global constraints), naming exactly which integrating commits were rolled back
+/// so the rollback is self-provenanced and a stepwise resume re-reads them (and so never
+/// re-reverts a commit already compensated - the replay-idempotency guard). Present ONLY on
+/// a compensation's `UnitFailed`; an ordinary remediation `UnitFailed` omits it.
+pub const META_COMPENSATED: &str = "compensated_commits";
+
+/// The metadata key carrying the CONTRADICTION a compensation fed back (spec 12, unit 4):
+/// the reason a later unit's review proved the integrated unit wrong (the adjudicator's
+/// verdict output), stamped on the same `UnitFailed` event so the re-entered unit's next
+/// attempt is prompted with the specific contradiction rather than blindly restarting, and
+/// so a stepwise resume recovers the feedback from the log. Rides existing vocabulary as
+/// metadata - no new event type.
+pub const META_CONTRADICTION: &str = "contradiction";
+
+/// The metadata key naming a DURABLE compensation-QUEUED mark's target (spec 12, unit 4):
+/// the already-integrated unit a review named for rollback, stamped the MOMENT the trigger
+/// fires - BEFORE the post-wave drain reverts anything - so the reverse gear's INTENT is
+/// evented, not held only in the in-memory queue. A crash between the naming review and the
+/// drain would otherwise silently drop the rollback (the target stays folded Integrated and
+/// the queue dies with the process); with this mark a resume re-derives the still-pending
+/// compensation and re-drives the drain. Rides the existing `UnitStatus` vocabulary as a
+/// fold-neutral marker (no new event type), paired at run start against the DRAINED
+/// [`META_COMPENSATED`] record so a completed compensation is never re-queued. Present ONLY
+/// on a compensation-queued mark; ordinary `UnitStatus` events omit it.
+pub const META_COMPENSATE_TARGET: &str = "compensate_target";
+
+/// The `UnitStatus.status` token a durable compensation-QUEUED mark carries (spec 12,
+/// unit 4). It is deliberately NOT a [`ledger::Status`] variant, so the ledger fold
+/// ([`ledger::State::apply`]) leaves the target's status untouched (`Status::parse` returns
+/// `None`) and the metrics fold ignores it (its `match` has no arm for it): the mark records
+/// the compensation INTENT for crash-resume recovery WITHOUT prematurely folding the target
+/// out of `Integrated` (it must stay integrated until the drain actually reverts it). The
+/// real re-derivation signal is [`META_COMPENSATE_TARGET`], not this string.
+const STATUS_COMPENSATION_QUEUED: &str = "compensation-queued";
+
+/// The metadata key naming a first-green-wins speculation GROUP (spec 13, unit 3) on the
+/// events its candidates emit: the winner's `UnitIntegrated`, every cancelled candidate's
+/// `UnitStatus`, and each candidate's green/verified status carry it. It is audit metadata
+/// on the EXISTING vocabulary (no new event type), so folds and projections ignore it - the
+/// group / winner / losers are recoverable from the log by reading it back. Its value is the
+/// deterministic [`spawn::speculation_group_id`].
+pub const META_SPEC_GROUP: &str = "speculation_group";
+
+/// The metadata key naming a speculation group's WINNING candidate (spec 13, unit 3) on the
+/// winner's `UnitIntegrated`: the deterministic implementer spawn id
+/// ([`spawn::spawn_id`]`(unit, `[`ROLE_IMPLEMENTER`]`, lane)`) of the candidate that passed
+/// its gates AND the adjudicator first and integrated.
+pub const META_SPEC_WINNER: &str = "speculation_winner";
+
+/// The metadata key naming a speculation group's CANCELLED candidates (spec 13, unit 3) on
+/// the winner's `UnitIntegrated`: a comma-separated list of the losing candidates'
+/// implementer spawn ids - every parked candidate the winner displaced.
+pub const META_SPEC_LOSERS: &str = "speculation_losers";
+
+/// The `UnitStatus.status` token a CANCELLED speculation candidate carries (spec 13, unit 3).
+/// Like [`STATUS_COMPENSATION_QUEUED`] it is deliberately NOT a [`ledger::Status`] variant, so
+/// the ledger fold leaves the unit's real status (driven by the WINNER's lifecycle) untouched
+/// and the metrics fold ignores it: a cancelled candidate is a recorded fact about the losing
+/// lane, never the unit's terminal state.
+const STATUS_SPECULATION_CANCELLED: &str = "speculation-cancelled";
+
+/// The `UnitStatus.status` token a REVIEW-REJECTED speculation candidate carries (spec 13,
+/// unit 3). Like [`STATUS_SPECULATION_CANCELLED`] it is deliberately NOT a [`ledger::Status`]
+/// variant, so the LEDGER fold leaves the shared unit's real status untouched - driven by the
+/// WINNER's lifecycle, or the group's escalation. A rejected candidate must never fold the
+/// unit out of `Fresh`, which would mis-route a resume of the still-racing group onto the
+/// canonical lane (the resume hazard the winner-status deferral is built to avoid). UNLIKE the
+/// cancelled marker, the METRICS fold DOES count it: it is the in-process review-reject signal
+/// that makes an adjudicator-rejected candidate visible to the spec-11 review-quality fold
+/// exactly as the single-lane `verified`-then-`UnitFailed` pair is, WITHOUT a resume-corrupting
+/// lifecycle status (addresses adv-u13-speculation-losers-invisible-to-review-metrics). It is
+/// recorded IN-PROCESS by the conductor (like every `UnitStatus`), so it survives on a live
+/// driver - unlike the adjudicator `SpawnResult` verdict, which only the courier/replay path
+/// records (adj-u1-verdict-reject-disjoint-attribution), so a fold keyed on that would be
+/// always-zero in production.
+pub const STATUS_SPECULATION_REJECTED: &str = "speculation-rejected";
+
+/// The `UnitStatus.status` token a review-tier ROUTING marker carries (spec 03
+/// "adaptive review depth", spec 13 unit 4 "risk-tiered review depth"). Like
+/// [`STATUS_COMPENSATION_QUEUED`] it is deliberately NOT a [`ledger::Status`] variant,
+/// so the ledger fold leaves the unit's status untouched (`Status::parse` returns
+/// `None`) and the metrics fold ignores it - the marker exists ONLY to LOG which tier a
+/// unit's review was routed to, with the inputs that decided it, riding the existing
+/// `UnitStatus` vocabulary so no new event type is added (spec 13 global constraint).
+const STATUS_REVIEW_TIER: &str = "review-tier";
+/// The two review-depth tiers a unit routes to: `TIER_LIGHT` runs the reduced roster,
+/// `TIER_FULL` the whole panel (spec 03 / spec 13 unit 4).
+const TIER_LIGHT: &str = "light";
+const TIER_FULL: &str = "full";
+
 /// The replay key for a gate's verdict, keyed by the `(unit, attempt, gate)` coordinate
 /// the gate ran under - so a step re-reaching an already-run gate REPLAYS its recorded
 /// verdict instead of re-running the command (spec 04, criterion 4). Distinct attempts
@@ -104,6 +245,244 @@ pub const META_MODEL_RESOLVED: &str = "model_resolved";
 /// SAME attempt's gate is a replay.
 fn gate_verdict_key(unit: &str, attempt: u32, gate: &str) -> String {
     format!("{unit}/gate:{gate}#{attempt}")
+}
+
+/// The replay key for a blast-radius SKIP verdict (spec 12, unit 3), DISTINCT from the
+/// gate-RUN key [`gate_verdict_key`] produces (`{unit}/gate:{gate}#{attempt}`). The skip
+/// is a logged provenance record ("the inner loop did not run this gate because its
+/// `inputs:` miss the blast radius"), NOT a gate outcome: keying it apart means
+/// [`recorded_gate_verdict`](RunCtx::recorded_gate_verdict) never treats a skip as a
+/// recorded verdict, so the exhaustive integrate pass still RUNS the skipped gate. The
+/// `gate-skip:` infix contains no `/gate:` substring, so [`unit_of_gate_key`] never
+/// mis-parses it. Keyed so a stepwise resume re-emits the skip exactly once.
+fn gate_skip_key(unit: &str, attempt: u32, gate: &str) -> String {
+    format!("{unit}/gate-skip:{gate}#{attempt}")
+}
+
+/// The replay key for a POST-MERGE re-gate verdict (spec 12, unit 5), DISTINCT from the
+/// pre-merge gate-RUN key [`gate_verdict_key`] produces (`{unit}/gate:{gate}#{attempt}`) at
+/// the SAME `(unit, attempt)`. Keying the post-merge re-gate apart is what lets it re-verify
+/// the MERGED tree instead of REPLAYING the pre-merge isolation green via the content-blind
+/// exact-key replay ([`recorded_gate_verdict`](RunCtx::recorded_gate_verdict)) - the merged
+/// tree runs (or content-cache-hits) under its own key. The `postmerge-gate:` infix carries
+/// no `/gate:` substring, so [`unit_of_gate_key`] never mis-parses it as a pre-merge gate key
+/// (it neither pollutes unit-4's attempt high-water scan nor seeds the cache with a unit).
+/// Keyed so a stepwise resume re-emits the post-merge verdict exactly once.
+fn postmerge_gate_verdict_key(unit: &str, attempt: u32, gate: &str) -> String {
+    format!("{unit}/postmerge-gate:{gate}#{attempt}")
+}
+
+/// The replay key for a durable compensation-QUEUED mark (spec 12, unit 4), keyed by the
+/// `(triggering unit, target, triggering attempt)` coordinate so the SAME review naming the
+/// SAME target at the SAME attempt re-appends the mark exactly once on a stepwise resume
+/// ([`emit_keyed_meta`](RunCtx::emit_keyed_meta)'s guard). The `compensate-queued:` infix
+/// carries no `/gate:` substring, so [`unit_of_gate_key`] never mis-parses it as a gate key.
+fn compensation_queued_key(triggerer: &str, target: &str, attempt: u32) -> String {
+    format!("{triggerer}/compensate-queued:{target}#{attempt}")
+}
+
+/// Whether a gate RUNS during the blast-radius-narrowed inner loop (spec 12, unit 3): a
+/// gate with no `inputs:` globs is UNSCOPED (it verifies the whole tree, so it can never be
+/// safely narrowed away) and always runs; a gate WITH `inputs:` runs iff at least one glob
+/// matches at least one file in the unit's `blast_radius` - otherwise the unit touches
+/// nothing this gate checks, so the inner loop skips it (the exhaustive integrate pass still
+/// runs it, preserving R6 even when grounding under-approximates).
+fn gate_intersects_radius(inputs: &[String], blast_radius: &[String]) -> bool {
+    if inputs.is_empty() {
+        return true;
+    }
+    inputs
+        .iter()
+        .any(|pat| blast_radius.iter().any(|f| glob_matches(pat, f)))
+}
+
+/// Match a glob `pattern` against a repo-relative `path` (spec 12, unit 3). `**` matches any
+/// run of characters INCLUDING `/` (any number of path segments, and a trailing `/` is
+/// optional so `a/**/b` also matches `a/b`); `*` matches any run EXCLUDING `/` (one path
+/// segment); `?` matches a single non-`/` character; every other character is literal. Built
+/// by translating the glob to an anchored regex; a malformed translation matches nothing.
+fn glob_matches(pattern: &str, path: &str) -> bool {
+    let mut re = String::from("^");
+    let mut chars = pattern.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '*' => {
+                if chars.peek() == Some(&'*') {
+                    chars.next();
+                    re.push_str(".*");
+                    // Swallow the separator after `**` so `a/**/b` matches `a/b` (zero dirs).
+                    if chars.peek() == Some(&'/') {
+                        chars.next();
+                    }
+                } else {
+                    re.push_str("[^/]*");
+                }
+            }
+            '?' => re.push_str("[^/]"),
+            '.' | '+' | '(' | ')' | '|' | '[' | ']' | '{' | '}' | '^' | '$' | '\\' => {
+                re.push('\\');
+                re.push(c);
+            }
+            _ => re.push(c),
+        }
+    }
+    re.push('$');
+    regex::Regex::new(&re)
+        .map(|r| r.is_match(path))
+        .unwrap_or(false)
+}
+
+/// Whether a `high_risk_paths` entry matches a blast-radius file (spec 03 / spec 13
+/// unit 4). An entry matches by literal path PREFIX (so `src/` or `src/conductor`
+/// flags `src/conductor.rs`) OR by the same glob semantics gate `inputs:` use (so
+/// `specs/**` or `src/*.rs` work). Either match forces the FULL review panel even for
+/// a small change - the "core trait / spec file" escape hatch the size threshold alone
+/// would miss.
+fn path_is_high_risk(pattern: &str, file: &str) -> bool {
+    file.starts_with(pattern) || glob_matches(pattern, file)
+}
+
+/// The review tier a unit was routed to and the OBSERVABLE inputs that decided it
+/// (spec 03 "adaptive review depth", spec 13 unit 4). Returned by [`route_review_tier`]
+/// so `review_unit` can both run the chosen panel and LOG the routing decision with its
+/// inputs ("every routing decision logged with its inputs").
+struct TierRouting<'a> {
+    /// The panel to run - the reduced light roster or the full panel.
+    panel: &'a crate::config::ReviewPanel,
+    /// [`TIER_LIGHT`] or [`TIER_FULL`].
+    tier: &'static str,
+    /// The unit's grounded blast-radius file count (the size signal).
+    blast_radius: usize,
+    /// The low-risk size threshold in effect (`0` when no policy is configured).
+    threshold: usize,
+    /// The first blast-radius file that matched a `high_risk_paths` entry, if any.
+    high_risk_hit: Option<String>,
+    /// Whether the grounded blast radius was EMPTY - no grounder configured, or a
+    /// coverage query that grounded to zero files. An absent risk signal is
+    /// UNASSESSABLE, so it fails SAFE to the FULL panel (never LIGHT): the size and
+    /// high-risk-path signals can say nothing about a radius with no files, and a
+    /// tiers-without-a-grounder workflow must not silently downgrade every unit to
+    /// light. Recorded so the routing log shows WHY the full panel ran.
+    empty_radius: bool,
+    /// Whether the unit's gates FLAPPED - it needed remediation to reach green (the
+    /// spec-13 "gate outcome" signal, observed as `attempt > 0`).
+    flapped: bool,
+    /// Whether a depth policy was configured at all. `false` means every unit runs the
+    /// full panel unchanged and NOTHING is logged - the shipped default.
+    policy: bool,
+}
+
+/// Route a unit's review to the LIGHT or FULL panel by its observable risk (spec 03
+/// "adaptive review depth", spec 13 unit 4 "risk-tiered review depth"). `full` is the
+/// unit's effective panel; when it carries no `tiers` depth policy every unit runs it
+/// unchanged (`policy: false`). Otherwise the unit runs the FULL panel if ANY high-risk
+/// signal holds - a blast-radius file matches a high-risk path, the blast-radius file
+/// count EXCEEDS the threshold, the gates flapped, or the blast radius is EMPTY - and the
+/// reduced LIGHT panel only when none of them do. The empty-radius arm is the FAIL-SAFE
+/// default: an absent risk signal (no grounder configured, or a coverage query that
+/// grounds to zero files) is unassessable, so it routes to FULL rather than LIGHT - the
+/// size and high-risk-path signals can prove nothing about a radius with no files, and a
+/// tiers-without-a-grounder workflow must never silently downgrade EVERY unit to light
+/// (the safety mechanism fails SAFE, not OPEN). The size `threshold` is bounded above by
+/// the grounder's `k` cap (`grounded_seed` grounds at most 8 distinct files), so a
+/// `threshold >= 8` is inert by size alone - only `high_risk_paths`/`flapped`/empty force
+/// full past the cap. The adjudicator and the full gate suite stay mandatory on every tier
+/// (config validation forces both the light AND the full panel to name an adjudicator; the
+/// gates run outside the review), so a light-routed unit still gets its gating verdict -
+/// only the adversary and the extra lenses flex. Pure over the panel + signals, so it is
+/// unit-tested directly.
+fn route_review_tier<'a>(
+    full: &'a crate::config::ReviewPanel,
+    blast_radius: &[String],
+    flapped: bool,
+) -> TierRouting<'a> {
+    let depth = match full.depth() {
+        None => {
+            return TierRouting {
+                panel: full,
+                tier: TIER_FULL,
+                blast_radius: blast_radius.len(),
+                threshold: 0,
+                high_risk_hit: None,
+                empty_radius: blast_radius.is_empty(),
+                flapped,
+                policy: false,
+            };
+        }
+        Some(d) => d,
+    };
+    let high_risk_hit = blast_radius
+        .iter()
+        .find(|f| {
+            depth
+                .high_risk_paths
+                .iter()
+                .any(|p| path_is_high_risk(p, f))
+        })
+        .cloned();
+    let over_threshold = blast_radius.len() > depth.threshold;
+    // An EMPTY grounded blast radius fails SAFE to the full panel: no grounder (or a
+    // zero-grounding coverage query) leaves the size/high-risk-path signals with nothing
+    // to assess, so routing LIGHT here would let a tiers-without-a-grounder workflow
+    // silently downgrade EVERY unit's review - a fail-OPEN in a safety mechanism. Full is
+    // the only defensible default when risk cannot be measured.
+    let empty_radius = blast_radius.is_empty();
+    let full_panel = empty_radius || high_risk_hit.is_some() || over_threshold || flapped;
+    TierRouting {
+        panel: if full_panel { full } else { &depth.light },
+        tier: if full_panel { TIER_FULL } else { TIER_LIGHT },
+        blast_radius: blast_radius.len(),
+        threshold: depth.threshold,
+        high_risk_hit,
+        empty_radius,
+        flapped,
+        policy: true,
+    }
+}
+
+/// The producing UNIT of a gate-verdict replay key (`{unit}/gate:{gate}#{attempt}`), used
+/// when seeding the content-address cache from prior GREEN verdicts so the cache value
+/// carries which unit earned the green (the coordinate a downstream staleness pass keys
+/// off). A deferred key (`deferred/gate:{gate}`) yields `"deferred"`; a key with no
+/// `/gate:` marker yields `None`. Pure string parse - the single place the key's unit
+/// segment is recovered.
+///
+/// Also the one authority `rigger replay` reuses to re-scope the candidate "gate runs"
+/// column to the gates the re-drive actually reaches: it recovers the STAGE a seeded
+/// gate verdict ran under so the composition root can ask whether the candidate config
+/// still declares that gate (a post-merge / skip / artifact key carries no `/gate:` infix,
+/// so it yields `None` and is left as recorded).
+pub fn unit_of_gate_key(key: &str) -> Option<&str> {
+    key.split_once("/gate:").map(|(unit, _)| unit)
+}
+
+/// The content address of a gate run (spec 12, unit 1): a stable digest over the gate
+/// `command` and the git `tree_sha` of its inputs (the whole committed tree by default -
+/// [`worktree::tree_sha_of`]). The verbatim tree-SHA is kept in the digest so two DIFFERENT
+/// trees are always distinct addresses - the tree is what determines the gate outcome, so
+/// it must never collide - while the command is folded to a compact FNV-1a hash (the same
+/// fixed-seed stable hash the rest of the crate uses for content oracles: identical bytes ->
+/// identical hash across processes, machines, and builds, unlike `DefaultHasher`). So the
+/// address is a pure function of `(command, tree bytes)`: replay-deterministic, and a gate
+/// re-run over an unchanged tree with the same command reproduces the SAME digest (a hit),
+/// while any change to either side changes it (a miss). Empty `tree_sha` (no worktree tree
+/// to address) yields an empty digest, which the caller reads as "addressing disabled here".
+fn input_digest(command: &str, tree_sha: &str) -> String {
+    if tree_sha.is_empty() {
+        return String::new();
+    }
+    // FNV-1a over the command bytes - the SAME fixed constants `main::fnv1a_64` and the
+    // turbovec staleness oracle use, so the crate has one stable-hash idiom. The
+    // collision-sensitive input (the tree) rides verbatim, so this 64-bit fold covers
+    // only the short, config-authored command string.
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = OFFSET;
+    for &b in command.as_bytes() {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(PRIME);
+    }
+    format!("{hash:016x}:{tree_sha}")
 }
 
 /// The payload of a `GateVerdict` event, for seeding the gate-verdict replay cache and
@@ -139,6 +518,13 @@ fn deferred_gate_failed_key(gate: &str) -> String {
 /// as a dropped/missing value - it records this EXPLICIT marker, truthfully saying
 /// "this stage reviewed; it produced no artifact to commit".
 pub const REVIEW_ONLY_NO_ARTIFACT: &str = "(review-only: no integrated artifact)";
+
+/// The deterministic-id role token for a plan-critique planner RE-SPAWN (Unit 1, spec
+/// 10). Distinct from [`ROLE_IMPLEMENTER`] (which the plan stage's first-wave spawn
+/// uses), so a re-plan spawn id (`plan/replan#<critique-attempt>`) never collides with
+/// the planner's original `plan/implementer#0` and a replay driver parks/replays each
+/// re-plan independently.
+const ROLE_REPLAN: &str = "replan";
 
 #[derive(Debug, thiserror::Error)]
 #[error("conductor: {0}")]
@@ -180,6 +566,80 @@ struct GateOutcome {
     evidence: Vec<String>,
 }
 
+/// Which gates a [`run_gates`](RunCtx::run_gates) pass runs (spec 12, unit 3).
+///
+/// - [`GateSelection::Narrowed`] is the implement/remediate INNER LOOP: a gate whose
+///   `inputs:` globs do NOT intersect the unit's grounded blast radius is SKIPPED and
+///   logged (never silent), so a remediation iteration re-verifies only what its change
+///   could have touched. A gate with no `inputs:` is unscoped and always runs.
+/// - [`GateSelection::Exhaustive`] is the INTEGRATE step: the FULL gate library runs, so
+///   "done" is asserted against the exhaustive suite (R6). Nothing is skipped. Cheap via
+///   unit-1's content cache - the gates the inner loop already ran replay from the log,
+///   so only the gates it SKIPPED actually run here.
+/// - [`GateSelection::PostMerge`] is the POST-MERGE re-gate (spec 12, unit 5): the FULL
+///   library runs against the MERGED run-branch tree, keyed apart (`{unit}/postmerge-gate:`)
+///   from the pre-merge `{unit}/gate:` verdict so it never REPLAYS the isolation green but
+///   still consults unit-1's CONTENT cache - a merge that changed nothing a gate reads is a
+///   near-free cache-hit, while an unpredicted merge break misses and RUNS on the merged
+///   tree. Skips nothing, exactly like `Exhaustive`.
+enum GateSelection<'a> {
+    Narrowed(&'a [String]),
+    Exhaustive,
+    PostMerge,
+}
+
+/// The result of integrating a unit ([`RunCtx::integrate_and_emit`]): the merge commit
+/// that landed (empty for a read-only / no-change unit), and the DOWNSTREAM units this
+/// integration marked STALE (spec 12, unit 2) - those whose blast radius intersects the
+/// unit's touched files. The caller stamps `staled` onto the `UnitIntegrated` event as
+/// [`META_STALE`] so the invalidation is recorded with provenance and re-seeded on resume.
+#[derive(Default)]
+struct Integration {
+    commit: String,
+    staled: Vec<String>,
+    /// The post-merge re-gate went RED (spec 12, unit 5): the merge was ROLLED BACK (nothing
+    /// landed, no `UnitIntegrated`) and this carries the merge-break gate evidence, so the
+    /// caller falls to remediation exactly like a pre-merge gate failure. `None` on a clean
+    /// integration (or a read-only / no-change unit).
+    blocked: Option<Vec<String>>,
+}
+
+/// The ratchet effect of a single gate run, resolved by the failure taxonomy's three-way
+/// outcome (spec 10, unit 2). `record_gate` maps each to a promote / demote / hold.
+enum GateRatchet {
+    /// A gate that passed on its first run: feeds the promotion ratchet normally.
+    CleanPass,
+    /// A gate that FAILED then PASSED on a rerun (a flaky/infra mixed result): a
+    /// pass-with-warning that never demotes and never promotes.
+    FlakyPass,
+    /// A believed-real failure (a `product` gate, or a `flaky` gate that stayed red
+    /// across every rerun): demotes the ratchet exactly as a gate failure did before.
+    FailDemote,
+    /// A persistent `infra` failure: a real failure that still charges the unit a
+    /// remediation attempt, but must NOT demote the ratchet (an outage must not cost the
+    /// gate its earned autonomy).
+    FailNoDemote,
+}
+
+impl GateRatchet {
+    /// The demote-vs-hold authority for a believed-real (persistent) gate failure: the
+    /// SINGLE place every gate site folds its demote-vs-hold decision through, so one
+    /// fault earns one demotion policy regardless of gate SITE. A class that demotes on
+    /// persistent failure (`product`, `flaky`) demotes the ratchet exactly as a gate
+    /// failure did before this taxonomy; an `infra` fault HOLDS it (`FailNoDemote`) - an
+    /// outage must never cost a gate its earned autonomy. The inline early-return
+    /// (a no-rerun or zero-limit class), the inline rerun-exhaustion fall-through, and
+    /// the single-run deferred gate all resolve their persistent failure through THIS
+    /// function, so the three sites are structurally unable to drift.
+    fn for_persistent_failure(class: failure::FailureClass) -> GateRatchet {
+        if class.demotes_on_persistent_failure() {
+            GateRatchet::FailDemote
+        } else {
+            GateRatchet::FailNoDemote
+        }
+    }
+}
+
 /// The outcome of a unit's three-tier review: whether the adjudicator approved, and
 /// its verdict reasoning (the adjudicator's raw output). On approval the reason is
 /// folded into the unit's `reviewed` evidence (item 4); on a reject it is threaded
@@ -187,6 +647,19 @@ struct GateOutcome {
 struct ReviewOutcome {
     approved: bool,
     reason: String,
+    /// The ALREADY-INTEGRATED unit this review named as the defect source (spec 12, unit
+    /// 4): a later unit's review can prove a prior integrated unit wrong (the adjudicator's
+    /// `compensate` field), which the run loop rolls back and re-enters. Parsed
+    /// INDEPENDENTLY of `approved` - a review may approve the current unit yet still name an
+    /// integrated unit as the real defect source. `None` when the verdict names no target.
+    compensate: Option<String>,
+    /// The adjudicator's RESOLVED model id (spec 05 line 52), captured ONLY when `review_unit`
+    /// DEFERS the `reviewed` status emit (speculation, `defer_reviewed`): the winning candidate
+    /// re-emits the deferred `reviewed` keyed by its lane, so it must carry the same resolved id
+    /// the inline single-lane emit would have. Empty when the emit was not deferred, or no
+    /// adjudicator rendered the verdict (an empty/adjudicator-less panel approves trivially and
+    /// emits no `reviewed`, exactly like the single-lane path).
+    adj_resolved: String,
 }
 
 impl ReviewOutcome {
@@ -194,14 +667,86 @@ impl ReviewOutcome {
         ReviewOutcome {
             approved: true,
             reason,
+            compensate: None,
+            adj_resolved: String::new(),
         }
     }
     fn rejected(reason: String) -> Self {
         ReviewOutcome {
             approved: false,
             reason,
+            compensate: None,
+            adj_resolved: String::new(),
         }
     }
+}
+
+/// A queued post-integration ROLLBACK (spec 12, unit 4): a later unit's review named
+/// `target` - an ALREADY-INTEGRATED unit - as the defect source, so the run loop must
+/// revert its integrating commit(s) on the run branch, record the compensation, and
+/// re-enter it into remediation with `reason` (the contradiction) as feedback. Queued
+/// during a wave at a (possibly concurrent) review site and DRAINED by the single-threaded
+/// run loop after the wave, so the git revert and the scheduler-set mutation never race a
+/// concurrent integration - the same discipline the integrate lock gives the forward door.
+struct Compensation {
+    target: String,
+    reason: String,
+}
+
+/// One parked-and-recorded first-green-wins speculation candidate (spec 13, unit 3) awaiting
+/// evaluation: its `lane` (which is also the attempt its gates/statuses/review key under), the
+/// isolated `wt` it committed into, that worktree's `dir`, and the `resolved_model` the worker
+/// reported (empty on a live driver that does not learn it). Held only inside
+/// [`RunCtx::run_speculation`] between the parallel-spawn phase and the winner-selection phase.
+struct SpecCandidate {
+    lane: u32,
+    wt: Worktree,
+    dir: String,
+    resolved_model: String,
+}
+
+/// The compensations STILL PENDING at run start (spec 12, unit 4): a durable
+/// compensation-QUEUED mark ([`META_COMPENSATE_TARGET`], stamped the moment a review named
+/// the target) that has NOT yet been DRAINED (no matching `UnitFailed` + [`META_COMPENSATED`]
+/// for that target). A crash between the naming review and the drain leaves the mark
+/// un-completed, so a resume re-derives it here, re-seeds the queue, and the next drain
+/// re-drives the rollback - the reverse gear's intent survives the process that queued it.
+///
+/// Paired per target by COUNT in log order: the first N queued marks for a target are
+/// consumed by its N drained records, and only the surplus (queued but never drained) is
+/// re-emitted as pending. So a fully-drained compensation is never re-queued (idempotent
+/// over the log), while a re-integrated-then-re-condemned unit's SECOND queue (one mark, no
+/// second drain yet) correctly stays pending. The in-process path emits both a mark AND its
+/// drain, so within one run every mark is balanced and this returns nothing for it.
+fn pending_compensations_from_log(prior_events: &[Event]) -> Vec<Compensation> {
+    // Queue marks in log order, then how many drains each target already has.
+    let mut marks: Vec<(String, String)> = Vec::new();
+    let mut drained: HashMap<String, usize> = HashMap::new();
+    for e in prior_events {
+        if let Some(target) = e.meta.get(META_COMPENSATE_TARGET) {
+            let reason = e.meta.get(META_CONTRADICTION).cloned().unwrap_or_default();
+            marks.push((target.clone(), reason));
+        } else if e.type_ == ledger::TYPE_UNIT_FAILED && e.meta.contains_key(META_COMPENSATED) {
+            if let Ok(v) = serde_json::from_slice::<Value>(&e.data) {
+                if let Some(id) = v.get("id").and_then(Value::as_str) {
+                    *drained.entry(id.to_string()).or_default() += 1;
+                }
+            }
+        }
+    }
+    // Consume the first `drained[target]` marks per target; the rest are still pending.
+    let mut consumed: HashMap<String, usize> = HashMap::new();
+    let mut pending = Vec::new();
+    for (target, reason) in marks {
+        let done = drained.get(&target).copied().unwrap_or(0);
+        let seen = consumed.entry(target.clone()).or_default();
+        if *seen < done {
+            *seen += 1;
+        } else {
+            pending.push(Compensation { target, reason });
+        }
+    }
+    pending
 }
 
 /// The proof, carried into [`RunCtx::integrate_and_emit`], that a unit's three-tier
@@ -239,11 +784,18 @@ struct PriorFailure {
     gate_evidence: Vec<String>,
     /// The adjudicator's rejection reasoning (its raw output) when review rejected.
     review_reason: String,
+    /// A later unit's review proved this unit's ALREADY-INTEGRATED change wrong (spec 12,
+    /// unit 4): the contradiction reason, threaded into the RE-ENTERED unit's next prompt so
+    /// it fixes the specific defect its (now reverted) integrating commit introduced, rather
+    /// than blindly re-implementing. Empty except on a compensation re-entry.
+    contradiction: String,
 }
 
 impl PriorFailure {
     fn is_empty(&self) -> bool {
-        self.gate_evidence.is_empty() && self.review_reason.trim().is_empty()
+        self.gate_evidence.is_empty()
+            && self.review_reason.trim().is_empty()
+            && self.contradiction.trim().is_empty()
     }
 
     /// A one-line summary of the failure, for the escalation lesson (spec 02: the
@@ -255,6 +807,9 @@ impl PriorFailure {
         }
         if !self.review_reason.trim().is_empty() {
             parts.push(format!("review rejected: {}", self.review_reason.trim()));
+        }
+        if !self.contradiction.trim().is_empty() {
+            parts.push(format!("compensated: {}", self.contradiction.trim()));
         }
         parts.join("; ")
     }
@@ -277,6 +832,17 @@ impl PriorFailure {
         if !self.review_reason.trim().is_empty() {
             b.push_str("Your previous attempt was rejected by review: ");
             b.push_str(self.review_reason.trim());
+            b.push('\n');
+        }
+        if !self.contradiction.trim().is_empty() {
+            // Compensation re-entry (spec 12, unit 4): a later unit's work proved this
+            // unit's integrated change wrong, so your integrating commit was REVERTED off
+            // the run branch. Fix the specific contradiction, do not blindly restart.
+            b.push_str(
+                "A later unit's work proved your integrated change wrong; your integrating \
+                 commit was REVERTED off the run branch. Fix exactly this contradiction: ",
+            );
+            b.push_str(self.contradiction.trim());
             b.push('\n');
         }
         b.push('\n');
@@ -322,6 +888,13 @@ pub struct SpawnOpts {
     /// The stage that produced this spawn - the parked request's `stage` (the thin
     /// driver's per-unit `opts.phase` label half). Empty when the caller does not park.
     pub stage: String,
+    /// The 0-based remediation attempt this spawn runs under (the same integer the
+    /// deterministic `id` encodes after `#`). Every driver resolves the actual spawn
+    /// model through [`AgentDef::model_for_attempt`](crate::config::AgentDef::model_for_attempt)
+    /// with it, so a `model_ladder` agent (spec 10 unit 4) escalates one rung per attempt
+    /// and the model that runs matches the [`META_MODEL_ALIAS`] the conductor stamps for
+    /// the same attempt. 0 for a caller that does not remediate.
+    pub attempt: u32,
     /// The agent's PERSONA - its role instructions, the markdown body of its
     /// `.rigger/agents/<id>.md` definition (`AgentDef::prompt`). It belongs as the
     /// agent's SYSTEM prompt, distinct from the grounded task `prompt`. The conductor
@@ -530,6 +1103,43 @@ struct UnitProposed {
     gates: Vec<String>,
 }
 
+/// The replayable TRAJECTORY of a completed run (spec 13, unit 2 - trajectory replay/eval):
+/// the events recording what the WORLD did during the run - each agent's recorded
+/// [`SpawnResult`](spawn::TYPE_SPAWN_RESULT) (the OUTPUT the [`ReplayDriver`] answers a
+/// spawn from) and each gate's recorded [`GateVerdict`](contextgraph::TYPE_GATE_VERDICT)
+/// (the pass/fail [`run_gates`](RunCtx::run_gates) replays) - and NOTHING the conductor
+/// DERIVES from the config (unit lifecycle, review routing, escalation, decisions).
+///
+/// Re-driving exactly these under a CANDIDATE config in an isolated namespace lets the
+/// conductor re-derive the run's SHAPE (which stages, which review tier, which budget,
+/// which gates it reaches) over the SAME agent behaviour and gate outcomes - so a config
+/// edit's effect on first-pass yield / escalation / review is measurable against the
+/// recorded baseline without re-running a live campaign. A spawn the candidate config
+/// introduces that the trajectory never recorded simply parks (no answer to replay), so
+/// the re-drive honestly stops where the recorded behaviour runs out rather than
+/// fabricating one.
+///
+/// Each event is cloned with its run-scoping [`crate::run::META_RUN_ID`] stamp stripped:
+/// the caller seeds these AFTER a fresh `RunStarted` for the candidate criteria, so run
+/// scoping is by that boundary's POSITION ([`crate::run::current_run`]) and a stale
+/// foreign run id on a seeded input would only mislead a reader. Every other stamp is
+/// preserved - crucially the gate-verdict replay key ([`META_REPLAY_KEY`]) so the re-drive
+/// REPLAYS the recorded verdict rather than re-running the gate command. Order is
+/// preserved (the stream is already in append order).
+pub fn replay_trajectory(baseline: &[Event]) -> Vec<Event> {
+    baseline
+        .iter()
+        .filter(|e| {
+            e.type_ == spawn::TYPE_SPAWN_RESULT || e.type_ == contextgraph::TYPE_GATE_VERDICT
+        })
+        .map(|e| {
+            let mut e = e.clone();
+            e.meta.remove(crate::run::META_RUN_ID);
+            e
+        })
+        .collect()
+}
+
 /// Run executes the workflow and returns the final run state, projected from the
 /// events it emitted. Independent stages run concurrently in waves.
 pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
@@ -588,6 +1198,77 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
             Some((key, (v.pass, v.evidence)))
         })
         .collect();
+    // Content-address cache (spec 12, unit 1): seed `input_digest -> (position, unit)` from
+    // the prior log's GREEN gate verdicts (those carrying a META_INPUT_DIGEST), so a fresh
+    // gate whose command + tree-sha digest matches is answered as a logged cache-hit citing
+    // that position. prior_events is ascending by position, and we insert only-if-absent, so
+    // the EARLIEST green for a digest is the cited source (a later cache-hit re-emit under
+    // the same digest is a no-op). Failures are excluded here (a red must re-prove), and the
+    // integrate-time GATED_BY artifact verdicts carry no replay key / digest so they never
+    // seed the cache. The unit is recovered once from the verdict's replay key.
+    let mut green_digests: HashMap<String, (u64, String)> = HashMap::new();
+    for e in prior_events
+        .iter()
+        .filter(|e| e.type_ == contextgraph::TYPE_GATE_VERDICT)
+    {
+        let Some(digest) = e.meta.get(META_INPUT_DIGEST) else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_slice::<GateVerdictData>(&e.data) else {
+            continue;
+        };
+        if !v.pass {
+            continue;
+        }
+        let unit = e
+            .meta
+            .get(META_REPLAY_KEY)
+            .and_then(|k| unit_of_gate_key(k))
+            .unwrap_or_default()
+            .to_string();
+        green_digests
+            .entry(digest.clone())
+            .or_insert((e.position, unit));
+    }
+    // Staleness set (spec 12, unit 2): seed the units a prior UnitIntegrated marked STALE
+    // (its META_STALE names the downstream units its integration invalidated), so a
+    // stepwise resume re-refuses their cached gate hits exactly as the process that marked
+    // them would - the invalidation is replay-deterministic over the log, not lost with the
+    // marking process. Extended live below each time a unit integrates this process.
+    let stale_units = stale_units_from_log(prior_events);
+
+    // Compensation replay state (spec 12, unit 4): the integrating commits a PRIOR step
+    // already reverted (so a resume never re-reverts them - the reverse gear is
+    // replay-deterministic over the log) and the contradiction fed back to each re-entered
+    // unit (so its resumed first attempt is still prompted with the specific contradiction).
+    // Both recovered from the `UnitFailed` events a compensation stamped: [`META_COMPENSATED`]
+    // names the reverted commits, [`META_CONTRADICTION`] the reason. An already-re-integrated
+    // unit is terminal and never reads its feedback, so seeding the last one per unit is safe.
+    let mut compensated_commits: HashSet<String> = HashSet::new();
+    let mut compensation_feedback: HashMap<String, String> = HashMap::new();
+    for e in prior_events
+        .iter()
+        .filter(|e| e.type_ == ledger::TYPE_UNIT_FAILED)
+    {
+        if let Some(list) = e.meta.get(META_COMPENSATED) {
+            for c in list.split(',').filter(|s| !s.is_empty()) {
+                compensated_commits.insert(c.to_string());
+            }
+        }
+        if let Some(reason) = e.meta.get(META_CONTRADICTION) {
+            if let Ok(v) = serde_json::from_slice::<Value>(&e.data) {
+                if let Some(id) = v.get("id").and_then(Value::as_str) {
+                    compensation_feedback.insert(id.to_string(), reason.clone());
+                }
+            }
+        }
+    }
+    // Crash-resume recovery of the reverse gear (spec 12, unit 4): re-derive any compensation
+    // that was durably QUEUED (a review named the target) but never DRAINED (its rollback did
+    // not complete) in a prior window, so a resume re-drives it. Empty on a fresh run and on a
+    // resume of a fully-drained run. Seeds the in-memory queue below; the pre-loop drain then
+    // reverts them before the first wave re-schedules the re-entered units.
+    let pending_compensations = pending_compensations_from_log(prior_events);
 
     // The RunCtx is created BEFORE the coverage check so a coverage gap can be
     // flagged as a spec defect through the event log (item 2 / §4.4) instead of
@@ -628,6 +1309,19 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         prior_attempts,
         replayed_keys: Mutex::new(replayed_keys),
         gate_verdicts: Mutex::new(gate_verdicts),
+        green_digests: Mutex::new(green_digests),
+        stale_units: Mutex::new(stale_units),
+        compensations: Mutex::new(pending_compensations),
+        compensation_feedback: Mutex::new(compensation_feedback),
+        compensation_attempts: Mutex::new(HashMap::new()),
+        compensated_commits: Mutex::new(compensated_commits),
+        // The failure taxonomy is built ONCE here from the same validated config the run
+        // loads (its regexes were compiled and classes checked at `Config::validate`), so
+        // every gate-failure classification this run makes reads one rule set.
+        taxonomy: cfg
+            .workflow
+            .failure_taxonomy()
+            .map_err(|e| Error(e.to_string()))?,
     };
 
     let mut stages = cfg.workflow.stages.clone();
@@ -691,36 +1385,124 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     // after planning: it has no units yet, so we run the planning wave + harvest
     // the proposed units FIRST, then check coverage against the extended DAG.
     // A run with no planner checks coverage up front, before any agent runs.
+    // The adversarial plan-critique gate (Unit 1, spec 10) releases the fan-out. A
+    // workflow with no gate leaves it released, so the wave loop runs exactly as before.
+    let mut fan_out_released = true;
     if has_producer(&stages) {
-        let ready = ready_stages(&stages, &integrated, &terminal);
+        // The plan-critique gate (if wired) is driven SYNCHRONOUSLY below, never through a
+        // wave, so exclude it from the planning wave's ready set: on a resume where `plan`
+        // already integrated, `ready_stages` would otherwise surface the gate (it needs
+        // plan) and `run_wave` would run it through the wrong path (`run_single_stage`).
+        let gate = critique_gate_name(&stages);
+        let ready = wave_ready(&stages, &integrated, &terminal, gate.as_deref());
         if !ready.is_empty() {
             ctx.run_wave(&stages, &ready, &mut integrated, &mut terminal)?;
             ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)?;
         }
+        // If the workflow wires a plan-critique stage, review the PROPOSED DAG with its
+        // adversary + adjudicator BEFORE any implementer runs. A reject loops the planner
+        // (bounded by the remediation depth); only an approve releases the fan-out. This
+        // runs synchronously here - not as a main-loop stage - because its reject re-runs
+        // the PLANNER, a coupling the per-stage scheduler does not express. Park/budget/
+        // halt from its reviewer or re-plan spawns are routed exactly like a wave's.
+        if let Some(gate) = gate {
+            // Resume short-circuit: a gate that already RESOLVED in a prior step must not
+            // re-run (it would re-spawn its reviewers and re-emit UnitIntegrated). An
+            // integrated gate released the fan-out; a terminal-but-not-integrated gate
+            // escalated and holds it. Both states are seeded from the log at run start.
+            if integrated.contains(&gate) {
+                fan_out_released = true;
+            } else if terminal.contains(&gate) {
+                fan_out_released = false;
+            } else {
+                let plan = producer_name(&stages)
+                    .expect("a critique gate is detected only when a producer exists");
+                match ctx.run_plan_critique_gate(
+                    &gate,
+                    &plan,
+                    &mut stages,
+                    &mut proposed,
+                    &mut integrated,
+                    &mut terminal,
+                ) {
+                    Ok(released) => fan_out_released = released,
+                    // A parked reviewer/re-plan spawn (stepwise/replay) ends the step
+                    // cleanly; a later step replays the recorded result and re-reaches
+                    // the gate.
+                    Err(e) if is_parked(&e) => {
+                        ctx.parked.store(true, Ordering::SeqCst);
+                        fan_out_released = false;
+                    }
+                    // A budget-refused gate spawn already set `budget_broke`; hold the
+                    // fan-out and let the breaker trip below (like the wave's handling).
+                    Err(e) if is_budget_refused(&e) => fan_out_released = false,
+                    // A degenerate-reviewer HALT (Gap 18) propagates loudly, marker
+                    // stripped.
+                    Err(e) if is_degenerate_reviewer(&e) => {
+                        return Err(Error(e.0.replace(DEGENERATE_MARKER, "")))
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+        }
     }
     ctx.check_coverage_or_flag(&stages, &deps.criteria)?;
 
-    loop {
-        let ready = ready_stages(&stages, &integrated, &terminal);
-        if ready.is_empty() {
-            break;
+    // A held fan-out (the plan-critique gate did not release, or a gate spawn was parked/
+    // budget-refused) must still trip the breaker if a gate spawn exhausted the budget -
+    // the main wave loop below is skipped, so it cannot.
+    if !fan_out_released && ctx.budget_broke() {
+        ctx.trip_budget_breaker()?;
+    }
+
+    // The wave loop runs only once the plan-critique gate released the fan-out (or the
+    // workflow wires no gate, so it stayed released). A held gate leaves the frontier
+    // unscheduled; the run reports the gate's escalation/park, never a fan-out over an
+    // unapproved decomposition.
+    if fan_out_released {
+        // The critique gate belongs to the producer prelude EXCLUSIVELY: it must never
+        // enter a main wave. Without this filter, a gate left verified-but-not-integrated
+        // by an interrupted prior step satisfies ready_stages (needs plan, not terminal)
+        // and run_wave drives it through run_single_stage's standalone-review path, whose
+        // lenses have no worktree - the empty-cwd isolation refusal that killed the first
+        // adopted spec-10 run (lesson-plan-critique-996e0010).
+        let gate = critique_gate_name(&stages);
+        // Crash-resume of the reverse gear (spec 12, unit 4): drain any compensation the
+        // prior window durably QUEUED but never completed (re-derived into the queue at run
+        // start) BEFORE the first `wave_ready` - the per-wave drain below runs only AFTER a
+        // wave, but a resume whose units are all already terminal schedules no wave, so
+        // without this the seeded rollback would never re-drive. On a fresh run (or a resume
+        // with nothing pending) the queue is empty and this is a no-op.
+        ctx.drain_compensations(&mut integrated, &mut terminal)?;
+        loop {
+            let ready = wave_ready(&stages, &integrated, &terminal, gate.as_deref());
+            if ready.is_empty() {
+                break;
+            }
+            // checkBudget circuit-breaker (§4.4, §8): before each wave, if the spawn
+            // budget is spent, trip the breaker - record it, abort the task, and pause
+            // the loop. Resume replays the ledger and continues from where it stopped.
+            if ctx.budget_tripped() {
+                ctx.trip_budget_breaker()?;
+                break;
+            }
+            ctx.run_wave(&stages, &ready, &mut integrated, &mut terminal)?;
+            // The breaker also trips at SPAWN granularity, mid-wave (item 9): a single
+            // wide wave can exhaust the budget partway through, refusing later spawns.
+            // Record the breaker and stop here too, not only at the next wave boundary.
+            if ctx.budget_broke() {
+                ctx.trip_budget_breaker()?;
+                break;
+            }
+            ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)?;
+            // Post-integration compensation (spec 12, unit 4): a review this wave may have
+            // proven a PRIOR integrated unit wrong. Drain the queued rollbacks now, between
+            // waves (single-threaded), reverting the condemned unit's integrating commit(s)
+            // on the run branch and re-entering it into remediation - so the next
+            // `wave_ready` re-schedules it. The forward door stays untouched; this is its
+            // evented reverse gear.
+            ctx.drain_compensations(&mut integrated, &mut terminal)?;
         }
-        // checkBudget circuit-breaker (§4.4, §8): before each wave, if the spawn
-        // budget is spent, trip the breaker - record it, abort the task, and pause
-        // the loop. Resume replays the ledger and continues from where it stopped.
-        if ctx.budget_tripped() {
-            ctx.trip_budget_breaker()?;
-            break;
-        }
-        ctx.run_wave(&stages, &ready, &mut integrated, &mut terminal)?;
-        // The breaker also trips at SPAWN granularity, mid-wave (item 9): a single
-        // wide wave can exhaust the budget partway through, refusing later spawns.
-        // Record the breaker and stop here too, not only at the next wave boundary.
-        if ctx.budget_broke() {
-            ctx.trip_budget_breaker()?;
-            break;
-        }
-        ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)?;
     }
 
     // Phase boundary (§4.3): the wave loop has converged - every ready unit reached a
@@ -876,6 +1658,70 @@ struct RunCtx<'a> {
     /// arch-gate-verdict-redundant-scan): gate-verdict replay is O(1) per lookup, seeded
     /// from the same `prior_events` read that already seeded `replayed_keys`.
     gate_verdicts: Mutex<HashMap<String, (bool, String)>>,
+    /// The content-address cache (spec 12, unit 1): `input_digest -> (position, unit)` of
+    /// each GREEN gate verdict, seeded ONCE at run start from the prior log's GateVerdicts
+    /// that carry a [`META_INPUT_DIGEST`] and extended as this process records fresh greens.
+    /// [`cached_green_verdict`](RunCtx::cached_green_verdict) consults it at the ONE
+    /// run_gates hit-site so a gate whose `(command, tree-sha)` digest matches a prior green
+    /// is answered as a logged cache-hit citing that `position` instead of re-running the
+    /// command. Only GREEN verdicts enter it (a red must always re-prove), and the EARLIEST
+    /// green for a digest wins (insert-if-absent in ascending position), so a cache-hit
+    /// re-emit under the same digest cites the original green, never a chain of hits. The
+    /// stored `unit` is the green's earner, carried as provenance in the cache-hit evidence.
+    /// Unit 2's staleness pass gates the hit at this SAME seam but keys off the REQUESTING
+    /// unit ([`stale_units`](RunCtx::stale_units) / [`is_stale`](RunCtx::is_stale)), not the
+    /// stored earner: it is the asker whose verdicts must stop hitting.
+    green_digests: Mutex<HashMap<String, (u64, String)>>,
+    /// The units whose cached gate verdicts are STALE (spec 12, unit 2): each was marked by
+    /// a downstream staleness pass because an integrated unit touched files intersecting its
+    /// blast radius. Seeded ONCE at run start from the prior log's `UnitIntegrated`
+    /// [`META_STALE`] marks (so staleness survives a stepwise resume, replay-deterministic
+    /// over the log) and extended live each time a unit integrates. The run_gates content-
+    /// cache hit-site consults it via [`is_stale`](RunCtx::is_stale): a stale unit's gate is
+    /// never cache-answered - it re-runs against the changed world - while an unaffected
+    /// unit's green still hits. An integrated unit is skipped by the run loop, so a stale
+    /// mark on one is harmless; a still-pending stale unit re-verifies its gates until it
+    /// lands (re-running a gate is never wrong, only the cache benefit is withheld).
+    stale_units: Mutex<HashSet<String>>,
+    /// The queued post-integration compensations (spec 12, unit 4): each is an
+    /// already-integrated unit a later unit's review named as the defect source. A review
+    /// site (inside a possibly-concurrent wave) PUSHES here; the single-threaded run loop
+    /// DRAINS it after the wave via [`drain_compensations`](RunCtx::drain_compensations),
+    /// reverting the unit's integrating commit(s) on the run branch and re-entering it into
+    /// remediation. Queue-then-drain keeps the git revert and the scheduler-set mutation off
+    /// the concurrent path, exactly as the integrate lock serializes the forward door.
+    compensations: Mutex<Vec<Compensation>>,
+    /// The contradiction fed back to each RE-ENTERED unit (spec 12, unit 4): unit id -> the
+    /// reason a later unit's review proved it wrong. Seeded at run start from the prior log's
+    /// compensation marks (so a resumed re-entry is still prompted with the contradiction)
+    /// and set live when a compensation drains. `run_single_stage` reads it once to seed the
+    /// re-entered unit's first-attempt prompt; an already-re-integrated (terminal) unit never
+    /// reads it, so a stale entry is harmless.
+    compensation_feedback: Mutex<HashMap<String, String>>,
+    /// The attempt counter a compensated unit RE-ENTERS at (spec 12, unit 4): unit id -> the
+    /// attempt its LAST compensation stamped. A compensation drain writes it (the same count
+    /// its `UnitFailed` records) and `run_single_stage` reads it (via
+    /// [`effective_attempts`](RunCtx::effective_attempts)) so an IN-RUN re-entry advances the
+    /// attempt exactly as a resume's folded `UnitFailed(attempts:N)` would - without it the
+    /// re-implemented tree would gate under the CONDEMNED pass's attempt key and REPLAY its
+    /// stale verdict (a content-blind false green) instead of re-gating, and repeated in-run
+    /// compensation would never accumulate toward escalation. Empty on a run with no
+    /// compensation; `prior_attempts` (the immutable run-start snapshot) covers the resume
+    /// case, and `effective_attempts` takes the max of the two.
+    compensation_attempts: Mutex<HashMap<String, u32>>,
+    /// The integrating commits already REVERTED by a compensation (spec 12, unit 4): the
+    /// replay-idempotency guard. Seeded at run start from the prior log's [`META_COMPENSATED`]
+    /// marks and extended as this process reverts, so a stepwise resume (or a re-reached
+    /// review) never applies the same git revert twice - the reverse gear is deterministic
+    /// over the log exactly like the forward integrate.
+    compensated_commits: Mutex<HashSet<String>>,
+    /// The declarative failure taxonomy (spec 10, unit 2): the SINGLE authority the
+    /// conductor folds its gate-failure classification from, built once from
+    /// `defaults.failure_rules` (or the shipped spec-07-preserving default when none are
+    /// authored). `run_gates` classifies a gate failure through it to decide the
+    /// three-way outcome (rerun a flaky/infra failure, annotate a mixed rerun flaky and
+    /// never demote, fail a product failure exactly as before).
+    taxonomy: failure::Taxonomy,
 }
 
 #[cfg(test)]
@@ -913,6 +1759,16 @@ impl<'a> RunCtx<'a> {
             prior_attempts: HashMap::new(),
             replayed_keys: Mutex::new(HashSet::new()),
             gate_verdicts: Mutex::new(HashMap::new()),
+            green_digests: Mutex::new(HashMap::new()),
+            stale_units: Mutex::new(HashSet::new()),
+            compensations: Mutex::new(Vec::new()),
+            compensation_feedback: Mutex::new(HashMap::new()),
+            compensation_attempts: Mutex::new(HashMap::new()),
+            compensated_commits: Mutex::new(HashSet::new()),
+            // The pure-helper test context builds no gates through the taxonomy; the
+            // shipped default is a harmless placeholder. The gate-behavior tests drive the
+            // full `run`, which builds the taxonomy from the config under test.
+            taxonomy: failure::Taxonomy::default(),
         }
     }
 }
@@ -929,7 +1785,7 @@ impl RunCtx<'_> {
     /// expected-revision handling, the position stamp, and the post-append graph fold
     /// live in ONE place and can never silently diverge (finding
     /// arch-emit-keyed-dup-authority).
-    fn append_and_fold(&self, mut ev: Event) -> Result<(), Error> {
+    fn append_and_fold(&self, mut ev: Event) -> Result<u64, Error> {
         // Stamp the run id on every conductor-emitted event (spec 06, unit 1): the one
         // chokepoint every emit path routes through, so unit/status/gate-verdict/spec-
         // defect events are all attributable to their run. Skipped only when the run id
@@ -945,7 +1801,10 @@ impl RunCtx<'_> {
             ev.position = pos;
             let _ = g.apply(&ev);
         }
-        Ok(())
+        // Return the appended log position so a caller that must CITE this event later
+        // (the content-address cache's green-verdict provenance, spec 12 unit 1) can
+        // record it; the un-citing emit wrappers discard it.
+        Ok(pos)
     }
 
     /// Emit an event, optionally stamping the acting agent in its metadata (the
@@ -956,7 +1815,25 @@ impl RunCtx<'_> {
         if !actor.is_empty() {
             ev = ev.with_meta(contextgraph::META_ACTOR, actor);
         }
-        self.append_and_fold(ev)
+        self.append_and_fold(ev).map(|_| ())
+    }
+
+    /// [`emit`](RunCtx::emit) plus arbitrary EXTRA metadata (each `(key, value)` pair
+    /// with a non-empty value; empties omitted, exactly as
+    /// [`emit_keyed_meta`](RunCtx::emit_keyed_meta) omits them). Unlike `emit_keyed_meta`
+    /// this appends UNCONDITIONALLY - it carries no replay key - so it is only for events
+    /// that are already emitted at most once per reach (the review-reject `UnitFailed`,
+    /// which the per-unit loop appends once per failing attempt). It exists so that
+    /// [`META_WORKTREE_SHA`] can ride an un-keyed lifecycle event without a second event
+    /// type, the same way `emit_keyed_meta` rides the model stamps on the keyed ones.
+    fn emit_meta(&self, type_: &str, payload: Value, extra: &[(&str, &str)]) -> Result<(), Error> {
+        let mut ev = Event::new(type_, serde_json::to_vec(&payload)?);
+        for (k, v) in extra {
+            if !v.is_empty() {
+                ev = ev.with_meta(*k, *v);
+            }
+        }
+        self.append_and_fold(ev).map(|_| ())
     }
 
     /// Emit an event IDEMPOTENTLY under a deterministic replay `key` (spec 04, criterion
@@ -1007,18 +1884,21 @@ impl RunCtx<'_> {
                 ev = ev.with_meta(*k, *v);
             }
         }
-        self.append_and_fold(ev)
+        self.append_and_fold(ev).map(|_| ())
     }
 
-    /// The requested model ALIAS an agent is spawned with (`AgentDef::model`, the value
-    /// that also rides the spawn request), or empty when the stage names no agent (a
-    /// producer/review-only stage) or the agent is unknown. Stamped onto the spawn's unit
-    /// events via [`META_MODEL_ALIAS`] (spec 05 line 52).
-    fn agent_model(&self, agent_id: &str) -> String {
+    /// The requested model ALIAS an agent is spawned with for `attempt` - the cascade rung
+    /// [`AgentDef::model_for_attempt`](crate::config::AgentDef::model_for_attempt) resolves
+    /// (spec 10 unit 4), which is `AgentDef::model` for a ladder-less agent - or empty when
+    /// the stage names no agent (a producer/review-only stage) or the agent is unknown. This
+    /// is the SAME resolution the driver runs to pick the actual spawn model, so the alias
+    /// stamped onto the spawn's unit events via [`META_MODEL_ALIAS`] (spec 05 line 52) names
+    /// exactly the rung that ran for that attempt.
+    fn agent_model(&self, agent_id: &str, attempt: u32) -> String {
         self.cfg
             .agents
             .get(agent_id)
-            .map(|a| a.model.clone())
+            .map(|a| a.model_for_attempt(attempt))
             .unwrap_or_default()
     }
 
@@ -1039,27 +1919,350 @@ impl RunCtx<'_> {
         self.gate_verdicts.lock().unwrap().get(key).cloned()
     }
 
-    /// Emit a gate's `GateVerdict` under its replay `key` (idempotent via
-    /// [`emit_keyed`](RunCtx::emit_keyed)) and cache its outcome so a later
-    /// [`recorded_gate_verdict`](RunCtx::recorded_gate_verdict) - this process or a
-    /// re-step - replays it without re-running the command. The append and the cache
-    /// insert are paired here so they can never drift.
+    /// The content-address cache-hit for a gate whose `(command, tree-sha)` `digest`
+    /// matches a prior GREEN verdict: its `(position, unit)`, or `None` when no green
+    /// carries this digest (spec 12, unit 1). This is the ONE site the content cache is
+    /// consulted - the gate is answered from the log instead of re-run - so it is also the
+    /// single seam unit 2's staleness pass gates the hit at (its [`is_stale`](RunCtx::is_stale)
+    /// guard skips this consult for a stale REQUESTING unit) and the merged-tree re-gate
+    /// (unit 5) reuses. Only GREEN verdicts ever populate the cache, so a red is never
+    /// cache-answered here.
+    fn cached_green_verdict(&self, digest: &str) -> Option<(u64, String)> {
+        self.green_digests.lock().unwrap().get(digest).cloned()
+    }
+
+    /// Whether `unit`'s cached gate verdicts are STALE (spec 12, unit 2): a downstream
+    /// staleness pass invalidated them because an integrated unit touched files in its
+    /// blast radius. The run_gates content-cache hit-site checks this before honoring a
+    /// hit, so a stale unit re-runs its gate against the changed world instead of reusing a
+    /// green earned before the integration.
+    fn is_stale(&self, unit: &str) -> bool {
+        self.stale_units.lock().unwrap().contains(unit)
+    }
+
+    /// The HIGH-WATER attempt `unit` RE-ENTERS its lifecycle at (spec 12, unit 4): the highest
+    /// attempt at which the unit has ANY recorded evidence, reconciled by MAX across every live
+    /// source so it equals what a resume would fold from the log even for a unit whose WHOLE
+    /// lifecycle ran in THIS process. Three sources:
+    ///
+    /// - [`prior_attempts`](RunCtx::prior_attempts): the run-start folded `UnitFailed(attempts:N)`
+    ///   count. Carries a RESUMED unit's accumulated remediation, but is an IMMUTABLE run-start
+    ///   snapshot - it is `0` for a unit that first failed/integrated IN this process.
+    /// - [`compensation_attempts`](RunCtx::compensation_attempts): the LIVE bump the drain
+    ///   recorded, so a second in-run compensation advances past the first.
+    /// - [`gate_verdict_high_water`](RunCtx::gate_verdict_high_water): the highest attempt at
+    ///   which the unit has a LIVE recorded gate verdict in [`gate_verdicts`](RunCtx::gate_verdicts)
+    ///   (seeded from the log at run start AND extended as this process runs gates). THIS is the
+    ///   source `prior_attempts` misses in-run: a unit that took >=1 remediation before it
+    ///   integrated recorded a green gate verdict at its approving attempt, and the reverse gear
+    ///   must clear THAT attempt - not the compensation count over a stale `0` snapshot.
+    ///
+    /// Taking the max of all three makes an in-run reverse-gear re-entry advance the attempt
+    /// EXACTLY as a resume's fold would, so [`drain_compensations`](RunCtx::drain_compensations)
+    /// stamps `high-water + 1` and the re-implemented tree gates under a FRESH
+    /// `(unit, attempt, gate)` key instead of replaying the condemned pass's verdict via the
+    /// content-blind exact-key replay - and repeated compensation accumulates toward the
+    /// escalation bound.
+    fn effective_attempts(&self, unit: &str) -> u32 {
+        let prior = self.prior_attempts.get(unit).copied().unwrap_or(0);
+        let bumped = self
+            .compensation_attempts
+            .lock()
+            .unwrap()
+            .get(unit)
+            .copied()
+            .unwrap_or(0);
+        let gate_high_water = self.gate_verdict_high_water(unit).unwrap_or(0);
+        prior.max(bumped).max(gate_high_water)
+    }
+
+    /// The highest attempt at which `unit` has a recorded gate verdict in the LIVE
+    /// [`gate_verdicts`](RunCtx::gate_verdicts) cache (spec 12, unit 4). The cache is keyed by
+    /// [`gate_verdict_key`] (`{unit}/gate:{gate}#{attempt}`), seeded once at run start from the
+    /// prior log and extended by [`emit_gate_verdict`](RunCtx::emit_gate_verdict) as this
+    /// process runs gates, so unlike the immutable `prior_attempts` snapshot it reflects an
+    /// IN-RUN unit's true attempt reach. Recovers the `{unit}` segment via [`unit_of_gate_key`]
+    /// (which matches only the `/gate:` gate-RUN infix, so a `/gate-skip:` provenance key or a
+    /// `deferred/gate:` key never contributes) and the trailing `#{attempt}` via `rsplit_once`;
+    /// returns the max over the unit's keys, or `None` when it has recorded no gate verdict yet.
+    fn gate_verdict_high_water(&self, unit: &str) -> Option<u32> {
+        self.gate_verdicts
+            .lock()
+            .unwrap()
+            .keys()
+            .filter(|k| unit_of_gate_key(k) == Some(unit))
+            .filter_map(|k| k.rsplit_once('#').and_then(|(_, a)| a.parse::<u32>().ok()))
+            .max()
+    }
+
+    /// Mark every DOWNSTREAM unit a just-integrated `unit`'s `touched` files render stale
+    /// (spec 12, unit 2), returning the marked ids for the `UnitIntegrated` provenance
+    /// mark. The set is decided by [`stale_downstream_units`] (the single staleness
+    /// authority) and inserted LIVE into [`stale_units`](RunCtx::stale_units) so a later
+    /// gate for one of them in THIS process stops hitting the cache immediately; the caller
+    /// records the same ids as [`META_STALE`] so a resume re-seeds the identical set.
+    fn mark_stale_downstream(
+        &self,
+        stages: &BTreeMap<String, Stage>,
+        unit: &str,
+        touched: &[String],
+    ) -> Vec<String> {
+        let staled = stale_downstream_units(stages, self.deps.grounder, unit, touched);
+        if !staled.is_empty() {
+            let mut set = self.stale_units.lock().unwrap();
+            for u in &staled {
+                set.insert(u.clone());
+            }
+        }
+        staled
+    }
+
+    /// Drain the queued post-integration COMPENSATIONS (spec 12, unit 4), single-threaded
+    /// after a wave: for each ALREADY-INTEGRATED unit a later unit's review named as the
+    /// defect source, REVERT its integrating commit(s) on the run branch in reverse
+    /// integration order, RECORD the compensation as `UnitFailed` metadata (existing
+    /// vocabulary, no new event type), and RE-ENTER it into remediation - dropping it from
+    /// the integrated/terminal sets so the next wave re-schedules it, and seeding the
+    /// contradiction as its next-attempt feedback. This is the one-way integrate door's
+    /// principled, evented reverse gear.
+    ///
+    /// Idempotent over the log: a commit already recorded as compensated (seeded at run
+    /// start / stamped here) is never reverted twice, so a stepwise replay - or a re-reached
+    /// review - applies no second git revert and the run branch stays deterministic. A
+    /// named unit that never integrated (a typo, or one already superseded) is a no-op: there
+    /// is nothing to revert.
+    fn drain_compensations(
+        &self,
+        integrated: &mut HashSet<String>,
+        terminal: &mut HashSet<String>,
+    ) -> Result<(), Error> {
+        let queued: Vec<Compensation> = std::mem::take(&mut *self.compensations.lock().unwrap());
+        for comp in queued {
+            // Only an integrated unit can be rolled back; anything else has no integrating
+            // commit on the run branch to revert.
+            if !integrated.contains(&comp.target) {
+                continue;
+            }
+            let commits = self.commits_to_compensate(&comp.target);
+            if commits.is_empty() {
+                continue;
+            }
+            // Revert each commit newest-first UNDER the integrate lock, so the rollback is
+            // serialized with any concurrent forward integration exactly as a merge is.
+            let reverted = {
+                let _lock = self.integrate_mu.lock().unwrap();
+                let mut done: Vec<String> = Vec::new();
+                for commit in &commits {
+                    Worktree::revert_on_base(
+                        &self.deps.repo,
+                        commit,
+                        &format!("rigger: compensate {} (revert {commit})", comp.target),
+                    )?;
+                    done.push(commit.clone());
+                }
+                done
+            };
+            {
+                let mut set = self.compensated_commits.lock().unwrap();
+                for c in &reverted {
+                    set.insert(c.clone());
+                }
+            }
+            // Record the compensation AND re-enter remediation on the EXISTING `UnitFailed`
+            // vocabulary (no new event type): the reverted commits + the contradiction ride
+            // as metadata for provenance and replay recovery. Un-keyed, appended once per
+            // drained compensation (the `compensated_commits` guard bounds re-reaches).
+            let compensated = reverted.join(",");
+            let contradiction = comp.reason.trim();
+            // ADVANCE the attempt counter (spec 12, unit 4): one past the unit's HIGH-WATER
+            // attempt (`effective_attempts` = the max of its resume-folded `prior_attempts`, any
+            // live earlier compensation this run, AND the highest attempt at which it recorded a
+            // live gate verdict - the attempts its OWN prior in-run remediation already consumed),
+            // so the re-entered unit re-implements and re-gates under a FRESH attempt key rather
+            // than replaying the CONDEMNED pass's verdict, and repeated compensation accumulates
+            // toward escalation. Recorded LIVE in `compensation_attempts` so the in-process
+            // re-entry (`effective_attempts`) reads it, matching the durable `UnitFailed(attempts:N)`
+            // a resume would fold from the same high-water mark.
+            let attempts = self.effective_attempts(&comp.target) + 1;
+            self.compensation_attempts
+                .lock()
+                .unwrap()
+                .insert(comp.target.clone(), attempts);
+            self.emit_meta(
+                ledger::TYPE_UNIT_FAILED,
+                json!({"id": comp.target, "attempts": attempts}),
+                &[
+                    (META_COMPENSATED, &compensated),
+                    (META_CONTRADICTION, contradiction),
+                ],
+            )?;
+            self.compensation_feedback
+                .lock()
+                .unwrap()
+                .insert(comp.target.clone(), comp.reason.clone());
+            // Re-enter the unit into remediation: drop the integrated/terminal marks so the
+            // next wave re-schedules it fresh (its branch was deleted on its integrate, so
+            // it re-implements off the now-reverted run branch).
+            integrated.remove(&comp.target);
+            terminal.remove(&comp.target);
+        }
+        Ok(())
+    }
+
+    /// The integrating commit(s) of `unit` to REVERT for a compensation (spec 12, unit 4):
+    /// the REAL git commits its `UnitIntegrated` events recorded in THIS run, in REVERSE
+    /// integration order (newest first, so reverting the newest never conflicts with an
+    /// older commit it sits on top of), excluding empty / review-only-marker commits and any
+    /// commit already compensated (the replay-idempotency guard). A unit that integrated once
+    /// yields exactly one commit; the reverse order is the general contract for a unit that
+    /// integrated more than once across compensation cycles.
+    fn commits_to_compensate(&self, unit: &str) -> Vec<String> {
+        let all = match self.deps.store.read_stream(STREAM, 0, Direction::Forward) {
+            Ok(e) => e,
+            Err(_) => return Vec::new(),
+        };
+        let events = crate::run::current_run(&all);
+        let already = self.compensated_commits.lock().unwrap();
+        let mut commits: Vec<String> = Vec::new();
+        for e in events
+            .iter()
+            .filter(|e| e.type_ == ledger::TYPE_UNIT_INTEGRATED)
+        {
+            let Ok(v) = serde_json::from_slice::<Value>(&e.data) else {
+                continue;
+            };
+            if v.get("id").and_then(Value::as_str) != Some(unit) {
+                continue;
+            }
+            let Some(commit) = v.get("commit").and_then(Value::as_str) else {
+                continue;
+            };
+            if commit.is_empty()
+                || commit == REVIEW_ONLY_NO_ARTIFACT
+                || already.contains(commit)
+                || commits.iter().any(|c| c == commit)
+            {
+                continue;
+            }
+            commits.push(commit.to_string());
+        }
+        // Recorded ascending by integration order; reverse to revert newest-first.
+        commits.reverse();
+        commits
+    }
+
+    /// Log a blast-radius SKIP (spec 12, unit 3): the inner loop did not run `gid` because its
+    /// `inputs:` globs miss the unit's grounded blast radius. Recorded as a `GateVerdict`
+    /// carrying `skipped: true` and the reason (no new event type - the skip rides the existing
+    /// vocabulary), under the distinct [`gate_skip_key`] so it never shadows the gate-RUN key
+    /// the exhaustive integrate pass records, and with NO content digest so it never seeds the
+    /// cache. The metrics fold excludes `skipped` verdicts exactly as it excludes the
+    /// integrate-time artifact bookkeeping, so a skip is never counted as a gate pass. Keyed so
+    /// a stepwise resume re-appends it exactly once.
+    fn emit_gate_skip(
+        &self,
+        unit: &str,
+        gid: &str,
+        attempt: u32,
+        inputs: &[String],
+        blast_radius: &[String],
+    ) -> Result<(), Error> {
+        let key = gate_skip_key(unit, attempt, gid);
+        {
+            // Idempotency guard, identical to `emit_gate_verdict`: a re-step that already
+            // recorded this skip re-appends nothing.
+            let mut keys = self.replayed_keys.lock().unwrap();
+            if !keys.insert(key.clone()) {
+                return Ok(());
+            }
+        }
+        let reason = format!(
+            "skipped: gate {gid:?} inputs {inputs:?} do not intersect the unit's blast radius \
+             {blast_radius:?}; the inner loop runs only blast-radius gates (spec 12, unit 3), and \
+             the exhaustive integrate pass still runs this gate"
+        );
+        let ev = Event::new(
+            contextgraph::TYPE_GATE_VERDICT,
+            serde_json::to_vec(&json!({
+                "gate": gid, "pass": true, "skipped": true, "evidence": reason
+            }))?,
+        )
+        .with_meta(META_REPLAY_KEY, &key);
+        self.append_and_fold(ev)?;
+        Ok(())
+    }
+
+    /// Emit a gate's `GateVerdict` under its replay `key`, stamping its content address and
+    /// caching its outcome so both the exact-key replay
+    /// ([`recorded_gate_verdict`](RunCtx::recorded_gate_verdict)) and the content-address
+    /// cache ([`cached_green_verdict`](RunCtx::cached_green_verdict)) can answer a later
+    /// gate without re-running the command. The append and the two cache inserts are paired
+    /// here so they can never drift.
+    ///
+    /// `digest` is the gate's [`input_digest`] (`""` when there is no tree to address, e.g.
+    /// a repo-less / worktree-less gate run - then content-addressing is simply off).
+    /// `cache_hit_of` is `Some(position)` when THIS verdict is itself a content-addressed
+    /// cache-hit answering from that prior green (its provenance citation), `None` for a
+    /// freshly-run gate. On a GREEN with a non-empty digest the `(position, unit)` is
+    /// recorded in the content cache insert-if-absent, so the earliest green for a digest
+    /// stays the cited source and a red never enters the cache.
+    #[allow(clippy::too_many_arguments)]
     fn emit_gate_verdict(
         &self,
         key: &str,
+        unit: &str,
         gid: &str,
         pass: bool,
+        flaky: bool,
         evidence: &str,
+        digest: &str,
+        cache_hit_of: Option<u64>,
     ) -> Result<(), Error> {
-        self.emit_keyed(
-            key,
+        {
+            // Idempotency guard, identical to `emit_keyed_meta`: a key already recorded
+            // (seeded at run start or emitted this process) is a replay - append nothing.
+            // The run_gates hit-site already checks the exact-key replay before calling
+            // here, so on the live path the key is always new; the guard keeps a
+            // double-call safe.
+            let mut keys = self.replayed_keys.lock().unwrap();
+            if !keys.insert(key.to_string()) {
+                return Ok(());
+            }
+        }
+        // `flaky` is the FlakyVerdict annotation (spec 10, unit 2, NO new event type): a
+        // gate that failed then passed on a rerun is recorded as a PASS carrying
+        // `flaky: true`, a pass-with-warning the ledger can surface without it demoting
+        // the ratchet. A clean pass or a real failure carries `flaky: false`. The input
+        // digest and any cache-hit citation ride as metadata (spec 12: no new event type).
+        let mut ev = Event::new(
             contextgraph::TYPE_GATE_VERDICT,
-            json!({"gate": gid, "pass": pass, "evidence": evidence}),
-        )?;
+            serde_json::to_vec(&json!({
+                "gate": gid, "pass": pass, "flaky": flaky, "evidence": evidence
+            }))?,
+        )
+        .with_meta(META_REPLAY_KEY, key);
+        if !digest.is_empty() {
+            ev = ev.with_meta(META_INPUT_DIGEST, digest);
+        }
+        if let Some(pos) = cache_hit_of {
+            ev = ev.with_meta(META_CACHE_HIT, pos.to_string());
+        }
+        let pos = self.append_and_fold(ev)?;
         self.gate_verdicts
             .lock()
             .unwrap()
             .insert(key.to_string(), (pass, evidence.to_string()));
+        // Only a GREEN with a real content address enters the cache, and only if no
+        // earlier green already claimed this digest - so the cited source is stable and a
+        // red must always re-prove. A cache-hit re-emit carries the same digest, so this
+        // is a no-op for it (the original green stays the source).
+        if pass && !digest.is_empty() {
+            self.green_digests
+                .lock()
+                .unwrap()
+                .entry(digest.to_string())
+                .or_insert((pos, unit.to_string()));
+        }
         Ok(())
     }
 
@@ -1424,7 +2627,7 @@ impl RunCtx<'_> {
                         let name = name.clone();
                         let st = stages[&name].clone();
                         s.spawn(move || {
-                            let r = self.start_and_run_stage(&name, &st);
+                            let r = self.start_and_run_stage(stages, &name, &st);
                             (name, r)
                         })
                     })
@@ -1436,7 +2639,12 @@ impl RunCtx<'_> {
         results
     }
 
-    fn start_and_run_stage(&self, name: &str, st: &Stage) -> Result<bool, Error> {
+    fn start_and_run_stage(
+        &self,
+        stages: &BTreeMap<String, Stage>,
+        name: &str,
+        st: &Stage,
+    ) -> Result<bool, Error> {
         // UnitStarted carries the assigned agent, its dependencies, and the unit's
         // DETERMINISTIC branch, so the graph can project ASSIGNED_TO (unit->agent) and
         // BLOCKS (need->unit), and the ledger records the durable checkpoint branch
@@ -1461,12 +2669,16 @@ impl RunCtx<'_> {
                 "needs": st.needs,
                 "branch": unit_branch(name),
             }),
-            &[(META_MODEL_ALIAS, &self.agent_model(&st.agent))],
+            // UnitStarted is a once-per-unit checkpoint, so it names the model the unit's
+            // FIRST attempt asks for - rung 0 of any cascade. The per-attempt rungs a
+            // remediating unit escalates through ride on the per-attempt green/verified
+            // status events below (spec 10 unit 4).
+            &[(META_MODEL_ALIAS, &self.agent_model(&st.agent, 0))],
         )?;
-        self.run_stage(st)
+        self.run_stage(stages, st)
     }
 
-    fn run_stage(&self, st: &Stage) -> Result<bool, Error> {
+    fn run_stage(&self, stages: &BTreeMap<String, Stage>, st: &Stage) -> Result<bool, Error> {
         // Async manual-gate queue (§4.3): a stage whose effective autonomy is Manual
         // pauses - its gate is awaiting a human, so emit ManualReview and leave the
         // unit pending (Ok(false), NOT escalated). Independent units in the same wave
@@ -1492,6 +2704,14 @@ impl RunCtx<'_> {
         if is_fan_out(st) {
             return self.run_fan_out_stage(st);
         }
+        // First-green-wins speculation (spec 13, unit 3): a fresh unit class declaring
+        // `speculation_width: K > 1` races K parallel implementer candidates and integrates the
+        // first gate-green adjudicator-approved one. `run_speculation` owns the K isolated
+        // worktrees' whole lifecycle. Default width 1 falls through to the single-lane path
+        // below, byte-for-byte unchanged (speculation defaults off).
+        if self.speculates(st) {
+            return self.run_speculation(stages, st);
+        }
         // Resume-continuity: decide whether this unit CONTINUES from a prior window's
         // recorded phase (its deterministic branch carries committed work) or runs the
         // full lifecycle fresh. Computed before the worktree is created so a resumed
@@ -1499,7 +2719,7 @@ impl RunCtx<'_> {
         let phase = self.resume_phase(st);
         let wt = self.stage_worktree(st)?;
         let dir = wt.as_ref().map(|w| w.dir.clone()).unwrap_or_default();
-        let result = self.run_single_stage(st, wt.as_ref(), &dir, phase);
+        let result = self.run_single_stage(stages, st, wt.as_ref(), &dir, phase);
         if let Some(w) = &wt {
             let _ = w.remove();
             // The unit's branch is its DURABLE checkpoint (resume-continuity): it must
@@ -1551,6 +2771,56 @@ impl RunCtx<'_> {
         }
     }
 
+    /// Select the review panel for a unit by its observable risk (spec 03 / spec 13
+    /// unit 4), routing to the LIGHT or FULL tier via [`route_review_tier`] over the
+    /// unit's [`effective_review_panel`](RunCtx::effective_review_panel). `blast_radius`
+    /// is the unit's grounded seed - the SAME set spawn/partition/staleness use, never a
+    /// second grounder call - and `flapped` is whether the unit's gates flapped (it took
+    /// remediation to reach green). When the effective panel carries no `tiers` policy,
+    /// every unit routes to the full panel unchanged.
+    fn select_review_panel<'a>(
+        &'a self,
+        st: &'a Stage,
+        blast_radius: &[String],
+        flapped: bool,
+    ) -> TierRouting<'a> {
+        route_review_tier(self.effective_review_panel(st), blast_radius, flapped)
+    }
+
+    /// Log a unit's review-tier routing decision with its inputs (spec 03 / spec 13
+    /// unit 4: "every routing decision logged with its inputs"). Rides the existing
+    /// `UnitStatus` vocabulary as the fold-neutral [`STATUS_REVIEW_TIER`] marker - a
+    /// token `Status::parse` does not recognize, so folding leaves the unit's status
+    /// untouched and adds NO new event type (spec 13 global constraint); the routing
+    /// inputs land in the unit's evidence (all stringified - evidence is
+    /// `BTreeMap<String, String>`). Keyed per unit + attempt so a stepwise resume
+    /// re-appends it exactly once. Called ONLY when a depth policy is configured, so a
+    /// workflow without tiers emits nothing new - the shipped default is byte-for-byte
+    /// unchanged.
+    fn log_review_tier(
+        &self,
+        st: &Stage,
+        attempt: u32,
+        routing: &TierRouting,
+    ) -> Result<(), Error> {
+        self.emit_keyed(
+            &format!("{}/review-tier#{attempt}", st.name),
+            ledger::TYPE_UNIT_STATUS,
+            json!({
+                "id": st.name,
+                "status": STATUS_REVIEW_TIER,
+                "evidence": {
+                    "review-tier": routing.tier,
+                    "blast-radius": routing.blast_radius.to_string(),
+                    "threshold": routing.threshold.to_string(),
+                    "high-risk-path": routing.high_risk_hit.clone().unwrap_or_default(),
+                    "empty-radius": routing.empty_radius.to_string(),
+                    "flapped": routing.flapped.to_string(),
+                },
+            }),
+        )
+    }
+
     /// The cwd-isolation invariant for EVERY spawned agent (the worktree-isolation
     /// fix): an agent NEVER runs in the live main-repo checkout. A spawn's `dir`
     /// becomes the agent's working directory (the cli driver's `current_dir`, the
@@ -1592,12 +2862,17 @@ impl RunCtx<'_> {
     /// the diff under review). So a reviewer runs IN that worktree - it reads the
     /// unit's actual code, and any accidental write lands in the throwaway worktree,
     /// never the main repo. `assert_isolated_cwd` enforces the dir is a real worktree.
+    // The reviewer coordinates (id, tier role, agent, worktree dir, attempt, parallelism,
+    // stage) are each a distinct spawn input threaded straight into one SpawnOpts; the same
+    // primitive-argument shape run_reviewer carries, allowed for the same reason.
+    #[allow(clippy::too_many_arguments)]
     fn reviewer_spawn_opts(
         &self,
         id: &str,
         role: &str,
         agent_id: &str,
         dir: &str,
+        attempt: u32,
         parallel: bool,
         st: &Stage,
     ) -> Result<SpawnOpts, Error> {
@@ -1622,6 +2897,12 @@ impl RunCtx<'_> {
             id: id.to_string(),
             unit: st.name.clone(),
             stage: st.name.clone(),
+            // A reviewer keeps a FIXED tier - judgment is not laddered (spec 10 unit 4
+            // exclusion) - so a scaffold reviewer declares no `model_ladder` and resolves
+            // its single `model` regardless. The attempt is threaded through anyway so the
+            // model the driver spawns and the alias the conductor stamps agree by
+            // construction if a reviewer ever were given a ladder.
+            attempt,
             run_id: self.run_id.clone(),
         })
     }
@@ -1631,7 +2912,7 @@ impl RunCtx<'_> {
     /// tiers communicate THROUGH THE CONTEXT GRAPH - the system's actual cross-agent
     /// memory - not through the conductor hand-threading one agent's stdout into the
     /// next agent's prompt. TIER 1: the expert lenses review the diff in parallel and
-    /// EMIT each finding as a ReviewFinding (the REVIEW_PROTOCOL); the projector folds
+    /// EMIT each finding as a ReviewFinding (the review_protocol); the projector folds
     /// each finding ABOUT the unit's files live. TIER 2: the adversary GROUNDS after
     /// the lenses, so `graph_context` already surfaces their findings, and it tries to
     /// prove them wrong, emitting its own findings the same way. TIER 3: the
@@ -1648,15 +2929,56 @@ impl RunCtx<'_> {
     /// the unit is marked `reviewed` and its evidence carries the verdict reason
     /// (item 4). An empty panel runs no review and approves trivially (the historical
     /// behavior).
-    fn review_unit(&self, st: &Stage, dir: &str, attempt: u32) -> Result<ReviewOutcome, Error> {
-        let panel = self.effective_review_panel(st);
+    /// `defer_reviewed` (spec 13, unit 3): when TRUE the approved `reviewed` status is NOT
+    /// emitted here - it is carried on the outcome (`adj_resolved`) for the winning speculation
+    /// candidate to re-emit keyed by its lane. A candidate that is approved but does NOT win
+    /// (a later exhaustive-red / blocked-integrate loser) must never fold the SHARED unit id to
+    /// ledger `Status::Reviewed`, which would route a resume to the review-SKIPPING
+    /// `ResumePhase::Reviewed` path on the canonical lane. The single-lane path passes FALSE and
+    /// emits inline, byte-for-byte unchanged.
+    ///
+    /// `flapped` (spec 03 / spec 13 unit 4) is the gate-outcome risk signal: TRUE when this
+    /// unit needed remediation to reach green, forcing the FULL panel even on a small radius.
+    /// The caller derives it, because it does NOT coincide with `attempt` on every path: the
+    /// single-lane path passes `attempts > 0` (a genuine remediation flap), but the speculation
+    /// path passes FALSE - a candidate's `lane` index is a parallel FIRST attempt in its own
+    /// worktree, not a remediation, so reusing `attempt > 0` there would force every lane>0 to
+    /// the FULL panel and fold a bogus `flapped=true` into the shared unit's evidence.
+    ///
+    /// `blast_radius` is the unit's grounded seed - the SAME set spawn/partition/staleness use -
+    /// threaded in so the risk-tier routing (spec 03 / spec 13 unit 4) selects the LIGHT or FULL
+    /// panel from the observable risk (blast-radius size, a high-risk-path hit, an empty radius,
+    /// or flapped gates) BEFORE running any tier. With no depth policy configured, routing
+    /// returns the effective panel unchanged and logs nothing, so behavior is byte-for-byte
+    /// unchanged (tiering is opt-in).
+    fn review_unit(
+        &self,
+        st: &Stage,
+        dir: &str,
+        attempt: u32,
+        flapped: bool,
+        defer_reviewed: bool,
+        blast_radius: &[String],
+    ) -> Result<ReviewOutcome, Error> {
+        // Risk-tiered review depth (spec 03 / spec 13 unit 4): route this unit to the
+        // LIGHT or FULL panel from its observable risk - the grounded blast-radius size,
+        // any high-risk-path hit, and whether the gates `flapped` (the caller-supplied
+        // gate-outcome signal) - BEFORE running any tier. When a depth policy is
+        // configured, LOG the decision with its inputs; when it is not, `routing.panel`
+        // IS the effective panel and nothing is logged, so behavior is byte-for-byte
+        // unchanged (tiering is opt-in).
+        let routing = self.select_review_panel(st, blast_radius, flapped);
+        if routing.policy {
+            self.log_review_tier(st, attempt, &routing)?;
+        }
+        let panel = routing.panel;
         if panel.is_empty() {
             return Ok(ReviewOutcome::approved(String::new()));
         }
         let lenses = panel.lenses.clone();
         let adversary = panel.adversary.clone();
         let adjudicator = panel.adjudicator.clone();
-        // TIER 1: the lenses emit their findings to the graph (REVIEW_PROTOCOL); the
+        // TIER 1: the lenses emit their findings to the graph (review_protocol); the
         // projector folds them ABOUT the unit's files live.
         if !lenses.is_empty() {
             self.run_review_agents_concurrently(st, &lenses, dir, attempt)?;
@@ -1673,7 +2995,25 @@ impl RunCtx<'_> {
         // findings from the graph, and renders the gating verdict.
         let (approved, reason, adj_resolved) =
             self.run_adjudicator(st, &adjudicator, dir, attempt)?;
+        // A COMPENSATION target (spec 12, unit 4): the verdict may name a PRIOR integrated
+        // unit as the real defect source, INDEPENDENTLY of whether it approves this unit.
+        // Carried on the outcome so the run loop can roll that unit back after the wave.
+        let compensate = verdict_compensates(&reason);
         if approved {
+            if defer_reviewed {
+                // Speculation DEFERS the `reviewed` status to the winning candidate (see
+                // `emit_speculation_winner_status`): emitting it here for a candidate that may
+                // NOT win would fold the SHARED unit id to `Status::Reviewed`, and a resume of a
+                // still-in-flight group would then route to the review-SKIPPING
+                // `ResumePhase::Reviewed` path on the canonical lane - landing a non-selected
+                // (possibly review-rejected) candidate UNREVIEWED. Carry the adjudicator's
+                // resolved id so the winner path re-emits the deferred `reviewed` keyed by its
+                // lane with the same audit metadata this inline emit would have.
+                let mut outcome = ReviewOutcome::approved(reason);
+                outcome.compensate = compensate;
+                outcome.adj_resolved = adj_resolved;
+                return Ok(outcome);
+            }
             // The adjudicator's verdict reason is folded into the unit's `reviewed`
             // evidence (item 4). Replay-keyed on unit + attempt: a repo-less unit that
             // reached `reviewed` but does not merge (on_pass: none) re-runs its review
@@ -1689,18 +3029,26 @@ impl RunCtx<'_> {
                     "evidence": review_evidence(&reason),
                 }),
                 &[
-                    (META_MODEL_ALIAS, &self.agent_model(&adjudicator)),
+                    (META_MODEL_ALIAS, &self.agent_model(&adjudicator, attempt)),
                     (META_MODEL_RESOLVED, &adj_resolved),
+                    // The approved worktree sha (spec 11, unit 1): pairs with a prior
+                    // reject on the SAME sha to surface reviewer flip-flop.
+                    (META_WORKTREE_SHA, &worktree::head_sha_of(dir)),
                 ],
             )?;
-            Ok(ReviewOutcome::approved(reason))
+            let mut outcome = ReviewOutcome::approved(reason);
+            outcome.compensate = compensate;
+            Ok(outcome)
         } else {
-            Ok(ReviewOutcome::rejected(reason))
+            let mut outcome = ReviewOutcome::rejected(reason);
+            outcome.compensate = compensate;
+            Ok(outcome)
         }
     }
 
     fn run_single_stage(
         &self,
+        stages: &BTreeMap<String, Stage>,
         st: &Stage,
         wt: Option<&Worktree>,
         dir: &str,
@@ -1717,19 +3065,51 @@ impl RunCtx<'_> {
             if !integrates(st) {
                 return Ok(false);
             }
+            // The exhaustive integrate door still gates a RESUMED merge (spec 12, unit 3): a
+            // prior window recorded `reviewed` after its blast-radius-narrowed inner loop and
+            // the approve, but may have crashed BEFORE the integrate-time exhaustive suite ran.
+            // So re-assert the FULL library here before merging - "done" is measured against the
+            // exhaustive suite, never the narrowed subset (R6). Cheap: every gate the prior
+            // window already ran replays its recorded verdict; only gates it skipped run now.
+            let attempts = self.prior_attempts.get(&st.name).copied().unwrap_or(0);
+            let full = self.run_gates(st, dir, attempts, GateSelection::Exhaustive)?;
+            if !full.pass {
+                // The exhaustive suite is red on a resumed approve (a skipped gate fails):
+                // do NOT integrate a failing tree. Record the failure so the unit re-enters
+                // its lifecycle next step rather than wedging forever on a `reviewed` status
+                // it can never safely merge.
+                let failed_sha = worktree::head_sha_of(dir);
+                self.emit_meta(
+                    ledger::TYPE_UNIT_FAILED,
+                    json!({"id": st.name, "attempts": attempts + 1}),
+                    &[(META_WORKTREE_SHA, &failed_sha)],
+                )?;
+                return Ok(false);
+            }
             // The prior window recorded `reviewed` - which is emitted ONLY on an
             // explicit adjudicator approve (`review_unit` / the fan-out review stage) -
             // so this resumed merge carries a real approval.
-            let commit = self.integrate_and_emit(
-                wt,
-                &st.agent,
-                &st.name,
-                &st.gates,
-                IntegrationApproval::approved(),
-            )?;
-            self.emit(
+            let integration =
+                self.integrate_and_emit(stages, wt, st, attempts, IntegrationApproval::approved())?;
+            if integration.blocked.is_some() {
+                // spec 12, unit 5: the MERGED tree failed the post-merge re-gate on a RESUMED
+                // merge (a batch-mate integrated onto the run branch since this unit was
+                // reviewed, and the two auto-merged into a broken tree). The merge was rolled
+                // back; record the failure so the unit re-enters its lifecycle next step and
+                // re-implements against the changed world, rather than wedging on a `reviewed`
+                // status it can never safely merge.
+                let failed_sha = worktree::head_sha_of(dir);
+                self.emit_meta(
+                    ledger::TYPE_UNIT_FAILED,
+                    json!({"id": st.name, "attempts": attempts + 1}),
+                    &[(META_WORKTREE_SHA, &failed_sha)],
+                )?;
+                return Ok(false);
+            }
+            self.emit_meta(
                 ledger::TYPE_UNIT_INTEGRATED,
-                json!({"id": st.name, "commit": commit}),
+                json!({"id": st.name, "commit": integration.commit}),
+                &[(META_STALE, &integration.staled.join(","))],
             )?;
             return Ok(true);
         }
@@ -1741,11 +3121,34 @@ impl RunCtx<'_> {
         // default bound), and ESCALATES at the configured `max_retries` bound TOTAL - not
         // a fresh `max_retries` every window forever.
         // A unit with no prior failure (fresh, or never failed) starts at 0, unchanged.
-        let mut attempts = self.prior_attempts.get(&st.name).copied().unwrap_or(0);
+        //
+        // Compensation re-entry (spec 12, unit 4): a unit a later unit's review proved wrong
+        // was reverted and re-entered here at ONE PAST its HIGH-WATER attempt (via
+        // `effective_attempts`, which reconciles the run-start `prior_attempts`, the live
+        // compensation bump the drain recorded, AND the highest attempt it already recorded a
+        // gate verdict at - so the value clears every attempt key its OWN prior in-run
+        // remediation consumed). Starting at the advanced attempt is what makes its
+        // re-implemented tree gate under a FRESH `(unit, attempt, gate)` key instead of
+        // REPLAYING the condemned pass's stale verdict - the reverse gear genuinely re-verifies
+        // the fix, never a content-blind false green.
+        let mut attempts = self.effective_attempts(&st.name);
         // The last attempt's concrete failure, threaded into the NEXT attempt's
         // prompt (item 3 + 5 / spec 02). Empty on the first attempt, so that prompt
         // is unchanged.
         let mut prior = PriorFailure::default();
+        // Compensation re-entry (spec 12, unit 4): a unit that a later unit's review proved
+        // wrong was reverted and re-entered here; its FIRST re-attempt is prompted with the
+        // recorded contradiction so it fixes the specific defect, not blindly restart. Read
+        // once at the top; a subsequent re-review reject then carries its own reason instead.
+        if let Some(reason) = self
+            .compensation_feedback
+            .lock()
+            .unwrap()
+            .get(&st.name)
+            .cloned()
+        {
+            prior.contradiction = reason;
+        }
         // Resume-continuity, Implemented phase: the unit was implemented in a prior
         // window and its branch carries the committed code, but it was not yet
         // approved+merged. Skip the implementer spawn on the FIRST iteration and pick
@@ -1753,10 +3156,19 @@ impl RunCtx<'_> {
         // Only the first iteration is skipped - if review then rejects, the retry
         // re-spawns the implementer normally to fix the rejected code.
         let mut skip_implement = phase == ResumePhase::Implemented;
-        // The implementer's requested model ALIAS (spec 05 line 52), stamped on every unit
-        // event this stage records for the implementer spawn. Empty for an agentless stage.
-        let impl_alias = self.agent_model(&st.agent);
         loop {
+            // The implementer's requested model ALIAS for THIS attempt (spec 05 line 52),
+            // stamped on every unit event this stage records for the implementer spawn.
+            // Recomputed each iteration from the live `attempts` so a `model_ladder` agent
+            // (spec 10 unit 4) escalates one rung per remediation attempt - the same rung
+            // the driver spawns on for `attempts`. Empty for an agentless stage.
+            let impl_alias = self.agent_model(&st.agent, attempts);
+            // The unit's grounded blast radius for THIS attempt, computed ONCE (the SAME
+            // grounding `grounded_seed` returns): it seeds the implementer spawn's
+            // `blast_radius` AND selects which gates the blast-radius-narrowed inner loop runs
+            // (spec 12, unit 3), so the gates a remediation iteration re-verifies are exactly
+            // the files the implementer was grounded on.
+            let blast_radius = self.grounded_seed(st);
             let mut spawn_err: Option<String> = None;
             // The RESOLVED model id the implementer reported for THIS attempt, surfaced by
             // the replay driver from the worker's `--meta` report. Empty until the spawn's
@@ -1826,10 +3238,13 @@ impl RunCtx<'_> {
                             dir: dir.to_string(),
                             isolation: wt.is_some(),
                             parallel: false,
-                            blast_radius: self.grounded_seed(st),
+                            blast_radius: blast_radius.clone(),
                             id: implementer_id.clone(),
                             unit: st.name.clone(),
                             stage: st.name.clone(),
+                            // The cascade rung the driver resolves for this attempt (spec 10
+                            // unit 4) - the same `attempts` the alias stamp above uses.
+                            attempt: attempts,
                             run_id: self.run_id.clone(),
                         },
                         &emit,
@@ -1914,7 +3329,14 @@ impl RunCtx<'_> {
                 if let Some(w) = wt {
                     w.commit(&format!("rigger: {} attempt {}", st.name, attempts + 1))?;
                 }
-                let gate_outcome = self.run_gates(st, dir, attempts)?;
+                // Blast-radius gate selection (spec 12, unit 3): the implement/remediate
+                // INNER LOOP runs only the gates whose `inputs:` intersect the unit's grounded
+                // blast radius (its `grounded_seed`, the SAME radius the spawn/partition/
+                // staleness passes use), skipping and logging the rest. A remediation iteration
+                // then re-verifies only what its change could have touched; the exhaustive suite
+                // is asserted once at the integrate door below.
+                let gate_outcome =
+                    self.run_gates(st, dir, attempts, GateSelection::Narrowed(&blast_radius))?;
                 if gate_outcome.pass {
                     // The verified status carries the gate evidence (item 4): each
                     // gate that ran summarized for the ledger's per-unit evidence.
@@ -1922,6 +3344,11 @@ impl RunCtx<'_> {
                     // recorded gates does not re-append it (spec 04, criterion 4). It is
                     // still an event of the implementer spawn, so it carries the same
                     // requested alias and resolved id as the green status (spec 05 line 52).
+                    // The worktree HEAD the tiers are about to judge (spec 11, unit 1):
+                    // the implementer's committed tree (committed above, before gating),
+                    // stamped so a later reject/approve on the SAME sha reads as a
+                    // flip-flop. Empty (omitted) on a repo-less unit with no worktree.
+                    let reviewed_sha = worktree::head_sha_of(dir);
                     self.emit_keyed_meta(
                         &format!("{}/verified#{attempts}", st.name),
                         ledger::TYPE_UNIT_STATUS,
@@ -1933,9 +3360,51 @@ impl RunCtx<'_> {
                         &[
                             (META_MODEL_ALIAS, &impl_alias),
                             (META_MODEL_RESOLVED, &resolved_model),
+                            (META_WORKTREE_SHA, &reviewed_sha),
                         ],
                     )?;
-                    let review = self.review_unit(st, dir, attempts)?;
+                    let review =
+                        self.review_unit(st, dir, attempts, attempts > 0, false, &blast_radius)?;
+                    // A contradiction against a PRIOR integrated unit (spec 12, unit 4): the
+                    // adjudicator named another, already-integrated unit as the real defect
+                    // source. QUEUE the rollback for the run loop to drain after this wave
+                    // (single-threaded, so the git revert never races a concurrent merge). A
+                    // unit never compensates ITSELF (that is ordinary remediation below).
+                    if let Some(target) = &review.compensate {
+                        if target != &st.name {
+                            // DURABLY record the compensation INTENT here, the MOMENT the
+                            // review names the target - BEFORE this unit integrates and before
+                            // the post-wave drain reverts anything - so a crash between now and
+                            // the drain does not silently drop the rollback. A resume
+                            // re-derives this un-drained mark (`pending_compensations_from_log`)
+                            // and the pre-loop drain re-drives it. Rides the existing
+                            // `UnitStatus` vocabulary as a fold-neutral marker (no new event
+                            // type, spec 12 G2): `META_COMPENSATE_TARGET` names the unit to roll
+                            // back and `META_CONTRADICTION` the reason; keyed so a stepwise
+                            // resume re-appends it exactly once. The mark's `id` is the TARGET
+                            // and its status token is not a real lifecycle status, so folding it
+                            // leaves the target `Integrated` until the drain reverts it.
+                            self.emit_keyed_meta(
+                                &compensation_queued_key(&st.name, target, attempts),
+                                ledger::TYPE_UNIT_STATUS,
+                                json!({
+                                    "id": target,
+                                    "status": STATUS_COMPENSATION_QUEUED,
+                                    "evidence": {
+                                        "compensation-queued": review.reason.trim(),
+                                    },
+                                }),
+                                &[
+                                    (META_COMPENSATE_TARGET, target),
+                                    (META_CONTRADICTION, review.reason.trim()),
+                                ],
+                            )?;
+                            self.compensations.lock().unwrap().push(Compensation {
+                                target: target.clone(),
+                                reason: review.reason.clone(),
+                            });
+                        }
+                    }
                     if review.approved {
                         // on_pass governs integration (§3.2): empty or `merge` lands
                         // the work; any other value (e.g. `none`) runs the gates but
@@ -1944,36 +3413,69 @@ impl RunCtx<'_> {
                         if !integrates(st) {
                             return Ok(false);
                         }
-                        // The gates passed AND the review explicitly approved: the only
-                        // path that mints an `IntegrationApproval`, so the only path that
-                        // can merge. The reject branch below has no approval to hand to
-                        // `integrate_and_emit`, so it cannot land the unit's code.
-                        //
-                        // Gap 16 invariant (spec 06 unit 3): the verdict is folded and
-                        // acted on HERE, and an approve returns before the `remediate`
-                        // terminal check below ever runs. So an approval on a unit's
-                        // FINAL permitted attempt integrates - `max_retries` gates only
-                        // STARTING another attempt, it never overrides an approval. This
-                        // ordering (verdict-fold before attempt-counter) is load-bearing;
-                        // reversing it re-opens the bug where unit-2's approved-on-
-                        // attempt-6 review was recorded as UnitFailed/UnitEscalated.
-                        let commit = self.integrate_and_emit(
-                            wt,
-                            &st.agent,
-                            &st.name,
-                            &st.gates,
-                            IntegrationApproval::approved(),
-                        )?;
-                        self.emit(
-                            ledger::TYPE_UNIT_INTEGRATED,
-                            json!({"id": st.name, "commit": commit}),
-                        )?;
-                        return Ok(true);
+                        // The integrate door's EXHAUSTIVE gate (spec 12, unit 3): "done" is
+                        // asserted against the FULL gate library, never the blast-radius-narrowed
+                        // inner-loop subset, so a unit never lands on a partial suite (R6). Cheap
+                        // via unit-1's content cache - the gates the inner loop already ran replay
+                        // from the log, so only the gates it SKIPPED actually run here. A red here
+                        // (a skipped gate the merged-to-be tree fails) BLOCKS the merge and feeds
+                        // remediation, exactly like an inner-loop gate failure. `integrate_and_emit`
+                        // itself is untouched - the exhaustive suite gates whether it is CALLED.
+                        let full = self.run_gates(st, dir, attempts, GateSelection::Exhaustive)?;
+                        if full.pass {
+                            // The gates passed AND the review explicitly approved: the only
+                            // path that mints an `IntegrationApproval`, so the only path that
+                            // can merge. The reject branch below has no approval to hand to
+                            // `integrate_and_emit`, so it cannot land the unit's code.
+                            //
+                            // Gap 16 invariant (spec 06 unit 3): the verdict is folded and
+                            // acted on HERE, and an approve returns before the `remediate`
+                            // terminal check below ever runs. So an approval on a unit's
+                            // FINAL permitted attempt integrates - `max_retries` gates only
+                            // STARTING another attempt, it never overrides an approval. This
+                            // ordering (verdict-fold before attempt-counter) is load-bearing;
+                            // reversing it re-opens the bug where unit-2's approved-on-
+                            // attempt-6 review was recorded as UnitFailed/UnitEscalated.
+                            let integration = self.integrate_and_emit(
+                                stages,
+                                wt,
+                                st,
+                                attempts,
+                                IntegrationApproval::approved(),
+                            )?;
+                            match integration.blocked {
+                                None => {
+                                    self.emit_meta(
+                                        ledger::TYPE_UNIT_INTEGRATED,
+                                        json!({"id": st.name, "commit": integration.commit}),
+                                        &[(META_STALE, &integration.staled.join(","))],
+                                    )?;
+                                    return Ok(true);
+                                }
+                                // The post-merge re-gate went RED (spec 12, unit 5): the pre-
+                                // merge gates passed in this unit's OWN worktree, but the MERGED
+                                // tree failed - an unpredicted batch-mate overlap auto-merged
+                                // into a broken tree. The merge was ROLLED BACK (nothing
+                                // landed), so capture the merge-break evidence and fall through
+                                // to remediation, exactly like the exhaustive pre-merge red
+                                // below - never integrate a broken merged tree.
+                                Some(evidence) => {
+                                    next.gate_evidence = evidence;
+                                }
+                            }
+                        } else {
+                            // The exhaustive suite went red on an approved unit (a gate the
+                            // inner loop had skipped fails against the merged-to-be tree): treat
+                            // it like any gate failure - capture the evidence and fall through
+                            // to remediation, do NOT integrate a tree that fails the full suite.
+                            next.gate_evidence = full.evidence;
+                        }
+                    } else {
+                        // A rejecting adjudicator is treated exactly like a gate failure:
+                        // capture its reasoning for the next attempt's prompt (item 5) and
+                        // fall through to remediation, do NOT integrate.
+                        next.review_reason = review.reason;
                     }
-                    // A rejecting adjudicator is treated exactly like a gate failure:
-                    // capture its reasoning for the next attempt's prompt (item 5) and
-                    // fall through to remediation, do NOT integrate.
-                    next.review_reason = review.reason;
                 } else {
                     // Capture the failing gates' evidence for the next attempt's
                     // prompt (item 3 / spec 02).
@@ -1983,9 +3485,15 @@ impl RunCtx<'_> {
 
             let rem = safety::remediate(attempts, self.max_retries());
             attempts = rem.attempts;
-            self.emit(
+            // Stamp the reviewed worktree sha (spec 11, unit 1): on a review reject this
+            // is the sha the tiers judged, so the flip-flop fold can pair it with a later
+            // approve on the SAME sha. Harmless on a gate/spawn failure (the fold only
+            // reads it for a detected review reject); empty (omitted) on a repo-less unit.
+            let failed_sha = worktree::head_sha_of(dir);
+            self.emit_meta(
                 ledger::TYPE_UNIT_FAILED,
                 json!({"id": st.name, "attempts": attempts}),
+                &[(META_WORKTREE_SHA, &failed_sha)],
             )?;
             if rem.decision == safety::Decision::Escalate {
                 // The escalation lesson carries the CONCRETE final failure (spec 02):
@@ -2014,6 +3522,499 @@ impl RunCtx<'_> {
             // otherwise loop and retry the stage (re-grounding + the prior-failure
             // block via build_prompt_with_failure)
         }
+    }
+
+    /// The effective first-green-wins speculation width for a unit class (spec 13, unit 3):
+    /// the stage's own `speculation_width` when set (`> 0`), else `defaults.speculation_width`,
+    /// with a floor of 1. Width 1 (the default) is speculation OFF - a single implementer
+    /// candidate, the historical [`run_single_stage`](RunCtx::run_single_stage) path unchanged.
+    fn effective_speculation_width(&self, st: &Stage) -> u32 {
+        let raw = if st.speculation_width > 0 {
+            st.speculation_width
+        } else {
+            self.cfg.workflow.defaults.speculation_width
+        };
+        raw.max(1)
+    }
+
+    /// Whether a unit runs first-green-wins speculation (spec 13, unit 3): its effective width
+    /// is `> 1`; it is a FRESH unit (a resumed unit continues its recorded candidate, it does
+    /// not re-fan-out); it names a real implementer agent that runs ISOLATED in a worktree
+    /// (speculation parks candidates in isolated worktrees, so a repo-less or `isolation: none`
+    /// unit cannot speculate); and it is not a producer (a planner emits a DAG, not a diff to
+    /// gate/review). Any false condition falls through to the single-lane `run_single_stage`,
+    /// so the default (width 1) changes no current behavior.
+    fn speculates(&self, st: &Stage) -> bool {
+        self.effective_speculation_width(st) > 1
+            && !st.agent.is_empty()
+            && !is_producer(st)
+            && !self.deps.repo.is_empty()
+            && self.agent_isolated(&st.agent)
+            && self.resume_phase(st) == ResumePhase::Fresh
+    }
+
+    /// The isolated worktree for speculation candidate `lane` (spec 13, unit 3). Candidate 0
+    /// uses the unit's CANONICAL deterministic worktree/branch, so a lane-0 winner integrates
+    /// exactly as the single-lane path; each candidate `lane > 0` gets a deterministic
+    /// lane-suffixed sibling (`...-spec<lane>` dir AND branch) so the K candidates never share
+    /// a worktree or a branch. Both derive purely from the unit id + lane (no per-process
+    /// uuid), so a resumed step recomputes the same path and [`Worktree::create`] ADOPTS the
+    /// candidate's prior committed work rather than re-implementing it.
+    fn speculation_lane_worktree(&self, st: &Stage, lane: u32) -> Result<Worktree, Error> {
+        let scratch = crate::worktree::scratch_root_from_env(
+            &self.deps.repo,
+            &self.cfg.workflow.defaults.workdir,
+        );
+        let dir = unit_worktree_dir(&scratch, &st.name);
+        let branch = unit_branch(&st.name);
+        if lane == 0 {
+            return Ok(Worktree::create(&self.deps.repo, &dir, &branch)?);
+        }
+        Ok(Worktree::create(
+            &self.deps.repo,
+            &format!("{dir}-spec{lane}"),
+            &format!("{branch}-spec{lane}"),
+        )?)
+    }
+
+    /// First-green-wins speculation (spec 13, unit 3). A unit class declaring
+    /// `speculation_width: K > 1` parks K parallel implementer candidates (one deterministic
+    /// speculation group) in isolated worktrees; the FIRST candidate to pass its gates AND the
+    /// adjudicator wins and integrates, and every other candidate is CANCELLED - the group,
+    /// winner, and losers recorded as metadata on the existing event vocabulary (no new event
+    /// type). Candidate `lane` runs at attempt `lane`, so each candidate's gates, statuses, and
+    /// review tiers key apart while staying a PURE function of the run structure (replay-safe).
+    ///
+    /// This REUSES the single mutation authorities - [`Self::run_gates`], [`Self::review_unit`],
+    /// [`Self::integrate_and_emit`] - and adds only the K-lane fan-out and winner selection;
+    /// the default-off (`run_single_stage`) path is untouched.
+    ///
+    /// PHASE A parks/spawns all K candidates, COLLECTING parks rather than propagating the
+    /// first, so under the stepwise/replay driver all K park in ONE step and a courier runs
+    /// them concurrently. Each candidate's implementer spawn is reserved against the global
+    /// spawn budget, so the breaker counts every candidate. PHASE B evaluates the candidates in
+    /// deterministic lane order and integrates the first gate-green adjudicator-approved one;
+    /// if none wins, the unit escalates (its K candidates were its attempts) rather than
+    /// re-fanning-out forever.
+    fn run_speculation(&self, stages: &BTreeMap<String, Stage>, st: &Stage) -> Result<bool, Error> {
+        let width = self.effective_speculation_width(st);
+        let group = speculation_group_id(&st.name);
+        let blast_radius = self.grounded_seed(st);
+        let agent_def = self
+            .cfg
+            .agents
+            .get(&st.agent)
+            .ok_or_else(|| {
+                Error(format!(
+                    "stage {:?} references unknown agent {:?}",
+                    st.name, st.agent
+                ))
+            })?
+            .clone();
+
+        // PHASE A: park/spawn every candidate. Lane worktree dirs are kept ALIVE across a
+        // park (removed only at a terminal outcome below), so the out-of-process worker
+        // always finds the pre-created candidate worktree the conductor owns - a lane's
+        // branch is not re-derivable from its SpawnRequest, so the conductor never lets the
+        // dir be reclaimed mid-flight.
+        let mut candidates: Vec<SpecCandidate> = Vec::with_capacity(width as usize);
+        let mut any_parked = false;
+        for lane in 0..width {
+            // Budget at spawn granularity (item 9): reserve THIS candidate's implementer
+            // spawn. A refusal (the budget is spent) sets `budget_broke` and unwinds the unit
+            // cleanly - the run loop trips the ONE breaker path - exactly like the single-lane
+            // implementer's `Ok(false)` refusal.
+            let impl_id = spawn_id(&st.name, ROLE_IMPLEMENTER, lane);
+            if !self.reserve_spawn(&impl_id) {
+                return Ok(false);
+            }
+            let wt = self.speculation_lane_worktree(st, lane)?;
+            let dir = wt.dir.clone();
+            let prompt = self.build_prompt_with_failure(st, &PriorFailure::default());
+            let emit = |t: &str, v: Value| self.emit_with_actor(&st.agent, t, v);
+            let isolation_check = self.assert_isolated_cwd("implementer", &st.agent, &dir);
+            match isolation_check.and_then(|()| {
+                self.deps.driver.spawn(
+                    &agent_def,
+                    &prompt,
+                    &SpawnOpts {
+                        system_prompt: self.build_system_prompt(&agent_def),
+                        dir: dir.clone(),
+                        isolation: true,
+                        parallel: true,
+                        blast_radius: blast_radius.clone(),
+                        id: impl_id.clone(),
+                        unit: st.name.clone(),
+                        stage: st.name.clone(),
+                        attempt: lane,
+                        run_id: self.run_id.clone(),
+                    },
+                    &emit,
+                )
+            }) {
+                Ok(result) => {
+                    // The candidate produced a diff: commit its worktree so the gates measure
+                    // exactly the committed artifact. Its `green` status is DEFERRED until it is
+                    // chosen the winner below - emitting a routing status (Green/Verified) per
+                    // candidate here would fold the unit out of `Fresh` and mis-route a resume
+                    // of a divergent group onto the canonical lane-0 branch (and collide the
+                    // lane-L candidate spawn id with lane-0 remediation attempt L). Keeping the
+                    // unit `Fresh` across phase B makes a resume re-enter `run_speculation`
+                    // deterministically (replaying the recorded candidates + gates + review).
+                    wt.commit(&format!("rigger: {} speculation candidate {lane}", st.name))?;
+                    candidates.push(SpecCandidate {
+                        lane,
+                        wt,
+                        dir,
+                        resolved_model: result.resolved_model,
+                    });
+                }
+                // A candidate parked (stepwise/replay frontier): collect it and keep going so
+                // ALL K candidates park this step. The dir persists for the worker.
+                Err(e) if is_parked(&e) => any_parked = true,
+                // A candidate CRASHED (usage limit, non-zero exit): it is simply absent from
+                // the group - a losing candidate that produced no diff. The remaining
+                // candidates still race; if none survives, the escalation tail fires. Its lane
+                // worktree AND branch were already created (above), and NO terminal path below
+                // tears them down - winner cleanup, `cancel_speculation_candidates`, and the
+                // escalation tail all iterate `candidates`, which EXCLUDES this never-pushed
+                // lane, and `Worktree` has no `Drop`. So remove them HERE, or the conductor
+                // leaks a durable dir + branch, breaking the "conductor owns the K worktrees'
+                // whole lifecycle" invariant (spec 13, unit 3).
+                Err(_) => {
+                    let _ = wt.remove();
+                    let _ = Worktree::delete_branch(&self.deps.repo, &wt.branch);
+                }
+            }
+        }
+        if any_parked {
+            // Every requested candidate parked together this step; unwind cleanly so a courier
+            // runs them in parallel and a later step evaluates the recorded group.
+            return Err(parked_spawn(&group));
+        }
+
+        // PHASE B: evaluate candidates in deterministic lane order; the FIRST gate-green
+        // adjudicator-approved candidate WINS and integrates, and every other candidate is
+        // cancelled. A candidate's review tiers park across steps exactly like the single-lane
+        // path (their spawns are keyed by the candidate's `lane` attempt).
+        for i in 0..candidates.len() {
+            let lane = candidates[i].lane;
+            let dir = candidates[i].dir.clone();
+            let gate_outcome =
+                self.run_gates(st, &dir, lane, GateSelection::Narrowed(&blast_radius))?;
+            if !gate_outcome.pass {
+                continue; // gate-red candidate loses; a later candidate may still win.
+            }
+            // This candidate's gates are green: review it. Its `green`/`verified`/`reviewed`
+            // statuses are ALL DEFERRED to the winner path below (`defer_reviewed: true`) so a
+            // candidate that is approved but does NOT win never folds the shared unit out of
+            // `Fresh`, and the review tiers park across steps while the unit stays `Fresh`.
+            // `flapped: false` - a candidate `lane` is a parallel FIRST attempt, NOT a
+            // remediation, so the review tier routes by RISK per lane rather than force-routing
+            // every lane>0 to the FULL panel (sdet-u13rt-flapped-conflates-lane-in-speculation).
+            let review = self.review_unit(st, &dir, lane, false, true, &blast_radius)?;
+            // A candidate's review may name a PRIOR integrated unit as the real defect source
+            // (spec 12, unit 4), independent of whether it approves this candidate: queue the
+            // rollback exactly as the single-lane path does, so the reverse gear is not lost.
+            if let Some(target) = &review.compensate {
+                if target != &st.name {
+                    self.emit_keyed_meta(
+                        &compensation_queued_key(&st.name, target, lane),
+                        ledger::TYPE_UNIT_STATUS,
+                        json!({
+                            "id": target,
+                            "status": STATUS_COMPENSATION_QUEUED,
+                            "evidence": {"compensation-queued": review.reason.trim()},
+                        }),
+                        &[
+                            (META_COMPENSATE_TARGET, target),
+                            (META_CONTRADICTION, review.reason.trim()),
+                        ],
+                    )?;
+                    self.compensations.lock().unwrap().push(Compensation {
+                        target: target.clone(),
+                        reason: review.reason.clone(),
+                    });
+                }
+            }
+            if !review.approved {
+                // Record the reject on the review-quality fold BEFORE moving on: a losing
+                // candidate is otherwise invisible to it (all lifecycle statuses defer to the
+                // winner), so a speculating unit would report inflated review quality to the
+                // spec-13 self-improvement loop. A fold-neutral marker keeps the shared unit
+                // `Fresh` for resume while the metrics fold counts the reject.
+                self.record_speculation_reject(st, lane, &dir, &group)?;
+                continue; // rejected candidate loses; try the next candidate.
+            }
+            // A candidate that passed its narrowed gates AND the adjudicator. Assert the
+            // exhaustive suite (the integrate door, spec 12 unit 3) before merging.
+            let full = self.run_gates(st, &dir, lane, GateSelection::Exhaustive)?;
+            if !full.pass {
+                continue; // even a full-suite-red candidate cannot land - try the next.
+            }
+            let losers: Vec<String> = candidates
+                .iter()
+                .filter(|c| c.lane != lane)
+                .map(|c| spawn_id(&st.name, ROLE_IMPLEMENTER, c.lane))
+                .collect();
+            if !integrates(st) {
+                // Verified + approved but never merges (`on_pass: none`): the group settled on a
+                // winner, but no code lands. Record the winner's deferred green/verified/reviewed
+                // (the verified-but-unmerged checkpoint - the group is terminal here, so no later
+                // lane is in flight), cancel the other candidates, and stop.
+                self.emit_speculation_winner_status(
+                    st,
+                    lane,
+                    &group,
+                    &dir,
+                    &candidates[i],
+                    &review,
+                )?;
+                self.cancel_speculation_candidates(st, &group, lane, &candidates)?;
+                return Ok(false);
+            }
+            let integration = self.integrate_and_emit(
+                stages,
+                Some(&candidates[i].wt),
+                st,
+                lane,
+                IntegrationApproval::approved(),
+            )?;
+            if integration.blocked.is_some() {
+                // The post-merge re-gate went RED (spec 12, unit 5): the merge was rolled back,
+                // so this candidate cannot land this step. CAPTURE the merge-break evidence as
+                // UnitFailed (mirroring the single-lane path) so the signal is not lost and the
+                // escalation lesson stays accurate, then treat it as a loser and try the next.
+                // The winner's green/verified/reviewed are DEFERRED PAST this check, so a blocked
+                // candidate followed by a later parking lane leaves the unit folded `Failed` (not
+                // `Reviewed`/`Verified`), so a resume RE-ENTERS `run_speculation` instead of
+                // mis-routing to the review-skipping single-lane `Reviewed` path on the canonical
+                // lane.
+                let failed_sha = worktree::head_sha_of(&dir);
+                self.emit_meta(
+                    ledger::TYPE_UNIT_FAILED,
+                    json!({"id": st.name, "attempts": lane + 1}),
+                    &[(META_WORKTREE_SHA, &failed_sha)],
+                )?;
+                continue;
+            }
+            // The winner integrated (integration.blocked is None): NOW record its DEFERRED
+            // green/verified/reviewed lifecycle, then the group / winner / losers on the existing
+            // UnitIntegrated (no new event type), then cancel every displaced candidate.
+            self.emit_speculation_winner_status(st, lane, &group, &dir, &candidates[i], &review)?;
+            self.emit_meta(
+                ledger::TYPE_UNIT_INTEGRATED,
+                json!({"id": st.name, "commit": integration.commit}),
+                &[
+                    (META_STALE, &integration.staled.join(",")),
+                    (META_SPEC_GROUP, &group),
+                    (
+                        META_SPEC_WINNER,
+                        &spawn_id(&st.name, ROLE_IMPLEMENTER, lane),
+                    ),
+                    (META_SPEC_LOSERS, &losers.join(",")),
+                ],
+            )?;
+            self.cancel_speculation_candidates(st, &group, lane, &candidates)?;
+            // The winner's work merged into the base: tear down its worktree and branch too,
+            // exactly as the single-lane path deletes an integrated unit's branch.
+            let _ = candidates[i].wt.remove();
+            let _ = Worktree::delete_branch(&self.deps.repo, &candidates[i].wt.branch);
+            return Ok(true);
+        }
+
+        // NO candidate won: every candidate was gate-red, review-rejected, crashed, or its
+        // winning merge broke post-merge (a UnitFailed captured that above). The K candidates
+        // were the unit's parallel attempts, so it ESCALATES rather than re-fanning out forever
+        // on the fresh re-entry. Clean up the losing candidates' worktrees.
+        for c in &candidates {
+            let _ = c.wt.remove();
+            let _ = Worktree::delete_branch(&self.deps.repo, &c.wt.branch);
+        }
+        self.emit_lesson(
+            None,
+            &st.name,
+            &format!(
+                "unit {:?} escalated: all {width} speculation candidates failed their gates, review, or post-merge integration",
+                st.name
+            ),
+        );
+        self.emit_meta(
+            ledger::TYPE_UNIT_ESCALATED,
+            json!({"id": st.name}),
+            &[(META_SPEC_GROUP, &group)],
+        )?;
+        Ok(false)
+    }
+
+    /// Record a confirmed speculation WINNER's DEFERRED lifecycle statuses (spec 13, unit 3):
+    /// `green` + `verified` + (when an adjudicator actually rendered the verdict) `reviewed`,
+    /// each keyed by the winning `lane` and tagged with the speculation `group`. These are
+    /// DEFERRED from phase A/B - a candidate that never wins emits NONE of them - so a speculating
+    /// unit stays folded out of `green`/`verified`/`reviewed` (`resume_phase` == `Fresh`) across
+    /// every phase-B parking step until a winner is confirmed. For an integrating unit this is
+    /// called ONLY AFTER `integration.blocked` is `None` (a rolled-back merge leaves no winner
+    /// status); for an `on_pass: none` unit it records the verified-but-unmerged checkpoint. This
+    /// is the SINGLE deferred-emission authority the winner-integrate and `on_pass: none` arms
+    /// share; it must stay in sync with the single-lane inline emission (`run_single_stage`), the
+    /// honest reuse decision `d13-u3-defer-all-three-statuses` sanctions.
+    fn emit_speculation_winner_status(
+        &self,
+        st: &Stage,
+        lane: u32,
+        group: &str,
+        dir: &str,
+        candidate: &SpecCandidate,
+        review: &ReviewOutcome,
+    ) -> Result<(), Error> {
+        let winner_alias = self.agent_model(&st.agent, lane);
+        let winner_resolved = candidate.resolved_model.clone();
+        let mut green = BTreeMap::new();
+        green.insert(
+            "green".to_string(),
+            format!("speculation winner {lane} implemented by {}", st.agent),
+        );
+        self.emit_keyed_meta(
+            &format!("{}/green#{lane}", st.name),
+            ledger::TYPE_UNIT_STATUS,
+            json!({"id": st.name, "status": "green", "evidence": green}),
+            &[
+                (META_MODEL_ALIAS, &winner_alias),
+                (META_MODEL_RESOLVED, &winner_resolved),
+                (META_SPEC_GROUP, group),
+            ],
+        )?;
+        let winner_sha = worktree::head_sha_of(dir);
+        self.emit_keyed_meta(
+            &format!("{}/verified#{lane}", st.name),
+            ledger::TYPE_UNIT_STATUS,
+            json!({
+                "id": st.name,
+                "status": "verified",
+                "evidence": verified_evidence(&st.gates),
+            }),
+            &[
+                (META_MODEL_ALIAS, &winner_alias),
+                (META_MODEL_RESOLVED, &winner_resolved),
+                (META_SPEC_GROUP, group),
+                (META_WORKTREE_SHA, &winner_sha),
+            ],
+        )?;
+        // The winner's `reviewed` status was DEFERRED out of `review_unit` (so a non-winning
+        // approved candidate never folds the shared unit to `Reviewed`). Re-emit it here keyed
+        // by the winning lane, but ONLY when an adjudicator actually rendered the verdict: an
+        // empty / adjudicator-less panel approves trivially and emits no `reviewed`, exactly as
+        // the single-lane path does. It carries the adjudicator's requested alias + the resolved
+        // id `review_unit` stashed, and the winner's reviewed-tree sha (spec 11, unit 1).
+        let panel = self.effective_review_panel(st);
+        if !panel.is_empty() && !panel.adjudicator.is_empty() {
+            self.emit_keyed_meta(
+                &format!("{}/reviewed#{lane}", st.name),
+                ledger::TYPE_UNIT_STATUS,
+                json!({
+                    "id": st.name,
+                    "status": "reviewed",
+                    "evidence": review_evidence(&review.reason),
+                }),
+                &[
+                    (
+                        META_MODEL_ALIAS,
+                        &self.agent_model(&panel.adjudicator, lane),
+                    ),
+                    (META_MODEL_RESOLVED, &review.adj_resolved),
+                    (META_WORKTREE_SHA, &winner_sha),
+                    (META_SPEC_GROUP, group),
+                ],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Record a REVIEW-REJECTED speculation candidate on the review-quality fold (spec 13,
+    /// unit 3; addresses adv-u13-speculation-losers-invisible-to-review-metrics). A losing
+    /// candidate the adjudicator rejected used to just `continue`, emitting nothing, so the
+    /// spec-11/spec-01 review-quality fold never saw the reject and `first_pass_clean` counted
+    /// the unit clean - the exact review-reject-uncounted class the metrics fold was hardened
+    /// against on the fan-out path, re-introduced on this third review path.
+    ///
+    /// The reject CANNOT ride a real `verified`+`UnitFailed` pair: that lifecycle status folds
+    /// the SHARED unit id out of `Fresh` and mis-routes a resume of the still-racing group onto
+    /// the canonical lane (the exact hazard the winner-status deferral,
+    /// `d13-u3-defer-all-three-statuses`, exists to close). So it rides a FOLD-NEUTRAL
+    /// `UnitStatus` marker - like [`STATUS_SPECULATION_CANCELLED`], its status is not a
+    /// [`ledger::Status`] variant, so the ledger fold leaves the unit's real status untouched -
+    /// that the METRICS fold counts directly as a review reject. The fold stays the single
+    /// counting authority; the producer only records the fact. Keyed by lane so a resume
+    /// RE-EVALUATING the recorded candidate dedups it, tagged with the `group`, and stamped with
+    /// the reviewed sha so a later approve on the SAME sha reads as a flip-flop (spec 11).
+    fn record_speculation_reject(
+        &self,
+        st: &Stage,
+        lane: u32,
+        dir: &str,
+        group: &str,
+    ) -> Result<(), Error> {
+        self.emit_keyed_meta(
+            &format!("{}/spec-rejected#{lane}", st.name),
+            ledger::TYPE_UNIT_STATUS,
+            json!({
+                "id": st.name,
+                "status": STATUS_SPECULATION_REJECTED,
+                "evidence": {
+                    "speculation-rejected": format!(
+                        "candidate {lane} rejected by the adjudicator"
+                    ),
+                },
+            }),
+            &[
+                (META_SPEC_GROUP, group),
+                (META_WORKTREE_SHA, &worktree::head_sha_of(dir)),
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Cancel every non-winning speculation candidate (spec 13, unit 3): record each loser's
+    /// `speculation-cancelled` status (keyed per lane, tagged with the group so the log ties it
+    /// back to the winner) and tear down its worktree + branch - the winner's code already
+    /// landed, so the displaced candidates' isolated work is discarded. The `winner` lane is
+    /// SKIPPED here (its worktree/branch is the caller's to clean up: removed once it merged, or
+    /// kept as the verified-but-unmerged checkpoint on an `on_pass: none` unit).
+    /// `STATUS_SPECULATION_CANCELLED` is not a real lifecycle status, so folding it leaves the
+    /// unit's terminal state as the winner's `Integrated`.
+    fn cancel_speculation_candidates(
+        &self,
+        st: &Stage,
+        group: &str,
+        winner: u32,
+        candidates: &[SpecCandidate],
+    ) -> Result<(), Error> {
+        for c in candidates {
+            // The winner is NOT cancelled and its worktree/branch is the caller's to clean up
+            // (deleted once it MERGED, or kept as the verified-but-unmerged checkpoint on an
+            // `on_pass: none` unit), so skip it entirely here.
+            if c.lane == winner {
+                continue;
+            }
+            self.emit_keyed_meta(
+                &format!("{}/speculation-cancelled#{}", st.name, c.lane),
+                ledger::TYPE_UNIT_STATUS,
+                json!({
+                    "id": st.name,
+                    "status": STATUS_SPECULATION_CANCELLED,
+                    "evidence": {
+                        "speculation-cancelled": format!(
+                            "candidate {} displaced by winner {}",
+                            c.lane, winner
+                        ),
+                    },
+                }),
+                &[(META_SPEC_GROUP, group)],
+            )?;
+            let _ = c.wt.remove();
+            let _ = Worktree::delete_branch(&self.deps.repo, &c.wt.branch);
+        }
+        Ok(())
     }
 
     fn run_fan_out_stage(&self, st: &Stage) -> Result<bool, Error> {
@@ -2093,7 +4094,13 @@ impl RunCtx<'_> {
                 self.run_adjudicator(st, &st.adjudicator, dir, attempts)?
             };
 
-            let gates_pass = approved && self.run_gates(st, dir, attempts)?.pass;
+            // A standalone review stage integrates no code of its own, so there is nothing to
+            // narrow by blast radius: it runs the EXHAUSTIVE gate library (spec 12, unit 3),
+            // exactly as before.
+            let gates_pass = approved
+                && self
+                    .run_gates(st, dir, attempts, GateSelection::Exhaustive)?
+                    .pass;
             if gates_pass {
                 // Gap 16 invariant (spec 06 unit 3): the adjudicator's verdict is folded
                 // and acted on HERE - an approve (with green gates) integrates and returns
@@ -2130,8 +4137,16 @@ impl RunCtx<'_> {
                         "evidence": review_evidence(&reason),
                     }),
                     &[
-                        (META_MODEL_ALIAS, &self.agent_model(&st.adjudicator)),
+                        (
+                            META_MODEL_ALIAS,
+                            &self.agent_model(&st.adjudicator, attempts),
+                        ),
                         (META_MODEL_RESOLVED, &adj_resolved),
+                        // The reviewed base-HEAD sha of the throwaway review worktree
+                        // (spec 11, unit 1): a standalone review re-judging the SAME sha
+                        // and flipping its verdict is reviewer noise the flip-flop fold
+                        // surfaces.
+                        (META_WORKTREE_SHA, &worktree::head_sha_of(dir)),
                     ],
                 )?;
                 self.emit(
@@ -2148,10 +4163,13 @@ impl RunCtx<'_> {
             let failed_attempt = attempts;
             let rem = safety::remediate(attempts, self.max_retries());
             attempts = rem.attempts;
-            self.emit_keyed(
+            self.emit_keyed_meta(
                 &format!("{}/failed#{failed_attempt}", st.name),
                 ledger::TYPE_UNIT_FAILED,
                 json!({"id": st.name, "attempts": attempts}),
+                // The reviewed base-HEAD sha (spec 11, unit 1): a standalone-review reject
+                // pairs with a later approve on the SAME sha for the flip-flop fold.
+                &[(META_WORKTREE_SHA, &worktree::head_sha_of(dir))],
             )?;
             if rem.decision == safety::Decision::Escalate {
                 let why = if approved {
@@ -2177,7 +4195,7 @@ impl RunCtx<'_> {
 
     /// Run the expert lenses (tier 1) concurrently. Each lens REVIEWS the diff and
     /// EMITS its findings to the shared context graph as ReviewFindings (the
-    /// REVIEW_PROTOCOL), so the later tiers and concurrent lenses retrieve them via
+    /// review_protocol), so the later tiers and concurrent lenses retrieve them via
     /// grounding + the side-car rather than via the conductor splicing one lens's
     /// stdout into another agent's prompt. The lenses produce no code to integrate, so
     /// they own NO worktree of their own and never integrate (item 6: a reviewing lens
@@ -2213,7 +4231,7 @@ impl RunCtx<'_> {
     /// worktree (`dir`) so it reads the actual code under review and any stray write
     /// (every lens has Bash; the sdet lens has Edit/Write) lands in the throwaway
     /// worktree, never the live main checkout. It is prompted with the grounded base
-    /// prompt plus the REVIEW_PROTOCOL, so it EMITS each finding it raises to the
+    /// prompt plus the review_protocol, so it EMITS each finding it raises to the
     /// shared context graph (the cross-agent memory), where the adversary, the
     /// adjudicator, and its fellow lenses retrieve it. Its stdout is no longer captured
     /// to thread into another agent's prompt - the graph is the channel. Budget-refused
@@ -2221,8 +4239,9 @@ impl RunCtx<'_> {
     fn run_lens(&self, st: &Stage, agent_id: &str, dir: &str, attempt: u32) -> Result<(), Error> {
         // A lens's output is not a verdict - it emits its findings to the graph - so the
         // substantive result is discarded here; the shared `run_reviewer` loop only needs
-        // it to be non-degenerate (Gap 18) before the review proceeds.
-        let prompt = self.build_review_prompt(st);
+        // it to be non-degenerate (Gap 18) before the review proceeds. The lens attributes
+        // each finding to its ROLE token so the courier path carries attribution too.
+        let prompt = self.build_review_prompt(st, &lens_role(agent_id));
         self.run_reviewer(
             st,
             "lens",
@@ -2295,12 +4314,12 @@ impl RunCtx<'_> {
         // ordinal is a `~retry{n}` respawn. At most `1 + REVIEWER_RESPAWN_BOUND` spawns.
         for retry in 0..=REVIEWER_RESPAWN_BOUND {
             let id = spawn_retry_id(&st.name, role, attempt, retry);
-            let opts = self.reviewer_spawn_opts(&id, tier, agent_id, dir, parallel, st)?;
+            let opts = self.reviewer_spawn_opts(&id, tier, agent_id, dir, attempt, parallel, st)?;
             if !self.reserve_spawn(&id) {
                 return Err(budget_refused(&st.name, tier, agent_id));
             }
             // Count the ReviewFindings this spawn emits to the graph - a lens/adversary's
-            // REAL work channel (the REVIEW_PROTOCOL). A reviewer that emitted its findings
+            // REAL work channel (the review_protocol). A reviewer that emitted its findings
             // but self-reported an empty stdout DID its work and must not be misread as
             // degenerate (Gap 18, adv-u2gap18-empty-success-is-a-valid-outcome-misread-as-
             // degenerate). The callback fires only while the agent runs IN-PROCESS.
@@ -2309,7 +4328,13 @@ impl RunCtx<'_> {
                 if t == contextgraph::TYPE_REVIEW_FINDING {
                     findings.set(findings.get() + 1);
                 }
-                self.emit_with_actor(agent_id, t, v)
+                // Stamp the reviewer's ROLE token (not its raw agent id) as the actor, so
+                // the in-process attribution matches the `by` role token the same reviewer
+                // carries on the out-of-process courier path (see `review_protocol`): a
+                // finding is attributed the ONE same way (`lens:<id>` / adversary) on both
+                // driver paths, which is what lets the review-quality folds key an upheld
+                // finding to its tier regardless of which driver recorded it.
+                self.emit_with_actor(role, t, v)
             };
             let result = self
                 .deps
@@ -2392,7 +4417,7 @@ impl RunCtx<'_> {
     /// the lenses' ReviewFindings are already folded into the graph and its grounded
     /// prompt (via `graph_context`) surfaces them - it retrieves the lenses' findings
     /// through the graph, not from a hand-threaded block. It then EMITS its own
-    /// findings (the REVIEW_PROTOCOL) so the adjudicator reads them the same way. Like
+    /// findings (the review_protocol) so the adjudicator reads them the same way. Like
     /// the adjudicator it reviews - it produces no code to integrate, so it owns no
     /// worktree of its own; it runs IN the unit's worktree (`dir`), never the live
     /// main checkout - and unlike the adjudicator its output does NOT gate the stage;
@@ -2406,8 +4431,9 @@ impl RunCtx<'_> {
     ) -> Result<(), Error> {
         // Like a lens, the adversary emits its findings to the graph rather than
         // returning a verdict, so its substantive result is discarded; `run_reviewer`
-        // only needs it non-degenerate (Gap 18) before the adjudicator grounds.
-        let prompt = self.build_review_prompt(st);
+        // only needs it non-degenerate (Gap 18) before the adjudicator grounds. It
+        // attributes each finding to ROLE_ADVERSARY so the courier path carries attribution.
+        let prompt = self.build_review_prompt(st, ROLE_ADVERSARY);
         self.run_reviewer(
             st,
             "adversary",
@@ -2466,6 +4492,400 @@ impl RunCtx<'_> {
         ))
     }
 
+    /// The fan-out implement units in the live DAG, each paired with its blast-radius
+    /// files (Unit 1, spec 10). These are the baseline + planner-proposed units the
+    /// plan-critique gate reviews: a stage that carries an implementer `agent`, is not
+    /// the producer, is not the fan-out TEMPLATE (which is removed once expanded but
+    /// guarded here defensively), and is not the gate itself. Each unit's blast radius is
+    /// the SAME grounding [`grounded_seed`](Self::grounded_seed) uses (so rule-6 conflicts
+    /// are computed against exactly the files the implementer will be grounded on), in the
+    /// stages' stable (BTreeMap) name order so the analysis is deterministic across steps.
+    /// The units the plan-critique gate critiques: the implement-lifecycle units that will
+    /// actually FAN OUT this run. An already-INTEGRATED or TERMINAL (escalated/superseded)
+    /// unit is EXCLUDED (Gap 22): it is settled, not a decomposition candidate, so its blast
+    /// radius overlapping a fresh planner proposal is a resume artifact - not a rule-6
+    /// split the planner could fix (it cannot un-integrate). Including them made the gate
+    /// flag baseline-vs-replan "duplicates" and escalate on every resumed run, wedging the
+    /// fan-out. Critiquing only the not-yet-run units keeps the gate catching REAL
+    /// duplicate-among-pending decompositions (which the planner CAN fix by superseding)
+    /// while never re-litigating settled work.
+    fn dag_unit_blast_radii(
+        &self,
+        stages: &BTreeMap<String, Stage>,
+        gate_name: &str,
+        integrated: &HashSet<String>,
+        terminal: &HashSet<String>,
+    ) -> Vec<(String, Vec<String>)> {
+        let mut units = Vec::new();
+        for (name, st) in stages {
+            if st.agent.is_empty()
+                || is_producer(st)
+                || name == gate_name
+                || st.strategy.eq_ignore_ascii_case("fan-out")
+                || integrated.contains(name)
+                || terminal.contains(name)
+            {
+                continue;
+            }
+            units.push((name.clone(), self.grounded_seed(st)));
+        }
+        units
+    }
+
+    /// Build the plan-critique reviewer prompt (Unit 1, spec 10): the proposed unit DAG,
+    /// the deterministic rule-6 blast-radius analysis, and the three decomposition review
+    /// targets NAMED in the prompt (handbook rules 6-8: shared blast radius, mitigation
+    /// ownership, open dispositions). On a re-plan it leads with the prior rejection so
+    /// the reviewer judges the revised DAG against what was wrong before. The same prompt
+    /// feeds the adversary (which appends the review_protocol and emits findings) and the
+    /// adjudicator (whose stdout verdict gates the fan-out).
+    fn build_dag_critique_prompt(
+        &self,
+        stages: &BTreeMap<String, Stage>,
+        radii: &[(String, Vec<String>)],
+        conflicts: &[(String, String, Vec<String>)],
+        prior_reason: &str,
+    ) -> String {
+        let mut b = String::new();
+        if !prior_reason.trim().is_empty() {
+            b.push_str("A prior plan-critique REJECTED this decomposition:\n");
+            b.push_str(prior_reason.trim());
+            b.push_str("\n\nThe planner has since revised the DAG; re-review it below.\n\n");
+        }
+        b.push_str(
+            "You are the plan-critique gate. Review the PROPOSED unit DAG below - the \
+             decomposition the planner produced - BEFORE any implementer runs, and judge \
+             it against the CROSS-UNIT decomposition rules (docs/handbook/authoring-loops.md \
+             rules 7-8) that per-unit review cannot see:\n\
+             - Rule 7 (mitigation ownership): every demanded mitigation must be owned by \
+             exactly one unit, with the exclusion named on its neighbors; an unassigned or \
+             ambiguously-owned mitigation - two units that will fight over the same concern \
+             through the shared context graph - is a reject.\n\
+             - Rule 8 (open dispositions): a unit must not leave a disposition open for a \
+             reviewer to re-litigate; an undecided disposition is a reject.\n\n\
+             NOTE on shared blast radius: units whose file footprints OVERLAP are NOT a \
+             defect. `partition: by-blast-radius` runs them in SEPARATE sequential batches \
+             (each branches off the prior batch's integrated tree), and per-unit worktree \
+             isolation keeps every reviewer on its own diff - so overlap integrates cleanly \
+             and reviews independently. Do NOT reject merely because two units touch the \
+             same file. Reject a shared-file split ONLY when it is a genuine OWNERSHIP or \
+             COHERENCE defect (rule 7) - two units that cannot own their concern cleanly - \
+             not for mechanical overlap the partitioner already serializes.\n\n",
+        );
+        b.push_str("Proposed units:\n");
+        for (name, files) in radii {
+            let st = &stages[name];
+            let criterion = if st.coverage.trim().is_empty() {
+                "(no criterion)"
+            } else {
+                st.coverage.trim()
+            };
+            let needs = if st.needs.is_empty() {
+                "none".to_string()
+            } else {
+                st.needs.join(", ")
+            };
+            let radius = if files.is_empty() {
+                "(none grounded)".to_string()
+            } else {
+                files.join(", ")
+            };
+            b.push_str(&format!(
+                "- `{name}`: criterion={criterion:?}; needs=[{needs}]; blast radius=[{radius}]\n"
+            ));
+        }
+        if conflicts.is_empty() {
+            b.push_str(
+                "\nBlast-radius overlap (informational): every proposed unit has a DISJOINT \
+                 blast radius.\n",
+            );
+        } else {
+            b.push_str(
+                "\nBlast-radius overlap (informational - the partitioner serializes these \
+                 into sequential batches; judge ownership/coherence, not the overlap):\n",
+            );
+            for (a, other, shared) in conflicts {
+                b.push_str(&format!(
+                    "- units `{a}` and `{other}` both touch: {}\n",
+                    shared.join(", ")
+                ));
+            }
+        }
+        b.push_str(
+            "\nRender your final verdict as a JSON line: {\"verdict\":\"approve\"} to \
+             release the fan-out, or {\"verdict\":\"reject\"} to send the decomposition \
+             back to the planner. Reject ONLY for a rule 7 (ownership) or rule 8 \
+             (open disposition) defect - never for mechanical blast-radius overlap alone.\n",
+        );
+        b
+    }
+
+    /// Re-spawn the planner with the plan-critique's rejection feedback so it revises the
+    /// DAG (Unit 1, spec 10: "a reject feeds back to the planner"). The re-plan spawn id
+    /// is deterministic (`plan/replan#<critique-attempt>`), distinct from the plan stage's
+    /// own `plan/implementer#0`, so a stepwise/replay driver parks and replays it exactly
+    /// like any other spawn; its budget is reserved through the same breaker. The planner
+    /// (`isolation: none`) runs in the project cwd like its first-wave spawn. Its revised
+    /// `UnitProposed` emits land in the log; the caller re-harvests them into the DAG.
+    fn re_plan(
+        &self,
+        plan_name: &str,
+        plan_st: &Stage,
+        critique_attempt: u32,
+        feedback: &str,
+    ) -> Result<(), Error> {
+        let agent_def = self.cfg.agents.get(&plan_st.agent).ok_or_else(|| {
+            Error(format!(
+                "plan-critique re-plan references unknown planner {:?}",
+                plan_st.agent
+            ))
+        })?;
+        let id = spawn_id(plan_name, ROLE_REPLAN, critique_attempt);
+        if !self.reserve_spawn(&id) {
+            return Err(budget_refused(plan_name, "planner", &plan_st.agent));
+        }
+        let prompt = format!(
+            "The plan-critique gate REJECTED your previous decomposition:\n{}\n\nRevise \
+             the unit DAG to resolve it, then re-emit your UnitProposed refinements.\n\n{}",
+            feedback.trim(),
+            self.build_prompt(plan_st)
+        );
+        let emit = |t: &str, v: Value| self.emit_with_actor(&plan_st.agent, t, v);
+        // The planner opts out of isolation (`isolation: none`), so - like its first-wave
+        // spawn in `run_single_stage` - it runs in the project cwd; only an ISOLATED agent
+        // must carry a worktree dir (asserted there, not here). An isolated planner would
+        // be a misconfiguration the first-wave spawn already rejects.
+        self.deps
+            .driver
+            .spawn(
+                agent_def,
+                &prompt,
+                &SpawnOpts {
+                    system_prompt: self.build_system_prompt(agent_def),
+                    dir: String::new(),
+                    isolation: false,
+                    parallel: false,
+                    blast_radius: self.grounded_seed(plan_st),
+                    id: id.clone(),
+                    unit: plan_name.to_string(),
+                    stage: plan_name.to_string(),
+                    run_id: self.run_id.clone(),
+                    // The re-plan is remediation of the DECOMPOSITION: the critique
+                    // attempt drives the planner's ladder rung exactly as a unit's
+                    // remediation attempt drives its implementer's (spec 10 unit 4).
+                    attempt: critique_attempt,
+                },
+                &emit,
+            )
+            .map_err(|e| {
+                Error(format!(
+                    "plan-critique re-plan {:?}: {}",
+                    plan_st.agent, e.0
+                ))
+            })?;
+        Ok(())
+    }
+
+    /// Run the adversarial plan-critique gate (Unit 1, spec 10): the existing adversary +
+    /// adjudicator review the PROPOSED unit DAG BEFORE any implementer runs. It runs
+    /// SYNCHRONOUSLY inside the producer prelude (after the planner wave + harvest), not as
+    /// a main-loop stage, so its reject can loop the PLANNER - a coupling the per-stage DAG
+    /// scheduler does not express - while the fan-out stays gated on its release. Returns
+    /// whether the gate RELEASED the fan-out (an adjudicator approve): the caller runs the
+    /// implement waves only when it did. The reviewers run in a throwaway read-only
+    /// worktree (like a standalone review stage) so a stray Bash/Edit never touches the
+    /// main checkout; it is torn down on every exit path.
+    fn run_plan_critique_gate(
+        &self,
+        gate_name: &str,
+        plan_name: &str,
+        stages: &mut BTreeMap<String, Stage>,
+        proposed: &mut HashSet<String>,
+        integrated: &mut HashSet<String>,
+        terminal: &mut HashSet<String>,
+    ) -> Result<bool, Error> {
+        let gate_st = stages[gate_name].clone();
+        // Seed the review worktree at the folded attempt so a resumed step recomputes the
+        // same deterministic path (mirrors `run_fan_out_stage`).
+        let seeded = self.prior_attempts.get(gate_name).copied().unwrap_or(0);
+        let review_wt = self.review_only_worktree(&gate_st, seeded)?;
+        let dir = review_wt
+            .as_ref()
+            .map(|w| w.dir.clone())
+            .unwrap_or_default();
+        let result = self.plan_critique_loop(
+            &gate_st, plan_name, &dir, stages, proposed, integrated, terminal,
+        );
+        if let Some(w) = &review_wt {
+            let _ = w.remove();
+            let _ = Worktree::delete_branch(&self.deps.repo, &w.branch);
+        }
+        result
+    }
+
+    /// The plan-critique review + planner-remediation loop, factored out of
+    /// [`run_plan_critique_gate`](Self::run_plan_critique_gate) so the throwaway review
+    /// worktree is torn down on EVERY exit path (the `?` early-returns here are caught by
+    /// the wrapper). `dir` is the read-only worktree the reviewers run in (empty only on a
+    /// repo-less run). The attempt counter is seeded from the prior log so the escalation
+    /// bound ACCUMULATES across steps and a replay parks at the next unrecorded frontier
+    /// (mirrors `run_fan_out_review_loop`).
+    #[allow(clippy::too_many_arguments)]
+    fn plan_critique_loop(
+        &self,
+        gate_st: &Stage,
+        plan_name: &str,
+        dir: &str,
+        stages: &mut BTreeMap<String, Stage>,
+        proposed: &mut HashSet<String>,
+        integrated: &mut HashSet<String>,
+        terminal: &mut HashSet<String>,
+    ) -> Result<bool, Error> {
+        let gate_name = gate_st.name.clone();
+        let plan_st = stages[plan_name].clone();
+        // The gate is a real DAG unit: record its start once (replay-keyed) so the ledger
+        // projects it between plan and implement. It reviews the DAG, not a criterion, so
+        // its spec_criterion is empty; the adjudicator is its representative agent.
+        self.emit_keyed_meta(
+            &format!("{gate_name}/started"),
+            ledger::TYPE_UNIT_STARTED,
+            json!({
+                "id": gate_name,
+                "unit": gate_name,
+                "spec_criterion": "",
+                "criterion": "",
+                "agent": gate_st.adjudicator,
+                "needs": gate_st.needs,
+                "branch": unit_branch(&gate_name),
+            }),
+            // The gate's representative alias is informational on its start event; the
+            // seeded attempt keeps the stamp consistent with the rung the adjudicator
+            // actually resolves on this attempt (spec 10 unit 4's ladder).
+            &[(
+                META_MODEL_ALIAS,
+                &self.agent_model(
+                    &gate_st.adjudicator,
+                    self.prior_attempts.get(&gate_name).copied().unwrap_or(0),
+                ),
+            )],
+        )?;
+        let mut attempts = self.prior_attempts.get(&gate_name).copied().unwrap_or(0);
+        let mut prior_reason = String::new();
+        loop {
+            // Ground each not-yet-run unit and surface the pairs that share a blast radius
+            // as INFORMATIONAL context for the reviewers - NOT a reject trigger. A shared
+            // blast radius is safely serialized by `partition: by-blast-radius` (disjoint
+            // sequential batches, each off the prior's integrated tree) and reviewed under
+            // per-unit worktree isolation, so mechanical overlap is not a defect; the gate
+            // judges cross-unit OWNERSHIP (rule 7) and open DISPOSITIONS (rule 8), which the
+            // partitioner does not address and per-unit review cannot see.
+            let radii = self.dag_unit_blast_radii(stages, &gate_name, integrated, terminal);
+            let conflicts = blast_radius_conflicts(&radii);
+            let prompt = self.build_dag_critique_prompt(stages, &radii, &conflicts, &prior_reason);
+            // TIER 2: the adversary reviews the DAG and emits its findings to the graph
+            // (the review_protocol), so the adjudicator - grounding after it - reads them.
+            if !gate_st.adversary.is_empty() {
+                self.run_reviewer(
+                    gate_st,
+                    "adversary",
+                    ROLE_ADVERSARY,
+                    &gate_st.adversary,
+                    dir,
+                    attempts,
+                    false,
+                    false,
+                    &format!("{prompt}{}", review_protocol(ROLE_ADVERSARY)),
+                )?;
+            }
+            // TIER 3: the adjudicator renders the gating verdict over the DAG, fail-closed.
+            let (approved, reason, adj_resolved) = if gate_st.adjudicator.is_empty() {
+                (true, String::new(), String::new())
+            } else {
+                let result = self.run_reviewer(
+                    gate_st,
+                    "adjudicator",
+                    ROLE_ADJUDICATOR,
+                    &gate_st.adjudicator,
+                    dir,
+                    attempts,
+                    false,
+                    true,
+                    &prompt,
+                )?;
+                (
+                    verdict_approves(&result.output),
+                    result.output,
+                    result.resolved_model,
+                )
+            };
+
+            if approved {
+                // Approve RELEASES the fan-out: mark the gate reviewed + integrated (a
+                // review-only unit with no code artifact, like a standalone review stage),
+                // and record it terminal + integrated so the main loop never re-runs it and
+                // the fan-out units that need it become ready.
+                self.emit_keyed_meta(
+                    &format!("{gate_name}/reviewed#{attempts}"),
+                    ledger::TYPE_UNIT_STATUS,
+                    json!({
+                        "id": gate_name,
+                        "status": "reviewed",
+                        "evidence": review_evidence(&reason),
+                    }),
+                    &[
+                        (
+                            META_MODEL_ALIAS,
+                            &self.agent_model(&gate_st.adjudicator, attempts),
+                        ),
+                        (META_MODEL_RESOLVED, &adj_resolved),
+                    ],
+                )?;
+                self.emit(
+                    ledger::TYPE_UNIT_INTEGRATED,
+                    json!({"id": gate_name, "commit": REVIEW_ONLY_NO_ARTIFACT}),
+                )?;
+                integrated.insert(gate_name.clone());
+                terminal.insert(gate_name.clone());
+                return Ok(true);
+            }
+
+            // Reject: charge a remediation attempt (replay-keyed on the failing attempt so a
+            // replay re-reaching it appends no duplicate) and either escalate or re-plan.
+            let failed_attempt = attempts;
+            let rem = safety::remediate(attempts, self.max_retries());
+            attempts = rem.attempts;
+            self.emit_keyed(
+                &format!("{gate_name}/failed#{failed_attempt}"),
+                ledger::TYPE_UNIT_FAILED,
+                json!({"id": gate_name, "attempts": attempts}),
+            )?;
+            if rem.decision == safety::Decision::Escalate {
+                let why = if reason.trim().is_empty() {
+                    "the adjudicator did not approve the decomposition".to_string()
+                } else {
+                    format!("plan-critique rejected: {}", reason.trim())
+                };
+                self.emit_lesson(
+                    None,
+                    &gate_name,
+                    &format!(
+                        "plan-critique {gate_name:?} escalated after {attempts} attempts; {why}"
+                    ),
+                );
+                self.emit(ledger::TYPE_UNIT_ESCALATED, json!({"id": gate_name}))?;
+                // Terminal but NOT integrated: the fan-out stays gated, so nothing
+                // implements over a decomposition three reviews could not fix.
+                terminal.insert(gate_name.clone());
+                return Ok(false);
+            }
+            // Retry: feed the rejection back to the planner (bounded by remediation depth)
+            // and re-harvest its revised DAG for the next critique iteration.
+            self.re_plan(plan_name, &plan_st, attempts, &reason)?;
+            self.harvest_proposed(stages, proposed, integrated, terminal)?;
+            prior_reason = reason;
+        }
+    }
+
     /// Run a stage's inline gates for its `attempt`, returning whether they all passed
     /// and the compact evidence of any failure. Each gate's verdict is REPLAY-KEYED on
     /// the `(unit, attempt, gate)` coordinate (spec 04, criterion 4): the first step to
@@ -2475,7 +4895,13 @@ impl RunCtx<'_> {
     /// duration once, not once per step) and appends no duplicate verdict. Distinct
     /// attempts are distinct gate runs - a re-implementation must re-gate - so only
     /// re-reaching the SAME attempt's gate is a replay.
-    fn run_gates(&self, st: &Stage, dir: &str, attempt: u32) -> Result<GateOutcome, Error> {
+    fn run_gates(
+        &self,
+        st: &Stage,
+        dir: &str,
+        attempt: u32,
+        selection: GateSelection,
+    ) -> Result<GateOutcome, Error> {
         let mut outcome = GateOutcome {
             pass: true,
             evidence: Vec::new(),
@@ -2491,6 +4917,13 @@ impl RunCtx<'_> {
         // `isolation: none` agent or a repo-less run) has no per-unit tree to isolate, so
         // `unit_cache_sibling` returns None and the gate inherits the ambient/shared target.
         let target = crate::worktree::unit_cache_sibling(dir).unwrap_or_default();
+        // The content address of this attempt's gate inputs (spec 12, unit 1): the git
+        // tree-SHA of the committed worktree (the whole tree by default - unit 3 narrows it
+        // to a gate's `inputs:`). Computed ONCE - every gate this attempt reads the same
+        // committed tree, and each gate folds its own command over it in `input_digest`.
+        // Empty when there is no worktree tree (a repo-less / `isolation: none` run), which
+        // simply disables content-addressing for this attempt's gates.
+        let tree_sha = crate::worktree::tree_sha_of(dir);
         for gid in &st.gates {
             let gc = self
                 .cfg
@@ -2507,7 +4940,14 @@ impl RunCtx<'_> {
             if !kind.runs_inline() {
                 continue;
             }
-            let key = gate_verdict_key(&st.name, attempt, gid);
+            // The post-merge re-gate (spec 12, unit 5) keys apart from the pre-merge
+            // `{unit}/gate:` verdict at the SAME `(unit, attempt)`, so it re-verifies the
+            // MERGED tree under its own key instead of REPLAYING the isolation green; every
+            // other selection uses the canonical gate-run key.
+            let key = match selection {
+                GateSelection::PostMerge => postmerge_gate_verdict_key(&st.name, attempt, gid),
+                _ => gate_verdict_key(&st.name, attempt, gid),
+            };
             // REPLAY a recorded verdict (spec 04, criterion 4): this gate already ran in
             // a prior step, so reuse its recorded pass/evidence and re-run NOTHING - not
             // the command, not the GateVerdict emit, not the ratchet. The recorded
@@ -2520,6 +4960,55 @@ impl RunCtx<'_> {
                 }
                 continue;
             }
+            // Blast-radius gate SELECTION (spec 12, unit 3): in the implement/remediate INNER
+            // LOOP, a gate whose `inputs:` globs do not intersect the unit's grounded blast
+            // radius verifies nothing this change could have touched, so it is SKIPPED - logged
+            // (never silent) and not run. An unscoped gate (no `inputs:`) always runs. This is
+            // gated AFTER the exact-key replay above, so a re-step that already recorded this
+            // gate's real verdict replays it rather than re-deciding a skip; and it uses the
+            // distinct skip key, so the EXHAUSTIVE integrate pass (which selects every gate)
+            // still runs the skipped gate below. `Exhaustive` skips nothing.
+            if let GateSelection::Narrowed(blast_radius) = selection {
+                if !gate_intersects_radius(&gc.inputs, blast_radius) {
+                    self.emit_gate_skip(&st.name, gid, attempt, &gc.inputs, blast_radius)?;
+                    continue;
+                }
+            }
+            // Content-addressed cache-hit (spec 12, unit 1): this gate has not run at THIS
+            // (unit, attempt, gate) coordinate, but a prior GREEN verdict may already have
+            // proven the SAME command over the SAME tree. If so, answer the gate as a
+            // logged cache-hit citing that green's position - the command is not run and the
+            // ratchet does not move, exactly like an exact-key replay - so an unchanged tree
+            // re-verifies near-free. Failures never enter the cache, so a red is never
+            // cache-answered (it must always re-prove). An empty digest (no worktree tree)
+            // disables the hit and the gate runs fresh below.
+            //
+            // Staleness (spec 12, unit 2): a unit a downstream staleness pass marked stale
+            // (an integrated unit touched files in its blast radius) does NOT take the hit -
+            // its cached verdicts stop hitting, so its gate re-runs against the changed world
+            // instead of reusing a green earned before that integration. Unaffected units
+            // are not stale, so their greens still stand and hit here.
+            let digest = input_digest(&gc.run, &tree_sha);
+            if !digest.is_empty() && !self.is_stale(&st.name) {
+                if let Some((pos, cached_unit)) = self.cached_green_verdict(&digest) {
+                    let evidence = format!(
+                        "cache-hit: gate {gid:?} was proven green at log position {pos} \
+                         (unit {cached_unit:?}) for the same command and input digest \
+                         {digest}; not re-run"
+                    );
+                    self.emit_gate_verdict(
+                        &key,
+                        &st.name,
+                        gid,
+                        true,
+                        false,
+                        &evidence,
+                        &digest,
+                        Some(pos),
+                    )?;
+                    continue;
+                }
+            }
             let g = Gate {
                 id: gid.clone(),
                 run: gc.run,
@@ -2527,14 +5016,20 @@ impl RunCtx<'_> {
                 autonomy: gate::Autonomy::Manual,
                 history: Vec::new(),
             };
-            let res = self.deps.gates.run(&g, dir, &target);
-            // The compact gate evidence is threaded into the GateVerdict event
-            // payload (item 3): a real run otherwise discarded it, so neither the
-            // ledger nor the workflow driver ever saw WHY a gate passed or failed.
-            // Replay-keyed (and cached) so a re-step replays this verdict instead of
-            // re-running.
-            self.emit_gate_verdict(&key, gid, res.pass, &res.evidence)?;
-            let (promoted, demoted, autonomy) = self.record_gate(gid, kind, res.pass, &st.autonomy);
+            // Run the gate and fold the failure taxonomy's three-way outcome (spec 10,
+            // unit 2): a clean pass; a flaky/infra failure that reran and PASSED (a
+            // FlakyVerdict pass-with-warning); or a real failure (product/flaky demote,
+            // infra hold).
+            let (pass, flaky, ratchet, evidence) = self.run_gate_with_taxonomy(&g, dir, &target);
+            // The compact gate evidence is threaded into the GateVerdict event payload
+            // (item 3): a real run otherwise discarded it, so neither the ledger nor the
+            // workflow driver ever saw WHY a gate passed or failed. `flaky` rides as the
+            // FlakyVerdict annotation (no new event type). Replay-keyed (and cached) so a
+            // re-step replays this verdict instead of re-running; the `digest` addresses it
+            // by content so a later gate over the same command + tree is a cache-hit (a
+            // GREEN populates the content cache; a red records the digest but never caches).
+            self.emit_gate_verdict(&key, &st.name, gid, pass, flaky, &evidence, &digest, None)?;
+            let (promoted, demoted, autonomy) = self.record_gate(gid, kind, ratchet, &st.autonomy);
             if promoted {
                 self.emit(
                     TYPE_GATE_PROMOTED,
@@ -2546,14 +5041,94 @@ impl RunCtx<'_> {
                     json!({"gate": gid, "autonomy": autonomy.as_str()}),
                 )?;
             }
-            if !res.pass {
+            if !pass {
                 outcome.pass = false;
                 // Capture the failing gate's compact summary so the next attempt's
                 // prompt names exactly which gate failed and why (item 3 / spec 02).
-                outcome.evidence.push(format!("{gid}: {}", res.evidence));
+                outcome.evidence.push(format!("{gid}: {evidence}"));
             }
         }
         Ok(outcome)
+    }
+
+    /// Run one gate and fold the failure taxonomy's three-way outcome (spec 10, unit 2).
+    ///
+    /// A gate that passes on its first run is a clean pass. A gate that FAILS is
+    /// classified by the taxonomy (a gate site supplies the captured output; exit-status
+    /// and signal matchers simply never match here). A `product` failure - the shipped
+    /// default for any unrecognised gate output - fails immediately and demotes, exactly
+    /// as a gate failure did before this taxonomy. A `flaky` or `infra` failure is rerun
+    /// up to the matched rule's `limit` with its `backoff`: the FIRST rerun that passes
+    /// makes the outcome MIXED - a `FlakyVerdict` pass-with-warning that never demotes -
+    /// while a failure that stays red across every rerun is a believed-real failure that
+    /// demotes (`flaky`) or holds the ratchet (`infra`).
+    ///
+    /// Returns `(recorded_pass, flaky_annotation, ratchet_effect, evidence)`.
+    fn run_gate_with_taxonomy(
+        &self,
+        g: &Gate,
+        dir: &str,
+        target: &str,
+    ) -> (bool, bool, GateRatchet, String) {
+        let res = self.deps.gates.run(g, dir, target);
+        if res.pass {
+            return (true, false, GateRatchet::CleanPass, res.evidence);
+        }
+        // Classify the failure. `FailureClass` is Copy and `Backoff` cheap to clone, so we
+        // hold no borrow of the taxonomy across the rerun loop below.
+        let sig = Signal::from_output(res.evidence.clone());
+        let (class, limit, backoff) = match self.taxonomy.classify(&sig) {
+            Some(rule) => (rule.class, rule.limit, rule.backoff.clone()),
+            // No rule matched: a plain product defect (no rerun) - today's behavior.
+            None => (
+                failure::FailureClass::Product,
+                0,
+                failure::Backoff::default(),
+            ),
+        };
+        let first_evidence = res.evidence;
+        if !class.reruns() || limit == 0 {
+            // A failure that is never rerun (a `product` defect, or a rerunnable class
+            // authored with a zero/omitted limit): believed real on its first run. Its
+            // demote-vs-hold is the SAME persistent-failure decision as the rerun
+            // exhaustion below and the deferred gate - an authored `infra` rule with its
+            // limit omitted (serde default 0) HOLDS the ratchet here exactly as it does
+            // at the deferred site, never demotes by gate SITE. Routed through the single
+            // demote-vs-hold authority so the three gate sites cannot drift.
+            return (
+                false,
+                false,
+                GateRatchet::for_persistent_failure(class),
+                first_evidence,
+            );
+        }
+        for n in 0..limit {
+            let delay = backoff.delay(n);
+            if !delay.is_zero() {
+                // The only wall-clock wait in the loop; a zero-backoff rule (and every
+                // test) never reaches it. There is no injected clock seam in `Deps`, so a
+                // configured backoff sleeps this unit's own thread - it delays only this
+                // unit's gate, never the wider wave.
+                std::thread::sleep(delay);
+            }
+            let retry = self.deps.gates.run(g, dir, target);
+            if retry.pass {
+                // MIXED: the gate failed then passed - a FlakyVerdict pass-with-warning.
+                let evidence = format!(
+                    "flaky: gate {:?} failed then passed on rerun {}/{}; first failure:\n{first_evidence}",
+                    g.id,
+                    n + 1,
+                    limit,
+                );
+                return (true, true, GateRatchet::FlakyPass, evidence);
+            }
+        }
+        // Stayed red across every rerun: a believed-real failure. A `flaky` class demotes
+        // (it was thought intermittent but consistently fails); an `infra` class holds the
+        // ratchet - an outage must not cost the gate its earned autonomy. Same single
+        // demote-vs-hold authority as the early-return above and the deferred gate.
+        let ratchet = GateRatchet::for_persistent_failure(class);
+        (false, false, ratchet, first_evidence)
     }
 
     /// Run the workflow's DEFERRED gates ONCE at the run's phase boundary (§4.3).
@@ -2652,12 +5227,56 @@ impl RunCtx<'_> {
                     // wrong here, and this is exactly the tree `rigger step`'s inline
                     // courier gates also build against (Gap 19).
                     let res = self.deps.gates.run(&g, "", "");
-                    self.emit_gate_verdict(&key, gid, res.pass, &res.evidence)?;
+                    // The deferred phase-boundary gate keeps its single-run semantics (no
+                    // taxonomy RERUN): it measures the ONE integrated tree once, so its
+                    // verdict carries no flaky annotation (a whole-tree deferred rerun is
+                    // out of this unit's scope). The DEMOTE-vs-HOLD decision, though, is
+                    // folded through the SAME single classification authority the inline
+                    // gate uses (self.taxonomy) - one fault earns one demotion policy
+                    // regardless of gate SITE.
+                    // A deferred gate runs in the BASE repo with no worktree dir, so there is
+                    // no per-tree address to compute (dir "" -> empty digest): it keeps its
+                    // once-per-run replay semantics and is NOT content-addressed by unit 1
+                    // (the owning unit is empty and the cache is untouched at an empty
+                    // digest). Its verdict still records normally.
+                    self.emit_gate_verdict(
+                        &key,
+                        "",
+                        gid,
+                        res.pass,
+                        false,
+                        &res.evidence,
+                        "",
+                        None,
+                    )?;
                     // Feed the ratchet the same way an inline gate does, so a deferred
                     // gate's trust still moves on its history (its ceiling is Silent,
                     // like Core). Only the fresh run feeds it; a replay must not re-emit
-                    // the (non-keyed) promote/demote events.
-                    let (promoted, demoted, autonomy) = self.record_gate(gid, kind, res.pass, "");
+                    // the (non-keyed) promote/demote events. A clean pass promotes; a
+                    // FAILURE is classified through self.taxonomy for the demote-vs-hold
+                    // decision ONLY (still single-run, no rerun): an `infra` class HOLDS
+                    // the ratchet (FailNoDemote) - an outage must never cost a deferred
+                    // gate its earned autonomy, exactly as at an inline gate - while a
+                    // product/flaky class and any UNMATCHED failure demote (FailDemote) as
+                    // before. Routing through the taxonomy (not a hardcoded FailDemote)
+                    // keeps ONE failure-classification authority across both gate sites.
+                    let ratchet = if res.pass {
+                        GateRatchet::CleanPass
+                    } else {
+                        // Classify the single deferred run (an UNMATCHED failure is a
+                        // plain `product` defect, exactly as the inline site resolves
+                        // None), then fold demote-vs-hold through the SAME single
+                        // authority the inline gate uses, so one fault earns one demotion
+                        // policy regardless of gate SITE.
+                        let sig = Signal::from_output(res.evidence.clone());
+                        let class = self
+                            .taxonomy
+                            .classify(&sig)
+                            .map(|rule| rule.class)
+                            .unwrap_or(failure::FailureClass::Product);
+                        GateRatchet::for_persistent_failure(class)
+                    };
+                    let (promoted, demoted, autonomy) = self.record_gate(gid, kind, ratchet, "");
                     if promoted {
                         self.emit(
                             TYPE_GATE_PROMOTED,
@@ -2706,11 +5325,17 @@ impl RunCtx<'_> {
     /// Record a gate's run on the ratchet, seeding a newly-tracked gate's starting
     /// autonomy from the stage override (`stage_autonomy`, when non-empty) and
     /// otherwise from `defaults.autonomy` (§3.2, §4.3).
+    ///
+    /// The `ratchet` argument is the three-way outcome the failure taxonomy resolved for
+    /// this gate run (spec 10, unit 2): a clean pass promotes normally; a flaky
+    /// pass-with-warning and a persistent infra failure move the autonomy NOWHERE (they
+    /// neither demote nor build promotion trust); a believed-real failure demotes exactly
+    /// as a gate failure did before.
     fn record_gate(
         &self,
         gid: &str,
         kind: gate::Kind,
-        pass: bool,
+        ratchet: GateRatchet,
         stage_autonomy: &str,
     ) -> (bool, bool, gate::Autonomy) {
         let mut tracker = self.gate_tracker.lock().unwrap();
@@ -2730,40 +5355,76 @@ impl RunCtx<'_> {
             autonomy,
             history: Vec::new(),
         });
+        // The history entry records whether the gate ultimately passed (a flaky rerun
+        // pass counts as a pass for the run's evidence); the promotion/demotion below
+        // then applies the class-specific ratchet effect.
+        let pass = matches!(ratchet, GateRatchet::CleanPass | GateRatchet::FlakyPass);
         g.history.push(gate::HistoryEntry { pass });
-        let (new_a, demoted) = gate::auto_demote(g, pass);
-        if demoted {
-            g.autonomy = new_a;
-            g.history.clear();
-            return (false, true, g.autonomy);
+        match ratchet {
+            GateRatchet::CleanPass => {
+                if gate::propose_promotion(g) {
+                    // Promotion is PROPOSED, never auto-applied (§4.3): surface it but
+                    // keep the gate at its current autonomy until a human approves. The
+                    // proposed step is capped at the gate kind's ceiling.
+                    let proposed = gate::next_autonomy(g);
+                    g.history.clear();
+                    return (true, false, proposed);
+                }
+                (false, false, g.autonomy)
+            }
+            GateRatchet::FlakyPass => {
+                // A pass-with-warning (a flaky/infra MIXED rerun): it must NEVER demote
+                // the ratchet, and it also builds no promotion trust - a flaky green is
+                // not a clean green. Reset the clean-pass streak, leave autonomy put.
+                g.history.clear();
+                (false, false, g.autonomy)
+            }
+            GateRatchet::FailDemote => {
+                // A believed-real failure (a product gate, or a flaky gate that stayed
+                // red across every rerun): demote exactly as a gate failure did before.
+                let (new_a, demoted) = gate::auto_demote(g, false);
+                if demoted {
+                    g.autonomy = new_a;
+                    g.history.clear();
+                    return (false, true, g.autonomy);
+                }
+                (false, false, g.autonomy)
+            }
+            GateRatchet::FailNoDemote => {
+                // A persistent INFRA failure: it charges a remediation attempt like any
+                // failure (the caller still treats the gate as failed), but an outage
+                // must not cost the gate its earned autonomy, so it does NOT demote. The
+                // pushed fail entry naturally breaks any promotion streak.
+                (false, false, g.autonomy)
+            }
         }
-        if gate::propose_promotion(g) {
-            // Promotion is PROPOSED, never auto-applied (§4.3): surface it but keep
-            // the gate at its current autonomy until a human approves. The proposed
-            // step is capped at the gate kind's ceiling.
-            let proposed = gate::next_autonomy(g);
-            g.history.clear();
-            return (true, false, proposed);
-        }
-        (false, false, g.autonomy)
     }
 
     fn integrate_and_emit(
         &self,
+        // The LIVE unit DAG (spec 12, unit 2): the set of units the staleness pass grounds
+        // to find those whose blast radius this integration's touched files intersect. It is
+        // the run loop's live `stages` (baseline + planner-proposed included), threaded down
+        // so staleness measures against every current unit, not just the authored config.
+        stages: &BTreeMap<String, Stage>,
         wt: Option<&Worktree>,
-        agent_id: &str,
-        unit_name: &str,
-        gates: &[String],
+        // The unit being integrated: its name, agent, and gate library drive the FILE_TOUCHED
+        // / GATED_BY edges AND the post-merge re-gate (spec 12, unit 5), which re-runs the full
+        // library `st.gates` against the merged tree.
+        st: &Stage,
+        // The unit's current attempt: the post-merge re-gate records its verdicts at this
+        // attempt under the `postmerge-gate:` key, so a stepwise resume replays them.
+        attempt: u32,
         // The fail-closed merge guard: an `IntegrationApproval` exists ONLY when the
         // unit's review EXPLICITLY APPROVED it (and its gates passed). Taking it by
         // value here makes "approved" a precondition of the merge seam itself, not an
         // implicit property of the call site - a rejected or escalated unit can never
         // call this, because it has no approval to hand over.
         _approval: IntegrationApproval,
-    ) -> Result<String, Error> {
+    ) -> Result<Integration, Error> {
         let wt = match wt {
             Some(w) => w,
-            None => return Ok(String::new()),
+            None => return Ok(Integration::default()),
         };
         // The unit's changed files span the commit-before-gates seam (§3.2): the
         // implementer's work is now committed, so a plain `git status` is clean -
@@ -2772,36 +5433,97 @@ impl RunCtx<'_> {
         // set whether or not the unit was pre-committed.
         let files = wt.changed_since_base()?;
         if files.is_empty() {
-            return Ok(String::new());
+            return Ok(Integration::default());
         }
+        let _lock = self.integrate_mu.lock().unwrap();
+        // spec 12, unit 5 (Gap 21): record the run-branch tip BEFORE the merge so a RED
+        // post-merge re-gate can roll the merge back. The whole merge -> re-gate -> land/undo
+        // sequence runs UNDER the integrate lock, so no concurrent integration mutates the run
+        // branch between the merge and the re-gate that judges it.
+        let pre_merge = worktree::head_sha_of(&self.deps.repo);
+        let commit = match wt.integrate(&format!("rigger: integrate {}", st.name))? {
+            worktree::IntegrateOutcome::Merged(c) => c,
+            worktree::IntegrateOutcome::Conflict(detail) => {
+                // A merge CONFLICT: an unpredicted overlap the partitioner did not serialize
+                // (two batch-mates the grounder placed together that edit the same region).
+                // `wt.integrate` already ABORTED the merge, so the run branch is untouched -
+                // NOTHING landed. RESET this unit's branch to the run-branch tip (`pre_merge`,
+                // unchanged by the aborted merge) so its NEXT remediation attempt re-implements
+                // off the INTEGRATED tree (with the batch-mate's change) and rebases cleanly,
+                // then re-enter remediation fed the conflict - EXACTLY like a RED post-merge
+                // re-gate below - instead of wedging the run on a broken branch.
+                wt.reset_branch_to(&pre_merge)?;
+                return Ok(Integration {
+                    blocked: Some(vec![format!(
+                        "integrate merge conflict (unpredicted overlap; the partitioner did \
+                         not serialize this unit against a batch-mate editing the same region) \
+                         - re-implement off the current run-branch tree so your change merges \
+                         cleanly:\n{detail}"
+                    )]),
+                    ..Default::default()
+                });
+            }
+        };
+        // spec 12, unit 5: re-run the FULL gate suite against the MERGED run-branch tree
+        // BEFORE emitting UnitIntegrated. A unit's pre-merge gates ran in its OWN worktree, so
+        // an UNPREDICTED overlap - two batch-mates the grounder placed together that edit the
+        // same region - can auto-merge textually into a broken tree neither unit gated. The
+        // re-gate is content-addressed (unit 1): a merge that changed nothing a gate reads (a
+        // clean fast-forward) replays the pre-merge green as a cache-hit - near-free - while a
+        // merge that combined divergent trees misses the cache and the gate RUNS on the merged
+        // tree. A RED here BLOCKS integration: the merge is rolled back so NOTHING lands (no
+        // UnitIntegrated over a broken tree) and the caller re-enters remediation fed the
+        // merge-break evidence, exactly like a pre-merge gate failure.
+        if !commit.is_empty() {
+            let merged = self.run_gates(st, &self.deps.repo, attempt, GateSelection::PostMerge)?;
+            if !merged.pass {
+                Worktree::reset_to(&self.deps.repo, &pre_merge)?;
+                return Ok(Integration {
+                    blocked: Some(merged.evidence),
+                    ..Default::default()
+                });
+            }
+        }
+        // The merged tree passed (or there was nothing to merge): the integration LANDS. Only
+        // NOW - once the tree the run branch carries is the verified one - record the artifact
+        // graph edges, reindex, and propagate staleness. A blocked integration emits none of
+        // these, so a rolled-back merge leaves no phantom FILE_TOUCHED / staleness for a unit
+        // whose work never landed.
         for f in &files {
             self.emit(
                 contextgraph::TYPE_FILE_TOUCHED,
-                json!({"path": f, "by": agent_id}),
+                json!({"path": f, "by": &st.agent}),
             )?;
         }
-        // GATED_BY (§7): record which gates govern each artifact this unit changed.
-        // The changed-file list must be captured BEFORE integrate commits it (after
-        // the commit the worktree is clean), so emit here while `files` is in scope.
-        // Each (file, gate) GateVerdict carries the artifact, which the projector
-        // folds into GATED_BY(artifact -> gate) - the edge a real run otherwise
-        // never produced (Phase 2 carryover).
+        // GATED_BY (§7): record which gates govern each artifact this unit changed. Each
+        // (file, gate) GateVerdict carries the artifact, which the projector folds into
+        // GATED_BY(artifact -> gate) - the edge a real run otherwise never produced (Phase 2
+        // carryover). `files` was captured before the merge, so it is the real artifact set.
         for f in &files {
-            for gid in gates {
+            for gid in &st.gates {
                 self.emit(
                     contextgraph::TYPE_GATE_VERDICT,
                     json!({"gate": gid, "pass": true, "artifact": f}),
                 )?;
             }
         }
-        let _lock = self.integrate_mu.lock().unwrap();
-        let commit = wt.integrate(&format!("rigger: integrate {unit_name}"))?;
         if !commit.is_empty() {
             if let Some(g) = self.deps.grounder {
                 g.reindex(&self.deps.repo, &files);
             }
         }
-        Ok(commit)
+        // Staleness propagation (spec 12, unit 2): now that this unit's files are merged and
+        // the grounder is reindexed, mark every DOWNSTREAM unit whose blast radius intersects
+        // them stale, so its next gate stops reusing a green earned before this change. The
+        // marked ids ride back on the `UnitIntegrated` event (META_STALE) for provenance +
+        // resume seeding. Computed under the integrate lock so a concurrent integration's
+        // staleness view is serialized with the merge it observes.
+        let staled = self.mark_stale_downstream(stages, &st.name, &files);
+        Ok(Integration {
+            commit,
+            staled,
+            blocked: None,
+        })
     }
 
     /// Build the SYSTEM prompt the conductor threads into every spawn: the agent's
@@ -2905,13 +5627,15 @@ impl RunCtx<'_> {
 
     /// Build a REVIEW agent's prompt: the grounded base prompt (which already
     /// surfaces, via `graph_context`, the decisions, lessons, AND findings other
-    /// reviewers raised about the unit's files) plus the REVIEW_PROTOCOL telling this
-    /// reviewer to emit each finding it raises as a ReviewFinding. This is how the
-    /// three tiers communicate THROUGH the graph: a lens emits findings, the adversary
-    /// and adjudicator (which ground after it) read them back from the graph, and a
-    /// reviewer who emits its own findings feeds the next tier the same way.
-    fn build_review_prompt(&self, st: &Stage) -> String {
-        format!("{}{REVIEW_PROTOCOL}", self.build_prompt(st))
+    /// reviewers raised about the unit's files) plus the [`review_protocol`] telling this
+    /// reviewer to emit each finding it raises as a ReviewFinding attributed to `actor`
+    /// (its ROLE token). This is how the three tiers communicate THROUGH the graph: a lens
+    /// emits findings, the adversary and adjudicator (which ground after it) read them back
+    /// from the graph, and a reviewer who emits its own findings feeds the next tier the
+    /// same way; the `by`-carried `actor` also lets the review-quality folds attribute the
+    /// finding on the out-of-process path (see [`review_protocol`]).
+    fn build_review_prompt(&self, st: &Stage, actor: &str) -> String {
+        format!("{}{}", self.build_prompt(st), review_protocol(actor))
     }
 
     /// Build a stage's prompt, optionally prepending a first-class prior-failure
@@ -3129,6 +5853,11 @@ impl RunCtx<'_> {
         terminal: &HashSet<String>,
     ) -> Result<(), Error> {
         let events = self.deps.store.read_stream(STREAM, 0, Direction::Forward)?;
+        // The plan-critique gate (Unit 1, spec 10) that HOLDS the fan-out until it
+        // releases, if the workflow wires one. Computed once over the static gate stage
+        // (always present) so it is stable as the loop mutates `stages`; None when no
+        // gate is wired (the historical no-gate shape, untouched).
+        let gate = critique_gate_name(stages);
         // Run-scoped (Gap 11, completing spec-06 unit-1): only THIS run's proposals
         // fold. A prior run's UnitProposed must never resurrect as live work - its
         // terminal states are (correctly) scoped OUT of `terminal`, so an unscoped
@@ -3192,12 +5921,30 @@ impl RunCtx<'_> {
                     stages.remove(&baseline_id);
                 }
             }
+            // Hold the fan-out behind the plan-critique gate (the resume-safety fix, spec
+            // 10 done-when 1: ONLY an approve releases the wave). A conductor-synthesized
+            // baseline inherits `[plan-critique, plan]` from the implement template, so it
+            // is naturally held; a PLANNER-proposed unit's `needs` (PLAN_PROTOCOL) name
+            // only sibling unit ids, NEVER the gate, so without this it would be scheduled
+            // the moment `plan` integrates - and on a RESUME the pre-gate planning wave
+            // fans it out BEFORE the gate renders (or replays) its verdict, implementing a
+            // decomposition three reviews may reject. Give every proposed fan-out unit the
+            // gate as a dependency so `ready_stages` holds it - in the pre-gate wave AND
+            // the main loop - until the gate INTEGRATES (an adjudicator approve); a
+            // terminal-but-unintegrated (escalated) or still-parked (mid-review) gate never
+            // surfaces it. The single hold the baselines already carry, now uniform.
+            let mut needs = u.needs;
+            if let Some(g) = &gate {
+                if u.id != *g && !needs.iter().any(|n| n == g) {
+                    needs.push(g.clone());
+                }
+            }
             stages.insert(
                 u.id.clone(),
                 Stage {
                     name: u.id,
                     agent: u.agent,
-                    needs: u.needs,
+                    needs,
                     coverage: u.coverage,
                     gates: u.gates,
                     ..Default::default()
@@ -3254,7 +6001,11 @@ fn review_evidence(reason: &str) -> BTreeMap<String, String> {
 /// no JSON, no `verdict` field, prose, `reject`, or any unrecognized value - does
 /// NOT approve and routes the unit to remediation. A missing or unparseable verdict
 /// is treated as a non-approval, never a silent pass.
-fn verdict_approves(output: &str) -> bool {
+///
+/// `pub(crate)` so the canary runner (spec 13, unit 5) judges its adjudicator's verdict
+/// through the SAME single fail-closed authority the live review path uses - the canary
+/// measures the real gate, not a second parallel verdict parser that could disagree.
+pub(crate) fn verdict_approves(output: &str) -> bool {
     for line in output.lines().rev() {
         if let Ok(v) = serde_json::from_str::<Value>(line.trim()) {
             if let Some(verdict) = v.get("verdict").and_then(|x| x.as_str()) {
@@ -3263,6 +6014,28 @@ fn verdict_approves(output: &str) -> bool {
         }
     }
     false
+}
+
+/// The ALREADY-INTEGRATED unit an adjudicator's verdict names as the COMPENSATION target
+/// (spec 12, unit 4): the `compensate` field (a unit id) on the last JSON verdict line that
+/// carries a non-empty one, or `None`. A later unit's review that proves a PRIOR integrated
+/// unit wrong names it here; the conductor then reverts that unit's integrating commit(s)
+/// and re-enters it into remediation. Parsed INDEPENDENTLY of the approve/reject verdict -
+/// a review may approve the CURRENT unit's own work yet still name an integrated unit as the
+/// real defect source. A missing or unparseable field is simply no compensation, never a
+/// silent one.
+fn verdict_compensates(output: &str) -> Option<String> {
+    for line in output.lines().rev() {
+        if let Ok(v) = serde_json::from_str::<Value>(line.trim()) {
+            if let Some(target) = v.get("compensate").and_then(|x| x.as_str()) {
+                let target = target.trim();
+                if !target.is_empty() {
+                    return Some(target.to_string());
+                }
+            }
+        }
+    }
+    None
 }
 
 const EMIT_PROTOCOL: &str = "Record each decision you make by calling the rigger_emit tool the moment you make it, with type \"DecisionMade\" and data:\n{\"id\":\"<short-id>\",\"summary\":\"<one line>\",\"governs\":[\"<file>\"],\"supersedes\":\"<prior-id-or-empty>\"}\nThis writes it to the shared event log live, so other agents see it immediately.";
@@ -3280,7 +6053,7 @@ const PLAN_PROTOCOL: &str = "You are the planner. The conductor has ALREADY crea
 /// Rigger's communication discipline, appended to EVERY spawned agent's SYSTEM
 /// prompt (after its persona) by [`RunCtx::build_system_prompt`], so every agent on
 /// every driver path receives it. It REINFORCES the cadence the user-prompt
-/// protocols (`EMIT_PROTOCOL` / `REVIEW_PROTOCOL`) carry the exact JSON shapes for:
+/// protocols (`EMIT_PROTOCOL` / `review_protocol`) carry the exact JSON shapes for:
 /// emit decisions and findings the MOMENT you make them, check peers between
 /// actions, and never silently contradict a peer - so concurrent agents stay
 /// coordinated through the shared log instead of running blind. This is the single
@@ -3311,7 +6084,11 @@ section governs the DISCIPLINE and cadence - follow it on every turn.";
 /// (empty body) still receives the discipline, so every spawned agent gets it; the
 /// persona, when present, leads so the role frames the discipline. This is the one
 /// place persona and discipline are joined, keeping both driver paths identical.
-fn build_system_prompt(persona: &str) -> String {
+///
+/// `pub(crate)` so the canary runner (spec 13, unit 5) composes a canary reviewer's
+/// system prompt through the SAME single authority, rather than a second copy that
+/// could drift from the discipline every live spawn receives.
+pub(crate) fn build_system_prompt(persona: &str) -> String {
     format!("{persona}{RIGGER_COMMUNICATION}")
 }
 
@@ -3321,7 +6098,31 @@ fn build_system_prompt(persona: &str) -> String {
 /// moment it raises it; the projector folds it ABOUT the files it concerns, and the
 /// later tiers (and concurrent lenses) retrieve it via grounding + rigger_peers,
 /// never via the conductor splicing one agent's stdout into another's prompt.
-const REVIEW_PROTOCOL: &str = "Record each review finding you raise by calling the rigger_emit tool the moment you raise it, with type \"ReviewFinding\" and data:\n{\"id\":\"<short-id>\",\"summary\":\"<one line>\",\"about\":[\"<file>\"]}\nThis writes it to the shared context graph live, so the adversary, the adjudicator, and your fellow reviewers see it immediately (via grounding and rigger_peers) and address or refute it.";
+///
+/// `actor` is the reviewer's ROLE token ([`lens_role`]`(agent)` for a lens,
+/// [`ROLE_ADVERSARY`] for the adversary) that the finding's `by` field carries. This is
+/// what makes finding attribution reach the SAME log the adjudicator's `SpawnResult`
+/// lands on: the in-process (cli) driver stamps [`contextgraph::META_ACTOR`] on the
+/// finding for us, but an OUT-OF-PROCESS reviewer (the courier / workflow path) emits
+/// its finding through `rigger emit`, which stamps no actor - so on THAT path, where the
+/// adjudicator's upheld/cause `SpawnResult` is the only place the verdict is recorded,
+/// the `by` field is the sole attribution the review-quality folds (finding survival,
+/// adversary precision, per-tier cost) can key an upheld finding on. Carrying the role
+/// token (not the raw agent id) keeps it consistent with the [`spawn_id`] role the
+/// per-tier `SpawnResult` cost fold reads, so both driver paths attribute a finding the
+/// same single way. See [`crate::metrics`].
+///
+/// `pub(crate)` so the canary runner (spec 13, unit 5) appends the SAME finding-emission
+/// protocol to its reviewer prompts, so a canary reviewer attributes each finding by the
+/// same `by` role token the live review-quality folds key on - one protocol, not two.
+pub(crate) fn review_protocol(actor: &str) -> String {
+    format!(
+        "Record each review finding you raise by calling the rigger_emit tool the moment you raise it, with type \"ReviewFinding\" and data:\n\
+         {{\"id\":\"<short-id>\",\"by\":\"{actor}\",\"summary\":\"<one line>\",\"about\":[\"<file>\"]}}\n\
+         The `by` field ATTRIBUTES the finding to you - keep it EXACTLY as \"{actor}\" so the review-quality metrics can measure your findings' survival even when you run out-of-process (where the conductor stamps no actor for you). \
+         This writes the finding to the shared context graph live, so the adversary, the adjudicator, and your fellow reviewers see it immediately (via grounding and rigger_peers) and address or refute it."
+    )
+}
 
 /// Gap-15 prompt budget: the most-recent governing decisions kept VERBATIM in a
 /// prompt. Older ones collapse into a single visible elision note. The store keeps
@@ -3382,6 +6183,16 @@ const DECISIONS_HEADER: &str =
 /// never crowds a current one out of the verbatim slice (sdet-u5 / arch-u5). `line` renders
 /// one entry's body (the sections differ: findings name the raising reviewer, the rest do
 /// not); `noun` names the unit in the elision note.
+///
+/// `by_relevance` selects the SINGLE lessons-slice divergence (spec 13b unit 2,
+/// d13b-u2-injection-relevance-seam): when set, nodes rank by blast-radius RELEVANCE
+/// (how many of the node's `recency_rel` targets fall inside the agent's grounded `seed`)
+/// as the PRIMARY key, with recency the deterministic tie-break - so a lesson whose trigger
+/// scope covers more of what the agent is about to touch outranks a merely-newer one. It is
+/// added as a primary sort key rather than a forked writer so the one capping path stays
+/// shared; the decisions and findings sections pass `false`, making relevance uniformly 0,
+/// which collapses the order back to (recency, id) BYTE-IDENTICALLY to before (spec exclusion:
+/// only the lessons slice gains relevance ranking).
 #[allow(clippy::too_many_arguments)]
 fn write_capped_section(
     b: &mut String,
@@ -3393,20 +6204,33 @@ fn write_capped_section(
     noun: &str,
     verbatim_n: usize,
     budget_bytes: usize,
+    by_relevance: bool,
     line: impl Fn(&contextgraph::Node) -> String,
 ) {
     // Recency per node id: the max source position of its own `recency_rel` edges. Those
     // edges point node -> file, so key on the `from` (node) side only; a SUPERSEDES edge
-    // (from = superseder) never dates the superseded node.
+    // (from = superseder) never dates the superseded node. When `by_relevance`, the SAME
+    // edge walk also tallies how many DISTINCT seed files each node is `recency_rel` to -
+    // its blast-radius relevance (0 for every node when the flag is off).
+    let seed_set: BTreeSet<&str> = seed.iter().map(String::as_str).collect();
     let mut recency: BTreeMap<&str, u64> = BTreeMap::new();
+    let mut relevance: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
     for e in &g.edges {
         if e.rel != recency_rel {
             continue;
         }
         let slot = recency.entry(e.from.as_str()).or_insert(0);
         *slot = (*slot).max(e.source);
+        if by_relevance && seed_set.contains(e.to.as_str()) {
+            relevance
+                .entry(e.from.as_str())
+                .or_default()
+                .insert(e.to.as_str());
+        }
     }
-    // The nodes of this kind with a non-empty summary, most-recent first.
+    let relevance_of = |id: &str| relevance.get(id).map(BTreeSet::len).unwrap_or(0);
+    // The nodes of this kind with a non-empty summary, ranked most-RELEVANT first (when
+    // `by_relevance`) then most-recent, id breaking any remaining tie for determinism.
     let mut nodes: Vec<&contextgraph::Node> = g
         .nodes
         .iter()
@@ -3416,7 +6240,10 @@ fn write_capped_section(
     nodes.sort_by(|a, c| {
         let ra = recency.get(a.id.as_str()).copied().unwrap_or(0);
         let rc = recency.get(c.id.as_str()).copied().unwrap_or(0);
-        rc.cmp(&ra).then_with(|| a.id.cmp(&c.id))
+        relevance_of(&c.id)
+            .cmp(&relevance_of(&a.id))
+            .then_with(|| rc.cmp(&ra))
+            .then_with(|| a.id.cmp(&c.id))
     });
     if nodes.is_empty() {
         return;
@@ -3473,6 +6300,8 @@ fn write_capped_decisions(b: &mut String, g: &Graph, seed: &[String]) {
         "decision",
         DECISIONS_VERBATIM_N,
         DECISIONS_BUDGET_BYTES,
+        // Decisions keep pure recency (spec exclusion: only the lessons slice gains relevance).
+        false,
         plain_node_line,
     );
 }
@@ -3491,6 +6320,10 @@ fn write_capped_lessons(b: &mut String, g: &Graph, seed: &[String]) {
         "lesson",
         LESSONS_VERBATIM_N,
         LESSONS_BUDGET_BYTES,
+        // The ONE relevance-ranked slice (spec 13b unit 2): a lesson whose trigger scope
+        // covers more of the agent's grounded seed outranks a merely-newer one, recency the
+        // tie-break, all within the unchanged lessons budget.
+        true,
         plain_node_line,
     );
 }
@@ -3512,6 +6345,8 @@ fn write_capped_findings(b: &mut String, g: &Graph, seed: &[String]) {
         "finding",
         FINDINGS_VERBATIM_N,
         FINDINGS_BUDGET_BYTES,
+        // Findings keep pure recency (spec exclusion: only the lessons slice gains relevance).
+        false,
         |n| {
             let by = n.attrs.get("by").map(String::as_str).unwrap_or("");
             if by.is_empty() {
@@ -3651,6 +6486,39 @@ pub fn partition_by_blast_radius(items: &[(String, Vec<String>)]) -> Vec<Vec<Str
     batches
 }
 
+/// The rule-6 blast-radius conflicts in a proposed decomposition (Unit 1, spec 10;
+/// `docs/handbook/authoring-loops.md` rule 6: "criteria that share a blast radius
+/// belong in ONE unit"). `units` pairs each fan-out unit's id with the distinct
+/// files in its blast radius (the same grounding [`RunCtx::grounded_seed`] /
+/// [`partition_by_blast_radius`] use). It returns every unordered pair of DISTINCT
+/// units whose blast radii INTERSECT, each with the shared files, so a decomposition
+/// that splits one blast radius across two units is surfaced as concrete evidence the
+/// plan-critique reviewers judge. The order is deterministic (input order for the
+/// pairs, sorted+deduped shared files), so the same DAG produces the same critique
+/// prompt across replay steps. A partition that is already disjoint yields no
+/// conflicts. This is the DETECTION half; the adjudicator renders the verdict.
+pub fn blast_radius_conflicts(
+    units: &[(String, Vec<String>)],
+) -> Vec<(String, String, Vec<String>)> {
+    let mut conflicts = Vec::new();
+    for (i, (a_name, a_files)) in units.iter().enumerate() {
+        let a_set: HashSet<&str> = a_files.iter().map(|s| s.as_str()).collect();
+        for (b_name, b_files) in units.iter().skip(i + 1) {
+            let mut shared: Vec<String> = b_files
+                .iter()
+                .filter(|f| a_set.contains(f.as_str()))
+                .cloned()
+                .collect();
+            shared.sort();
+            shared.dedup();
+            if !shared.is_empty() {
+                conflicts.push((a_name.clone(), b_name.clone(), shared));
+            }
+        }
+    }
+    conflicts
+}
+
 /// Whether a stage runs the fan-out (parallel-lens) path rather than the
 /// single-worker path (§3.2). A stage takes the standalone fan-out path ONLY when it
 /// is a standalone review stage: it carries an `agents` lens list (or `strategy:
@@ -3688,12 +6556,104 @@ fn is_producer(st: &Stage) -> bool {
     !st.produces.is_empty()
 }
 
+/// Seed the STALE-units set from the prior log (spec 12, unit 2): every unit named in a
+/// `UnitIntegrated` event's [`META_STALE`] mark. A stepwise resume recovers the identical
+/// invalidation the marking process held, so a stale unit's cached gate verdicts keep
+/// stopping-to-hit across the process boundary. Pure over the ordered log (a comma-joined
+/// list per mark, empty segments ignored), so it is replay-deterministic.
+fn stale_units_from_log(prior_events: &[Event]) -> HashSet<String> {
+    let mut stale = HashSet::new();
+    for e in prior_events
+        .iter()
+        .filter(|e| e.type_ == ledger::TYPE_UNIT_INTEGRATED)
+    {
+        if let Some(list) = e.meta.get(META_STALE) {
+            for u in list.split(',').filter(|s| !s.is_empty()) {
+                stale.insert(u.to_string());
+            }
+        }
+    }
+    stale
+}
+
+/// The DOWNSTREAM units a just-integrated unit's `touched` files render STALE (spec 12,
+/// unit 2): every OTHER unit whose grounded blast radius intersects the integrating
+/// unit's touched file set. This is the SINGLE authority that decides staleness - it is
+/// consulted once, at the integrate seam, and both the recorded `META_STALE` mark and the
+/// live [`RunCtx::stale_units`] invalidation read its result, so a unit is judged stale
+/// in exactly one place.
+///
+/// A unit's blast radius is the files the grounder surfaces for its grounding query (its
+/// `coverage`, else its name) - the same seed [`RunCtx::grounded_seed`] computes, so the
+/// staleness set is measured against the SAME radius the unit was grounded and
+/// partitioned on. The integrating unit never stales itself, and PRODUCER (planner)
+/// stages are skipped: they emit a DAG, not code, so they have no gate verdict to
+/// invalidate. With no grounder no radius is computable, so nothing is staled (best-effort
+/// but real, exactly like `grounded_seed`). The result is sorted + deduped so the mark is
+/// stable across runs (replay determinism).
+fn stale_downstream_units(
+    stages: &BTreeMap<String, Stage>,
+    grounder: Option<&dyn Grounder>,
+    integrating_unit: &str,
+    touched: &[String],
+) -> Vec<String> {
+    let grounder = match grounder {
+        Some(g) => g,
+        None => return Vec::new(),
+    };
+    let touched: HashSet<&str> = touched.iter().map(String::as_str).collect();
+    if touched.is_empty() {
+        return Vec::new();
+    }
+    let mut stale: Vec<String> = Vec::new();
+    for (name, st) in stages {
+        if name == integrating_unit || is_producer(st) {
+            continue;
+        }
+        // A non-producer unit grounds on its criterion (`coverage`), falling back to its
+        // name - the SAME query `RunCtx::ground_query`/`grounded_seed` use for a unit.
+        let query = if st.coverage.is_empty() {
+            name.as_str()
+        } else {
+            st.coverage.as_str()
+        };
+        let intersects = grounder
+            .ground(query, 8)
+            .into_iter()
+            .any(|r| touched.contains(r.file.as_str()));
+        if intersects {
+            stale.push(name.clone());
+        }
+    }
+    stale.sort();
+    stale.dedup();
+    stale
+}
+
 /// The name of the (first) `produces` planner stage, if any: baseline units depend on
 /// it so they run only AFTER the planner has had its chance to refine the DAG.
 fn producer_name(stages: &BTreeMap<String, Stage>) -> Option<String> {
     stages
         .iter()
         .find(|(_, st)| is_producer(st))
+        .map(|(name, _)| name.clone())
+}
+
+/// The name of the plan-critique gate stage, if the workflow wires one (Unit 1, spec
+/// 10). The gate is recognized by ROLE, not by a hard-coded name: it is the review-only
+/// stage (no `agent` - it critiques the DAG, it does not implement) that carries an
+/// `adjudicator` (its verdict gates the fan-out) and `needs` the producer (it runs
+/// AFTER the planner refined the DAG, BEFORE any implementer). A downstream standalone
+/// review stage (which needs the implementer, not the producer) is therefore never
+/// mistaken for it. Returns None when the workflow has no producer or no such gate, so
+/// a non-decomposing or ungated workflow runs exactly as before.
+fn critique_gate_name(stages: &BTreeMap<String, Stage>) -> Option<String> {
+    let producer = producer_name(stages)?;
+    stages
+        .iter()
+        .find(|(_, st)| {
+            st.agent.is_empty() && !st.adjudicator.is_empty() && st.needs.contains(&producer)
+        })
         .map(|(name, _)| name.clone())
 }
 
@@ -3818,6 +6778,25 @@ fn coverage_gap(stages: &BTreeMap<String, Stage>, criteria: &[String]) -> Option
         "coverage gap - no stage with an LLM verifier covers: {}",
         gaps.join("; ")
     ))
+}
+
+/// The stages a WAVE may run: [`ready_stages`] minus the plan-critique gate. The gate
+/// belongs to the producer prelude EXCLUSIVELY (its reject re-runs the planner - a
+/// coupling the per-stage scheduler cannot express), so no wave may ever schedule it.
+/// Load-bearing on resume: a gate left verified-but-not-integrated by an interrupted
+/// step satisfies `ready_stages` (needs the producer, not terminal), and driving it
+/// through `run_single_stage`'s standalone-review path spawns lenses with no worktree -
+/// the empty-cwd isolation refusal that killed the first adopted spec-10 run.
+fn wave_ready(
+    stages: &BTreeMap<String, Stage>,
+    integrated: &HashSet<String>,
+    terminal: &HashSet<String>,
+    critique_gate: Option<&str>,
+) -> Vec<String> {
+    ready_stages(stages, integrated, terminal)
+        .into_iter()
+        .filter(|n| critique_gate != Some(n.as_str()))
+        .collect()
 }
 
 fn ready_stages(
@@ -3971,6 +6950,11 @@ mod tests {
         /// conductor copies the resolved id onto the spawn's unit events.
         resolved_model_by_agent: HashMap<String, String>,
         fail_spawn: bool,
+        /// Per-SPAWN-ID crash: the spawn whose deterministic id ([`SpawnOpts::id`]) is in this
+        /// set returns an `Err` (a usage-limit / non-zero-exit crash), while its siblings run
+        /// normally. Lets a speculation test crash ONE lane (`u/implementer#0`) and prove a
+        /// surviving sibling lane still wins - which the whole-driver `fail_spawn` cannot.
+        fail_spawn_ids: std::collections::HashSet<String>,
         last_prompt: Mutex<String>,
         /// Per-agent (isolation, parallel) the conductor passed at each spawn.
         opts_by_agent: Mutex<HashMap<String, (bool, bool)>>,
@@ -3999,6 +6983,7 @@ mod tests {
                 output: String::new(),
                 output_by_agent: HashMap::new(),
                 output_by_spawn_id: HashMap::new(),
+                fail_spawn_ids: std::collections::HashSet::new(),
                 spawn_ids: Mutex::new(Vec::new()),
                 resolved_model_by_agent: HashMap::new(),
                 fail_spawn: false,
@@ -4099,7 +7084,7 @@ mod tests {
                 .push(prompt.to_string());
             self.call_order.lock().unwrap().push(a.id.clone());
             self.spawn_ids.lock().unwrap().push(opts.id.clone());
-            if self.fail_spawn {
+            if self.fail_spawn || self.fail_spawn_ids.contains(&opts.id) {
                 return Err(Error("simulated mid-spawn crash".into()));
             }
             // Only an ISOLATED spawn (a real worktree dir) writes its file: a review
@@ -4158,6 +7143,18 @@ mod tests {
         config::Gate {
             run: run.to_string(),
             kind: "core".to_string(),
+            inputs: Vec::new(),
+        }
+    }
+
+    /// A `core` gate over `run` scoped to the given blast-radius `inputs` globs (spec 12,
+    /// unit 3): the inner loop runs it only when its globs intersect the unit's grounded
+    /// blast radius.
+    fn gate_def_inputs(run: &str, inputs: &[&str]) -> config::Gate {
+        config::Gate {
+            run: run.to_string(),
+            kind: "core".to_string(),
+            inputs: inputs.iter().map(|s| s.to_string()).collect(),
         }
     }
 
@@ -5708,6 +8705,74 @@ mod tests {
         );
     }
 
+    // Build a lessons subgraph where each lesson carries its OWN `about` scope (not the
+    // uniform seed), applied in order so position grows (older first), then render the
+    // capped-lessons section for `seed`. Lets a test vary blast-radius RELEVANCE (how much
+    // a lesson's trigger scope overlaps the grounded seed) independently of recency.
+    fn render_capped_lessons_scoped(
+        lessons: &[(&str, &str, Vec<&str>)],
+        seed: &[String],
+    ) -> String {
+        let graph = crate::contextgraph::sqlite::Projector::open(":memory:").unwrap();
+        for (i, (id, summary, about)) in lessons.iter().enumerate() {
+            let mut e = Event::new(
+                contextgraph::TYPE_LESSON_LEARNED,
+                serde_json::to_vec(&json!({
+                    "id": id,
+                    "summary": summary,
+                    "about": about,
+                }))
+                .unwrap(),
+            );
+            e.position = (i as u64) + 1;
+            graph.apply(&e).unwrap();
+        }
+        let g = graph.subgraph(seed, 2).unwrap();
+        let mut b = String::new();
+        write_capped_lessons(&mut b, &g, seed);
+        b
+    }
+
+    #[test]
+    fn lessons_rank_by_blast_radius_relevance_over_pure_recency() {
+        // spec 13b unit 2 / d13b-u2-injection-relevance-seam: the lessons slice ranks by
+        // blast-radius RELEVANCE (overlap of the lesson's trigger scope with the agent's
+        // grounded seed files), with recency the deterministic tie-break - REPLACING the
+        // pure-recency order the decisions/findings sections keep. A lesson whose scope
+        // covers MORE of the seed must outrank a NEWER lesson whose scope barely overlaps,
+        // and among equal-relevance lessons the newer still wins.
+        let seed = vec!["a.rs".to_string(), "b.rs".to_string(), "c.rs".to_string()];
+        let lessons: Vec<(&str, &str, Vec<&str>)> = vec![
+            // Oldest, but covers ALL of the seed -> highest relevance (3).
+            ("l_broad_old", "BROAD_MARK", vec!["a.rs", "b.rs", "c.rs"]),
+            // Older shallow (relevance 1), newer than l_broad_old.
+            ("l_shallow_old", "SHALLOW_OLD_MARK", vec!["a.rs"]),
+            // Newest, but only overlaps ONE seed file -> low relevance (1).
+            ("l_shallow_new", "SHALLOW_NEW_MARK", vec!["a.rs"]),
+        ];
+        let out = render_capped_lessons_scoped(&lessons, &seed);
+        let pos = |m: &str| {
+            out.find(m)
+                .unwrap_or_else(|| panic!("{m} must render; output was:\n{out}"))
+        };
+        // Relevance beats recency: the OLDEST-but-broadest lesson outranks the newest.
+        assert!(
+            pos("BROAD_MARK") < pos("SHALLOW_NEW_MARK"),
+            "the highest-relevance lesson must rank first even though it is the oldest; \
+             output was:\n{out}"
+        );
+        assert!(
+            pos("BROAD_MARK") < pos("SHALLOW_OLD_MARK"),
+            "the highest-relevance lesson must outrank a shallower one; output was:\n{out}"
+        );
+        // Recency is the tie-break WITHIN equal relevance: both shallow lessons overlap the
+        // seed once, so the newer (l_shallow_new) precedes the older (l_shallow_old).
+        assert!(
+            pos("SHALLOW_NEW_MARK") < pos("SHALLOW_OLD_MARK"),
+            "within equal relevance the newer lesson must win the tie-break; output was:\n{out}"
+        );
+    }
+
     #[test]
     fn resume_skips_already_integrated_units() {
         let mut cfg = Config::default();
@@ -5770,6 +8835,63 @@ mod tests {
         )
         .unwrap();
         st.append(STREAM, ExpectedRevision::Any, events).unwrap();
+    }
+
+    #[test]
+    fn replay_trajectory_keeps_only_the_world_inputs_and_restrips_the_run_id() {
+        // The trajectory is what the WORLD did - agent SpawnResults and gate GateVerdicts -
+        // NOT the conductor-derived lifecycle (UnitStarted / UnitStatus / DecisionMade),
+        // which the candidate config must re-derive. Order is preserved, the gate-verdict
+        // replay key survives (so the re-drive replays the verdict), and the baseline run's
+        // run-id stamp is stripped (the caller re-scopes under a fresh RunStarted).
+        let spawn_result = Event::new(
+            spawn::TYPE_SPAWN_RESULT,
+            serde_json::to_vec(&json!({"id": "s/implementer#0", "output": "did it"})).unwrap(),
+        )
+        .with_meta(crate::run::META_RUN_ID, "old-run");
+        let gate_verdict = Event::new(
+            contextgraph::TYPE_GATE_VERDICT,
+            serde_json::to_vec(&json!({"pass": true, "evidence": "PASS"})).unwrap(),
+        )
+        .with_meta(META_REPLAY_KEY, "s/gate:check#0")
+        .with_meta(crate::run::META_RUN_ID, "old-run");
+        let baseline = vec![
+            Event::new(
+                crate::run::TYPE_RUN_STARTED,
+                serde_json::to_vec(&json!({"run": "old-run", "criteria": []})).unwrap(),
+            ),
+            Event::new(
+                ledger::TYPE_UNIT_STARTED,
+                serde_json::to_vec(&json!({"id": "s", "agent": "worker"})).unwrap(),
+            ),
+            spawn_result,
+            Event::new(
+                ledger::TYPE_UNIT_STATUS,
+                serde_json::to_vec(&json!({"id": "s", "status": "green"})).unwrap(),
+            ),
+            gate_verdict,
+            Event::new(
+                contextgraph::TYPE_DECISION_MADE,
+                serde_json::to_vec(&json!({"id": "d", "summary": "x"})).unwrap(),
+            ),
+        ];
+
+        let traj = replay_trajectory(&baseline);
+        assert_eq!(
+            traj.iter().map(|e| e.type_.as_str()).collect::<Vec<_>>(),
+            [spawn::TYPE_SPAWN_RESULT, contextgraph::TYPE_GATE_VERDICT],
+            "only the world inputs survive, in order - no derived lifecycle event"
+        );
+        assert!(
+            traj.iter()
+                .all(|e| !e.meta.contains_key(crate::run::META_RUN_ID)),
+            "the baseline run-id stamp is stripped so the caller re-scopes freely"
+        );
+        assert_eq!(
+            traj[1].meta.get(META_REPLAY_KEY).map(String::as_str),
+            Some("s/gate:check#0"),
+            "the gate-verdict replay key survives so the re-drive replays the verdict"
+        );
     }
 
     /// Commit a file on a unit's DETERMINISTIC branch exactly as a prior window would:
@@ -5888,6 +9010,130 @@ mod tests {
         assert!(
             repo.path().join("feature.rs").exists(),
             "the prior window's committed file must land in the base on resume-integrate"
+        );
+    }
+
+    /// Build a single implement+review stage `s` (worker implements, one lens, one
+    /// adjudicator), returning the config. The adjudicator's canned verdict is `verdict`.
+    fn sha_stamp_cfg() -> Config {
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                review: crate::config::ReviewPanel {
+                    lenses: vec!["lens".into()],
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        cfg
+    }
+
+    #[test]
+    fn review_boundary_events_carry_the_worktree_sha() {
+        // spec 11, unit 1: the `verified` and `reviewed` review-boundary statuses carry the
+        // reviewed worktree HEAD sha as metadata (mirroring the commit UnitIntegrated
+        // carries), so the flip-flop fold can tell a verdict reversal on the SAME code from
+        // a legitimate remediation on new code.
+        let repo = init_repo();
+        let cfg = sha_stamp_cfg();
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            write_file: Some("feature.rs".into()),
+            output_by_agent: HashMap::from([
+                ("judge".to_string(), r#"{"verdict":"approve"}"#.to_string()),
+                ("lens".to_string(), "reviewed: no blocker".to_string()),
+            ]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo.path().to_str().unwrap().to_string(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let sha_of = |status: &str| -> Option<String> {
+            events
+                .iter()
+                .find(|e| {
+                    e.type_ == ledger::TYPE_UNIT_STATUS
+                        && String::from_utf8_lossy(&e.data)
+                            .contains(&format!("\"status\":\"{status}\""))
+                })
+                .and_then(|e| e.meta.get(META_WORKTREE_SHA).cloned())
+        };
+        let verified_sha = sha_of("verified").expect("verified carries a worktree sha");
+        let reviewed_sha = sha_of("reviewed").expect("reviewed carries a worktree sha");
+        assert_eq!(
+            verified_sha.len(),
+            40,
+            "the stamp is a full git sha: {verified_sha:?}"
+        );
+        assert!(verified_sha.chars().all(|c| c.is_ascii_hexdigit()));
+        // Both boundary events stamp the SAME committed tree the tiers judged this attempt.
+        assert_eq!(
+            verified_sha, reviewed_sha,
+            "verified and reviewed must stamp the same reviewed sha"
+        );
+    }
+
+    #[test]
+    fn a_review_reject_unitfailed_carries_the_worktree_sha() {
+        // spec 11, unit 1: the review-reject `UnitFailed` also carries the reviewed sha, so
+        // the fold can pair a reject with a later approve on the same sha.
+        let repo = init_repo();
+        let cfg = sha_stamp_cfg();
+        let st = Store::open(":memory:").unwrap();
+        // The adjudicator rejects every attempt, so the unit fails (and eventually
+        // escalates); each review-reject UnitFailed must carry the sha.
+        let driver = Stub {
+            write_file: Some("feature.rs".into()),
+            output_by_agent: HashMap::from([
+                ("judge".to_string(), r#"{"verdict":"reject"}"#.to_string()),
+                (
+                    "lens".to_string(),
+                    "reviewed: a blocker remains".to_string(),
+                ),
+            ]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo.path().to_str().unwrap().to_string(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let reject_with_sha = events.iter().find(|e| {
+            e.type_ == ledger::TYPE_UNIT_FAILED
+                && e.meta
+                    .get(META_WORKTREE_SHA)
+                    .is_some_and(|s| s.len() == 40 && s.chars().all(|c| c.is_ascii_hexdigit()))
+        });
+        assert!(
+            reject_with_sha.is_some(),
+            "a review-reject UnitFailed must carry the reviewed worktree sha"
         );
     }
 
@@ -6394,6 +9640,7 @@ mod tests {
                     lenses: vec!["lens".into()],
                     adversary: "adversary".into(),
                     adjudicator: "judge".into(),
+                    tiers: None,
                 },
                 ..Default::default()
             },
@@ -6585,6 +9832,7 @@ mod tests {
             lenses: vec!["lens".into()],
             adversary: "adversary".into(),
             adjudicator: "adj".into(),
+            tiers: None,
         };
         cfg.workflow.stages.insert(
             "implement".into(),
@@ -7071,6 +10319,7 @@ mod tests {
             lenses: vec!["lensA".into(), "lensB".into()],
             adversary: "adversary".into(),
             adjudicator: "adj".into(),
+            tiers: None,
         };
         cfg.workflow.stages.insert(
             "implement".into(),
@@ -7147,6 +10396,700 @@ mod tests {
         );
     }
 
+    // A depth policy wrapping `light` with a size `threshold` and a `high_risk` path list.
+    fn depth_tiers(
+        light: config::ReviewPanel,
+        threshold: usize,
+        high_risk: &[&str],
+    ) -> Option<Box<config::ReviewDepth>> {
+        Some(Box::new(config::ReviewDepth {
+            light,
+            threshold,
+            high_risk_paths: high_risk.iter().map(|s| s.to_string()).collect(),
+        }))
+    }
+
+    // The full panel used across the tiering tests: two lenses + adversary + adjudicator,
+    // reducing to a one-lens + adjudicator light tier under the given policy.
+    fn full_panel_with_tiers(tiers: Option<Box<config::ReviewDepth>>) -> config::ReviewPanel {
+        config::ReviewPanel {
+            lenses: vec!["lensA".into(), "lensB".into()],
+            adversary: "adversary".into(),
+            adjudicator: "adj".into(),
+            tiers,
+        }
+    }
+
+    fn strs(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn path_is_high_risk_matches_by_prefix_and_by_glob() {
+        // A high_risk_paths entry flags a blast-radius file by literal PREFIX or by glob.
+        assert!(
+            path_is_high_risk("src/conductor.rs", "src/conductor.rs"),
+            "exact"
+        );
+        assert!(
+            path_is_high_risk("src/", "src/conductor.rs"),
+            "directory prefix"
+        );
+        assert!(
+            !path_is_high_risk("src/", "docs/architecture.md"),
+            "non-matching prefix"
+        );
+        assert!(
+            path_is_high_risk("specs/**", "specs/13-wave-4.md"),
+            "** glob"
+        );
+        assert!(
+            path_is_high_risk("src/*.rs", "src/gate.rs"),
+            "* segment glob"
+        );
+        assert!(
+            !path_is_high_risk("src/*.rs", "src/contextgraph/mod.rs"),
+            "* does not cross /"
+        );
+    }
+
+    #[test]
+    fn route_review_tier_with_no_policy_is_the_full_panel_unchanged() {
+        // Without a `tiers` policy every unit routes to the full panel and `policy` is
+        // false, so nothing is logged - the shipped default is byte-for-byte unchanged.
+        let full = full_panel_with_tiers(None);
+        let routing = route_review_tier(&full, &strs(&["a.rs", "b.rs", "c.rs", "d.rs"]), true);
+        assert_eq!(routing.tier, TIER_FULL);
+        assert!(!routing.policy, "no policy configured");
+        assert_eq!(routing.panel.lenses, ["lensA", "lensB"]);
+        assert_eq!(routing.panel.adversary, "adversary");
+    }
+
+    #[test]
+    fn route_review_tier_routes_a_low_risk_unit_to_the_light_panel() {
+        // Small blast radius, no high-risk path, gates did not flap => the light panel.
+        let light = config::ReviewPanel {
+            lenses: vec!["lensA".into()],
+            adjudicator: "adj".into(),
+            ..Default::default()
+        };
+        let full = full_panel_with_tiers(depth_tiers(light, 3, &["src/conductor.rs"]));
+        let routing = route_review_tier(&full, &strs(&["leaf.rs"]), false);
+        assert_eq!(routing.tier, TIER_LIGHT);
+        assert!(routing.policy);
+        assert_eq!(routing.panel.lenses, ["lensA"], "the light roster runs");
+        assert!(
+            routing.panel.adversary.is_empty(),
+            "light omits the adversary"
+        );
+        assert_eq!(routing.blast_radius, 1);
+        assert!(routing.high_risk_hit.is_none());
+        assert!(!routing.flapped);
+    }
+
+    #[test]
+    fn route_review_tier_forces_full_on_a_high_risk_path_hit() {
+        let light = config::ReviewPanel {
+            lenses: vec!["lensA".into()],
+            adjudicator: "adj".into(),
+            ..Default::default()
+        };
+        let full = full_panel_with_tiers(depth_tiers(light, 3, &["src/conductor.rs"]));
+        // One small blast-radius file, but it matches a high-risk path => full panel.
+        let routing = route_review_tier(&full, &strs(&["src/conductor.rs"]), false);
+        assert_eq!(routing.tier, TIER_FULL);
+        assert_eq!(
+            routing.panel.adversary, "adversary",
+            "the full adversary runs"
+        );
+        assert_eq!(routing.high_risk_hit.as_deref(), Some("src/conductor.rs"));
+    }
+
+    #[test]
+    fn route_review_tier_forces_full_over_the_size_threshold() {
+        let light = config::ReviewPanel {
+            lenses: vec!["lensA".into()],
+            adjudicator: "adj".into(),
+            ..Default::default()
+        };
+        let full = full_panel_with_tiers(depth_tiers(light, 3, &[]));
+        // Exactly at the threshold stays LOW risk (threshold is the inclusive max)...
+        let at = route_review_tier(&full, &strs(&["a.rs", "b.rs", "c.rs"]), false);
+        assert_eq!(at.tier, TIER_LIGHT, "count == threshold is still low-risk");
+        // ...one over the threshold forces the full panel.
+        let over = route_review_tier(&full, &strs(&["a.rs", "b.rs", "c.rs", "d.rs"]), false);
+        assert_eq!(over.tier, TIER_FULL, "count > threshold is high-risk");
+    }
+
+    #[test]
+    fn route_review_tier_forces_full_when_the_gates_flapped() {
+        // The spec-13 "gate outcome" signal: a unit that needed remediation to reach green
+        // (flapped) gets the full adversarial panel even with a tiny, low-path blast radius.
+        let light = config::ReviewPanel {
+            lenses: vec!["lensA".into()],
+            adjudicator: "adj".into(),
+            ..Default::default()
+        };
+        let full = full_panel_with_tiers(depth_tiers(light, 3, &["src/conductor.rs"]));
+        let routing = route_review_tier(&full, &strs(&["leaf.rs"]), true);
+        assert_eq!(routing.tier, TIER_FULL);
+        assert!(routing.flapped);
+        assert_eq!(routing.panel.adversary, "adversary");
+    }
+
+    #[test]
+    fn route_review_tier_fails_safe_to_full_on_an_empty_blast_radius() {
+        // The FAIL-SAFE default (remediation of adv-u13-empty-blast-radius-routes-light):
+        // an EMPTY grounded blast radius (no grounder configured, or a coverage query that
+        // grounds to zero files) is UNASSESSABLE, so it must route to FULL - never LIGHT.
+        // Even at threshold 0 with a high_risk_paths list set (the config the docs claim
+        // keeps the full panel for every unit), the absent-signal case previously fell OPEN
+        // to light because `0 > 0` is false and no file can match a path; it now fails SAFE.
+        let light = config::ReviewPanel {
+            lenses: vec!["lensA".into()],
+            adjudicator: "adj".into(),
+            ..Default::default()
+        };
+        let full = full_panel_with_tiers(depth_tiers(light, 0, &["src/conductor.rs"]));
+        // Empty radius, gates did NOT flap (attempt 0): the ONLY thing forcing full here is
+        // the empty-radius fail-safe, so this pins that arm specifically.
+        let routing = route_review_tier(&full, &strs(&[]), false);
+        assert_eq!(
+            routing.tier, TIER_FULL,
+            "an empty blast radius must fail SAFE to the full panel, never light"
+        );
+        assert!(routing.empty_radius, "the empty-radius signal is recorded");
+        assert!(
+            !routing.flapped,
+            "full is forced by the empty radius, not a flap"
+        );
+        assert!(
+            routing.high_risk_hit.is_none(),
+            "no file to match a high-risk path"
+        );
+        assert_eq!(
+            routing.panel.adversary, "adversary",
+            "the full adversary runs on an unassessable unit"
+        );
+        assert_eq!(routing.blast_radius, 0);
+    }
+
+    // Drive a full per-unit lifecycle with a Grep grounder over `files` (each a
+    // (relative-path, contents) pair) rooted in a fresh tempdir, the given `coverage`
+    // query, and the given default review panel. Returns the recorded run state and the
+    // driver so a test can assert which review agents ran and that the routing was logged.
+    fn run_tiered_unit(
+        review: config::ReviewPanel,
+        coverage: &str,
+        files: &[(&str, &str)],
+    ) -> (RunState, Store) {
+        let dir = tempfile::tempdir().unwrap();
+        for (rel, contents) in files {
+            let p = dir.path().join(rel);
+            if let Some(parent) = p.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(p, contents).unwrap();
+        }
+        let mut cfg = Config::default();
+        for id in ["worker", "lensA", "lensB", "adversary", "adj"] {
+            cfg.agents.insert(id.into(), agent(id));
+        }
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.defaults.review = review;
+        cfg.workflow.stages.insert(
+            "implement".into(),
+            Stage {
+                name: "implement".into(),
+                agent: "worker".into(),
+                coverage: coverage.into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            output: r#"{"verdict":"approve"}"#.into(),
+            ..Stub::new()
+        };
+        let grep = crate::grounder::Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        // The caller asserts on the recorded run state + the store (the routing marker and
+        // the folded evidence); the tests that need the exact spawn set inline this setup so
+        // they keep the `driver` handle in scope.
+        (rs, st)
+    }
+
+    // Whether a `review-tier` routing marker with the given tier token was logged for the
+    // unit (spec 03 / spec 13 unit 4: every routing decision logged with its inputs).
+    fn logged_review_tier(st: &Store, tier: &str) -> bool {
+        st.read_all(0, Direction::Forward, &Filter::default())
+            .unwrap()
+            .iter()
+            .any(|e| {
+                e.type_ == ledger::TYPE_UNIT_STATUS && {
+                    let s = String::from_utf8_lossy(&e.data);
+                    s.contains("\"status\":\"review-tier\"")
+                        && s.contains(&format!("\"review-tier\":\"{tier}\""))
+                }
+            })
+    }
+
+    #[test]
+    fn a_low_risk_unit_runs_the_light_panel_and_logs_the_routing() {
+        // spec 03 / spec 13 unit 4, the LIGHT route: a unit whose grounded blast radius is
+        // small, hits no high-risk path, and did not flap runs the reduced light panel
+        // (one lens + adjudicator, NO adversary), and the routing decision is logged.
+        let light = config::ReviewPanel {
+            lenses: vec!["lensA".into()],
+            adjudicator: "adj".into(),
+            ..Default::default()
+        };
+        let review = full_panel_with_tiers(depth_tiers(light, 3, &["src/conductor.rs"]));
+        // Exactly one grounded file, well under the threshold and not a high-risk path.
+        let (rs, st) = run_tiered_unit(review, "widget", &[("leaf.rs", "fn widget() {}\n")]);
+        assert_eq!(
+            rs.units["implement"].status,
+            ledger::Status::Integrated,
+            "a light-panel-approved low-risk unit still integrates"
+        );
+        assert!(
+            logged_review_tier(&st, "light"),
+            "the light routing decision must be logged with its inputs"
+        );
+        // The unit's evidence carries the routing inputs (blast-radius size, flapped).
+        let ev = &rs.units["implement"].evidence;
+        assert_eq!(ev.get("review-tier").map(String::as_str), Some("light"));
+        assert_eq!(ev.get("blast-radius").map(String::as_str), Some("1"));
+        assert_eq!(ev.get("flapped").map(String::as_str), Some("false"));
+    }
+
+    #[test]
+    fn a_low_risk_unit_skips_the_adversary_and_extra_lens() {
+        // Assert on WHICH agents ran: the light route spawns only lensA + adj, never lensB
+        // or the adversary.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("leaf.rs"), "fn widget() {}\n").unwrap();
+        let light = config::ReviewPanel {
+            lenses: vec!["lensA".into()],
+            adjudicator: "adj".into(),
+            ..Default::default()
+        };
+        let mut cfg = Config::default();
+        for id in ["worker", "lensA", "lensB", "adversary", "adj"] {
+            cfg.agents.insert(id.into(), agent(id));
+        }
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.defaults.review =
+            full_panel_with_tiers(depth_tiers(light, 3, &["src/conductor.rs"]));
+        cfg.workflow.stages.insert(
+            "implement".into(),
+            Stage {
+                name: "implement".into(),
+                agent: "worker".into(),
+                coverage: "widget".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            output: r#"{"verdict":"approve"}"#.into(),
+            ..Stub::new()
+        };
+        let grep = crate::grounder::Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        assert!(driver.spawned("lensA"), "the light lens runs");
+        assert!(
+            driver.spawned("adj"),
+            "the adjudicator is mandatory on every tier"
+        );
+        assert!(
+            !driver.spawned("lensB"),
+            "the light panel drops the extra lens"
+        );
+        assert!(
+            !driver.spawned("adversary"),
+            "the light panel drops the adversary"
+        );
+    }
+
+    #[test]
+    fn a_high_risk_unit_runs_the_full_panel_and_logs_the_routing() {
+        // spec 03 / spec 13 unit 4, the FULL route: a unit whose blast radius touches a
+        // high-risk path runs the FULL panel (both lenses + adversary + adjudicator), and
+        // the routing decision is logged as `full` with the matched path.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/conductor.rs"), "fn widget() {}\n").unwrap();
+        let light = config::ReviewPanel {
+            lenses: vec!["lensA".into()],
+            adjudicator: "adj".into(),
+            ..Default::default()
+        };
+        let mut cfg = Config::default();
+        for id in ["worker", "lensA", "lensB", "adversary", "adj"] {
+            cfg.agents.insert(id.into(), agent(id));
+        }
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.defaults.review =
+            full_panel_with_tiers(depth_tiers(light, 3, &["src/conductor.rs"]));
+        cfg.workflow.stages.insert(
+            "implement".into(),
+            Stage {
+                name: "implement".into(),
+                agent: "worker".into(),
+                coverage: "widget".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            output: r#"{"verdict":"approve"}"#.into(),
+            ..Stub::new()
+        };
+        let grep = crate::grounder::Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        assert!(
+            driver.spawned("lensA") && driver.spawned("lensB"),
+            "both lenses run"
+        );
+        assert!(
+            driver.spawned("adversary"),
+            "the adversary runs on a high-risk unit"
+        );
+        assert!(driver.spawned("adj"), "the adjudicator runs");
+        assert!(
+            logged_review_tier(&st, "full"),
+            "the full routing decision must be logged"
+        );
+        assert_eq!(
+            rs.units["implement"]
+                .evidence
+                .get("high-risk-path")
+                .map(String::as_str),
+            Some("src/conductor.rs"),
+            "the routing log names the matched high-risk path"
+        );
+    }
+
+    #[test]
+    fn without_a_depth_policy_a_grounded_unit_runs_the_full_panel_and_logs_no_routing() {
+        // spec 03 backward compatibility: with a grounder present but NO `tiers` policy,
+        // every unit runs the full panel exactly as today and NO review-tier marker is
+        // emitted - the log is byte-for-byte what it was before tiering existed.
+        let review = full_panel_with_tiers(None); // full panel, no tiers policy
+        let (rs, st) = run_tiered_unit(review, "widget", &[("leaf.rs", "fn widget() {}\n")]);
+        assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        assert!(
+            !logged_review_tier(&st, "light") && !logged_review_tier(&st, "full"),
+            "no depth policy => no routing marker (behavior unchanged)"
+        );
+        assert!(
+            !rs.units["implement"].evidence.contains_key("review-tier"),
+            "no routing inputs are folded onto a unit without a depth policy"
+        );
+    }
+
+    #[test]
+    fn a_zero_grounding_unit_fails_safe_to_the_full_panel_and_logs_it() {
+        // The FAIL-SAFE end-to-end (remediation of adv-u13-empty-blast-radius-routes-light):
+        // a unit whose coverage query grounds to ZERO files - here a query that matches no
+        // file's contents - has an unassessable risk profile, so with a tiers policy set it
+        // must run the FULL panel (both lenses + adversary + adjudicator), NOT the light one,
+        // and the routing log must record the empty-radius fail-safe. Before the fix this
+        // routed LIGHT (0 > threshold is false, no file matches a high-risk path), silently
+        // downgrading review.
+        let light = config::ReviewPanel {
+            lenses: vec!["lensA".into()],
+            adjudicator: "adj".into(),
+            ..Default::default()
+        };
+        // threshold 0 + a high-risk-paths list: the config the docs say keeps the full panel
+        // for every unit. Only the empty radius decides here.
+        let review = full_panel_with_tiers(depth_tiers(light, 0, &["src/conductor.rs"]));
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("leaf.rs"), "fn widget() {}\n").unwrap();
+        let mut cfg = Config::default();
+        for id in ["worker", "lensA", "lensB", "adversary", "adj"] {
+            cfg.agents.insert(id.into(), agent(id));
+        }
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.defaults.review = review;
+        cfg.workflow.stages.insert(
+            "implement".into(),
+            Stage {
+                name: "implement".into(),
+                agent: "worker".into(),
+                // A coverage query that appears in NO file's contents grounds to zero files.
+                coverage: "this_token_is_in_no_file".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            output: r#"{"verdict":"approve"}"#.into(),
+            ..Stub::new()
+        };
+        let grep = crate::grounder::Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        assert!(
+            logged_review_tier(&st, "full"),
+            "an empty-radius unit must route (and log) FULL, not light"
+        );
+        assert!(
+            !logged_review_tier(&st, "light"),
+            "a zero-grounding unit must NEVER be downgraded to the light panel"
+        );
+        assert!(
+            driver.spawned("adversary") && driver.spawned("lensB"),
+            "the full panel (adversary + both lenses) runs on an unassessable unit"
+        );
+        let ev = &rs.units["implement"].evidence;
+        assert_eq!(
+            ev.get("blast-radius").map(String::as_str),
+            Some("0"),
+            "the grounded radius really was empty"
+        );
+        assert_eq!(
+            ev.get("empty-radius").map(String::as_str),
+            Some("true"),
+            "the routing log records the empty-radius fail-safe as the reason for full"
+        );
+    }
+
+    #[test]
+    fn a_flapped_unit_escalates_from_light_at_attempt_0_to_full_on_remediation() {
+        // The flapped->full escalation END-TO-END (remediation of
+        // sdet-u13-flapped-escalation-e2e-untested): a LOW-RISK unit routes LIGHT on
+        // attempt 0; the light adjudicator REJECTS it; on the remediation attempt the unit
+        // has flapped (attempt > 0), so it re-routes to the FULL panel, whose adjudicator
+        // approves. Two review-tier markers land (#0 light, #1 full, keyed per unit+attempt)
+        // and the full-only adversary spawns ONLY on the remediation attempt - proving the
+        // flapped signal actually changed the panel, not just the log.
+        let light = config::ReviewPanel {
+            lenses: vec!["lensA".into()],
+            adjudicator: "adj".into(),
+            ..Default::default()
+        };
+        // A small, non-high-risk radius so attempt 0 is low-risk (routes light); threshold 3
+        // keeps the single grounded file under the size bar, and the high-risk path does not
+        // match it - so ONLY the flap can force full.
+        let review = full_panel_with_tiers(depth_tiers(light, 3, &["src/conductor.rs"]));
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("leaf.rs"), "fn widget() {}\n").unwrap();
+        let mut cfg = Config::default();
+        for id in ["worker", "lensA", "lensB", "adversary", "adj"] {
+            cfg.agents.insert(id.into(), agent(id));
+        }
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.defaults.review = review;
+        cfg.workflow.defaults.max_retries = 3;
+        cfg.workflow.stages.insert(
+            "implement".into(),
+            Stage {
+                name: "implement".into(),
+                agent: "worker".into(),
+                coverage: "widget".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        // The adjudicator rejects its attempt-0 spawn (the light route) and approves its
+        // attempt-1 spawn (the full route); lenses/adversary return substantive narration.
+        let driver = Stub {
+            output: "reviewed the diff; no blocking defect".into(),
+            output_by_spawn_id: HashMap::from([
+                (
+                    spawn_id("implement", ROLE_ADJUDICATOR, 0),
+                    r#"{"verdict":"reject","issues":[]}"#.to_string(),
+                ),
+                (
+                    spawn_id("implement", ROLE_ADJUDICATOR, 1),
+                    r#"{"verdict":"approve"}"#.to_string(),
+                ),
+            ]),
+            ..Stub::new()
+        };
+        let grep = crate::grounder::Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs.units["implement"].status,
+            ledger::Status::Integrated,
+            "the unit integrates once the full-panel adjudicator approves the remediation"
+        );
+        // BOTH markers landed: attempt 0 routed light, attempt 1 (flapped) routed full.
+        assert!(
+            logged_review_tier(&st, "light"),
+            "attempt 0 routed to the light panel"
+        );
+        assert!(
+            logged_review_tier(&st, "full"),
+            "the flapped remediation attempt re-routed to the full panel"
+        );
+        // The two markers are keyed per unit+attempt, so exactly one of each landed.
+        let events = st
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        let tier_markers: Vec<String> = events
+            .iter()
+            .filter(|e| {
+                e.type_ == ledger::TYPE_UNIT_STATUS
+                    && String::from_utf8_lossy(&e.data).contains("\"status\":\"review-tier\"")
+            })
+            .map(|e| String::from_utf8_lossy(&e.data).into_owned())
+            .collect();
+        assert_eq!(
+            tier_markers.len(),
+            2,
+            "exactly two review-tier markers (attempt 0 light, attempt 1 full): {tier_markers:?}"
+        );
+        // The full-only adversary spawned ONLY on the remediation attempt, never at attempt 0
+        // (the light route drops it) - proving the flap actually widened the panel.
+        let ids = driver.spawn_ids();
+        assert!(
+            !ids.contains(&spawn_id("implement", ROLE_ADVERSARY, 0)),
+            "the light route at attempt 0 must NOT spawn the adversary: {ids:?}"
+        );
+        assert!(
+            ids.contains(&spawn_id("implement", ROLE_ADVERSARY, 1)),
+            "the full route on the flapped remediation MUST spawn the adversary: {ids:?}"
+        );
+    }
+
+    #[test]
+    fn a_stage_level_tiers_policy_routes_the_unit_by_risk() {
+        // The STAGE-OVERRIDE tiering path (remediation of sdet-u13-stage-override-tiers-
+        // untested): a tiers policy declared on a stage's OWN `review` block (not
+        // defaults.review) is honored - `effective_review_panel` picks the non-empty stage
+        // panel and `route_review_tier` runs over it, so a low-risk unit routes LIGHT. This
+        // pins d13-u4-tiers-on-reviewpanel's claim that BOTH defaults and stage.review
+        // inherit tiering through the one panel abstraction; only defaults was covered.
+        let light = config::ReviewPanel {
+            lenses: vec!["lensA".into()],
+            adjudicator: "adj".into(),
+            ..Default::default()
+        };
+        let stage_review = full_panel_with_tiers(depth_tiers(light, 3, &["src/conductor.rs"]));
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("leaf.rs"), "fn widget() {}\n").unwrap();
+        let mut cfg = Config::default();
+        for id in ["worker", "lensA", "lensB", "adversary", "adj"] {
+            cfg.agents.insert(id.into(), agent(id));
+        }
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        // defaults.review stays EMPTY: the tiering must come from the STAGE override alone.
+        cfg.workflow.stages.insert(
+            "implement".into(),
+            Stage {
+                name: "implement".into(),
+                agent: "worker".into(),
+                coverage: "widget".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                review: stage_review,
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            output: r#"{"verdict":"approve"}"#.into(),
+            ..Stub::new()
+        };
+        let grep = crate::grounder::Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        assert!(
+            logged_review_tier(&st, "light"),
+            "a low-risk unit under a STAGE-level tiers policy routes light"
+        );
+        assert!(
+            driver.spawned("lensA") && driver.spawned("adj"),
+            "the light roster (lens + mandatory adjudicator) runs"
+        );
+        assert!(
+            !driver.spawned("lensB") && !driver.spawned("adversary"),
+            "the stage-level light route drops the extra lens and the adversary"
+        );
+    }
+
     #[test]
     fn every_spawn_runs_in_a_worktree_never_the_main_repo_checkout() {
         // The worktree-isolation invariant (the headline fix): with a repo configured,
@@ -7169,6 +11112,7 @@ mod tests {
             lenses: vec!["lensA".into(), "lensB".into()],
             adversary: "adversary".into(),
             adjudicator: "adj".into(),
+            tiers: None,
         };
         cfg.workflow.stages.insert(
             "implement".into(),
@@ -7229,6 +11173,1224 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A single-agent config with a review panel over a real repo, at the given
+    /// speculation width. The spec-13-unit-3 tests drive first-green-wins speculation.
+    fn spec_cfg(width: u32) -> Config {
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("adj".into(), agent("adj"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.defaults.review = config::ReviewPanel {
+            lenses: vec!["lens".into()],
+            adjudicator: "adj".into(),
+            ..Default::default()
+        };
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                speculation_width: width,
+                ..Default::default()
+            },
+        );
+        cfg
+    }
+
+    #[test]
+    fn speculation_width_2_runs_two_candidates_first_green_wins_rest_cancelled() {
+        // spec 13, unit 3 done-when: a unit class with speculation_width: K parks K
+        // deterministic parallel implementer candidates, the FIRST gate-green
+        // adjudicator-approved one integrates, the rest are CANCELLED, and the
+        // group / winner / losers are logged (K=2, including budget accounting).
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let cfg = spec_cfg(2);
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            write_file: Some("feature.rs".into()),
+            output: r#"{"verdict":"approve"}"#.into(),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "the first gate-green adjudicator-approved candidate integrates"
+        );
+
+        // TWO deterministic candidate implementers were spawned in one speculation group
+        // - budget accounting counts BOTH candidate spawns.
+        assert_eq!(
+            driver.spawn_count("worker"),
+            2,
+            "K=2 parks two parallel implementer candidates (budget counts both)"
+        );
+        let ids = driver.spawn_ids();
+        assert!(
+            ids.contains(&spawn_id("s", ROLE_IMPLEMENTER, 0)),
+            "candidate 0 has its deterministic implementer id"
+        );
+        assert!(
+            ids.contains(&spawn_id("s", ROLE_IMPLEMENTER, 1)),
+            "candidate 1 has its deterministic implementer id"
+        );
+
+        // The winner's UnitIntegrated carries the group, the winning candidate, and the
+        // losing candidates - the group / winner / losers logged on the existing event.
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let integrated = events
+            .iter()
+            .find(|e| {
+                e.type_ == ledger::TYPE_UNIT_INTEGRATED
+                    && String::from_utf8_lossy(&e.data).contains("\"id\":\"s\"")
+            })
+            .expect("the unit integrated");
+        assert_eq!(
+            integrated.meta.get(META_SPEC_GROUP).map(String::as_str),
+            Some(speculation_group_id("s").as_str()),
+            "the winner records its speculation group"
+        );
+        assert_eq!(
+            integrated.meta.get(META_SPEC_WINNER).map(String::as_str),
+            Some(spawn_id("s", ROLE_IMPLEMENTER, 0).as_str()),
+            "candidate 0 is the recorded winner"
+        );
+        assert_eq!(
+            integrated.meta.get(META_SPEC_LOSERS).map(String::as_str),
+            Some(spawn_id("s", ROLE_IMPLEMENTER, 1).as_str()),
+            "candidate 1 is the recorded loser"
+        );
+
+        // The displaced candidate is CANCELLED (recorded in the group), never a winner.
+        let cancelled = events.iter().any(|e| {
+            e.type_ == ledger::TYPE_UNIT_STATUS
+                && String::from_utf8_lossy(&e.data).contains(STATUS_SPECULATION_CANCELLED)
+                && e.meta.get(META_SPEC_GROUP).map(String::as_str)
+                    == Some(speculation_group_id("s").as_str())
+        });
+        assert!(
+            cancelled,
+            "the displaced candidate is recorded cancelled in the group"
+        );
+
+        // Only the WINNING candidate is reviewed - the cancelled candidate never reaches
+        // the review tiers (first-green-wins stops at the winner).
+        assert_eq!(
+            driver.spawn_count("adj"),
+            1,
+            "only the winning candidate is adjudicated; the loser is cancelled un-reviewed"
+        );
+    }
+
+    #[test]
+    fn speculation_budget_accounts_for_every_candidate_spawn() {
+        // Budget accounting (done-when): each parked candidate counts against the global
+        // spawn budget. With width 2 and budget 1 the FIRST candidate is admitted and the
+        // SECOND is refused - the breaker trips with BudgetExhausted, exactly like any
+        // over-budget spawn.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = spec_cfg(2);
+        cfg.workflow.defaults.budget = 1;
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            write_file: Some("feature.rs".into()),
+            output: r#"{"verdict":"approve"}"#.into(),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).expect("a tripped budget halts the run, it does not error");
+
+        assert_eq!(
+            driver.spawn_count("worker"),
+            1,
+            "budget 1 admits exactly one candidate; the second is refused over budget"
+        );
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(
+            events.iter().any(|e| e.type_ == TYPE_BUDGET_EXHAUSTED),
+            "the over-budget second candidate trips the breaker with BudgetExhausted"
+        );
+    }
+
+    #[test]
+    fn speculation_defaults_off_runs_a_single_candidate() {
+        // Global constraint: speculation defaults OFF. A stage with no speculation_width
+        // (effective width 1) runs exactly ONE implementer - the historical single-lane
+        // path - and its UnitIntegrated carries no speculation metadata.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let cfg = spec_cfg(0);
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            write_file: Some("feature.rs".into()),
+            output: r#"{"verdict":"approve"}"#.into(),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(rs.units["s"].status, ledger::Status::Integrated);
+        assert_eq!(
+            driver.spawn_count("worker"),
+            1,
+            "speculation off runs exactly one implementer candidate"
+        );
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let integrated = events
+            .iter()
+            .find(|e| {
+                e.type_ == ledger::TYPE_UNIT_INTEGRATED
+                    && String::from_utf8_lossy(&e.data).contains("\"id\":\"s\"")
+            })
+            .expect("the unit integrated");
+        assert!(
+            !integrated.meta.contains_key(META_SPEC_GROUP),
+            "a non-speculative unit carries no speculation-group metadata"
+        );
+    }
+
+    #[test]
+    fn speculation_parks_all_candidates_together_in_one_step() {
+        // The K candidates are parked TOGETHER in ONE step (parallel), not one-per-step:
+        // the replay/parking driver records BOTH deterministic implementer ids in a single
+        // step so a courier runs them concurrently. Uses on_pass: none so the step needs
+        // no integrate - it only proves the parallel park of the candidate group.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = spec_cfg(2);
+        // No review panel and no merge: this step only parks the two candidate spawns.
+        cfg.workflow.defaults.review = config::ReviewPanel::default();
+        if let Some(s) = cfg.workflow.stages.get_mut("s") {
+            s.on_pass = "none".into();
+        }
+        let store = Store::open(":memory:").unwrap();
+        let driver = crate::driver::replay::ReplayDriver::new(&store);
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).expect("a parked candidate frontier is not a run failure");
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(
+            crate::spawn::is_recorded(&events, &spawn_id("s", ROLE_IMPLEMENTER, 0)),
+            "candidate 0 parked this step"
+        );
+        assert!(
+            crate::spawn::is_recorded(&events, &spawn_id("s", ROLE_IMPLEMENTER, 1)),
+            "candidate 1 parked in the SAME step - the group parks in parallel"
+        );
+        assert_eq!(
+            crate::spawn::recorded(&events).unwrap().len(),
+            2,
+            "both candidates park together in one step, not one per step"
+        );
+    }
+
+    #[test]
+    fn speculation_defers_green_until_the_winner_and_integrates_across_replay_steps() {
+        // Resume coherence under the PRODUCTION stepwise/replay driver: a speculating unit must
+        // stay FRESH across every phase-B parking step (its winner's `green`/`verified` are
+        // DEFERRED until the adjudicator approves), so a resume RE-ENTERS `run_speculation`
+        // deterministically instead of mis-routing onto the single-lane canonical path. This
+        // drives the full park -> replay -> evaluate -> integrate flow across separate step
+        // processes, asserting the deferral holds while the review is still in flight.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let cfg = spec_cfg(2);
+
+        let store = Store::open(":memory:").unwrap();
+        let replay_step = |store: &Store| {
+            let driver = crate::driver::replay::ReplayDriver::new(store);
+            let deps = Deps {
+                store,
+                driver: &driver,
+                gates: &ExecRunner,
+                repo: repo_path.clone(),
+                grounder: None,
+                graph: None,
+                criteria: Vec::new(),
+            };
+            run(&cfg, &deps).expect("a parked frontier is not a run failure")
+        };
+        let has_status = |status: &str| {
+            store
+                .read_stream(STREAM, 0, Direction::Forward)
+                .unwrap()
+                .iter()
+                .any(|e| {
+                    e.type_ == ledger::TYPE_UNIT_STATUS
+                        && String::from_utf8_lossy(&e.data)
+                            .contains(&format!("\"status\":\"{status}\""))
+                })
+        };
+
+        let impl0 = spawn_id("s", ROLE_IMPLEMENTER, 0);
+        let impl1 = spawn_id("s", ROLE_IMPLEMENTER, 1);
+        let lens0 = spawn_id("s", &lens_role("lens"), 0);
+        let adj0 = spawn_id("s", ROLE_ADJUDICATOR, 0);
+
+        // Step 1: both candidates park TOGETHER. No lifecycle status yet.
+        replay_step(&store);
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(crate::spawn::is_recorded(&events, &impl0));
+        assert!(crate::spawn::is_recorded(&events, &impl1));
+        assert!(
+            !has_status("green"),
+            "no candidate emits a routing status before it is chosen the winner"
+        );
+        crate::spawn::record_result(&store, &crate::spawn::SpawnResult::ok(&impl0, "cand 0"))
+            .unwrap();
+        crate::spawn::record_result(&store, &crate::spawn::SpawnResult::ok(&impl1, "cand 1"))
+            .unwrap();
+
+        // Step 2: candidates replay, candidate 0's gates pass, its review LENS parks. The unit
+        // is still FRESH - green/verified are DEFERRED while the review is in flight.
+        replay_step(&store);
+        assert!(
+            crate::spawn::is_recorded(
+                &store.read_stream(STREAM, 0, Direction::Forward).unwrap(),
+                &lens0
+            ),
+            "candidate 0's review lens parked"
+        );
+        assert!(
+            !has_status("green") && !has_status("verified"),
+            "green/verified stay DEFERRED while the winner's review is still parking - the \
+             unit stays Fresh so a resume re-enters speculation, never the canonical single-lane path"
+        );
+        crate::spawn::record_result(
+            &store,
+            &crate::spawn::SpawnResult::ok(&lens0, "lens: no blocker"),
+        )
+        .unwrap();
+
+        // Step 3: the lens replays, the ADJUDICATOR parks.
+        replay_step(&store);
+        assert!(
+            crate::spawn::is_recorded(
+                &store.read_stream(STREAM, 0, Direction::Forward).unwrap(),
+                &adj0
+            ),
+            "candidate 0's adjudicator parked"
+        );
+        crate::spawn::record_result(
+            &store,
+            &crate::spawn::SpawnResult::ok(&adj0, r#"{"verdict":"approve"}"#),
+        )
+        .unwrap();
+
+        // Step 4: the adjudicator replays its approve -> candidate 0 WINS: its deferred
+        // green/verified land, it integrates, and the group/winner/losers are recorded.
+        let rs = replay_step(&store);
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "the approved winner integrates"
+        );
+        assert!(
+            has_status("green") && has_status("verified"),
+            "the winner's deferred green/verified land once it is chosen"
+        );
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let integrated = events
+            .iter()
+            .find(|e| {
+                e.type_ == ledger::TYPE_UNIT_INTEGRATED
+                    && String::from_utf8_lossy(&e.data).contains("\"id\":\"s\"")
+            })
+            .expect("the unit integrated");
+        assert_eq!(
+            integrated.meta.get(META_SPEC_WINNER).map(String::as_str),
+            Some(impl0.as_str()),
+            "candidate 0 is the recorded winner across the replay boundary"
+        );
+        assert_eq!(
+            integrated.meta.get(META_SPEC_LOSERS).map(String::as_str),
+            Some(impl1.as_str()),
+            "candidate 1 is the recorded loser"
+        );
+    }
+
+    /// True iff the log carries a `UnitStatus` for unit `id` whose status token is `status`.
+    /// Scoped to the unit so a peer unit's status never satisfies it (the merge-break test runs
+    /// two units), and it reads the JSON body directly so it pins the DEFERRED-status invariant:
+    /// a status that must NOT land leaves no matching event.
+    fn unit_has_status(events: &[Event], id: &str, status: &str) -> bool {
+        events.iter().any(|e| {
+            e.type_ == ledger::TYPE_UNIT_STATUS
+                && serde_json::from_slice::<Value>(&e.data)
+                    .ok()
+                    .is_some_and(|v| {
+                        v.get("id").and_then(Value::as_str) == Some(id)
+                            && v.get("status").and_then(Value::as_str) == Some(status)
+                    })
+        })
+    }
+
+    /// Whether a local branch ref exists in `repo` - used to pin that speculation lane branches
+    /// are torn down (winner cleanup, escalation cleanup, and the crash arm), never leaked.
+    fn branch_present(repo: &str, branch: &str) -> bool {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args([
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{branch}"),
+            ])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    #[test]
+    fn speculation_later_candidate_wins_when_an_earlier_lane_is_review_rejected() {
+        // MUST-FIX A + the unit HEADLINE (sdet-u13-spec-later-candidate-never-wins HIGH,
+        // adv-u13-later-candidate-wins-mutation-confirmed): candidate 0 passes its gates but the
+        // adjudicator REJECTS it, and candidate 1 wins. This is the FIRST test to drive a NON-ZERO
+        // winner, so it pins the `continue`-past-a-loser selection the whole unit exists for. A
+        // regression that caps phase B to `for i in 0..candidates.len().min(1)` (evaluate only lane
+        // 0), or `break`s instead of `continue`s, or hardcodes winner=lane 0, makes lane 1
+        // unreachable - lane 0 is rejected, so no candidate wins and the unit ESCALATES instead of
+        // integrating: every assertion below FAILS.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let cfg = spec_cfg(2);
+        let store = Store::open(":memory:").unwrap();
+        // Per-lane divergent adjudicator: lane 0's adjudicator spawn REJECTS, lane 1's (the default
+        // `output`) APPROVES. Keyed on the deterministic adjudicator spawn id, which keys by lane.
+        let driver = Stub {
+            write_file: Some("feature.rs".into()),
+            output: r#"{"verdict":"approve"}"#.into(),
+            output_by_spawn_id: HashMap::from([(
+                spawn_id("s", ROLE_ADJUDICATOR, 0),
+                r#"{"verdict":"reject","issues":["lane 0 rejected by the adjudicator"]}"#.into(),
+            )]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "a later gate-green adjudicator-approved candidate integrates over a rejected earlier lane"
+        );
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let integrated = events
+            .iter()
+            .find(|e| {
+                e.type_ == ledger::TYPE_UNIT_INTEGRATED
+                    && String::from_utf8_lossy(&e.data).contains("\"id\":\"s\"")
+            })
+            .expect("the unit integrated");
+        assert_eq!(
+            integrated.meta.get(META_SPEC_WINNER).map(String::as_str),
+            Some(spawn_id("s", ROLE_IMPLEMENTER, 1).as_str()),
+            "candidate 1 (NOT lane 0) is the recorded winner"
+        );
+        assert_eq!(
+            integrated.meta.get(META_SPEC_LOSERS).map(String::as_str),
+            Some(spawn_id("s", ROLE_IMPLEMENTER, 0).as_str()),
+            "the rejected candidate 0 is the recorded loser"
+        );
+
+        // The winner's lifecycle statuses are keyed by the WINNING lane (1), and the rejected
+        // lane 0 emits NONE of them - so the metrics fold attributes the merge to lane 1.
+        let has_key = |key: &str| {
+            events
+                .iter()
+                .any(|e| e.meta.get(META_REPLAY_KEY) == Some(&key.to_string()))
+        };
+        assert!(
+            has_key("s/green#1") && has_key("s/verified#1") && has_key("s/reviewed#1"),
+            "the winner's green/verified/reviewed are keyed by lane 1"
+        );
+        assert!(
+            !has_key("s/green#0") && !has_key("s/verified#0") && !has_key("s/reviewed#0"),
+            "the rejected lane 0 emits no lifecycle status (it never won)"
+        );
+    }
+
+    #[test]
+    fn speculation_low_risk_later_lane_winner_routes_light_not_falsely_flapped() {
+        // The COMPOSITION of risk-tiering (spec 13 unit 4) with first-green-wins speculation
+        // (unit 3) - closing sdet-u13rt-speculation-tiers-composition-untested and the
+        // sdet-u13rt-flapped-conflates-lane-in-speculation defect. A speculation candidate's
+        // `lane` index is NOT a remediation flap: each lane is a parallel FIRST attempt in its
+        // own worktree. Lane 0 is adjudicator-REJECTED and the LOW-RISK lane 1 wins; its review
+        // must route by observable RISK (LIGHT - no adversary), and no review-tier marker may
+        // record flapped=true. A regression that reuses `attempt>0` as the flapped signal on the
+        // speculation path force-routes lane 1 FULL (spawning the full-only adversary on a
+        // low-risk change) and folds a bogus flapped=true into the shared unit's evidence: the
+        // adversary-absence and no-false-flap assertions below FAIL.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        // A small, non-high-risk grounded radius so the unit is LOW risk by size AND path:
+        // one file, under threshold 3, not under the high_risk_paths prefix.
+        let gdir = tempfile::tempdir().unwrap();
+        std::fs::write(gdir.path().join("leaf.rs"), "fn widget() {}\n").unwrap();
+        let grep = crate::grounder::Grep {
+            root: gdir.path().to_string_lossy().into_owned(),
+        };
+        let light = config::ReviewPanel {
+            lenses: vec!["lensA".into()],
+            adjudicator: "adj".into(),
+            ..Default::default()
+        };
+        let mut cfg = Config::default();
+        for id in ["worker", "lensA", "lensB", "adversary", "adj"] {
+            cfg.agents.insert(id.into(), agent(id));
+        }
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.defaults.review =
+            full_panel_with_tiers(depth_tiers(light, 3, &["src/conductor.rs"]));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                coverage: "widget".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                speculation_width: 2,
+                ..Default::default()
+            },
+        );
+        let store = Store::open(":memory:").unwrap();
+        // Per-lane divergent adjudicator: lane 0's adjudicator spawn REJECTS, lane 1's (the
+        // default `output`) APPROVES - keyed on the deterministic adjudicator spawn id, which
+        // keys by lane. The adjudicator runs on BOTH tiers, so this holds whether lane 0 routes
+        // light or full.
+        let driver = Stub {
+            write_file: Some("feature.rs".into()),
+            output: r#"{"verdict":"approve"}"#.into(),
+            output_by_spawn_id: HashMap::from([(
+                spawn_id("s", ROLE_ADJUDICATOR, 0),
+                r#"{"verdict":"reject","issues":["lane 0 rejected by the adjudicator"]}"#.into(),
+            )]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path,
+            grounder: Some(&grep),
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "the low-risk lane 1 wins after lane 0 is rejected"
+        );
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let integrated = events
+            .iter()
+            .find(|e| {
+                e.type_ == ledger::TYPE_UNIT_INTEGRATED
+                    && String::from_utf8_lossy(&e.data).contains("\"id\":\"s\"")
+            })
+            .expect("the unit integrated");
+        assert_eq!(
+            integrated.meta.get(META_SPEC_WINNER).map(String::as_str),
+            Some(spawn_id("s", ROLE_IMPLEMENTER, 1).as_str()),
+            "lane 1 (NOT lane 0) is the recorded winner"
+        );
+        // The low-risk lane-1 winner routed LIGHT: its full-only adversary NEVER spawned. This
+        // is the discriminator - reusing `attempt>0` for flapped force-routes lane 1 FULL and
+        // this adversary spawn appears.
+        let ids = driver.spawn_ids();
+        assert!(
+            !ids.contains(&spawn_id("s", ROLE_ADVERSARY, 1)),
+            "the low-risk lane-1 winner must route LIGHT - the adversary must NOT spawn on lane 1: {ids:?}"
+        );
+        // No lane flapped: a lane index is not a remediation attempt, so no review-tier marker
+        // may fold a bogus flapped=true.
+        let tier_markers: Vec<String> = events
+            .iter()
+            .filter(|e| {
+                e.type_ == ledger::TYPE_UNIT_STATUS
+                    && String::from_utf8_lossy(&e.data).contains("\"status\":\"review-tier\"")
+            })
+            .map(|e| String::from_utf8_lossy(&e.data).into_owned())
+            .collect();
+        assert!(
+            !tier_markers.is_empty(),
+            "the tiers policy logs a routing decision per reviewed lane"
+        );
+        assert!(
+            tier_markers
+                .iter()
+                .all(|m| !m.contains("\"flapped\":\"true\"")),
+            "no speculation lane flapped - the lane index must not fold a bogus flapped=true: {tier_markers:?}"
+        );
+        assert!(
+            logged_review_tier(&store, "light"),
+            "the low-risk lanes routed to the light panel"
+        );
+    }
+
+    #[test]
+    fn speculation_rejected_loser_is_visible_to_the_review_quality_fold() {
+        // adv-u13-speculation-losers-invisible-to-review-metrics: a losing speculation
+        // candidate the adjudicator REJECTED must be counted on the spec-11/spec-01
+        // review-quality fold exactly as the single-lane path is - review_reject counts it
+        // and first_pass_clean excludes the unit - so a speculating unit does NOT report
+        // INFLATED review quality to the spec-13 self-improvement loop that consumes these
+        // metrics. Same scenario as `speculation_later_candidate_wins...`: lane 0 is
+        // adjudicator-REJECTED, lane 1 wins. Before the fix the fold read approve=1/reject=0
+        // /first_pass_clean=1 (a clean pass over an identical review that single-lane records
+        // as reject=1/not-clean); the fold-neutral `speculation-rejected` marker closes it.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let cfg = spec_cfg(2);
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            write_file: Some("feature.rs".into()),
+            output: r#"{"verdict":"approve"}"#.into(),
+            output_by_spawn_id: HashMap::from([(
+                spawn_id("s", ROLE_ADJUDICATOR, 0),
+                r#"{"verdict":"reject","issues":["lane 0 rejected by the adjudicator"]}"#.into(),
+            )]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        // The fold-neutral reject marker must NOT disturb the unit's real terminal state:
+        // the winner still integrates (the marker is not a `ledger::Status` variant).
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "the reject marker is fold-neutral - the winning lane still integrates the unit"
+        );
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let m = crate::metrics::project(&events);
+        assert_eq!(
+            m.review_approve, 1,
+            "the winning lane-1 candidate's adjudicator approve is counted once"
+        );
+        assert_eq!(
+            m.review_reject, 1,
+            "the adjudicator-rejected lane-0 candidate is counted as a review reject, exactly \
+             as single-lane review work rejecting one attempt records reject=1"
+        );
+        assert_eq!(
+            m.first_pass_clean, 0,
+            "a unit whose review rejected a candidate is NOT a clean first pass"
+        );
+    }
+
+    #[test]
+    fn speculation_escalates_when_every_candidate_is_rejected() {
+        // MUST-FIX B (sdet-u13-spec-no-winner-escalation-untested, MUTATION-PROVEN): EVERY candidate
+        // is review-rejected, so no candidate wins and the unit ESCALATES rather than re-fanning out
+        // forever on the Fresh re-entry. Deleting the `UnitEscalated` emit (or returning `Ok(false)`
+        // leaving the unit Fresh) makes `rs.units["s"].status` != Escalated and the event lookup
+        // panic - the mutation the design's own guard-citation left unpinned now FAILS.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let cfg = spec_cfg(2);
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            write_file: Some("feature.rs".into()),
+            output: r#"{"verdict":"reject","issues":["every candidate rejected"]}"#.into(),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Escalated,
+            "all candidates rejected => the group escalates, it does not re-fan-out forever"
+        );
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let escalated = events
+            .iter()
+            .find(|e| {
+                e.type_ == ledger::TYPE_UNIT_ESCALATED
+                    && String::from_utf8_lossy(&e.data).contains("\"id\":\"s\"")
+            })
+            .expect("the unit escalated");
+        assert_eq!(
+            escalated.meta.get(META_SPEC_GROUP).map(String::as_str),
+            Some(speculation_group_id("s").as_str()),
+            "the escalation is tagged with the speculation group"
+        );
+        assert!(
+            events.iter().any(|e| {
+                e.type_ == contextgraph::TYPE_LESSON_LEARNED
+                    && String::from_utf8_lossy(&e.data).contains("escalated")
+            }),
+            "the escalation records a distilled lesson"
+        );
+        assert!(
+            !events.iter().any(|e| {
+                e.type_ == ledger::TYPE_UNIT_INTEGRATED
+                    && String::from_utf8_lossy(&e.data).contains("\"id\":\"s\"")
+            }),
+            "a group that escalates lands NO code - there is no UnitIntegrated"
+        );
+        // Every lane branch (canonical lane 0 + the -spec1 sibling) is torn down.
+        assert!(
+            !branch_present(&repo_path, &unit_branch("s")),
+            "the canonical lane branch is cleaned up on escalation"
+        );
+        assert!(
+            !branch_present(&repo_path, &format!("{}-spec1", unit_branch("s"))),
+            "the lane-1 sibling branch is cleaned up on escalation"
+        );
+    }
+
+    #[test]
+    fn speculation_crashed_lane_is_absent_and_a_sibling_still_wins() {
+        // MUST-FIX E (sdet-u13-spec-crashed-candidate-arm-untested + arch-spec-crash-lane-worktree-
+        // leak): lane 0's implementer CRASHES (non-zero exit) while lane 1 writes + is approved.
+        // The crashed lane is simply absent from the group and the surviving sibling still wins and
+        // integrates ("the remaining candidates still race"). A mutation that propagated the lane-0
+        // error (aborting the group) leaves the unit un-integrated. AND the crash arm now tears down
+        // lane 0's ALREADY-CREATED worktree + branch: without that cleanup the canonical branch
+        // leaks (no terminal path touches the never-pushed crashed lane), so `branch_present` holds
+        // and this test FAILS.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let cfg = spec_cfg(2);
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            write_file: Some("feature.rs".into()),
+            output: r#"{"verdict":"approve"}"#.into(),
+            fail_spawn_ids: std::collections::HashSet::from([spawn_id("s", ROLE_IMPLEMENTER, 0)]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "lane 0 crashed but the surviving sibling lane 1 still wins and integrates"
+        );
+        assert_eq!(
+            driver.spawn_count("worker"),
+            2,
+            "BOTH candidate implementers were spawned - the crash did not abort the group"
+        );
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let integrated = events
+            .iter()
+            .find(|e| {
+                e.type_ == ledger::TYPE_UNIT_INTEGRATED
+                    && String::from_utf8_lossy(&e.data).contains("\"id\":\"s\"")
+            })
+            .expect("the surviving sibling integrated");
+        assert_eq!(
+            integrated.meta.get(META_SPEC_WINNER).map(String::as_str),
+            Some(spawn_id("s", ROLE_IMPLEMENTER, 1).as_str()),
+            "the surviving lane 1 is the recorded winner"
+        );
+        assert!(
+            !integrated
+                .meta
+                .get(META_SPEC_LOSERS)
+                .is_some_and(|l| l.contains(&spawn_id("s", ROLE_IMPLEMENTER, 0))),
+            "the CRASHED lane 0 is absent from the group (no diff), not recorded a loser"
+        );
+        // The crash arm removed lane 0's already-created worktree AND branch: no durable leak.
+        assert!(
+            !branch_present(&repo_path, &unit_branch("s")),
+            "the crashed lane's worktree branch is torn down in the crash arm, never leaked"
+        );
+    }
+
+    #[test]
+    fn speculation_exhaustive_integrate_door_red_blocks_a_candidate() {
+        // MUST-FIX F (sdet-u13-spec-exhaustive-door-untested): the winner's EXHAUSTIVE integrate
+        // door (spec 12 unit 3) must still gate a candidate that passed its narrowed gates AND the
+        // adjudicator. Gate `door` (`inputs: [docs/door.md]`) misses the empty blast radius, so the
+        // narrowed inner loop SKIPS it (both candidates read gate-green) and BOTH adjudicators
+        // APPROVE - the ONLY thing between a candidate and the merge is the exhaustive door, which
+        // runs `door` RED. Neither candidate may land; the unit escalates. A mutation that dropped
+        // the exhaustive re-gate (or its `!full.pass` continue) integrates lane 0 on narrowed-green +
+        // approve, so `Escalated` FAILS.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = spec_cfg(2);
+        cfg.workflow
+            .gates
+            .insert("door".into(), gate_def_inputs("exit 1", &["docs/door.md"]));
+        cfg.workflow.stages.get_mut("s").unwrap().gates = vec!["ok".into(), "door".into()];
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            write_file: Some("feature.rs".into()),
+            output: r#"{"verdict":"approve"}"#.into(),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Escalated,
+            "a candidate that fails the exhaustive integrate door cannot land - the unit escalates"
+        );
+        assert_eq!(
+            driver.spawn_count("adj"),
+            2,
+            "BOTH candidates passed their narrowed gates and reached (and were approved by) the \
+             adjudicator; only the exhaustive door bit them"
+        );
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(
+            !events.iter().any(|e| {
+                e.type_ == ledger::TYPE_UNIT_INTEGRATED
+                    && String::from_utf8_lossy(&e.data).contains("\"id\":\"s\"")
+            }),
+            "a tree that fails the exhaustive door never lands"
+        );
+        // `door` is SKIPPED in the narrowed inner loop yet has a REAL RED run at the exhaustive door.
+        let door_skipped_inline = events
+            .iter()
+            .any(|e| e.meta.get(META_REPLAY_KEY) == Some(&"s/gate-skip:door#0".to_string()));
+        let door_red_at_door = events.iter().any(|e| {
+            e.type_ == contextgraph::TYPE_GATE_VERDICT
+                && e.meta.get(META_REPLAY_KEY) == Some(&"s/gate:door#0".to_string())
+                && serde_json::from_slice::<Value>(&e.data)
+                    .ok()
+                    .and_then(|v| v.get("pass").and_then(Value::as_bool))
+                    == Some(false)
+        });
+        assert!(
+            door_skipped_inline && door_red_at_door,
+            "door is skipped inline (narrowed) but runs RED at the exhaustive integrate door"
+        );
+    }
+
+    #[test]
+    fn speculation_stays_fresh_across_parking_until_a_winner_integrates() {
+        // MUST-FIX C (arch-spec-green-verified-stranded-before-blocked-integrate +
+        // adv-u13-stranded-green-worse-than-crash-window + the review-bypass the adjudicator
+        // sharpened): the deepest defect. Under the PRODUCTION stepwise/replay driver a candidate is
+        // APPROVED (pre-fix `review_unit` folds the SHARED unit to `Reviewed`) but does NOT win (its
+        // exhaustive door is red), while a LATER lane is still parking. Pre-fix the unit folds out of
+        // `Fresh`, so a resume drops to `run_single_stage` `ResumePhase::Reviewed` and integrates the
+        // CANONICAL lane UNREVIEWED. With green/verified/reviewed ALL deferred until a winner
+        // INTEGRATES, the unit stays folded out of those statuses across EVERY parking step, so a
+        // resume RE-ENTERS `run_speculation` and (here) escalates WITH the speculation group -
+        // something `run_single_stage` never emits. This crosses the post-approval / pre-integrate
+        // boundary the fix targets.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = spec_cfg(2);
+        // `door` is skipped in the narrowed inner loop (misses the empty blast radius) but RED at the
+        // exhaustive door - so a candidate is approved by the adjudicator, then loses at the door.
+        cfg.workflow
+            .gates
+            .insert("door".into(), gate_def_inputs("exit 1", &["docs/door.md"]));
+        cfg.workflow.stages.get_mut("s").unwrap().gates = vec!["ok".into(), "door".into()];
+
+        let store = Store::open(":memory:").unwrap();
+        let replay_step = |store: &Store| {
+            let driver = crate::driver::replay::ReplayDriver::new(store);
+            let deps = Deps {
+                store,
+                driver: &driver,
+                gates: &ExecRunner,
+                repo: repo_path.clone(),
+                grounder: None,
+                graph: None,
+                criteria: Vec::new(),
+            };
+            run(&cfg, &deps).expect("a parked frontier is not a run failure")
+        };
+
+        // Drive the full park -> replay -> evaluate loop across separate step processes, recording
+        // every parked spawn's result each step (adjudicators APPROVE) exactly as a courier would.
+        let mut final_rs = None;
+        for _ in 0..16 {
+            let rs = replay_step(&store);
+            let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            // THE INVARIANT: no candidate's green/verified/reviewed EVER lands (none ever wins), so
+            // the unit is never folded out of Fresh - the exact fold the review-bypass exploited.
+            assert!(
+                !unit_has_status(&events, "s", "green")
+                    && !unit_has_status(&events, "s", "verified")
+                    && !unit_has_status(&events, "s", "reviewed"),
+                "green/verified/reviewed stay DEFERRED across every parking step - an approved-but-\
+                 losing candidate must never fold the shared unit out of Fresh"
+            );
+            assert!(
+                !matches!(
+                    rs.units["s"].status,
+                    ledger::Status::Green | ledger::Status::Verified | ledger::Status::Reviewed
+                ),
+                "the speculating unit is never folded Green/Verified/Reviewed while a group is in flight"
+            );
+            let escalated = rs.units["s"].status == ledger::Status::Escalated;
+            final_rs = Some(rs);
+            if escalated {
+                break;
+            }
+            for id in crate::spawn::recorded(&events).unwrap().into_keys() {
+                let out = if id.contains("/adjudicator#") {
+                    r#"{"verdict":"approve"}"#
+                } else {
+                    "ok"
+                };
+                crate::spawn::record_result_if_absent(
+                    &store,
+                    &crate::spawn::SpawnResult::ok(&id, out),
+                )
+                .unwrap();
+            }
+        }
+
+        let rs = final_rs.expect("at least one step ran");
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Escalated,
+            "the unit stayed Fresh across parking and RE-ENTERED run_speculation, escalating"
+        );
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        // Only run_speculation tags its escalation with the group - this is the re-entry proof: a
+        // mis-route to run_single_stage would carry NO speculation group on the escalation.
+        let escalated = events
+            .iter()
+            .find(|e| {
+                e.type_ == ledger::TYPE_UNIT_ESCALATED
+                    && String::from_utf8_lossy(&e.data).contains("\"id\":\"s\"")
+            })
+            .expect("the unit escalated");
+        assert_eq!(
+            escalated.meta.get(META_SPEC_GROUP).map(String::as_str),
+            Some(speculation_group_id("s").as_str()),
+            "the escalation carries the speculation group => a resume re-entered run_speculation, \
+             never the review-skipping single-lane Reviewed path"
+        );
+        assert!(
+            !events.iter().any(|e| {
+                e.type_ == ledger::TYPE_UNIT_INTEGRATED
+                    && String::from_utf8_lossy(&e.data).contains("\"id\":\"s\"")
+            }),
+            "the canonical lane is never integrated unreviewed - nothing lands"
+        );
+    }
+
+    /// A synchronous driver for the blocked-winner merge-break fixture (MUST-FIX D + mechanism a):
+    /// a single-lane POISON unit `p` prepends one `MARK` to the shared `m.rs` and integrates first
+    /// (it barriers on the speculation unit's canonical branch so lane 0 is cut from the CLEAN base
+    /// first); the SPECULATION unit `s`'s lane-0 implementer then WAITS until that poison MARK is on
+    /// the run branch and APPENDS its own MARK - so lane 0's OWN worktree gates green (one MARK) but
+    /// its post-merge merged tree carries TWO MARKs the re-gate REJECTS (a DETERMINISTIC blocked
+    /// winner, no lock race). Lane 1 is cut AFTER poison landed (from the one-MARK base) and its
+    /// append OVERWRITES the prepend, so lane 1 merges cleanly to one MARK and WINS - a later lane
+    /// winning past a blocked earlier lane. Adjudicators approve; the block is purely post-merge.
+    struct SpecBlockDriver {
+        repo: String,
+    }
+    impl AgentDriver for SpecBlockDriver {
+        fn spawn(
+            &self,
+            _a: &AgentDef,
+            _prompt: &str,
+            opts: &SpawnOpts,
+            _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+        ) -> Result<AgentResult, Error> {
+            let unit = opts.id.split('/').next().unwrap_or_default();
+            if opts.id.contains("/implementer#") {
+                if !opts.dir.is_empty() {
+                    if unit == "p" {
+                        // Barrier: wait until the speculation unit's CANONICAL lane branch exists,
+                        // so lane 0's worktree was already cut from the CLEAN base BEFORE poison
+                        // integrates. This makes lane 0 a DETERMINISTIC blocked winner (clean base +
+                        // append, merged into poison's prepend => two MARKs) - no lock race.
+                        for _ in 0..400 {
+                            let exists = std::process::Command::new("git")
+                                .arg("-C")
+                                .arg(&self.repo)
+                                .args(["rev-parse", "--verify", "--quiet", "refs/heads/rigger/u/s"])
+                                .output()
+                                .map(|o| o.status.success())
+                                .unwrap_or(false);
+                            if exists {
+                                break;
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(25));
+                        }
+                        // Poison: PREPEND one MARK (idempotent from the fixed base), integrate first.
+                        std::fs::write(
+                            Path::new(&opts.dir).join("m.rs"),
+                            format!("MARK\n{MERGE_BREAK_BASE}"),
+                        )
+                        .unwrap();
+                    } else {
+                        // Speculation candidate: block until the poison MARK is on the run branch,
+                        // so this candidate's worktree was cut from the CLEAN base (one MARK of its
+                        // own) yet its merge combines into the two-MARK tree the re-gate rejects.
+                        for _ in 0..400 {
+                            let landed =
+                                std::fs::read_to_string(Path::new(&self.repo).join("m.rs"))
+                                    .map(|c| c.contains("MARK"))
+                                    .unwrap_or(false);
+                            if landed {
+                                break;
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(25));
+                        }
+                        std::fs::write(
+                            Path::new(&opts.dir).join("m.rs"),
+                            format!("{MERGE_BREAK_BASE}MARK\n"),
+                        )
+                        .unwrap();
+                    }
+                }
+                return Ok(AgentResult::default());
+            }
+            if opts.id.contains("/adjudicator#") {
+                return Ok(AgentResult {
+                    output: r#"{"verdict":"approve"}"#.into(),
+                    resolved_model: String::new(),
+                });
+            }
+            Ok(AgentResult {
+                output: "reviewed the diff".into(),
+                resolved_model: String::new(),
+            })
+        }
+    }
+
+    #[test]
+    fn speculation_blocked_winner_captures_evidence_and_a_later_lane_wins() {
+        // MUST-FIX D (adv-u13-blocked-winner-integrate-evidence-lost) + mechanism a
+        // (arch-spec-green-verified-stranded-before-blocked-integrate). The speculation unit `s`'s
+        // lane-0 candidate passes its narrowed gates + adjudicator + exhaustive door, but its
+        // POST-MERGE re-gate goes RED (a batch-mate poison moved the base into a two-MARK tree). The
+        // blocked arm must (D) emit a UnitFailed carrying the merge-break evidence - the signal
+        // run_single_stage emits, previously DROPPED by the bare `continue` - and (a) lane 0's
+        // green/verified/reviewed must be DEFERRED PAST the block, so the rolled-back candidate
+        // records NO winner status. A later lane (1) then wins cleanly. A mutation that emitted
+        // green/verified before the block check leaves a `s/green#0`; one that dropped the UnitFailed
+        // leaves no s UnitFailed - each FAILS its assertion.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        // Seed the shared file at the base so both units branch from a tree that already holds it.
+        std::fs::write(Path::new(&repo_path).join("m.rs"), MERGE_BREAK_BASE).unwrap();
+        for args in [
+            &["add", "m.rs"][..],
+            &["commit", "-q", "-m", "base m.rs"][..],
+        ] {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo_path)
+                .args(args)
+                .output()
+                .unwrap();
+        }
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert(
+            "g".into(),
+            gate_def(
+                "c=$(grep -c MARK m.rs 2>/dev/null); c=${c:-0}; \
+                 if [ \"$c\" -le 1 ]; then exit 0; else \
+                 echo 'gate g failed: merge introduced duplicate MARK'; exit 1; fi",
+            ),
+        );
+        let panel = crate::config::ReviewPanel {
+            lenses: vec!["lens".into()],
+            adjudicator: "judge".into(),
+            ..Default::default()
+        };
+        // POISON: a single-lane batch-mate that integrates its one MARK first.
+        cfg.workflow.stages.insert(
+            "p".into(),
+            Stage {
+                name: "p".into(),
+                agent: "worker".into(),
+                gates: vec!["g".into()],
+                on_pass: "merge".into(),
+                review: panel.clone(),
+                ..Default::default()
+            },
+        );
+        // SPECULATION unit: its winning candidate merges into the poisoned two-MARK tree.
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                gates: vec!["g".into()],
+                on_pass: "merge".into(),
+                review: panel.clone(),
+                speculation_width: 2,
+                ..Default::default()
+            },
+        );
+
+        let store = Store::open(":memory:").unwrap();
+        let driver = SpecBlockDriver {
+            repo: repo_path.clone(),
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        assert_eq!(
+            rs.units["p"].status,
+            ledger::Status::Integrated,
+            "the poison batch-mate integrates its one MARK cleanly first"
+        );
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "lane 0's winning merge broke post-merge; the later lane 1 then wins and integrates"
+        );
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let has_key = |key: &str| {
+            events
+                .iter()
+                .any(|e| e.meta.get(META_REPLAY_KEY) == Some(&key.to_string()))
+        };
+        // (D) the blocked lane-0 candidate recorded a UnitFailed - the merge-break signal
+        // single-lane emits, no longer dropped by the bare `continue` arm.
+        assert!(
+            events.iter().any(|e| {
+                e.type_ == ledger::TYPE_UNIT_FAILED
+                    && String::from_utf8_lossy(&e.data).contains("\"id\":\"s\"")
+            }),
+            "the blocked candidate emits a UnitFailed capturing the merge-break (evidence not dropped)"
+        );
+        // (D) it was a REAL post-merge block: a RED post-merge re-gate ran for s at lane 0 (keyed
+        // apart from the pre-merge green), carrying the duplicate-MARK evidence.
+        assert!(
+            events.iter().any(|e| {
+                e.type_ == contextgraph::TYPE_GATE_VERDICT
+                    && e.meta
+                        .get(META_REPLAY_KEY)
+                        .is_some_and(|k| k.starts_with("s/postmerge-gate:g#0"))
+                    && serde_json::from_slice::<Value>(&e.data)
+                        .ok()
+                        .and_then(|v| v.get("pass").and_then(Value::as_bool))
+                        == Some(false)
+            }),
+            "s's lane-0 merged tree records a RED post-merge re-gate (a genuine merge-break, not a pre-merge fail)"
+        );
+        // (a) + C2: lane 0's green/verified/reviewed were DEFERRED PAST the block, so the rolled-back
+        // candidate records NONE of them. Pre-fix, green/verified were emitted BEFORE the block check
+        // (a `s/green#0` would exist) and `reviewed` folded on approval (a `s/reviewed#0`).
+        assert!(
+            !has_key("s/green#0") && !has_key("s/verified#0") && !has_key("s/reviewed#0"),
+            "the blocked lane 0 records NO green/verified/reviewed - all three defer past the block"
+        );
+        // The later lane 1 WON: its lifecycle statuses landed and it is the recorded winner - a
+        // later candidate integrating past a blocked earlier lane.
+        let integrated = events
+            .iter()
+            .find(|e| {
+                e.type_ == ledger::TYPE_UNIT_INTEGRATED
+                    && String::from_utf8_lossy(&e.data).contains("\"id\":\"s\"")
+            })
+            .expect("the later lane integrated");
+        assert_eq!(
+            integrated.meta.get(META_SPEC_WINNER).map(String::as_str),
+            Some(spawn_id("s", ROLE_IMPLEMENTER, 1).as_str()),
+            "lane 1 is the recorded winner, past the blocked lane 0"
+        );
+        assert!(
+            has_key("s/green#1") && has_key("s/verified#1") && has_key("s/reviewed#1"),
+            "the winning lane 1's deferred green/verified/reviewed land once it INTEGRATES"
+        );
     }
 
     #[test]
@@ -7324,6 +12486,7 @@ mod tests {
             lenses: vec!["lensA".into(), "lensB".into()],
             adversary: "adversary".into(),
             adjudicator: "adj".into(),
+            tiers: None,
         };
         cfg.workflow.stages.insert(
             "implement".into(),
@@ -7496,6 +12659,7 @@ mod tests {
             lenses: vec!["lens".into()],
             adversary: String::new(),
             adjudicator: "adj".into(),
+            tiers: None,
         };
         cfg.workflow.stages.insert(
             "plan".into(),
@@ -7577,6 +12741,7 @@ mod tests {
                     lenses: vec!["lens".into()],
                     adversary: "adversary".into(),
                     adjudicator: "adjudicator".into(),
+                    tiers: None,
                 },
                 ..Default::default()
             },
@@ -7659,6 +12824,7 @@ mod tests {
             lenses: vec!["lens".into()],
             adversary: "adversary".into(),
             adjudicator: "adj".into(),
+            tiers: None,
         };
         cfg.workflow.stages.insert(
             "implement".into(),
@@ -7734,6 +12900,7 @@ mod tests {
             lenses: vec!["lens".into()],
             adversary: "adversary".into(),
             adjudicator: "adj".into(),
+            tiers: None,
         };
         cfg.workflow.stages.insert(
             "implement".into(),
@@ -7837,6 +13004,7 @@ mod tests {
                 lenses: vec!["lens".into()],
                 adversary: "adversary".into(),
                 adjudicator: "adj".into(),
+                tiers: None,
             };
             cfg.workflow.defaults.max_retries = max_retries;
             cfg.workflow.stages.insert(
@@ -7931,6 +13099,7 @@ mod tests {
             lenses: vec!["lens".into()],
             adversary: "adversary".into(),
             adjudicator: "adj".into(),
+            tiers: None,
         };
         // NOTE: defaults.max_retries deliberately left unset (0 -> falls back to 3).
         assert_eq!(
@@ -8058,6 +13227,7 @@ mod tests {
             lenses: vec!["lens".into()],
             adversary: "adversary".into(),
             adjudicator: "adj".into(),
+            tiers: None,
         };
         cfg.workflow.defaults.max_retries = CAP;
         cfg.workflow.stages.insert(
@@ -8109,6 +13279,99 @@ mod tests {
                 .iter()
                 .any(|e| e.type_ == ledger::TYPE_UNIT_INTEGRATED),
             "an approved unit must record a UnitIntegrated"
+        );
+    }
+
+    #[test]
+    fn a_model_ladder_implementer_escalates_one_rung_per_remediation_attempt() {
+        // Spec 10 unit 4 - the ladder-advance-on-retry path. An implementer on a
+        // `model_ladder` resolves rung 0 on its first attempt and advances one rung on each
+        // remediation attempt, and the resolved rung is VISIBLE in the logged model stamps.
+        // The adjudicator rejects attempt 0 (forcing one remediation) then approves attempt 1,
+        // so the unit records a `green` status for BOTH attempts; each must carry the rung
+        // that attempt ran on as its META_MODEL_ALIAS. This is the same discriminating driver
+        // the Gap-16 approval tests use, here proving the per-attempt rung escalation.
+        const CAP: u32 = 3;
+        let mut cfg = Config::default();
+        let mut worker = agent("worker");
+        worker.model_ladder = vec!["haiku".into(), "sonnet".into(), "opus".into()];
+        cfg.agents.insert("worker".into(), worker);
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("adversary".into(), agent("adversary"));
+        cfg.agents.insert("adj".into(), agent("adj"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true")); // static gates pass
+        cfg.workflow.defaults.review = config::ReviewPanel {
+            lenses: vec!["lens".into()],
+            adversary: "adversary".into(),
+            adjudicator: "adj".into(),
+            tiers: None,
+        };
+        cfg.workflow.defaults.max_retries = CAP;
+        cfg.workflow.stages.insert(
+            "implement".into(),
+            Stage {
+                name: "implement".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        // Reject attempt 0, approve attempt 1: exactly one remediation, so the ladder advances
+        // exactly once (rung 0 -> rung 1).
+        let driver = AdjApprovesOnAttempt::new("adj", 1);
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs.units["implement"].status,
+            ledger::Status::Integrated,
+            "the unit integrates once the adjudicator approves attempt 1"
+        );
+        // The adjudicator ran on attempts 0 and 1 (rejected then approved), confirming exactly
+        // one remediation actually occurred - so the ladder genuinely advanced.
+        assert_eq!(
+            driver.adj_attempts.lock().unwrap().clone(),
+            vec![0, 1],
+            "the adjudicator rejected attempt 0 and approved attempt 1"
+        );
+
+        // Each attempt's `green` status carries the rung that attempt ran on. Distinguish the
+        // two attempts by their replay key (`implement/green#<attempt>`).
+        let events = st
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        let alias_for_attempt = |attempt: u32| -> String {
+            let key = format!("implement/green#{attempt}");
+            events
+                .iter()
+                .find(|e| {
+                    e.type_ == ledger::TYPE_UNIT_STATUS
+                        && e.meta.get(META_REPLAY_KEY).map(String::as_str) == Some(key.as_str())
+                })
+                .unwrap_or_else(|| panic!("a green status for attempt {attempt} must exist"))
+                .meta
+                .get(META_MODEL_ALIAS)
+                .cloned()
+                .unwrap_or_default()
+        };
+        assert_eq!(
+            alias_for_attempt(0),
+            "haiku",
+            "attempt 0's stamp names the cheap first rung"
+        );
+        assert_eq!(
+            alias_for_attempt(1),
+            "sonnet",
+            "the remediation attempt's stamp advanced exactly one rung"
         );
     }
 
@@ -8921,8 +14184,15 @@ mod tests {
             prior_attempts: HashMap::new(),
             replayed_keys: Mutex::new(HashSet::new()),
             gate_verdicts: Mutex::new(HashMap::new()),
+            green_digests: Mutex::new(HashMap::new()),
+            stale_units: Mutex::new(HashSet::new()),
+            compensations: Mutex::new(Vec::new()),
+            compensation_feedback: Mutex::new(HashMap::new()),
+            compensation_attempts: Mutex::new(HashMap::new()),
+            compensated_commits: Mutex::new(HashSet::new()),
+            taxonomy: failure::Taxonomy::default(),
         };
-        ctx.record_gate("ok", gate::Kind::Core, true, "silent");
+        ctx.record_gate("ok", gate::Kind::Core, GateRatchet::CleanPass, "silent");
         let seeded = ctx.gate_tracker.lock().unwrap().get("ok").unwrap().autonomy;
         assert_eq!(
             seeded,
@@ -8981,6 +14251,33 @@ mod tests {
         );
     }
 
+    /// A driver whose implementer commits the UNIT'S OWN id as its file content, so two
+    /// independent units write DIVERGENT trees. Real independent units have divergent blast
+    /// radii - never byte-identical trees - and a fixture that wrote identical content would,
+    /// under the content-address cache (spec 12, unit 1), let one unit's gate be answered by
+    /// the other's green as a (correct) content-hit, so only ONE gate would run. Writing the
+    /// unit id keeps the trees - and thus the input digests - distinct, so both gates
+    /// genuinely run and the Gap-19 target-isolation assertion stays meaningful.
+    struct UnitDistinctWriter;
+    impl AgentDriver for UnitDistinctWriter {
+        fn spawn(
+            &self,
+            _a: &AgentDef,
+            _prompt: &str,
+            opts: &SpawnOpts,
+            _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+        ) -> Result<AgentResult, Error> {
+            if !opts.dir.is_empty() {
+                std::fs::write(
+                    Path::new(&opts.dir).join("work.rs"),
+                    format!("// unit {}\n", opts.unit),
+                )
+                .unwrap();
+            }
+            Ok(AgentResult::default())
+        }
+    }
+
     #[test]
     fn two_units_gate_environments_never_share_a_target_dir() {
         // Gap 19 (criterion 3): a gate that runs INSIDE a unit's worktree must build into
@@ -9010,10 +14307,9 @@ mod tests {
             );
         }
         let store = Store::open(":memory:").unwrap();
-        let driver = Stub {
-            write_file: Some("work.rs".into()),
-            ..Stub::new()
-        };
+        // Each unit writes its OWN id as content, so their trees (and input digests) differ
+        // and both gates genuinely run - never one content-hitting the other (spec 12, u1).
+        let driver = UnitDistinctWriter;
         let runner = RecordingRunner::new(&[]);
         let deps = Deps {
             store: &store,
@@ -9376,6 +14672,47 @@ mod tests {
     }
 
     #[test]
+    fn blast_radius_conflicts_flags_units_that_split_one_file_set() {
+        // Unit 1 / rule 6: two proposed units grounding to an OVERLAPPING file set are
+        // a shared-blast-radius split - the exact decomposition the plan-critique gate
+        // must catch. The conflict names both units and the shared file(s); a unit with
+        // a disjoint radius raises nothing.
+        let units = vec![
+            (
+                "u1".to_string(),
+                vec!["a.rs".to_string(), "b.rs".to_string()],
+            ),
+            (
+                "u2".to_string(),
+                vec!["b.rs".to_string(), "c.rs".to_string()], // overlaps u1 on b.rs
+            ),
+            ("u3".to_string(), vec!["d.rs".to_string()]), // disjoint from both
+        ];
+        let conflicts = blast_radius_conflicts(&units);
+        assert_eq!(
+            conflicts,
+            vec![("u1".to_string(), "u2".to_string(), vec!["b.rs".to_string()])],
+            "exactly one conflict: u1 and u2 both touch b.rs"
+        );
+    }
+
+    #[test]
+    fn blast_radius_conflicts_is_empty_for_a_disjoint_partition() {
+        // A clean decomposition (every unit a disjoint file set, or an empty radius that
+        // conflicts with nothing) raises no rule-6 conflict, so the gate has nothing to
+        // reject on.
+        let units = vec![
+            ("u1".to_string(), vec!["a.rs".to_string()]),
+            ("u2".to_string(), vec!["b.rs".to_string()]),
+            ("u3".to_string(), Vec::new()),
+        ];
+        assert!(
+            blast_radius_conflicts(&units).is_empty(),
+            "disjoint units are not a shared-blast-radius split"
+        );
+    }
+
+    #[test]
     fn partitioned_wave_still_integrates_every_stage() {
         // Correctness under partitioning: a wave with a grep grounder and
         // `partition: by-blast-radius` must still integrate EVERY ready stage, even
@@ -9566,7 +14903,7 @@ mod tests {
 
     #[test]
     fn review_agents_emit_findings_via_the_review_protocol() {
-        // Item 3: a lens / adversary prompt must carry the REVIEW_PROTOCOL telling it
+        // Item 3: a lens / adversary prompt must carry the review_protocol telling it
         // to record each finding as a ReviewFinding; the adjudicator's must NOT (it
         // ends with its verdict line, not a finding emit).
         let mut cfg = Config::default();
@@ -9603,10 +14940,23 @@ mod tests {
             lens_prompt.contains("ReviewFinding"),
             "a lens must be told to emit findings as ReviewFindings; prompt was:\n{lens_prompt}"
         );
+        // spec 11, unit 1: the lens must carry its ROLE token in the finding's `by` field so
+        // its findings are attributed on the out-of-process courier path (where the conductor
+        // stamps no META_ACTOR). Its role is `lens:<agent-id>`.
+        assert!(
+            lens_prompt.contains(r#""by":"lens:lens""#),
+            "a lens must be told to attribute each finding to its role via `by`; prompt was:\n{lens_prompt}"
+        );
         let adv_prompt = driver.prompts_for("adversary").pop().unwrap();
         assert!(
             adv_prompt.contains("ReviewFinding"),
             "the adversary must be told to emit its findings as ReviewFindings; prompt was:\n{adv_prompt}"
+        );
+        // The adversary attributes its findings to the ROLE_ADVERSARY token, so adversary
+        // precision / cost-per-upheld can key its findings on the courier path.
+        assert!(
+            adv_prompt.contains(r#""by":"adversary""#),
+            "the adversary must be told to attribute each finding to `adversary` via `by`; prompt was:\n{adv_prompt}"
         );
         let adj_prompt = driver.prompts_for("adj").pop().unwrap();
         assert!(
@@ -9728,6 +15078,338 @@ mod tests {
     }
 
     #[test]
+    fn a_flaky_gate_rerun_is_a_pass_with_warning_that_never_demotes() {
+        // Spec 10, unit 2 - the PINNED three-way outcome. A gate whose failure matches a
+        // `flaky` rule is rerun; a MIXED result (it failed once then passed on a rerun) is
+        // a FlakyVerdict pass-with-warning: the unit integrates WITHOUT charging a
+        // remediation attempt, the GateVerdict is annotated `flaky: true`, and the
+        // autonomy ratchet is NEVER demoted.
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.gates.insert("g".into(), gate_def("unused"));
+        // A zero-backoff flaky rule matching the gate's failure evidence (rerun up to 2x).
+        cfg.workflow.defaults.failure_rules = vec![config::FailureRuleDef {
+            match_: config::MatchDef {
+                output_regex: Some("TRANSIENT_RACE".into()),
+                ..Default::default()
+            },
+            class: "flaky".into(),
+            limit: 2,
+            backoff: config::BackoffDef::default(),
+        }];
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                gates: vec!["g".into()],
+                // A graduated (silent) gate, so any demotion would be visible.
+                autonomy: "silent".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        // The gate FAILS its first run then PASSES on the rerun - within one attempt.
+        let flaky = FlakyGate {
+            fail_first: 1,
+            runs: AtomicU32::new(0),
+            evidence: "FAIL\nTRANSIENT_RACE flaked once".into(),
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &flaky,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "a flaky mixed rerun passes, so the unit integrates"
+        );
+        // No remediation: the worker was spawned exactly ONCE (a flaky pass is not a
+        // failure, so no re-implementation attempt is charged).
+        assert_eq!(
+            driver.prompts_for("worker").len(),
+            1,
+            "a flaky-rerun pass must not charge the unit a remediation attempt"
+        );
+        // The gate ran exactly twice within the one attempt: the initial fail + one
+        // passing rerun (the flaky rule's limit is 2, but the first passing rerun stops).
+        assert_eq!(
+            flaky.runs.load(Ordering::SeqCst),
+            2,
+            "the gate is rerun after its first failure, and the first passing rerun ends it"
+        );
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        // The inline GateVerdict is recorded as a PASS annotated flaky=true.
+        assert!(
+            events.iter().any(|e| {
+                e.type_ == contextgraph::TYPE_GATE_VERDICT
+                    && serde_json::from_slice::<serde_json::Value>(&e.data)
+                        .map(|v| v["pass"] == json!(true) && v["flaky"] == json!(true))
+                        .unwrap_or(false)
+            }),
+            "a mixed rerun records a pass annotated as a FlakyVerdict (flaky: true)"
+        );
+        // The pinned guarantee: a flaky pass-with-warning NEVER demotes the ratchet.
+        assert!(
+            !events.iter().any(|e| e.type_ == TYPE_GATE_DEMOTED),
+            "a flaky pass-with-warning must NEVER demote the autonomy ratchet"
+        );
+    }
+
+    #[test]
+    fn a_product_gate_failure_is_not_rerun_and_demotes_as_before() {
+        // Spec 10, unit 2 - the back-compat guard. Without an authored flaky rule, the
+        // shipped DEFAULT taxonomy classifies an ordinary gate failure as `product`: it
+        // is run ONCE per attempt (no rerun - today's behavior) and a graduated gate that
+        // fails demotes exactly as before this taxonomy.
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.gates.insert("g".into(), gate_def("unused"));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                gates: vec!["g".into()],
+                autonomy: "silent".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        // A gate that ALWAYS fails, with evidence matching no default infra pattern.
+        let always_fail = FlakyGate {
+            fail_first: u32::MAX,
+            runs: AtomicU32::new(0),
+            evidence: "FAIL\nassertion `left == right` failed: a real product defect".into(),
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &always_fail,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_ne!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "a persistently failing product gate must never integrate"
+        );
+        // No rerun: the gate ran EXACTLY once per attempt. The default remediation bound
+        // is 3, so a persistently-failing unit makes 3 attempts before escalating.
+        assert_eq!(
+            always_fail.runs.load(Ordering::SeqCst),
+            3,
+            "a product gate failure is never rerun: one run per attempt, no flaky retries"
+        );
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        // The graduated gate demoted on its first failure, exactly as before.
+        assert!(
+            events.iter().any(|e| e.type_ == TYPE_GATE_DEMOTED),
+            "a real product gate failure still demotes the ratchet"
+        );
+        // No verdict was ever annotated flaky.
+        assert!(
+            !events.iter().any(|e| {
+                e.type_ == contextgraph::TYPE_GATE_VERDICT
+                    && serde_json::from_slice::<serde_json::Value>(&e.data)
+                        .map(|v| v["flaky"] == json!(true))
+                        .unwrap_or(false)
+            }),
+            "a product failure is never annotated flaky"
+        );
+    }
+
+    #[test]
+    fn an_authored_infra_rule_with_limit_zero_at_an_inline_gate_holds_the_ratchet() {
+        // Spec 10, unit 2 - the INLINE leg of the SINGLE demote-vs-hold authority, the
+        // mirror of a_default_infra_fault_at_a_deferred_gate_does_not_demote. An AUTHORED
+        // `infra` rule whose `limit` is OMITTED deserializes to limit 0 (config.rs: limit is
+        // #[serde(default)] over u32, and validation never enforces limit >= 1 for a
+        // rerunnable class), so the fault lands on the no-rerun/zero-limit early-return in
+        // run_gate_with_taxonomy. That early-return USED to hardcode FailDemote, so it
+        // DEMOTED a graduated inline gate on the very fault the deferred site (and the
+        // rerun-exhaustion fall-through) HOLD - two demotion policies for one fault by gate
+        // SITE, the exact harm this unit ships to prevent. The early-return now folds through
+        // GateRatchet::for_persistent_failure, so an infra fault HOLDS the ratchet
+        // (FailNoDemote) at the inline gate exactly as it does at the deferred gate.
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.gates.insert("g".into(), gate_def("unused"));
+        // An authored infra rule matching the gate's failure, with `limit` OMITTED: it
+        // deserializes to the serde default 0 - the exact reachable config the reject cites.
+        cfg.workflow.defaults.failure_rules = vec![config::FailureRuleDef {
+            match_: config::MatchDef {
+                output_regex: Some("OUTAGE".into()),
+                ..Default::default()
+            },
+            class: "infra".into(),
+            // limit + backoff omitted: limit is the serde default 0 (a rerunnable class
+            // authored with no reruns), which routes to the early-return under test.
+            ..Default::default()
+        }];
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                gates: vec!["g".into()],
+                // A graduated (silent) gate, so a bug-path FailDemote would be VISIBLE.
+                autonomy: "silent".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        // The inline gate ALWAYS fails, with evidence the authored infra rule matches.
+        let always_fail = FlakyGate {
+            fail_first: u32::MAX,
+            runs: AtomicU32::new(0),
+            evidence: "FAIL\nOUTAGE the build host lost the network".into(),
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &always_fail,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        // A persistently failing gate never integrates (an infra HOLD still charges a
+        // remediation attempt - it just must not demote the ratchet).
+        assert_ne!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "a persistently failing gate must never integrate"
+        );
+        // limit 0: the gate is NEVER rerun - it ran EXACTLY once per attempt (the default
+        // remediation bound is 3), proving the no-rerun/zero-limit early-return path.
+        assert_eq!(
+            always_fail.runs.load(Ordering::SeqCst),
+            3,
+            "a zero-limit infra rule is never rerun: one run per attempt via the early-return"
+        );
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        // The pinned single-authority invariant: an infra fault at the INLINE gate must HOLD
+        // the ratchet, never demote it - identical to the deferred site. Before the fix this
+        // asserted false (the early-return hardcoded FailDemote -> a visible GateDemoted).
+        assert!(
+            !events.iter().any(|e| e.type_ == TYPE_GATE_DEMOTED),
+            "an authored infra fault at an inline gate must HOLD the ratchet (FailNoDemote), not demote it"
+        );
+    }
+
+    #[test]
+    fn an_inline_gate_red_across_every_rerun_holds_for_infra_and_demotes_for_flaky() {
+        // Spec 10, unit 2 - the INLINE rerun-EXHAUSTION fall-through (the `for n in 0..limit`
+        // loop completing red), closing sdet-u2-inline-rerun-exhaustion-still-uncovered. A
+        // rerunnable class with limit >= 1 that stays red across EVERY rerun is a
+        // believed-real failure whose demote-vs-hold folds through the SAME single authority
+        // as the zero-limit early-return and the deferred gate: an `infra` outage HOLDS the
+        // ratchet (FailNoDemote); a `flaky` failure DEMOTES it (FailDemote). This drives the
+        // real rerun loop (not the early-return) in BOTH directions, so a regression routing
+        // inline persistent-infra to FailDemote, or exhaustion to FailNoDemote for a real
+        // flaky failure, is caught.
+        let inline_exhaustion = |class: &str, regex: &str, evidence: &str| {
+            let mut cfg = Config::default();
+            cfg.agents.insert("worker".into(), agent("worker"));
+            cfg.workflow.gates.insert("g".into(), gate_def("unused"));
+            // A rerunnable rule with limit 2: the gate is rerun twice per attempt before the
+            // failure is believed, exercising the exhaustion fall-through (zero backoff, so
+            // no wall-clock wait).
+            cfg.workflow.defaults.failure_rules = vec![config::FailureRuleDef {
+                match_: config::MatchDef {
+                    output_regex: Some(regex.into()),
+                    ..Default::default()
+                },
+                class: class.into(),
+                limit: 2,
+                backoff: config::BackoffDef::default(),
+            }];
+            cfg.workflow.stages.insert(
+                "s".into(),
+                Stage {
+                    name: "s".into(),
+                    agent: "worker".into(),
+                    gates: vec!["g".into()],
+                    // Graduated (silent), so a demotion is visible.
+                    autonomy: "silent".into(),
+                    ..Default::default()
+                },
+            );
+            let st = Store::open(":memory:").unwrap();
+            let driver = Stub::new();
+            let always_fail = FlakyGate {
+                fail_first: u32::MAX,
+                runs: AtomicU32::new(0),
+                evidence: evidence.into(),
+            };
+            let deps = Deps {
+                store: &st,
+                driver: &driver,
+                gates: &always_fail,
+                repo: String::new(),
+                grounder: None,
+                graph: None,
+                criteria: Vec::new(),
+            };
+            run(&cfg, &deps).unwrap();
+            let runs = always_fail.runs.load(Ordering::SeqCst);
+            let demoted = st
+                .read_stream(STREAM, 0, Direction::Forward)
+                .unwrap()
+                .iter()
+                .any(|e| e.type_ == TYPE_GATE_DEMOTED);
+            (runs, demoted)
+        };
+
+        // (a) An infra rule, limit 2, gate always red: reruns exhaust, then HOLD. Each
+        // attempt runs the gate 3x (initial + 2 reruns); the default remediation bound is 3,
+        // so 9 runs prove the rerun loop actually ran, and no demote proves the hold.
+        let (infra_runs, infra_demoted) = inline_exhaustion(
+            "infra",
+            "OUTAGE",
+            "FAIL\nOUTAGE the build host lost the network",
+        );
+        assert_eq!(
+            infra_runs, 9,
+            "an infra rule with limit 2 reruns the gate twice per attempt before exhausting"
+        );
+        assert!(
+            !infra_demoted,
+            "a persistent infra fault that exhausts its reruns must HOLD the ratchet, not demote it"
+        );
+
+        // (b) A flaky rule, limit 2, gate always red: reruns exhaust, then DEMOTE (a
+        // believed-real failure), proving the fall-through is not a blanket hold.
+        let (flaky_runs, flaky_demoted) = inline_exhaustion(
+            "flaky",
+            "TRANSIENT_RACE",
+            "FAIL\nTRANSIENT_RACE never settled",
+        );
+        assert!(
+            flaky_runs >= 3,
+            "a flaky rule with limit 2 reruns the gate twice per attempt before believing the failure"
+        );
+        assert!(
+            flaky_demoted,
+            "a flaky gate that stays red across every rerun is a believed-real failure and demotes"
+        );
+    }
+
+    #[test]
     fn unit_evidence_is_populated_after_a_run() {
         // Item 4: every TYPE_UNIT_STATUS emit used to omit `evidence`, leaving the
         // ledger's Unit.evidence always empty. After a passing run the unit's projected
@@ -9784,6 +15466,7 @@ mod tests {
             lenses: vec!["lens".into()],
             adversary: String::new(),
             adjudicator: "adj".into(),
+            tiers: None,
         };
         cfg.workflow.stages.insert(
             "implement".into(),
@@ -10208,6 +15891,2003 @@ mod tests {
         }
     }
 
+    /// A single implement + review stage `s` (worker implements, one lens, one
+    /// adjudicator, `on_pass: merge`) over gate `g`, for the content-address cache tests.
+    fn content_cache_cfg() -> Config {
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert("g".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                gates: vec!["g".into()],
+                on_pass: "merge".into(),
+                review: crate::config::ReviewPanel {
+                    lenses: vec!["lens".into()],
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        cfg
+    }
+
+    /// The `#{attempt}` ordinal of a deterministic spawn id (`{unit}/{role}#{attempt}`,
+    /// possibly `~retry{n}`-suffixed), for a driver that must vary its behavior per attempt.
+    fn attempt_of(id: &str) -> u32 {
+        id.rsplit('#')
+            .next()
+            .and_then(|s| s.split('~').next())
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0)
+    }
+
+    /// A driver for the content-address cache tests: the IMPLEMENTER writes `work.rs` with
+    /// the content for its attempt (`contents[attempt]`, falling back to the last entry), so
+    /// a test controls whether attempt 1's tree is IDENTICAL to attempt 0's (a cache hit) or
+    /// CHANGED (a miss); the ADJUDICATOR rejects until `approve_at` then approves, driving
+    /// exactly one remediation loop; lenses narrate non-degenerately.
+    struct CacheDriver {
+        contents: Vec<String>,
+        approve_at: u32,
+    }
+    impl AgentDriver for CacheDriver {
+        fn spawn(
+            &self,
+            _a: &AgentDef,
+            _prompt: &str,
+            opts: &SpawnOpts,
+            _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+        ) -> Result<AgentResult, Error> {
+            let attempt = attempt_of(&opts.id);
+            if opts.id.contains("/implementer#") {
+                if !opts.dir.is_empty() {
+                    let content = self
+                        .contents
+                        .get(attempt as usize)
+                        .or_else(|| self.contents.last())
+                        .cloned()
+                        .unwrap_or_default();
+                    std::fs::write(Path::new(&opts.dir).join("work.rs"), content).unwrap();
+                }
+                return Ok(AgentResult::default());
+            }
+            if opts.id.contains("/adjudicator#") {
+                let out = if attempt >= self.approve_at {
+                    r#"{"verdict":"approve"}"#
+                } else {
+                    r#"{"verdict":"reject","issues":[]}"#
+                };
+                return Ok(AgentResult {
+                    output: out.into(),
+                    resolved_model: String::new(),
+                });
+            }
+            // A lens (or any other reviewer): its stdout is not a verdict, but must be
+            // non-degenerate so the Gap-18 respawn loop does not treat it as an infra fault.
+            Ok(AgentResult {
+                output: "reviewed the diff".into(),
+                resolved_model: String::new(),
+            })
+        }
+    }
+
+    /// A gate runner that FAILS the first call to `gate` then passes every later call, and
+    /// records every gate id it was asked to run - so a test can prove a red verdict is
+    /// never cache-answered (the same gate, over the same tree, must run a SECOND time).
+    struct FailFirstRunner {
+        gate: String,
+        calls: Mutex<Vec<String>>,
+    }
+    impl FailFirstRunner {
+        fn new(gate: &str) -> Self {
+            FailFirstRunner {
+                gate: gate.to_string(),
+                calls: Mutex::new(Vec::new()),
+            }
+        }
+        fn calls(&self) -> Vec<String> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+    impl gate::Runner for FailFirstRunner {
+        fn run(&self, g: &Gate, _dir: &str, _target: &str) -> gate::GateResult {
+            let mut calls = self.calls.lock().unwrap();
+            let prior = calls.iter().filter(|c| **c == g.id).count();
+            calls.push(g.id.clone());
+            let pass = !(g.id == self.gate && prior == 0);
+            gate::GateResult {
+                pass,
+                evidence: if pass { "PASS" } else { "FAIL: transient" }.into(),
+            }
+        }
+    }
+
+    /// Find the GateVerdict recorded under `s/gate:g#{attempt}` in the log.
+    fn gate_verdict_event(events: &[Event], attempt: u32) -> &Event {
+        let key = format!("s/gate:g#{attempt}");
+        events
+            .iter()
+            .find(|e| {
+                e.type_ == contextgraph::TYPE_GATE_VERDICT
+                    && e.meta.get(META_REPLAY_KEY) == Some(&key)
+            })
+            .unwrap_or_else(|| panic!("no gate verdict recorded for {key}"))
+    }
+
+    fn verdict_passed(e: &Event) -> bool {
+        serde_json::from_slice::<GateVerdictData>(&e.data)
+            .map(|v| v.pass)
+            .unwrap()
+    }
+
+    #[test]
+    fn a_matching_input_digest_answers_a_gate_as_a_logged_cache_hit_citing_the_prior_green() {
+        // spec 12, unit 1 (HIT): a gate whose (command, tree-sha) input digest matches a
+        // prior GREEN verdict is answered as a LOGGED cache-hit citing that green's position
+        // - the command is NOT re-run. The unit gates GREEN on attempt 0, its review
+        // REJECTS, and on attempt 1 the implementer reproduces the IDENTICAL tree. Attempt
+        // 1's gate has a fresh (unit, attempt) key so the exact-key replay misses, but the
+        // content cache holds attempt 0's green for the identical digest - so the gate is a
+        // cache-hit, not a second command run.
+        let repo = init_repo();
+        let cfg = content_cache_cfg();
+        let store = Store::open(":memory:").unwrap();
+        let runner = RecordingRunner::new(&[]);
+        let driver = CacheDriver {
+            contents: vec!["same\n".into()],
+            approve_at: 1,
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo.path().to_str().unwrap().to_string(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "the unit integrates after the attempt-1 approve"
+        );
+        assert_eq!(
+            runner.calls().iter().filter(|c| c.as_str() == "g").count(),
+            1,
+            "the gate command ran ONCE (attempt 0); attempt 1 was a content-addressed cache-hit, not a re-run: {:?}",
+            runner.calls()
+        );
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let v0 = gate_verdict_event(&events, 0);
+        let v1 = gate_verdict_event(&events, 1);
+        let d0 = v0
+            .meta
+            .get(META_INPUT_DIGEST)
+            .expect("attempt 0 carries a digest");
+        let d1 = v1
+            .meta
+            .get(META_INPUT_DIGEST)
+            .expect("attempt 1 carries a digest");
+        assert_eq!(
+            d0, d1,
+            "identical trees + command yield the same input digest"
+        );
+        assert!(
+            !v0.meta.contains_key(META_CACHE_HIT),
+            "attempt 0 is a fresh run, not a cache-hit"
+        );
+        assert_eq!(
+            v1.meta.get(META_CACHE_HIT),
+            Some(&v0.position.to_string()),
+            "the attempt-1 cache-hit cites attempt 0's green verdict position (provenance)"
+        );
+        assert!(
+            verdict_passed(v1),
+            "a cache-hit is recorded as a passing verdict"
+        );
+    }
+
+    #[test]
+    fn a_content_change_misses_the_cache_and_re_runs_the_gate() {
+        // spec 12, unit 1 (MISS on content change): when attempt 1 CHANGES the tree, its
+        // input digest differs from attempt 0's green, so the content cache MISSES and the
+        // gate RUNS AGAIN - a stale green never answers changed inputs.
+        let repo = init_repo();
+        let cfg = content_cache_cfg();
+        let store = Store::open(":memory:").unwrap();
+        let runner = RecordingRunner::new(&[]);
+        let driver = CacheDriver {
+            contents: vec!["one\n".into(), "two\n".into()],
+            approve_at: 1,
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo.path().to_str().unwrap().to_string(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(rs.units["s"].status, ledger::Status::Integrated);
+        assert_eq!(
+            runner.calls().iter().filter(|c| c.as_str() == "g").count(),
+            2,
+            "a changed tree misses the cache, so the gate ran on BOTH attempts: {:?}",
+            runner.calls()
+        );
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let v0 = gate_verdict_event(&events, 0);
+        let v1 = gate_verdict_event(&events, 1);
+        assert_ne!(
+            v0.meta.get(META_INPUT_DIGEST),
+            v1.meta.get(META_INPUT_DIGEST),
+            "the changed tree must produce a different input digest"
+        );
+        assert!(
+            !v1.meta.contains_key(META_CACHE_HIT),
+            "attempt 1 was a FRESH run over the changed tree, not a cache-hit"
+        );
+    }
+
+    #[test]
+    fn a_red_verdict_is_never_cache_answered_and_the_gate_re_runs() {
+        // spec 12, unit 1 (red never cached): a FAILING gate never enters the content cache,
+        // so a later gate over the SAME tree must RE-RUN rather than reuse the red. The gate
+        // fails on attempt 0 (red); remediation re-runs it on attempt 1 over the IDENTICAL
+        // tree, and the red does NOT answer it - the gate runs a second time (and passes).
+        let repo = init_repo();
+        let cfg = content_cache_cfg();
+        let store = Store::open(":memory:").unwrap();
+        let runner = FailFirstRunner::new("g");
+        let driver = CacheDriver {
+            contents: vec!["same\n".into()],
+            approve_at: 1,
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo.path().to_str().unwrap().to_string(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "attempt 1's re-run passes and the unit integrates"
+        );
+        assert_eq!(
+            runner.calls().iter().filter(|c| c.as_str() == "g").count(),
+            2,
+            "the red at attempt 0 is never cached, so the gate RE-RAN over the identical tree at attempt 1: {:?}",
+            runner.calls()
+        );
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let v0 = gate_verdict_event(&events, 0);
+        let v1 = gate_verdict_event(&events, 1);
+        assert!(!verdict_passed(v0), "attempt 0 is the red verdict");
+        assert!(verdict_passed(v1), "attempt 1's re-run passes");
+        let d0 = v0
+            .meta
+            .get(META_INPUT_DIGEST)
+            .expect("the red verdict still carries its content address");
+        let d1 = v1
+            .meta
+            .get(META_INPUT_DIGEST)
+            .expect("attempt 1 carries its content address");
+        assert_eq!(
+            d0, d1,
+            "both attempts address the SAME tree - yet the red did not answer attempt 1"
+        );
+        assert!(
+            !v1.meta.contains_key(META_CACHE_HIT),
+            "attempt 1 was a real re-run, never a cache-hit off the red"
+        );
+    }
+
+    /// A grounder that returns a CANNED blast radius per grounding query, so a staleness
+    /// test controls exactly which files each unit grounds to - independent of any real
+    /// tree - and can pin the intersection authority directly.
+    struct StubGrounder {
+        by_query: HashMap<String, Vec<String>>,
+    }
+    impl Grounder for StubGrounder {
+        fn ground(&self, query: &str, _k: usize) -> Vec<crate::grounder::Ref> {
+            self.by_query
+                .get(query)
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|file| crate::grounder::Ref {
+                    file,
+                    line: 0,
+                    text: String::new(),
+                })
+                .collect()
+        }
+    }
+
+    #[test]
+    fn staleness_flags_only_downstream_units_whose_radius_intersects_the_touched_files() {
+        // spec 12, unit 2 (the marking authority, in isolation): when a unit integrates
+        // touching a file set, EXACTLY the OTHER units whose grounded blast radius intersects
+        // those files are stale. Four-unit fixture proving each exclusion: `up` integrates
+        // touching `shared.rs`; `near` grounds ONTO `shared.rs` (stale); `far` grounds
+        // elsewhere (stands); a `plan` PRODUCER grounds onto `shared.rs` too yet is excluded
+        // (it emits a DAG, not a gate verdict to invalidate); and `up` never stales itself.
+        let mut stages: BTreeMap<String, Stage> = BTreeMap::new();
+        for (name, coverage) in [("up", "up"), ("near", "near"), ("far", "far")] {
+            stages.insert(
+                name.into(),
+                Stage {
+                    name: name.into(),
+                    coverage: coverage.into(),
+                    ..Default::default()
+                },
+            );
+        }
+        stages.insert(
+            "plan".into(),
+            Stage {
+                name: "plan".into(),
+                coverage: "plan".into(),
+                produces: "units".into(),
+                ..Default::default()
+            },
+        );
+        let grounder = StubGrounder {
+            by_query: HashMap::from([
+                ("up".to_string(), vec!["shared.rs".to_string()]),
+                (
+                    "near".to_string(),
+                    vec!["shared.rs".to_string(), "near.rs".to_string()],
+                ),
+                ("far".to_string(), vec!["far.rs".to_string()]),
+                ("plan".to_string(), vec!["shared.rs".to_string()]),
+            ]),
+        };
+        let touched = vec!["shared.rs".to_string()];
+        assert_eq!(
+            stale_downstream_units(&stages, Some(&grounder), "up", &touched),
+            vec!["near".to_string()],
+            "only `near` is stale: its radius intersects shared.rs; `up` never stales itself, \
+             `far` is disjoint, and the `plan` producer has no gate verdict to invalidate"
+        );
+        // No grounder => no computable radius => nothing staled (best-effort, exactly like
+        // `grounded_seed` returns an empty seed when no grounder is configured).
+        assert!(
+            stale_downstream_units(&stages, None, "up", &touched).is_empty(),
+            "with no grounder there is no blast radius to intersect, so nothing is staled"
+        );
+    }
+
+    #[test]
+    fn a_resume_reseeds_the_stale_set_from_the_prior_unitintegrated_marks() {
+        // spec 12, unit 2 (replay determinism): a stepwise resume recovers the STALE set
+        // purely from the log - every unit named in a prior UnitIntegrated META_STALE mark,
+        // comma-joined, empty segments ignored - so a stale unit keeps stopping-to-hit across
+        // the process boundary. A mark on a NON-UnitIntegrated event is ignored (only the
+        // integration event carries the invalidation).
+        let events = vec![
+            Event::new(ledger::TYPE_UNIT_INTEGRATED, br#"{"id":"alpha"}"#.to_vec())
+                .with_meta(META_STALE, "beta,delta"),
+            // A second integration adds another stale unit and tolerates a trailing empty.
+            Event::new(ledger::TYPE_UNIT_INTEGRATED, br#"{"id":"beta"}"#.to_vec())
+                .with_meta(META_STALE, "epsilon,"),
+            // An integration that staled nobody carries no mark.
+            Event::new(ledger::TYPE_UNIT_INTEGRATED, br#"{"id":"gamma"}"#.to_vec()),
+            // A stray mark on some OTHER event type must never seed the set.
+            Event::new(ledger::TYPE_UNIT_STATUS, br#"{"id":"zeta"}"#.to_vec())
+                .with_meta(META_STALE, "zeta"),
+        ];
+        let seeded = stale_units_from_log(&events);
+        let mut got: Vec<String> = seeded.into_iter().collect();
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                "beta".to_string(),
+                "delta".to_string(),
+                "epsilon".to_string()
+            ],
+            "the stale set is exactly the units named across the UnitIntegrated marks"
+        );
+    }
+
+    /// Drives the staleness end-to-end fixture. `alpha` (upstream) writes `shared.rs` (whose
+    /// content carries `beta`'s grounding keyword) and its adjudicator approves immediately,
+    /// so it integrates first. `beta`/`gamma` (downstream, needing alpha) each write their
+    /// OWN file with STABLE content and reject attempt 0 then approve attempt 1, so each
+    /// re-gates an IDENTICAL tree - a content cache-hit unless staleness refuses it.
+    struct StaleDriver;
+    impl AgentDriver for StaleDriver {
+        fn spawn(
+            &self,
+            _a: &AgentDef,
+            _prompt: &str,
+            opts: &SpawnOpts,
+            _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+        ) -> Result<AgentResult, Error> {
+            let unit = opts.id.split('/').next().unwrap_or_default();
+            let attempt = attempt_of(&opts.id);
+            if opts.id.contains("/implementer#") {
+                if !opts.dir.is_empty() {
+                    let (file, content) = match unit {
+                        // alpha's touched file, carrying beta's grounding keyword `widget`.
+                        "alpha" => ("shared.rs", "// widget helper\n"),
+                        // beta/gamma each write their OWN file with fixed content, so their
+                        // attempt-0 and attempt-1 trees are byte-identical (a hit candidate).
+                        "beta" => ("beta_work.rs", "fn beta() {}\n"),
+                        _ => ("gamma_work.rs", "fn gamma() {}\n"),
+                    };
+                    std::fs::write(Path::new(&opts.dir).join(file), content).unwrap();
+                }
+                return Ok(AgentResult::default());
+            }
+            if opts.id.contains("/adjudicator#") {
+                // alpha integrates on attempt 0; beta/gamma reject once then approve, so each
+                // reaches an attempt-1 re-gate over its identical tree.
+                let approve_at = if unit == "alpha" { 0 } else { 1 };
+                let out = if attempt >= approve_at {
+                    r#"{"verdict":"approve"}"#
+                } else {
+                    r#"{"verdict":"reject","issues":[]}"#
+                };
+                return Ok(AgentResult {
+                    output: out.into(),
+                    resolved_model: String::new(),
+                });
+            }
+            Ok(AgentResult {
+                output: "reviewed the diff".into(),
+                resolved_model: String::new(),
+            })
+        }
+    }
+
+    #[test]
+    fn integrating_a_unit_stales_the_intersecting_downstream_units_cached_verdict_not_the_rest() {
+        // spec 12, unit 2 (end-to-end, three-unit dependency fixture): integrating `alpha`
+        // (touching `shared.rs`) marks EXACTLY the downstream units whose blast radius
+        // intersects `shared.rs` stale - `beta` grounds onto it, `gamma` does not. The stale
+        // unit's cached verdicts STOP HITTING: `beta` re-gates its identical attempt-1 tree
+        // for real instead of taking the content cache-hit its attempt-0 green would answer,
+        // while the unaffected `gamma` still hits and its green STANDS.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        // `gamma` grounds onto a file present from the base (a grep grounder searches file
+        // CONTENT for the coverage word); `beta` grounds onto shared.rs, which alpha creates.
+        std::fs::write(repo.path().join("gamma_only.rs"), "// gizmo lives here\n").unwrap();
+        for args in [&["add", "-A"][..], &["commit", "-q", "-m", "fixture"][..]] {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo_path)
+                .args(args)
+                .output()
+                .unwrap();
+        }
+        let grep = crate::grounder::Grep {
+            root: repo_path.clone(),
+        };
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert("g".into(), gate_def("true"));
+        let panel = crate::config::ReviewPanel {
+            lenses: vec!["lens".into()],
+            adjudicator: "judge".into(),
+            ..Default::default()
+        };
+        // alpha upstream (its coverage grounds onto no touched file, so it stales nobody by
+        // its own name); beta grounds onto shared.rs (`widget`); gamma onto gamma_only.rs
+        // (`gizmo`). beta/gamma depend on alpha so they run only AFTER it integrated + marked.
+        let mk = |name: &str, coverage: &str, needs: Vec<String>| Stage {
+            name: name.into(),
+            agent: "worker".into(),
+            coverage: coverage.into(),
+            gates: vec!["g".into()],
+            on_pass: "merge".into(),
+            needs,
+            review: panel.clone(),
+            ..Default::default()
+        };
+        cfg.workflow
+            .stages
+            .insert("alpha".into(), mk("alpha", "alpha", vec![]));
+        cfg.workflow
+            .stages
+            .insert("beta".into(), mk("beta", "widget", vec!["alpha".into()]));
+        cfg.workflow
+            .stages
+            .insert("gamma".into(), mk("gamma", "gizmo", vec!["alpha".into()]));
+
+        let store = Store::open(":memory:").unwrap();
+        let driver = StaleDriver;
+        let runner = RecordingRunner::new(&[]);
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo_path.clone(),
+            grounder: Some(&grep),
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        for name in ["alpha", "beta", "gamma"] {
+            assert_eq!(
+                rs.units[name].status,
+                ledger::Status::Integrated,
+                "{name} must integrate"
+            );
+        }
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        // The `META_STALE` mark on a unit's UnitIntegrated event, if any.
+        let staled_by = |unit: &str| -> Option<String> {
+            events
+                .iter()
+                .find(|e| {
+                    e.type_ == ledger::TYPE_UNIT_INTEGRATED
+                        && serde_json::from_slice::<Value>(&e.data)
+                            .ok()
+                            .and_then(|v| v.get("id").and_then(Value::as_str).map(str::to_string))
+                            .as_deref()
+                            == Some(unit)
+                })
+                .and_then(|e| e.meta.get(META_STALE).cloned())
+        };
+        // (1) MARKING: alpha's integration stales EXACTLY beta - never gamma (disjoint
+        // radius) and never itself; beta/gamma touch no downstream radius, so they stale none.
+        assert_eq!(
+            staled_by("alpha").as_deref(),
+            Some("beta"),
+            "alpha's integration stales exactly beta, whose blast radius intersects shared.rs"
+        );
+        assert!(
+            staled_by("beta").is_none() && staled_by("gamma").is_none(),
+            "beta and gamma touch no downstream blast radius, so their integrations stale nobody"
+        );
+
+        // (2) CACHE STOPS HITTING vs GREEN STANDS: both re-gate an identical attempt-1 tree,
+        // but the stale beta re-runs (no cache-hit) while the unaffected gamma hits.
+        let verdict = |unit: &str, attempt: u32| -> &Event {
+            let key = format!("{unit}/gate:g#{attempt}");
+            events
+                .iter()
+                .find(|e| {
+                    e.type_ == contextgraph::TYPE_GATE_VERDICT
+                        && e.meta.get(META_REPLAY_KEY) == Some(&key)
+                })
+                .unwrap_or_else(|| panic!("no gate verdict recorded for {key}"))
+        };
+        assert!(
+            !verdict("beta", 1).meta.contains_key(META_CACHE_HIT),
+            "beta is stale, so its attempt-1 gate RE-RAN rather than reuse its attempt-0 green"
+        );
+        assert!(
+            verdict("gamma", 1).meta.contains_key(META_CACHE_HIT),
+            "gamma is unaffected, so its identical attempt-1 tree still cache-hits - green stands"
+        );
+    }
+
+    #[test]
+    fn glob_matches_supports_star_doublestar_and_literals() {
+        // `*` is one path segment; `**` spans segments (with an optional separator); `?` is one
+        // non-`/` char; a bare path is an exact match. These are the semantics gate `inputs:`
+        // globs are selected by (spec 12, unit 3).
+        assert!(glob_matches("src/conductor.rs", "src/conductor.rs"));
+        assert!(!glob_matches("src/conductor.rs", "src/gate.rs"));
+        assert!(glob_matches("src/*.rs", "src/gate.rs"));
+        assert!(
+            !glob_matches("src/*.rs", "src/contextgraph/mod.rs"),
+            "* does not cross /"
+        );
+        assert!(
+            glob_matches("src/**/*.rs", "src/contextgraph/mod.rs"),
+            "** crosses /"
+        );
+        assert!(glob_matches("src/**", "src/anything/deep.rs"));
+        assert!(
+            glob_matches("a/**/b.rs", "a/b.rs"),
+            "** matches zero directories"
+        );
+        assert!(glob_matches("a/**/b.rs", "a/x/y/b.rs"));
+        assert!(glob_matches("gate?.rs", "gate1.rs"));
+        assert!(!glob_matches("gate?.rs", "gate12.rs"));
+        // A regex metacharacter in the pattern is a literal, not a wildcard.
+        assert!(glob_matches("a.b", "a.b"));
+        assert!(!glob_matches("a.b", "axb"), ". is escaped to a literal dot");
+    }
+
+    #[test]
+    fn gate_intersects_radius_runs_unscoped_and_intersecting_gates_only() {
+        // A gate with NO inputs is unscoped and always runs; a scoped gate runs iff a glob hits a
+        // blast-radius file (spec 12, unit 3).
+        let radius = vec!["src/conductor.rs".to_string(), "src/gate.rs".to_string()];
+        assert!(
+            gate_intersects_radius(&[], &radius),
+            "an unscoped gate (no inputs) always runs"
+        );
+        assert!(gate_intersects_radius(
+            &["src/gate.rs".to_string()],
+            &radius
+        ));
+        assert!(gate_intersects_radius(
+            &["src/**/*.rs".to_string()],
+            &radius
+        ));
+        assert!(
+            !gate_intersects_radius(&["docs/**".to_string()], &radius),
+            "a gate whose inputs miss every blast-radius file is skipped"
+        );
+        assert!(
+            !gate_intersects_radius(&["src/gate.rs".to_string()], &[]),
+            "an empty blast radius intersects no scoped gate"
+        );
+    }
+
+    #[test]
+    fn blast_radius_narrows_the_inner_loop_and_the_integrate_step_runs_the_full_library() {
+        // spec 12, unit 3 (end-to-end): during the implement/remediate INNER LOOP only the gates
+        // whose `inputs:` intersect the unit's grounded blast radius run; the rest are SKIPPED and
+        // LOGGED (never silent). The INTEGRATE step then runs the EXHAUSTIVE library, so "done" is
+        // asserted against the full suite. Unit `s` grounds onto `src/near.rs`; gate `near`
+        // (`inputs: [src/near.rs]`) intersects and runs inline, while gate `far`
+        // (`inputs: [docs/far.md]`) does NOT - it is skipped inline and run only at integrate.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+
+        // A canned blast radius for unit `s`, so the intersection is deterministic regardless of
+        // what the implementer's stub actually writes.
+        let grounder = StubGrounder {
+            by_query: HashMap::from([("s".to_string(), vec!["src/near.rs".to_string()])]),
+        };
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        // Distinct commands so the two gates have DISTINCT content addresses (spec 12, unit 1):
+        // otherwise `far` would content-cache-hit `near`'s green over the identical tree and
+        // never actually run - the test would not prove the integrate step EXECUTES the gate the
+        // inner loop skipped.
+        cfg.workflow.gates.insert(
+            "near".into(),
+            gate_def_inputs("near-check", &["src/near.rs"]),
+        );
+        cfg.workflow
+            .gates
+            .insert("far".into(), gate_def_inputs("far-check", &["docs/far.md"]));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                coverage: "s".into(),
+                gates: vec!["near".into(), "far".into()],
+                on_pass: "merge".into(),
+                review: crate::config::ReviewPanel {
+                    lenses: vec!["lens".into()],
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let store = Store::open(":memory:").unwrap();
+        let driver = CacheDriver {
+            contents: vec!["work\n".into()],
+            approve_at: 0,
+        };
+        let runner = RecordingRunner::new(&[]);
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo_path,
+            grounder: Some(&grounder),
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "the unit integrates once its exhaustive suite is green"
+        );
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let find_key = |key: &str| -> Option<&Event> {
+            events.iter().find(|e| {
+                e.type_ == contextgraph::TYPE_GATE_VERDICT
+                    && e.meta.get(META_REPLAY_KEY) == Some(&key.to_string())
+            })
+        };
+
+        // (1) INNER-LOOP NARROWING + SKIP LOGGING: `far` (its inputs miss the blast radius) is
+        // SKIPPED in the inner loop and logged as a `skipped` GateVerdict carrying a reason;
+        // `near` (its inputs intersect) is NOT skipped.
+        let skip = find_key("s/gate-skip:far#0")
+            .expect("far is skipped-and-logged in the blast-radius-narrowed inner loop");
+        let skip_v: Value = serde_json::from_slice(&skip.data).unwrap();
+        assert_eq!(
+            skip_v["skipped"],
+            json!(true),
+            "the skip verdict is explicitly marked skipped"
+        );
+        assert!(
+            skip_v["evidence"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("skipped"),
+            "the skip carries its reason (never silent): {skip_v}"
+        );
+        assert!(
+            !skip.meta.contains_key(META_INPUT_DIGEST),
+            "a skip carries no content digest, so it never seeds the content cache"
+        );
+        assert!(
+            find_key("s/gate-skip:near#0").is_none(),
+            "near intersects the blast radius, so the inner loop does NOT skip it"
+        );
+
+        // (2) EXHAUSTIVE INTEGRATE: by integration the FULL library ran - `far`, skipped inline,
+        // has a REAL run verdict (distinct from its skip), and the runner executed both gates.
+        let far_run =
+            find_key("s/gate:far#0").expect("far RUNS at the exhaustive integrate step (R6)");
+        let far_run_v: Value = serde_json::from_slice(&far_run.data).unwrap();
+        assert!(
+            far_run_v.get("skipped").is_none(),
+            "the integrate-step run of far is a REAL verdict, not a skip: {far_run_v}"
+        );
+        assert!(
+            skip.position < far_run.position,
+            "far was SKIPPED in the inner loop first, then RUN at the integrate step"
+        );
+        assert!(
+            find_key("s/gate:near#0").is_some(),
+            "near ran inline in the inner loop"
+        );
+        let calls = runner.calls();
+        assert!(
+            calls.contains(&"near".to_string()) && calls.contains(&"far".to_string()),
+            "both gates ran by integrate time - the integrate step runs the full library: {calls:?}"
+        );
+        assert_eq!(
+            calls.iter().filter(|c| c.as_str() == "far").count(),
+            1,
+            "far's COMMAND ran exactly once - the exhaustive integrate step; the inner loop \
+             skipped it and unit 5's post-merge re-gate CACHE-HIT its green (a clean \
+             fast-forward changed nothing), so the runner was never invoked a second time: \
+             {calls:?}"
+        );
+
+        // (3) A skip is not a gate run: the operator metrics never count the `gate-skip:far#0`
+        // verdict as a `far` pass. `far` tallies TWO green verdicts - the exhaustive integrate
+        // RUN and unit 5's post-merge re-gate, which cache-hit the same green and is logged with
+        // provenance (spec 12 global: cache-hits are ALWAYS logged) - both real `pass:true`
+        // verdicts the metrics count, exactly like unit 1's cache-hits elsewhere. The SKIP is
+        // excluded (like the artifact-tagged integrate bookkeeping), which is what this asserts.
+        let m = crate::metrics::project(&events);
+        assert_eq!(
+            m.gates.get("far").map(|c| c.pass).unwrap_or_default(),
+            2,
+            "the metrics count far's REAL integrate run and its logged post-merge cache-hit, \
+             but NEVER its skip"
+        );
+    }
+
+    #[test]
+    fn a_gate_skipped_inline_but_red_at_the_exhaustive_integrate_door_blocks_the_merge() {
+        // spec 12, unit 3 - the R6 safety property (done-when line 25: "integrate ALWAYS runs
+        // the full library"). The e2e happy-path test proves the exhaustive integrate step RUNS
+        // a gate the inner loop skipped; this test proves the OTHER half - that a RED there
+        // BLOCKS the merge and feeds remediation. Without it the `if full.pass` guard at the
+        // integrate door is unpinned: a mutation that integrates regardless of the exhaustive
+        // result survives the whole suite, because no other test fails a gate at the integrate
+        // step. Here gate `far` (`inputs: [docs/far.md]`) misses unit `s`'s blast radius
+        // (`src/near.rs`), so the inner loop SKIPS it every attempt - it is red ONLY at the
+        // exhaustive integrate door, which is exactly where R6 must catch it.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+
+        let grounder = StubGrounder {
+            by_query: HashMap::from([("s".to_string(), vec!["src/near.rs".to_string()])]),
+        };
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        // Bound the remediation loop: attempt 0 fails the integrate door and RETRIES, attempt 1
+        // fails it again and escalates (`remediate` escalates when attempts >= max), so the unit
+        // terminates deterministically without integrating and the integrate door is exercised
+        // on a genuine retry.
+        cfg.workflow.defaults.max_retries = 2;
+        cfg.workflow.gates.insert(
+            "near".into(),
+            gate_def_inputs("near-check", &["src/near.rs"]),
+        );
+        cfg.workflow
+            .gates
+            .insert("far".into(), gate_def_inputs("far-check", &["docs/far.md"]));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                coverage: "s".into(),
+                gates: vec!["near".into(), "far".into()],
+                on_pass: "merge".into(),
+                review: crate::config::ReviewPanel {
+                    lenses: vec!["lens".into()],
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let store = Store::open(":memory:").unwrap();
+        let driver = CacheDriver {
+            contents: vec!["work\n".into()],
+            approve_at: 0,
+        };
+        // `far` FAILS every run; `near` (and everything else) passes. So the inner loop is
+        // GREEN (it skips far), the adjudicator APPROVES, and the ONLY thing standing between
+        // the unit and a merge is the exhaustive integrate door running the skipped `far`.
+        let runner = RecordingRunner::new(&["far"]);
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo_path,
+            grounder: Some(&grounder),
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        // (1) THE MERGE IS BLOCKED: the exhaustive integrate door went red, so the unit never
+        // integrates - it exhausts its retries and escalates. A mutation that integrated on a
+        // red exhaustive suite would land the unit as Integrated here.
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Escalated,
+            "a red exhaustive integrate door must BLOCK the merge, not land the unit"
+        );
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.type_ == ledger::TYPE_UNIT_INTEGRATED),
+            "no UnitIntegrated may be emitted - a tree that fails the full suite never lands"
+        );
+
+        let find_key = |key: &str| -> Option<&Event> {
+            events.iter().find(|e| {
+                e.type_ == contextgraph::TYPE_GATE_VERDICT
+                    && e.meta.get(META_REPLAY_KEY) == Some(&key.to_string())
+            })
+        };
+
+        // (2) IT WAS THE SKIPPED GATE, RUN AT INTEGRATE, THAT BLOCKED IT: `far` is skipped in
+        // the inner loop (only a skip verdict inline) yet has a REAL, RED run verdict from the
+        // exhaustive integrate pass. This is the whole point of R6 - a gate the narrowed inner
+        // loop never ran still gets asserted before the unit can land.
+        assert!(
+            find_key("s/gate-skip:far#0").is_some(),
+            "far is skipped in the blast-radius-narrowed inner loop"
+        );
+        let far_run =
+            find_key("s/gate:far#0").expect("far RUNS at the exhaustive integrate door (R6)");
+        let far_run_v: Value = serde_json::from_slice(&far_run.data).unwrap();
+        assert_eq!(
+            far_run_v["pass"],
+            json!(false),
+            "the integrate-door run of far is REAL and RED - its failure is what blocks the merge"
+        );
+        assert!(
+            far_run_v.get("skipped").is_none(),
+            "the integrate-door run of far is a real verdict, not a skip: {far_run_v}"
+        );
+
+        // (3) THE RED FED REMEDIATION: the unit re-entered its lifecycle (a second attempt ran
+        // far at the integrate door again) before escalating - the failure is not swallowed, it
+        // drives another attempt exactly like an inner-loop gate failure.
+        let far_runs = runner
+            .calls()
+            .iter()
+            .filter(|c| c.as_str() == "far")
+            .count();
+        assert!(
+            far_runs >= 2,
+            "the integrate-door red must feed remediation: far re-runs at the door on the retry \
+             (saw {far_runs} far runs)"
+        );
+    }
+
+    #[test]
+    fn verdict_compensates_names_a_prior_unit_independent_of_approval() {
+        // spec 12, unit 4: the `compensate` field on the last JSON verdict line naming a
+        // prior integrated unit is parsed INDEPENDENTLY of approve/reject - a review may
+        // approve its own unit yet still name an integrated unit as the defect source.
+        assert_eq!(
+            verdict_compensates(r#"{"verdict":"approve","compensate":"unit-a"}"#).as_deref(),
+            Some("unit-a"),
+            "an approving verdict can still name a prior unit for compensation"
+        );
+        assert_eq!(
+            verdict_compensates(r#"{"verdict":"reject","compensate":"unit-x"}"#).as_deref(),
+            Some("unit-x"),
+            "a rejecting verdict can name a prior unit for compensation too"
+        );
+        // The LAST json line with a `compensate` field wins, mirroring verdict_approves.
+        assert_eq!(
+            verdict_compensates(
+                "{\"compensate\":\"first\"}\n{\"verdict\":\"approve\",\"compensate\":\"last\"}"
+            )
+            .as_deref(),
+            Some("last")
+        );
+        // No field, empty field, or non-JSON is simply no compensation - never a silent one.
+        assert_eq!(verdict_compensates(r#"{"verdict":"approve"}"#), None);
+        assert_eq!(
+            verdict_compensates(r#"{"verdict":"reject","compensate":"  "}"#),
+            None
+        );
+        assert_eq!(verdict_compensates("no json here"), None);
+    }
+
+    /// A driver for the compensation e2e test (spec 12, unit 4): each unit's IMPLEMENTER
+    /// writes its OWN file (so the two units touch disjoint paths and revert cleanly), and
+    /// the driver records every implementer prompt per unit so the test can prove the
+    /// RE-ENTERED unit was prompted with the contradiction. `unit-a`'s adjudicator always
+    /// approves; `unit-b`'s adjudicator approves ITS OWN work but names `unit-a` as the
+    /// defect source (`compensate`) - the seeded two-unit contradiction (a later unit's work
+    /// proves a prior integrated unit wrong).
+    struct CompDriver {
+        impl_prompts: Mutex<HashMap<String, Vec<String>>>,
+    }
+    impl AgentDriver for CompDriver {
+        fn spawn(
+            &self,
+            _a: &AgentDef,
+            prompt: &str,
+            opts: &SpawnOpts,
+            _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+        ) -> Result<AgentResult, Error> {
+            let unit = opts.id.split('/').next().unwrap_or_default();
+            if opts.id.contains("/implementer#") {
+                self.impl_prompts
+                    .lock()
+                    .unwrap()
+                    .entry(unit.to_string())
+                    .or_default()
+                    .push(prompt.to_string());
+                if !opts.dir.is_empty() {
+                    let (file, content) = match unit {
+                        "unit-a" => ("a.rs", "fn a() {}\n"),
+                        _ => ("b.rs", "fn b() {}\n"),
+                    };
+                    std::fs::write(Path::new(&opts.dir).join(file), content).unwrap();
+                }
+                return Ok(AgentResult::default());
+            }
+            if opts.id.contains("/adjudicator#") {
+                // unit-b's own work is fine (approve), but its work PROVES unit-a wrong, so it
+                // names unit-a for compensation. unit-a's own re-review approves cleanly (no
+                // further compensation), so the run converges.
+                let out = if unit == "unit-b" {
+                    r#"{"verdict":"approve","compensate":"unit-a"}"#
+                } else {
+                    r#"{"verdict":"approve"}"#
+                };
+                return Ok(AgentResult {
+                    output: out.into(),
+                    resolved_model: String::new(),
+                });
+            }
+            Ok(AgentResult {
+                output: "reviewed the diff".into(),
+                resolved_model: String::new(),
+            })
+        }
+    }
+
+    #[test]
+    fn a_contradiction_compensates_reverts_and_re_enters_the_integrated_unit() {
+        // spec 12, unit 4 (end-to-end, seeded two-unit contradiction - done-when line 26):
+        // `unit-a` integrates; then `unit-b`'s review proves it wrong (its adjudicator names
+        // unit-a as the defect source). The conductor RECORDS the compensation (as
+        // `UnitCompensated` metadata on the existing `UnitFailed` vocabulary), REVERTS unit-a's
+        // integrating commit on the run branch, and RE-ENTERS unit-a into remediation with the
+        // contradiction as feedback - whereupon unit-a re-implements (now PROMPTED with the
+        // contradiction) and re-integrates, so the run converges.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert("g".into(), gate_def("true"));
+        let panel = crate::config::ReviewPanel {
+            lenses: vec!["lens".into()],
+            adjudicator: "judge".into(),
+            ..Default::default()
+        };
+        let mk = |name: &str, needs: Vec<String>| Stage {
+            name: name.into(),
+            agent: "worker".into(),
+            gates: vec!["g".into()],
+            on_pass: "merge".into(),
+            needs,
+            review: panel.clone(),
+            ..Default::default()
+        };
+        // unit-b needs unit-a, so unit-a integrates FIRST and then unit-b's review can prove
+        // that already-integrated unit-a wrong.
+        cfg.workflow
+            .stages
+            .insert("unit-a".into(), mk("unit-a", vec![]));
+        cfg.workflow
+            .stages
+            .insert("unit-b".into(), mk("unit-b", vec!["unit-a".into()]));
+
+        let store = Store::open(":memory:").unwrap();
+        let driver = CompDriver {
+            impl_prompts: Mutex::new(HashMap::new()),
+        };
+        let runner = RecordingRunner::new(&[]);
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        // CONVERGENCE: unit-a re-integrated after its rollback; unit-b integrated.
+        assert_eq!(
+            rs.units["unit-a"].status,
+            ledger::Status::Integrated,
+            "unit-a re-integrates after its compensation rollback"
+        );
+        assert_eq!(
+            rs.units["unit-b"].status,
+            ledger::Status::Integrated,
+            "unit-b integrates"
+        );
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let unit_of = |e: &Event| -> Option<String> {
+            serde_json::from_slice::<Value>(&e.data)
+                .ok()
+                .and_then(|v| v.get("id").and_then(Value::as_str).map(str::to_string))
+        };
+        // unit-a's FIRST integrating commit - the one the contradiction condemns.
+        let first_a_commit = events
+            .iter()
+            .find(|e| {
+                e.type_ == ledger::TYPE_UNIT_INTEGRATED && unit_of(e).as_deref() == Some("unit-a")
+            })
+            .and_then(|e| serde_json::from_slice::<Value>(&e.data).ok())
+            .and_then(|v| v.get("commit").and_then(Value::as_str).map(str::to_string))
+            .filter(|c| !c.is_empty())
+            .expect("unit-a integrated with a real commit");
+
+        // (1) COMPENSATION RECORDED on existing vocabulary: a `UnitFailed` for unit-a carries
+        // the reverted commit in META_COMPENSATED - the `UnitCompensated` record, no new event
+        // type - naming exactly unit-a's first integrating commit for provenance.
+        let compensated = events
+            .iter()
+            .find(|e| {
+                e.type_ == ledger::TYPE_UNIT_FAILED
+                    && unit_of(e).as_deref() == Some("unit-a")
+                    && e.meta.contains_key(META_COMPENSATED)
+            })
+            .expect("a UnitCompensated (UnitFailed + META_COMPENSATED) records unit-a's rollback");
+        assert_eq!(
+            compensated.meta.get(META_COMPENSATED).map(String::as_str),
+            Some(first_a_commit.as_str()),
+            "the compensation names unit-a's reverted integrating commit"
+        );
+        assert!(
+            compensated
+                .meta
+                .get(META_CONTRADICTION)
+                .is_some_and(|r| r.contains("compensate")),
+            "the compensation carries the contradiction reason for provenance and feedback"
+        );
+
+        // (2) REVERTED ON THE RUN BRANCH, in an EVENTED (not history-rewriting) rollback: the
+        // run branch carries a compensation revert commit for unit-a.
+        let log = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo_path)
+            .args(["log", "--pretty=%s"])
+            .output()
+            .unwrap();
+        let log = String::from_utf8_lossy(&log.stdout);
+        assert!(
+            log.lines().any(|l| l.contains("compensate unit-a")),
+            "the run branch carries an evented revert of unit-a's integrating commit; log:\n{log}"
+        );
+
+        // (3) RE-ENTERED INTO REMEDIATION WITH THE CONTRADICTION AS FEEDBACK: unit-a's
+        // implementer ran a SECOND time, and its re-entry prompt names the reverted commit as
+        // the contradiction to fix - not a blind restart.
+        let prompts = driver
+            .impl_prompts
+            .lock()
+            .unwrap()
+            .get("unit-a")
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(
+            prompts.len(),
+            2,
+            "unit-a implements once, then RE-implements after being compensated"
+        );
+        assert!(
+            prompts[1].contains("your integrating commit was REVERTED"),
+            "the re-entered unit-a is prompted with the contradiction as feedback; prompt:\n{}",
+            prompts[1]
+        );
+
+        // (4) THE TRIGGER IS DURABLE (spec 12, unit 4): the compensation is queued via an
+        // evented, fold-neutral UnitStatus mark (META_COMPENSATE_TARGET) the MOMENT the review
+        // names unit-a - not held only in the in-memory queue - so a crash before the drain
+        // does not drop the rollback. Exactly one such mark names unit-a, and it is BALANCED by
+        // the drained UnitFailed, so a resume re-derives NOTHING still pending.
+        let queued_marks: Vec<&Event> = events
+            .iter()
+            .filter(|e| e.meta.get(META_COMPENSATE_TARGET).map(String::as_str) == Some("unit-a"))
+            .collect();
+        assert_eq!(
+            queued_marks.len(),
+            1,
+            "the compensation trigger records exactly one durable compensation-queued mark for unit-a"
+        );
+        assert_eq!(
+            queued_marks[0].type_,
+            ledger::TYPE_UNIT_STATUS,
+            "the durable trigger rides the existing UnitStatus vocabulary (no new event type)"
+        );
+        assert!(
+            pending_compensations_from_log(&events).is_empty(),
+            "the in-run drain balances the queued mark, so a resume re-derives no pending compensation"
+        );
+    }
+
+    #[test]
+    fn pending_compensations_from_log_re_derives_only_undrained_marks() {
+        // spec 12, unit 4 (crash-resume recovery): a durable compensation-queued mark
+        // (META_COMPENSATE_TARGET) that has NOT been drained (no matching UnitFailed +
+        // META_COMPENSATED for the target) is re-derived as PENDING so a resume re-drives the
+        // reverse gear; a mark already balanced by its drain is NOT re-derived (idempotent over
+        // the log). This pins the crash-window recovery the ephemeral in-memory queue missed.
+        let queued = |target: &str, reason: &str| {
+            Event::new(
+                ledger::TYPE_UNIT_STATUS,
+                serde_json::to_vec(&json!({"id": target, "status": STATUS_COMPENSATION_QUEUED}))
+                    .unwrap(),
+            )
+            .with_meta(META_COMPENSATE_TARGET, target)
+            .with_meta(META_CONTRADICTION, reason)
+        };
+        let drained = |target: &str| {
+            Event::new(
+                ledger::TYPE_UNIT_FAILED,
+                serde_json::to_vec(&json!({"id": target, "attempts": 1})).unwrap(),
+            )
+            .with_meta(META_COMPENSATED, "deadbeef")
+            .with_meta(META_CONTRADICTION, "x")
+        };
+
+        // A queued-but-never-drained mark (the crash window) is pending, carrying its reason.
+        let pending = pending_compensations_from_log(&[queued("unit-a", "the contradiction")]);
+        assert_eq!(
+            pending.len(),
+            1,
+            "an undrained queue mark is re-derived as pending"
+        );
+        assert_eq!(pending[0].target, "unit-a");
+        assert_eq!(
+            pending[0].reason, "the contradiction",
+            "the re-derived compensation carries the recorded contradiction for feedback"
+        );
+
+        // A mark BALANCED by its drain is not re-derived - a completed compensation never
+        // re-runs on resume.
+        assert!(
+            pending_compensations_from_log(&[queued("unit-a", "r"), drained("unit-a")]).is_empty(),
+            "a drained compensation is not re-queued"
+        );
+
+        // Two cycles for one target: mark, drain, re-integrate, mark again, crash before the
+        // second drain -> exactly ONE (the second) is pending, the first stays consumed.
+        let two_cycles = pending_compensations_from_log(&[
+            queued("unit-a", "first"),
+            drained("unit-a"),
+            queued("unit-a", "second"),
+        ]);
+        assert_eq!(
+            two_cycles.len(),
+            1,
+            "only the unconsumed second cycle is pending"
+        );
+        assert_eq!(two_cycles[0].reason, "second");
+
+        // No marks at all -> nothing pending (a fresh run / a run with no compensation).
+        assert!(pending_compensations_from_log(&[drained("unit-a")]).is_empty());
+    }
+
+    #[test]
+    fn a_durable_compensation_queued_mark_is_fold_neutral_on_the_target() {
+        // spec 12, unit 4: the compensation-queued mark must NOT fold the target out of
+        // `Integrated` - it must stay integrated until the drain actually reverts it, else a
+        // resume would re-schedule it BEFORE the revert and re-implement on the un-reverted
+        // branch. Guards the fold-neutrality of STATUS_COMPENSATION_QUEUED against a future
+        // Status variant silently capturing it.
+        let mut state = ledger::RunState::default();
+        state
+            .apply(&Event::new(
+                ledger::TYPE_UNIT_INTEGRATED,
+                serde_json::to_vec(&json!({"id": "unit-a", "commit": "c0"})).unwrap(),
+            ))
+            .unwrap();
+        assert_eq!(state.units["unit-a"].status, ledger::Status::Integrated);
+        state
+            .apply(
+                &Event::new(
+                    ledger::TYPE_UNIT_STATUS,
+                    serde_json::to_vec(
+                        &json!({"id": "unit-a", "status": STATUS_COMPENSATION_QUEUED}),
+                    )
+                    .unwrap(),
+                )
+                .with_meta(META_COMPENSATE_TARGET, "unit-a"),
+            )
+            .unwrap();
+        assert_eq!(
+            state.units["unit-a"].status,
+            ledger::Status::Integrated,
+            "a compensation-queued mark leaves the target Integrated (fold-neutral) until the drain reverts it"
+        );
+    }
+
+    /// A driver for the reverse-gear re-gate test (spec 12, unit 4): `unit-a`'s implementer
+    /// writes DIFFERENT content per attempt (so its re-implemented tree is not byte-identical
+    /// to the condemned one), `unit-b` condemns `unit-a`, and `unit-a`'s own review approves
+    /// each time so the run converges after one rollback.
+    struct CompRegateDriver;
+    impl AgentDriver for CompRegateDriver {
+        fn spawn(
+            &self,
+            _a: &AgentDef,
+            _prompt: &str,
+            opts: &SpawnOpts,
+            _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+        ) -> Result<AgentResult, Error> {
+            let unit = opts.id.split('/').next().unwrap_or_default();
+            let attempt = attempt_of(&opts.id);
+            if opts.id.contains("/implementer#") {
+                if !opts.dir.is_empty() {
+                    let (file, content) = match unit {
+                        // A distinct body per attempt: the re-implementation (attempt 1) is a
+                        // genuinely different tree from the condemned attempt-0 one.
+                        "unit-a" if attempt == 0 => ("a.rs", "fn a_v0() {}\n"),
+                        "unit-a" => ("a.rs", "fn a_v1() {}\n"),
+                        _ => ("b.rs", "fn b() {}\n"),
+                    };
+                    std::fs::write(Path::new(&opts.dir).join(file), content).unwrap();
+                }
+                return Ok(AgentResult::default());
+            }
+            if opts.id.contains("/adjudicator#") {
+                let out = if unit == "unit-b" {
+                    r#"{"verdict":"approve","compensate":"unit-a"}"#
+                } else {
+                    r#"{"verdict":"approve"}"#
+                };
+                return Ok(AgentResult {
+                    output: out.into(),
+                    resolved_model: String::new(),
+                });
+            }
+            Ok(AgentResult {
+                output: "reviewed the diff".into(),
+                resolved_model: String::new(),
+            })
+        }
+    }
+
+    #[test]
+    fn a_compensated_unit_re_gates_its_re_implemented_tree_not_the_condemned_verdict() {
+        // spec 12, unit 4 (the reverse gear's RE-VERIFY half): a compensated unit re-enters at
+        // an ADVANCED attempt, so its re-implemented tree runs the gate under a FRESH
+        // (unit, attempt, gate) key instead of REPLAYING the condemned pass's verdict. Without
+        // the attempt advance the unit re-enters at attempt 0 and the content-BLIND exact-key
+        // replay answers the gate from the condemned green - the gate COMMAND never runs on the
+        // re-implemented code (a live false green). Proven by the gate-run count: unit-a's gate
+        // `ga` must run TWICE (once per implemented tree), not once.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        // Distinct gates per unit so a gate-run count is attributable to one unit.
+        cfg.workflow.gates.insert("ga".into(), gate_def("true"));
+        cfg.workflow.gates.insert("gb".into(), gate_def("true"));
+        let panel = crate::config::ReviewPanel {
+            lenses: vec!["lens".into()],
+            adjudicator: "judge".into(),
+            ..Default::default()
+        };
+        let mk = |name: &str, gate: &str, needs: Vec<String>| Stage {
+            name: name.into(),
+            agent: "worker".into(),
+            gates: vec![gate.into()],
+            on_pass: "merge".into(),
+            needs,
+            review: panel.clone(),
+            ..Default::default()
+        };
+        cfg.workflow
+            .stages
+            .insert("unit-a".into(), mk("unit-a", "ga", vec![]));
+        cfg.workflow
+            .stages
+            .insert("unit-b".into(), mk("unit-b", "gb", vec!["unit-a".into()]));
+
+        let store = Store::open(":memory:").unwrap();
+        let driver = CompRegateDriver;
+        let runner = RecordingRunner::new(&[]);
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        assert_eq!(
+            rs.units["unit-a"].status,
+            ledger::Status::Integrated,
+            "unit-a re-integrates its re-implemented tree after the rollback"
+        );
+        assert_eq!(rs.units["unit-b"].status, ledger::Status::Integrated);
+
+        // The crux: `ga` RAN on BOTH of unit-a's trees. Under the stale-replay bug it runs once
+        // (attempt 0) and the re-implemented tree replays that green without re-running.
+        let ga_runs = runner.calls().into_iter().filter(|c| c == "ga").count();
+        assert_eq!(
+            ga_runs, 2,
+            "unit-a's gate must RE-RUN on the re-implemented tree, not replay the condemned attempt-0 verdict; ga runs={ga_runs}"
+        );
+
+        // And the re-run verdict is recorded under the ADVANCED attempt key, a real gate RUN
+        // (no cache-hit / skip citation) on the re-implemented tree.
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let regate = events.iter().any(|e| {
+            e.meta.get(META_REPLAY_KEY).map(String::as_str) == Some("unit-a/gate:ga#1")
+                && !e.meta.contains_key(META_CACHE_HIT)
+                && serde_json::from_slice::<Value>(&e.data)
+                    .ok()
+                    .and_then(|v| v.get("skipped").and_then(Value::as_bool))
+                    != Some(true)
+        });
+        assert!(
+            regate,
+            "the re-implemented tree records a fresh gate:ga#1 RUN verdict (not a replay/cache-hit/skip)"
+        );
+    }
+
+    /// A driver for the reverse-gear re-gate test on the REMEDIATED lifecycle (spec 12,
+    /// unit 4): unlike [`CompRegateDriver`] (which lets `unit-a` approve its FIRST pass),
+    /// `unit-a`'s adjudicator here REJECTS attempt 0 and only approves attempt 1, so `unit-a`
+    /// integrates having ALREADY recorded a green gate verdict at attempt 1. When `unit-b`
+    /// then condemns it, the reverse gear must clear that attempt-1 key. Each `unit-a` attempt
+    /// writes DISTINCT content (`fn a_v{attempt}`) so every one of its trees is a genuinely
+    /// different content address; `unit-b` approves its own work but names `unit-a`.
+    struct CompRegateRemediatedDriver;
+    impl AgentDriver for CompRegateRemediatedDriver {
+        fn spawn(
+            &self,
+            _a: &AgentDef,
+            _prompt: &str,
+            opts: &SpawnOpts,
+            _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+        ) -> Result<AgentResult, Error> {
+            let unit = opts.id.split('/').next().unwrap_or_default();
+            let attempt = attempt_of(&opts.id);
+            if opts.id.contains("/implementer#") {
+                if !opts.dir.is_empty() {
+                    let (file, content) = match unit {
+                        // A distinct body per attempt so no two of unit-a's trees are
+                        // byte-identical - each gate run is a distinct content address, so a
+                        // fresh key genuinely re-runs the command rather than content-cache
+                        // hitting an earlier tree's green.
+                        "unit-a" => ("a.rs", format!("fn a_v{attempt}() {{}}\n")),
+                        _ => ("b.rs", "fn b() {}\n".to_string()),
+                    };
+                    std::fs::write(Path::new(&opts.dir).join(file), content).unwrap();
+                }
+                return Ok(AgentResult::default());
+            }
+            if opts.id.contains("/adjudicator#") {
+                let out = if unit == "unit-b" {
+                    // unit-b approves its own work but proves unit-a wrong (names it).
+                    r#"{"verdict":"approve","compensate":"unit-a"}"#
+                } else if attempt == 0 {
+                    // unit-a's FIRST pass is rejected: it consumes attempt 0 and re-implements,
+                    // so it records its GREEN gate verdict at attempt 1 when it approves. This
+                    // is the attempt key the reverse gear must NOT collide with. Its re-review
+                    // after the rollback (attempt >= 1) approves cleanly so the run converges.
+                    r#"{"verdict":"reject"}"#
+                } else {
+                    r#"{"verdict":"approve"}"#
+                };
+                return Ok(AgentResult {
+                    output: out.into(),
+                    resolved_model: String::new(),
+                });
+            }
+            Ok(AgentResult {
+                output: "reviewed the diff".into(),
+                resolved_model: String::new(),
+            })
+        }
+    }
+
+    #[test]
+    fn a_compensated_unit_that_remediated_before_integrating_re_gates_at_a_fresh_key() {
+        // spec 12, unit 4 (the reverse gear's RE-VERIFY half on the REMEDIATED lifecycle - the
+        // blocking regression sdet-s12u4-reentry-collides-with-prior-lifecycle-attempt-key /
+        // adv-s12u4-collision-proven-by-run): unit-a REJECTS its own attempt 0 and only approves
+        // on attempt 1, so it integrates having ALREADY recorded a green gate verdict at
+        // attempt 1. When unit-b then condemns it, the reverse gear must re-enter it ONE PAST
+        // its HIGH-WATER attempt (attempt 2) - NOT at attempt 1 where its OWN prior remediation
+        // already recorded a green. Advancing only compensation-count+1 over the run-start
+        // prior_attempts snapshot (=0 in-run) lands it back on attempt 1, where the
+        // content-BLIND exact-key replay answers the re-implemented tree from the condemned
+        // green and the gate COMMAND never runs (a live false green). Proven by the gate-run
+        // count: unit-a's gate `ga` must run THREE times (attempt 0, the attempt-1
+        // re-implementation, and the attempt-2 reverse-gear re-implementation), not two.
+        //
+        // The zero-remediation sibling (a_compensated_unit_re_gates_its_re_implemented_tree_...)
+        // only drives unit-a approving its first pass, so a fixed +1 advance passes it; this
+        // case is the mutation-distinguishing one it missed.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        // Distinct gates per unit so a gate-run count is attributable to one unit.
+        cfg.workflow.gates.insert("ga".into(), gate_def("true"));
+        cfg.workflow.gates.insert("gb".into(), gate_def("true"));
+        let panel = crate::config::ReviewPanel {
+            lenses: vec!["lens".into()],
+            adjudicator: "judge".into(),
+            ..Default::default()
+        };
+        let mk = |name: &str, gate: &str, needs: Vec<String>| Stage {
+            name: name.into(),
+            agent: "worker".into(),
+            gates: vec![gate.into()],
+            on_pass: "merge".into(),
+            needs,
+            review: panel.clone(),
+            ..Default::default()
+        };
+        cfg.workflow
+            .stages
+            .insert("unit-a".into(), mk("unit-a", "ga", vec![]));
+        cfg.workflow
+            .stages
+            .insert("unit-b".into(), mk("unit-b", "gb", vec!["unit-a".into()]));
+
+        let store = Store::open(":memory:").unwrap();
+        let driver = CompRegateRemediatedDriver;
+        let runner = RecordingRunner::new(&[]);
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        assert_eq!(
+            rs.units["unit-a"].status,
+            ledger::Status::Integrated,
+            "unit-a re-integrates its re-implemented tree after the rollback"
+        );
+        assert_eq!(rs.units["unit-b"].status, ledger::Status::Integrated);
+
+        // The crux: `ga` RAN on ALL THREE of unit-a's trees (attempt 0, the attempt-1
+        // re-implementation, and the reverse-gear attempt-2 re-implementation). Under the
+        // stale-key collision it runs only twice - the reverse-gear re-entry lands on attempt 1
+        // and replays unit-a's OWN prior-remediation green without re-running the command.
+        let ga_runs = runner.calls().into_iter().filter(|c| c == "ga").count();
+        assert_eq!(
+            ga_runs, 3,
+            "unit-a's gate must RE-RUN on the re-implemented tree at a FRESH attempt key, not \
+             replay the attempt-1 green its own prior remediation recorded; ga runs={ga_runs}"
+        );
+
+        // And the reverse-gear verdict is recorded under the HIGH-WATER-advanced attempt key
+        // (`#2`, one past the attempt-1 green), a real gate RUN (no cache-hit / skip citation).
+        // A `#1` re-run here would be the collision: that key was already green from unit-a's
+        // own remediation.
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let regate = events.iter().any(|e| {
+            e.meta.get(META_REPLAY_KEY).map(String::as_str) == Some("unit-a/gate:ga#2")
+                && !e.meta.contains_key(META_CACHE_HIT)
+                && serde_json::from_slice::<Value>(&e.data)
+                    .ok()
+                    .and_then(|v| v.get("skipped").and_then(Value::as_bool))
+                    != Some(true)
+        });
+        assert!(
+            regate,
+            "the reverse-gear re-implemented tree records a fresh gate:ga#2 RUN verdict at the \
+             high-water-advanced key (not a replay/cache-hit/skip, and not a colliding #1)"
+        );
+    }
+
+    /// A driver for the crash-resume compensation test (spec 12, unit 4): unit-a's implementer
+    /// writes its file and records each prompt (to prove the re-entry carries the seeded
+    /// contradiction); its adjudicator approves with no further compensation, so the resumed
+    /// rollback converges.
+    struct ResumeCompDriver {
+        impl_prompts: Mutex<Vec<String>>,
+    }
+    impl AgentDriver for ResumeCompDriver {
+        fn spawn(
+            &self,
+            _a: &AgentDef,
+            prompt: &str,
+            opts: &SpawnOpts,
+            _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+        ) -> Result<AgentResult, Error> {
+            if opts.id.contains("/implementer#") {
+                self.impl_prompts.lock().unwrap().push(prompt.to_string());
+                if !opts.dir.is_empty() {
+                    std::fs::write(Path::new(&opts.dir).join("a.rs"), "fn a_fixed() {}\n").unwrap();
+                }
+                return Ok(AgentResult::default());
+            }
+            if opts.id.contains("/adjudicator#") {
+                return Ok(AgentResult {
+                    output: r#"{"verdict":"approve"}"#.into(),
+                    resolved_model: String::new(),
+                });
+            }
+            Ok(AgentResult {
+                output: "reviewed the diff".into(),
+                resolved_model: String::new(),
+            })
+        }
+    }
+
+    #[test]
+    fn a_resume_re_drives_a_durably_queued_but_undrained_compensation() {
+        // spec 12, unit 4 (crash-resume of the reverse gear): a prior window durably QUEUED a
+        // compensation of the integrated unit-a (a review named it) but CRASHED before the
+        // drain reverted it - so the log carries unit-a Integrated + a compensation-queued mark
+        // but NO drained UnitFailed. On resume the conductor must re-derive the still-pending
+        // compensation, REVERT unit-a's integrating commit, and re-enter unit-a - never leave a
+        // converged run with a green ledger over a tree that still holds the condemned work.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+
+        // The prior window's integrating commit of unit-a, on the run branch (HEAD).
+        std::fs::write(Path::new(&repo_path).join("a.rs"), "fn a_condemned() {}\n").unwrap();
+        let commit_c = {
+            for args in [
+                &["add", "a.rs"][..],
+                &["commit", "-q", "-m", "unit-a integrates"][..],
+            ] {
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(&repo_path)
+                    .args(args)
+                    .output()
+                    .unwrap();
+            }
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo_path)
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert("g".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "unit-a".into(),
+            Stage {
+                name: "unit-a".into(),
+                agent: "worker".into(),
+                gates: vec!["g".into()],
+                on_pass: "merge".into(),
+                review: crate::config::ReviewPanel {
+                    lenses: vec!["lens".into()],
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let store = Store::open(":memory:").unwrap();
+        // Seed the crash state: unit-a integrated at commit C, a durable compensation-queued
+        // mark naming unit-a, and NO drained UnitFailed - the trigger fired, the drain did not.
+        let contradiction = r#"{"verdict":"approve","compensate":"unit-a"}"#;
+        seed_events_in_run(
+            &store,
+            &[],
+            &[
+                Event::new(
+                    ledger::TYPE_UNIT_INTEGRATED,
+                    serde_json::to_vec(&json!({"id": "unit-a", "commit": commit_c})).unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_STATUS,
+                    serde_json::to_vec(
+                        &json!({"id": "unit-a", "status": STATUS_COMPENSATION_QUEUED}),
+                    )
+                    .unwrap(),
+                )
+                .with_meta(META_COMPENSATE_TARGET, "unit-a")
+                .with_meta(META_CONTRADICTION, contradiction),
+            ],
+        );
+
+        let driver = ResumeCompDriver {
+            impl_prompts: Mutex::new(Vec::new()),
+        };
+        let runner = RecordingRunner::new(&[]);
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        // The resume re-drove the rollback: unit-a re-implemented and re-integrated.
+        assert_eq!(
+            rs.units["unit-a"].status,
+            ledger::Status::Integrated,
+            "the resumed run re-integrates unit-a after re-driving the queued compensation"
+        );
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        // The seeded queue mark was DRAINED on resume: a UnitFailed for unit-a now names the
+        // reverted commit C in META_COMPENSATED (the rollback completed, not dropped).
+        let drained = events.iter().any(|e| {
+            e.type_ == ledger::TYPE_UNIT_FAILED
+                && e.meta.get(META_COMPENSATED).map(String::as_str) == Some(commit_c.as_str())
+        });
+        assert!(
+            drained,
+            "on resume the queued compensation is drained: a UnitFailed reverts unit-a's commit C"
+        );
+
+        // The condemned commit was reverted on the run branch (an evented rollback), so the
+        // final tree does NOT still carry unit-a's condemned artifact under a green ledger.
+        let log = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo_path)
+            .args(["log", "--pretty=%s"])
+            .output()
+            .unwrap();
+        let log = String::from_utf8_lossy(&log.stdout);
+        assert!(
+            log.lines().any(|l| l.contains("compensate unit-a")),
+            "the resume reverts unit-a's condemned commit on the run branch; log:\n{log}"
+        );
+
+        // The re-entered unit-a's first prompt carries the SEEDED contradiction (recovered from
+        // the durable mark), so the re-implementation fixes the specific defect.
+        let prompts = driver.impl_prompts.lock().unwrap().clone();
+        assert!(
+            prompts
+                .first()
+                .is_some_and(|p| p.contains("your integrating commit was REVERTED")),
+            "the re-entered unit-a is prompted with the recovered contradiction; prompts:\n{prompts:?}"
+        );
+    }
+
+    /// The base `m.rs` content the merge-break fixture below starts from: six MARK-free
+    /// lines so `unit-a`'s top insert and `unit-b`'s bottom append land in NON-overlapping
+    /// hunks that git auto-merges cleanly (no conflict) into a tree carrying BOTH marks.
+    const MERGE_BREAK_BASE: &str = "l1\nl2\nl3\nl4\nl5\nl6\n";
+
+    /// A driver for the post-merge re-gate fixture (spec 12, unit 5): `unit-a` and `unit-b`
+    /// are two batch-mates with NO dependency between them (the grounder placed them in one
+    /// wave), each editing the SAME file `m.rs`. `unit-a` PREPENDS one `MARK` line, `unit-b`
+    /// APPENDS one - so each unit's OWN tree carries exactly one MARK (its gate passes in
+    /// isolation), but the textual auto-merge combines both into a two-MARK tree the gate
+    /// REJECTS. Both writes are recomputed from the fixed base each attempt (idempotent), so
+    /// a remediation re-attempt never doubles a unit's own mark. A barrier makes both
+    /// worktrees branch from the SAME base commit (neither integrates before the other's
+    /// branch exists), which is what creates the unpredicted overlap.
+    struct MergeBreakDriver {
+        repo: String,
+    }
+    impl AgentDriver for MergeBreakDriver {
+        fn spawn(
+            &self,
+            _a: &AgentDef,
+            _prompt: &str,
+            opts: &SpawnOpts,
+            _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+        ) -> Result<AgentResult, Error> {
+            let unit = opts.id.split('/').next().unwrap_or_default();
+            if opts.id.contains("/implementer#") {
+                if !opts.dir.is_empty() {
+                    // Barrier: block until BOTH unit branches exist, so both worktrees were
+                    // cut from the SAME base commit (neither has integrated yet - an
+                    // implementer runs strictly before its unit's integrate). This is the
+                    // UNPREDICTED-overlap case unit 5 targets: two batch-mates that actually
+                    // edit the same region, each green alone, broken when merged.
+                    for _ in 0..400 {
+                        let n = std::process::Command::new("git")
+                            .arg("-C")
+                            .arg(&self.repo)
+                            .args(["branch", "--list", "rigger/u/*"])
+                            .output()
+                            .map(|o| String::from_utf8_lossy(&o.stdout).lines().count())
+                            .unwrap_or(0);
+                        if n >= 2 {
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(25));
+                    }
+                    // Idempotent per attempt: always the fixed base plus this unit's ONE mark.
+                    let content = if unit == "unit-a" {
+                        format!("MARK\n{MERGE_BREAK_BASE}")
+                    } else {
+                        format!("{MERGE_BREAK_BASE}MARK\n")
+                    };
+                    std::fs::write(Path::new(&opts.dir).join("m.rs"), content).unwrap();
+                }
+                return Ok(AgentResult::default());
+            }
+            if opts.id.contains("/adjudicator#") {
+                return Ok(AgentResult {
+                    output: r#"{"verdict":"approve"}"#.into(),
+                    resolved_model: String::new(),
+                });
+            }
+            Ok(AgentResult {
+                output: "reviewed the diff".into(),
+                resolved_model: String::new(),
+            })
+        }
+    }
+
+    #[test]
+    fn integrate_re_gates_the_merged_tree_and_a_merge_break_blocks_the_second_unit() {
+        // spec 12, unit 5 (Gap 21): two units each PASS their gate in isolation but merge into
+        // a FAILING tree. The grounder placed them in one batch (no dependency), so both cut
+        // their worktree from the same base and each gates only its OWN one-MARK tree green.
+        // The FIRST to win the integrate lock merges cleanly (a fast-forward over the base) and
+        // its post-merge re-gate is a CONTENT-CACHE HIT of the pre-merge green - near-free - so
+        // it integrates. The SECOND merges into a TWO-MARK tree the grounder never predicted:
+        // its post-merge re-gate MISSES the cache, RUNS on the merged tree, goes RED, and BLOCKS
+        // the integration - the merge is rolled back (nothing lands) and the unit re-enters
+        // remediation fed the merge-break evidence. The broken two-MARK tree is NEVER recorded
+        // with an UnitIntegrated.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        // Seed the shared file at the base so both units branch from a tree that already holds
+        // it (their edits are a top prepend / bottom append of one MARK line each).
+        std::fs::write(Path::new(&repo_path).join("m.rs"), MERGE_BREAK_BASE).unwrap();
+        for args in [
+            &["add", "m.rs"][..],
+            &["commit", "-q", "-m", "base m.rs"][..],
+        ] {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo_path)
+                .args(args)
+                .output()
+                .unwrap();
+        }
+
+        let mut cfg = Config::default();
+        // Bound the losing unit's merge/rollback cascade: it re-breaks every attempt, so cap
+        // remediation low and let it escalate.
+        cfg.workflow.defaults.max_retries = 2;
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        // A real shell gate over the tree: PASS with at most one MARK line, RED (with a
+        // greppable reason) once the merge introduces a second.
+        cfg.workflow.gates.insert(
+            "g".into(),
+            gate_def(
+                "c=$(grep -c MARK m.rs 2>/dev/null); c=${c:-0}; \
+                 if [ \"$c\" -le 1 ]; then exit 0; else \
+                 echo 'gate g failed: merge introduced duplicate MARK'; exit 1; fi",
+            ),
+        );
+        let panel = crate::config::ReviewPanel {
+            lenses: vec!["lens".into()],
+            adjudicator: "judge".into(),
+            ..Default::default()
+        };
+        let mk = |name: &str| Stage {
+            name: name.into(),
+            agent: "worker".into(),
+            gates: vec!["g".into()],
+            on_pass: "merge".into(),
+            needs: vec![],
+            review: panel.clone(),
+            ..Default::default()
+        };
+        cfg.workflow.stages.insert("unit-a".into(), mk("unit-a"));
+        cfg.workflow.stages.insert("unit-b".into(), mk("unit-b"));
+
+        let store = Store::open(":memory:").unwrap();
+        let driver = MergeBreakDriver {
+            repo: repo_path.clone(),
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        // Exactly one unit integrated; the other was BLOCKED by the post-merge re-gate and
+        // escalated (it re-breaks the merge every attempt). Order between them is a lock race,
+        // so the assertions are order-independent.
+        let statuses: Vec<_> = ["unit-a", "unit-b"]
+            .iter()
+            .map(|u| (*u, rs.units[*u].status))
+            .collect();
+        let winner = statuses
+            .iter()
+            .find(|(_, s)| *s == ledger::Status::Integrated)
+            .map(|(u, _)| *u)
+            .expect("exactly one unit must integrate its merged tree");
+        let loser = if winner == "unit-a" {
+            "unit-b"
+        } else {
+            "unit-a"
+        };
+        assert_eq!(
+            rs.units[loser].status,
+            ledger::Status::Escalated,
+            "the merge-broken unit never integrates a failing tree; it escalates after the block"
+        );
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+
+        // (1) The broken TWO-MARK tree never landed: the run branch's m.rs carries exactly ONE
+        // MARK (the winner's), and there is exactly ONE UnitIntegrated (for the winner).
+        let merged = std::fs::read_to_string(Path::new(&repo_path).join("m.rs")).unwrap();
+        assert_eq!(
+            merged.matches("MARK").count(),
+            1,
+            "the run branch holds only the winner's one MARK; the broken merged tree was rolled back:\n{merged}"
+        );
+        let integrations: Vec<String> = events
+            .iter()
+            .filter(|e| e.type_ == ledger::TYPE_UNIT_INTEGRATED)
+            .filter_map(|e| {
+                serde_json::from_slice::<Value>(&e.data)
+                    .ok()
+                    .and_then(|v| v.get("id").and_then(Value::as_str).map(str::to_string))
+            })
+            .collect();
+        assert_eq!(
+            integrations,
+            vec![winner.to_string()],
+            "only the winner records an UnitIntegrated; the merge-broken unit never does"
+        );
+
+        // (2) The loser's post-merge re-gate RAN on the merged tree and went RED, carrying the
+        // merge-break evidence - keyed apart from the pre-merge `{unit}/gate:` verdict so it did
+        // NOT replay the isolation green.
+        let postmerge_red = events.iter().any(|e| {
+            e.type_ == contextgraph::TYPE_GATE_VERDICT
+                && e.meta
+                    .get(META_REPLAY_KEY)
+                    .is_some_and(|k| k.starts_with(&format!("{loser}/postmerge-gate:g#")))
+                && serde_json::from_slice::<Value>(&e.data).ok().map(|v| {
+                    v.get("pass").and_then(Value::as_bool) == Some(false)
+                        && v.get("evidence")
+                            .and_then(Value::as_str)
+                            .is_some_and(|s| s.contains("merge introduced duplicate MARK"))
+                }) == Some(true)
+        });
+        assert!(
+            postmerge_red,
+            "the loser's merged tree records a RED post-merge re-gate verdict carrying the merge-break evidence"
+        );
+
+        // (3) The winner's post-merge re-gate was NEAR-FREE: a content-addressed cache-hit of
+        // its pre-merge green (its clean fast-forward merge changed nothing the gate reads), not
+        // a fresh run.
+        let winner_hit = events.iter().any(|e| {
+            e.type_ == contextgraph::TYPE_GATE_VERDICT
+                && e.meta
+                    .get(META_REPLAY_KEY)
+                    .is_some_and(|k| k.starts_with(&format!("{winner}/postmerge-gate:g#")))
+                && e.meta.contains_key(META_CACHE_HIT)
+        });
+        assert!(
+            winner_hit,
+            "the winner's post-merge re-gate is a content-cache hit of its pre-merge green (near-free)"
+        );
+
+        // (4) The loser re-entered remediation after the block (a UnitFailed at an advanced
+        // attempt), proving the merge-break fed its lifecycle rather than wedging.
+        let loser_remediated = events.iter().any(|e| {
+            e.type_ == ledger::TYPE_UNIT_FAILED
+                && serde_json::from_slice::<Value>(&e.data).ok().map(|v| {
+                    v.get("id").and_then(Value::as_str) == Some(loser)
+                        && v.get("attempts").and_then(Value::as_u64).unwrap_or(0) >= 1
+                }) == Some(true)
+        });
+        assert!(
+            loser_remediated,
+            "the blocked unit re-enters remediation (UnitFailed at an advanced attempt) fed the merge-break"
+        );
+    }
+
     #[test]
     fn a_deferred_gate_runs_once_at_the_phase_boundary_not_inline() {
         // A stage with both an inline (core) gate and a deferred gate. The deferred
@@ -10222,6 +17902,7 @@ mod tests {
             config::Gate {
                 run: "true".into(),
                 kind: "deferred".into(),
+                inputs: Vec::new(),
             },
         );
         cfg.workflow.stages.insert(
@@ -10298,6 +17979,7 @@ mod tests {
             config::Gate {
                 run: "false".into(),
                 kind: "deferred".into(),
+                inputs: Vec::new(),
             },
         );
         cfg.workflow.stages.insert(
@@ -10354,6 +18036,104 @@ mod tests {
         );
     }
 
+    /// A gate runner that FAILS one named gate with caller-supplied evidence and passes
+    /// every other gate. Lets a test drive a specific gate (e.g. a deferred phase-boundary
+    /// gate) into a failure whose evidence the taxonomy classifies, while the unit's inline
+    /// gate still passes so the unit integrates.
+    struct FailOneGate {
+        fail: String,
+        evidence: String,
+    }
+    impl gate::Runner for FailOneGate {
+        fn run(&self, g: &Gate, _dir: &str, _target: &str) -> gate::GateResult {
+            if g.id == self.fail {
+                gate::GateResult {
+                    pass: false,
+                    evidence: self.evidence.clone(),
+                }
+            } else {
+                gate::GateResult {
+                    pass: true,
+                    evidence: "PASS".into(),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_default_infra_fault_at_a_deferred_gate_does_not_demote() {
+        // Spec 10, unit 2 - the DEFERRED leg of the SINGLE classification authority. A
+        // persistent infra outage (one the SHIPPED DEFAULT taxonomy classifies `infra`) at
+        // a DEFERRED phase-boundary gate must HOLD the ratchet exactly as the identical
+        // fault does at an INLINE gate (FailNoDemote): an outage must never cost a graduated
+        // gate its earned autonomy. run_deferred_gates used to hardcode `if pass {CleanPass}
+        // else {FailDemote}`, a second failure-classification path that BYPASSED
+        // self.taxonomy and demoted the deferred gate AutoNotify->Manual on the SAME fault
+        // the inline site holds - two demotion policies for one fault by gate SITE, the
+        // exact harm this unit exists to prevent. No failure_rules are authored, so the
+        // shipped default taxonomy governs and classifies the outage below as infra.
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent("a"));
+        cfg.workflow.gates.insert("inline".into(), gate_def("true"));
+        cfg.workflow.gates.insert(
+            "deferred".into(),
+            config::Gate {
+                run: "false".into(),
+                kind: "deferred".into(),
+                inputs: Vec::new(),
+            },
+        );
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "a".into(),
+                gates: vec!["inline".into(), "deferred".into()],
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        // The inline gate passes (the unit integrates); the deferred gate fails at the
+        // phase boundary with an outage the DEFAULT taxonomy recognises as infra. The
+        // deferred gate is seeded at the default autonomy (AutoNotify, above Manual), so a
+        // bug-path FailDemote WOULD emit a visible GateDemoted.
+        let runner = FailOneGate {
+            fail: "deferred".into(),
+            evidence: "FAIL\nno space left on device".into(),
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &runner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        // The unit integrated on its passing inline gate.
+        assert_eq!(rs.units["s"].status, ledger::Status::Integrated);
+
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        // The deferred failure is still surfaced truthfully...
+        assert!(
+            events.iter().any(|e| {
+                e.type_ == TYPE_DEFERRED_GATE_FAILED
+                    && String::from_utf8_lossy(&e.data).contains("\"gate\":\"deferred\"")
+            }),
+            "a failing deferred gate must still surface a DeferredGateFailed event"
+        );
+        // ...but an INFRA outage classified through the SINGLE authority must NEVER demote
+        // the deferred gate's ratchet - the same HOLD the inline site gives the identical
+        // fault. This is the pinned single-authority invariant the reject demanded.
+        assert!(
+            !events.iter().any(|e| e.type_ == TYPE_GATE_DEMOTED),
+            "a persistent infra fault at a deferred gate must HOLD the ratchet (FailNoDemote), not demote it"
+        );
+    }
+
     #[test]
     fn a_replayed_step_re_runs_no_recorded_gate_and_appends_no_duplicate_events() {
         // spec 04, criterion 4: a step re-running the conductor over recorded history
@@ -10379,6 +18159,10 @@ mod tests {
         );
 
         let st = Store::open(":memory:").unwrap();
+        // Begin the run before recording, as production does (`run` calls `ensure_started`
+        // before any spawn is parked): the run-scoped replay lookup answers only results
+        // inside the current run's slice, so the recorded result must follow the boundary.
+        crate::run::ensure_started(&st, &[]).unwrap();
         // A courier already recorded the implementer's result, so the replay driver
         // ANSWERS the implementer spawn (never parks it) and the gate is reached both
         // steps.
@@ -10471,6 +18255,7 @@ mod tests {
             config::Gate {
                 run: "true".into(),
                 kind: "deferred".into(),
+                inputs: Vec::new(),
             },
         );
         cfg.workflow.stages.insert(
@@ -10485,6 +18270,9 @@ mod tests {
         );
 
         let st = Store::open(":memory:").unwrap();
+        // Begin the run before recording (production ordering): the run-scoped replay lookup
+        // answers only results inside the current run's slice.
+        crate::run::ensure_started(&st, &[]).unwrap();
         crate::spawn::record_result(
             &st,
             &crate::spawn::SpawnResult::ok(spawn_id("u", ROLE_IMPLEMENTER, 0), "done"),
@@ -10560,6 +18348,7 @@ mod tests {
             config::Gate {
                 run: "true".into(),
                 kind: "deferred".into(),
+                inputs: Vec::new(),
             },
         );
         cfg.workflow.stages.insert(
@@ -10708,6 +18497,7 @@ mod tests {
             config::Gate {
                 run: "true".into(),
                 kind: "deferred".into(),
+                inputs: Vec::new(),
             },
         );
         // A Manual-autonomy stage pauses on its gate awaiting a human (§4.3). It also
@@ -10796,12 +18586,14 @@ mod tests {
             config::Gate {
                 run: "true".into(),
                 kind: "deferred".into(),
+                inputs: Vec::new(),
             },
         );
         cfg.workflow.defaults.review = config::ReviewPanel {
             lenses: vec!["lens".into()],
             adversary: "adversary".into(),
             adjudicator: "adj".into(),
+            tiers: None,
         };
         // `s` passes its inline gate but the adjudicator ALWAYS rejects, so it remediates
         // to the bound and ESCALATES. It also references the deferred whole-tree gate.
@@ -10925,6 +18717,7 @@ mod tests {
             config::Gate {
                 run: "false".into(),
                 kind: "deferred".into(),
+                inputs: Vec::new(),
             },
         );
         cfg.workflow.stages.insert(
@@ -11049,6 +18842,9 @@ mod tests {
         );
 
         let st = Store::open(":memory:").unwrap();
+        // Begin the run before recording (production ordering): the run-scoped replay lookup
+        // answers only results inside the current run's slice.
+        crate::run::ensure_started(&st, &[]).unwrap();
         // The adjudicator's attempt-0 verdict is recorded as a REJECT, so the replay
         // driver answers it (the review runs to a reject) instead of parking it.
         crate::spawn::record_result(
@@ -11328,6 +19124,826 @@ mod tests {
         assert!(
             crate::worktree::Worktree::branch_has_work(&repo_path, &unit_branch("s")),
             "the escalated unit's work must remain on its own branch for a human to inspect"
+        );
+    }
+
+    // --- Unit 1 (spec 10): the adversarial plan-critique gate ---
+
+    /// A spec-driven workflow with the plan-critique gate wired between `plan` and the
+    /// fan-out `implement` template: `plan` produces the DAG, `plan-critique` reviews it
+    /// with an adversary + adjudicator (no lenses, per the spec), and `implement` fans
+    /// out only after the gate releases. The caller supplies the driver.
+    fn critique_cfg() -> Config {
+        let mut cfg = Config::default();
+        cfg.agents.insert("planner".into(), agent("planner"));
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("adversary".into(), agent("adversary"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "plan".into(),
+            Stage {
+                name: "plan".into(),
+                agent: "planner".into(),
+                produces: "dag".into(),
+                ..Default::default()
+            },
+        );
+        cfg.workflow.stages.insert(
+            "plan-critique".into(),
+            Stage {
+                name: "plan-critique".into(),
+                needs: vec!["plan".into()],
+                adversary: "adversary".into(),
+                adjudicator: "judge".into(),
+                ..Default::default()
+            },
+        );
+        cfg.workflow.stages.insert(
+            "implement".into(),
+            Stage {
+                name: "implement".into(),
+                agent: "worker".into(),
+                strategy: "fan-out".into(),
+                needs: vec!["plan-critique".into()],
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        cfg
+    }
+
+    /// A driver whose adjudicator DRAWS its verdict from the conductor's own rule-6
+    /// detection: it REJECTS a DAG whose critique prompt surfaces a shared-blast-radius
+    /// conflict, and APPROVES one that does not - so the reject is a CONSEQUENCE of the
+    /// split, not a blind script. The planner replays a fixed set of UnitProposed emits
+    /// on every spawn (its original wave spawn and each critique-driven re-plan), and
+    /// every other reviewer returns a benign non-empty result.
+    struct CritiqueDriver {
+        planner: String,
+        adjudicator: String,
+        plan_emits: Vec<(String, Value)>,
+        // The adjudicator's verdict, modelled directly: the gate rejects a decomposition
+        // for a rule 7/8 defect (ownership/disposition) - a JUDGMENT, not a mechanical
+        // blast-radius trip. These flags drive the verdict independently of blast-radius
+        // overlap (which no longer drives the gate at all): `reject_dag` rejects the first
+        // DAG then approves the revision; `reject_always` never approves (models an
+        // unresolvable defect that escalates).
+        reject_dag: bool,
+        reject_always: bool,
+        calls: Mutex<Vec<String>>,
+        adj_prompts: Mutex<Vec<String>>,
+    }
+    impl CritiqueDriver {
+        fn new(plan_emits: Vec<(String, Value)>) -> Self {
+            CritiqueDriver {
+                planner: "planner".into(),
+                adjudicator: "judge".into(),
+                plan_emits,
+                reject_dag: false,
+                reject_always: false,
+                calls: Mutex::new(Vec::new()),
+                adj_prompts: Mutex::new(Vec::new()),
+            }
+        }
+        /// A driver whose adjudicator REJECTS the DAG (models a rule 7/8 ownership or
+        /// open-disposition defect the gate must catch), then approves the revised DAG.
+        fn rejecting(plan_emits: Vec<(String, Value)>) -> Self {
+            CritiqueDriver {
+                reject_dag: true,
+                ..Self::new(plan_emits)
+            }
+        }
+        /// A driver whose adjudicator NEVER approves (models an unresolvable rule 7/8
+        /// defect): the planner re-plans to the retry bound and the gate escalates.
+        fn always_rejecting(plan_emits: Vec<(String, Value)>) -> Self {
+            CritiqueDriver {
+                reject_always: true,
+                ..Self::new(plan_emits)
+            }
+        }
+        fn count(&self, id: &str) -> usize {
+            self.calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|c| *c == id)
+                .count()
+        }
+    }
+    impl AgentDriver for CritiqueDriver {
+        fn spawn(
+            &self,
+            a: &AgentDef,
+            prompt: &str,
+            _opts: &SpawnOpts,
+            emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+        ) -> Result<AgentResult, Error> {
+            self.calls.lock().unwrap().push(a.id.clone());
+            if a.id == self.planner {
+                for (t, v) in &self.plan_emits {
+                    emit(t, v.clone())?;
+                }
+                return Ok(AgentResult {
+                    output: "proposed the DAG".into(),
+                    resolved_model: String::new(),
+                });
+            }
+            if a.id == self.adjudicator {
+                self.adj_prompts.lock().unwrap().push(prompt.to_string());
+                // The verdict models a rule 7/8 JUDGMENT (ownership/disposition), NOT a
+                // mechanical blast-radius trip: a rejecting driver rejects the first DAG
+                // and approves the planner's revision; otherwise it approves. Blast-radius
+                // overlap never drives this - the partitioner handles overlap safely.
+                let already_rejected = self
+                    .calls
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|c| c.as_str() == self.adjudicator)
+                    .count()
+                    > 1;
+                let verdict = if self.reject_always || (self.reject_dag && !already_rejected) {
+                    "reject"
+                } else {
+                    "approve"
+                };
+                return Ok(AgentResult {
+                    output: format!("{{\"verdict\":\"{verdict}\"}}"),
+                    resolved_model: String::new(),
+                });
+            }
+            // The adversary (or any other reviewer) emits nothing and returns benignly.
+            Ok(AgentResult {
+                output: format!("{} reviewed the DAG", a.id),
+                resolved_model: String::new(),
+            })
+        }
+    }
+
+    #[test]
+    fn a_blast_radius_overlap_alone_does_not_reject() {
+        // Architecture alignment (2026-07-07): a shared blast radius is NOT a defect. The
+        // reference architecture handles overlap with `partition: by-blast-radius` ->
+        // disjoint sequential batches ("safe parallelism"), so the plan-critique gate must
+        // NOT reject two units merely for touching the same file - it judges cross-unit
+        // ownership (rule 7) and open dispositions (rule 8), which the partitioner and
+        // per-unit review do not cover.
+        let dir = tempfile::tempdir().unwrap();
+        let criterion = "the widget renderer is implemented";
+        // The one file both units ground to: the grep grounder matches the whole
+        // criterion text as a line, so two units citing the SAME criterion resolve to the
+        // SAME blast radius - the canonical shared-blast-radius split.
+        std::fs::write(
+            dir.path().join("feature.rs"),
+            format!("// {criterion}\nfn render() {{}}\n"),
+        )
+        .unwrap();
+        let cfg = critique_cfg();
+        let st = Store::open(":memory:").unwrap();
+        // The planner splits the single criterion into TWO units - both citing it, so
+        // both ground to feature.rs and SHARE the entire blast radius. This is NOT a
+        // defect: `partition: by-blast-radius` serializes them into sequential batches
+        // and per-unit worktree isolation keeps each reviewer on its own diff, so overlap
+        // integrates cleanly. The gate (no ownership/disposition defect here) APPROVES and
+        // the fan-out releases - the architecture-aligned behavior (overlap != reject).
+        let driver = CritiqueDriver::new(vec![
+            (
+                TYPE_UNIT_PROPOSED.to_string(),
+                json!({"id":"u-a","agent":"worker","criterion":criterion,"needs":["plan-critique"]}),
+            ),
+            (
+                TYPE_UNIT_PROPOSED.to_string(),
+                json!({"id":"u-b","agent":"worker","criterion":criterion,"needs":["plan-critique"]}),
+            ),
+        ]);
+        let grep = crate::grounder::Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: None,
+            criteria: vec![criterion.to_string()],
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        // The gate APPROVED despite the shared blast radius (overlap is not a defect).
+        assert_eq!(
+            rs.units["plan-critique"].status,
+            ledger::Status::Integrated,
+            "a shared blast radius alone must NOT reject - the partitioner serializes it"
+        );
+        // The fan-out released: the overlapping units run (the partitioner serializes them
+        // into separate batches, so they integrate cleanly).
+        assert!(
+            driver.count("worker") >= 1,
+            "the fan-out must release on approve; worker ran {}x",
+            driver.count("worker")
+        );
+        // No re-plan: an approve on the first pass means the planner runs exactly once.
+        assert_eq!(
+            driver.count("planner"),
+            1,
+            "no reject means no re-plan; planner ran {}x",
+            driver.count("planner")
+        );
+    }
+
+    #[test]
+    fn a_rule_7_or_8_defect_rejects_then_releases_on_the_revision() {
+        // The gate's REAL value: a cross-unit ownership (rule 7) or open-disposition (rule
+        // 8) defect - which per-unit review cannot see and the partitioner does not address
+        // - draws a reject that feeds back to the planner; the revised DAG then approves and
+        // releases. Modelled with a rejecting adjudicator (rule 7/8 is a judgment, not a
+        // mechanical trip), independent of blast radius.
+        let dir = tempfile::tempdir().unwrap();
+        let crit = "the alpha module is implemented";
+        std::fs::write(dir.path().join("alpha.rs"), format!("// {crit}\n")).unwrap();
+        let cfg = critique_cfg();
+        let st = Store::open(":memory:").unwrap();
+        let driver = CritiqueDriver::rejecting(Vec::new());
+        let grep = crate::grounder::Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: None,
+            criteria: vec![crit.to_string()],
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        // The reject fed back to the planner (re-plan), then the revised DAG approved.
+        assert!(
+            driver.count("planner") > 1,
+            "a rule 7/8 reject must feed back to the planner; planner ran {}x",
+            driver.count("planner")
+        );
+        assert_eq!(
+            rs.units["plan-critique"].status,
+            ledger::Status::Integrated,
+            "the gate approves the revised DAG and releases the fan-out"
+        );
+    }
+
+    #[test]
+    fn a_clean_decomposition_approves_and_releases_the_fan_out() {
+        // The approve path: a decomposition whose units have DISJOINT blast radii draws
+        // no rule-6 conflict, so the adjudicator approves and the fan-out releases - the
+        // implementers run and integrate.
+        let dir = tempfile::tempdir().unwrap();
+        let crit_a = "the alpha module is implemented";
+        let crit_b = "the beta module is implemented";
+        // Disjoint files: crit_a -> alpha.rs, crit_b -> beta.rs (no overlap).
+        std::fs::write(dir.path().join("alpha.rs"), format!("// {crit_a}\n")).unwrap();
+        std::fs::write(dir.path().join("beta.rs"), format!("// {crit_b}\n")).unwrap();
+        let cfg = critique_cfg();
+        let st = Store::open(":memory:").unwrap();
+        // The planner proposes nothing to refine; the conductor's per-criterion baselines
+        // (one per criterion, disjoint radii) stand.
+        let driver = CritiqueDriver::new(Vec::new());
+        let grep = crate::grounder::Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: None,
+            criteria: vec![crit_a.to_string(), crit_b.to_string()],
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        // The gate approved (one adjudicator pass, no re-plan) and integrated.
+        assert_eq!(
+            rs.units["plan-critique"].status,
+            ledger::Status::Integrated,
+            "a clean DAG approves and the gate integrates (review-only, no artifact)"
+        );
+        assert_eq!(
+            driver.count("planner"),
+            1,
+            "no reject means no re-plan; the planner runs exactly once"
+        );
+        // The gate really reviewed the DAG (the adjudicator rendered the approve).
+        assert!(
+            driver.count("judge") >= 1,
+            "the gate must run the adjudicator to render its verdict, not approve trivially"
+        );
+        // The fan-out released: the implementer ran for each baseline unit.
+        assert!(
+            driver.count("worker") >= 2,
+            "the fan-out releases on approve; worker ran {}x",
+            driver.count("worker")
+        );
+    }
+
+    #[test]
+    fn the_gate_critiques_only_not_yet_run_units_and_approves() {
+        // The critique excludes already-integrated and terminal units (`dag_unit_blast_radii`):
+        // a settled unit is not a decomposition candidate, so it never clutters the critique
+        // context. Combined with the architecture alignment (overlap is not a defect - the
+        // partitioner serializes it), a run that adopts a prior wave's integrated unit and
+        // grounds a fresh pending unit to the SAME file approves cleanly and releases the
+        // fan-out (the exact spec-10 resume scenario, now handled at the root).
+        let dir = tempfile::tempdir().unwrap();
+        let crit_a = "the shared alpha behavior is implemented";
+        let crit_b = "the shared beta behavior is implemented";
+        // BOTH criteria ground to the SAME file (overlapping blast radius): shared.rs
+        // mentions both criterion strings, so the grep grounder returns it for each.
+        std::fs::write(
+            dir.path().join("shared.rs"),
+            format!("// {crit_a}\n// {crit_b}\n"),
+        )
+        .unwrap();
+        let cfg = critique_cfg();
+        let st = Store::open(":memory:").unwrap();
+
+        // Seed the run so crit_a's baseline is ALREADY INTEGRATED. The RunStarted carries
+        // the same criteria this run drives, so ensure_started ADOPTS it (no new run) and
+        // the fold sees the integration in scope.
+        let baseline_a = unit_slug(1, crit_a);
+        st.append(
+            STREAM,
+            ExpectedRevision::Any,
+            &[
+                Event::new(
+                    crate::run::TYPE_RUN_STARTED,
+                    serde_json::to_vec(&json!({
+                        "run": "run-resume-fixture",
+                        "criteria": [crit_a, crit_b],
+                    }))
+                    .unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_STARTED,
+                    serde_json::to_vec(&json!({"id": baseline_a})).unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_INTEGRATED,
+                    serde_json::to_vec(&json!({"id": baseline_a, "commit": "prior-wave"})).unwrap(),
+                ),
+            ],
+        )
+        .unwrap();
+
+        let driver = CritiqueDriver::new(Vec::new());
+        let grep = crate::grounder::Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: None,
+            criteria: vec![crit_a.to_string(), crit_b.to_string()],
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        // The gate APPROVED (integrated, review-only) rather than escalating on a false
+        // integrated-vs-pending duplicate.
+        assert_eq!(
+            rs.units["plan-critique"].status,
+            ledger::Status::Integrated,
+            "the gate must approve: an integrated unit is not a duplicate it can flag"
+        );
+        assert_eq!(
+            rs.units[&baseline_a].status,
+            ledger::Status::Integrated,
+            "the seeded prior-wave unit stays integrated, untouched"
+        );
+    }
+
+    #[test]
+    fn the_plan_critique_prompt_names_the_cross_unit_rules() {
+        // The gate prompt must NAME its review targets: mitigation ownership (rule 7) and
+        // open dispositions (rule 8) as REJECT criteria, plus the shared-blast-radius note
+        // (informational - the partitioner serializes overlap; not a reject trigger).
+        let dir = tempfile::tempdir().unwrap();
+        let criterion = "the widget renderer is implemented";
+        std::fs::write(dir.path().join("feature.rs"), format!("// {criterion}\n")).unwrap();
+        let cfg = critique_cfg();
+        let st = Store::open(":memory:").unwrap();
+        let driver = CritiqueDriver::new(vec![(
+            TYPE_UNIT_PROPOSED.to_string(),
+            json!({"id":"u-a","agent":"worker","criterion":criterion,"needs":["plan-critique"]}),
+        )]);
+        let grep = crate::grounder::Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: None,
+            criteria: vec![criterion.to_string()],
+        };
+        let _ = run(&cfg, &deps).unwrap();
+
+        let prompts = driver.adj_prompts.lock().unwrap();
+        let prompt = prompts
+            .first()
+            .expect("the adjudicator must have been spawned");
+        for target in ["blast radius", "mitigation", "disposition"] {
+            assert!(
+                prompt.to_lowercase().contains(target),
+                "the plan-critique prompt must name rule targets ({target:?}); got:\n{prompt}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_critique_gate_never_enters_a_wave_even_when_ready() {
+        // Regression pin for the adopted-run crash (lesson-plan-critique-996e0010): a
+        // gate left verified-but-not-integrated by an interrupted step satisfies
+        // ready_stages (its producer integrated, itself non-terminal), but a wave
+        // driving it through run_single_stage's standalone-review path spawns lenses
+        // with no worktree. wave_ready must exclude the gate UNCONDITIONALLY - it is
+        // the producer prelude's to run, never a wave's.
+        let cfg = critique_cfg();
+        let stages = cfg.workflow.stages.clone();
+        let mut integrated = HashSet::new();
+        integrated.insert("plan".to_string());
+        let terminal: HashSet<String> = integrated.clone();
+
+        let raw = ready_stages(&stages, &integrated, &terminal);
+        assert!(
+            raw.iter().any(|n| n == "plan-critique"),
+            "precondition: the raw ready set must surface the gate for this pin to bite; got {raw:?}"
+        );
+        let gate = critique_gate_name(&stages);
+        let wave = wave_ready(&stages, &integrated, &terminal, gate.as_deref());
+        assert!(
+            !wave.iter().any(|n| n == "plan-critique"),
+            "the critique gate must never be wave-scheduled; got {wave:?}"
+        );
+    }
+
+    #[test]
+    fn a_resolved_plan_critique_gate_does_not_re_run_on_resume() {
+        // Resume-safety: once the gate has RESOLVED (approved + integrated in a prior
+        // step), a later step reads that from the log and releases the fan-out directly -
+        // it must NOT re-spawn its reviewers or re-emit its integration. Two run() calls
+        // over ONE store model the stepwise resume (the second adopts the first's run).
+        let dir = tempfile::tempdir().unwrap();
+        let crit = "the alpha module is implemented";
+        std::fs::write(dir.path().join("alpha.rs"), format!("// {crit}\n")).unwrap();
+        let cfg = critique_cfg();
+        let st = Store::open(":memory:").unwrap();
+        let grep = crate::grounder::Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+
+        // First run: the gate approves and the fan-out integrates.
+        let d1 = CritiqueDriver::new(Vec::new());
+        let deps1 = Deps {
+            store: &st,
+            driver: &d1,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: None,
+            criteria: vec![crit.to_string()],
+        };
+        let rs1 = run(&cfg, &deps1).unwrap();
+        assert_eq!(
+            rs1.units["plan-critique"].status,
+            ledger::Status::Integrated
+        );
+        assert!(
+            d1.count("judge") >= 1,
+            "the first run must run the adjudicator"
+        );
+
+        // Second run over the SAME store (a resume): the gate is already resolved.
+        let d2 = CritiqueDriver::new(Vec::new());
+        let deps2 = Deps {
+            store: &st,
+            driver: &d2,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: None,
+            criteria: vec![crit.to_string()],
+        };
+        let rs2 = run(&cfg, &deps2).unwrap();
+        assert_eq!(
+            d2.count("judge"),
+            0,
+            "a resolved gate must NOT re-spawn its adjudicator on resume"
+        );
+        assert_eq!(
+            d2.count("planner"),
+            0,
+            "a resumed run over a settled DAG must not re-run the planner"
+        );
+        assert_eq!(
+            rs2.units["plan-critique"].status,
+            ledger::Status::Integrated
+        );
+        // Exactly ONE plan-critique UnitIntegrated across the resume - no duplicate.
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let integrated = events
+            .iter()
+            .filter(|e| {
+                e.type_ == ledger::TYPE_UNIT_INTEGRATED
+                    && String::from_utf8_lossy(&e.data).contains("plan-critique")
+            })
+            .count();
+        assert_eq!(
+            integrated, 1,
+            "the gate must integrate exactly once across the resume, not re-emit"
+        );
+    }
+
+    #[test]
+    fn a_resumed_step_holds_the_fan_out_while_the_plan_critique_gate_is_escalated() {
+        // The resume-hold arm the approve-only resume test cannot reach (spec 10,
+        // done-when 1: ONLY an approve releases the wave). A real planner follows
+        // PLAN_PROTOCOL - its proposed units' `needs` name sibling unit ids, NEVER the
+        // gate - so it emits the split with `needs:[]`. Two run() over ONE store model
+        // the stepwise resume the production `rigger step` path runs on: run 1 the gate
+        // ESCALATES (its adjudicator never approves the shared-blast-radius split); run 2
+        // resumes over that settled, TERMINAL-but-not-integrated gate. The fan-out must
+        // stay HELD across the resume - a step after an escalation must NOT implement the
+        // decomposition three reviews rejected, the exact harm the gate exists to prevent.
+        let dir = tempfile::tempdir().unwrap();
+        let criterion = "the widget renderer is implemented";
+        std::fs::write(
+            dir.path().join("feature.rs"),
+            format!("// {criterion}\nfn render() {{}}\n"),
+        )
+        .unwrap();
+        let cfg = critique_cfg();
+        let st = Store::open(":memory:").unwrap();
+        let grep = crate::grounder::Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+        // PLAN_PROTOCOL shape: the split units carry `needs:[]` (only sibling ids ever
+        // appear here, never the gate) - the exact shape that bypassed the pre-gate wave.
+        let split = || {
+            vec![
+                (
+                    TYPE_UNIT_PROPOSED.to_string(),
+                    json!({"id":"u-a","agent":"worker","criterion":criterion,"needs":[]}),
+                ),
+                (
+                    TYPE_UNIT_PROPOSED.to_string(),
+                    json!({"id":"u-b","agent":"worker","criterion":criterion,"needs":[]}),
+                ),
+            ]
+        };
+
+        // Run 1: the gate escalates (an unresolvable rule 7/8 defect - modelled by an
+        // always-rejecting adjudicator, since blast-radius overlap no longer rejects); the
+        // fan-out is held (no worker runs).
+        let d1 = CritiqueDriver::always_rejecting(split());
+        let deps1 = Deps {
+            store: &st,
+            driver: &d1,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: None,
+            criteria: vec![criterion.to_string()],
+        };
+        let rs1 = run(&cfg, &deps1).unwrap();
+        assert_eq!(
+            rs1.units["plan-critique"].status,
+            ledger::Status::Escalated,
+            "run 1: an unresolvable rule 7/8 defect must escalate the gate"
+        );
+        assert_eq!(
+            d1.count("worker"),
+            0,
+            "run 1: no implementer runs while the gate is unresolved; calls: {:?}",
+            d1.calls.lock().unwrap()
+        );
+
+        // Run 2 over the SAME store (the resume): the gate is terminal-but-not-integrated.
+        let d2 = CritiqueDriver::new(split());
+        let deps2 = Deps {
+            store: &st,
+            driver: &d2,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: None,
+            criteria: vec![criterion.to_string()],
+        };
+        let _ = run(&cfg, &deps2).unwrap();
+        // The resume short-circuit correctly does NOT re-run the gate...
+        assert_eq!(
+            d2.count("judge"),
+            0,
+            "resume: an already-resolved (escalated) gate must not re-spawn its adjudicator"
+        );
+        // ...and, critically, the pre-gate planning wave must NOT fan the rejected units
+        // out. This is the blocker: before the fix, `harvest_proposed` folds the prior
+        // window's proposals (needs:[]) as READY and the pre-gate wave runs them BEFORE
+        // the terminal-hold arm ever fires.
+        assert_eq!(
+            d2.count("worker"),
+            0,
+            "resume: the fan-out must stay HELD over an ESCALATED gate; workers ran: {:?}",
+            d2.calls.lock().unwrap()
+        );
+    }
+
+    #[test]
+    fn an_approved_gate_releases_planner_proposed_units_not_only_baselines() {
+        // The release direction of the same hold (spec 10, done-when 1: an approve
+        // RELEASES the wave). The fix gives PLANNER-proposed units the gate as a
+        // dependency; this pins that the dependency is SATISFIED on approve, so a proposed
+        // unit (not only a conductor baseline) fans out once the gate integrates. The
+        // planner proposes two DISJOINT units (each `needs:[]`, the PLAN_PROTOCOL shape),
+        // superseding the baselines; disjoint blast radii draw no rule-6 conflict, the
+        // adjudicator approves, and BOTH proposed implementers run.
+        let dir = tempfile::tempdir().unwrap();
+        let crit_a = "the alpha module is implemented";
+        let crit_b = "the beta module is implemented";
+        std::fs::write(dir.path().join("alpha.rs"), format!("// {crit_a}\n")).unwrap();
+        std::fs::write(dir.path().join("beta.rs"), format!("// {crit_b}\n")).unwrap();
+        let cfg = critique_cfg();
+        let st = Store::open(":memory:").unwrap();
+        let grep = crate::grounder::Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+        let driver = CritiqueDriver::new(vec![
+            (
+                TYPE_UNIT_PROPOSED.to_string(),
+                json!({"id":"u-a","agent":"worker","criterion":crit_a,"needs":[]}),
+            ),
+            (
+                TYPE_UNIT_PROPOSED.to_string(),
+                json!({"id":"u-b","agent":"worker","criterion":crit_b,"needs":[]}),
+            ),
+        ]);
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: None,
+            criteria: vec![crit_a.to_string(), crit_b.to_string()],
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        assert_eq!(
+            rs.units["plan-critique"].status,
+            ledger::Status::Integrated,
+            "a disjoint decomposition approves and the gate integrates"
+        );
+        assert_eq!(
+            driver.count("planner"),
+            1,
+            "no reject means no re-plan; the planner runs exactly once"
+        );
+        // The proposed units - held behind the gate by the fix - release on approve.
+        assert_eq!(
+            driver.count("worker"),
+            2,
+            "an approve releases the PROPOSED fan-out units; workers ran: {:?}",
+            driver.calls.lock().unwrap()
+        );
+    }
+
+    /// A driver that answers the PLANNER (emitting a shared-blast-radius split in the
+    /// real PLAN_PROTOCOL `needs:[]` shape) but PARKS every reviewer, so the plan-critique
+    /// gate stays UNRESOLVED (mid-review) across a step boundary - the stepwise shape
+    /// where the gate's adversary and adjudicator each take their own `rigger step`. Any
+    /// implementer (`worker`) spawn is recorded via `calls` before it parks, so a fan-out
+    /// that leaks before the gate resolves is detected even though the worker never runs.
+    struct ParkingGateDriver {
+        plan_emits: Vec<(String, Value)>,
+        calls: Mutex<Vec<String>>,
+    }
+    impl ParkingGateDriver {
+        fn new(plan_emits: Vec<(String, Value)>) -> Self {
+            ParkingGateDriver {
+                plan_emits,
+                calls: Mutex::new(Vec::new()),
+            }
+        }
+        fn count(&self, id: &str) -> usize {
+            self.calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|c| *c == id)
+                .count()
+        }
+    }
+    impl AgentDriver for ParkingGateDriver {
+        fn spawn(
+            &self,
+            a: &AgentDef,
+            _prompt: &str,
+            opts: &SpawnOpts,
+            emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+        ) -> Result<AgentResult, Error> {
+            self.calls.lock().unwrap().push(a.id.clone());
+            if a.id == "planner" {
+                for (t, v) in &self.plan_emits {
+                    emit(t, v.clone())?;
+                }
+                return Ok(AgentResult {
+                    output: "proposed the DAG".into(),
+                    resolved_model: String::new(),
+                });
+            }
+            // Every reviewer (and any leaked implementer) parks: the gate never renders a
+            // verdict, so it stays unresolved (mid-review) across the resume.
+            Err(parked_spawn(&opts.id))
+        }
+    }
+
+    #[test]
+    fn a_resumed_step_holds_the_fan_out_while_the_plan_critique_gate_is_mid_review() {
+        // The OTHER held arm (spec 10, done-when 1): a gate parked MID-REVIEW - the
+        // stepwise dogfood shape where plan integrates on step 1 and the gate's reviewers
+        // park across later steps. On the resume the gate is neither integrated NOR
+        // terminal (its verdict is unrendered), so the fan-out must stay held. Before the
+        // fix the pre-gate planning wave folds the prior window's proposals (needs:[]) as
+        // ready and runs the implementers BEFORE the gate re-reaches its (still parked)
+        // adjudicator - fanning out over a decomposition NO reviewer has approved.
+        let dir = tempfile::tempdir().unwrap();
+        let criterion = "the widget renderer is implemented";
+        std::fs::write(
+            dir.path().join("feature.rs"),
+            format!("// {criterion}\nfn render() {{}}\n"),
+        )
+        .unwrap();
+        let cfg = critique_cfg();
+        let st = Store::open(":memory:").unwrap();
+        let grep = crate::grounder::Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+        let split = || {
+            vec![
+                (
+                    TYPE_UNIT_PROPOSED.to_string(),
+                    json!({"id":"u-a","agent":"worker","criterion":criterion,"needs":[]}),
+                ),
+                (
+                    TYPE_UNIT_PROPOSED.to_string(),
+                    json!({"id":"u-b","agent":"worker","criterion":criterion,"needs":[]}),
+                ),
+            ]
+        };
+
+        // Run 1: the planner emits the split, then the gate parks mid-review.
+        let d1 = ParkingGateDriver::new(split());
+        let deps1 = Deps {
+            store: &st,
+            driver: &d1,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: None,
+            criteria: vec![criterion.to_string()],
+        };
+        run(&cfg, &deps1).unwrap();
+        assert_eq!(
+            d1.count("worker"),
+            0,
+            "run 1: no implementer runs while the gate is mid-review; calls: {:?}",
+            d1.calls.lock().unwrap()
+        );
+
+        // Run 2 over the SAME store (the resume): the gate is STILL unresolved (its
+        // verdict was never recorded), so the fan-out must remain held.
+        let d2 = ParkingGateDriver::new(split());
+        let deps2 = Deps {
+            store: &st,
+            driver: &d2,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: None,
+            criteria: vec![criterion.to_string()],
+        };
+        run(&cfg, &deps2).unwrap();
+        assert_eq!(
+            d2.count("worker"),
+            0,
+            "resume: the fan-out must stay HELD while the gate is mid-review; workers: {:?}",
+            d2.calls.lock().unwrap()
         );
     }
 }
