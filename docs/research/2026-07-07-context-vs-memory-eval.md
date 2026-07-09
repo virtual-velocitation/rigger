@@ -1,0 +1,32 @@
+# Rigger evaluated against "Context vs. Memory Engineering in Agentic AI Systems"
+
+Source: [machinelearningmastery.com/context-vs-memory-engineering-in-agentic-ai-systems](https://machinelearningmastery.com/context-vs-memory-engineering-in-agentic-ai-systems/) (fetched 2026-07-07). The article splits the problem in two: **context engineering** (one inference call - what enters the window, how it is compressed and placed, what is discarded) and **memory engineering** (what survives across calls - write policy, storage, retrieval, maintenance), meeting at the **retrieval boundary** (memory produces candidates; context assembly decides inclusion, amount, and placement).
+
+Rigger's whole thesis is memory-first, so this is a fair mirror. The verdict: rigger is unusually strong on the two halves it was designed around and has three genuine gaps at the edges the article names.
+
+## Where rigger already does what the article recommends
+
+- **Selective inclusion = blast-radius grounding.** The article's first principle ("not all data should enter context; compress before injection") is rigger's core: every agent grounds on ONLY its blast-radius via `rigger ground` (turbovec semantic search + context-graph subgraph), never the whole repo. Strong.
+- **Retrieval-aware context budgeting (the article's Failure Mode #1) is already built.** The article names "retrieval without a context budget" as a top failure mode and prescribes allocating token budgets before retrieval. Spec 07 (Gaps 15/17) did exactly this: per-section byte budgets on the decisions/findings/lessons injection, with a visible elision note and a `rigger peers` recovery pointer. Rigger fixed by hand the failure the article warns about.
+- **Episodic memory is richer than the article's vector-store model.** The article stores episodic memory in a vector store retrieved by similarity. Rigger's episodic memory is the append-only event log (`events.db`) - a full causal, ordered, bi-temporal record (what happened, in what order, valid-from/valid-to). It is queryable by run scope, actor, and file, not just fuzzy similarity. For an agent dev-loop this is a strict superset.
+- **Semantic memory is the recommended hybrid.** The article recommends "vector store + K/V hybrid" for semantic memory. Rigger IS that hybrid: the context graph (decisions/findings as facts with GOVERNS/ABOUT/SUPERSEDES edges) plus the turbovec vector index over code.
+- **Bi-temporal invalidation without deletion.** The article's "update and conflict handling" and "stale facts compete with current ones" - rigger answers with SUPERSEDES edges (explicit) and `valid_to` (temporal), so a superseded decision is invalidated-not-deleted, exactly the Zep/Graphiti model the article's lineage draws on.
+- **Working memory + live cross-agent sharing.** The side-car's subscription poll makes concurrent agents see each other's decisions the moment they land - the article's "working memory during long-horizon interactions," extended to a fan-out of agents.
+- **Provenance.** Events carry `META_ACTOR` (agent_id), `run_id` (session), position and `recorded_at`. Most of the article's provenance dict is present.
+
+## Genuine gaps the article surfaces
+
+**Gap 23 - position-aware placement ("lost in the middle" / the article's Failure Mode #2).** Rigger budgets the AMOUNT of retrieved memory (spec 07) but not its PLACEMENT: the budgeted sections are assembled in a fixed order, not positioned so the most load-bearing decision sits near the generation point. The article and the campaign's own review-calibration research (position bias in rubric judges) both flag this. Actionable: order the budgeted injection by relevance-to-this-task and place the highest-relevance items last (nearest the prompt tail), not merely most-recent-first.
+
+**Gap 24 - memory maintenance (confidence decay, dedup, TTL) on the projection.** Rigger never forgets the log (correct, R2) but its PROJECTION into a prompt is recency-N with no confidence decay, no semantic dedup, and no TTL on volatile facts - so as a project accumulates history, the signal-to-noise of what gets injected drops (the article's "memory degradation"). Spec 13's playbook distillation dedups LESSONS only. Actionable: a maintenance pass over the injected projection - decay confidence on volatile decisions, dedup semantically-near findings before budgeting, and rank by importance x recency x survival-rate rather than pure recency. (Composes with the finding-survival telemetry from the review-calibration research.)
+
+**Gap 25 - trust-level weighting on memory provenance.** The article weights memory by trust (1.0 internal, 0.5 user, 0.0 external). Rigger records WHO emitted a fact (`META_ACTOR`) but does not WEIGHT retrieval by source trust - an adversary's refuted finding and an adjudicator's ratified decision carry equal injection weight. Lower priority (rigger's fleet is all internal today), but as rigger ingests external content (imported agent fleets, web-grounded facts) a trust weight on the injection ranking becomes real. Actionable: a trust field on the emit vocabulary, folded into Gap 24's ranking.
+
+## Deliberate divergences (not gaps)
+
+- **Write-time importance gating.** The article gates writes on `importance >= 0.6 and confidence >= 0.7 and trust >= 0.5`. Rigger deliberately does NOT gate writes: the event log stores everything (R2 - the log is the single truth, never lossy at write), and selectivity happens at RETRIEVAL (grounding + budgeting). This is a principled difference, not a deficiency; rigger trades write-time storage for the ability to reproject history under new rules (spec 09's migration, spec 13's replay depend on it). Gap 24 brings the article's benefit (signal-to-noise) at retrieval time without sacrificing the lossless log.
+- **Procedural memory.** The article's "procedural memory" = rigger's planned distilled playbooks (spec 13 unit 6, trigger-predicate markdown). Already on the roadmap.
+
+## Bottom line
+
+Rigger's memory-first architecture already implements the article's hardest recommendations (retrieval-aware budgeting, hybrid semantic store, bi-temporal invalidation, live working memory) and its event-log episodic memory exceeds the vector-store baseline. The three gaps (placement, maintenance/decay, trust-weighting) are all at the RETRIEVAL BOUNDARY the article identifies as the crux - and all three fold naturally into the existing improvement program's ranking/injection machinery rather than needing new infrastructure.

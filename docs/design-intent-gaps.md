@@ -1,6 +1,6 @@
 # Design-intent gaps
 
-Status: assessed 2026-07-01 against [architecture.md](architecture.md) after the three-gap dogfood run (PR #7); updated through 2026-07-03 across the stepwise-conductor campaign's four loop runs (specs 04-07). ALL RECORDED GAPS (1-19) ARE CLOSED. Open work: NONE - the housekeeping deferrals were delivered by spec 08 (helper consolidation, canonical scaffold seed, the missing test pins, loud failed writes, honest --if-absent advisories, outermost-store-wins). New gaps discovered by future runs land here as before.
+Status: assessed 2026-07-01 against [architecture.md](architecture.md) after the three-gap dogfood run (PR #7); updated through 2026-07-09 across the stepwise-conductor + improvement-program campaigns (specs 04-14). Gaps 1-22 and 26-30 are CLOSED (21 by spec-12 unit-5; 26 run-scoping + `--fresh`; 27 by spec-14; 28 integrate-conflict recovery; 29 was a MISDIAGNOSIS, corrected; 30 the `rigger step` serialization fix). Open work: Gaps 23-25 (memory retrieval-boundary gaps from the 2026-07-07 context-vs-memory eval - placement, projection maintenance, trust weighting; all fold into the existing injection-ranking machinery, which spec-13 unit-7's blast-radius relevance ranking for the lessons section now partly realizes). The improvement program in docs/research/ drove specs 10-13; spec 13 is complete (all 7 units integrated).
 
 This document records where the implementation currently falls short of the design intent, with the evidence that surfaced each gap and the shape of the fix. It is the feed for the next loop runs: each gap is written so it can be lifted into a spec's "Done when" criteria with little editing. Remove entries as they close.
 
@@ -9,6 +9,116 @@ This document records where the implementation currently falls short of the desi
 Dogfooding. Rigger ran on its own spec; the run's telemetry (`rigger stats`, `rigger peers`), the `/workflows` display, and independent verification of the run's output are the evidence base. The through-line: the memory layer and the review economics are delivering as designed (78.6% first-pass yield, 0% escalations, decisions demonstrably inherited across agents); the gaps concentrate in the **native workflow driver**, which implements the loop's shape but not all of the conductor's safeguards.
 
 ---
+
+## Gap 21: integrate asserts "done" on a merged tree the gates never saw
+
+**Intent.** R6: a unit is done only when machine-verified - and the thing that must be verified is what actually LANDS, the post-merge tree.
+
+**Reality.** Gates run in the unit's worktree (pre-merge); integration merges into the run branch WITHOUT re-running gates on the merged result. Two units that are each green in isolation can merge into a broken tree: spec-10 unit-1 (stale-based, one-arg `agent_model` calls) textually auto-merged over unit-4's two-arg signature change and `rigger-run` stopped compiling - while both units' events read Integrated. The breakage surfaced only at the next `cargo install`, hours later.
+
+**Evidence.** 2026-07-03: commits 57baf35 (unit-4) + 07f9f44/95ba133 (unit-1) produced a rigger-run tree failing `cargo build` with E0061/E0063; operator hand-weave repaired it. PR-level CI would have caught it eventually; the run branch was broken and "integrated" in the meantime.
+
+**Fix shape.** The integrate step re-runs the gate suite against the MERGED tree before emitting `UnitIntegrated` (spec 12's content-addressed verdicts make this cheap - an unchanged-input gate is a cache hit, so the post-merge re-gate costs only what the merge actually changed); a red post-merge re-gate blocks integration and feeds remediation with the semantic-conflict evidence.
+
+**Status: CLOSED (spec 12 unit 5) 2026-07-08.** The integrate step now re-gates the MERGED tree before emitting `UnitIntegrated`: a red post-merge re-gate resets to the pre-merge tip and feeds remediation. Landed as the `integrate re-gates the MERGED tree before it lands` unit and proven live on the spec-12 dogfood run. Scope stays narrow (the UNPREDICTED-overlap case): `partition: by-blast-radius` already serializes units whose GROUNDED radii overlap, so this catches only two units the grounder mis-placed in one batch that merge into a broken tree.
+
+## Gap 22: the plan-critique gate escalates on a resumed run over baseline-vs-replan duplication
+
+**Intent.** The plan-critique gate (spec 10 unit 1) rejects a decomposition that violates handbook rules 6-8 (duplicate ownership, shared blast radius) BEFORE fan-out, and a reject sends the planner back to fix it.
+
+**Reality.** On a resumed run the planner re-proposes units under FRESH slugs (`u-plancritique`, `u-modelladder`) while the run still holds the earlier waves' baseline/integrated units (`unit-1-a-plan-critique-...`, `unit-4-...`) - so the gate correctly sees TWO units owning one mitigation and rejects, but the planner cannot resolve it: `UnitProposed` only ADDS, and the supersede-the-baseline path needs a verbatim-criterion match the re-slug breaks. The planner itself diagnosed "the plan-critique REJECT is UNRESOLVABLE by any UnitProposed" and the gate escalated after 6 attempts, wedging the fan-out for work that was already done. Introducing the gate MID-RUN (the binary gained it between waves) is what first exposed this.
+
+**Evidence.** 2026-07-07: spec-10 run wf_3db89015 escalated `plan-critique` at event 5522 after 6 replan cycles; findings 5496-5499 name the baseline-vs-replan duplicate pairs. Operator disposition: removed the gate from rigger's OWN workflow.yml (kept in the scaffold, fully tested) so rigger self-hosts; unit-2/3 finished by hand.
+
+**Fix shape.** Two parts: (a) the gate critiques only units that will actually FAN OUT, excluding already-integrated and terminal units, treating them as settled not duplicate candidates; (b) definition pinning (spec 13 unit 1) prevents a gate being introduced mid-run at all.
+
+**Status: CLOSED (root-cause, architecture-aligned) 2026-07-07.** Deeper analysis against the reference architecture showed the gate's whole rule-6 mechanism was the defect: `partition: by-blast-radius` is the architecture's stated handling of shared blast radius ("disjoint batches -> safe parallelism"), and worktree isolation keeps reviewers on their own diff - so a shared blast radius is NOT a decomposition defect, and the gate's `blast_radius_conflicts -> reject` both duplicated and contradicted the partitioner (rejecting at plan-time what the partitioner serializes safely at run-time, and pre-empting it by holding the fan-out). Resolution: the gate's mechanical blast-radius auto-reject is REMOVED; overlap is presented to the adjudicator as informational context; the gate keeps its genuinely-unique value - cross-unit OWNERSHIP (rule 7) and open DISPOSITIONS (rule 8), the actual spec-05 cause, which per-unit review cannot see. Handbook rule 6 corrected. plan-critique stays wired into rigger's own loop. (The earlier integrated/terminal exclusion in `dag_unit_blast_radii` remains, now just keeping settled units out of the informational context.)
+
+## Gap 23: the budgeted prompt injection controls amount but not placement
+
+**Intent.** Retrieved memory that is critical to the current reasoning should sit where the model attends most - near the generation point (the "lost in the middle" effect).
+
+**Reality.** Spec 07 budgets the AMOUNT of each injected section (decisions/findings/lessons) but assembles them in a fixed section order, most-recent-first within a section - not positioned by relevance to the current task. The most load-bearing decision can land in the low-attention middle.
+
+**Evidence.** The context-vs-memory-engineering evaluation (docs/research/2026-07-07-context-vs-memory-eval.md, Failure Mode #2), corroborated by the review-calibration research's position-bias finding.
+
+**Fix shape.** Rank the budgeted items by relevance-to-this-task and place the highest-relevance last (nearest the prompt tail); keep the byte budgets. Composes with Gap 24's ranking.
+
+## Gap 24: the injected projection has no maintenance (decay, dedup, TTL)
+
+**Intent.** Retrieval quality holds as a project accumulates history: stale facts do not crowd out current ones.
+
+**Reality.** The event log correctly never forgets (R2), but the PROJECTION into a prompt is recency-N with no confidence decay on volatile decisions, no semantic dedup of near-duplicate findings, and no TTL - so signal-to-noise of the injection drops over a long project (the article's "memory degradation"). Spec 13's playbook distillation dedups lessons only.
+
+**Evidence.** docs/research/2026-07-07-context-vs-memory-eval.md, "memory maintenance."
+
+**Fix shape.** A maintenance pass over the injected projection (NOT the log): decay confidence on volatile decisions, dedup semantically-near findings before budgeting, rank by importance x recency x finding-survival-rate rather than pure recency. Folds the review-calibration finding-survival telemetry into the ranking.
+
+## Gap 25: memory retrieval is not weighted by source trust
+
+**Intent.** A ratified adjudicator decision and a refuted adversary finding should not carry equal weight when injected.
+
+**Reality.** Events record WHO emitted them (META_ACTOR) but retrieval/injection does not WEIGHT by source trust (internal vs user vs external). Low impact while the fleet is all-internal; real once external content (imported fleets, web-grounded facts) enters the graph.
+
+**Evidence.** docs/research/2026-07-07-context-vs-memory-eval.md, trust-level weighting (article: 1.0 internal / 0.5 user / 0.0 external).
+
+**Fix shape.** A trust field on the emit vocabulary, folded into Gap 24's injection ranking. Lower priority than 23/24.
+
+## Gap 26: a plan-critique escalation leaked across runs, and a correct spec had no evented restart
+
+**Intent.** Run scoping (Gap 11) makes each run a self-contained slice: a fresh run folds work from ONLY its own slice, and prior runs stay visible as memory but can never become live work. A run wedged by a since-fixed defect must be re-runnable - an escalation names a problem for a human, and the human's resolution is a NEW event, never a silent overwrite of the old one.
+
+**Reality.** Two coupled defects broke this for the plan-critique gate. (a) The replay driver answered a spawn by reading the WHOLE stream for a recorded result under its deterministic id - but the fixed-stage ids (`plan-critique/adjudicator#N`, `plan/replan#N`) are spec-INDEPENDENT, so a fresh run REPLAYED a prior run's recorded plan-critique reject instead of running its own adjudicator, escalating the gate on an old verdict the new reviewer never produced. Run scoping (Gap 11) had closed the read side for the ledger/spawn/metrics folds but NOT for the replay driver's answer/park lookup. (b) Even once (a) was fixed, the already-escalated run stays terminal within its slice (the resume short-circuit holds the fan-out forever - correct for resume), and `ensure_started` ADOPTS a same-criteria run - so a correct spec whose only problem was the since-fixed bug could never be cleanly re-run: every relaunch re-adopted the wedged run.
+
+**Evidence.** 2026-07-07: the spec-12 run (`f45180e6`, boundary at event 5081-era ids) held `plan` integrated and `plan-critique` escalated at 6 attempts, fan-out never released; the dash showed the spec-10 reject decision `d-plancritique-verdict-1` as the wedging verdict, replayed across the run boundary.
+
+**Fix shape.** (a) Scope the replay driver's answer/park lookup to `runscope::current_run` (commit 389723a), completing Gap 11 for the last fold that read whole-stream; this keeps a prior decision OVERTURNABLE - the new adjudicator runs, grounds on the prior reject as visible context, and supersedes it with a new verdict, rather than freezing the old one by replaying it. (b) `runscope::start_fresh` + `rigger run --fresh`: an explicit, evented restart that appends a new `RunStarted` for the current criteria even when the latest run matches, so the wedged gate runs anew in a clean slice while the prior run stays in the log as history and context. Cross-run decision context is untouched throughout - it flows whole-stream through grounding/`peers`; only execution-replay bookkeeping is run-scoped.
+
+**Status: CLOSED (root-cause) 2026-07-07.** Both fixes carry regression tests (a prior run's recorded result never answers a fresh run's same-id spawn; `start_fresh` mints a new boundary even when criteria match). Distinct from Gap 22 (which removed the WRONG-reject mechanism): this closes the cross-run LEAK of a correct-or-not verdict and the missing recovery affordance.
+
+## Gap 27: rigger does not present live agent activity - the event log only records milestones
+
+**Intent.** Rigger is the authority on what every agent is doing; an operator (and the driver) should be able to see, at any moment, each in-flight agent's current activity and that it is alive - not just the discrete decisions it has committed.
+
+**Reality.** Agents emit events only at MILESTONES - `DecisionMade`, `SpawnResult`, `GateVerdict`. Everything between them (grounding, reading, editing, running cargo) emits nothing, so an agent can work 20-30 minutes with the event store - rigger's own observability substrate, read by `rigger dash`/`stats`/`peers` - showing a blackout. The only liveness signal is a bare per-spawn file marker the worker voluntarily touches (spec 10 unit 3), read by an ad-hoc haiku PROBE the JS driver spawns to `stat` it (the Workflow-tool script sandbox has no filesystem access - only `agent()`), and never surfaced to any observability surface. So the best rigger can say about a live agent is "its marker was touched N seconds ago", and even that is invisible to the operator. Spec 11's observability work covered the past/present/future of the event LOG, not live agent progress - a different, missing thing.
+
+**Evidence.** 2026-07-08: during the spec-12 dogfood run, unit-4's implementer worked continuously for ~26 minutes (30+ grep/read commands, transcript never idle >2.6 min) before recording its first store event; every store-reading monitor saw a stall where the agent was in fact busy. The pattern was initially misread as a machine sleep before the transcript timeline proved the agent had been working the whole time.
+
+**Fix shape (spec 14, Wave 5).** Rigger becomes the authority that CONSOLIDATES its signals and PRESENTS a live per-agent view; consumers receive it rather than reassembling it. Agents emit fine-grained `AgentProgress` events to a SEPARATE non-replayed store (`.rigger/progress.db`, a sibling of `graph.db`, so no run fold can read it and replay is structurally untouched) via a new `rigger progress <id> "<activity>"` verb. A Rust consolidator folds the current run's milestones + progress + marker-mtime into a live view exposed by `rigger status`, a `rigger_activity` MCP tool (so the real-Node shim gets up-to-the-second state over its existing connection), and the dash's present view. The driver-side haiku `stat` probe is retired - it was the sandboxed driver reconstructing, badly, what rigger already knows; the spec-10 marker itself stays (Rust reads it and presents the liveness age).
+
+**Status: CLOSED (spec 14, Wave 5) 2026-07-08.** All four units landed: the progress store + `rigger progress`; the consolidator + `rigger status` + `rigger_activity` MCP tool; per-step emission in all three drivers + retirement of the haiku probe; the dash present-view. Validated live on the spec-13 dogfood run - `rigger status` showed each in-flight agent's activity filling a 161s store blackout. (Follow-up caught by the same dogfood: agents reliably emit progress but skip the SEPARATE spec-10 marker touch, so the two write-side actions want unifying - `rigger progress` should also touch the marker; tracked for a spec-14 refinement.)
+
+## Gap 28: the conductor's integrate wedges the whole run on a git merge conflict
+
+**Intent.** A unit's integration must never wedge the run or leave the run branch broken. `partition: by-blast-radius` serializes PREDICTED overlaps into separate batches, but the grounder's blast-radius prediction is imperfect - an UNPREDICTED overlap (two batch-mates that actually edit the same region) must be RECOVERED like any other failure, not fatal.
+
+**Reality.** `Worktree::integrate` was a bare `git merge --no-edit`. When an unpredicted-overlap unit's merge CONFLICTED, the conductor errored MID-MERGE, left the run branch with unmerged files, and wedged `rigger step` for the ENTIRE run - a broken branch no subsequent step could advance past. Spec-12 unit-5 (Gap 21) re-gates a SUCCESSFUL merge for SEMANTIC breaks, but a textual merge CONFLICT is an earlier failure it never reaches.
+
+**Evidence.** 2026-07-09: spec-13 dogfood run wf_8ba0cd57. The grounder placed three `src/conductor.rs`-editing units (definition-pinning, review-tiers, speculation-width) in ONE batch; two integrated, then review-tiers's merge conflicted on `src/conductor.rs`, left the run branch mid-merge (`UU src/conductor.rs`), and `rigger step` failed exit 1 with no JSON - the whole run stopped.
+
+**Fix shape.** `integrate()` returns `IntegrateOutcome::{Merged, Conflict}`; a Conflict ABORTS the merge (the run branch is left exactly as it was) and the conductor RESETS the unit's branch to the run-branch tip and re-enters remediation - so the unit re-implements off the current integrated tree and its next merge rebases cleanly - EXACTLY like spec-12 unit-5's post-merge-RED rollback (the textual-conflict sibling of that semantic-break path). Never wedges the run.
+
+**Status: CLOSED (root-cause) 2026-07-09.** Pinned by a worktree test (an add/add conflict aborts, leaves the run branch untouched with no merge in progress, and reports Conflict). The partitioner's under-grounding (the trigger) is a separate grounder-accuracy concern; this closes the AMPLIFIER that turned a recoverable conflict into a run-wedge.
+
+## Gap 29: a gate's test run can pollute and HIJACK the live run store
+
+**Intent.** A gate (`cargo test`) verifies a unit; it must have NO side effect on the live run store. A run's `RunStarted` boundaries are the spine of run-scoping - nothing outside the run's own driver may append one.
+
+**Reality (this was a MISDIAGNOSIS - empirically DISPROVEN 2026-07-09).** A gate's `cargo test` does NOT touch the live run store. Three checks settle it: (1) running the full `cargo test` from a real git-linked unit worktree left the run-stream event HISTOGRAM byte-identical (no `RunStarted` appended, no hijack); (2) with `events.db` made read-only, all 440 lib tests still passed - no test attempts a write to it; (3) with a clean checkpoint and the WAL stripped, `cargo test` left `events.db` byte-identical (md5 + size). The md5 churn that first looked like pollution was leftover-WAL checkpoint-on-open from MY OWN diagnostic reads (`rigger dash --export` / `rigger stats`), not the tests. The shipped tests all isolate (`:memory:` or `tempfile::tempdir` with an explicit cwd); the store walk-up from a worktree is INTENTIONAL courier design (pinned by `result_from_a_nested_git_worktree_records_into_the_repo_stream`); and the run driver (`run`/`step`) uses a cwd-relative `db_path`, so a worktree gets its OWN store and a `RunStarted` can never reach the main store from a gate.
+
+**Actual cause of the observed "burying".** The real run was superseded by `RunStarted` boundaries created at the REPO ROOT via `rigger run --fresh` / fresh spec-13 launches during debugging - ordinary run-scoping supersession (a new boundary becomes `current_run`), which was misattributed to a gate.
+
+**Status: CLOSED (not a defect / misdiagnosis corrected) 2026-07-09.** No gate-sandbox fix is warranted - fabricating one would paper over a non-existent defect. The genuine adjacent behavior (a `rigger run --fresh` at the repo root supersedes the current run scope) is by design; the run branch and the integrated git history are unaffected regardless of which run scope is current.
+
+## Gap 30: concurrent `rigger step` invocations deadlock on cross-process ORT/CUDA construction
+
+**Intent.** `rigger step` advances the run one frontier. It runs cargo gates, whose grounder tests build ORT/CUDA embedding sessions. Constructing an ORT/CUDA session concurrently across processes corrupts the heap / hangs on a CUDA box (already documented: the turbovec model tests take a cross-binary `file_serial` lock, and the grounder holds a per-process `CONSTRUCT_MU`). Nothing enforced that invariant ACROSS separate `rigger step` processes.
+
+**Reality.** The workflow driver couriers `rigger step` through a Bash call capped at 600s (the tool ceiling). A step whose `cargo test` gate runs longer than that is killed at the Bash layer, but its `rigger step` CHILD orphans and keeps running the gate; the courier then re-runs `rigger step`, so two steps run at once. Each runs a `cargo test` gate whose grounder subprocesses build ORT/CUDA sessions CONCURRENTLY ACROSS PROCESSES - the documented hazard - and both hang the GPU forever. Nothing sweeps a hung GATE (the liveness bound only covers agents), so the run wedges permanently. A single gate is fine: it serializes its own construction internally, which is why one step always ran clean.
+
+**Evidence.** 2026-07-09: spec-13 dogfood workflow wf_2335f5b9 ran ~4.75h / 12 waves, then deadlocked - two `rigger step` + two `cargo test` + a `rigger ground` subprocess all pinned at 0% CPU for 20+ minutes, store idle 21 minutes, two adversary reviewers parked with no heartbeat. The workflow finally failed ("courier agent completed without calling StructuredOutput").
+
+**Status: CLOSED (root-cause, two layers) 2026-07-09.** (a) The observed TRIGGER: `cmd_step` takes an exclusive advisory `flock` (fs2) on `.rigger/step.lock` for its whole duration, auto-released even on crash/kill - a second concurrent step REFUSES fast with a driver-recognizable token instead of deadlocking, and the workflow courier treats that "already running" refusal as transient back-off (wait + retry) so an orphaned step finishes ALONE and the retry then proceeds. Pinned by `a_second_concurrent_rigger_step_refuses_and_the_lock_frees_on_release`; proven live on the flawless spec-13b loop. (b) The deeper ROOT: ort/CUDA session construction was serialized only WITHIN a process (`CONSTRUCT_MU`), never across processes (the store flock guards store I/O, not the build), so ANY two grounding commands - a gate's `rigger ground`, a `rigger canary` during a run, the MCP/serve driver - could still race the GPU. `Turbovec::construct` now takes a MACHINE-WIDE flock around the CUDA build (matching the per-GPU scope and the tests' `file_serial`), released before the store load. The step-lock closes the trigger; the construction lock closes the class for every driver.
 
 ---
 
@@ -39,3 +149,4 @@ Move entries here when they land, with the closing PR.
 - **Gap 17 (findings/lessons uncapped in prompts)** - closed by spec 07 unit 1: one shared budgeted-section writer renders decisions, findings, and lessons alike (recent-N verbatim, visible elision note with the `rigger peers` recovery, per-section byte budgets as named constants).
 - **Gap 18 (degenerate reviewer charges an attempt)** - closed by spec 07 unit 2: an empty/whitespace reviewer result triggers a bounded, deterministic, replay-safe respawn instead of folding a failure; exhausting the respawn bound halts the run loudly naming the dead reviewer (tier-aware and recoverable after the retry round).
 - **Gap 19 (shared build-cache pollution)** - closed by spec 07 unit 3: worktree gates get per-unit `CARGO_TARGET_DIR`s reclaimed by the terminal sweep; the shared cache serves only the courier's inline gates on the integrated tree.
+- **Gap 20 (volatile project identity)** - closed by spec 09: identity is the tracked `.rigger/project.id` (minted from the normalized origin URL, random without a remote; clones inherit), with legacy-basename fallback, a one-time recorded stream migration, loud refusal on ambiguous double-namespace stores, and a validate nudge. History survives a directory rename, pinned end-to-end.

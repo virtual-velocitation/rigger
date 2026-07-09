@@ -263,6 +263,47 @@ binding. All three tiers are optional and compose: a panel may run lenses alone,
 an adjudicator, or the full three tiers; an empty panel runs no per-unit review. Every
 planner-proposed unit inherits `defaults.review` automatically.
 
+**Risk-tiered review depth (opt-in).** Running the full adversarial panel on every unit
+spends the same review budget on a one-line change to a leaf file as on a change to a core
+trait. A `review` block may carry an optional `tiers:` depth policy to right-size the panel
+to each unit's *observable* risk:
+
+```yaml
+defaults:
+  review:
+    lenses: [architecture, sdet, game-design]
+    adversary: adversary
+    adjudicator: adjudicator
+    tiers:
+      light:            # the reduced roster a low-risk unit reviews itself with
+        lenses: [architecture]
+        adjudicator: adjudicator
+      threshold: 3      # max grounded blast-radius file count to stay "low risk"
+                        # (inert at/above the grounder's k=8 cap - see below)
+      high_risk_paths:  # a blast-radius hit here forces the full panel regardless of size
+        - src/conductor.rs
+        - "specs/**"
+```
+
+Before running the tiers, the conductor routes each unit to `light` or the full panel from
+signals it already computes: the unit's grounded blast-radius size against `threshold`,
+whether any blast-radius file matches a `high_risk_paths` prefix/glob, and whether the
+unit's gates *flapped* (it needed remediation to reach green). Any high-risk signal runs the
+full panel; only a small, low-path, first-pass-green unit runs the reduced `light` roster.
+Risk signals **fail safe**: when risk cannot be measured - an **empty grounded blast radius**
+(no grounder configured, or a coverage query that grounds to zero files) - the unit routes to
+the **full** panel, never `light`, so a `tiers`-without-a-grounder workflow can never silently
+downgrade every unit's review. The size `threshold` is bounded above by the grounder's `k`
+cap (at most 8 distinct files are grounded), so a `threshold >= 8` is inert by size alone -
+use `high_risk_paths` for breadth beyond the cap. The **adjudicator and the full gate suite
+stay mandatory on every tier** - only the adversary and the extra lenses flex, so a
+light-routed unit still earns a gating verdict. Config load rejects a `light` panel that names
+no adjudicator **and** a `tiers` policy whose enclosing full panel names no adjudicator (a
+high-risk unit routes to that panel, so it too must render a verdict). Every routing decision
+is logged with its inputs (including the empty-radius fail-safe). The policy is **opt-in**:
+with no `tiers:` block every unit runs the full panel exactly as before, so existing workflows
+are unchanged.
+
 ### 3.3 Gates are config, not code
 
 A gate is `{ run: <command>, kind: core|elevated|deferred }`. Rigger runs it, captures a

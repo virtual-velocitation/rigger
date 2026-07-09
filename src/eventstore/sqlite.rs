@@ -51,6 +51,54 @@ impl Store {
             conn: Arc::new(Mutex::new(conn)),
         })
     }
+
+    /// Whether any stream whose name starts with `prefix` holds an event. An EXACT
+    /// prefix comparison (`substr(stream, 1, length(prefix)) = prefix`), never a `LIKE`
+    /// pattern, so a prefix carrying SQL wildcards (`_` / `%` - e.g. a project namespace
+    /// derived from a directory basename such as `my_repo`) matches literally rather than
+    /// as a wildcard. This is a store-level maintenance read: the spec-09 identity
+    /// migration uses it to decide whether a project namespace is populated.
+    pub fn has_stream_prefix(&self, prefix: &str) -> Result<bool, Error> {
+        let conn = self.conn.lock().unwrap();
+        let present: i64 = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM events WHERE substr(stream, 1, length(?1)) = ?1)",
+                params![prefix],
+                |r| r.get(0),
+            )
+            .map_err(be)?;
+        Ok(present != 0)
+    }
+
+    /// Rename every stream whose name starts with `from` to the same name with `from`
+    /// replaced by `to`, in place, returning the number of DISTINCT streams moved. A
+    /// store-level maintenance operation (the spec-09 identity migration): it moves a
+    /// project's whole history from one namespace to another while preserving each
+    /// event's position, revision, and payload. The prefix comparison is exact (not
+    /// `LIKE`), and the caller guarantees the `to` namespace is empty, so the
+    /// `UNIQUE(stream, revision)` index never collides. Renaming when nothing matches
+    /// `from` moves nothing and returns 0 (idempotent shape).
+    pub fn rename_stream_prefix(&self, from: &str, to: &str) -> Result<usize, Error> {
+        let mut guard = self.conn.lock().unwrap();
+        let tx = guard
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(be)?;
+        let renamed: i64 = tx
+            .query_row(
+                "SELECT COUNT(DISTINCT stream) FROM events WHERE substr(stream, 1, length(?1)) = ?1",
+                params![from],
+                |r| r.get(0),
+            )
+            .map_err(be)?;
+        tx.execute(
+            "UPDATE events SET stream = ?2 || substr(stream, length(?1) + 1) \
+             WHERE substr(stream, 1, length(?1)) = ?1",
+            params![from, to],
+        )
+        .map_err(be)?;
+        tx.commit().map_err(be)?;
+        Ok(renamed as usize)
+    }
 }
 
 fn be<E: std::fmt::Display>(e: E) -> Error {
@@ -341,6 +389,87 @@ mod tests {
         assert_eq!(b[0].revision, 0);
         // stream + valid_from round-trip
         assert_eq!(a[0].stream, "a");
+    }
+
+    #[test]
+    fn has_stream_prefix_matches_literally_not_as_a_like_pattern() {
+        let s = Store::open(":memory:").unwrap();
+        // A project namespace whose basename carries a SQL `LIKE` wildcard (`_`).
+        s.append(
+            "proj-my_repo-run",
+            ExpectedRevision::Any,
+            &[Event::new("A", b"".to_vec())],
+        )
+        .unwrap();
+        assert!(s.has_stream_prefix("proj-my_repo-").unwrap());
+        // The `_` is a LITERAL, not a single-char wildcard: a different name must NOT match.
+        assert!(!s.has_stream_prefix("proj-myXrepo-").unwrap());
+        assert!(!s.has_stream_prefix("proj-absent-").unwrap());
+    }
+
+    #[test]
+    fn rename_stream_prefix_moves_history_preserving_revisions() {
+        let s = Store::open(":memory:").unwrap();
+        s.append(
+            "proj-old-run",
+            ExpectedRevision::Any,
+            &[
+                Event::new("A", b"1".to_vec()),
+                Event::new("B", b"2".to_vec()),
+            ],
+        )
+        .unwrap();
+        s.append(
+            "proj-old-graph",
+            ExpectedRevision::Any,
+            &[Event::new("C", b"3".to_vec())],
+        )
+        .unwrap();
+        // An unrelated namespace must be left untouched by the rename.
+        s.append(
+            "proj-keep-run",
+            ExpectedRevision::Any,
+            &[Event::new("K", b"".to_vec())],
+        )
+        .unwrap();
+
+        let n = s.rename_stream_prefix("proj-old-", "proj-new-").unwrap();
+        assert_eq!(n, 2, "two distinct streams (run + graph) moved");
+
+        assert!(
+            s.read_stream("proj-old-run", 0, Direction::Forward)
+                .unwrap()
+                .is_empty(),
+            "the legacy stream is empty after the rename"
+        );
+        let run = s
+            .read_stream("proj-new-run", 0, Direction::Forward)
+            .unwrap();
+        assert_eq!(
+            run.iter().map(|e| e.type_.as_str()).collect::<Vec<_>>(),
+            ["A", "B"]
+        );
+        assert_eq!(
+            run.iter().map(|e| e.revision).collect::<Vec<_>>(),
+            [0, 1],
+            "per-stream revisions are preserved across the rename"
+        );
+        assert_eq!(
+            s.read_stream("proj-new-graph", 0, Direction::Forward)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            s.read_stream("proj-keep-run", 0, Direction::Forward)
+                .unwrap()
+                .len(),
+            1,
+            "an unrelated namespace is untouched"
+        );
+
+        // Renaming again with nothing left under `from` is a no-op returning 0.
+        assert_eq!(s.rename_stream_prefix("proj-old-", "proj-new-").unwrap(), 0);
     }
 
     #[test]

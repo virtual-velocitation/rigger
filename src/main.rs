@@ -5,26 +5,34 @@
 //! (`--eventstore sqlite|kurrentdb`) are selected by flag; `rigger graph` inspects
 //! the context graph; `rigger init`/`setup` scaffold a project.
 
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use rigger::canary;
 use rigger::conductor::{self, Deps};
 use rigger::config;
 use rigger::contextgraph::{self, sqlite::Projector, Projection};
+use rigger::dash;
 use rigger::driver::cli;
 use rigger::driver::replay::ReplayDriver;
 use rigger::eventstore::namespace::Namespaced;
-use rigger::eventstore::{sqlite::Store, Direction, Event, EventStore, Filter};
-use rigger::gate::ExecRunner;
+use rigger::eventstore::{sqlite::Store, Direction, Event, EventStore, ExpectedRevision, Filter};
+use rigger::gate::{ExecRunner, Gate, GateResult, Runner};
 use rigger::grounder::Grounder;
 use rigger::ledger::{self, RunState};
 use rigger::metrics::{self, Metrics};
 use rigger::run as runscope;
 use rigger::sidecar::{PeerDecision, Sidecar};
 use rigger::worktree::{RunBranchSetup, Worktree};
-use rigger::{hooks, mcpserver, spawn, spec};
+use rigger::{hooks, mcpserver, playbooks, progress, spawn, spec};
 
 const RIGGER_DIR: &str = ".rigger";
+
+/// The tracked file under `.rigger/` that carries the durable project identity (spec 09,
+/// Gap 20): one trimmed line committed to git, so the identity survives directory renames
+/// and machine moves instead of tracking the volatile directory basename.
+const PROJECT_ID_FILE: &str = "project.id";
 
 /// The run branch the stepwise driver accumulates a run on: every unit worktree is
 /// branched from it and every approved unit is merged back into it. Mirrored by
@@ -94,13 +102,23 @@ enum StoreKind {
 }
 
 /// The parsed flags shared by `run` (and the `--driver workflow` path): which
-/// driver, which event store, the connection string for the server backend, and
-/// the positional spec path.
+/// driver, which event store, the connection string for the server backend, the
+/// positional spec path, and whether to force a fresh run.
 struct RunArgs {
     driver: DriverKind,
     store: StoreKind,
     conn: Option<String>,
     spec: Option<String>,
+    /// `--fresh`: begin a NEW run for the spec's criteria even when the latest run in the
+    /// store already matches them (which `ensure_started` would otherwise adopt). The
+    /// evented recovery from a run wedged in a terminal state - e.g. a plan-critique
+    /// escalation - whose spec is unchanged; see [`rigger::run::start_fresh`].
+    fresh: bool,
+    /// `--rebase-definition` (spec 13, unit 1): on a live run whose on-disk definition drifted
+    /// from the hash pinned at start, record the supersession (old hash, new hash) and continue
+    /// on the new definition, instead of HALTING loudly. The operator's explicit "I meant to
+    /// edit the definition mid-campaign" escape.
+    rebase_definition: bool,
 }
 
 /// Parse `rigger run`'s flags: `--driver <cli|workflow>`, `--eventstore
@@ -111,9 +129,13 @@ fn parse_run_args(args: &[String]) -> Result<RunArgs, Box<dyn std::error::Error>
     let mut store = StoreKind::Sqlite;
     let mut conn = None;
     let mut spec = None;
+    let mut fresh = false;
+    let mut rebase_definition = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
+            "--fresh" => fresh = true,
+            "--rebase-definition" => rebase_definition = true,
             "--driver" => {
                 i += 1;
                 driver = match args.get(i).map(String::as_str) {
@@ -166,6 +188,8 @@ fn parse_run_args(args: &[String]) -> Result<RunArgs, Box<dyn std::error::Error>
         store,
         conn,
         spec,
+        fresh,
+        rebase_definition,
     })
 }
 
@@ -218,10 +242,19 @@ fn project_identity() -> String {
     project_identity_at(&cwd)
 }
 
-/// The project identity, anchored at an explicit `root` rather than the process cwd:
-/// the basename of the git top-level *containing `root`* (resolved with `git -C <root>`,
-/// so it is stable no matter which subdirectory the command ran from), falling back to
-/// `root`'s own basename, then to "rigger". Never empty.
+/// The project identity, anchored at an explicit `root` rather than the process cwd. In
+/// precedence order (spec 09): the tracked `.rigger/project.id` file when present, else the
+/// legacy basename identity ([`legacy_identity_at`]). Never empty.
+///
+/// The tracked id file survives directory renames, machine moves, and shared backends - a
+/// `mv` of the checkout no longer orphans the project's history, because the identity is a
+/// committed line, not the volatile directory basename (Gap 20). A pre-spec-09 checkout with
+/// no `project.id` behaves EXACTLY as before (the legacy basename), until `rigger init`/
+/// `setup` mints the file, so backward compatibility is a hard bar.
+///
+/// The id file is resolved relative to the git top-level (where `.rigger` conventionally
+/// lives, like `.git`), so it is found no matter which subdirectory the command ran from,
+/// falling back to `root` itself outside any git context.
 ///
 /// Anchoring at an explicit root is load-bearing for the store-opening couriers. When a
 /// courier walks UP from a git-linked worktree nested inside the repo (the Gap-14 default
@@ -229,12 +262,36 @@ fn project_identity() -> String {
 /// --show-toplevel` run from the cwd returns the LINKED-WORKTREE path, so the append would
 /// misfile under `proj-<worktree>-run` while the spawn the conductor is waiting on stays
 /// parked forever (spec 05's exact charter defect). Running git anchored at the resolved
-/// store root instead returns the repo root, so the write lands in the `proj-<repo>-run`
-/// stream the conductor reads - identical to the identity the conductor computed when it
-/// created that store from the same root.
+/// store root instead returns the repo root, so it reads THAT root's `project.id` first and
+/// the write lands in the `proj-<repo>-run` stream the conductor reads - identical to the
+/// identity the conductor computed when it created that store from the same root.
 fn project_identity_at(root: &Path) -> String {
     let toplevel = git_repo_at(root);
-    let from_repo = Path::new(&toplevel)
+    let base: &Path = if toplevel.is_empty() {
+        root
+    } else {
+        Path::new(&toplevel)
+    };
+    if let Some(id) = read_project_id(base) {
+        return id;
+    }
+    legacy_identity_from(&toplevel, root)
+}
+
+/// The LEGACY basename identity, anchored at an explicit `root`: the basename of the git
+/// top-level containing `root`, falling back to `root`'s own basename, then to "rigger".
+/// Never empty. This is the pre-spec-09 behavior, unchanged - it is what identity resolves
+/// to when no `.rigger/project.id` is present, and the "before" namespace the spec-09
+/// migration renames a project's history AWAY from once the file is minted.
+fn legacy_identity_at(root: &Path) -> String {
+    legacy_identity_from(&git_repo_at(root), root)
+}
+
+/// The legacy basename identity given an already-resolved git `toplevel` (empty outside a
+/// repo) and the `root` it was resolved from - so [`project_identity_at`] resolves the git
+/// top-level exactly once and reuses it for the fallback.
+fn legacy_identity_from(toplevel: &str, root: &Path) -> String {
+    let from_repo = Path::new(toplevel)
         .file_name()
         .and_then(|n| n.to_str())
         .filter(|s| !s.is_empty());
@@ -246,6 +303,335 @@ fn project_identity_at(root: &Path) -> String {
         .map(String::from)
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "rigger".to_string())
+}
+
+/// The trimmed contents of the tracked `<base>/.rigger/project.id`, or `None` when the file
+/// is absent, unreadable, or blank. A present, non-empty line IS the project identity
+/// (spec 09): clones and checkouts inherit it through git, so one logical project shares a
+/// single namespace across machines and paths.
+fn read_project_id(base: &Path) -> Option<String> {
+    let path = base.join(RIGGER_DIR).join(PROJECT_ID_FILE);
+    let raw = std::fs::read_to_string(path).ok()?;
+    let id = raw.trim();
+    if id.is_empty() {
+        None
+    } else {
+        Some(id.to_string())
+    }
+}
+
+/// Whether the tracked `.rigger/project.id` is present (and non-blank) for the project at
+/// `root`, resolved relative to the git top-level (else `root`) - the same anchoring
+/// [`project_identity_at`] uses. `false` means identity falls back to the volatile basename,
+/// which `rigger validate` surfaces as a rename-orphans-history hazard.
+fn has_tracked_project_id(root: &Path) -> bool {
+    let toplevel = git_repo_at(root);
+    let base: &Path = if toplevel.is_empty() {
+        root
+    } else {
+        Path::new(&toplevel)
+    };
+    read_project_id(base).is_some()
+}
+
+/// A stable, deterministic 64-bit FNV-1a hash. The project id derived from a remote must
+/// be the SAME on every clone, machine, and rigger version, so this uses the fixed FNV
+/// constants rather than `std::collections::hash_map::DefaultHasher` (whose output is
+/// explicitly NOT guaranteed stable across builds).
+fn fnv1a_64(bytes: &[u8]) -> u64 {
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = OFFSET;
+    for &b in bytes {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(PRIME);
+    }
+    hash
+}
+
+/// Canonicalize definition text for hashing (spec 13, unit 1): normalize CRLF -> LF and
+/// strip trailing whitespace from each line, so a checkout's line-ending or trailing-space
+/// noise never reads as a definition change while any real edit does.
+fn canonical_definition_text(s: &str) -> String {
+    s.replace("\r\n", "\n")
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The definition hash a run PINS (spec 13, unit 1): a stable FNV-1a digest over the on-disk
+/// definition - the `.rigger/workflow.yml` plus the FULL agent-prompt set (every
+/// `.rigger/agents/*.md`, which carries each agent's prompt and frontmatter) - canonicalized
+/// ([`canonical_definition_text`]) and folded in sorted-filename order. So the same definition
+/// hashes identically across machines and checkouts (the [`fnv1a_64`] idiom is fixed-seed and
+/// build-stable), while ANY content change - a mid-campaign prompt edit above all - changes it.
+///
+/// This is the hash a run pins at start and a live-run step re-checks; a mismatch on a live run
+/// HALTS loudly (see [`enforce_definition_pin`]). Hashing the on-disk files directly (not the
+/// parsed `Config`) is faithful to the design's "workflow.yml + the full agent-prompt set" and
+/// conservative: it needs no serialization of the config and errs toward halting, and the
+/// `--rebase-definition` escape makes an intended edit a one-flag continue.
+fn definition_hash(dir: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let base = Path::new(dir).join(RIGGER_DIR);
+    let mut buf = String::new();
+    // workflow.yml first, tagged so an (impossible-here) empty agents set is still distinct
+    // from an empty workflow.
+    let workflow = std::fs::read_to_string(base.join("workflow.yml"))
+        .map_err(|e| format!("definition hash: read {RIGGER_DIR}/workflow.yml: {e}"))?;
+    buf.push_str("workflow.yml\n");
+    buf.push_str(&canonical_definition_text(&workflow));
+    buf.push('\n');
+    // Every agent definition, folded in sorted-filename order so the hash is independent of
+    // directory iteration order.
+    let agents_dir = base.join("agents");
+    let mut agents: Vec<(String, String)> = Vec::new();
+    for entry in std::fs::read_dir(&agents_dir)
+        .map_err(|e| format!("definition hash: read {}: {e}", agents_dir.display()))?
+    {
+        let path = entry?.path();
+        if path.extension().and_then(|x| x.to_str()) != Some("md") {
+            continue;
+        }
+        let name = path
+            .file_name()
+            .and_then(|x| x.to_str())
+            .unwrap_or_default()
+            .to_string();
+        let content = std::fs::read_to_string(&path)
+            .map_err(|e| format!("definition hash: read {}: {e}", path.display()))?;
+        agents.push((name, content));
+    }
+    agents.sort();
+    for (name, content) in agents {
+        buf.push_str("agent:");
+        buf.push_str(&name);
+        buf.push('\n');
+        buf.push_str(&canonical_definition_text(&content));
+        buf.push('\n');
+    }
+    Ok(format!("{:016x}", fnv1a_64(buf.as_bytes())))
+}
+
+/// Enforce the run's definition pin (spec 13, unit 1) at the CLI boundary, BEFORE the
+/// conductor drives: adopt-or-mint the run for `criteria` with `definition` pinned, and act on
+/// the outcome. A fresh or unchanged run continues silently; `--rebase-definition` on a drifted
+/// run records the supersession and continues with a notice; a drifted run WITHOUT the flag
+/// returns a loud error, so `rigger step`/`run` HALTS naming the drift instead of driving a
+/// campaign whose replay semantics silently changed. The conductor's own (unpinned)
+/// `ensure_started` then simply ADOPTS the run this ensured.
+fn enforce_definition_pin(
+    store: &dyn EventStore,
+    criteria: &[String],
+    definition: &str,
+    rebase: bool,
+) -> Res {
+    match runscope::ensure_started_pinned(store, criteria, definition, rebase)? {
+        runscope::RunStart::Ready(_) => Ok(()),
+        runscope::RunStart::Rebased {
+            run,
+            pinned,
+            current,
+        } => {
+            eprintln!(
+                "rigger: --rebase-definition: recorded the definition supersession \
+                 ({pinned} -> {current}) on run {run}; continuing on the new definition."
+            );
+            Ok(())
+        }
+        runscope::RunStart::Drifted {
+            run,
+            pinned,
+            current,
+        } => Err(format!(
+            "definition drift - the on-disk workflow/agent definition (hash {current}) differs \
+             from the hash run {run} pinned at start ({pinned}). A live run pins its definition so \
+             replay semantics cannot silently change mid-campaign. Re-run with --rebase-definition \
+             to record the supersession ({pinned} -> {current}) and continue, or restore the \
+             definition to match the pin."
+        )
+        .into()),
+    }
+}
+
+/// Canonicalize a git remote URL so the ssh, https, and `.git`-suffixed forms of ONE repo
+/// all reduce to the SAME string (spec 09): strip the scheme (`https://`, `ssh://`,
+/// `git://`) and any `user@` credential, lowercase the host, drop a trailing `.git` and
+/// surrounding slashes, and normalize the scp-style `host:path` separator to `/`. So
+/// `git@github.com:Acme/Repo.git`, `https://github.com/Acme/Repo.git`, and
+/// `ssh://git@github.com/Acme/Repo` all normalize to `github.com/Acme/Repo`, minting one
+/// identity. Pure, so the "ssh/https/.git forms mint identical ids" invariant is unit-tested.
+fn normalize_origin_url(url: &str) -> String {
+    let mut s = url.trim();
+    // Strip the scheme (everything up to and including "://").
+    if let Some(idx) = s.find("://") {
+        s = &s[idx + 3..];
+    }
+    // Strip any "user@" credential prefix (e.g. the ssh `git@`).
+    if let Some(idx) = s.find('@') {
+        s = &s[idx + 1..];
+    }
+    // Split the host from the path on the first ':' (scp-style) or '/'.
+    let (host, path) = match s.find([':', '/']) {
+        Some(i) => (&s[..i], &s[i + 1..]),
+        None => (s, ""),
+    };
+    let host = host.to_ascii_lowercase();
+    // Drop surrounding slashes and a single trailing `.git` from the path.
+    let path = path.trim_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    let path = path.trim_end_matches('/');
+    if path.is_empty() {
+        host
+    } else {
+        format!("{host}/{path}")
+    }
+}
+
+/// The `origin` remote URL configured at `root`, or `None` when there is no `origin` remote
+/// (or git is unavailable). Read via `git config --get remote.origin.url`, which needs no
+/// network and no newer git than the rest of rigger already assumes.
+fn origin_url_at(root: &Path) -> Option<String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["config", "--get", "remote.origin.url"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if url.is_empty() {
+        None
+    } else {
+        Some(url)
+    }
+}
+
+/// Mint a fresh durable project id for `root` (spec 09): deterministically from the
+/// normalized `origin` URL when a remote exists (so every clone of one repo mints the same
+/// id, and the ssh/https/`.git` forms agree), else a random id when there is no remote to
+/// anchor on. The result is a compact hex token, safe as a stream-namespace component.
+fn mint_project_id(root: &Path) -> String {
+    match origin_url_at(root) {
+        Some(url) => format!("{:016x}", fnv1a_64(normalize_origin_url(&url).as_bytes())),
+        None => uuid::Uuid::new_v4().simple().to_string(),
+    }
+}
+
+/// What the spec-09 open-time identity migration should do, given whether each namespace
+/// holds history. Pure over the two facts, so the decision is unit-testable without a store.
+#[derive(Debug, PartialEq, Eq)]
+enum MigrationOutcome {
+    /// Nothing to migrate: no minted identity distinct from the basename, already migrated
+    /// (minted populated), or a fresh project (both empty).
+    NoOp,
+    /// Legacy history with an empty minted namespace: rename the legacy streams once.
+    Rename,
+    /// BOTH namespaces hold history: ambiguous, refuse loudly (never guess).
+    Ambiguous,
+}
+
+/// Decide the migration from the minted vs legacy identities and whether each namespace is
+/// populated (spec 09). When the minted identity is not distinct from the legacy basename
+/// (no `project.id`, or it equals the basename) there is nothing to migrate. Otherwise the
+/// only case that renames is legacy-populated + minted-empty; a populated minted namespace
+/// means it already migrated (or is a fresh mint), and both populated is ambiguous.
+fn decide_migration(
+    minted: &str,
+    legacy: &str,
+    minted_has: bool,
+    legacy_has: bool,
+) -> MigrationOutcome {
+    if minted == legacy {
+        return MigrationOutcome::NoOp;
+    }
+    match (legacy_has, minted_has) {
+        (true, true) => MigrationOutcome::Ambiguous,
+        (true, false) => MigrationOutcome::Rename,
+        _ => MigrationOutcome::NoOp,
+    }
+}
+
+/// Perform the one-time spec-09 identity migration on an already-opened sqlite `backend`,
+/// renaming a project's legacy-namespace history to the `minted` identity and recording the
+/// move as a `DecisionMade` (no new event types). Returns `Some(n)` with the stream count
+/// when it migrated, `None` when there was nothing to do (idempotent on re-open), and an
+/// `Err` naming BOTH identities when the store is ambiguous (history under both namespaces).
+/// Takes the identities as arguments so it is unit-testable against an in-memory store.
+fn migrate_project_identity(
+    backend: &Store,
+    minted: &str,
+    legacy: &str,
+    graph: Option<&dyn Projection>,
+) -> Result<Option<usize>, Box<dyn std::error::Error>> {
+    let legacy_ns = format!("proj-{legacy}-");
+    let minted_ns = format!("proj-{minted}-");
+    let legacy_has = backend.has_stream_prefix(&legacy_ns)?;
+    let minted_has = backend.has_stream_prefix(&minted_ns)?;
+    match decide_migration(minted, legacy, minted_has, legacy_has) {
+        MigrationOutcome::NoOp => Ok(None),
+        MigrationOutcome::Ambiguous => Err(format!(
+            "ambiguous project identity: the event store holds history under BOTH the minted \
+             identity {minted:?} and the legacy identity {legacy:?}. Refusing to guess which \
+             is authoritative - resolve it manually (keep one namespace) before running again."
+        )
+        .into()),
+        MigrationOutcome::Rename => {
+            let n = backend.rename_stream_prefix(&legacy_ns, &minted_ns)?;
+            // Record the migration as a DecisionMade in the MINTED namespace (spec 09: the
+            // migration is recorded with the existing DecisionMade, NO new event type) - old
+            // identity, new identity, and stream count - so the audit trail carries it and a
+            // re-open finds the legacy namespace already empty (a no-op).
+            let store = Namespaced::new(backend, minted);
+            let data = serde_json::json!({
+                "id": format!("identity-migration-{minted}"),
+                "summary": format!(
+                    "migrated project history to the durable identity: renamed {n} stream(s) \
+                     from the legacy namespace {legacy:?} to the minted identity {minted:?} \
+                     (.rigger/{PROJECT_ID_FILE})"
+                ),
+                "governs": [format!("{RIGGER_DIR}/{PROJECT_ID_FILE}")],
+            });
+            let args = serde_json::json!({
+                "type": contextgraph::TYPE_DECISION_MADE,
+                "data": data,
+            });
+            mcpserver::emit_event(&store, conductor::STREAM, graph, &args)
+                .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+            Ok(Some(n))
+        }
+    }
+}
+
+/// Run the spec-09 open-time identity migration against the LOCAL sqlite store
+/// (`.rigger/events.db` under the cwd), before the run driver opens its own backend. A
+/// no-op when there is no local store yet (a fresh project), or when the minted identity is
+/// not distinct from the legacy basename (no `project.id` minted). Refuses loudly (Err) when
+/// both namespaces hold history. Self-contained: it opens its own short-lived store + graph
+/// connections and drops them before the caller opens the real ones, so it wires into any
+/// run-driver entry point in a single call and never touches the injected backend.
+fn migrate_local_identity() -> Res {
+    let store_path = db_path("events.db");
+    if !Path::new(&store_path).is_file() {
+        return Ok(()); // a fresh project: no history to migrate
+    }
+    let cwd = std::env::current_dir()?;
+    let minted = project_identity_at(&cwd);
+    let legacy = legacy_identity_at(&cwd);
+    if minted == legacy {
+        return Ok(()); // no minted identity distinct from the basename
+    }
+    let backend = Store::open(&store_path)?;
+    let graph = Projector::open(&db_path("graph.db"))?;
+    if let Some(n) = migrate_project_identity(&backend, &minted, &legacy, Some(&graph))? {
+        eprintln!(
+            "rigger: migrated project identity - renamed {n} stream(s) from the legacy \
+             namespace {legacy:?} to the minted identity {minted:?} (.rigger/{PROJECT_ID_FILE})"
+        );
+    }
+    Ok(())
 }
 
 fn main() {
@@ -276,9 +662,15 @@ fn main() {
         "workflow" => cmd_workflow(&args[2..]),
         "graph" => cmd_graph(&args[2..]),
         "stats" => cmd_stats(&args[2..]),
+        "canary" => cmd_canary(&args[2..]),
+        "playbooks" => cmd_playbooks(&args[2..]),
+        "replay" => cmd_replay(&args[2..]),
+        "status" => cmd_status(&args[2..]),
+        "dash" => cmd_dash(&args[2..]),
         "ground" => cmd_ground(&args[2..]),
         "reindex" => cmd_reindex(&args[2..]),
         "emit" => cmd_emit(&args[2..]),
+        "progress" => cmd_progress(&args[2..]),
         "result" => cmd_result(&args[2..]),
         "peers" => cmd_peers(&args[2..]),
         "validate" => cmd_validate(),
@@ -351,7 +743,11 @@ rigger step [--spec <path>]      advance the run one frontier via the replay dri
 [--base <ref>]        and print the newly parked spawn wave + a done flag\n                              \
 as JSON. --base (default origin/main) anchors a NEW run\n                              \
 branch; if it is unresolvable the branch is created off\n                              \
-HEAD. An existing run branch is reused, never reset\n  \
+HEAD. An existing run branch is reused, never reset.\n                              \
+--fresh begins a NEW run for the spec even if the latest\n                              \
+matches (pass on the first step to restart a wedged run);\n                              \
+--rebase-definition accepts a drifted definition and\n                              \
+continues, else a live-run step HALTS on definition drift\n  \
 rigger reported <id>        exit 0 iff spawn <id> already has a recorded result in\n                              \
 this project's run stream (else non-zero). A read-only check\n                              \
 of whether a spawn reported yet; the death courier records\n                              \
@@ -367,7 +763,31 @@ rigger serve [opts]         run as an MCP server the driver connects to\n  \
 rigger graph --around <id>  print the context subgraph around a node\n  \
 rigger stats                print the run's operator metrics: first-pass yield,\n                              \
 per-gate remediation counts, escalation rate, and\n                              \
-review approve/reject counts\n  \
+review approve/reject counts. --canary reports the\n                              \
+latest canary run's judge-the-judges recall scorecard\n  \
+rigger canary               run the review panel against the seeded-defect corpus\n            \
+[--corpus <dir>]         (default ./canaries) and score per-tier catch rate,\n                              \
+adjudicator correctness, and verdict stability under\n                              \
+finding-order shuffle, into the project's canary stream\n                              \
+(read back with `rigger stats --canary`)\n  \
+rigger playbooks --rebuild  reconstruct the distilled playbook pool under\n                              \
+.rigger/playbooks/ from the recorded LessonLearned\n                              \
+stream: deduplicated, trigger-scoped agent-files the\n                              \
+lessons injector ranks by blast-radius relevance (a\n                              \
+rebuildable projection of the log, never hand-edited)\n  \
+rigger replay <run|latest>  re-drive a completed run's recorded trajectory under a\n            \
+--against <rev>          candidate config (workflow + prompts at git <rev>) in an\n                              \
+isolated scratch namespace, and print the stats diff\n                              \
+vs the recorded baseline. Never writes the real run\n                              \
+stream - past runs become a regression corpus for a\n                              \
+config edit (\"did that change regress first-pass yield?\")\n  \
+rigger status [--json]      present the live per-agent view of the current run: for\n                              \
+each in-flight agent, what it is doing (latest progress),\n                              \
+its heartbeat age, and how long since its last store event\n                              \
+(the blackout). --json prints the shim/dash machine shape\n  \
+rigger dash [--port <n>]    serve the read-only observability page on 127.0.0.1\n                              \
+(default port 7420) with live past/present/future views;\n                              \
+--export <path> writes the equivalent static snapshot\n  \
 rigger ground <query> [k]   print up to k (default 8) repo references the project's\n                              \
 configured grounder finds for <query>, as `file:line: text`\n  \
 rigger reindex <file>...    incrementally re-embed the named files in the project's\n                              \
@@ -375,6 +795,10 @@ persisted grounding index (the grounder's reindex), so a\n                      
 later `rigger ground` reflects just-landed changes\n  \
 rigger emit <type> <json>   append {{type, data:<json>}} to the event store and fold\n                              \
 it into the context graph (the CLI form of rigger_emit)\n  \
+rigger progress <id> <act>  record one live progress line for spawn <id> to the\n                              \
+separate .rigger/progress.db (never the run stream), so an\n                              \
+observer can see what a working agent is doing between\n                              \
+milestones - `rigger status` and the dash present it\n  \
 rigger result <id> [out]    record a parked spawn's outcome to the run log so the next\n                              \
 step advances past it: <out> (or stdin) is the agent's output\n                              \
 (with --error, its failure message); --if-absent records only\n                              \
@@ -397,7 +821,17 @@ run/serve options:\n  \
 workflow: in-Claude-Code MCP server\n  \
 --eventstore <sqlite|kurrentdb>  sqlite (default): embedded file in .rigger/;\n                                   \
 kurrentdb: server (needs the kurrentdb feature)\n  \
---conn <url>                     KurrentDB connection url (or set KURRENTDB_CONN)\n\n\
+--conn <url>                     KurrentDB connection url (or set KURRENTDB_CONN)\n  \
+--fresh                          begin a NEW run even if the latest run matches this\n                                   \
+spec (which is otherwise adopted/resumed). The evented\n                                   \
+restart for a run wedged in a terminal state (e.g. an\n                                   \
+escalated plan-critique) whose spec is unchanged; the\n                                   \
+prior run stays in the log as history and context\n  \
+--rebase-definition              accept an on-disk definition (workflow.yml + agent\n                                   \
+prompts) that drifted from what this live run pinned at\n                                   \
+start: record the supersession and continue instead of\n                                   \
+halting. The explicit mid-campaign-edit escape (a live\n                                   \
+run otherwise HALTS loudly on definition drift)\n\n\
 storage and graph live in ./.rigger/ (per project, like .git/), scoped to the\n\
 project identity so one backend can hold many projects without their data mixing.\n"
     );
@@ -699,11 +1133,59 @@ fn cmd_run(args: &[String]) -> Res {
 /// once [`RUN_BRANCH`] exists, an explicit `--base` is ignored (re-anchoring would orphan
 /// the integrated units), and the step says so on stderr rather than silently. A
 /// repo-less invocation skips run-branch setup entirely.
+/// The busy-refusal token a second concurrent `rigger step` prints (see
+/// [`acquire_step_lock`]). A DRIVER couriering steps keys on this exact substring to tell a
+/// benign "wait, another step holds the lock" from a real step failure - so it backs off
+/// and retries `rigger step` instead of tearing the run down. Kept as a named constant so
+/// the conductor side and the driver prompt can never drift apart.
+const STEP_BUSY_TOKEN: &str = "another `rigger step` is already running";
+
+/// Acquire the exclusive advisory lock that SERIALIZES `rigger step`, returning the held
+/// [`File`](std::fs::File) as an RAII guard (the OS releases the flock when it drops or the
+/// process dies). A NON-blocking `try_lock`: if another step already holds it, refuse fast
+/// and loudly ([`STEP_BUSY_TOKEN`]) rather than blocking - a driver whose courier gets the
+/// refusal backs off and retries, which keeps the run flowing without ever running two
+/// steps (and thus two cross-process ORT/CUDA gate builds) at once. See the call site for
+/// why concurrent steps deadlock the GPU.
+fn acquire_step_lock() -> Result<std::fs::File, Box<dyn std::error::Error>> {
+    use fs2::FileExt;
+    let path = Path::new(RIGGER_DIR).join("step.lock");
+    let f = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(&path)?;
+    f.try_lock_exclusive()
+        .map_err(|_| -> Box<dyn std::error::Error> {
+            format!(
+                "rigger step: {STEP_BUSY_TOKEN} in this repo (lock {}). Refusing to run \
+             concurrently: two steps run two `cargo test` gates whose grounder subprocesses \
+             build ORT/CUDA sessions concurrently across processes, which deadlocks the GPU. \
+             Wait for the running step to finish (or kill it) and retry.",
+                path.display()
+            )
+            .into()
+        })?;
+    Ok(f)
+}
+
 fn cmd_step(args: &[String]) -> Res {
     let args = parse_step_args(args)?;
     let cfg = config::load(".")?;
     let criteria = load_criteria(args.spec.as_deref())?;
     std::fs::create_dir_all(RIGGER_DIR)?;
+
+    // Serialize concurrent `rigger step` invocations (root-cause fix for the ORT/CUDA
+    // GPU deadlock). Two steps at once run two `cargo test` gates whose grounder
+    // subprocesses build ORT/CUDA sessions CONCURRENTLY ACROSS PROCESSES - the documented
+    // heap-corruption/deadlock hazard (Cargo.toml turbovec test-serial note). A single
+    // step's own gate is already serialized internally (the grounder's CONSTRUCT_MU +
+    // the tests' `file_serial`), which is why one gate runs clean; the ONLY source of
+    // cross-process concurrency is OVERLAPPING steps - e.g. a driver re-couriering a step
+    // while the first's minutes-long gate still runs. Held for the whole step and released
+    // when this process exits (even on crash/kill), so a dead step never wedges the run.
+    // The guard binds a name so it is not dropped early.
+    let _step_lock = acquire_step_lock()?;
 
     // Anchor + check out the run branch before the conductor branches any unit worktree
     // off HEAD. Guarded on a real repo so the repo-less unit-test path is untouched. A
@@ -731,8 +1213,36 @@ fn cmd_step(args: &[String]) -> Res {
         }
     }
 
+    // Migrate a pre-spec-09 store's legacy-namespace history to the minted identity once,
+    // before opening the run backend (spec 09, Gap 20). A no-op unless `.rigger/project.id`
+    // was minted with an id distinct from the basename and the legacy namespace still holds
+    // the history; refuses loudly if both namespaces are populated.
+    migrate_local_identity()?;
+
     let backend = Store::open(&db_path("events.db"))?;
     let store = Namespaced::new(&backend, &project_identity());
+
+    // The definition hash this step pins / re-checks (spec 13, unit 1): the digest of the
+    // on-disk workflow.yml + agent-prompt set. Computed once and used for both the `--fresh`
+    // pinned boundary and the drift check below.
+    let definition = definition_hash(".")?;
+
+    // `--fresh`: begin a NEW run BEFORE this step (and before the liveness sweep reads the
+    // current run), so the conductor's own `ensure_started` adopts this just-minted
+    // boundary instead of the latest (possibly wedged) run. A one-shot the DRIVER passes
+    // on the first step of an explicit restart; plain steps after it adopt the boundary it
+    // began. The notice goes to STDERR - stdout carries only the `{wave,done}` JSON the
+    // driver parses. See `runscope::start_fresh`.
+    if args.fresh {
+        let run = runscope::start_fresh(&store, &criteria, &definition)?;
+        eprintln!("rigger step: --fresh: began a new run {run} (the prior run stays in the log)");
+    }
+
+    // Definition pinning (spec 13, unit 1): pin this run's definition (a fresh run) or enforce
+    // it (a live run). A drifted live-run definition WITHOUT `--rebase-definition` HALTS here,
+    // loudly and before any worktree work, so a mid-campaign prompt edit can never silently
+    // change replay semantics; `--rebase-definition` records the supersession and continues.
+    enforce_definition_pin(&store, &criteria, &definition, args.rebase_definition)?;
 
     // Captured before `repo` moves into Deps: the fixpoint sweep below needs it.
     let scratch_root = if repo.is_empty() {
@@ -746,6 +1256,42 @@ fn cmd_step(args: &[String]) -> Res {
 
     let graph = Projector::open(&db_path("graph.db"))?;
     let grounder = select_grounder(&cfg.workflow.defaults.grounder)?;
+    // Liveness sweep (spec 10, unit 3): BEFORE the conductor replays the frontier, classify
+    // any IN-FLIGHT spawn whose per-spawn heartbeat marker went stale beyond its
+    // `max_wall_clock` as an infrastructure fault (a HUNG agent) and record it on the
+    // spawn's id. The conductor then re-parks that fault (charging no remediation attempt -
+    // the unit's code is not at fault), and it surfaces as a halt below. Best-effort and
+    // scoped to the current run; a sweep failure never blocks the step.
+    if let Some(root) = &scratch_root {
+        match cfg.workflow.failure_taxonomy() {
+            Ok(taxonomy) => {
+                let pre = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+                // The current run id scopes the marker path (spec 10, unit 3): the sweep reads
+                // markers under this run's subdir, so a slug-colliding re-run never reads a
+                // prior run's leftover mtime. Empty before the first RunStarted (the first
+                // step, where nothing is in-flight to sweep anyway).
+                let run_id = runscope::current_run_id(&pre).unwrap_or_default();
+                match rigger::liveness::sweep(
+                    &store,
+                    runscope::current_run(&pre),
+                    root,
+                    &run_id,
+                    &taxonomy,
+                    std::time::SystemTime::now(),
+                ) {
+                    Ok(stale) if !stale.is_empty() => eprintln!(
+                        "rigger step: liveness swept {} hung spawn(s) (classified infra, no attempt charged): {}",
+                        stale.len(),
+                        stale.iter().map(|s| s.id.clone()).collect::<Vec<_>>().join(", ")
+                    ),
+                    Ok(_) => {}
+                    Err(e) => eprintln!("rigger step: liveness sweep skipped: {e}"),
+                }
+            }
+            Err(e) => eprintln!("rigger step: liveness sweep skipped (taxonomy: {e})"),
+        }
+    }
+
     let driver = ReplayDriver::new(&store);
     let deps = Deps {
         store: &store,
@@ -765,18 +1311,59 @@ fn cmd_step(args: &[String]) -> Res {
     // run's slice (spec 06, unit 1): a prior run's unanswered spawns sit before this
     // run's RunStarted, so they never reappear in this run's wave (Gap 11).
     let mut step = spawn::step_result(runscope::current_run(&events)).map_err(|e| e.to_string())?;
+    // Stamp each bounded wave item with the RESOLVED absolute path of its liveness marker
+    // (spec 10, unit 3, BLOCKER-1): the thin driver frames both the worker's heartbeat
+    // `touch` and its staleness watchdog around THIS path, never re-deriving a scratch root
+    // of its own. Derived from the SINGLE authority `liveness::marker_path` over the same
+    // resolved scratch root (`RIGGER_TMPDIR` > `defaults.workdir` > repo default) the sweep
+    // above reads and this run's id - so the worker-write path is byte-identical to the
+    // sweep-read path under ANY scratch config. Only a bounded spawn carries a marker.
+    if let Some(root) = &scratch_root {
+        let run_id = runscope::current_run_id(&events).unwrap_or_default();
+        for item in step.wave.iter_mut() {
+            if item.max_wall_clock.is_some() {
+                item.marker_path = Some(
+                    rigger::liveness::marker_path(root, &run_id, &item.id)
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+            }
+        }
+    }
     // Surface a spawn-budget HALT (Gap 13) distinct from convergence: the conductor sets
     // `budget_halt` from its in-process breaker when a trip left ready work unscheduled, so
     // the printed `Step` carries a halt reason (`{"...","done":true,"halted":"..."}`) the
     // thin driver stops LOUDLY on - instead of reading a starved run as a clean completion.
     step.halted = rs.budget_halt;
-    // At the fixpoint, sweep the shared agent-scratch area (probe repos, verification
-    // builds workers park under <scratch-root>/agent-scratch per the driver's scratch
-    // policy): it exists only to serve in-flight spawns, and leaving it is how a run
-    // leaks gigabytes of build debris (Gap 14). Best-effort - never fails the step.
-    if step.done {
+    // Surface hung agents (spec 10, unit 3): any spawn whose LATEST result is a liveness
+    // fault is a hung, unrecovered agent. Halt LOUDLY - like the budget breaker - so the
+    // driver stops on a named reason instead of reading a stalled wave as a clean fixpoint;
+    // a hung agent can no longer stall the wave invisibly. A budget halt already on the
+    // channel takes precedence (it is the harder global rail). Recovery: record a real
+    // result on the named spawn (last-write-wins supersedes the fault), then re-drive.
+    if step.halted.is_none() {
+        let hung = rigger::liveness::hung_spawns(runscope::current_run(&events))
+            .map_err(|e| e.to_string())?;
+        if !hung.is_empty() {
+            step.halted = Some(rigger::liveness::halt_reason(&hung));
+        }
+    }
+    // At a CLEAN fixpoint, reclaim the run's shared scratch areas: `agent-scratch` (probe
+    // repos, verification builds workers park under <scratch-root>/agent-scratch per the
+    // driver's scratch policy) and `agent-live` (the per-spawn liveness markers, spec 10
+    // unit 3) - both exist only to serve in-flight spawns, and leaving them is how a run
+    // leaks gigabytes of build debris (Gap 14) or unbounded stale markers. Gated on
+    // `halted.is_none()`: a liveness halt sets `done` while a spawn is still hung (a
+    // liveness-fault result counts as answered), and an abandoned-but-possibly-alive worker
+    // may still be writing under agent-scratch - so a halted step must NOT wipe the areas out
+    // from under it; only a genuine, unhalted convergence reclaims. Best-effort - never fails
+    // the step.
+    if step.done && step.halted.is_none() {
         if let Some(root) = &scratch_root {
             let _ = std::fs::remove_dir_all(std::path::Path::new(root).join("agent-scratch"));
+            let _ = std::fs::remove_dir_all(
+                std::path::Path::new(root).join(rigger::liveness::MARKER_SUBDIR),
+            );
         }
     }
     println!("{}", serde_json::to_string(&step)?);
@@ -913,6 +1500,16 @@ struct StepArgs {
     /// an operator's EXPLICIT base is ignored because the run branch already exists -
     /// the steady-state default reuse is silent, an explicit-but-ignored base is not.
     base_explicit: bool,
+    /// `--fresh`: begin a NEW run for the spec's criteria before this step, even when the
+    /// latest run matches (which the conductor's `ensure_started` would adopt). A ONE-SHOT
+    /// the DRIVER passes on the first step of an explicit restart - the evented recovery
+    /// from a run wedged in a terminal state whose spec is unchanged; see
+    /// [`rigger::run::start_fresh`]. Plain steps after it adopt the boundary it began.
+    fresh: bool,
+    /// `--rebase-definition` (spec 13, unit 1): on a live-run step whose on-disk definition
+    /// drifted from the hash pinned at start, record the supersession and continue on the new
+    /// definition instead of HALTING loudly. The operator's explicit mid-campaign-edit escape.
+    rebase_definition: bool,
 }
 
 /// Parse `rigger step`'s flags: an optional `--spec <path>` (the spec whose Done-when
@@ -923,9 +1520,13 @@ struct StepArgs {
 fn parse_step_args(args: &[String]) -> Result<StepArgs, Box<dyn std::error::Error>> {
     let mut spec = None;
     let mut base = None;
+    let mut fresh = false;
+    let mut rebase_definition = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
+            "--fresh" => fresh = true,
+            "--rebase-definition" => rebase_definition = true,
             "--spec" => {
                 i += 1;
                 spec = match args.get(i) {
@@ -956,6 +1557,8 @@ fn parse_step_args(args: &[String]) -> Result<StepArgs, Box<dyn std::error::Erro
         spec,
         base_explicit: base.is_some(),
         base: base.unwrap_or_else(|| DEFAULT_BASE_REF.to_string()),
+        fresh,
+        rebase_definition,
     })
 }
 
@@ -997,8 +1600,19 @@ fn run_cli(parsed: &RunArgs) -> Res {
     // The boxed backend and its namespaced wrapper both live here, in this stack
     // frame, for the whole run: the decorator borrows the concrete store, and both
     // outlive the `conductor::run` call below.
+    // Migrate a pre-spec-09 store's legacy-namespace history to the minted identity once,
+    // before opening the run backend (spec 09). Local-sqlite only - the migration renames
+    // streams in the local `.rigger/events.db`; a shared KurrentDB backend is out of scope.
+    if parsed.store == StoreKind::Sqlite {
+        migrate_local_identity()?;
+    }
     let backend = open_store(parsed.store, parsed.conn.as_deref())?;
     let store = Namespaced::new(backend.as_ref(), &project_identity());
+    // `--fresh`: begin a NEW run before driving, so the conductor's own `ensure_started`
+    // adopts this just-minted boundary instead of the (possibly wedged) latest run. See
+    // `runscope::start_fresh` - the evented restart for a terminal escalation on an
+    // unchanged spec.
+    fresh_run_if_requested(parsed, &store, &criteria)?;
     let graph = Projector::open(&db_path("graph.db"))?;
     let driver = cli::Driver::default();
     let grounder = select_grounder(&cfg.workflow.defaults.grounder)?;
@@ -1016,6 +1630,26 @@ fn run_cli(parsed: &RunArgs) -> Res {
     Ok(())
 }
 
+/// Begin (or adopt) and definition-PIN the run both `run` drivers drive (spec 13, unit 1).
+/// When `--fresh` is set it appends a new pinned `RunStarted` for `criteria` so the run starts
+/// a clean slice even if the latest run already matches (which `ensure_started` would adopt),
+/// printing the new run id. It then enforces the definition pin ([`enforce_definition_pin`]):
+/// a drifted live-run definition HALTS loudly unless `--rebase-definition` records the
+/// supersession and continues. A fresh or unchanged run continues silently.
+fn fresh_run_if_requested(
+    parsed: &RunArgs,
+    store: &dyn EventStore,
+    criteria: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let definition = definition_hash(".")?;
+    if parsed.fresh {
+        let run = runscope::start_fresh(store, criteria, &definition)?;
+        println!("rigger: --fresh: began a new run {run} (the prior run stays in the log)");
+    }
+    enforce_definition_pin(store, criteria, &definition, parsed.rebase_definition)?;
+    Ok(())
+}
+
 /// The in-Claude-Code MCP-server path (`rigger serve` / `rigger run --driver
 /// workflow`): the conductor orchestrates on a background thread and this thread
 /// serves the MCP bridge over stdio. The store is selected by flag and wrapped in
@@ -1025,12 +1659,35 @@ fn run_workflow(parsed: &RunArgs) -> Res {
     let cfg = config::load(".")?;
     let criteria = load_criteria(parsed.spec.as_deref())?;
     std::fs::create_dir_all(RIGGER_DIR)?;
+    // One-time spec-09 identity migration before opening the run backend (local-sqlite only).
+    if parsed.store == StoreKind::Sqlite {
+        migrate_local_identity()?;
+    }
     let backend = open_store(parsed.store, parsed.conn.as_deref())?;
     let store = Namespaced::new(backend.as_ref(), &project_identity());
+    // `--fresh`: begin a NEW run before the conductor thread starts, so its `ensure_started`
+    // adopts this boundary rather than the latest (possibly wedged) run.
+    fresh_run_if_requested(parsed, &store, &criteria)?;
     let graph = Projector::open(&db_path("graph.db"))?;
     let driver = rigger::driver::workflow::Driver::new();
     let grounder = select_grounder(&cfg.workflow.defaults.grounder)?;
     let peers = rigger::sidecar::Sidecar::start(&store, 0, Filter::default())?;
+
+    // Spec 14: the SEPARATE progress store + scratch root, so the MCP `rigger_activity` tool
+    // presents the live per-agent view (this run's progress joined with the frontier and the
+    // liveness-marker ages rigger reads in Rust) to the shim over its existing connection -
+    // the shim never touches the filesystem. Progress is always the local sqlite sibling of
+    // the run store, regardless of the run store's backend.
+    let prog_backend = Store::open(&db_path("progress.db"))?;
+    let prog_store = Namespaced::new(&prog_backend, &project_identity());
+    let scratch_root = {
+        let repo = git_repo();
+        if repo.is_empty() {
+            String::new()
+        } else {
+            rigger::worktree::scratch_root_from_env(&repo, &cfg.workflow.defaults.workdir)
+        }
+    };
 
     // The conductor orchestrates in the background; this thread serves the MCP
     // bridge over stdio. The shim drains spawns via rigger_next/result; closing
@@ -1060,7 +1717,8 @@ fn run_workflow(parsed: &RunArgs) -> Res {
         // `graph_context` (the cross-agent memory the review tiers communicate
         // through), not via the conductor hand-threading prompts.
         let server = rigger::mcpserver::Server::new(&driver, &store, conductor::STREAM, &peers)
-            .with_graph(&graph);
+            .with_graph(&graph)
+            .with_progress(&prog_store, &scratch_root);
         let _ = server.run(std::io::stdin().lock(), std::io::stdout().lock());
     });
     Ok(())
@@ -1225,14 +1883,20 @@ fn cmd_graph(args: &[String]) -> Res {
 /// `rigger stats` takes no arguments; any extra argument is a clear error.
 fn cmd_stats(args: &[String]) -> Res {
     // `rigger stats` reports the LATEST run; `rigger stats --all` reports the historical
-    // aggregate over every run in the store (spec 06, unit 1). No other argument is
-    // accepted.
+    // aggregate over every run in the store (spec 06, unit 1); `rigger stats --canary`
+    // reports the judge-the-judges scorecard of the latest canary run (spec 13, unit 5).
+    // No other argument is accepted.
+    if let [flag] = args {
+        if flag == "--canary" {
+            return cmd_stats_canary();
+        }
+    }
     let all = match args {
         [] => false,
         [flag] if flag == "--all" => true,
         _ => {
             return Err(format!(
-                "stats: expected no arguments or --all, got {}",
+                "stats: expected no arguments, --all, or --canary, got {}",
                 args.join(" ")
             )
             .into())
@@ -1353,9 +2017,965 @@ fn format_stats(m: &Metrics) -> Vec<String> {
             ));
         }
     }
+    append_review_quality(&mut lines, m);
     lines
 }
 
+fn append_review_quality(lines: &mut Vec<String>, m: &Metrics) {
+    let rq = &m.review_quality;
+    lines.push("  review quality:".to_string());
+    // Disclose an UNFED upheld numerator honestly (spec 11 remediation): the upheld-based
+    // folds - finding survival, adversary precision, cost per upheld - only take a non-zero
+    // value when a finding's attribution AND the adjudicator's recorded verdict meet on this
+    // log. An all-zero-upheld panel is therefore ambiguous: it can mean the review tier
+    // genuinely upheld nothing, OR that the numerator was never fed here. Distinguish and
+    // disclose the UNFED case so a reader never misreads "0 upheld" as proven reviewer
+    // failure. Two unfed shapes leave the folded upheld total at 0 while findings/spawns
+    // exist:
+    //   - NO verdict recorded on this run's driver (the in-process cli path records none), or
+    //   - a verdict WAS recorded but the findings it upheld carry no attribution to fold onto
+    //     (`upheld_unattributed > 0` - the empty-actor sentinel dropped them). This is the
+    //     dominant case on a real aggregate store, which the adjudications==0 guard missed.
+    // A verdict that recorded and genuinely upheld nothing (upheld set empty, so
+    // `upheld_unattributed == 0`) is NOT unfed - its 0% is honest, so it stays silent.
+    let upheld_folded: u64 = rq.finding_survival.values().map(|c| c.upheld).sum();
+    let has_upheld_panel = !rq.finding_survival.is_empty() || !rq.tier_cost.is_empty();
+    if has_upheld_panel
+        && upheld_folded == 0
+        && (rq.adjudications == 0 || rq.upheld_unattributed > 0)
+    {
+        let why = if rq.adjudications == 0 {
+            "no adjudicator verdict recorded on this run's driver - the upheld set rides the courier SpawnResult the in-process cli path never writes".to_string()
+        } else {
+            format!(
+                "a verdict WAS recorded, but {} upheld finding(s) carry no attribution to fold onto (unattributed on this log)",
+                rq.upheld_unattributed,
+            )
+        };
+        lines.push(format!(
+            "    (unfed upheld numerator: the folds below - survival, adversary precision, cost per upheld - render 0/- and do NOT mean the review tier upheld nothing; {why})"
+        ));
+    }
+    lines.push(format!(
+        "    flip-flop rate     {:.1}% ({}/{} rejects reversed on the same sha)",
+        m.flip_flop_rate() * 100.0,
+        rq.flip_flops,
+        m.review_reject,
+    ));
+    lines.push(format!(
+        "    lens overlap       {:.1}% ({}/{} flagged files hit by 2+ actors)",
+        rq.lens_overlap_rate() * 100.0,
+        rq.overlap_files,
+        rq.finding_files,
+    ));
+    lines.push(format!(
+        "    adversary precision {:.1}% ({}/{} adversary-only findings upheld)",
+        rq.adversary_precision() * 100.0,
+        rq.adversary_only.upheld,
+        rq.adversary_only.raised,
+    ));
+    if rq.finding_survival.is_empty() {
+        lines.push("    finding survival   (no review findings recorded)".to_string());
+    } else {
+        lines.push("    finding survival per actor (upheld/raised):".to_string());
+        for (actor, c) in &rq.finding_survival {
+            lines.push(format!(
+                "      {actor:<20} {}/{} ({:.0}%)",
+                c.upheld,
+                c.raised,
+                c.survival() * 100.0,
+            ));
+        }
+    }
+    if rq.rejections_by_cause.is_empty() {
+        lines.push("    rejections by cause (none recorded)".to_string());
+    } else {
+        lines.push("    rejections by cause:".to_string());
+        for (cause, n) in &rq.rejections_by_cause {
+            lines.push(format!("      {cause:<24} {n}"));
+        }
+    }
+    // A rejection's cause rides a RECORDED adjudicator reject verdict; the in-process cli
+    // path records none, so on that path - and on any aggregate store mixing the two - the
+    // folded causes account for FEWER rejects than review_reject. Disclose the unfed
+    // remainder so the cause panel is never misread as the full reject breakdown (the count
+    // never underflows: each cause fold is paired with a review_reject in the same arm).
+    let causes_folded: u64 = rq.rejections_by_cause.values().sum();
+    if causes_folded < m.review_reject {
+        lines.push(format!(
+            "    (cause folded for {}/{} review rejects; the other {} carry no recorded verdict cause on this log)",
+            causes_folded,
+            m.review_reject,
+            m.review_reject - causes_folded,
+        ));
+    }
+    if !rq.escalations_by_cause.is_empty() {
+        lines.push("    escalations by cause:".to_string());
+        for (cause, n) in &rq.escalations_by_cause {
+            lines.push(format!("      {cause:<24} {n}"));
+        }
+    }
+    if rq.tier_cost.is_empty() {
+        lines.push("    tier cost          (no review spawns recorded)".to_string());
+    } else {
+        lines.push("    cost per upheld finding per tier (spawns/upheld):".to_string());
+        for (tier, tc) in &rq.tier_cost {
+            let ratio = if tc.upheld == 0 {
+                "-".to_string()
+            } else {
+                format!("{:.1}", tc.cost_per_upheld())
+            };
+            lines.push(format!(
+                "      {tier:<12} {} spawns / {} upheld ({ratio})",
+                tc.spawns, tc.upheld,
+            ));
+        }
+    }
+}
+
+/// The message `rigger stats --canary` prints when no canary run has been recorded yet -
+/// either the project has never run (no `events.db`) or its canary stream is empty.
+const NO_CANARY_MESSAGE: &str =
+    "# Rigger: no canary run recorded yet (run `rigger canary` to score the review panel \
+     against the corpus, then `rigger stats --canary`).";
+
+/// `rigger stats --canary` (spec 13, unit 5): report the judge-the-judges scorecard of the
+/// LATEST canary run - per-tier catch rate, adjudicator correctness, and finding-order
+/// stability - folded from the project's DISTINCT canary stream (never the run stream).
+fn cmd_stats_canary() -> Res {
+    match canary_stats_lines(&db_path("events.db"), &project_identity())? {
+        Some(lines) => {
+            for line in lines {
+                println!("{line}");
+            }
+        }
+        None => println!("{NO_CANARY_MESSAGE}"),
+    }
+    Ok(())
+}
+
+/// The pure read-model core of `rigger stats --canary`: open the embedded `events.db`,
+/// read `project`'s namespaced `canary` stream, and fold it into the printable canary
+/// scorecard - `None` for the two "no canary run yet" edges (absent db / empty stream),
+/// so [`cmd_stats_canary`] prints one clear message for both. Split out for the same
+/// reason [`stats_lines`] is: the namespace-scoped read is unit-testable off the process
+/// cwd.
+fn canary_stats_lines(
+    path: &str,
+    project: &str,
+) -> Result<Option<Vec<String>>, Box<dyn std::error::Error>> {
+    if !Path::new(path).exists() {
+        return Ok(None);
+    }
+    let backend = Store::open(path)?;
+    let store = Namespaced::new(&backend, project);
+    let events = store.read_stream(canary::STREAM, 0, Direction::Forward)?;
+    if events.is_empty() {
+        return Ok(None);
+    }
+    // `project_canary` scopes internally to the latest canary run (its batch marker).
+    Ok(Some(format_canary_stats(&metrics::project_canary(&events))))
+}
+
+/// Render a [`metrics::CanaryMetrics`] scorecard into the lines `rigger stats --canary`
+/// prints. Pure over the metrics so it is asserted without touching the filesystem, and
+/// shared with `rigger canary`'s own post-run summary so the two agree.
+fn format_canary_stats(m: &metrics::CanaryMetrics) -> Vec<String> {
+    let mut lines = Vec::new();
+    lines.push("canary stats (judge-the-judges recall):".to_string());
+    lines.push(format!(
+        "  items scored       {} ({} planted, {} defect class(es) cataloged)",
+        m.items,
+        m.planted,
+        m.defect_classes.len(),
+    ));
+    lines.push("  catch rate by tier (planted defects each tier caught):".to_string());
+    for (tier, tc) in &m.tier_catch {
+        lines.push(format!(
+            "    {tier:<16} {}/{} ({:.1}%)",
+            tc.caught,
+            tc.planted,
+            tc.rate() * 100.0,
+        ));
+    }
+    lines.push(format!(
+        "  adjudicator        {}/{} correct ({:.1}%)",
+        m.adjudicator_correct,
+        m.items,
+        m.adjudicator_accuracy() * 100.0,
+    ));
+    lines.push(format!(
+        "  verdict stability  {}/{} stable ({:.1}%) under finding-order shuffle",
+        m.stable,
+        m.items,
+        m.stability_rate() * 100.0,
+    ));
+    if !m.defect_classes.is_empty() {
+        lines.push(format!(
+            "  defect classes     {}",
+            m.defect_classes
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", "),
+        ));
+    }
+    lines
+}
+
+/// Read the project's cross-run resolved-model drift (spec 13b, unit 1) from the embedded
+/// `events.db` at `path`, namespaced by `project`, folding the run stream via
+/// [`metrics::model_drift`]. Returns an EMPTY (no-drift) [`metrics::ModelDrift`] when there
+/// is no store yet - so a never-run project and a no-drift project are treated the same. It
+/// reads the SAME namespaced run stream `rigger stats` folds, so the `rigger validate`
+/// warning and the `rigger canary --if-model-changed` trigger fold ONE source of truth for
+/// what "the model changed" means - they can never disagree. Split off (path + project
+/// explicit) so the read is unit-testable off the process cwd, exactly like [`stats_lines`].
+fn read_model_drift(
+    path: &str,
+    project: &str,
+) -> Result<metrics::ModelDrift, Box<dyn std::error::Error>> {
+    if !Path::new(path).exists() {
+        return Ok(metrics::ModelDrift::default());
+    }
+    let backend = Store::open(path)?;
+    let store = Namespaced::new(&backend, project);
+    let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+    Ok(metrics::model_drift(&events))
+}
+
+/// The `rigger validate` model-drift advisory (spec 13b, unit 1): a stderr warning naming
+/// each tier whose resolved model id re-pointed since the previous run and recommending the
+/// drift-gated canary, or `None` when nothing drifted. Pure over the [`metrics::ModelDrift`]
+/// so it is asserted without touching the filesystem (like [`format_stats`]); the caller
+/// prints it without changing the exit status, exactly like the other validate advisories.
+fn model_drift_advisory(drift: &metrics::ModelDrift) -> Option<String> {
+    if !drift.changed() {
+        return None;
+    }
+    let mut msg = String::from(
+        "warning: a tier's resolved model id changed since the previous run (a silent alias \
+         re-point):",
+    );
+    for c in &drift.changes {
+        let alias = if c.alias.is_empty() {
+            "(unnamed tier)"
+        } else {
+            c.alias.as_str()
+        };
+        msg.push_str(&format!("\n  - {alias}: {} -> {}", c.previous, c.current));
+    }
+    msg.push_str(
+        "\nRun `rigger canary --if-model-changed` to re-measure the review panel against the \
+         seeded-defect corpus before trusting a run under the new model.",
+    );
+    Some(msg)
+}
+
+/// `rigger canary [--corpus <dir>] [--if-model-changed]` (spec 13, unit 5; drift trigger spec
+/// 13b, unit 1): run the review panel against every item in the seeded-defect corpus (default
+/// `./canaries`) and record the scored outcomes to the project's canary stream, then print the
+/// scorecard. This is the loop's only RECALL measurement - it judges the judges against known
+/// ground truth. The scores land in a DISTINCT stream from the run's, so a canary run never
+/// perturbs the project's operator metrics; `rigger stats --canary` re-reports them.
+///
+/// With `--if-model-changed` the run is GATED on model drift: the canary runs ONLY when a
+/// tier's resolved model id re-pointed since the previous run (the same drift `rigger
+/// validate` warns about), and an unchanged model runs no canary - the automatic monitor for
+/// silent alias re-points. Without the flag the canary always runs.
+fn cmd_canary(args: &[String]) -> Res {
+    let mut corpus_dir = "canaries".to_string();
+    let mut if_model_changed = false;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--corpus" => {
+                corpus_dir = args
+                    .get(i + 1)
+                    .ok_or("canary: --corpus needs a directory path")?
+                    .clone();
+                i += 2;
+            }
+            "--if-model-changed" => {
+                if_model_changed = true;
+                i += 1;
+            }
+            other => {
+                return Err(format!(
+                    "canary: unexpected argument {other:?} (usage: rigger canary [--corpus <dir>] \
+                     [--if-model-changed])"
+                )
+                .into())
+            }
+        }
+    }
+
+    // The drift gate (spec 13b, unit 1): with `--if-model-changed`, run the canary ONLY when a
+    // tier's resolved model re-pointed since the previous run; an unchanged model runs no
+    // canary (and needs no corpus, so the gate precedes the corpus load). The detection reads
+    // the SAME namespaced run stream `rigger validate`'s drift advisory folds, so the warning
+    // and this trigger can never disagree on what "the model changed" means.
+    if if_model_changed {
+        let drift = read_model_drift(&db_path("events.db"), &project_identity())?;
+        if !drift.changed() {
+            println!(
+                "canary: no resolved-model change since the previous run - skipping (run \
+                 `rigger canary` to force a run)."
+            );
+            return Ok(());
+        }
+        for c in &drift.changes {
+            let alias = if c.alias.is_empty() {
+                "(unnamed tier)"
+            } else {
+                c.alias.as_str()
+            };
+            println!(
+                "canary: resolved model changed for {alias} ({} -> {}) since the previous run - \
+                 running the panel.",
+                c.previous, c.current,
+            );
+        }
+    }
+
+    let corpus = canary::load_corpus(Path::new(&corpus_dir))?;
+    if corpus.is_empty() {
+        return Err(format!(
+            "canary: the corpus at {corpus_dir:?} has no items (add `*.md` canary files)"
+        )
+        .into());
+    }
+
+    let cfg = config::load(".")?;
+    let panel = cfg.workflow.defaults.review.clone();
+    if panel.is_empty() {
+        return Err("canary: defaults.review declares no review panel to measure".into());
+    }
+
+    std::fs::create_dir_all(RIGGER_DIR)?;
+    // Sqlite is the canary's local measurement store; migrate a pre-spec-09 namespace once
+    // so the canary stream lands under the same identity `stats --canary` reads.
+    migrate_local_identity()?;
+    let backend = Store::open(&db_path("events.db"))?;
+    let store = Namespaced::new(&backend, &project_identity());
+    let driver = cli::Driver::default();
+
+    let report = canary::run_canary(&store, &driver, &cfg, &panel, &corpus)?;
+    println!(
+        "canary run {}: scored {} corpus item(s) against the review panel",
+        report.batch,
+        report.outcomes.len(),
+    );
+    // Re-read and fold from the store so the printed scorecard is exactly what
+    // `rigger stats --canary` will report from the same events.
+    let events = store.read_stream(canary::STREAM, 0, Direction::Forward)?;
+    for line in format_canary_stats(&metrics::project_canary(&events)) {
+        println!("{line}");
+    }
+    Ok(())
+}
+
+/// `rigger playbooks --rebuild` (spec 13b, unit 2) - reconstruct the distilled playbook pool
+/// under `.rigger/playbooks/` from this project's recorded `LessonLearned` stream. The pool is
+/// a rebuildable PROJECTION of the log (never hand-edited state): [`playbooks::rebuild`] clears
+/// the rigger-managed pool files and re-derives every deduplicated, trigger-scoped playbook, so
+/// this command is the operator's way to regenerate the pool after new lessons land (or to
+/// recover a hand-corrupted pool). It only READS the run stream (never writes it), scoped to
+/// this project's namespace exactly as `rigger stats`/`rigger canary` read it; an absent store
+/// (a never-run project) has no lessons, so the pool rebuilds empty rather than fabricating one.
+fn cmd_playbooks(args: &[String]) -> Res {
+    match args {
+        [flag] if flag == "--rebuild" => {}
+        _ => {
+            return Err("playbooks: expected --rebuild (usage: rigger playbooks --rebuild)".into())
+        }
+    }
+
+    // Migrate a pre-spec-09 namespace once so the lessons stream lands under the same
+    // identity the conductor wrote, then READ (never fabricate) this project's run stream.
+    migrate_local_identity()?;
+    let db = db_path("events.db");
+    let events = if Path::new(&db).exists() {
+        let backend = Store::open(&db)?;
+        let store = Namespaced::new(&backend, &project_identity());
+        store.read_stream(conductor::STREAM, 0, Direction::Forward)?
+    } else {
+        Vec::new()
+    };
+
+    let pool_dir = Path::new(RIGGER_DIR).join(playbooks::POOL_SUBDIR);
+    let pool = playbooks::rebuild(&events, &pool_dir)?;
+    let lessons = events
+        .iter()
+        .filter(|e| e.type_ == contextgraph::TYPE_LESSON_LEARNED)
+        .count();
+    println!(
+        "playbooks: rebuilt {} playbook(s) under {} from {} recorded lesson event(s)",
+        pool.len(),
+        pool_dir.display(),
+        lessons,
+    );
+    Ok(())
+}
+
+/// `rigger replay <run-id|latest> --against <rev>` - trajectory replay / config eval
+/// (spec 13, unit 2). Re-drive a COMPLETED run's recorded trajectory under a CANDIDATE
+/// config (the `workflow.yml` + agent prompts committed at git `<rev>`) in a fully
+/// ISOLATED scratch namespace, then print the stats DIFF against the run's recorded
+/// baseline metrics. Past runs become a regression corpus for config edits - "did that
+/// prompt/tier/budget change regress first-pass yield?" gets an answer with no live
+/// campaign, because unit 1's pinned definition makes the baseline citable.
+///
+/// The re-drive answers every agent spawn from the baseline's recorded `SpawnResult`s (the
+/// [`ReplayDriver`]) and every gate the candidate still declares from its recorded
+/// `GateVerdict`s (the conductor's gate-verdict replay), so it runs NO agent and NO gate
+/// command - it re-derives only the run's SHAPE (which stages, which review tier, which
+/// budget, WHICH gates the CANDIDATE config dictates) over the same recorded behaviour. A
+/// spawn the candidate config introduces that the trajectory never recorded simply parks, so
+/// the re-drive stops where the recorded behaviour runs out rather than fabricating one.
+///
+/// The "gate runs" column is re-scoped to the candidate accordingly: the trajectory seeds
+/// every recorded gate verdict, but only the gates the candidate config still declares are
+/// re-reached, so a config edit that REMOVES or renames a gate lowers the candidate "gate
+/// runs" (a removed gate's seeded verdict is dropped by [`candidate_reaches_gate`] before the
+/// candidate fold), while an added gate the baseline never ran runs FAIL-SAFE (never a
+/// fabricated pass, see [`ReplayRunner`]). The one gate boundary the offline replay does not
+/// reproduce is the git-merge-specific POST-MERGE re-gate (d13-u2), whose recorded verdict is
+/// left as-is.
+///
+/// ISOLATION (never the real project streams): the re-drive writes to a FRESH sqlite file
+/// under the scratch root, opened as a distinct [`Namespaced`] project - the real
+/// `.rigger/events.db` is only ever READ (to lift the baseline) and never opened for write.
+/// The candidate config is read from a throwaway detached `git worktree` of `<rev>` that is
+/// removed after loading. Both scratch artifacts live under the project scratch root, never
+/// the OS temp partition.
+fn cmd_replay(args: &[String]) -> Res {
+    let (run_id, rev) = parse_replay_args(args)?;
+
+    // The candidate config lives at a git rev, so a replay needs a repo. The baseline is
+    // read from THIS project's namespaced run stream (read-only).
+    let repo = git_repo();
+    if repo.is_empty() {
+        return Err(
+            "rigger replay: needs a git repo - the candidate config is read at the \
+                    git rev given to --against, and this project is not inside one"
+                .into(),
+        );
+    }
+
+    // 1. Lift the baseline: read (never write) this project's run stream and slice the
+    //    requested run. `metrics::project` folds it into the recorded baseline.
+    let db = db_path("events.db");
+    if !Path::new(&db).exists() {
+        return Err(format!(
+            "rigger replay: no runs recorded yet for this project (no {db}); run `rigger run` first"
+        )
+        .into());
+    }
+    let backend = Store::open(&db)?;
+    let real = Namespaced::new(&backend, &project_identity());
+    let events = real.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+    let baseline = baseline_run_slice(&events, &run_id).ok_or_else(|| {
+        format!(
+            "rigger replay: no run {run_id:?} in this project's stream (use a run id from \
+             `rigger stats`, or `latest`)"
+        )
+    })?;
+    let baseline_metrics = metrics::project(baseline);
+    // The baseline run's acceptance criteria: the SPEC the candidate config is re-driven
+    // against, so the isolated run adopts the same campaign fingerprint. The resolved run id
+    // (never the literal `latest`) names the baseline in the diff header.
+    let baseline_started = serde_json::from_slice::<runscope::RunStarted>(&baseline[0].data).ok();
+    let criteria: Vec<String> = baseline_started
+        .as_ref()
+        .map(|r| r.criteria.clone())
+        .unwrap_or_default();
+    let baseline_id = baseline_started
+        .map(|r| r.run)
+        .filter(|r| !r.is_empty())
+        .unwrap_or_else(|| run_id.clone());
+
+    // 2. Materialize the candidate config at <rev> in a throwaway checkout.
+    let workdir = config::load(".")
+        .map(|c| c.workflow.defaults.workdir)
+        .unwrap_or_default();
+    let scratch_root = rigger::worktree::scratch_root_from_env(&repo, &workdir);
+    std::fs::create_dir_all(&scratch_root)?;
+    let (candidate_cfg, candidate_definition) =
+        materialize_config_at_rev(&repo, &rev, &scratch_root)?;
+
+    // 3. Seed the ISOLATED store (a separate scratch db + namespace) with a fresh RunStarted
+    //    for the candidate criteria/definition, then the baseline's replayable trajectory.
+    //    The db lives in a THROWAWAY subdir removed wholesale below, so the WAL/SHM sidecars
+    //    a live WAL-mode sqlite opens beside the .db never leak under the scratch root.
+    let replay_dir =
+        Path::new(&scratch_root).join(format!("rigger-replay-{}", uuid::Uuid::new_v4().simple()));
+    std::fs::create_dir_all(&replay_dir)?;
+    let replay_db = replay_dir.join("events.db");
+
+    // The store (and everything borrowing it - the namespaced view, the driver, the deps)
+    // is confined to this scope so it is DROPPED before the scratch subdir is removed: a
+    // WAL-mode sqlite only releases its `.db-wal`/`.db-shm` sidecars on close, so cleaning
+    // up while the connection is still open would leak them (adv-u13r-replay-scratch-wal-shm-leak).
+    let (candidate_metrics, drive_err) = {
+        let iso_backend = Store::open(replay_db.to_str().unwrap_or_default())?;
+        let iso = Namespaced::new(&iso_backend, "rigger-replay");
+        runscope::start_fresh(&iso, &criteria, &candidate_definition)?;
+        let trajectory = conductor::replay_trajectory(baseline);
+        iso.append(conductor::STREAM, ExpectedRevision::Any, &trajectory)?;
+
+        // 4. Re-drive the candidate config over the isolated store. Repo-less and grounder-less
+        //    (a pure offline re-fold), the ReplayDriver answers each spawn from the seeded
+        //    results, and ReplayRunner guarantees a candidate-config-only gate never shells out.
+        let driver = ReplayDriver::new(&iso);
+        let deps = Deps {
+            store: &iso,
+            driver: &driver,
+            gates: &ReplayRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria,
+        };
+        let drive = conductor::run(&candidate_cfg, &deps);
+
+        // 5. Fold the candidate metrics from the isolated run. The re-drive's own result is
+        //    reported but never fatal: a candidate config that parks (an uncovered spawn) still
+        //    yields a partial, honestly-labelled candidate column.
+        //
+        //    "gate runs" must reflect the CANDIDATE config, not echo the seeded baseline: the
+        //    trajectory seeds every recorded GateVerdict, but the re-drive only RE-REACHES the
+        //    gates the candidate config still declares (`run_gates` iterates the candidate's
+        //    `st.gates`), so a removed/renamed gate is never touched. Filter the isolated
+        //    current-run through `candidate_reaches_gate` before folding, so a seeded verdict
+        //    the candidate no longer reaches is dropped from the candidate "gate runs" count
+        //    (adv-u13r-gate-runs-echoes-seed-not-candidate). Every non-gate event folds
+        //    unchanged, so only the gate column is re-scoped.
+        let iso_events = iso.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+        let current = runscope::current_run(&iso_events);
+        let started = started_units(current);
+        let candidate_view: Vec<Event> = current
+            .iter()
+            .filter(|e| candidate_reaches_gate(e, &candidate_cfg, &started))
+            .cloned()
+            .collect();
+        (metrics::project(&candidate_view), drive.err())
+    };
+
+    // 6. The isolated store is now dropped (closed): remove the whole throwaway db subdir -
+    //    the `.db` plus its `.db-wal` / `.db-shm` sidecars - in one call, so no sqlite file
+    //    leaks under the scratch root. Best-effort (the diff is already computed), so a
+    //    cleanup failure never fails the command.
+    let _ = std::fs::remove_dir_all(&replay_dir);
+
+    for line in format_stats_diff(&baseline_id, &rev, &baseline_metrics, &candidate_metrics) {
+        println!("{line}");
+    }
+    if let Some(e) = drive_err {
+        eprintln!(
+            "rigger replay: the candidate re-drive did not complete ({e}); the candidate \
+             column reflects the run up to where the recorded trajectory ran out"
+        );
+    }
+    Ok(())
+}
+
+/// The set of unit ids the re-drive actually STARTED (emitted a `UnitStarted` for) in the
+/// isolated `events` slice. The seeded trajectory carries only SpawnResults + GateVerdicts
+/// ([`conductor::replay_trajectory`] strips the lifecycle), so every `UnitStarted` here is
+/// one the re-drive emitted for a unit the CANDIDATE config reached - the signal that lets
+/// [`candidate_reaches_gate`] drop the seeded gate verdicts of a stage the candidate removed
+/// (or a unit its DAG never reached), which the re-drive never re-started.
+fn started_units(events: &[Event]) -> std::collections::HashSet<String> {
+    events
+        .iter()
+        .filter(|e| e.type_ == ledger::TYPE_UNIT_STARTED)
+        .filter_map(|e| {
+            serde_json::from_slice::<serde_json::Value>(&e.data)
+                .ok()
+                .and_then(|v| v.get("id").and_then(|i| i.as_str()).map(String::from))
+        })
+        .collect()
+}
+
+/// Whether the candidate config still REACHES the gate a recorded `GateVerdict` scored, so it
+/// counts toward the candidate "gate runs" column of a `rigger replay` diff. Every non-gate
+/// event passes through unchanged (only the gate column is re-scoped to the candidate); a
+/// gate verdict is KEPT only when the offline re-drive would genuinely re-reach it:
+///
+/// - its stage/unit was STARTED in the re-drive (`started`) - a stage the candidate removed,
+///   or a unit its DAG never reached, is never re-driven, so its seeded verdicts do not count;
+/// - AND the candidate config's stage still DECLARES this gate - `run_gates` iterates the
+///   candidate's `st.gates`, so a static stage that dropped or renamed the gate never runs it,
+///   and its seeded verdict is not reached. A kept gate replays (counted), an added gate runs
+///   fail-safe (a fresh verdict, also for a declared gate, so counted), a removed/renamed gate
+///   drops out - exactly the set the re-drive reaches.
+///
+/// A verdict whose replay key carries no `/gate:` infix (an integrate-time GATED_BY artifact
+/// verdict, already excluded by [`metrics::project`]; or a post-merge re-gate keyed apart -
+/// the git-merge-specific boundary the offline replay never reproduces, per d13-u2) is left as
+/// recorded. A gate verdict on a started unit that is NOT a static workflow stage (a
+/// planner-proposed unit whose gate list cannot be re-scoped from the config) is likewise kept
+/// as recorded - the re-scoping never over-drops a verdict it cannot confidently place.
+fn candidate_reaches_gate(
+    e: &Event,
+    cfg: &config::Config,
+    started: &std::collections::HashSet<String>,
+) -> bool {
+    if e.type_ != contextgraph::TYPE_GATE_VERDICT {
+        return true;
+    }
+    // A verdict with no gate-RUN replay key (artifact / post-merge / skip) is not a re-scopable
+    // pre-merge gate run; leave it as recorded.
+    let Some(stage) = e
+        .meta
+        .get(conductor::META_REPLAY_KEY)
+        .and_then(|k| conductor::unit_of_gate_key(k))
+    else {
+        return true;
+    };
+    // The re-drive must have re-started this stage's unit; a removed stage is never re-driven.
+    if !started.contains(stage) {
+        return false;
+    }
+    let Some(gate) = serde_json::from_slice::<serde_json::Value>(&e.data)
+        .ok()
+        .and_then(|v| v.get("gate").and_then(|g| g.as_str()).map(String::from))
+    else {
+        return true;
+    };
+    // A static candidate stage that no longer lists this gate never runs it (removed/renamed);
+    // a non-static unit (no such stage) is kept as recorded rather than over-dropped.
+    match cfg.workflow.stages.get(stage) {
+        Some(st) => st.gates.iter().any(|g| g == &gate),
+        None => true,
+    }
+}
+
+/// Parse `rigger replay <run-id|latest> --against <rev>`. Exactly the run selector and the
+/// `--against <rev>` pair are accepted, in either order for the flag; anything else is a
+/// loud usage error rather than a silently-ignored argument.
+fn parse_replay_args(args: &[String]) -> Result<(String, String), Box<dyn std::error::Error>> {
+    let mut run_id: Option<String> = None;
+    let mut rev: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--against" => {
+                rev = Some(
+                    args.get(i + 1)
+                        .ok_or("rigger replay: --against needs a git rev")?
+                        .clone(),
+                );
+                i += 2;
+            }
+            flag if flag.starts_with("--") => {
+                return Err(format!("rigger replay: unknown flag {flag:?}").into());
+            }
+            positional if run_id.is_none() => {
+                run_id = Some(positional.to_string());
+                i += 1;
+            }
+            extra => {
+                return Err(format!("rigger replay: unexpected argument {extra:?}").into());
+            }
+        }
+    }
+    let run_id = run_id.ok_or(
+        "rigger replay: expected a run id (or `latest`) and `--against <rev>`; \
+         see `rigger --help`",
+    )?;
+    let rev = rev.ok_or("rigger replay: missing --against <rev> (the candidate config rev)")?;
+    Ok((run_id, rev))
+}
+
+/// The slice of `events` belonging to `run_id`: the contiguous window from that run's
+/// `RunStarted` up to (but excluding) the next one, so a MIDDLE run in a multi-run store is
+/// sliced exactly like the current one - not just the latest. `latest` selects the current
+/// run ([`runscope::current_run`]). `None` when no such run exists (an unknown id, or an
+/// empty stream).
+fn baseline_run_slice<'a>(events: &'a [Event], run_id: &str) -> Option<&'a [Event]> {
+    if run_id == "latest" {
+        let slice = runscope::current_run(events);
+        return (!slice.is_empty()).then_some(slice);
+    }
+    let start = events.iter().position(|e| {
+        e.type_ == runscope::TYPE_RUN_STARTED && run_started_id(e).as_deref() == Some(run_id)
+    })?;
+    let end = events[start + 1..]
+        .iter()
+        .position(|e| e.type_ == runscope::TYPE_RUN_STARTED)
+        .map(|off| start + 1 + off)
+        .unwrap_or(events.len());
+    Some(&events[start..end])
+}
+
+/// The run id carried in a `RunStarted` event body, or `None` if it is malformed.
+fn run_started_id(e: &Event) -> Option<String> {
+    serde_json::from_slice::<runscope::RunStarted>(&e.data)
+        .ok()
+        .map(|r| r.run)
+}
+
+/// Load the candidate [`Config`](config) and its definition hash from git `<rev>` via a
+/// throwaway DETACHED worktree under `scratch_root`, removed once loaded. Reading the config
+/// through a real checkout (rather than piping `git show`) reuses the exact [`config::load`]
+/// / [`definition_hash`] readers the live path uses, so a replay evaluates precisely the
+/// config a run at `<rev>` would.
+fn materialize_config_at_rev(
+    repo: &str,
+    rev: &str,
+    scratch_root: &str,
+) -> Result<(config::Config, String), Box<dyn std::error::Error>> {
+    let checkout = Path::new(scratch_root).join(format!(
+        "rigger-replay-cfg-{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let checkout_str = checkout
+        .to_str()
+        .ok_or("rigger replay: non-utf8 scratch path")?;
+    let add = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["worktree", "add", "--detach"])
+        .arg(checkout_str)
+        .arg(rev)
+        .output()?;
+    if !add.status.success() {
+        return Err(format!(
+            "rigger replay: could not check out --against {rev:?}: {}",
+            String::from_utf8_lossy(&add.stderr).trim()
+        )
+        .into());
+    }
+    // Load BEFORE removing the checkout; both readers return owned values, so the worktree
+    // can be torn down immediately after.
+    let loaded = config::load(checkout_str)
+        .map_err(|e| format!("rigger replay: candidate config at {rev:?} is invalid: {e}"))
+        .and_then(|cfg| {
+            definition_hash(checkout_str)
+                .map(|def| (cfg, def))
+                .map_err(|e| format!("rigger replay: candidate definition hash at {rev:?}: {e}"))
+        });
+    let _ = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["worktree", "remove", "--force"])
+        .arg(checkout_str)
+        .output();
+    Ok(loaded?)
+}
+
+/// Render the baseline-vs-candidate stats diff `rigger replay` prints: a header naming the
+/// baseline run and the candidate rev, a column head, then one aligned row per headline
+/// metric from [`metrics::diff_rows`], each changed row flagged with `*` so a config edit's
+/// effect jumps out. Pure over the two [`Metrics`], so it is asserted without any I/O.
+fn format_stats_diff(run_id: &str, rev: &str, base: &Metrics, cand: &Metrics) -> Vec<String> {
+    let mut lines = vec![
+        format!("replay stats diff (baseline run {run_id} vs candidate config @ {rev}):"),
+        format!("  {:<20} {:>10} {:>10}", "metric", "baseline", "candidate"),
+    ];
+    for (label, b, c) in metrics::diff_rows(base, cand) {
+        let flag = if b != c { "  *" } else { "" };
+        lines.push(format!("  {label:<20} {b:>10} {c:>10}{flag}"));
+    }
+    lines
+}
+
+/// A [`Runner`] for `rigger replay` that NEVER executes a gate command. The re-drive
+/// replays every gate outcome the recorded trajectory carries (the conductor's gate-verdict
+/// replay answers them before any runner is consulted), so this is reached ONLY for a gate
+/// the CANDIDATE config introduced that the baseline never ran - which cannot be scored from
+/// recorded behaviour. It therefore FAILS SAFE (never a fabricated pass) and runs no shell,
+/// keeping the replay a pure offline re-fold of recorded facts.
+struct ReplayRunner;
+
+impl Runner for ReplayRunner {
+    fn run(&self, g: &Gate, _dir: &str, _target_dir: &str) -> GateResult {
+        GateResult {
+            pass: false,
+            evidence: format!(
+                "FAIL\ngate {}: not covered by the replayed trajectory (a candidate-config gate \
+                 with no recorded verdict); rigger replay never executes a gate command",
+                g.id
+            ),
+        }
+    }
+}
+
+/// `rigger dash` - serve or export the embedded observability page (spec 11, unit 2).
+///
+/// A READ-ONLY window over the existing projections: the conductor stays the sole mutation
+/// authority, so the dash has no write or control surface (enforced in [`dash::route`],
+/// which answers only `GET`). `rigger dash` serves the live-polling single-file page on
+/// loopback (`127.0.0.1`, default [`dash::DEFAULT_PORT`], override with `--port`);
+/// `rigger dash --export <path>` writes the equivalent static, shareable snapshot.
+///
+/// Composition mirrors the sibling operator reads (`stats`, `graph`): it resolves this
+/// project's `.rigger/events.db` + `.rigger/graph.db` by cwd (via [`db_path`] /
+/// [`project_identity`]) and re-reads them on EACH request, so the page reflects the run
+/// as it advances. An ABSENT `events.db` reads as an empty run (guarded BEFORE
+/// [`Store::open`], which would otherwise create it), so an operator can launch the dash
+/// first and watch the run populate it. The context graph is best-effort: a grep-only run
+/// never builds one, and an absent or unreadable `graph.db` yields an empty graph rather
+/// than failing the whole page.
+fn cmd_dash(args: &[String]) -> Res {
+    // `--export <path>` and/or `--port <n>`; loopback only (no host flag by design).
+    let mut export: Option<String> = None;
+    let mut port: u16 = dash::DEFAULT_PORT;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--export" => {
+                i += 1;
+                export = Some(
+                    args.get(i)
+                        .cloned()
+                        .ok_or("dash: --export expects a path")?,
+                );
+            }
+            "--port" => {
+                i += 1;
+                port = args
+                    .get(i)
+                    .and_then(|p| p.parse().ok())
+                    .ok_or("dash: --port expects a port number (1-65535)")?;
+            }
+            other => return Err(format!("dash: unknown argument {other:?}").into()),
+        }
+        i += 1;
+    }
+
+    let events_db = db_path("events.db");
+    let graph_db = db_path("graph.db");
+    let progress_db = db_path("progress.db");
+    let identity = project_identity();
+    // The scratch root whose markers rigger stats to present each agent's liveness age (spec
+    // 14). Resolved once; a repo-less invocation leaves it empty and the view omits ages.
+    let workdir = config::load(".")
+        .map(|c| c.workflow.defaults.workdir)
+        .unwrap_or_default();
+    let scratch_root = {
+        let repo = git_repo();
+        if repo.is_empty() {
+            String::new()
+        } else {
+            rigger::worktree::scratch_root_from_env(&repo, &workdir)
+        }
+    };
+
+    // Fresh projection inputs on every request. Reading (not holding an open handle) is
+    // what lets the dash start before the store exists and pick the run up once it does.
+    let provider = move || -> Result<dash::DashInputs, String> {
+        let events = dash_read_run(&events_db, &identity).map_err(|e| e.to_string())?;
+        let graph = dash_read_graph(&graph_db, &events);
+        let run_id = runscope::current_run_id(&events).unwrap_or_default();
+        let progress = dash_read_progress(&progress_db, &identity, &run_id);
+        let liveness = dash_read_liveness(&events, &scratch_root, &run_id);
+        Ok((events, graph, progress, liveness))
+    };
+
+    match export {
+        Some(path) => {
+            let (events, graph, progress, liveness) =
+                provider().map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+            let html = dash::render_export(&events, &graph, &progress, &liveness)?;
+            std::fs::write(&path, html)?;
+            println!("wrote dash snapshot to {path}");
+            Ok(())
+        }
+        None => {
+            let addr = SocketAddr::from(([127, 0, 0, 1], port));
+            dash::serve(addr, provider)?;
+            Ok(())
+        }
+    }
+}
+
+/// Read this project's CURRENT-run events from `events_db` under `identity`, scoped to the
+/// latest run exactly as [`stats_lines`] does. An absent db is an empty run and NO file is
+/// created (the guard precedes [`Store::open`], which would otherwise fabricate one).
+fn dash_read_run(
+    events_db: &str,
+    identity: &str,
+) -> Result<Vec<Event>, Box<dyn std::error::Error>> {
+    if !Path::new(events_db).exists() {
+        return Ok(Vec::new());
+    }
+    let backend = Store::open(events_db)?;
+    let store = Namespaced::new(&backend, identity);
+    let all = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+    Ok(runscope::current_run(&all).to_vec())
+}
+
+/// Build the context subgraph around the run's own units/decisions/findings from
+/// `graph_db` (seeds via [`dash::graph_seeds`]). Best-effort: an absent graph (a grep-only
+/// run never builds one) or any query error yields an empty graph, so the rest of the dash
+/// still serves.
+fn dash_read_graph(graph_db: &str, events: &[Event]) -> contextgraph::Graph {
+    if !Path::new(graph_db).exists() {
+        return contextgraph::Graph::default();
+    }
+    let seeds = dash::graph_seeds(events);
+    if seeds.is_empty() {
+        return contextgraph::Graph::default();
+    }
+    match Projector::open(graph_db) {
+        Ok(p) => p.subgraph(&seeds, 2).unwrap_or_default(),
+        Err(_) => contextgraph::Graph::default(),
+    }
+}
+
+/// This run's progress from the SEPARATE progress store (spec 14), for the dash's live
+/// per-agent view. Absent/empty is fine (the store is created lazily by the first
+/// `rigger progress`), and only the current run's reports (by `run_id`) are returned.
+fn dash_read_progress(progress_db: &str, identity: &str, run_id: &str) -> Vec<Event> {
+    if !Path::new(progress_db).exists() {
+        return Vec::new();
+    }
+    let Ok(backend) = Store::open(progress_db) else {
+        return Vec::new();
+    };
+    let store = Namespaced::new(&backend, identity);
+    store
+        .read_stream(progress::STREAM, 0, Direction::Forward)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|e| {
+            run_id.is_empty()
+                || e.meta.get(runscope::META_RUN_ID).map(String::as_str) == Some(run_id)
+        })
+        .collect()
+}
+
+/// The liveness-marker age (whole seconds since last touch) for each in-flight spawn in
+/// `events` (the current run's slice), read HERE in Rust so the dash PRESENTS it (spec 14) -
+/// the same stat the retired probe did, done by rigger rather than a spawned agent. Empty
+/// when there is no scratch root (a repo-less invocation).
+fn dash_read_liveness(
+    events: &[Event],
+    scratch_root: &str,
+    run_id: &str,
+) -> std::collections::HashMap<String, u64> {
+    let mut ages = std::collections::HashMap::new();
+    if scratch_root.is_empty() {
+        return ages;
+    }
+    let Ok(step) = spawn::step_result(events) else {
+        return ages;
+    };
+    let now = std::time::SystemTime::now();
+    for w in &step.wave {
+        let path = rigger::liveness::marker_path(scratch_root, run_id, &w.id);
+        if let Ok(age) = std::fs::metadata(&path)
+            .and_then(|md| md.modified())
+            .map(|mtime| now.duration_since(mtime).map(|d| d.as_secs()).unwrap_or(0))
+        {
+            ages.insert(w.id.clone(), age);
+        }
+    }
+    ages
+}
 /// `rigger ground "<query>" [<k>]` - run the project's configured grounder (the
 /// same one the `run`/`serve` paths build from `defaults.grounder` via
 /// [`select_grounder`]) over the repo and print up to `k` (default 8) relevant
@@ -1472,6 +3092,145 @@ fn cmd_emit(args: &[String]) -> Res {
     let tool_args = serde_json::json!({ "type": typ, "data": data });
     let pos = mcpserver::emit_event(&store, conductor::STREAM, Some(&graph), &tool_args)?;
     println!("emitted {typ} (position {pos}) and folded it into the context graph");
+    Ok(())
+}
+
+/// `rigger progress <id> "<activity>"` - record one live progress report for spawn `<id>`
+/// to the SEPARATE progress store (`.rigger/progress.db`), stamped with the current run
+/// (spec 14, Gap 27). `<activity>` is a short one-line description of what the agent just
+/// did (a grep, a build, a commit, a decision). The report NEVER touches the run stream -
+/// it lands in its own store, so replay stays byte-identical - and rigger reads it back
+/// (the consolidator) to PRESENT a live per-agent view. A pure append: the run is resolved
+/// read-only from the run store to scope the report, and only the progress store is written.
+/// Routed through [`require_store_dir`] like the other courier commands, so a worker running
+/// it from a nested worktree records into the project's real store, never a misfiled one.
+fn cmd_progress(args: &[String]) -> Res {
+    let id = args
+        .first()
+        .ok_or("progress: expected a spawn id: rigger progress <id> \"<activity>\"")?;
+    let activity = args
+        .get(1)
+        .ok_or("progress: expected an activity: rigger progress <id> \"<activity>\"")?;
+    if args.len() > 2 {
+        return Err(format!(
+            "progress: expected an id and a single activity string, got {} arguments",
+            args.len()
+        )
+        .into());
+    }
+    if activity.trim().is_empty() {
+        return Err("progress: <activity> must be non-empty".into());
+    }
+
+    let loc = require_store_dir()?;
+    // Resolve the current run READ-ONLY from the run store, only to scope the report.
+    let run_backend = Store::open(&loc.file("events.db"))?;
+    let run_store = Namespaced::new(&run_backend, &loc.identity());
+    let events = run_store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+    let run_id = runscope::current_run_id(&events).unwrap_or_default();
+    // Append to the SEPARATE progress store - never the run stream.
+    let prog_backend = Store::open(&loc.file("progress.db"))?;
+    let prog_store = Namespaced::new(&prog_backend, &loc.identity());
+    let pos = rigger::progress::record(&prog_store, &run_id, id, activity)?;
+    println!("progress recorded for {id} (position {pos})");
+    Ok(())
+}
+
+/// `rigger status [--json]` - present the live per-agent view of the current run (spec 14,
+/// unit 2). Rigger CONSOLIDATES its three signals for every in-flight spawn - the run-stream
+/// milestone, the latest progress report, and the liveness-marker age it reads in Rust here
+/// (so no consumer stats a file) - into one view: what each agent is at, what it is doing,
+/// how long since its last activity and heartbeat, and how long since its last store event
+/// (the blackout this closes). `--json` prints the machine shape the shim and the dash also
+/// consume; the default is a readable table. Read-only over the run store, the separate
+/// progress store, and the liveness markers.
+fn cmd_status(args: &[String]) -> Res {
+    let mut json = false;
+    for a in args {
+        match a.as_str() {
+            "--json" => json = true,
+            other => return Err(format!("status: unknown argument {other:?} (only --json)").into()),
+        }
+    }
+    let loc = require_store_dir()?;
+    let now = std::time::SystemTime::now();
+
+    // The current run's slice of the run stream, and its id.
+    let run_backend = Store::open(&loc.file("events.db"))?;
+    let run_store = Namespaced::new(&run_backend, &loc.identity());
+    let all = run_store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+    let run_events = runscope::current_run(&all);
+    let run_id = runscope::current_run_id(&all).unwrap_or_default();
+
+    // This run's progress, from the SEPARATE store (absent/empty is fine - the store is
+    // created lazily by the first `rigger progress`).
+    let prog_events: Vec<Event> = match Store::open(&loc.file("progress.db")) {
+        Ok(backend) => {
+            let store = Namespaced::new(&backend, &loc.identity());
+            store
+                .read_stream(progress::STREAM, 0, Direction::Forward)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|e| {
+                    run_id.is_empty()
+                        || e.meta.get(runscope::META_RUN_ID).map(String::as_str)
+                            == Some(run_id.as_str())
+                })
+                .collect()
+        }
+        Err(_) => Vec::new(),
+    };
+
+    // Liveness ages: rigger stats each in-flight spawn's marker IN RUST here (this is what
+    // the JS driver's haiku probe was reconstructing by proxy - unit 3 retires it).
+    let workdir = config::load(".")
+        .map(|c| c.workflow.defaults.workdir)
+        .unwrap_or_default();
+    let repo = git_repo();
+    let mut liveness_ages: std::collections::HashMap<String, u64> =
+        std::collections::HashMap::new();
+    if !repo.is_empty() {
+        let root = rigger::worktree::scratch_root_from_env(&repo, &workdir);
+        for w in &spawn::step_result(run_events)?.wave {
+            let path = rigger::liveness::marker_path(&root, &run_id, &w.id);
+            if let Ok(age) = std::fs::metadata(&path)
+                .and_then(|md| md.modified())
+                .map(|mtime| now.duration_since(mtime).map(|d| d.as_secs()).unwrap_or(0))
+            {
+                liveness_ages.insert(w.id.clone(), age);
+            }
+        }
+    }
+
+    let view = progress::consolidate(run_events, &prog_events, &liveness_ages, now)?;
+    if json {
+        println!("{}", serde_json::to_string(&view)?);
+        return Ok(());
+    }
+
+    // Readable table. The blackout is visible as `last store event` age >> activity age.
+    let short = |s: &str| s.chars().take(12).collect::<String>();
+    if view.is_empty() {
+        println!("run {}: no agents in flight", short(&run_id));
+        return Ok(());
+    }
+    let age = |s: Option<u64>| s.map(|s| format!("{s}s ago")).unwrap_or_else(|| "-".into());
+    println!("run {}: {} agent(s) in flight", short(&run_id), view.len());
+    for a in &view {
+        println!("  {} [{}]", a.id, a.stage);
+        println!(
+            "      doing: {} ({}) | heartbeat {} | last store event: {} ({})",
+            a.latest_activity
+                .as_deref()
+                .unwrap_or("(none reported yet)"),
+            age(a.activity_age_s),
+            a.liveness_age_s
+                .map(|s| format!("{s}s ago"))
+                .unwrap_or_else(|| "-".into()),
+            a.last_milestone.as_deref().unwrap_or("-"),
+            age(a.milestone_age_s),
+        );
+    }
     Ok(())
 }
 
@@ -1791,6 +3550,15 @@ fn cmd_validate() -> Res {
     for advisory in residue_advisories(root, &cfg) {
         eprintln!("{advisory}");
     }
+    // Model-drift advisory (spec 13b, unit 1): warn when a tier's resolved model id
+    // re-pointed since the previous run and recommend `rigger canary --if-model-changed`.
+    // A store-read failure just skips the advisory (never fails validate), exactly like the
+    // git-backed advisories above swallow a missing/erroring git.
+    if let Ok(drift) = read_model_drift(&db_path("events.db"), &project_identity()) {
+        if let Some(advisory) = model_drift_advisory(&drift) {
+            eprintln!("{advisory}");
+        }
+    }
     Ok(())
 }
 
@@ -1802,6 +3570,16 @@ fn cmd_validate() -> Res {
 /// temp dir without mutating the process-wide current directory.
 fn validate_advisories(root: &Path) -> Vec<String> {
     let mut advisories = Vec::new();
+    // Identity durability (spec 09): without a tracked project.id, identity is the volatile
+    // directory basename, so a rename away orphans this project's run history. Warn (like
+    // the other drift advisories) so it is seen before a rename loses the log.
+    if !has_tracked_project_id(root) {
+        advisories.push(format!(
+            "warning: no tracked {RIGGER_DIR}/{PROJECT_ID_FILE}; this project's identity falls \
+             back to the directory basename, so renaming the checkout orphans its run history. \
+             Run `rigger setup` (or `rigger init`) to mint a durable id, then commit it."
+        ));
+    }
     if installed_workflow_drifted(root) {
         advisories.push(format!(
             "warning: the installed /rigger workflow ({}) has drifted from this rigger \
@@ -2276,6 +4054,9 @@ struct ScaffoldReport {
     /// `.gitignore` patterns this run newly appended (empty when every machine-local
     /// pattern was already ignored or tracked).
     gitignore_added: Vec<String>,
+    /// The durable project id this run newly MINTED into `.rigger/project.id` (spec 09),
+    /// or `None` when the file already existed and was left untouched.
+    minted_id: Option<String>,
 }
 
 impl ScaffoldReport {
@@ -2286,6 +4067,7 @@ impl ScaffoldReport {
             || !self.new_agents.is_empty()
             || self.wrote_hook
             || !self.gitignore_added.is_empty()
+            || self.minted_id.is_some()
     }
 }
 
@@ -2298,6 +4080,22 @@ fn init_project(root: &Path) -> Result<ScaffoldReport, Box<dyn std::error::Error
     let agents_dir = rigger_dir.join("agents");
     std::fs::create_dir_all(&agents_dir)?;
     let wrote_workflow = write_if_absent(&rigger_dir.join("workflow.yml"), SCAFFOLD_WORKFLOW)?;
+
+    // 1b. Mint the durable project identity when absent (spec 09, Gap 20): a tracked
+    // `.rigger/project.id` line so the identity survives directory renames and machine
+    // moves instead of tracking the volatile directory basename. Deterministic from the
+    // normalized `origin` URL when a remote exists (every clone mints the same id), random
+    // otherwise. A present file is left untouched (`minted_id` stays `None`), so a rerun
+    // never re-mints. A genuine write failure escalates (naming the artifact), never a
+    // silent omission - identity is load-bearing.
+    let id_path = rigger_dir.join(PROJECT_ID_FILE);
+    let minted_id = if id_path.exists() {
+        None
+    } else {
+        let id = mint_project_id(root);
+        write_if_absent(&id_path, &format!("{id}\n"))?;
+        Some(id)
+    };
 
     // 2. Load the workflow to determine which agents are referenced, then only
     // scaffold those agents. This allows setup to skip scaffolding when the
@@ -2363,6 +4161,7 @@ fn init_project(root: &Path) -> Result<ScaffoldReport, Box<dyn std::error::Error
         new_agents,
         wrote_hook,
         gitignore_added,
+        minted_id,
     })
 }
 
@@ -2474,6 +4273,12 @@ fn get_referenced_agent_ids(
 /// without capturing stdout.
 fn scaffold_summary_lines(report: &ScaffoldReport) -> Vec<String> {
     let mut lines = Vec::new();
+    if let Some(id) = &report.minted_id {
+        lines.push(format!(
+            "minted the durable project identity in .rigger/{PROJECT_ID_FILE}: {id} \
+             (commit it so a rename never orphans this project's history)"
+        ));
+    }
     if report.wrote_workflow {
         lines.push("scaffolded .rigger/workflow.yml".to_string());
     }
@@ -3116,11 +4921,23 @@ plan:\n    \
 agent: planner\n    \
 produces: dag           # refine the spec's unit DAG at runtime\n\
 \n  \
+# The adversarial plan-critique gate: BEFORE any implementer spawns, the adversary +\n  \
+# adjudicator review the PROPOSED unit DAG for the cross-unit hazards per-unit review\n  \
+# cannot see: ambiguous mitigation ownership and open dispositions (a shared blast\n  \
+# radius is informational only - partition: by-blast-radius serializes it). A reject\n  \
+# feeds back to the\n  \
+# planner (bounded by max_retries); an approve releases the fan-out. Review-only (no\n  \
+# agent) - it critiques the plan, it does not implement.\n  \
+plan-critique:\n    \
+needs: [plan]\n    \
+adversary: adversary        # tier 2: reviews the DAG and refutes it\n    \
+adjudicator: adjudicator    # tier 3: its approve/reject gates the fan-out\n\
+\n  \
 # Each unit implements, three-tier-reviews ITSELF (via defaults.review), and\n  \
 # integrates in one lifecycle. A reject or a gate failure feeds back into that\n  \
 # same unit's remediation loop; it does NOT integrate until approved + green.\n  \
 implement:\n    \
-needs: [plan]\n    \
+needs: [plan-critique]\n    \
 agent: rust-engineer\n    \
 strategy: fan-out       # one worker per ready unit, in isolated worktrees\n    \
 partition: by-blast-radius\n    \
@@ -3135,9 +4952,12 @@ coverage: \"each unit is implemented, reviews itself, and integrates green\"\n";
 /// (planner, rust-engineer, architecture-reviewer, sdet, adversary, adjudicator); the
 /// four generic placeholder personas (implementer, devils-advocate, reviewer.architecture,
 /// reviewer.technical) deliberately do NOT appear. Model tiers are a conscious seed
-/// default: the implementer and lenses on `sonnet`, the adversary and adjudicator on
-/// `opus`. Each is a markdown-with-frontmatter definition `config::load` parses; filenames
-/// are arbitrary, the `id` is what the workflow binds to.
+/// default: the implementer ships on a cheap-first `model_ladder` (`[sonnet, opus]`, spec 10
+/// unit 4) so its first attempt is cheap and a persistently-failing unit escalates to the
+/// strong model under remediation; the lenses stay on `sonnet` and the adversary and
+/// adjudicator on a fixed `opus` (judgment is not laddered). Each is a
+/// markdown-with-frontmatter definition `config::load` parses; filenames are arbitrary, the
+/// `id` is what the workflow binds to.
 const SCAFFOLD_AGENTS: &[(&str, &str)] = &[
     (
         "planner.md",
@@ -3154,7 +4974,7 @@ per acceptance criterion. Emit each as a UnitProposed decision. Do not write cod
         "rust-engineer.md",
         "---\n\
 id: rust-engineer\n\
-model: sonnet\n\
+model_ladder: [sonnet, opus]\n\
 tools: [Read, Edit, Write, Grep, Glob, Bash]\n\
 isolation: worktree\n\
 recurse: false\n\
@@ -4133,19 +5953,31 @@ mod tests {
         // folded into the unit lifecycle (no integrator). None of the four generic
         // placeholder personas is seeded.
         assert_eq!(cfg.agents.len(), 6, "scaffold agent count");
-        // Two stages: plan -> implement (each unit reviews itself and integrates).
-        assert_eq!(cfg.workflow.stages.len(), 2, "scaffold stage count");
+        // Three stages: plan -> plan-critique -> implement. The plan-critique gate
+        // (spec 10, Unit 1) reviews the proposed DAG before the fan-out releases.
+        assert_eq!(cfg.workflow.stages.len(), 3, "scaffold stage count");
         // Three gates in the reusable library.
         assert_eq!(cfg.workflow.gates.len(), 3, "scaffold gate count");
 
-        // The scaffold exercises the per-unit shape: a producer, a fan-out implement
-        // stage that integrates on_pass: merge, and a three-tier review panel
-        // (lenses -> adversary -> adjudicator) declared once on defaults.review.
+        // The scaffold exercises the per-unit shape: a producer, the plan-critique gate
+        // between plan and implement, a fan-out implement stage that integrates on_pass:
+        // merge, and a three-tier review panel declared once on defaults.review.
         let plan = &cfg.workflow.stages["plan"];
         assert_eq!(plan.produces, "dag");
+        // The plan-critique gate: review-only (no agent), needs plan, its adversary +
+        // adjudicator gate the fan-out.
+        let critique = &cfg.workflow.stages["plan-critique"];
+        assert!(critique.agent.is_empty(), "the gate implements nothing");
+        assert_eq!(critique.needs, ["plan"]);
+        assert_eq!(critique.adversary, "adversary");
+        assert_eq!(critique.adjudicator, "adjudicator");
         let implement = &cfg.workflow.stages["implement"];
         assert_eq!(implement.strategy, "fan-out");
-        assert_eq!(implement.needs, ["plan"]);
+        assert_eq!(
+            implement.needs,
+            ["plan-critique"],
+            "the fan-out releases only after the plan-critique gate approves"
+        );
         assert_eq!(implement.on_pass, "merge");
         let review = &cfg.workflow.defaults.review;
         assert_eq!(
@@ -4209,6 +6041,34 @@ mod tests {
         assert!(a.store == StoreKind::Sqlite);
         assert!(a.conn.is_none());
         assert!(a.spec.is_none());
+        assert!(!a.fresh, "--fresh is off unless asked");
+    }
+
+    #[test]
+    fn parse_run_args_reads_fresh_alongside_a_spec() {
+        // `--fresh` is a bare boolean flag; it composes with a positional spec and the
+        // other run flags without consuming a value.
+        let a = parse_run_args(&["--fresh".to_string(), "spec.md".to_string()]).unwrap();
+        assert!(a.fresh, "--fresh sets the fresh-restart flag");
+        assert_eq!(a.spec.as_deref(), Some("spec.md"));
+        assert!(a.driver == DriverKind::Cli, "--fresh leaves other defaults");
+        assert!(
+            !a.rebase_definition,
+            "--rebase-definition is off unless asked"
+        );
+    }
+
+    #[test]
+    fn parse_run_args_reads_rebase_definition() {
+        // `--rebase-definition` (spec 13, unit 1) is a bare boolean flag, off by default.
+        assert!(!parse_run_args(&[]).unwrap().rebase_definition);
+        let a =
+            parse_run_args(&["--rebase-definition".to_string(), "spec.md".to_string()]).unwrap();
+        assert!(
+            a.rebase_definition,
+            "--rebase-definition sets the mid-campaign-edit escape"
+        );
+        assert_eq!(a.spec.as_deref(), Some("spec.md"));
     }
 
     #[test]
@@ -4274,6 +6134,74 @@ mod tests {
         assert!(s(&["--spec"]).is_err(), "--spec without a value must error");
         assert!(s(&["--nope"]).is_err(), "an unknown flag must error");
         assert!(s(&["bare"]).is_err(), "a bare positional must error");
+
+        // `--fresh` is a bare boolean flag (off by default), composing with the others.
+        assert!(!s(&[]).unwrap().fresh, "--fresh is off unless asked");
+        let a = s(&["--fresh", "--spec", "specs/12.md"]).unwrap();
+        assert!(a.fresh, "--fresh sets the fresh-restart flag on a step");
+        assert_eq!(a.spec.as_deref(), Some("specs/12.md"));
+
+        // `--rebase-definition` (spec 13, unit 1) is likewise a bare boolean, off by default.
+        assert!(
+            !s(&[]).unwrap().rebase_definition,
+            "--rebase-definition is off unless asked"
+        );
+        let a = s(&["--rebase-definition", "--base", "origin/next"]).unwrap();
+        assert!(
+            a.rebase_definition,
+            "--rebase-definition sets the mid-campaign-edit escape on a step"
+        );
+        assert_eq!(a.base, "origin/next");
+    }
+
+    /// The definition hash (spec 13, unit 1) is a DETERMINISTIC function of the on-disk
+    /// definition that CHANGES when any part of it - a prompt above all - changes, and is
+    /// independent of agent-file iteration order and of trailing-whitespace / line-ending noise.
+    #[test]
+    fn definition_hash_is_stable_and_content_sensitive() {
+        let write_def = |root: &std::path::Path, workflow: &str, prompt: &str| {
+            let agents = root.join(".rigger").join("agents");
+            std::fs::create_dir_all(&agents).unwrap();
+            std::fs::write(root.join(".rigger").join("workflow.yml"), workflow).unwrap();
+            std::fs::write(
+                agents.join("worker.md"),
+                format!("---\nid: worker\n---\n{prompt}\n"),
+            )
+            .unwrap();
+        };
+
+        let base = tempfile::tempdir().unwrap();
+        write_def(base.path(), "name: w\n", "Do the unit.");
+        let dir = base.path().to_str().unwrap();
+        let h0 = definition_hash(dir).unwrap();
+        // Deterministic: recomputing over the same on-disk definition is byte-identical.
+        assert_eq!(
+            h0,
+            definition_hash(dir).unwrap(),
+            "same definition, same hash"
+        );
+        // Canonicalization: trailing whitespace and CRLF do NOT change the hash.
+        write_def(base.path(), "name: w\r\n", "Do the unit.   ");
+        assert_eq!(
+            h0,
+            definition_hash(dir).unwrap(),
+            "trailing-ws / CRLF noise is canonicalized away"
+        );
+        // A PROMPT edit changes the hash - the mid-campaign edit spec 13 must catch.
+        write_def(base.path(), "name: w\n", "Do the unit differently.");
+        assert_ne!(
+            h0,
+            definition_hash(dir).unwrap(),
+            "a prompt edit changes the definition hash"
+        );
+        // A workflow.yml edit changes the hash too.
+        let with_wf = definition_hash(dir).unwrap();
+        write_def(base.path(), "name: changed\n", "Do the unit differently.");
+        assert_ne!(
+            with_wf,
+            definition_hash(dir).unwrap(),
+            "a workflow edit changes the hash"
+        );
     }
 
     /// With the default build (no `kurrentdb` feature), requesting the server store
@@ -4336,6 +6264,197 @@ mod tests {
     #[test]
     fn project_identity_is_never_empty() {
         assert!(!project_identity().is_empty());
+    }
+
+    #[test]
+    fn project_identity_reads_the_tracked_id_file_then_falls_back_to_the_basename() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        // No project.id: identity is the legacy basename (unchanged pre-spec-09 behavior).
+        let basename = root.file_name().unwrap().to_str().unwrap().to_string();
+        assert_eq!(project_identity_at(root), basename);
+        assert_eq!(legacy_identity_at(root), basename);
+
+        // A tracked project.id, when present (and trimmed), IS the identity - it survives a
+        // directory rename because it does not track the basename.
+        std::fs::create_dir_all(root.join(RIGGER_DIR)).unwrap();
+        std::fs::write(
+            root.join(RIGGER_DIR).join(PROJECT_ID_FILE),
+            "  durable-id-42 \n",
+        )
+        .unwrap();
+        assert_eq!(project_identity_at(root), "durable-id-42");
+        // The legacy resolver ignores the file, so the migration can still name the "before".
+        assert_eq!(legacy_identity_at(root), basename);
+        assert!(has_tracked_project_id(root));
+
+        // A blank id file is treated as absent (falls back), never an empty identity.
+        std::fs::write(root.join(RIGGER_DIR).join(PROJECT_ID_FILE), "   \n").unwrap();
+        assert_eq!(project_identity_at(root), basename);
+        assert!(!has_tracked_project_id(root));
+    }
+
+    #[test]
+    fn ssh_https_and_git_suffix_forms_of_one_repo_mint_identical_ids() {
+        let forms = [
+            "git@github.com:Acme/Repo.git",
+            "https://github.com/Acme/Repo.git",
+            "https://github.com/Acme/Repo",
+            "ssh://git@github.com/Acme/Repo.git",
+            "git://github.com/Acme/Repo.git",
+            "https://GitHub.com/Acme/Repo.git/",
+        ];
+        // Every form canonicalizes to the same normalized URL...
+        assert_eq!(normalize_origin_url(forms[0]), "github.com/Acme/Repo");
+        for f in forms {
+            assert_eq!(
+                normalize_origin_url(f),
+                "github.com/Acme/Repo",
+                "form {f:?} must normalize identically"
+            );
+        }
+        // ...so the derived stable id is identical across all forms.
+        let id0 = format!(
+            "{:016x}",
+            fnv1a_64(normalize_origin_url(forms[0]).as_bytes())
+        );
+        for f in forms {
+            let id = format!("{:016x}", fnv1a_64(normalize_origin_url(f).as_bytes()));
+            assert_eq!(id, id0, "form {f:?} must mint the same id");
+        }
+    }
+
+    #[test]
+    fn normalize_origin_url_separates_distinct_repos_and_lowercases_only_the_host() {
+        assert_ne!(
+            normalize_origin_url("git@github.com:Acme/One.git"),
+            normalize_origin_url("git@github.com:Acme/Two.git")
+        );
+        // Host case is normalized; path case is significant (never lowercased).
+        assert_eq!(
+            normalize_origin_url("https://GITHUB.com/Acme/Repo"),
+            normalize_origin_url("https://github.com/Acme/Repo")
+        );
+        assert_ne!(
+            normalize_origin_url("https://github.com/Acme/Repo"),
+            normalize_origin_url("https://github.com/acme/repo")
+        );
+    }
+
+    #[test]
+    fn decide_migration_covers_every_case() {
+        // No minted identity distinct from the basename: nothing to migrate, ever.
+        assert_eq!(
+            decide_migration("same", "same", false, false),
+            MigrationOutcome::NoOp
+        );
+        assert_eq!(
+            decide_migration("same", "same", true, true),
+            MigrationOutcome::NoOp
+        );
+        // Legacy history with an empty minted namespace: rename once.
+        assert_eq!(
+            decide_migration("minted", "legacy", false, true),
+            MigrationOutcome::Rename
+        );
+        // BOTH namespaces populated: ambiguous, refuse.
+        assert_eq!(
+            decide_migration("minted", "legacy", true, true),
+            MigrationOutcome::Ambiguous
+        );
+        // Already migrated (minted populated, legacy empty) or fresh (both empty): no-op.
+        assert_eq!(
+            decide_migration("minted", "legacy", true, false),
+            MigrationOutcome::NoOp
+        );
+        assert_eq!(
+            decide_migration("minted", "legacy", false, false),
+            MigrationOutcome::NoOp
+        );
+    }
+
+    #[test]
+    fn migrate_project_identity_renames_legacy_history_and_records_a_decision() {
+        use rigger::eventstore::ExpectedRevision;
+        let backend = Store::open(":memory:").unwrap();
+        // Pre-spec-09 history under the legacy basename namespace.
+        backend
+            .append(
+                "proj-oldname-run",
+                ExpectedRevision::Any,
+                &[Event::new("UnitStarted", b"{}".to_vec())],
+            )
+            .unwrap();
+
+        let moved = migrate_project_identity(&backend, "mint123", "oldname", None).unwrap();
+        assert_eq!(moved, Some(1), "one legacy stream renamed");
+
+        // The legacy namespace is now empty; the minted namespace holds the history.
+        assert!(backend
+            .read_stream("proj-oldname-run", 0, Direction::Forward)
+            .unwrap()
+            .is_empty());
+        let migrated = backend
+            .read_stream("proj-mint123-run", 0, Direction::Forward)
+            .unwrap();
+        assert!(
+            migrated.iter().any(|e| e.type_ == "UnitStarted"),
+            "the original history moved to the minted namespace"
+        );
+        assert!(
+            migrated
+                .iter()
+                .any(|e| e.type_ == contextgraph::TYPE_DECISION_MADE),
+            "the migration is recorded as a DecisionMade in the minted namespace"
+        );
+
+        // Idempotent: a second open sees the legacy namespace empty and does nothing.
+        assert_eq!(
+            migrate_project_identity(&backend, "mint123", "oldname", None).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn migrate_project_identity_refuses_when_both_namespaces_hold_history() {
+        use rigger::eventstore::ExpectedRevision;
+        let backend = Store::open(":memory:").unwrap();
+        backend
+            .append(
+                "proj-oldname-run",
+                ExpectedRevision::Any,
+                &[Event::new("A", b"".to_vec())],
+            )
+            .unwrap();
+        backend
+            .append(
+                "proj-mint123-run",
+                ExpectedRevision::Any,
+                &[Event::new("B", b"".to_vec())],
+            )
+            .unwrap();
+
+        let err = migrate_project_identity(&backend, "mint123", "oldname", None).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("mint123") && msg.contains("oldname"),
+            "the refusal names BOTH identities; got: {msg}"
+        );
+        // Nothing was renamed - both namespaces are intact.
+        assert_eq!(
+            backend
+                .read_stream("proj-oldname-run", 0, Direction::Forward)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            backend
+                .read_stream("proj-mint123-run", 0, Direction::Forward)
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     /// `rigger setup` must provision the per-project JS driver: write the three
@@ -5360,6 +7479,7 @@ mod tests {
             units_escalated: 1,
             review_approve: 5,
             review_reject: 2,
+            ..Default::default()
         };
         let out = format_stats(&m).join("\n");
 
@@ -5415,6 +7535,187 @@ mod tests {
         );
     }
 
+    /// spec 11 remediation: an in-process (cli) run has findings but records NO adjudicator
+    /// verdict (no SpawnResult), so the upheld-based folds are unfed. The render must
+    /// DISCLOSE that honestly rather than let a reader misread the 0% survival as the
+    /// adjudicator having discarded every finding.
+    #[test]
+    fn stats_discloses_when_no_verdict_was_recorded_on_this_driver() {
+        let mut finding_survival = BTreeMap::new();
+        finding_survival.insert(
+            "lens:sdet".to_string(),
+            metrics::FindingCounts {
+                raised: 3,
+                upheld: 0,
+            },
+        );
+        let m = Metrics {
+            review_quality: metrics::ReviewQuality {
+                finding_survival,
+                adjudications: 0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let out = format_stats(&m).join("\n");
+        assert!(
+            out.contains("no adjudicator verdict recorded on this run's driver"),
+            "an in-process run with findings but no recorded verdict must disclose the unfed numerator:\n{out}"
+        );
+
+        // With a verdict recorded (the courier path), the disclosure is suppressed.
+        let mut finding_survival = BTreeMap::new();
+        finding_survival.insert(
+            "lens:sdet".to_string(),
+            metrics::FindingCounts {
+                raised: 3,
+                upheld: 2,
+            },
+        );
+        let m = Metrics {
+            review_quality: metrics::ReviewQuality {
+                finding_survival,
+                adjudications: 1,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let out = format_stats(&m).join("\n");
+        assert!(
+            !out.contains("no adjudicator verdict recorded"),
+            "a run WITH a recorded verdict must not print the disclosure:\n{out}"
+        );
+    }
+
+    /// spec 11 remediation (the reject this unit fixes): a run RECORDS an adjudicator verdict
+    /// (adjudications > 0) yet folds ZERO upheld per actor because the upheld findings carry
+    /// no attribution on this log (the empty-actor sentinel dropped them - the dominant shape
+    /// on a real aggregate store). The prior guard keyed the disclosure on `adjudications == 0`
+    /// only, so this case rendered an all-zero survival / "-" cost panel with NO disclosure -
+    /// the exact "review upheld nothing" misread this unit exists to prevent. The render must
+    /// now DISCLOSE the unfed numerator whenever an all-zero-upheld panel hides a dropped
+    /// numerator, and stay SILENT only when the adjudicator genuinely upheld nothing.
+    #[test]
+    fn stats_discloses_unfed_numerator_when_verdict_recorded_but_findings_unattributed() {
+        let mut finding_survival = BTreeMap::new();
+        finding_survival.insert(
+            "lens:sdet".to_string(),
+            metrics::FindingCounts {
+                raised: 3,
+                upheld: 0,
+            },
+        );
+        let mut tier_cost = BTreeMap::new();
+        tier_cost.insert(
+            "lens".to_string(),
+            metrics::TierCost {
+                spawns: 2,
+                upheld: 0,
+            },
+        );
+        tier_cost.insert(
+            "adjudicator".to_string(),
+            metrics::TierCost {
+                spawns: 1,
+                upheld: 0,
+            },
+        );
+        let m = Metrics {
+            review_reject: 5,
+            review_quality: metrics::ReviewQuality {
+                finding_survival,
+                tier_cost,
+                adjudications: 1,       // a verdict WAS recorded ...
+                upheld_unattributed: 2, // ... but the findings it upheld are unattributed here
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let out = format_stats(&m).join("\n");
+        assert!(
+            out.contains("unfed upheld numerator"),
+            "an all-zero-upheld panel with a recorded verdict but unattributed upheld findings must disclose the unfed numerator:\n{out}"
+        );
+        assert!(
+            out.contains("2 upheld finding(s) carry no attribution"),
+            "the disclosure must name the count of dropped upheld findings:\n{out}"
+        );
+        assert!(
+            !out.contains("no adjudicator verdict recorded"),
+            "with a verdict recorded, the disclosure must not claim none was recorded:\n{out}"
+        );
+
+        // A verdict that recorded and GENUINELY upheld nothing (nothing dropped) is NOT unfed;
+        // its 0% is honest, so the render must stay silent rather than cry an unfed numerator.
+        let mut finding_survival = BTreeMap::new();
+        finding_survival.insert(
+            "lens:sdet".to_string(),
+            metrics::FindingCounts {
+                raised: 3,
+                upheld: 0,
+            },
+        );
+        let m = Metrics {
+            review_quality: metrics::ReviewQuality {
+                finding_survival,
+                adjudications: 1,
+                upheld_unattributed: 0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let out = format_stats(&m).join("\n");
+        assert!(
+            !out.contains("unfed upheld numerator"),
+            "a genuine all-discard verdict (nothing upheld, nothing dropped) must not claim an unfed numerator:\n{out}"
+        );
+    }
+
+    /// spec 11 remediation (adv-u1r-cause-split-folds-undisclosed-on-cli): a rejection's cause
+    /// folds only from a RECORDED adjudicator reject verdict, so on a real aggregate store the
+    /// cause panel accounts for far fewer rejects than `review_reject` (e.g. `spec-ambiguity 1`
+    /// beside `64 rejected`). The render must disclose the unfed remainder so the cause panel
+    /// is never misread as the full reject breakdown.
+    #[test]
+    fn stats_discloses_cause_split_remainder_when_fewer_causes_than_rejects() {
+        let mut rejections_by_cause = BTreeMap::new();
+        rejections_by_cause.insert("spec-ambiguity".to_string(), 1u64);
+        let m = Metrics {
+            review_reject: 64,
+            review_quality: metrics::ReviewQuality {
+                rejections_by_cause,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let out = format_stats(&m).join("\n");
+        assert!(
+            out.contains("cause folded for 1/64 review rejects"),
+            "a cause panel accounting for fewer rejects than review_reject must disclose the remainder:\n{out}"
+        );
+        assert!(
+            out.contains("the other 63 carry no recorded verdict cause"),
+            "the disclosure must name the unfed remainder count:\n{out}"
+        );
+
+        // When every reject carries a folded cause, no remainder disclosure fires.
+        let mut rejections_by_cause = BTreeMap::new();
+        rejections_by_cause.insert("genuine-defect".to_string(), 2u64);
+        let m = Metrics {
+            review_reject: 2,
+            review_quality: metrics::ReviewQuality {
+                rejections_by_cause,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let out = format_stats(&m).join("\n");
+        assert!(
+            !out.contains("carry no recorded verdict cause"),
+            "with every reject's cause folded, no remainder disclosure should fire:\n{out}"
+        );
+    }
+
     /// `cmd_stats` rejects any positional argument with a clear error (it takes none),
     /// mirroring the strict-arity errors the other CLI commands raise.
     #[test]
@@ -5423,6 +7724,108 @@ mod tests {
         assert!(
             err.to_string().contains("stats: expected no arguments"),
             "the error must explain stats takes no arguments; got: {err}"
+        );
+    }
+
+    #[test]
+    fn baseline_run_slice_selects_a_run_by_id_including_a_middle_run() {
+        // A multi-run store. An explicit id slices THAT run's window
+        // (RunStarted..next RunStarted) even for a MIDDLE run - so replaying an OLD run
+        // never folds the newer runs appended after it - while `latest` selects the
+        // current run and an unknown id (or empty stream) is None.
+        let rs = |run: &str| {
+            Event::new(
+                runscope::TYPE_RUN_STARTED,
+                serde_json::to_vec(&serde_json::json!({"run": run, "criteria": []})).unwrap(),
+            )
+        };
+        let unit = |id: &str| {
+            Event::new(
+                ledger::TYPE_UNIT_STARTED,
+                serde_json::to_vec(&serde_json::json!({"id": id, "agent": "w"})).unwrap(),
+            )
+        };
+        let events = vec![
+            rs("run-A"),
+            unit("a1"),
+            rs("run-B"),
+            unit("b1"),
+            unit("b2"),
+            rs("run-C"),
+            unit("c1"),
+        ];
+
+        let b = baseline_run_slice(&events, "run-B").expect("run-B exists");
+        assert_eq!(b.len(), 3, "run-B is its RunStarted plus its two units");
+        assert_eq!(b[0].type_, runscope::TYPE_RUN_STARTED);
+        assert!(String::from_utf8_lossy(&b[1].data).contains("b1"));
+        assert!(
+            !b.iter()
+                .any(|e| String::from_utf8_lossy(&e.data).contains("c1")),
+            "run-C is excluded from run-B's slice"
+        );
+        assert_eq!(
+            baseline_run_slice(&events, "run-A").unwrap().len(),
+            2,
+            "the first run is bounded by run-B's boundary"
+        );
+        let latest = baseline_run_slice(&events, "latest").unwrap();
+        assert!(String::from_utf8_lossy(&latest[1].data).contains("c1"));
+        assert!(baseline_run_slice(&events, "run-Z").is_none(), "unknown id");
+        assert!(baseline_run_slice(&[], "latest").is_none(), "empty stream");
+    }
+
+    #[test]
+    fn format_stats_diff_flags_only_the_changed_rows() {
+        let base = Metrics {
+            review_approve: 1,
+            ..Default::default()
+        };
+        let cand = Metrics {
+            review_approve: 0,
+            ..Default::default()
+        };
+        let lines = format_stats_diff("run-X", "abc123", &base, &cand);
+        assert!(
+            lines[0].contains("run-X") && lines[0].contains("abc123"),
+            "the header names the baseline run and the candidate rev; got: {:?}",
+            lines[0]
+        );
+        let review = lines
+            .iter()
+            .find(|l| l.contains("review approved"))
+            .expect("a review-approved row");
+        assert!(
+            review.trim_end().ends_with('*'),
+            "the changed review row is flagged; got: {review:?}"
+        );
+        let units = lines
+            .iter()
+            .find(|l| l.contains("units started"))
+            .expect("a units-started row");
+        assert!(
+            !units.trim_end().ends_with('*'),
+            "an unchanged row carries no flag; got: {units:?}"
+        );
+    }
+
+    #[test]
+    fn parse_replay_args_requires_a_run_and_a_rev_in_either_order() {
+        assert!(parse_replay_args(&[]).is_err(), "no args is an error");
+        assert!(
+            parse_replay_args(&["latest".to_string()]).is_err(),
+            "missing --against is an error"
+        );
+        let (run, rev) =
+            parse_replay_args(&["latest".into(), "--against".into(), "HEAD".into()]).unwrap();
+        assert_eq!((run.as_str(), rev.as_str()), ("latest", "HEAD"));
+        // The flag may lead the positional.
+        let (run, rev) =
+            parse_replay_args(&["--against".into(), "rev1".into(), "run-7".into()]).unwrap();
+        assert_eq!((run.as_str(), rev.as_str()), ("run-7", "rev1"));
+        assert!(
+            parse_replay_args(&["a".into(), "b".into(), "--against".into(), "r".into()]).is_err(),
+            "a second positional is an error, not silently ignored"
         );
     }
 
@@ -5457,6 +7860,41 @@ mod tests {
             !dir.path().join(RIGGER_DIR).join("events.db").exists(),
             "stats on a never-run project must not create events.db"
         );
+    }
+
+    /// `rigger step` SERIALIZES: while one step holds the lock, a second concurrent step
+    /// REFUSES (with the driver-recognizable busy token) instead of running - the root-cause
+    /// fix for the cross-process ORT/CUDA deadlock two overlapping gate builds cause. And the
+    /// refusal is not permanent: once the first releases, a later step acquires cleanly.
+    #[test]
+    #[serial_test::serial(cwd)]
+    fn a_second_concurrent_rigger_step_refuses_and_the_lock_frees_on_release() {
+        let dir = tempfile::tempdir().unwrap();
+        let prev = std::env::current_dir().unwrap();
+        struct Restore(std::path::PathBuf);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                let _ = std::env::set_current_dir(&self.0);
+            }
+        }
+        let _restore = Restore(prev);
+        std::env::set_current_dir(dir.path()).unwrap();
+        std::fs::create_dir_all(RIGGER_DIR).unwrap();
+
+        // First step holds the exclusive lock for its whole duration.
+        let held = acquire_step_lock().expect("the first step must acquire the lock");
+        // A second concurrent step must REFUSE fast (not block, not double-run) and carry the
+        // token the driver keys on to back off rather than tear the run down.
+        let err = acquire_step_lock().expect_err("a second concurrent step must refuse");
+        assert!(
+            err.to_string().contains(STEP_BUSY_TOKEN),
+            "the refusal must carry the busy token for the driver: {err}"
+        );
+        // Releasing the first frees the lock so a later step proceeds - the refusal is
+        // transient, not a wedge.
+        drop(held);
+        let _reacquired =
+            acquire_step_lock().expect("after the first releases, a later step acquires cleanly");
     }
 
     /// The no-runs message single-sourced for both the absent-db and empty-stream
