@@ -326,6 +326,58 @@ impl Metrics {
     }
 }
 
+/// The headline run metrics as a labeled BASELINE-vs-CANDIDATE comparison (spec 13, unit 2 -
+/// trajectory replay): one row per metric as `(label, baseline, candidate)` pre-rendered
+/// strings, so `rigger replay` prints the stats DIFF between a recorded run and its re-drive
+/// under a candidate config without the render re-deriving each ratio. Pure and order-stable
+/// (so a change flags deterministically); the two arguments are folded identically by
+/// [`project`], the recorded baseline and the isolated re-drive.
+pub fn diff_rows(baseline: &Metrics, candidate: &Metrics) -> Vec<(&'static str, String, String)> {
+    vec![
+        (
+            "units started",
+            baseline.units_started.to_string(),
+            candidate.units_started.to_string(),
+        ),
+        (
+            "first-pass yield",
+            pct(baseline.first_pass_yield()),
+            pct(candidate.first_pass_yield()),
+        ),
+        (
+            "escalation rate",
+            pct(baseline.escalation_rate()),
+            pct(candidate.escalation_rate()),
+        ),
+        (
+            "review approved",
+            baseline.review_approve.to_string(),
+            candidate.review_approve.to_string(),
+        ),
+        (
+            "review rejected",
+            baseline.review_reject.to_string(),
+            candidate.review_reject.to_string(),
+        ),
+        (
+            "gate runs",
+            gate_total(baseline).to_string(),
+            gate_total(candidate).to_string(),
+        ),
+    ]
+}
+
+/// A fraction in `[0.0, 1.0]` rendered as a one-decimal percentage, for the replay diff.
+fn pct(f: f64) -> String {
+    format!("{:.1}%", f * 100.0)
+}
+
+/// Total real gate runs across every gate in `m` - the denominator-free gate-activity
+/// summary the replay diff carries (a config edit that adds/removes a gate moves it).
+fn gate_total(m: &Metrics) -> u64 {
+    m.gates.values().map(|g| g.total()).sum()
+}
+
 /// A guarded fraction: `num / den`, or `0.0` when `den == 0` (never `NaN`).
 fn ratio(num: u64, den: u64) -> f64 {
     if den == 0 {
@@ -795,6 +847,69 @@ mod tests {
             TYPE_GATE_VERDICT,
             &format!(r#"{{"gate":"{gate}","pass":true,"artifact":"{artifact}"}}"#),
         )
+    }
+
+    #[test]
+    fn diff_rows_labels_the_headline_metrics_baseline_then_candidate() {
+        // The replay diff rows are `(label, baseline, candidate)`, order-stable, with the
+        // ratios pre-rendered as percentages and the counts as integers - so `rigger replay`
+        // renders the diff without re-deriving anything. A baseline that started one clean
+        // unit through review, versus a candidate re-drive that started the same unit but
+        // ran no review (a config that dropped it), must show the review approve move 1 -> 0
+        // and the yield move while units-started stays equal.
+        let baseline = project(&[
+            started("u", "worker"),
+            verdict("check", true),
+            status("u", "verified"),
+            status("u", "reviewed"),
+            integrated("u"),
+        ]);
+        let candidate = project(&[
+            started("u", "worker"),
+            verdict("check", true),
+            status("u", "verified"),
+            integrated("u"),
+        ]);
+        let rows = diff_rows(&baseline, &candidate);
+        let by_label = |needle: &str| -> (String, String) {
+            let (_, b, c) = rows
+                .iter()
+                .find(|(l, _, _)| *l == needle)
+                .unwrap_or_else(|| panic!("diff_rows must carry a {needle:?} row"));
+            (b.clone(), c.clone())
+        };
+        assert_eq!(
+            by_label("units started"),
+            ("1".to_string(), "1".to_string()),
+            "both drove the same one unit"
+        );
+        assert_eq!(
+            by_label("review approved"),
+            ("1".to_string(), "0".to_string()),
+            "the candidate ran no review, so its approve count drops"
+        );
+        assert_eq!(
+            by_label("first-pass yield"),
+            ("100.0%".to_string(), "100.0%".to_string()),
+            "both integrated the unit cleanly, rendered as a one-decimal percentage"
+        );
+        assert_eq!(
+            by_label("gate runs"),
+            ("1".to_string(), "1".to_string()),
+            "both folded the one gate verdict"
+        );
+        // The rows are order-stable so a render flags changes deterministically.
+        assert_eq!(
+            rows.iter().map(|(l, _, _)| *l).collect::<Vec<_>>(),
+            [
+                "units started",
+                "first-pass yield",
+                "escalation rate",
+                "review approved",
+                "review rejected",
+                "gate runs",
+            ]
+        );
     }
 
     #[test]

@@ -16,8 +16,8 @@ use rigger::dash;
 use rigger::driver::cli;
 use rigger::driver::replay::ReplayDriver;
 use rigger::eventstore::namespace::Namespaced;
-use rigger::eventstore::{sqlite::Store, Direction, Event, EventStore, Filter};
-use rigger::gate::ExecRunner;
+use rigger::eventstore::{sqlite::Store, Direction, Event, EventStore, ExpectedRevision, Filter};
+use rigger::gate::{ExecRunner, Gate, GateResult, Runner};
 use rigger::grounder::Grounder;
 use rigger::ledger::{self, RunState};
 use rigger::metrics::{self, Metrics};
@@ -661,6 +661,7 @@ fn main() {
         "workflow" => cmd_workflow(&args[2..]),
         "graph" => cmd_graph(&args[2..]),
         "stats" => cmd_stats(&args[2..]),
+        "replay" => cmd_replay(&args[2..]),
         "status" => cmd_status(&args[2..]),
         "dash" => cmd_dash(&args[2..]),
         "ground" => cmd_ground(&args[2..]),
@@ -760,6 +761,12 @@ rigger graph --around <id>  print the context subgraph around a node\n  \
 rigger stats                print the run's operator metrics: first-pass yield,\n                              \
 per-gate remediation counts, escalation rate, and\n                              \
 review approve/reject counts\n  \
+rigger replay <run|latest>  re-drive a completed run's recorded trajectory under a\n            \
+--against <rev>          candidate config (workflow + prompts at git <rev>) in an\n                              \
+isolated scratch namespace, and print the stats diff\n                              \
+vs the recorded baseline. Never writes the real run\n                              \
+stream - past runs become a regression corpus for a\n                              \
+config edit (\"did that change regress first-pass yield?\")\n  \
 rigger status [--json]      present the live per-agent view of the current run: for\n                              \
 each in-flight agent, what it is doing (latest progress),\n                              \
 its heartbeat age, and how long since its last store event\n                              \
@@ -2054,6 +2061,282 @@ fn append_review_quality(lines: &mut Vec<String>, m: &Metrics) {
                 "      {tier:<12} {} spawns / {} upheld ({ratio})",
                 tc.spawns, tc.upheld,
             ));
+        }
+    }
+}
+
+/// `rigger replay <run-id|latest> --against <rev>` - trajectory replay / config eval
+/// (spec 13, unit 2). Re-drive a COMPLETED run's recorded trajectory under a CANDIDATE
+/// config (the `workflow.yml` + agent prompts committed at git `<rev>`) in a fully
+/// ISOLATED scratch namespace, then print the stats DIFF against the run's recorded
+/// baseline metrics. Past runs become a regression corpus for config edits - "did that
+/// prompt/tier/budget change regress first-pass yield?" gets an answer with no live
+/// campaign, because unit 1's pinned definition makes the baseline citable.
+///
+/// The re-drive answers every agent spawn from the baseline's recorded `SpawnResult`s (the
+/// [`ReplayDriver`]) and every gate from its recorded `GateVerdict`s (the conductor's
+/// gate-verdict replay), so it runs NO agent and NO gate command - it re-derives only the
+/// run's SHAPE (which stages, which review tier, which budget the CANDIDATE config
+/// dictates) over the same recorded behaviour. A spawn the candidate config introduces that
+/// the trajectory never recorded simply parks, so the re-drive stops where the recorded
+/// behaviour runs out rather than fabricating one.
+///
+/// ISOLATION (never the real project streams): the re-drive writes to a FRESH sqlite file
+/// under the scratch root, opened as a distinct [`Namespaced`] project - the real
+/// `.rigger/events.db` is only ever READ (to lift the baseline) and never opened for write.
+/// The candidate config is read from a throwaway detached `git worktree` of `<rev>` that is
+/// removed after loading. Both scratch artifacts live under the project scratch root, never
+/// the OS temp partition.
+fn cmd_replay(args: &[String]) -> Res {
+    let (run_id, rev) = parse_replay_args(args)?;
+
+    // The candidate config lives at a git rev, so a replay needs a repo. The baseline is
+    // read from THIS project's namespaced run stream (read-only).
+    let repo = git_repo();
+    if repo.is_empty() {
+        return Err(
+            "rigger replay: needs a git repo - the candidate config is read at the \
+                    git rev given to --against, and this project is not inside one"
+                .into(),
+        );
+    }
+
+    // 1. Lift the baseline: read (never write) this project's run stream and slice the
+    //    requested run. `metrics::project` folds it into the recorded baseline.
+    let db = db_path("events.db");
+    if !Path::new(&db).exists() {
+        return Err(format!(
+            "rigger replay: no runs recorded yet for this project (no {db}); run `rigger run` first"
+        )
+        .into());
+    }
+    let backend = Store::open(&db)?;
+    let real = Namespaced::new(&backend, &project_identity());
+    let events = real.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+    let baseline = baseline_run_slice(&events, &run_id).ok_or_else(|| {
+        format!(
+            "rigger replay: no run {run_id:?} in this project's stream (use a run id from \
+             `rigger stats`, or `latest`)"
+        )
+    })?;
+    let baseline_metrics = metrics::project(baseline);
+    // The baseline run's acceptance criteria: the SPEC the candidate config is re-driven
+    // against, so the isolated run adopts the same campaign fingerprint. The resolved run id
+    // (never the literal `latest`) names the baseline in the diff header.
+    let baseline_started = serde_json::from_slice::<runscope::RunStarted>(&baseline[0].data).ok();
+    let criteria: Vec<String> = baseline_started
+        .as_ref()
+        .map(|r| r.criteria.clone())
+        .unwrap_or_default();
+    let baseline_id = baseline_started
+        .map(|r| r.run)
+        .filter(|r| !r.is_empty())
+        .unwrap_or_else(|| run_id.clone());
+
+    // 2. Materialize the candidate config at <rev> in a throwaway checkout.
+    let workdir = config::load(".")
+        .map(|c| c.workflow.defaults.workdir)
+        .unwrap_or_default();
+    let scratch_root = rigger::worktree::scratch_root_from_env(&repo, &workdir);
+    std::fs::create_dir_all(&scratch_root)?;
+    let (candidate_cfg, candidate_definition) =
+        materialize_config_at_rev(&repo, &rev, &scratch_root)?;
+
+    // 3. Seed the ISOLATED store (a separate scratch db + namespace) with a fresh RunStarted
+    //    for the candidate criteria/definition, then the baseline's replayable trajectory.
+    let replay_db = Path::new(&scratch_root).join(format!(
+        "rigger-replay-{}.db",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let iso_backend = Store::open(replay_db.to_str().unwrap_or_default())?;
+    let iso = Namespaced::new(&iso_backend, "rigger-replay");
+    runscope::start_fresh(&iso, &criteria, &candidate_definition)?;
+    let trajectory = conductor::replay_trajectory(baseline);
+    iso.append(conductor::STREAM, ExpectedRevision::Any, &trajectory)?;
+
+    // 4. Re-drive the candidate config over the isolated store. Repo-less and grounder-less
+    //    (a pure offline re-fold), the ReplayDriver answers each spawn from the seeded
+    //    results, and ReplayRunner guarantees a candidate-config-only gate never shells out.
+    let driver = ReplayDriver::new(&iso);
+    let deps = Deps {
+        store: &iso,
+        driver: &driver,
+        gates: &ReplayRunner,
+        repo: String::new(),
+        grounder: None,
+        graph: None,
+        criteria,
+    };
+    let drive = conductor::run(&candidate_cfg, &deps);
+
+    // 5. Fold the candidate metrics from the isolated run and print the diff. The re-drive's
+    //    own result is reported but never fatal: a candidate config that parks (an
+    //    uncovered spawn) still yields a partial, honestly-labelled candidate column.
+    let iso_events = iso.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+    let candidate_metrics = metrics::project(runscope::current_run(&iso_events));
+    for line in format_stats_diff(&baseline_id, &rev, &baseline_metrics, &candidate_metrics) {
+        println!("{line}");
+    }
+    if let Err(e) = drive {
+        eprintln!(
+            "rigger replay: the candidate re-drive did not complete ({e}); the candidate \
+             column reflects the run up to where the recorded trajectory ran out"
+        );
+    }
+
+    // Best-effort scratch cleanup: the isolated db is throwaway (the diff is already
+    // printed), so a failure to unlink it never fails the command.
+    let _ = std::fs::remove_file(&replay_db);
+    Ok(())
+}
+
+/// Parse `rigger replay <run-id|latest> --against <rev>`. Exactly the run selector and the
+/// `--against <rev>` pair are accepted, in either order for the flag; anything else is a
+/// loud usage error rather than a silently-ignored argument.
+fn parse_replay_args(args: &[String]) -> Result<(String, String), Box<dyn std::error::Error>> {
+    let mut run_id: Option<String> = None;
+    let mut rev: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--against" => {
+                rev = Some(
+                    args.get(i + 1)
+                        .ok_or("rigger replay: --against needs a git rev")?
+                        .clone(),
+                );
+                i += 2;
+            }
+            flag if flag.starts_with("--") => {
+                return Err(format!("rigger replay: unknown flag {flag:?}").into());
+            }
+            positional if run_id.is_none() => {
+                run_id = Some(positional.to_string());
+                i += 1;
+            }
+            extra => {
+                return Err(format!("rigger replay: unexpected argument {extra:?}").into());
+            }
+        }
+    }
+    let run_id = run_id.ok_or(
+        "rigger replay: expected a run id (or `latest`) and `--against <rev>`; \
+         see `rigger --help`",
+    )?;
+    let rev = rev.ok_or("rigger replay: missing --against <rev> (the candidate config rev)")?;
+    Ok((run_id, rev))
+}
+
+/// The slice of `events` belonging to `run_id`: the contiguous window from that run's
+/// `RunStarted` up to (but excluding) the next one, so a MIDDLE run in a multi-run store is
+/// sliced exactly like the current one - not just the latest. `latest` selects the current
+/// run ([`runscope::current_run`]). `None` when no such run exists (an unknown id, or an
+/// empty stream).
+fn baseline_run_slice<'a>(events: &'a [Event], run_id: &str) -> Option<&'a [Event]> {
+    if run_id == "latest" {
+        let slice = runscope::current_run(events);
+        return (!slice.is_empty()).then_some(slice);
+    }
+    let start = events.iter().position(|e| {
+        e.type_ == runscope::TYPE_RUN_STARTED && run_started_id(e).as_deref() == Some(run_id)
+    })?;
+    let end = events[start + 1..]
+        .iter()
+        .position(|e| e.type_ == runscope::TYPE_RUN_STARTED)
+        .map(|off| start + 1 + off)
+        .unwrap_or(events.len());
+    Some(&events[start..end])
+}
+
+/// The run id carried in a `RunStarted` event body, or `None` if it is malformed.
+fn run_started_id(e: &Event) -> Option<String> {
+    serde_json::from_slice::<runscope::RunStarted>(&e.data)
+        .ok()
+        .map(|r| r.run)
+}
+
+/// Load the candidate [`Config`](config) and its definition hash from git `<rev>` via a
+/// throwaway DETACHED worktree under `scratch_root`, removed once loaded. Reading the config
+/// through a real checkout (rather than piping `git show`) reuses the exact [`config::load`]
+/// / [`definition_hash`] readers the live path uses, so a replay evaluates precisely the
+/// config a run at `<rev>` would.
+fn materialize_config_at_rev(
+    repo: &str,
+    rev: &str,
+    scratch_root: &str,
+) -> Result<(config::Config, String), Box<dyn std::error::Error>> {
+    let checkout = Path::new(scratch_root).join(format!(
+        "rigger-replay-cfg-{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let checkout_str = checkout
+        .to_str()
+        .ok_or("rigger replay: non-utf8 scratch path")?;
+    let add = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["worktree", "add", "--detach"])
+        .arg(checkout_str)
+        .arg(rev)
+        .output()?;
+    if !add.status.success() {
+        return Err(format!(
+            "rigger replay: could not check out --against {rev:?}: {}",
+            String::from_utf8_lossy(&add.stderr).trim()
+        )
+        .into());
+    }
+    // Load BEFORE removing the checkout; both readers return owned values, so the worktree
+    // can be torn down immediately after.
+    let loaded = config::load(checkout_str)
+        .map_err(|e| format!("rigger replay: candidate config at {rev:?} is invalid: {e}"))
+        .and_then(|cfg| {
+            definition_hash(checkout_str)
+                .map(|def| (cfg, def))
+                .map_err(|e| format!("rigger replay: candidate definition hash at {rev:?}: {e}"))
+        });
+    let _ = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["worktree", "remove", "--force"])
+        .arg(checkout_str)
+        .output();
+    Ok(loaded?)
+}
+
+/// Render the baseline-vs-candidate stats diff `rigger replay` prints: a header naming the
+/// baseline run and the candidate rev, a column head, then one aligned row per headline
+/// metric from [`metrics::diff_rows`], each changed row flagged with `*` so a config edit's
+/// effect jumps out. Pure over the two [`Metrics`], so it is asserted without any I/O.
+fn format_stats_diff(run_id: &str, rev: &str, base: &Metrics, cand: &Metrics) -> Vec<String> {
+    let mut lines = vec![
+        format!("replay stats diff (baseline run {run_id} vs candidate config @ {rev}):"),
+        format!("  {:<20} {:>10} {:>10}", "metric", "baseline", "candidate"),
+    ];
+    for (label, b, c) in metrics::diff_rows(base, cand) {
+        let flag = if b != c { "  *" } else { "" };
+        lines.push(format!("  {label:<20} {b:>10} {c:>10}{flag}"));
+    }
+    lines
+}
+
+/// A [`Runner`] for `rigger replay` that NEVER executes a gate command. The re-drive
+/// replays every gate outcome the recorded trajectory carries (the conductor's gate-verdict
+/// replay answers them before any runner is consulted), so this is reached ONLY for a gate
+/// the CANDIDATE config introduced that the baseline never ran - which cannot be scored from
+/// recorded behaviour. It therefore FAILS SAFE (never a fabricated pass) and runs no shell,
+/// keeping the replay a pure offline re-fold of recorded facts.
+struct ReplayRunner;
+
+impl Runner for ReplayRunner {
+    fn run(&self, g: &Gate, _dir: &str, _target_dir: &str) -> GateResult {
+        GateResult {
+            pass: false,
+            evidence: format!(
+                "FAIL\ngate {}: not covered by the replayed trajectory (a candidate-config gate \
+                 with no recorded verdict); rigger replay never executes a gate command",
+                g.id
+            ),
         }
     }
 }
@@ -6970,6 +7253,108 @@ mod tests {
         assert!(
             err.to_string().contains("stats: expected no arguments"),
             "the error must explain stats takes no arguments; got: {err}"
+        );
+    }
+
+    #[test]
+    fn baseline_run_slice_selects_a_run_by_id_including_a_middle_run() {
+        // A multi-run store. An explicit id slices THAT run's window
+        // (RunStarted..next RunStarted) even for a MIDDLE run - so replaying an OLD run
+        // never folds the newer runs appended after it - while `latest` selects the
+        // current run and an unknown id (or empty stream) is None.
+        let rs = |run: &str| {
+            Event::new(
+                runscope::TYPE_RUN_STARTED,
+                serde_json::to_vec(&serde_json::json!({"run": run, "criteria": []})).unwrap(),
+            )
+        };
+        let unit = |id: &str| {
+            Event::new(
+                ledger::TYPE_UNIT_STARTED,
+                serde_json::to_vec(&serde_json::json!({"id": id, "agent": "w"})).unwrap(),
+            )
+        };
+        let events = vec![
+            rs("run-A"),
+            unit("a1"),
+            rs("run-B"),
+            unit("b1"),
+            unit("b2"),
+            rs("run-C"),
+            unit("c1"),
+        ];
+
+        let b = baseline_run_slice(&events, "run-B").expect("run-B exists");
+        assert_eq!(b.len(), 3, "run-B is its RunStarted plus its two units");
+        assert_eq!(b[0].type_, runscope::TYPE_RUN_STARTED);
+        assert!(String::from_utf8_lossy(&b[1].data).contains("b1"));
+        assert!(
+            !b.iter()
+                .any(|e| String::from_utf8_lossy(&e.data).contains("c1")),
+            "run-C is excluded from run-B's slice"
+        );
+        assert_eq!(
+            baseline_run_slice(&events, "run-A").unwrap().len(),
+            2,
+            "the first run is bounded by run-B's boundary"
+        );
+        let latest = baseline_run_slice(&events, "latest").unwrap();
+        assert!(String::from_utf8_lossy(&latest[1].data).contains("c1"));
+        assert!(baseline_run_slice(&events, "run-Z").is_none(), "unknown id");
+        assert!(baseline_run_slice(&[], "latest").is_none(), "empty stream");
+    }
+
+    #[test]
+    fn format_stats_diff_flags_only_the_changed_rows() {
+        let base = Metrics {
+            review_approve: 1,
+            ..Default::default()
+        };
+        let cand = Metrics {
+            review_approve: 0,
+            ..Default::default()
+        };
+        let lines = format_stats_diff("run-X", "abc123", &base, &cand);
+        assert!(
+            lines[0].contains("run-X") && lines[0].contains("abc123"),
+            "the header names the baseline run and the candidate rev; got: {:?}",
+            lines[0]
+        );
+        let review = lines
+            .iter()
+            .find(|l| l.contains("review approved"))
+            .expect("a review-approved row");
+        assert!(
+            review.trim_end().ends_with('*'),
+            "the changed review row is flagged; got: {review:?}"
+        );
+        let units = lines
+            .iter()
+            .find(|l| l.contains("units started"))
+            .expect("a units-started row");
+        assert!(
+            !units.trim_end().ends_with('*'),
+            "an unchanged row carries no flag; got: {units:?}"
+        );
+    }
+
+    #[test]
+    fn parse_replay_args_requires_a_run_and_a_rev_in_either_order() {
+        assert!(parse_replay_args(&[]).is_err(), "no args is an error");
+        assert!(
+            parse_replay_args(&["latest".to_string()]).is_err(),
+            "missing --against is an error"
+        );
+        let (run, rev) =
+            parse_replay_args(&["latest".into(), "--against".into(), "HEAD".into()]).unwrap();
+        assert_eq!((run.as_str(), rev.as_str()), ("latest", "HEAD"));
+        // The flag may lead the positional.
+        let (run, rev) =
+            parse_replay_args(&["--against".into(), "rev1".into(), "run-7".into()]).unwrap();
+        assert_eq!((run.as_str(), rev.as_str()), ("run-7", "rev1"));
+        assert!(
+            parse_replay_args(&["a".into(), "b".into(), "--against".into(), "r".into()]).is_err(),
+            "a second positional is an error, not silently ignored"
         );
     }
 

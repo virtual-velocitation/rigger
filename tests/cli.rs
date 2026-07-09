@@ -2018,6 +2018,215 @@ fn a_step_driven_run_yields_nonempty_gate_and_review_sections_in_stats() {
 }
 
 // ---------------------------------------------------------------------------
+// `rigger replay <run-id> --against <rev>` - trajectory replay / config eval (spec 13:2)
+// ---------------------------------------------------------------------------
+
+/// Drive the offline single-unit baseline run of `write_gated_reviewed_workflow` to
+/// completion via the proven step/emit dance (implementer parks -> record it -> gates +
+/// review park the adjudicator -> record an approve -> replays to done), recording a REAL
+/// trajectory (SpawnResults + a passing GateVerdict + the unit lifecycle) in this project's
+/// run stream. Shared by the replay tests, which then re-drive that trajectory.
+fn drive_baseline_run(root: &Path) {
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(
+        ok && out.contains(r#""id":"solo/implementer#0""#),
+        "baseline step 1 must park the implementer; stderr:{err} stdout:{out}"
+    );
+    let (_o, err, ok) = run_rigger(
+        root,
+        &[
+            "emit",
+            "SpawnResult",
+            r#"{"id":"solo/implementer#0","output":"implemented the unit"}"#,
+        ],
+    );
+    assert!(
+        ok,
+        "recording the implementer result must succeed; stderr:{err}"
+    );
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(
+        ok && out.contains(r#""id":"solo/adjudicator#0""#),
+        "baseline step 2 must park the adjudicator; stderr:{err} stdout:{out}"
+    );
+    let (_o, err, ok) = run_rigger(
+        root,
+        &[
+            "emit",
+            "SpawnResult",
+            r#"{"id":"solo/adjudicator#0","output":"{\"verdict\":\"approve\"}"}"#,
+        ],
+    );
+    assert!(
+        ok,
+        "recording the adjudicator approve must succeed; stderr:{err}"
+    );
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(
+        ok && out.contains(r#""done":true"#),
+        "baseline step 3 must replay to done; stderr:{err} stdout:{out}"
+    );
+}
+
+/// The value columns of a `rigger replay` diff row whose label CONTAINS `needle`: the
+/// whitespace-separated tokens after the two-word label, with any trailing `*` change flag
+/// dropped. Lets a test assert a metric's baseline/candidate pair without pinning column
+/// widths.
+fn replay_diff_values(diff: &str, needle: &str) -> Vec<String> {
+    let row = diff
+        .lines()
+        .find(|l| l.contains(needle))
+        .unwrap_or_else(|| panic!("the replay diff must carry a {needle:?} row; got:\n{diff}"));
+    row.split_whitespace()
+        .filter(|t| *t != "*")
+        .rev()
+        .take(2)
+        .map(|t| t.to_string())
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect()
+}
+
+/// spec 13, unit 2 done-when: `rigger replay <run-id|latest> --against <rev>` re-drives a
+/// completed run's recorded trajectory under a candidate config in an ISOLATED namespace and
+/// prints the stats diff against the recorded baseline, NEVER touching the real project
+/// streams. Here the candidate rev is HEAD - the very config the run used - so a FAITHFUL
+/// re-drive must reproduce the baseline (matching columns), which proves the re-drive
+/// actually ran in isolation rather than echoing the baseline twice; the sibling test drives
+/// a DIFFERENT config to show the candidate column move.
+#[test]
+fn replay_re_drives_the_trajectory_and_diffs_stats_without_touching_the_real_stream() {
+    // Record the baseline in a REPO-LESS project first (the proven offline step/emit dance,
+    // review included - a repo would force worktree isolation on the review agents), THEN
+    // turn the dir into a git repo and commit the config, so `--against <rev>` resolves the
+    // candidate config at a git rev while the re-drive itself stays repo-less and isolated.
+    let dir = temp_repoless_project();
+    let root = dir.path();
+    write_gated_reviewed_workflow(root);
+
+    drive_baseline_run(root);
+
+    // Make the config readable at a git rev (HEAD == the config the run used). Add only the
+    // config, never the runtime events.db, so the checkout `--against` loads is clean.
+    git_ok(root, &["init", "-q"]);
+    git_ok(root, &["config", "user.email", "t@example.com"]);
+    git_ok(root, &["config", "user.name", "t"]);
+    git_ok(root, &["add", ".rigger/workflow.yml", ".rigger/agents"]);
+    git_ok(root, &["commit", "-q", "-m", "config"]);
+
+    // Capture the recorded baseline stats, to prove the replay leaves them byte-identical.
+    let (stats_before, err, ok) = run_rigger(root, &["stats"]);
+    assert!(ok, "baseline stats must succeed; stderr:{err}");
+    assert!(
+        stats_before.contains("1 approved"),
+        "the baseline recorded the adjudicator approve; got:\n{stats_before}"
+    );
+
+    let (diff, err, ok) = run_rigger(root, &["replay", "latest", "--against", "HEAD"]);
+    assert!(
+        ok,
+        "rigger replay must succeed; stderr:\n{err}\nstdout:\n{diff}"
+    );
+    assert!(
+        diff.contains("replay stats diff")
+            && diff.contains("baseline")
+            && diff.contains("candidate"),
+        "the diff must print a header and both columns; got:\n{diff}"
+    );
+    // A faithful re-drive against the run's own config reproduces the review outcome AND the
+    // gate run - baseline == candidate for both, so the re-drive genuinely re-folded the
+    // trajectory under the candidate config (not a printed-baseline-twice no-op: the
+    // candidate column is computed from the ISOLATED re-driven stream).
+    assert_eq!(
+        replay_diff_values(&diff, "review approved"),
+        vec!["1".to_string(), "1".to_string()],
+        "the faithful re-drive reproduces the one approve in both columns; got:\n{diff}"
+    );
+    assert_eq!(
+        replay_diff_values(&diff, "gate runs"),
+        vec!["1".to_string(), "1".to_string()],
+        "the faithful re-drive replays the one gate verdict in both columns; got:\n{diff}"
+    );
+
+    // The real project stream is UNTOUCHED: stats after the replay are byte-identical.
+    let (stats_after, err, ok) = run_rigger(root, &["stats"]);
+    assert!(ok, "post-replay stats must succeed; stderr:{err}");
+    assert_eq!(
+        stats_after, stats_before,
+        "rigger replay must never write the real project run stream"
+    );
+}
+
+/// A candidate variant of `write_gated_reviewed_workflow` with the review panel REMOVED:
+/// the `solo` unit still gates but no adjudicator reviews it. Re-driving the baseline
+/// trajectory (which recorded a review approve) under THIS config must drop `review
+/// approved` from 1 to 0 - the signal that a config edit changes the re-driven metrics.
+fn write_gated_workflow_no_review(root: &Path) {
+    std::fs::write(
+        root.join(".rigger").join("workflow.yml"),
+        r#"name: statstest
+defaults:
+  grounder: nop
+  budget: 60
+gates:
+  check: { run: "true", kind: core }
+stages:
+  solo:
+    agent: worker
+    gates: [check]
+    on_pass: none
+"#,
+    )
+    .unwrap();
+}
+
+/// spec 13, unit 2: the candidate COLUMN reacts to the config - a config edit measurably
+/// changes the re-driven metrics, which is the whole point of the eval ("did that change
+/// regress the run?"). Re-driving the same recorded trajectory (a review approve) under a
+/// candidate config with the review panel REMOVED drops `review approved` from the recorded
+/// 1 to a re-driven 0, proving the candidate column is genuinely re-folded from the isolated
+/// re-drive and not a copy of the baseline.
+#[test]
+fn replay_candidate_column_reacts_to_a_changed_config() {
+    let dir = temp_repoless_project();
+    let root = dir.path();
+    write_gated_reviewed_workflow(root);
+    drive_baseline_run(root);
+
+    // Commit the reviewed config, then a review-less variant as HEAD (the candidate rev).
+    git_ok(root, &["init", "-q"]);
+    git_ok(root, &["config", "user.email", "t@example.com"]);
+    git_ok(root, &["config", "user.name", "t"]);
+    git_ok(root, &["add", ".rigger/workflow.yml", ".rigger/agents"]);
+    git_ok(root, &["commit", "-q", "-m", "reviewed config"]);
+    write_gated_workflow_no_review(root);
+    git_ok(root, &["add", ".rigger/workflow.yml"]);
+    git_ok(root, &["commit", "-q", "-m", "review removed"]);
+
+    let (diff, err, ok) = run_rigger(root, &["replay", "latest", "--against", "HEAD"]);
+    assert!(
+        ok,
+        "rigger replay must succeed; stderr:\n{err}\nstdout:\n{diff}"
+    );
+    // Baseline recorded one approve; the review-less candidate re-drives to zero approves.
+    assert_eq!(
+        replay_diff_values(&diff, "review approved"),
+        vec!["1".to_string(), "0".to_string()],
+        "removing review must move the candidate column from the baseline 1 to 0; got:\n{diff}"
+    );
+    // The changed row is flagged with the `*` marker so a reader spots the regression.
+    let review_row = diff
+        .lines()
+        .find(|l| l.contains("review approved"))
+        .unwrap();
+    assert!(
+        review_row.trim_end().ends_with('*'),
+        "a changed metric row is flagged with `*`; got row: {review_row:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // `rigger validate` install-drift + uncommitted-.rigger advisories (spec 05:55)
 // ---------------------------------------------------------------------------
 
