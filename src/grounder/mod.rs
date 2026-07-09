@@ -6,6 +6,13 @@
 #[cfg(feature = "turbovec")]
 pub mod turbovec;
 
+// The structural grounding axis (spec 15): a symbol index projected from the code tree.
+// Declared UNGATED on purpose - the parser-free data model (`symbols::model`) must compile
+// in the light (`--no-default-features`) lane, where tree-sitter is not even linked, which
+// is the compile-time proof that no tree-sitter type crosses into the model API. Only the
+// tree-sitter-touching submodules inside `symbols` carry `#[cfg(feature = "symbols")]`.
+pub mod symbols;
+
 use std::collections::HashSet;
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
