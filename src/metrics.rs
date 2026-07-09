@@ -801,6 +801,115 @@ fn parse_adjudication(output: &str) -> Option<Adjudication> {
     None
 }
 
+// ---------------------------------------------------------------------------
+// Canary metrics (spec 13, unit 5): the loop's only RECALL read-model.
+// ---------------------------------------------------------------------------
+
+/// A review tier's catch tally over the planted defects of one canary run: how many it
+/// caught (raised a finding about the anchor) out of how many were planted.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TierCatch {
+    /// Planted defects this tier caught.
+    pub caught: u64,
+    /// Planted defects in the run (this tier's denominator).
+    pub planted: u64,
+}
+
+impl TierCatch {
+    /// The tier's catch rate over the run's planted defects in `[0.0, 1.0]`, `0.0` when
+    /// none were planted (never `NaN`).
+    pub fn rate(&self) -> f64 {
+        ratio(self.caught, self.planted)
+    }
+}
+
+/// The judge-the-judges scorecard of one canary run, folded from the scored outcomes on
+/// the canary stream (spec 13, unit 5). Where [`Metrics`] measures the loop's PRECISION,
+/// this measures its RECALL: does the review panel actually catch the defects it should?
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CanaryMetrics {
+    /// Total corpus items scored in the run.
+    pub items: u64,
+    /// Items carrying a planted defect (the catch-rate denominators' basis).
+    pub planted: u64,
+    /// Catch tally per review tier (`lens`, `adversary`), in id order.
+    pub tier_catch: BTreeMap<String, TierCatch>,
+    /// Items whose adjudicator verdict matched the expectation (reject a planted defect,
+    /// approve a known-good control).
+    pub adjudicator_correct: u64,
+    /// Items whose adjudicator verdict was stable under finding-order shuffling.
+    pub stable: u64,
+    /// The distinct planted defect classes the run cataloged (spec 13 unit 5 requires
+    /// at least three).
+    pub defect_classes: BTreeSet<String>,
+}
+
+impl CanaryMetrics {
+    /// The adjudicator's correctness rate over every scored item in `[0.0, 1.0]`.
+    pub fn adjudicator_accuracy(&self) -> f64 {
+        ratio(self.adjudicator_correct, self.items)
+    }
+
+    /// The verdict stability rate over every scored item in `[0.0, 1.0]`: the share whose
+    /// verdict did NOT flip when its findings were re-presented in a shuffled order.
+    pub fn stability_rate(&self) -> f64 {
+        ratio(self.stable, self.items)
+    }
+}
+
+/// Fold a canary stream read into its [`CanaryMetrics`] scorecard, scoped to the LATEST
+/// canary run (spec 13, unit 5). This is a pure replay like [`project`], over the DISTINCT
+/// canary stream ([`crate::canary::STREAM`]) so it never sees the run stream's events and
+/// the run's own metrics never see a canary's: `rigger stats --canary` folds this, `rigger
+/// stats` folds [`project`], and they cannot cross-contaminate.
+///
+/// The catch rate is BY TIER: for each planted defect, which review tier (`lens` -
+/// tier 1, the lenses collectively; `adversary` - tier 2) raised a finding about the
+/// defect's file. A tier's rate is its catches over the run's planted total - the RECALL
+/// the three-tier design exists to earn (does the adversary surface what the lenses
+/// missed). Adjudicator correctness and finding-order stability fold over EVERY item
+/// (planted and known-good alike).
+pub fn project_canary(events: &[Event]) -> CanaryMetrics {
+    let mut m = CanaryMetrics::default();
+    // Seed both tiers so a run reports a `0/0` for a tier that never caught, rather than
+    // omitting it (a silent absence reads as "not measured", not "caught nothing").
+    for tier in [crate::canary::TIER_LENS, crate::canary::TIER_ADVERSARY] {
+        m.tier_catch.insert(tier.to_string(), TierCatch::default());
+    }
+    for e in crate::canary::latest_run(events) {
+        let Some(o) = crate::canary::CanaryOutcome::from_event(e) else {
+            continue; // a batch marker or a foreign/malformed event
+        };
+        m.items += 1;
+        if o.verdict_correct {
+            m.adjudicator_correct += 1;
+        }
+        if o.stable {
+            m.stable += 1;
+        }
+        if o.planted {
+            m.planted += 1;
+            if !o.defect_class.trim().is_empty() {
+                m.defect_classes.insert(o.defect_class.clone());
+            }
+            // Only a planted defect has something to catch, so only it moves a tier's
+            // denominator. Every tier's planted denominator is the run's planted total.
+            for tier in m.tier_catch.values_mut() {
+                tier.planted += 1;
+            }
+            for tier in &o.caught_by {
+                // Only the two known tiers are scored, so `caught <= planted` holds per
+                // tier; a foreign tier label (only reachable via a hand-corrupted event)
+                // is ignored rather than counted against a zero denominator.
+                if let Some(tc) = m.tier_catch.get_mut(tier) {
+                    tc.caught += 1;
+                }
+            }
+        }
+    }
+    m
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1594,5 +1703,102 @@ mod tests {
         ]);
         assert_eq!(m2.review_quality.upheld_unattributed, 0);
         assert_eq!(m2.review_quality.finding_survival["lens:sdet"].upheld, 0);
+    }
+
+    // --- canary metrics (spec 13, unit 5) -------------------------------------------
+
+    fn canary_run_marker() -> Event {
+        ev(TYPE_UNIT_STATUS, r#"{"id":"b","status":"canary-run"}"#)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn canary_outcome(
+        id: &str,
+        class: &str,
+        planted: bool,
+        expected_reject: bool,
+        caught_by: &[&str],
+        verdict_correct: bool,
+        stable: bool,
+    ) -> Event {
+        let caught: String = caught_by
+            .iter()
+            .map(|t| format!("\"{t}\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        ev(
+            TYPE_UNIT_STATUS,
+            &format!(
+                r#"{{"id":"{id}","status":"canary","defect_class":"{class}","planted":{planted},"expected_reject":{expected_reject},"expected_tier":"","caught_by":[{caught}],"verdict_approved":{},"verdict_correct":{verdict_correct},"stable":{stable}}}"#,
+                !expected_reject
+            ),
+        )
+    }
+
+    #[test]
+    fn project_canary_folds_per_tier_catch_correctness_and_stability() {
+        // Three planted defects + one known-good control. The adversary catches all three
+        // planted; the lens catches only one. The adjudicator is correct on 3 of 4 and
+        // stable on 3 of 4.
+        let events = vec![
+            canary_run_marker(),
+            // planted, both tiers catch, correct + stable
+            canary_outcome("a", "off-by-one", true, true, &["lens", "adversary"], true, true),
+            // planted, only adversary catches, correct but UNSTABLE
+            canary_outcome("b", "resource-leak", true, true, &["adversary"], true, false),
+            // planted, only adversary catches, adjudicator WRONG (approved a defect), stable
+            canary_outcome("c", "fail-open-guard", true, true, &["adversary"], false, true),
+            // known-good control, nothing caught, correct + stable
+            canary_outcome("d", "none", false, false, &[], true, true),
+        ];
+        let m = project_canary(&events);
+        assert_eq!(m.items, 4);
+        assert_eq!(m.planted, 3);
+
+        // Catch rate BY TIER over the 3 planted defects.
+        assert_eq!(m.tier_catch["adversary"].caught, 3);
+        assert_eq!(m.tier_catch["adversary"].planted, 3);
+        assert!((m.tier_catch["adversary"].rate() - 1.0).abs() < 1e-9);
+        assert_eq!(m.tier_catch["lens"].caught, 1);
+        assert_eq!(m.tier_catch["lens"].planted, 3);
+        assert!((m.tier_catch["lens"].rate() - 1.0 / 3.0).abs() < 1e-9);
+
+        // Adjudicator correctness and stability over ALL items.
+        assert_eq!(m.adjudicator_correct, 3);
+        assert!((m.adjudicator_accuracy() - 0.75).abs() < 1e-9);
+        assert_eq!(m.stable, 3);
+        assert!((m.stability_rate() - 0.75).abs() < 1e-9);
+
+        // The three cataloged defect classes are surfaced (the known-good adds none).
+        assert_eq!(m.defect_classes.len(), 3);
+        assert!(m.defect_classes.contains("off-by-one"));
+        assert!(m.defect_classes.contains("fail-open-guard"));
+    }
+
+    #[test]
+    fn project_canary_scopes_to_the_latest_run_and_seeds_both_tiers() {
+        // An older run's outcome precedes a newer marker; only the latest run folds.
+        let events = vec![
+            canary_run_marker(),
+            canary_outcome("old", "off-by-one", true, true, &["lens"], true, true),
+            canary_run_marker(),
+            canary_outcome("new", "off-by-one", true, true, &["adversary"], true, true),
+        ];
+        let m = project_canary(&events);
+        assert_eq!(m.items, 1, "only the latest run is folded");
+        assert_eq!(m.tier_catch["adversary"].caught, 1);
+        // The lens tier is seeded even though it caught nothing this run - a 0/1 report,
+        // never a silent omission that reads as "not measured".
+        assert_eq!(m.tier_catch["lens"].caught, 0);
+        assert_eq!(m.tier_catch["lens"].planted, 1);
+    }
+
+    #[test]
+    fn project_canary_on_an_empty_stream_is_all_zero_but_names_both_tiers() {
+        let m = project_canary(&[]);
+        assert_eq!(m.items, 0);
+        assert_eq!(m.adjudicator_accuracy(), 0.0);
+        assert_eq!(m.stability_rate(), 0.0);
+        assert!(m.tier_catch.contains_key("lens") && m.tier_catch.contains_key("adversary"));
     }
 }
