@@ -14,6 +14,11 @@
 # Persisted turbovec grounding index (embeddings + the id->Ref map): per-machine
 # derived data rebuilt from the tree, large + binary, never committed.
 .rigger/grounding/
+# The `rigger step` serialization lock (fs2 flock target): runtime-only, per-machine.
+.rigger/step.lock
+# Distilled playbook pool (spec 13, unit 7): a rebuildable projection of the log
+# (`rigger playbooks --rebuild`), derived per-machine, never hand-edited state.
+.rigger/playbooks/
 
 # Node deps for the workflow shim (shim/package-lock.json IS committed)
 shim/node_modules/

@@ -17,7 +17,7 @@
 //!
 //! # Review approve/reject classification
 //!
-//! A unit's review outcome is read off the conductor's two review paths:
+//! A unit's review outcome is read off the conductor's three review paths:
 //!
 //! - **Per-unit review** (`run_single_stage`): the conductor emits a `verified`
 //!   `UnitStatus` once the gates pass, *then* runs the adjudicator. An approve
@@ -29,6 +29,17 @@
 //!   `verified`**. There is no per-unit cause discriminator on `UnitFailed`, so a
 //!   fan-out reject is inferred from the unit's `UnitStarted` carrying an **empty
 //!   `agent`** (the necessary condition for `is_fan_out`).
+//! - **Speculation candidates** (`run_speculation`): a first-green-wins group defers
+//!   the winner's `verified`/`reviewed` and emits nothing for a losing lane's
+//!   lifecycle - a rejected candidate cannot ride a `verified`+`UnitFailed` pair
+//!   without folding the shared unit out of `Fresh` and mis-routing a resume. So an
+//!   adjudicator-rejected candidate instead rides a fold-neutral
+//!   [`STATUS_SPECULATION_REJECTED`] `UnitStatus` marker (not a `ledger::Status`, so
+//!   the ledger fold ignores it) that this fold counts DIRECTLY as one review reject.
+//!   It is an EXACT signal (the conductor emits it only on an adjudicator reject), not
+//!   the lossy empty-`agent` heuristic, and being an in-process `UnitStatus` it
+//!   survives on a live driver - unlike the adjudicator `SpawnResult`, which only the
+//!   courier records.
 //!
 //! The empty-`agent` signal is a **lossy heuristic, not an exact classifier**: an
 //! empty agent is *necessary* for a fan-out / review-only stage but not
@@ -46,17 +57,97 @@
 //! conductor stamps no `META_ACTOR` on either `UnitFailed` emit site (both route
 //! through `emit_with_actor("")`), so a per-tier split would be permanently empty
 //! on any real log - the spec's "otherwise report the aggregate" applies.
+//!
+//! # Review-quality attribution across the two driver paths
+//!
+//! The actor-keyed review-quality folds - **finding survival**, **adversary
+//! precision**, and the **per-tier cost-per-upheld** - join two signals that must
+//! meet on ONE log: a finding's *attribution* (who raised it) and the adjudicator's
+//! *verdict* (which findings it upheld, recorded as its `SpawnResult`). Those signals
+//! reach the log by different mechanisms on the two drivers, so attribution is carried
+//! the SAME way on both:
+//!
+//! - **In-process (`rigger run`, cli driver):** the conductor stamps `META_ACTOR` on
+//!   each finding as the reviewer emits it, but the live drivers record **no**
+//!   adjudicator `SpawnResult` (the verdict gates the stage in-memory). So `upheld` is
+//!   0 on this path - the `raised` and overlap signals are exact, but a finding's
+//!   survival cannot be computed without a recorded verdict. This is a real per-driver
+//!   limitation, not a defect: the render discloses it (an all-zero-upheld panel over a
+//!   run with findings but no recorded verdicts is the cli path, not reviewer failure).
+//! - **Out-of-process (the courier / workflow path):** the reviewer runs as its own
+//!   process and emits its finding through `rigger emit`, which stamps no `META_ACTOR`;
+//!   the adjudicator's verdict IS recorded, as the `SpawnResult` the courier writes with
+//!   `rigger result`. So the finding's own **`by`** field is the attribution, and the
+//!   conductor's `review_protocol` makes every out-of-process reviewer carry its ROLE
+//!   token there. On THIS path attribution and the verdict co-occur, so all three folds
+//!   produce real values - which is the single production path the folds are measured on
+//!   (see `courier_path_single_log_feeds_all_three_actor_keyed_folds`).
+//!
+//! Carrying the reviewer's **role token** (`lens:<agent-id>` / `adversary`, the same
+//! [`crate::spawn::spawn_id`] role the per-tier `SpawnResult` cost fold reads) as BOTH the
+//! in-process `META_ACTOR` and the out-of-process `by` means a finding is attributed one
+//! single way regardless of which driver recorded it - not two reconciled schemes.
+//!
+//! There remains a THIRD way an upheld numerator goes unfed even when a verdict IS
+//! recorded: the adjudicator upholds a finding id that carries no attribution on THIS
+//! log - a pre-contract finding emitted without a `by` token, or a historical / cross-log
+//! id the current slice never saw raised. The empty-actor sentinel in the finalize pass
+//! drops those from every per-actor fold (they key on no actor), so an aggregate store can
+//! record a verdict AND raised findings yet fold zero upheld per actor. That drop is
+//! counted as [`ReviewQuality::upheld_unattributed`] and the render discloses it, so an
+//! all-zero-upheld panel with `adjudications > 0` is never misread as "the review tier
+//! upheld nothing" when the truth is "the upheld findings were unattributed here".
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Deserialize;
+use serde_json::Value;
 
-use crate::contextgraph::TYPE_GATE_VERDICT;
+use crate::conductor::{
+    META_MODEL_ALIAS, META_MODEL_RESOLVED, META_WORKTREE_SHA, STATUS_SPECULATION_REJECTED,
+};
+use crate::contextgraph::{META_ACTOR, TYPE_GATE_VERDICT, TYPE_REVIEW_FINDING};
 use crate::eventstore::Event;
 use crate::ledger::{
     TYPE_UNIT_ESCALATED, TYPE_UNIT_FAILED, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
     TYPE_UNIT_STATUS,
 };
+use crate::run::META_RUN_ID;
+use crate::spawn::{SpawnResult, ROLE_ADJUDICATOR, ROLE_ADVERSARY, TYPE_SPAWN_RESULT};
+
+/// The tier a review spawn belongs to, recovered from its deterministic
+/// [`spawn_id`](crate::spawn::spawn_id) `{unit}/{role}#{attempt}` (a retry id may add a
+/// `~retryN` suffix, which is trimmed here). Returns the tier label the fold keys cost
+/// under - `"lens"`, `"adversary"`, `"adjudicator"` - or `None` for a non-review spawn
+/// (the implementer). The `lens:` role prefix mirrors [`crate::spawn::lens_role`].
+fn review_tier(spawn_id: &str) -> Option<&'static str> {
+    let role = spawn_id
+        .rsplit_once('/')
+        .map(|(_, r)| r)
+        .unwrap_or(spawn_id);
+    let role = role.split(['#', '~']).next().unwrap_or(role);
+    if role == ROLE_ADVERSARY {
+        Some("adversary")
+    } else if role == ROLE_ADJUDICATOR {
+        Some("adjudicator")
+    } else if role.starts_with("lens:") {
+        Some("lens")
+    } else {
+        None
+    }
+}
+
+/// The tier a finding's ACTOR belongs to for cost/precision accounting: the adversary
+/// role token is the adversary tier; every other finding-raising actor is a lens (the
+/// adjudicator raises no findings). Single-sources the lens-vs-adversary split the
+/// per-tier cost and adversary-precision folds share.
+fn actor_tier(actor: &str) -> &'static str {
+    if actor == ROLE_ADVERSARY {
+        "adversary"
+    } else {
+        "lens"
+    }
+}
 
 /// Pass/fail tallies for one gate id across a run.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -83,8 +174,11 @@ impl GateCounts {
 pub struct Metrics {
     /// Distinct units that emitted a `UnitStarted` (deduplicated across resumes).
     pub units_started: u64,
-    /// Units that reached `Integrated` with zero `UnitFailed` for their id - a
-    /// clean first pass. The numerator of first-pass yield.
+    /// Units that reached `Integrated` with no failed attempt for their id - a clean
+    /// first pass. The numerator of first-pass yield. "Failed" here is any `UnitFailed`
+    /// OR a rejected speculation candidate (the [`STATUS_SPECULATION_REJECTED`] marker):
+    /// a first-green-wins unit whose review rejected one candidate is not a clean pass,
+    /// exactly as a single-lane unit that rejected then re-implemented is not.
     pub first_pass_clean: u64,
     /// Per-gate pass/fail tallies, excluding the artifact-tagged integrate-time
     /// `GateVerdict`s. Sorted by gate id (`BTreeMap`) for stable reporting.
@@ -97,13 +191,136 @@ pub struct Metrics {
     /// Reviews that rejected and looped back into `UnitFailed` without
     /// integrating on that attempt. Aggregate only.
     ///
-    /// Detected on both conductor review paths: the per-unit path arms on a
+    /// Detected on all three conductor review paths: the per-unit path arms on a
     /// `verified` `UnitStatus` then counts a `UnitFailed`-while-armed; the
     /// fan-out / review-only path is inferred from an empty-`agent` `UnitStarted`
-    /// then a `UnitFailed`. The fan-out signal is **lossy** - see the module doc
-    /// for the known/accepted false positive (an agentless gated stage's bare gate
-    /// failure).
+    /// then a `UnitFailed`; a rejected speculation candidate rides an exact
+    /// [`STATUS_SPECULATION_REJECTED`] marker counted directly. The fan-out signal is
+    /// **lossy** - see the module doc for the known/accepted false positive (an
+    /// agentless gated stage's bare gate failure).
     pub review_reject: u64,
+    /// The spec-11 unit-1 review-QUALITY telemetry (is the review tier RIGHT, not just
+    /// how often it rejects), folded from the sha-stamped review-boundary events, the
+    /// `ReviewFinding`s the tiers raise, and the adjudicator `SpawnResult` verdicts.
+    pub review_quality: ReviewQuality,
+}
+
+/// Raised-vs-upheld tally for one review actor's (or tier's) findings. `survival` is the
+/// fraction the adjudicator upheld - the review-quality signal the aggregate reject
+/// count cannot see.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FindingCounts {
+    /// Findings this actor RAISED (distinct `ReviewFinding` ids attributed to it).
+    pub raised: u64,
+    /// Of those, how many an adjudicator listed in its `upheld` verdict field.
+    pub upheld: u64,
+}
+
+impl FindingCounts {
+    /// The fraction of this actor's raised findings the adjudicator upheld, in
+    /// `[0.0, 1.0]`; `0.0` when it raised none (never `NaN`).
+    pub fn survival(&self) -> f64 {
+        ratio(self.upheld, self.raised)
+    }
+}
+
+/// Per-tier review cost proxy: how many review spawns that tier ran against how many of
+/// its findings survived adjudication. A spawn-count proxy (not a dollar figure): the
+/// Gap-6 model stamps that would price each spawn ride the same events, but weighting
+/// them by a price table is Wave-4 acting-on-measurements, out of this read-model.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TierCost {
+    /// `SpawnResult`s recorded for this tier's role (the cost incurred).
+    pub spawns: u64,
+    /// Findings this tier raised that were upheld (the value delivered).
+    pub upheld: u64,
+}
+
+impl TierCost {
+    /// Review spawns per upheld finding for this tier - lower is cheaper review. `0.0`
+    /// when the tier upheld nothing (the ratio is undefined; render it as "not yet
+    /// earning" rather than a division by zero).
+    pub fn cost_per_upheld(&self) -> f64 {
+        if self.upheld == 0 {
+            0.0
+        } else {
+            self.spawns as f64 / self.upheld as f64
+        }
+    }
+}
+
+/// Review-quality telemetry (spec 11, unit 1 - "the cheap six"): measures whether the
+/// review tier is RIGHT, folded from the same run stream as the rest of [`Metrics`].
+/// Every field is an integer count so [`Metrics`] keeps deriving [`Eq`]; the rates are
+/// derived on demand.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ReviewQuality {
+    /// Review REJECTIONS later APPROVED on the SAME worktree sha (spec 11): the tiers
+    /// flipped their verdict on unchanged code, so this is reviewer noise. Paired via the
+    /// [`META_WORKTREE_SHA`] stamp on the review-reject `UnitFailed` and the `reviewed`.
+    pub flip_flops: u64,
+    /// Per-actor finding survival (upheld / raised), keyed by the finding's raiser (its
+    /// ROLE token, e.g. `lens:<agent-id>` or `adversary`), sorted for stable reporting.
+    /// The raiser resolves from the conductor-stamped [`META_ACTOR`] when present, else the
+    /// finding's `by` field. The `raised` side is fed on EITHER driver path, but the
+    /// `upheld` numerator is fed only when the finding's attribution AND the adjudicator's
+    /// `SpawnResult` (which carries `upheld`) land on the SAME log: the out-of-process
+    /// courier path records the `SpawnResult` but stamps no `META_ACTOR`, so the reviewer's
+    /// `by`-carried role token (the conductor's `review_protocol` puts it there) is what
+    /// supplies attribution on THAT path; the in-process cli path stamps
+    /// `META_ACTOR` but records no adjudicator `SpawnResult`, so its `upheld` stays 0 (no
+    /// verdict to fold) - a genuine per-driver limitation, disclosed here and rendered as
+    /// such, not a silent always-zero.
+    pub finding_survival: BTreeMap<String, FindingCounts>,
+    /// Files carrying findings from TWO OR MORE distinct actors - the same defect flagged
+    /// by more than one lens. The numerator of the lens-overlap rate (retroactive over
+    /// all history).
+    pub overlap_files: u64,
+    /// Files carrying at least one finding - the denominator of the lens-overlap rate.
+    pub finding_files: u64,
+    /// Review rejections split by the adjudicator-declared `cause`
+    /// (`genuine-defect` / `spec-ambiguity` / `decomposition-conflict` / `infra-fault`),
+    /// sorted by cause.
+    pub rejections_by_cause: BTreeMap<String, u64>,
+    /// Escalations split by the `cause` of the escalating unit's FINAL rejection.
+    pub escalations_by_cause: BTreeMap<String, u64>,
+    /// Adversary-ONLY findings (raised by the adversary about files no lens also flagged)
+    /// upheld vs raised - the adversary's unique catch rate, its precision.
+    pub adversary_only: FindingCounts,
+    /// Per-tier cost proxy (`"lens"` / `"adversary"` / `"adjudicator"`): review spawns vs
+    /// upheld findings, sorted by tier.
+    pub tier_cost: BTreeMap<String, TierCost>,
+    /// Adjudicator verdicts RECORDED as a `SpawnResult` and parsed for their upheld/cause
+    /// (the courier path records these; the in-process cli path does not). This is the
+    /// numerator source for every upheld-based fold, so when it is `0` there simply is no
+    /// verdict on this run's driver to compute survival/precision/cost-per-upheld from -
+    /// the render discloses that rather than showing a misleading `0%` survival.
+    pub adjudications: u64,
+    /// Of the finding ids the adjudicator UPHELD, how many carry NO attribution the fold
+    /// could key on - the finding either was never recorded on this log, or was recorded
+    /// with neither a conductor-stamped [`META_ACTOR`] nor a `by` role token (a pre-contract
+    /// / historical / cross-log id). These are the upheld findings the empty-actor sentinel
+    /// in the finalize pass silently drops from `finding_survival` (and thus from
+    /// `adversary_only` and `tier_cost`), so they contribute to NO per-actor upheld count.
+    /// When this is `> 0` the upheld-based panels can render all-zero even though the
+    /// adjudicator DID uphold findings - a genuinely UNFED numerator, distinct from the
+    /// adjudicator having upheld nothing (which leaves this `0`). The render keys its
+    /// "unfed on this log" disclosure on this so the drop stops being silent.
+    pub upheld_unattributed: u64,
+}
+
+impl ReviewQuality {
+    /// The lens-overlap rate in `[0.0, 1.0]`: files flagged by two or more actors over
+    /// files flagged at all. `0.0` when no findings touched any file.
+    pub fn lens_overlap_rate(&self) -> f64 {
+        ratio(self.overlap_files, self.finding_files)
+    }
+
+    /// Adversary precision in `[0.0, 1.0]`: adversary-only findings upheld over
+    /// adversary-only findings raised. `0.0` when the adversary raised no unique finding.
+    pub fn adversary_precision(&self) -> f64 {
+        self.adversary_only.survival()
+    }
 }
 
 impl Metrics {
@@ -118,6 +335,71 @@ impl Metrics {
     pub fn escalation_rate(&self) -> f64 {
         ratio(self.units_escalated, self.units_started)
     }
+
+    /// Rejection flip-flop rate in `[0.0, 1.0]`: rejections later approved on the SAME
+    /// worktree sha over all review rejections. Zero when nothing was rejected. This is
+    /// the share of rejects that were reviewer noise (a verdict flip on unchanged code).
+    pub fn flip_flop_rate(&self) -> f64 {
+        ratio(self.review_quality.flip_flops, self.review_reject)
+    }
+}
+
+/// The headline run metrics as a labeled BASELINE-vs-CANDIDATE comparison (spec 13, unit 2 -
+/// trajectory replay): one row per metric as `(label, baseline, candidate)` pre-rendered
+/// strings, so `rigger replay` prints the stats DIFF between a recorded run and its re-drive
+/// under a candidate config without the render re-deriving each ratio. Pure and order-stable
+/// (so a change flags deterministically); the two arguments are folded identically by
+/// [`project`], the recorded baseline and the isolated re-drive.
+pub fn diff_rows(baseline: &Metrics, candidate: &Metrics) -> Vec<(&'static str, String, String)> {
+    vec![
+        (
+            "units started",
+            baseline.units_started.to_string(),
+            candidate.units_started.to_string(),
+        ),
+        (
+            "first-pass yield",
+            pct(baseline.first_pass_yield()),
+            pct(candidate.first_pass_yield()),
+        ),
+        (
+            "escalation rate",
+            pct(baseline.escalation_rate()),
+            pct(candidate.escalation_rate()),
+        ),
+        (
+            "review approved",
+            baseline.review_approve.to_string(),
+            candidate.review_approve.to_string(),
+        ),
+        (
+            "review rejected",
+            baseline.review_reject.to_string(),
+            candidate.review_reject.to_string(),
+        ),
+        (
+            "gate runs",
+            gate_total(baseline).to_string(),
+            gate_total(candidate).to_string(),
+        ),
+    ]
+}
+
+/// A fraction in `[0.0, 1.0]` rendered as a one-decimal percentage, for the replay diff.
+fn pct(f: f64) -> String {
+    format!("{:.1}%", f * 100.0)
+}
+
+/// Total gate verdicts folded into `m` (summed across every gate) - the denominator-free
+/// gate-activity count the replay diff carries. This is a RAW fold over `m.gates`, so WHICH
+/// verdicts it counts is entirely determined by which the caller folded into `m`: it makes no
+/// config judgement of its own. `rigger replay` re-scopes the CANDIDATE `Metrics` UPSTREAM
+/// (in `cmd_replay`) to only the gates the re-drive actually reaches - a gate the candidate
+/// config removed or renamed has its seeded verdict dropped BEFORE this fold - so the
+/// candidate "gate runs" column reflects the candidate config, not the seeded baseline. The
+/// baseline `Metrics` is the raw recorded run, so its total is every gate the run really ran.
+fn gate_total(m: &Metrics) -> u64 {
+    m.gates.values().map(|g| g.total()).sum()
 }
 
 /// A guarded fraction: `num / den`, or `0.0` when `den == 0` (never `NaN`).
@@ -150,6 +432,13 @@ struct UnitFold {
     /// This unit's escalation has already been tallied (idempotency guard against
     /// a malformed double-emit; the conductor emits `UnitEscalated` once per id).
     escalated: bool,
+    /// Worktree shas this unit was review-REJECTED on. A later `reviewed` (approve)
+    /// on any sha in this set is a flip-flop (spec 11): a verdict reversal on the same
+    /// code the tiers already rejected.
+    rejected_shas: BTreeSet<String>,
+    /// The adjudicator-declared `cause` of this unit's most recent review rejection,
+    /// carried so a subsequent `UnitEscalated` can attribute the escalation to it.
+    last_reject_cause: Option<String>,
 }
 
 /// Fold an ordered event slice into the operator [`Metrics`], mirroring
@@ -159,6 +448,25 @@ struct UnitFold {
 pub fn project(events: &[Event]) -> Metrics {
     let mut units: BTreeMap<String, UnitFold> = BTreeMap::new();
     let mut metrics = Metrics::default();
+
+    // Review-quality accumulators (spec 11, unit 1), resolved into `metrics.review_quality`
+    // after the pass. Findings are folded as they are raised; the adjudicator verdicts that
+    // uphold them and stamp a rejection `cause` arrive later in the same forward stream.
+    // finding id -> the actor that raised it (empty when unattributed).
+    let mut finding_actor: BTreeMap<String, String> = BTreeMap::new();
+    // finding id -> the files it concerns (for adversary-only attribution).
+    let mut finding_about: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    // file -> the distinct non-empty actors that raised a finding about it (lens overlap).
+    let mut file_actors: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    // finding ids an adjudicator upheld (union across all verdicts).
+    let mut upheld: BTreeSet<String> = BTreeSet::new();
+    // review rejections split by adjudicator-declared cause.
+    let mut rejections_by_cause: BTreeMap<String, u64> = BTreeMap::new();
+    // per-unit rejection cause stashed by the adjudicator verdict, consumed by the
+    // matching review-reject `UnitFailed` (the verdict precedes the failure in-stream).
+    let mut pending_cause: BTreeMap<String, String> = BTreeMap::new();
+    // review spawns recorded per tier (the cost side of cost-per-upheld).
+    let mut tier_spawns: BTreeMap<String, u64> = BTreeMap::new();
 
     for e in events {
         match e.type_.as_str() {
@@ -195,7 +503,36 @@ pub fn project(events: &[Event]) -> Metrics {
                     // A `reviewed` status is the standalone/fan-out approve signal,
                     // exact. Gate the increment on a started unit so the count stays
                     // a subset of units_started.
-                    "reviewed" if u.started => metrics.review_approve += 1,
+                    "reviewed" if u.started => {
+                        metrics.review_approve += 1;
+                        // Flip-flop (spec 11): an approve on a sha this unit was already
+                        // REJECTED on is a verdict reversal over unchanged code - reviewer
+                        // noise. Matched by the worktree-sha meta stamped on both events.
+                        if let Some(sha) = e.meta.get(META_WORKTREE_SHA).filter(|s| !s.is_empty()) {
+                            if u.rejected_shas.contains(sha) {
+                                metrics.review_quality.flip_flops += 1;
+                            }
+                        }
+                    }
+                    // A speculation candidate the adjudicator REJECTED (spec 13, unit 3). The
+                    // producer cannot arm the shared unit with a real `verified`+`UnitFailed`
+                    // pair - that lifecycle status would fold the SHARED unit out of `Fresh` and
+                    // mis-route a resume of the still-racing group onto the canonical lane - so
+                    // the reject rides this fold-neutral marker (the ledger fold ignores it). It
+                    // is an EXACT reject signal: the conductor emits it only on an adjudicator
+                    // reject, so count it DIRECTLY (no `verified` arming needed), mirroring the
+                    // single-lane reject. Gated on `started` so the count stays a subset of
+                    // units_started, and it spoils first_pass_clean exactly as a single-lane
+                    // reject's `UnitFailed` does. The reviewed sha it carries pairs with a later
+                    // approve on the SAME sha for the flip-flop fold, symmetric with the
+                    // `UnitFailed` reject path.
+                    s if s == STATUS_SPECULATION_REJECTED && u.started => {
+                        metrics.review_reject += 1;
+                        u.failed = true;
+                        if let Some(sha) = e.meta.get(META_WORKTREE_SHA).filter(|s| !s.is_empty()) {
+                            u.rejected_shas.insert(sha.clone());
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -203,7 +540,7 @@ pub fn project(events: &[Event]) -> Metrics {
                 let Some(id) = field_str(e, "id") else {
                     continue;
                 };
-                let u = units.entry(id).or_default();
+                let u = units.entry(id.clone()).or_default();
                 u.failed = true;
                 // Classify the failure as a review reject on either review path,
                 // gated on a started unit so review_reject stays a subset of
@@ -215,6 +552,18 @@ pub fn project(events: &[Event]) -> Metrics {
                 // neither arm and is correctly not counted.
                 if u.started && (u.armed || u.review_only) {
                     metrics.review_reject += 1;
+                    // Record the rejected sha so a later approve on it reads as a
+                    // flip-flop (spec 11).
+                    if let Some(sha) = e.meta.get(META_WORKTREE_SHA).filter(|s| !s.is_empty()) {
+                        u.rejected_shas.insert(sha.clone());
+                    }
+                    // Attribute the reject to the cause the adjudicator's verdict stashed
+                    // for this unit (cause-split rejection rate); carry it so an escalation
+                    // of this unit can inherit its final cause.
+                    if let Some(cause) = pending_cause.remove(&id) {
+                        *rejections_by_cause.entry(cause.clone()).or_default() += 1;
+                        u.last_reject_cause = Some(cause);
+                    }
                 }
                 // The reject (or remediation) is consumed; disarm so a later retry's
                 // gate failure on the same id is not double-counted.
@@ -228,6 +577,15 @@ pub fn project(events: &[Event]) -> Metrics {
                 if !u.escalated {
                     u.escalated = true;
                     metrics.units_escalated += 1;
+                    // Cause-split escalation rate (spec 11): attribute this escalation to
+                    // the cause of the unit's final review rejection, when one was recorded.
+                    if let Some(cause) = &u.last_reject_cause {
+                        *metrics
+                            .review_quality
+                            .escalations_by_cause
+                            .entry(cause.clone())
+                            .or_default() += 1;
+                    }
                 }
             }
             TYPE_UNIT_INTEGRATED => {
@@ -244,7 +602,7 @@ pub fn project(events: &[Event]) -> Metrics {
                 let Some(v) = gate_verdict(e) else {
                     continue;
                 };
-                if !v.artifact.is_empty() {
+                if !v.artifact.is_empty() || v.skipped {
                     continue;
                 }
                 let counts = metrics.gates.entry(v.gate).or_default();
@@ -254,11 +612,131 @@ pub fn project(events: &[Event]) -> Metrics {
                     counts.fail += 1;
                 }
             }
+            TYPE_REVIEW_FINDING => {
+                // A finding a lens or the adversary raised. Attribute it to the
+                // conductor-stamped META_ACTOR (falling back to the payload `by`, exactly
+                // as the context-graph fold resolves provenance), and record the files it
+                // concerns for the lens-overlap and adversary-only folds. First sighting
+                // per id wins (a defensive dedup against a replayed finding).
+                let Some(id) = field_str(e, "id") else {
+                    continue;
+                };
+                if finding_actor.contains_key(&id) {
+                    continue;
+                }
+                let actor = e
+                    .meta
+                    .get(META_ACTOR)
+                    .filter(|a| !a.is_empty())
+                    .cloned()
+                    .or_else(|| field_str(e, "by").filter(|b| !b.is_empty()))
+                    .unwrap_or_default();
+                let about = field_str_vec(e, "about");
+                if !actor.is_empty() {
+                    for f in &about {
+                        file_actors
+                            .entry(f.clone())
+                            .or_default()
+                            .insert(actor.clone());
+                    }
+                }
+                finding_about.insert(id.clone(), about);
+                finding_actor.insert(id, actor);
+            }
+            TYPE_SPAWN_RESULT => {
+                // A recorded review spawn: count it under its tier (cost side), and - for
+                // the adjudicator - parse the grown verdict JSON for the findings it upheld
+                // and the rejection cause (spec 11's already-durably-logged raw output).
+                let Ok(res) = SpawnResult::from_event(e) else {
+                    continue;
+                };
+                let Some(tier) = review_tier(&res.id) else {
+                    continue;
+                };
+                *tier_spawns.entry(tier.to_string()).or_default() += 1;
+                if tier == "adjudicator" {
+                    if let Some(adj) = parse_adjudication(&res.output) {
+                        // A verdict was RECORDED on this run's driver (the courier path):
+                        // the upheld-based folds have a numerator source to fold from.
+                        metrics.review_quality.adjudications += 1;
+                        for fid in adj.upheld {
+                            upheld.insert(fid);
+                        }
+                        // The cause rides only a REJECT verdict (contract); stash it for the
+                        // matching review-reject UnitFailed, keyed by this spawn's unit.
+                        if let Some(cause) = adj.cause {
+                            let unit = res.id.split('/').next().unwrap_or(&res.id).to_string();
+                            pending_cause.insert(unit, cause);
+                        }
+                    }
+                }
+            }
             // Unknown / foreign event types (DecisionMade, LessonLearned, ...) are
             // ignored so the same shared log feeds every read-model.
             _ => {}
         }
     }
+
+    // ---- Finalize the review-quality folds from the accumulated findings/verdicts ----
+    metrics.review_quality.rejections_by_cause = rejections_by_cause;
+    // Upheld findings the empty-actor sentinel below WILL drop from every per-actor fold:
+    // an id the adjudicator upheld but which carries no attribution (the finding was never
+    // recorded on this log, or was recorded with neither META_ACTOR nor a `by` role token).
+    // Counted BEFORE the sentinel skips them so the render can disclose the dropped
+    // numerator instead of presenting an all-zero-upheld panel as "review upheld nothing".
+    metrics.review_quality.upheld_unattributed = upheld
+        .iter()
+        .filter(|id| finding_actor.get(*id).map(String::is_empty).unwrap_or(true))
+        .count() as u64;
+    // Per-actor finding survival and the adversary's unique-catch precision.
+    for (id, actor) in &finding_actor {
+        if actor.is_empty() {
+            continue;
+        }
+        let is_upheld = upheld.contains(id);
+        let c = metrics
+            .review_quality
+            .finding_survival
+            .entry(actor.clone())
+            .or_default();
+        c.raised += 1;
+        if is_upheld {
+            c.upheld += 1;
+        }
+        // Adversary-ONLY: an adversary finding about files NO lens also flagged.
+        if actor == ROLE_ADVERSARY {
+            let files = finding_about.get(id).cloned().unwrap_or_default();
+            let shared_with_a_lens = files.iter().any(|f| {
+                file_actors
+                    .get(f)
+                    .is_some_and(|acts| acts.iter().any(|a| !a.is_empty() && a != ROLE_ADVERSARY))
+            });
+            if !shared_with_a_lens {
+                metrics.review_quality.adversary_only.raised += 1;
+                if is_upheld {
+                    metrics.review_quality.adversary_only.upheld += 1;
+                }
+            }
+        }
+    }
+    // Lens overlap: files flagged by two or more distinct actors, over files flagged at
+    // all (retroactive across the whole slice).
+    metrics.review_quality.finding_files = file_actors.len() as u64;
+    metrics.review_quality.overlap_files =
+        file_actors.values().filter(|acts| acts.len() >= 2).count() as u64;
+    // Per-tier cost: the spawn count for each tier joined with the upheld findings that
+    // tier delivered (lens actors roll up to "lens", the adversary to "adversary").
+    let mut tier_cost: BTreeMap<String, TierCost> = BTreeMap::new();
+    for (tier, &spawns) in &tier_spawns {
+        tier_cost.entry(tier.clone()).or_default().spawns = spawns;
+    }
+    for (actor, counts) in &metrics.review_quality.finding_survival {
+        tier_cost
+            .entry(actor_tier(actor).to_string())
+            .or_default()
+            .upheld += counts.upheld;
+    }
+    metrics.review_quality.tier_cost = tier_cost;
 
     // First-pass-clean numerator: integrated with zero failures, gated on a real
     // UnitStarted so the numerator stays a subset of units_started.
@@ -280,6 +758,11 @@ struct GateVerdictView {
     pass: bool,
     #[serde(default)]
     artifact: String,
+    /// A blast-radius SKIP verdict (spec 12, unit 3): the inner loop logged that it did NOT
+    /// run this gate (its `inputs:` miss the blast radius). A skip is not a gate run, so it is
+    /// excluded from the pass/fail counts exactly like the artifact-tagged bookkeeping below.
+    #[serde(default)]
+    skipped: bool,
 }
 
 /// Decode a `GateVerdict` payload, or `None` for a malformed one (the sentinel arm
@@ -294,6 +777,274 @@ fn gate_verdict(e: &Event) -> Option<GateVerdictView> {
 fn field_str(e: &Event, key: &str) -> Option<String> {
     let value: serde_json::Value = serde_json::from_slice(&e.data).ok()?;
     value.get(key)?.as_str().map(str::to_owned)
+}
+
+/// Pull a string-array field out of an event's JSON payload as a `Vec<String>`; empty
+/// when the payload is malformed, the field is absent, or it is not an array of strings.
+/// The `about` files of a `ReviewFinding` are read this way.
+fn field_str_vec(e: &Event, key: &str) -> Vec<String> {
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&e.data) else {
+        return Vec::new();
+    };
+    value
+        .get(key)
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The review-quality fields this fold reads off an adjudicator's grown verdict line.
+struct Adjudication {
+    /// The finding ids the adjudicator upheld (its `upheld` array).
+    upheld: Vec<String>,
+    /// The rejection `cause`, present only on a reject verdict (`None` on approve or when
+    /// the adjudicator declared none).
+    cause: Option<String>,
+}
+
+/// Parse an adjudicator's raw output for its grown JSON verdict line (spec 11): the LAST
+/// JSON object line carrying a `verdict`, `upheld`, or `discarded` field. Returns the
+/// upheld finding ids and the rejection cause, or `None` when no verdict line is present
+/// (an old-contract adjudicator, or unparseable output) - the fold then attributes
+/// nothing, exactly like the empty per-tier reject split on a log that never stamped it.
+fn parse_adjudication(output: &str) -> Option<Adjudication> {
+    for line in output.lines().rev() {
+        let Ok(v) = serde_json::from_str::<Value>(line.trim()) else {
+            continue;
+        };
+        if v.get("verdict").is_none() && v.get("upheld").is_none() && v.get("discarded").is_none() {
+            continue;
+        }
+        let upheld = v
+            .get("upheld")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let cause = v
+            .get("cause")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .filter(|s| !s.is_empty());
+        return Some(Adjudication { upheld, cause });
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
+// Canary metrics (spec 13, unit 5): the loop's only RECALL read-model.
+// ---------------------------------------------------------------------------
+
+/// A review tier's catch tally over the planted defects of one canary run: how many it
+/// caught (raised a finding about the anchor) out of how many were planted.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TierCatch {
+    /// Planted defects this tier caught.
+    pub caught: u64,
+    /// Planted defects in the run (this tier's denominator).
+    pub planted: u64,
+}
+
+impl TierCatch {
+    /// The tier's catch rate over the run's planted defects in `[0.0, 1.0]`, `0.0` when
+    /// none were planted (never `NaN`).
+    pub fn rate(&self) -> f64 {
+        ratio(self.caught, self.planted)
+    }
+}
+
+/// The judge-the-judges scorecard of one canary run, folded from the scored outcomes on
+/// the canary stream (spec 13, unit 5). Where [`Metrics`] measures the loop's PRECISION,
+/// this measures its RECALL: does the review panel actually catch the defects it should?
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CanaryMetrics {
+    /// Total corpus items scored in the run.
+    pub items: u64,
+    /// Items carrying a planted defect (the catch-rate denominators' basis).
+    pub planted: u64,
+    /// Catch tally per review tier (`lens`, `adversary`), in id order.
+    pub tier_catch: BTreeMap<String, TierCatch>,
+    /// Items whose adjudicator verdict matched the expectation (reject a planted defect,
+    /// approve a known-good control).
+    pub adjudicator_correct: u64,
+    /// Items whose adjudicator verdict was stable under finding-order shuffling.
+    pub stable: u64,
+    /// The distinct planted defect classes the run cataloged (spec 13 unit 5 requires
+    /// at least three).
+    pub defect_classes: BTreeSet<String>,
+}
+
+impl CanaryMetrics {
+    /// The adjudicator's correctness rate over every scored item in `[0.0, 1.0]`.
+    pub fn adjudicator_accuracy(&self) -> f64 {
+        ratio(self.adjudicator_correct, self.items)
+    }
+
+    /// The verdict stability rate over every scored item in `[0.0, 1.0]`: the share whose
+    /// verdict did NOT flip when its findings were re-presented in a shuffled order.
+    pub fn stability_rate(&self) -> f64 {
+        ratio(self.stable, self.items)
+    }
+}
+
+/// Fold a canary stream read into its [`CanaryMetrics`] scorecard, scoped to the LATEST
+/// canary run (spec 13, unit 5). This is a pure replay like [`project`], over the DISTINCT
+/// canary stream ([`crate::canary::STREAM`]) so it never sees the run stream's events and
+/// the run's own metrics never see a canary's: `rigger stats --canary` folds this, `rigger
+/// stats` folds [`project`], and they cannot cross-contaminate.
+///
+/// The catch rate is BY TIER: for each planted defect, which review tier (`lens` -
+/// tier 1, the lenses collectively; `adversary` - tier 2) raised a finding about the
+/// defect's file. A tier's rate is its catches over the run's planted total - the RECALL
+/// the three-tier design exists to earn (does the adversary surface what the lenses
+/// missed). Adjudicator correctness and finding-order stability fold over EVERY item
+/// (planted and known-good alike).
+pub fn project_canary(events: &[Event]) -> CanaryMetrics {
+    let mut m = CanaryMetrics::default();
+    // Seed both tiers so a run reports a `0/0` for a tier that never caught, rather than
+    // omitting it (a silent absence reads as "not measured", not "caught nothing").
+    for tier in [crate::canary::TIER_LENS, crate::canary::TIER_ADVERSARY] {
+        m.tier_catch.insert(tier.to_string(), TierCatch::default());
+    }
+    for e in crate::canary::latest_run(events) {
+        let Some(o) = crate::canary::CanaryOutcome::from_event(e) else {
+            continue; // a batch marker or a foreign/malformed event
+        };
+        m.items += 1;
+        if o.verdict_correct {
+            m.adjudicator_correct += 1;
+        }
+        if o.stable {
+            m.stable += 1;
+        }
+        if o.planted {
+            m.planted += 1;
+            if !o.defect_class.trim().is_empty() {
+                m.defect_classes.insert(o.defect_class.clone());
+            }
+            // Only a planted defect has something to catch, so only it moves a tier's
+            // denominator. Every tier's planted denominator is the run's planted total.
+            for tier in m.tier_catch.values_mut() {
+                tier.planted += 1;
+            }
+            for tier in &o.caught_by {
+                // Only the two known tiers are scored, so `caught <= planted` holds per
+                // tier; a foreign tier label (only reachable via a hand-corrupted event)
+                // is ignored rather than counted against a zero denominator.
+                if let Some(tc) = m.tier_catch.get_mut(tier) {
+                    tc.caught += 1;
+                }
+            }
+        }
+    }
+    m
+}
+
+/// One tier's resolved-model change between two runs (spec 13b, unit 1). The `alias` is the
+/// tier's REQUESTED model alias (the stable [`META_MODEL_ALIAS`] config token the agent was
+/// spawned with); `previous` and `current` are the concrete resolved model ids
+/// ([`META_MODEL_RESOLVED`]) that alias actually ran as in the prior and current runs. A
+/// change is a SILENT ALIAS RE-POINT - the same requested alias resolving to a different
+/// concrete model - the exact drift the canary exists to re-measure the review panel against.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ModelChange {
+    /// The tier's requested model alias (the stable config token, e.g. `opus`).
+    pub alias: String,
+    /// The concrete model id the alias resolved to in the previous run.
+    pub previous: String,
+    /// The concrete model id the alias resolved to in the current run.
+    pub current: String,
+}
+
+/// The cross-run resolved-model drift between the current run and the most recent prior run
+/// (spec 13b, unit 1): the aliases whose resolved model id CHANGED. Unlike [`project`] and
+/// [`project_canary`], which fold a single run's slice, [`model_drift`] reads the WHOLE
+/// stream because drift is defined ACROSS runs. `changes` is empty when nothing drifted (or
+/// there is no comparable prior run); [`ModelDrift::changed`] is the trigger the `rigger
+/// validate` warning and `rigger canary --if-model-changed` both read.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ModelDrift {
+    /// The id of the prior run the current run was compared against (the most recent run
+    /// BEFORE the current that stamped any resolved model), or `None` when there was none.
+    pub previous_run: Option<String>,
+    /// The id of the current (latest model-bearing) run, or `None` when no run stamped a
+    /// resolved model at all.
+    pub current_run: Option<String>,
+    /// The tiers whose resolved model id differs from the prior run's, sorted by alias.
+    pub changes: Vec<ModelChange>,
+}
+
+impl ModelDrift {
+    /// Whether any tier's resolved model changed - the boolean the drift monitor gates on.
+    pub fn changed(&self) -> bool {
+        !self.changes.is_empty()
+    }
+}
+
+/// Fold the whole event stream into the cross-run resolved-model [`ModelDrift`] (spec 13b,
+/// unit 1). Every conductor-emitted event carries its run id ([`META_RUN_ID`]); a spawn's
+/// unit-lifecycle events additionally carry the requested alias ([`META_MODEL_ALIAS`]) and
+/// the resolved model the spawn ran as ([`META_MODEL_RESOLVED`], reported by the worker via
+/// `rigger result --meta`). This fold groups the resolved-model stamps by run, keyed by
+/// alias (last stamp wins within a run), then compares the two most recent runs that stamped
+/// ANY resolved model - so a run that recorded none (e.g. an in-process cli-driver run, which
+/// never learns the resolved id) is transparent to the comparison rather than masking a
+/// re-point across the runs that DID record one. An alias present in BOTH with a different
+/// resolved id is a re-point; a tier only the current run recorded (no prior baseline) is a
+/// NEW tier, not drift. Pure and replay-safe: events without the stamps are ignored, exactly
+/// like the sibling folds.
+pub fn model_drift(events: &[Event]) -> ModelDrift {
+    // The distinct run ids that stamped at least one resolved model, in first-appearance
+    // order, and each such run's alias -> resolved-model map.
+    let mut order: Vec<String> = Vec::new();
+    let mut per_run: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+    for e in events {
+        let (Some(run), Some(resolved)) = (
+            e.meta.get(META_RUN_ID).filter(|r| !r.is_empty()),
+            e.meta.get(META_MODEL_RESOLVED).filter(|m| !m.is_empty()),
+        ) else {
+            continue;
+        };
+        let alias = e.meta.get(META_MODEL_ALIAS).cloned().unwrap_or_default();
+        if !per_run.contains_key(run) {
+            order.push(run.clone());
+        }
+        per_run
+            .entry(run.clone())
+            .or_default()
+            .insert(alias, resolved.clone());
+    }
+
+    let mut drift = ModelDrift::default();
+    // Fewer than two model-bearing runs: no prior baseline, so nothing can drift.
+    if order.len() < 2 {
+        return drift;
+    }
+    let previous = &order[order.len() - 2];
+    let current = &order[order.len() - 1];
+    drift.previous_run = Some(previous.clone());
+    drift.current_run = Some(current.clone());
+    let prev_map = &per_run[previous];
+    let curr_map = &per_run[current];
+    for (alias, cur_model) in curr_map {
+        if let Some(prev_model) = prev_map.get(alias) {
+            if prev_model != cur_model {
+                drift.changes.push(ModelChange {
+                    alias: alias.clone(),
+                    previous: prev_model.clone(),
+                    current: cur_model.clone(),
+                });
+            }
+        }
+    }
+    drift
 }
 
 #[cfg(test)]
@@ -348,6 +1099,69 @@ mod tests {
             TYPE_GATE_VERDICT,
             &format!(r#"{{"gate":"{gate}","pass":true,"artifact":"{artifact}"}}"#),
         )
+    }
+
+    #[test]
+    fn diff_rows_labels_the_headline_metrics_baseline_then_candidate() {
+        // The replay diff rows are `(label, baseline, candidate)`, order-stable, with the
+        // ratios pre-rendered as percentages and the counts as integers - so `rigger replay`
+        // renders the diff without re-deriving anything. A baseline that started one clean
+        // unit through review, versus a candidate re-drive that started the same unit but
+        // ran no review (a config that dropped it), must show the review approve move 1 -> 0
+        // and the yield move while units-started stays equal.
+        let baseline = project(&[
+            started("u", "worker"),
+            verdict("check", true),
+            status("u", "verified"),
+            status("u", "reviewed"),
+            integrated("u"),
+        ]);
+        let candidate = project(&[
+            started("u", "worker"),
+            verdict("check", true),
+            status("u", "verified"),
+            integrated("u"),
+        ]);
+        let rows = diff_rows(&baseline, &candidate);
+        let by_label = |needle: &str| -> (String, String) {
+            let (_, b, c) = rows
+                .iter()
+                .find(|(l, _, _)| *l == needle)
+                .unwrap_or_else(|| panic!("diff_rows must carry a {needle:?} row"));
+            (b.clone(), c.clone())
+        };
+        assert_eq!(
+            by_label("units started"),
+            ("1".to_string(), "1".to_string()),
+            "both drove the same one unit"
+        );
+        assert_eq!(
+            by_label("review approved"),
+            ("1".to_string(), "0".to_string()),
+            "the candidate ran no review, so its approve count drops"
+        );
+        assert_eq!(
+            by_label("first-pass yield"),
+            ("100.0%".to_string(), "100.0%".to_string()),
+            "both integrated the unit cleanly, rendered as a one-decimal percentage"
+        );
+        assert_eq!(
+            by_label("gate runs"),
+            ("1".to_string(), "1".to_string()),
+            "both folded the one gate verdict"
+        );
+        // The rows are order-stable so a render flags changes deterministically.
+        assert_eq!(
+            rows.iter().map(|(l, _, _)| *l).collect::<Vec<_>>(),
+            [
+                "units started",
+                "first-pass yield",
+                "escalation rate",
+                "review approved",
+                "review rejected",
+                "gate runs",
+            ]
+        );
     }
 
     #[test]
@@ -451,6 +1265,9 @@ mod tests {
             units_escalated: 1, // `esc`
             review_approve: 2,  // `clean` + `reject` (the retry approved)
             review_reject: 1,   // `reject`'s verified-then-UnitFailed
+            // This slice carries no findings, adjudicator results, or sha stamps, so every
+            // review-quality fold is empty - the new fields never disturb the existing ones.
+            review_quality: ReviewQuality::default(),
         };
 
         let m = project(&events);
@@ -477,6 +1294,58 @@ mod tests {
         let m = project(&events);
         assert_eq!(m.review_reject, 2);
         assert_eq!(m.review_approve, 0);
+    }
+
+    #[test]
+    fn a_rejected_speculation_candidate_counts_as_a_review_reject() {
+        // spec 13, unit 3 (adv-u13-speculation-losers-invisible-to-review-metrics): a
+        // first-green-wins group defers the winner's lifecycle statuses, so a losing
+        // candidate the adjudicator rejected rides an EXACT fold-neutral
+        // STATUS_SPECULATION_REJECTED marker instead of a `verified`+`UnitFailed` pair
+        // (which would fold the shared unit out of `Fresh`). The fold counts it directly as
+        // one review reject and it spoils first_pass_clean - exactly the approve=1/reject=1
+        // /not-clean shape single-lane records for identical review work. The marker is NOT
+        // a `ledger::Status`, so the unit's terminal state stays the winner's `reviewed`
+        // approve here.
+        let events = vec![
+            started("s", "impl"),
+            status("s", STATUS_SPECULATION_REJECTED), // lane 0: adjudicator rejected
+            status("s", "reviewed"),                  // lane 1: the winner's deferred approve
+            integrated("s"),
+        ];
+        let m = project(&events);
+        assert_eq!(m.review_reject, 1, "the rejected candidate is counted");
+        assert_eq!(
+            m.review_approve, 1,
+            "the winning candidate's approve is counted"
+        );
+        assert_eq!(
+            m.first_pass_clean, 0,
+            "a review reject means the unit is not a clean first pass"
+        );
+    }
+
+    #[test]
+    fn a_speculation_reject_marker_is_fold_neutral_for_the_ledger_but_not_the_metrics() {
+        // The marker must never fold the unit's ledger status (that would mis-route a
+        // resume): a unit that ONLY carries the reject marker (no integrate/escalate) is
+        // still counted as one review reject here, but it is not integrated - so it is
+        // neither a clean pass nor double-counted. Gated on `started`: an unstarted id
+        // carrying the marker counts nothing (subset-of-units_started invariant).
+        let started_events = vec![
+            started("s", "impl"),
+            status("s", STATUS_SPECULATION_REJECTED),
+        ];
+        let m = project(&started_events);
+        assert_eq!(m.review_reject, 1);
+        assert_eq!(m.first_pass_clean, 0);
+
+        let unstarted = vec![status("s", STATUS_SPECULATION_REJECTED)];
+        let m2 = project(&unstarted);
+        assert_eq!(
+            m2.review_reject, 0,
+            "the marker on a never-started unit counts nothing"
+        );
     }
 
     #[test]
@@ -631,5 +1500,625 @@ mod tests {
         assert_eq!(m.gates.get("build").unwrap().pass, 1);
         // The gate-less malformed verdict must not have created an entry.
         assert_eq!(m.gates.len(), 1);
+    }
+
+    // ---- spec-11 unit-1 review-quality folds (each pinned by a synthetic log) ----
+
+    /// A `verified`/`reviewed`/reject-`UnitFailed` event carrying the worktree-sha stamp.
+    fn status_sha(id: &str, status_val: &str, sha: &str) -> Event {
+        status(id, status_val).with_meta(META_WORKTREE_SHA, sha)
+    }
+    fn failed_sha(id: &str, sha: &str) -> Event {
+        failed(id).with_meta(META_WORKTREE_SHA, sha)
+    }
+    /// A `ReviewFinding` a lens/adversary raised, attributed via the conductor-stamped
+    /// META_ACTOR and concerning `about` files.
+    fn finding(id: &str, actor: &str, about: &[&str]) -> Event {
+        let about_json = about
+            .iter()
+            .map(|f| format!("\"{f}\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        ev(
+            TYPE_REVIEW_FINDING,
+            &format!(r#"{{"id":"{id}","about":[{about_json}]}}"#),
+        )
+        .with_meta(META_ACTOR, actor)
+    }
+    /// A `ReviewFinding` as the OUT-OF-PROCESS courier path records it: the reviewer emits
+    /// it through `rigger emit`, which stamps NO `META_ACTOR`, so its attribution rides the
+    /// payload `by` role token the conductor's `review_protocol` told the reviewer to carry.
+    /// This is the shape a real single-driver-path (courier) run produces.
+    fn courier_finding(id: &str, by: &str, about: &[&str]) -> Event {
+        let about_json = about
+            .iter()
+            .map(|f| format!("\"{f}\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        ev(
+            TYPE_REVIEW_FINDING,
+            &format!(r#"{{"id":"{id}","by":"{by}","about":[{about_json}]}}"#),
+        )
+    }
+    /// An adjudicator `SpawnResult` whose `output` carries the grown verdict JSON line.
+    fn adjudication(unit: &str, attempt: u32, output: &str) -> Event {
+        SpawnResult::ok(format!("{unit}/adjudicator#{attempt}"), output)
+            .to_event()
+            .unwrap()
+    }
+    /// A bare review `SpawnResult` of a given role, for per-tier spawn counting.
+    fn review_spawn(unit: &str, role: &str, attempt: u32) -> Event {
+        SpawnResult::ok(format!("{unit}/{role}#{attempt}"), "")
+            .to_event()
+            .unwrap()
+    }
+
+    #[test]
+    fn flip_flop_counts_a_reject_then_approve_on_the_same_sha() {
+        let events = vec![
+            // `noise`: rejected on sha aaa, then APPROVED on the SAME sha aaa (the code
+            // never changed) - a reviewer flip-flop.
+            started("noise", "impl"),
+            status_sha("noise", "verified", "aaa"),
+            failed_sha("noise", "aaa"),
+            status_sha("noise", "verified", "aaa"),
+            status_sha("noise", "reviewed", "aaa"),
+            integrated("noise"),
+            // `real`: rejected on bbb, re-implemented, approved on a NEW sha ccc - a
+            // legitimate remediation, NOT a flip-flop.
+            started("real", "impl"),
+            status_sha("real", "verified", "bbb"),
+            failed_sha("real", "bbb"),
+            status_sha("real", "verified", "ccc"),
+            status_sha("real", "reviewed", "ccc"),
+            integrated("real"),
+        ];
+        let m = project(&events);
+        assert_eq!(m.review_reject, 2);
+        assert_eq!(m.review_quality.flip_flops, 1);
+        assert!((m.flip_flop_rate() - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn finding_survival_is_upheld_over_raised_per_actor() {
+        // The realistic single-driver-path (courier) shape: findings carry their `by` role
+        // token (no META_ACTOR) on the SAME log the adjudicator SpawnResult lands on, so the
+        // upheld numerator is genuinely fed - not the production-impossible META_ACTOR +
+        // SpawnResult co-location.
+        let events = vec![
+            courier_finding("f1", "lens:architecture-reviewer", &["src/a.rs"]),
+            courier_finding("f2", "lens:architecture-reviewer", &["src/b.rs"]),
+            courier_finding("f3", "lens:sdet", &["src/c.rs"]),
+            // The adjudicator upholds f1 and f3, discards f2.
+            adjudication(
+                "u",
+                0,
+                r#"{"verdict":"reject","upheld":["f1","f3"],"discarded":["f2"],"cause":"genuine-defect"}"#,
+            ),
+        ];
+        let m = project(&events);
+        let arch = m.review_quality.finding_survival["lens:architecture-reviewer"];
+        assert_eq!((arch.raised, arch.upheld), (2, 1));
+        assert!((arch.survival() - 0.5).abs() < 1e-9);
+        let sdet = m.review_quality.finding_survival["lens:sdet"];
+        assert_eq!((sdet.raised, sdet.upheld), (1, 1));
+        assert_eq!(sdet.survival(), 1.0);
+    }
+
+    #[test]
+    fn lens_overlap_counts_files_flagged_by_two_or_more_actors() {
+        let events = vec![
+            finding("f1", "architecture-reviewer", &["src/shared.rs"]),
+            finding("f2", "sdet", &["src/shared.rs"]), // same file, a second actor => overlap
+            finding("f3", "sdet", &["src/solo.rs"]),   // one actor only
+        ];
+        let m = project(&events);
+        assert_eq!(m.review_quality.finding_files, 2); // shared.rs + solo.rs
+        assert_eq!(m.review_quality.overlap_files, 1); // shared.rs
+        assert!((m.review_quality.lens_overlap_rate() - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn rejections_and_escalations_split_by_adjudicator_cause() {
+        let events = vec![
+            started("u", "impl"),
+            status("u", "verified"),
+            adjudication(
+                "u",
+                0,
+                r#"{"verdict":"reject","upheld":[],"discarded":[],"cause":"spec-ambiguity"}"#,
+            ),
+            failed("u"), // reject #1: spec-ambiguity
+            status("u", "verified"),
+            adjudication(
+                "u",
+                1,
+                r#"{"verdict":"reject","upheld":[],"discarded":[],"cause":"genuine-defect"}"#,
+            ),
+            failed("u"), // reject #2 (final): genuine-defect
+            escalated("u"),
+        ];
+        let m = project(&events);
+        assert_eq!(m.review_quality.rejections_by_cause["spec-ambiguity"], 1);
+        assert_eq!(m.review_quality.rejections_by_cause["genuine-defect"], 1);
+        // The escalation inherits the cause of the unit's FINAL rejection only.
+        assert_eq!(m.review_quality.escalations_by_cause["genuine-defect"], 1);
+        assert_eq!(
+            m.review_quality.escalations_by_cause.get("spec-ambiguity"),
+            None
+        );
+    }
+
+    #[test]
+    fn adversary_precision_is_over_adversary_only_findings() {
+        // Realistic courier shape: `by` role tokens (no META_ACTOR) alongside the recorded
+        // adjudicator verdict, so the adversary-only upheld numerator is genuinely fed.
+        let events = vec![
+            // Adversary-only, on a file no lens flagged - UPHELD.
+            courier_finding("a1", "adversary", &["src/only.rs"]),
+            // Adversary finding on a file a lens ALSO flagged - NOT adversary-only.
+            courier_finding("a2", "adversary", &["src/shared.rs"]),
+            courier_finding("l1", "lens:sdet", &["src/shared.rs"]),
+            // Adversary-only, on its own file - DISCARDED (not upheld).
+            courier_finding("a3", "adversary", &["src/other.rs"]),
+            adjudication(
+                "u",
+                0,
+                r#"{"verdict":"approve","upheld":["a1","a2"],"discarded":["a3"]}"#,
+            ),
+        ];
+        let m = project(&events);
+        // adversary-only set = {a1 upheld, a3 not}; a2 is excluded (shared with a lens).
+        let adv = m.review_quality.adversary_only;
+        assert_eq!((adv.raised, adv.upheld), (2, 1));
+        assert!((m.review_quality.adversary_precision() - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn cost_per_upheld_finding_is_spawns_over_upheld_per_tier() {
+        // Realistic courier shape: the per-tier spawns and the `by`-attributed findings ride
+        // one log with the recorded adjudicator verdict, so each tier's upheld count is fed.
+        let events = vec![
+            review_spawn("u", "lens:architecture-reviewer", 0),
+            review_spawn("u", "lens:sdet", 0),
+            review_spawn("u", "adversary", 0),
+            courier_finding("f1", "lens:architecture-reviewer", &["src/a.rs"]),
+            courier_finding("f2", "lens:sdet", &["src/b.rs"]),
+            courier_finding("f3", "adversary", &["src/c.rs"]),
+            // Upholds one lens finding (f1) and the adversary's (f3); discards f2.
+            adjudication(
+                "u",
+                0,
+                r#"{"verdict":"reject","upheld":["f1","f3"],"discarded":["f2"],"cause":"genuine-defect"}"#,
+            ),
+        ];
+        let m = project(&events);
+        let lens = m.review_quality.tier_cost["lens"];
+        assert_eq!((lens.spawns, lens.upheld), (2, 1)); // 2 lens spawns, only f1 upheld
+        assert!((lens.cost_per_upheld() - 2.0).abs() < 1e-9);
+        let adv = m.review_quality.tier_cost["adversary"];
+        assert_eq!((adv.spawns, adv.upheld), (1, 1));
+        assert_eq!(adv.cost_per_upheld(), 1.0);
+        // The adjudicator SpawnResult is counted as a tier spawn too - it judges, it raises
+        // no findings, so its upheld is 0 (a cost with no findings of its own to survive).
+        let adj = m.review_quality.tier_cost["adjudicator"];
+        assert_eq!((adj.spawns, adj.upheld), (1, 0));
+    }
+
+    #[test]
+    fn old_contract_log_without_shas_or_grown_verdicts_folds_empty_and_never_nan() {
+        // Backward compatibility: a pre-spec-11 run stamps no worktree sha and its
+        // adjudicator emits only `{"verdict":...}` (no upheld/discarded/cause). Every
+        // review-quality fold degrades to empty - never a panic, never a NaN rate.
+        let events = vec![
+            started("u", "impl"),
+            status("u", "verified"),
+            failed("u"), // reject, but no sha to pair - no flip-flop bookkeeping
+            status("u", "verified"),
+            status("u", "reviewed"), // approve, no sha
+            integrated("u"),
+            adjudication("u", 2, r#"{"verdict":"approve"}"#),
+        ];
+        let m = project(&events);
+        assert_eq!(m.review_quality.flip_flops, 0);
+        assert!(m.review_quality.finding_survival.is_empty());
+        assert!(m.review_quality.rejections_by_cause.is_empty());
+        assert_eq!(m.review_quality.finding_files, 0);
+        assert_eq!(m.flip_flop_rate(), 0.0);
+        assert_eq!(m.review_quality.lens_overlap_rate(), 0.0);
+        assert_eq!(m.review_quality.adversary_precision(), 0.0);
+        // Only the adjudicator spawn is tallied as a tier cost (no findings to survive).
+        assert_eq!(
+            m.review_quality.tier_cost.get("adjudicator"),
+            Some(&TierCost {
+                spawns: 1,
+                upheld: 0
+            })
+        );
+    }
+
+    #[test]
+    fn finding_by_field_attributes_actor_when_no_meta_actor_stamp() {
+        // The actor resolves from the payload `by` when META_ACTOR is absent, mirroring
+        // the context-graph fold's provenance rule.
+        let f = ev(
+            TYPE_REVIEW_FINDING,
+            r#"{"id":"f1","by":"sdet","about":["src/a.rs"]}"#,
+        );
+        let m = project(&[
+            f,
+            adjudication(
+                "u",
+                0,
+                r#"{"verdict":"reject","upheld":["f1"],"cause":"genuine-defect"}"#,
+            ),
+        ]);
+        assert_eq!(m.review_quality.finding_survival["sdet"].upheld, 1);
+    }
+
+    #[test]
+    fn courier_path_single_log_feeds_all_three_actor_keyed_folds() {
+        // The REALISTIC production shape (spec 11 remediation): a single OUT-OF-PROCESS
+        // (courier / workflow) driver run. Every finding is emitted through `rigger emit`
+        // so it carries NO `META_ACTOR` - only the `by` role token the conductor's
+        // `review_protocol` told the reviewer to stamp - and the adjudicator's verdict is
+        // recorded as its `SpawnResult` (the ONLY place the verdict lands out-of-process).
+        // Attribution (`by`) and the upheld set (`SpawnResult`) therefore co-occur on the
+        // SAME log, so all three actor-keyed folds - finding survival, adversary precision,
+        // and per-tier cost-per-upheld - take REAL non-trivial values. This is the log a
+        // real run produces; the earlier META_ACTOR-stamped-finding + SpawnResult tests
+        // co-located two signals no single live driver path emits together.
+        let events = vec![
+            // The review spawns the courier recorded (cost side of cost-per-upheld).
+            review_spawn("u", "lens:architecture-reviewer", 0),
+            review_spawn("u", "lens:sdet", 0),
+            review_spawn("u", "adversary", 0),
+            // Findings as the courier records them: `by` role token, NO META_ACTOR.
+            courier_finding("f1", "lens:architecture-reviewer", &["src/a.rs"]),
+            courier_finding("f2", "lens:sdet", &["src/shared.rs"]),
+            // The adversary also flags src/shared.rs (a lens hit it too -> NOT adversary-only)
+            courier_finding("a1", "adversary", &["src/shared.rs"]),
+            // ...and uniquely flags src/solo.rs (adversary-only) - this one is upheld.
+            courier_finding("a2", "adversary", &["src/solo.rs"]),
+            // The adjudicator's verdict, recorded as its SpawnResult on the courier log.
+            adjudication(
+                "u",
+                0,
+                r#"{"verdict":"reject","upheld":["f1","a2"],"discarded":["f2","a1"],"cause":"genuine-defect"}"#,
+            ),
+        ];
+        let m = project(&events);
+        let rq = &m.review_quality;
+
+        // A verdict WAS recorded on this (courier) driver, so the upheld-based folds have a
+        // numerator source and the render suppresses its "no verdict recorded" disclosure.
+        assert_eq!(rq.adjudications, 1);
+
+        // finding survival: keyed by the courier `by` role token, with a REAL upheld
+        // numerator (not the always-zero the pre-remediation production path yielded).
+        assert_eq!(
+            (
+                rq.finding_survival["lens:architecture-reviewer"].raised,
+                rq.finding_survival["lens:architecture-reviewer"].upheld,
+            ),
+            (1, 1),
+        );
+        assert_eq!(
+            (
+                rq.finding_survival["lens:sdet"].raised,
+                rq.finding_survival["lens:sdet"].upheld,
+            ),
+            (1, 0),
+        );
+        assert_eq!(
+            (
+                rq.finding_survival["adversary"].raised,
+                rq.finding_survival["adversary"].upheld,
+            ),
+            (2, 1),
+        );
+
+        // adversary precision: adversary-only set = {a1 excluded (shared with a lens),
+        // a2 unique and upheld} -> 1/1 = 100%, a real value on the single courier log.
+        assert_eq!((rq.adversary_only.raised, rq.adversary_only.upheld), (1, 1),);
+        assert_eq!(rq.adversary_precision(), 1.0);
+
+        // per-tier cost-per-upheld: lens tier ran 2 spawns and had 1 upheld (f1); the
+        // adversary tier ran 1 spawn and had 1 upheld (a2). Both ratios are computable
+        // (not the "-" the pre-remediation production log rendered for every tier).
+        assert_eq!(
+            (rq.tier_cost["lens"].spawns, rq.tier_cost["lens"].upheld),
+            (2, 1),
+        );
+        assert_eq!(rq.tier_cost["lens"].cost_per_upheld(), 2.0);
+        assert_eq!(
+            (
+                rq.tier_cost["adversary"].spawns,
+                rq.tier_cost["adversary"].upheld,
+            ),
+            (1, 1),
+        );
+        assert_eq!(rq.tier_cost["adversary"].cost_per_upheld(), 1.0);
+    }
+
+    #[test]
+    fn upheld_finding_without_attribution_is_dropped_by_sentinel_and_counted_unfed() {
+        // The recorded-but-UNATTRIBUTED subcase (spec 11 remediation - the reject this unit
+        // fixes): a verdict IS recorded (adjudications > 0) and it UPHOLDS a finding, but
+        // that finding carries NEITHER a conductor-stamped META_ACTOR NOR a `by` role token -
+        // the shape a pre-contract / historical / cross-log finding takes on a real aggregate
+        // store. The empty-actor sentinel drops it from every per-actor fold, so
+        // finding_survival is empty and the folded upheld total is 0 even though the
+        // adjudicator upheld something. That silent drop MUST be surfaced (upheld_unattributed)
+        // so the render can disclose it rather than render an all-zero-upheld panel that reads
+        // as "review upheld nothing".
+        let unattributed = ev(
+            TYPE_REVIEW_FINDING,
+            r#"{"id":"f1","about":["src/a.rs"]}"#, // NO META_ACTOR, NO `by`
+        );
+        let m = project(&[
+            unattributed,
+            adjudication(
+                "u",
+                0,
+                r#"{"verdict":"reject","upheld":["f1"],"discarded":[],"cause":"genuine-defect"}"#,
+            ),
+        ]);
+        let rq = &m.review_quality;
+        // (a) the sentinel excluded the unattributed finding from the per-actor fold.
+        assert!(
+            rq.finding_survival.is_empty(),
+            "an unattributed finding must not enter finding_survival: {:?}",
+            rq.finding_survival
+        );
+        // A verdict WAS recorded and it upheld a finding, so the numerator is UNFED (dropped),
+        // not absent. The dropped upheld id is surfaced as upheld_unattributed for the render.
+        assert_eq!(rq.adjudications, 1);
+        assert_eq!(rq.upheld_unattributed, 1);
+        // The folded upheld total across the per-actor panels is 0 despite that verdict - the
+        // exact all-zero-upheld state the render must now disclose.
+        let upheld_folded: u64 = rq.finding_survival.values().map(|c| c.upheld).sum();
+        assert_eq!(upheld_folded, 0);
+
+        // Contrast: a verdict that recorded and GENUINELY upheld nothing drops nothing, so
+        // upheld_unattributed stays 0 - the render stays silent, its 0% being honest.
+        let m2 = project(&[
+            finding("g1", "lens:sdet", &["src/b.rs"]),
+            adjudication(
+                "u",
+                0,
+                r#"{"verdict":"reject","upheld":[],"cause":"genuine-defect"}"#,
+            ),
+        ]);
+        assert_eq!(m2.review_quality.upheld_unattributed, 0);
+        assert_eq!(m2.review_quality.finding_survival["lens:sdet"].upheld, 0);
+    }
+
+    // --- canary metrics (spec 13, unit 5) -------------------------------------------
+
+    fn canary_run_marker() -> Event {
+        ev(TYPE_UNIT_STATUS, r#"{"id":"b","status":"canary-run"}"#)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn canary_outcome(
+        id: &str,
+        class: &str,
+        planted: bool,
+        expected_reject: bool,
+        caught_by: &[&str],
+        verdict_correct: bool,
+        stable: bool,
+    ) -> Event {
+        let caught: String = caught_by
+            .iter()
+            .map(|t| format!("\"{t}\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        ev(
+            TYPE_UNIT_STATUS,
+            &format!(
+                r#"{{"id":"{id}","status":"canary","defect_class":"{class}","planted":{planted},"expected_reject":{expected_reject},"expected_tier":"","caught_by":[{caught}],"verdict_approved":{},"verdict_correct":{verdict_correct},"stable":{stable}}}"#,
+                !expected_reject
+            ),
+        )
+    }
+
+    #[test]
+    fn project_canary_folds_per_tier_catch_correctness_and_stability() {
+        // Three planted defects + one known-good control. The adversary catches all three
+        // planted; the lens catches only one. The adjudicator is correct on 3 of 4 and
+        // stable on 3 of 4.
+        let events = vec![
+            canary_run_marker(),
+            // planted, both tiers catch, correct + stable
+            canary_outcome(
+                "a",
+                "off-by-one",
+                true,
+                true,
+                &["lens", "adversary"],
+                true,
+                true,
+            ),
+            // planted, only adversary catches, correct but UNSTABLE
+            canary_outcome(
+                "b",
+                "resource-leak",
+                true,
+                true,
+                &["adversary"],
+                true,
+                false,
+            ),
+            // planted, only adversary catches, adjudicator WRONG (approved a defect), stable
+            canary_outcome(
+                "c",
+                "fail-open-guard",
+                true,
+                true,
+                &["adversary"],
+                false,
+                true,
+            ),
+            // known-good control, nothing caught, correct + stable
+            canary_outcome("d", "none", false, false, &[], true, true),
+        ];
+        let m = project_canary(&events);
+        assert_eq!(m.items, 4);
+        assert_eq!(m.planted, 3);
+
+        // Catch rate BY TIER over the 3 planted defects.
+        assert_eq!(m.tier_catch["adversary"].caught, 3);
+        assert_eq!(m.tier_catch["adversary"].planted, 3);
+        assert!((m.tier_catch["adversary"].rate() - 1.0).abs() < 1e-9);
+        assert_eq!(m.tier_catch["lens"].caught, 1);
+        assert_eq!(m.tier_catch["lens"].planted, 3);
+        assert!((m.tier_catch["lens"].rate() - 1.0 / 3.0).abs() < 1e-9);
+
+        // Adjudicator correctness and stability over ALL items.
+        assert_eq!(m.adjudicator_correct, 3);
+        assert!((m.adjudicator_accuracy() - 0.75).abs() < 1e-9);
+        assert_eq!(m.stable, 3);
+        assert!((m.stability_rate() - 0.75).abs() < 1e-9);
+
+        // The three cataloged defect classes are surfaced (the known-good adds none).
+        assert_eq!(m.defect_classes.len(), 3);
+        assert!(m.defect_classes.contains("off-by-one"));
+        assert!(m.defect_classes.contains("fail-open-guard"));
+    }
+
+    #[test]
+    fn project_canary_scopes_to_the_latest_run_and_seeds_both_tiers() {
+        // An older run's outcome precedes a newer marker; only the latest run folds.
+        let events = vec![
+            canary_run_marker(),
+            canary_outcome("old", "off-by-one", true, true, &["lens"], true, true),
+            canary_run_marker(),
+            canary_outcome("new", "off-by-one", true, true, &["adversary"], true, true),
+        ];
+        let m = project_canary(&events);
+        assert_eq!(m.items, 1, "only the latest run is folded");
+        assert_eq!(m.tier_catch["adversary"].caught, 1);
+        // The lens tier is seeded even though it caught nothing this run - a 0/1 report,
+        // never a silent omission that reads as "not measured".
+        assert_eq!(m.tier_catch["lens"].caught, 0);
+        assert_eq!(m.tier_catch["lens"].planted, 1);
+    }
+
+    #[test]
+    fn project_canary_on_an_empty_stream_is_all_zero_but_names_both_tiers() {
+        let m = project_canary(&[]);
+        assert_eq!(m.items, 0);
+        assert_eq!(m.adjudicator_accuracy(), 0.0);
+        assert_eq!(m.stability_rate(), 0.0);
+        assert!(m.tier_catch.contains_key("lens") && m.tier_catch.contains_key("adversary"));
+    }
+
+    // ---- spec-13b unit-1 model-drift monitor (cross-run resolved-model comparison) ----
+
+    /// A run boundary carrying its run id (the conductor stamps [`META_RUN_ID`] on every
+    /// event, so the drift fold groups by it).
+    fn run_started(run: &str) -> Event {
+        ev(
+            crate::run::TYPE_RUN_STARTED,
+            &format!(r#"{{"run":"{run}"}}"#),
+        )
+        .with_meta(META_RUN_ID, run)
+    }
+
+    /// A conductor-emitted unit-lifecycle event as a spawn's model stamps ride it (spec 05
+    /// line 52): the run id, the requested alias, and the resolved model the tier ran as.
+    /// The drift fold reads only the metadata, so any lifecycle type stands in for the real
+    /// green/verified/reviewed statuses that carry these stamps.
+    fn model_status(run: &str, alias: &str, resolved: &str) -> Event {
+        status("u", "green")
+            .with_meta(META_RUN_ID, run)
+            .with_meta(META_MODEL_ALIAS, alias)
+            .with_meta(META_MODEL_RESOLVED, resolved)
+    }
+
+    #[test]
+    fn model_drift_flags_a_tier_whose_resolved_model_repointed_between_runs() {
+        // Two runs. The "opus" tier resolved to a DIFFERENT concrete model in r2 than in
+        // r1 - a silent alias re-point - while the "sonnet" tier held steady.
+        let events = vec![
+            run_started("r1"),
+            model_status("r1", "opus", "claude-opus-4-1"),
+            model_status("r1", "sonnet", "claude-sonnet-4-5"),
+            run_started("r2"),
+            model_status("r2", "opus", "claude-opus-4-8"),
+            model_status("r2", "sonnet", "claude-sonnet-4-5"),
+        ];
+        let d = model_drift(&events);
+        assert!(d.changed(), "a repointed alias is drift");
+        assert_eq!(d.previous_run.as_deref(), Some("r1"));
+        assert_eq!(d.current_run.as_deref(), Some("r2"));
+        assert_eq!(d.changes.len(), 1, "only the repointed tier is reported");
+        let c = &d.changes[0];
+        assert_eq!(c.alias, "opus");
+        assert_eq!(c.previous, "claude-opus-4-1");
+        assert_eq!(c.current, "claude-opus-4-8");
+    }
+
+    #[test]
+    fn model_drift_is_silent_when_every_tier_resolved_the_same_model() {
+        // The no-change control: both runs resolve every alias identically -> no drift.
+        let events = vec![
+            run_started("r1"),
+            model_status("r1", "opus", "claude-opus-4-1"),
+            model_status("r1", "sonnet", "claude-sonnet-4-5"),
+            run_started("r2"),
+            model_status("r2", "opus", "claude-opus-4-1"),
+            model_status("r2", "sonnet", "claude-sonnet-4-5"),
+        ];
+        let d = model_drift(&events);
+        assert!(!d.changed(), "identical resolved models are not drift");
+        assert!(d.changes.is_empty());
+    }
+
+    #[test]
+    fn model_drift_needs_a_prior_run_and_a_shared_tier() {
+        // A first run alone has no baseline to compare against.
+        let one = vec![
+            run_started("r1"),
+            model_status("r1", "opus", "claude-opus-4-1"),
+        ];
+        assert!(!model_drift(&one).changed(), "one run cannot drift");
+        // A tier only the current run recorded (no prior baseline for that alias) is a NEW
+        // tier, not a re-point - so it is not drift.
+        let novel = vec![
+            run_started("r1"),
+            model_status("r1", "opus", "claude-opus-4-1"),
+            run_started("r2"),
+            model_status("r2", "haiku", "claude-haiku-4-5"),
+        ];
+        assert!(
+            !model_drift(&novel).changed(),
+            "a tier with no prior-run baseline is not a re-point"
+        );
+    }
+
+    #[test]
+    fn model_drift_compares_against_the_most_recent_prior_run_that_stamped_a_model() {
+        // A run that recorded NO resolved model (e.g. a cli-driver run) is transparent to
+        // the comparison: r3's "opus" is measured against r1's, skipping the empty r2, so a
+        // real re-point across the two model-bearing runs is still caught.
+        let events = vec![
+            run_started("r1"),
+            model_status("r1", "opus", "claude-opus-4-1"),
+            run_started("r2"), // a run that stamped no resolved model at all
+            run_started("r3"),
+            model_status("r3", "opus", "claude-opus-4-8"),
+        ];
+        let d = model_drift(&events);
+        assert!(
+            d.changed(),
+            "the empty run is skipped, the re-point is caught"
+        );
+        assert_eq!(d.previous_run.as_deref(), Some("r1"));
+        assert_eq!(d.current_run.as_deref(), Some("r3"));
+        assert_eq!(d.changes.len(), 1);
+        assert_eq!(d.changes[0].alias, "opus");
     }
 }

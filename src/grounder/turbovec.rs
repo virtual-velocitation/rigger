@@ -80,6 +80,17 @@ const META_FILE: &str = "meta.json";
 /// purpose is to be the flock target.
 const LOCK_FILE: &str = "store.lock";
 
+/// The MACHINE-WIDE advisory lock that serializes ort/CUDA session CONSTRUCTION across
+/// every `rigger` process on the box (see the flock in [`Turbovec::construct`]). Building
+/// two ort/CUDA sessions at once corrupts the driver heap, and that heap is per-GPU, not
+/// per-store - so the lock lives under the OS temp dir where ALL processes share ONE
+/// target, regardless of repo, matching the per-GPU scope of the hazard (and the scope the
+/// tests' `file_serial(turbovec_model)` uses). It carries no data; it is only a flock
+/// target, auto-released when the constructing process exits (even on crash/kill).
+fn ort_construct_lock_path() -> std::path::PathBuf {
+    std::env::temp_dir().join("rigger-ort-construct.lock")
+}
+
 /// Serializes embedding-model CONSTRUCTION across the whole process. `ort`, built with
 /// `load-dynamic`, lazily reads `ORT_DYLIB_PATH` on the FIRST session load and is not
 /// safe to construct concurrently on a CUDA box (concurrent session creation corrupts
@@ -334,6 +345,17 @@ impl Turbovec {
         // reading the env) while we write it, and no two sessions are built concurrently.
         let model = {
             let _construct = CONSTRUCT_MU.lock().unwrap();
+            // Serialize the CUDA session build ACROSS PROCESSES too. `CONSTRUCT_MU` above
+            // serializes it within THIS process, but building two ort/CUDA sessions
+            // concurrently corrupts the driver heap across SEPARATE processes on one GPU box
+            // as well (the concurrent-`rigger step` deadlock, and any `rigger ground` /
+            // `rigger canary` / second driver that grounds at the same time). A plain mutex
+            // is blind to other processes and the store flock guards store I/O, not the
+            // build - so take a MACHINE-WIDE advisory flock: a concurrent grounder BLOCKS
+            // here instead of racing the GPU. Held only for this block (released before the
+            // store load below), so it never nests with `with_store_lock`, and auto-released
+            // if this process dies mid-build.
+            let _gpu = StoreLock::acquire(&ort_construct_lock_path())?;
             // Point `ort` (built with `load-dynamic`) at a discovered `libonnxruntime.so`
             // BEFORE the fastembed/`ort` model below first loads the runtime. `main` also
             // calls this, but tests and any other caller that constructs the grounder

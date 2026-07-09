@@ -95,6 +95,13 @@ pub struct RunState {
     /// `rigger step` copies it onto its printed `Step` so the thin driver stops loudly on a
     /// halt instead of reading convergence.
     pub budget_halt: Option<String>,
+    /// Unit ids currently awaiting a human: a `ManualReview` was emitted for the unit and
+    /// the run does not (yet) class it terminal - the manual-review half of the
+    /// action-needed inbox. Deduped and lexically ordered for a stable render. Folded by
+    /// [`project`] in a second pass (see [`RunState::fold_manual_review_inbox`]) because the
+    /// terminal exclusion needs the FINAL folded state: a unit that is manual-reviewed and
+    /// then integrated must leave the inbox.
+    pub manual_review: Vec<String>,
 }
 
 // Run-event types the conductor emits (folded here into run state).
@@ -112,6 +119,12 @@ pub const TYPE_SPEC_DEFECT: &str = "SpecDefect";
 /// both `done` and `fully_done` so the run never reports finished with a red
 /// phase-boundary gate.
 pub const TYPE_DEFERRED_GATE_FAILED: &str = "DeferredGateFailed";
+/// The conductor's ManualReview event (the conductor re-exports this as
+/// `conductor::TYPE_MANUAL_REVIEW`, the single source of the string): a Manual-autonomy
+/// gate paused its unit awaiting human review (§4.3). Folded here into
+/// [`RunState::manual_review`] so the action-needed inbox is owned by the projection, not
+/// re-derived by any adapter that only reads it.
+pub const TYPE_MANUAL_REVIEW: &str = "ManualReview";
 
 #[derive(Deserialize)]
 struct UnitStarted {
@@ -147,6 +160,16 @@ struct UnitIntegrated {
     id: String,
     #[serde(default)]
     commit: String,
+}
+#[derive(Deserialize)]
+struct ManualReview {
+    /// The paused unit's id. The conductor emits `unit` and `id` both equal to the unit
+    /// name; `unit` takes precedence and `id` is the fallback for any producer that carries
+    /// only the generic id.
+    #[serde(default)]
+    unit: String,
+    #[serde(default)]
+    id: String,
 }
 
 impl RunState {
@@ -276,6 +299,32 @@ impl RunState {
             Some(Status::Integrated)
         )
     }
+
+    /// Fold the manual-review inbox into [`RunState::manual_review`]: distinct unit ids that
+    /// have a [`TYPE_MANUAL_REVIEW`] event and are NOT (yet) terminal.
+    ///
+    /// This is a SECOND pass over the events, run once by [`project`] after the per-event
+    /// fold, because the terminal exclusion needs the FINAL state: a unit that is
+    /// manual-reviewed and later integrated (or escalated) must leave the inbox, and event
+    /// order does not guarantee the terminal transition follows the pause. The candidate id
+    /// is the event's `unit` field, falling back to `id`; empties are skipped; the result is
+    /// deduped and lexically ordered (via [`BTreeSet`]) for a stable render.
+    fn fold_manual_review_inbox(&mut self, events: &[Event]) {
+        let mut inbox: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for e in events {
+            if e.type_ != TYPE_MANUAL_REVIEW {
+                continue;
+            }
+            let Ok(p) = serde_json::from_slice::<ManualReview>(&e.data) else {
+                continue;
+            };
+            let id = if p.unit.is_empty() { p.id } else { p.unit };
+            if !id.is_empty() && !self.is_terminal(&id) {
+                inbox.insert(id);
+            }
+        }
+        self.manual_review = inbox.into_iter().collect();
+    }
 }
 
 /// Project rebuilds run state from an ordered slice of events.
@@ -284,6 +333,7 @@ pub fn project(events: &[Event]) -> Result<RunState, serde_json::Error> {
     for e in events {
         r.apply(e)?;
     }
+    r.fold_manual_review_inbox(events);
     Ok(r)
 }
 
@@ -419,5 +469,44 @@ mod tests {
             !r.fully_done(&[]),
             "a failing deferred gate must gate `fully_done` with no criteria"
         );
+    }
+
+    #[test]
+    fn manual_review_inbox_folds_fallback_dedup_and_drops_terminal() {
+        // The action-needed inbox: distinct, non-terminal units with a ManualReview.
+        // Exercises every arm of `fold_manual_review_inbox` in one projection:
+        //   a - `unit` field, emitted TWICE  -> deduped to one entry, not terminal
+        //   b - only the `id` field present  -> picked up via the id fallback
+        //   c - manual-reviewed then INTEGRATED -> dropped (terminal exclusion)
+        //   d - manual-reviewed then ESCALATED  -> dropped (terminal exclusion)
+        let events = vec![
+            ev(TYPE_UNIT_STARTED, r#"{"id":"a"}"#),
+            ev(TYPE_MANUAL_REVIEW, r#"{"id":"a","unit":"a"}"#),
+            // Duplicate ManualReview for the same unit must not double-list it.
+            ev(TYPE_MANUAL_REVIEW, r#"{"id":"a","unit":"a"}"#),
+            // Only the generic `id` field, no `unit` - the fallback must still list it.
+            ev(TYPE_MANUAL_REVIEW, r#"{"id":"b"}"#),
+            // Manual-reviewed then integrated: the terminal transition drops it.
+            ev(TYPE_UNIT_STARTED, r#"{"id":"c"}"#),
+            ev(TYPE_MANUAL_REVIEW, r#"{"id":"c","unit":"c"}"#),
+            ev(TYPE_UNIT_INTEGRATED, r#"{"id":"c","commit":"abc"}"#),
+            // Manual-reviewed then escalated: escalation is terminal too, so it drops.
+            ev(TYPE_MANUAL_REVIEW, r#"{"id":"d","unit":"d"}"#),
+            ev(TYPE_UNIT_ESCALATED, r#"{"id":"d"}"#),
+        ];
+        let r = project(&events).unwrap();
+        // Deduped, lexically ordered, terminal units excluded: only a and b remain.
+        assert_eq!(r.manual_review, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn manual_review_inbox_is_empty_without_manual_review_events() {
+        // A run with no ManualReview leaves the inbox empty (no spurious entries).
+        let r = project(&[
+            ev(TYPE_UNIT_STARTED, r#"{"id":"u"}"#),
+            ev(TYPE_UNIT_INTEGRATED, r#"{"id":"u","commit":"abc"}"#),
+        ])
+        .unwrap();
+        assert!(r.manual_review.is_empty());
     }
 }

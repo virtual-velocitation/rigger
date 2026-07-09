@@ -5,15 +5,19 @@
 //! ports. It generalizes a proven internal multi-agent dev-loop harness into a
 //! standalone, config-driven product.
 
+pub mod canary;
 pub mod conductor;
 pub mod config;
 pub mod contextgraph;
+pub mod dash;
 pub mod driver;
 pub mod eventstore;
+pub mod failure;
 pub mod gate;
 pub mod grounder;
 pub mod hooks;
 pub mod ledger;
+pub mod liveness;
 pub mod mcpserver;
 pub mod metrics;
 /// Points `ort` at a CUDA-enabled ONNX Runtime `.so` to `dlopen` (`load-dynamic`), so
@@ -23,6 +27,8 @@ pub mod metrics;
 pub mod ort_runtime;
 #[cfg(feature = "turbovec")]
 pub mod ort_teardown;
+pub mod playbooks;
+pub mod progress;
 pub mod run;
 pub mod safety;
 pub mod sidecar;

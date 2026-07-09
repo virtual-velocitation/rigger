@@ -198,7 +198,15 @@ export async function runWorkflow(client, runAgent, opts = {}) {
     // prepend them so the agent starts aware of its peers (§5.3).
     const peers = await call(client, 'rigger_peers', { files: next.blast_radius || [] })
     const refresh = renderPeers(peers)
-    const prompt = refresh ? `${refresh}\n${next.prompt}` : next.prompt
+    // Live progress (spec 14): the worker reports one short line after each significant step,
+    // so a long silent stretch of real work is visible (via `rigger status` / the dash) rather
+    // than looking like a stall. `require_store_dir` walks up from the worktree to the real
+    // store, so the CLI resolves it correctly from wherever the agent runs.
+    const progressNote =
+      `\n\nLIVE PROGRESS: after each significant step - a search, a read, a build, a commit, a decision - report ONE short line of what you just did by running (Bash):\n` +
+      `  rigger progress '${next.id}' '<one line: what you just did>'\n` +
+      `Keep it flowing WHILE you work; do not batch it at the end.`
+    const prompt = (refresh ? `${refresh}\n${next.prompt}` : next.prompt) + progressNote
 
     debug(`spawn ${next.id}: model=${next.model || '(default)'} tools=${JSON.stringify(next.tools || [])} dir=${next.dir || '(cwd)'}`)
     debug(`spawn ${next.id} prompt:\n${prompt}`)
