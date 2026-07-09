@@ -113,6 +113,11 @@ struct RunArgs {
     /// evented recovery from a run wedged in a terminal state - e.g. a plan-critique
     /// escalation - whose spec is unchanged; see [`rigger::run::start_fresh`].
     fresh: bool,
+    /// `--rebase-definition` (spec 13, unit 1): on a live run whose on-disk definition drifted
+    /// from the hash pinned at start, record the supersession (old hash, new hash) and continue
+    /// on the new definition, instead of HALTING loudly. The operator's explicit "I meant to
+    /// edit the definition mid-campaign" escape.
+    rebase_definition: bool,
 }
 
 /// Parse `rigger run`'s flags: `--driver <cli|workflow>`, `--eventstore
@@ -124,10 +129,12 @@ fn parse_run_args(args: &[String]) -> Result<RunArgs, Box<dyn std::error::Error>
     let mut conn = None;
     let mut spec = None;
     let mut fresh = false;
+    let mut rebase_definition = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--fresh" => fresh = true,
+            "--rebase-definition" => rebase_definition = true,
             "--driver" => {
                 i += 1;
                 driver = match args.get(i).map(String::as_str) {
@@ -181,6 +188,7 @@ fn parse_run_args(args: &[String]) -> Result<RunArgs, Box<dyn std::error::Error>
         conn,
         spec,
         fresh,
+        rebase_definition,
     })
 }
 
@@ -338,6 +346,111 @@ fn fnv1a_64(bytes: &[u8]) -> u64 {
         hash = hash.wrapping_mul(PRIME);
     }
     hash
+}
+
+/// Canonicalize definition text for hashing (spec 13, unit 1): normalize CRLF -> LF and
+/// strip trailing whitespace from each line, so a checkout's line-ending or trailing-space
+/// noise never reads as a definition change while any real edit does.
+fn canonical_definition_text(s: &str) -> String {
+    s.replace("\r\n", "\n")
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The definition hash a run PINS (spec 13, unit 1): a stable FNV-1a digest over the on-disk
+/// definition - the `.rigger/workflow.yml` plus the FULL agent-prompt set (every
+/// `.rigger/agents/*.md`, which carries each agent's prompt and frontmatter) - canonicalized
+/// ([`canonical_definition_text`]) and folded in sorted-filename order. So the same definition
+/// hashes identically across machines and checkouts (the [`fnv1a_64`] idiom is fixed-seed and
+/// build-stable), while ANY content change - a mid-campaign prompt edit above all - changes it.
+///
+/// This is the hash a run pins at start and a live-run step re-checks; a mismatch on a live run
+/// HALTS loudly (see [`enforce_definition_pin`]). Hashing the on-disk files directly (not the
+/// parsed `Config`) is faithful to the design's "workflow.yml + the full agent-prompt set" and
+/// conservative: it needs no serialization of the config and errs toward halting, and the
+/// `--rebase-definition` escape makes an intended edit a one-flag continue.
+fn definition_hash(dir: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let base = Path::new(dir).join(RIGGER_DIR);
+    let mut buf = String::new();
+    // workflow.yml first, tagged so an (impossible-here) empty agents set is still distinct
+    // from an empty workflow.
+    let workflow = std::fs::read_to_string(base.join("workflow.yml"))
+        .map_err(|e| format!("definition hash: read {RIGGER_DIR}/workflow.yml: {e}"))?;
+    buf.push_str("workflow.yml\n");
+    buf.push_str(&canonical_definition_text(&workflow));
+    buf.push('\n');
+    // Every agent definition, folded in sorted-filename order so the hash is independent of
+    // directory iteration order.
+    let agents_dir = base.join("agents");
+    let mut agents: Vec<(String, String)> = Vec::new();
+    for entry in std::fs::read_dir(&agents_dir)
+        .map_err(|e| format!("definition hash: read {}: {e}", agents_dir.display()))?
+    {
+        let path = entry?.path();
+        if path.extension().and_then(|x| x.to_str()) != Some("md") {
+            continue;
+        }
+        let name = path
+            .file_name()
+            .and_then(|x| x.to_str())
+            .unwrap_or_default()
+            .to_string();
+        let content = std::fs::read_to_string(&path)
+            .map_err(|e| format!("definition hash: read {}: {e}", path.display()))?;
+        agents.push((name, content));
+    }
+    agents.sort();
+    for (name, content) in agents {
+        buf.push_str("agent:");
+        buf.push_str(&name);
+        buf.push('\n');
+        buf.push_str(&canonical_definition_text(&content));
+        buf.push('\n');
+    }
+    Ok(format!("{:016x}", fnv1a_64(buf.as_bytes())))
+}
+
+/// Enforce the run's definition pin (spec 13, unit 1) at the CLI boundary, BEFORE the
+/// conductor drives: adopt-or-mint the run for `criteria` with `definition` pinned, and act on
+/// the outcome. A fresh or unchanged run continues silently; `--rebase-definition` on a drifted
+/// run records the supersession and continues with a notice; a drifted run WITHOUT the flag
+/// returns a loud error, so `rigger step`/`run` HALTS naming the drift instead of driving a
+/// campaign whose replay semantics silently changed. The conductor's own (unpinned)
+/// `ensure_started` then simply ADOPTS the run this ensured.
+fn enforce_definition_pin(
+    store: &dyn EventStore,
+    criteria: &[String],
+    definition: &str,
+    rebase: bool,
+) -> Res {
+    match runscope::ensure_started_pinned(store, criteria, definition, rebase)? {
+        runscope::RunStart::Ready(_) => Ok(()),
+        runscope::RunStart::Rebased {
+            run,
+            pinned,
+            current,
+        } => {
+            eprintln!(
+                "rigger: --rebase-definition: recorded the definition supersession \
+                 ({pinned} -> {current}) on run {run}; continuing on the new definition."
+            );
+            Ok(())
+        }
+        runscope::RunStart::Drifted {
+            run,
+            pinned,
+            current,
+        } => Err(format!(
+            "definition drift - the on-disk workflow/agent definition (hash {current}) differs \
+             from the hash run {run} pinned at start ({pinned}). A live run pins its definition so \
+             replay semantics cannot silently change mid-campaign. Re-run with --rebase-definition \
+             to record the supersession ({pinned} -> {current}) and continue, or restore the \
+             definition to match the pin."
+        )
+        .into()),
+    }
 }
 
 /// Canonicalize a git remote URL so the ssh, https, and `.git`-suffixed forms of ONE repo
@@ -628,7 +741,9 @@ as JSON. --base (default origin/main) anchors a NEW run\n                       
 branch; if it is unresolvable the branch is created off\n                              \
 HEAD. An existing run branch is reused, never reset.\n                              \
 --fresh begins a NEW run for the spec even if the latest\n                              \
-matches (pass on the first step to restart a wedged run)\n  \
+matches (pass on the first step to restart a wedged run);\n                              \
+--rebase-definition accepts a drifted definition and\n                              \
+continues, else a live-run step HALTS on definition drift\n  \
 rigger reported <id>        exit 0 iff spawn <id> already has a recorded result in\n                              \
 this project's run stream (else non-zero). A read-only check\n                              \
 of whether a spawn reported yet; the death courier records\n                              \
@@ -690,7 +805,12 @@ kurrentdb: server (needs the kurrentdb feature)\n  \
 spec (which is otherwise adopted/resumed). The evented\n                                   \
 restart for a run wedged in a terminal state (e.g. an\n                                   \
 escalated plan-critique) whose spec is unchanged; the\n                                   \
-prior run stays in the log as history and context\n\n\
+prior run stays in the log as history and context\n  \
+--rebase-definition              accept an on-disk definition (workflow.yml + agent\n                                   \
+prompts) that drifted from what this live run pinned at\n                                   \
+start: record the supersession and continue instead of\n                                   \
+halting. The explicit mid-campaign-edit escape (a live\n                                   \
+run otherwise HALTS loudly on definition drift)\n\n\
 storage and graph live in ./.rigger/ (per project, like .git/), scoped to the\n\
 project identity so one backend can hold many projects without their data mixing.\n"
     );
@@ -1033,6 +1153,11 @@ fn cmd_step(args: &[String]) -> Res {
     let backend = Store::open(&db_path("events.db"))?;
     let store = Namespaced::new(&backend, &project_identity());
 
+    // The definition hash this step pins / re-checks (spec 13, unit 1): the digest of the
+    // on-disk workflow.yml + agent-prompt set. Computed once and used for both the `--fresh`
+    // pinned boundary and the drift check below.
+    let definition = definition_hash(".")?;
+
     // `--fresh`: begin a NEW run BEFORE this step (and before the liveness sweep reads the
     // current run), so the conductor's own `ensure_started` adopts this just-minted
     // boundary instead of the latest (possibly wedged) run. A one-shot the DRIVER passes
@@ -1040,9 +1165,15 @@ fn cmd_step(args: &[String]) -> Res {
     // began. The notice goes to STDERR - stdout carries only the `{wave,done}` JSON the
     // driver parses. See `runscope::start_fresh`.
     if args.fresh {
-        let run = runscope::start_fresh(&store, &criteria)?;
+        let run = runscope::start_fresh(&store, &criteria, &definition)?;
         eprintln!("rigger step: --fresh: began a new run {run} (the prior run stays in the log)");
     }
+
+    // Definition pinning (spec 13, unit 1): pin this run's definition (a fresh run) or enforce
+    // it (a live run). A drifted live-run definition WITHOUT `--rebase-definition` HALTS here,
+    // loudly and before any worktree work, so a mid-campaign prompt edit can never silently
+    // change replay semantics; `--rebase-definition` records the supersession and continues.
+    enforce_definition_pin(&store, &criteria, &definition, args.rebase_definition)?;
 
     // Captured before `repo` moves into Deps: the fixpoint sweep below needs it.
     let scratch_root = if repo.is_empty() {
@@ -1306,6 +1437,10 @@ struct StepArgs {
     /// from a run wedged in a terminal state whose spec is unchanged; see
     /// [`rigger::run::start_fresh`]. Plain steps after it adopt the boundary it began.
     fresh: bool,
+    /// `--rebase-definition` (spec 13, unit 1): on a live-run step whose on-disk definition
+    /// drifted from the hash pinned at start, record the supersession and continue on the new
+    /// definition instead of HALTING loudly. The operator's explicit mid-campaign-edit escape.
+    rebase_definition: bool,
 }
 
 /// Parse `rigger step`'s flags: an optional `--spec <path>` (the spec whose Done-when
@@ -1317,10 +1452,12 @@ fn parse_step_args(args: &[String]) -> Result<StepArgs, Box<dyn std::error::Erro
     let mut spec = None;
     let mut base = None;
     let mut fresh = false;
+    let mut rebase_definition = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--fresh" => fresh = true,
+            "--rebase-definition" => rebase_definition = true,
             "--spec" => {
                 i += 1;
                 spec = match args.get(i) {
@@ -1352,6 +1489,7 @@ fn parse_step_args(args: &[String]) -> Result<StepArgs, Box<dyn std::error::Erro
         base_explicit: base.is_some(),
         base: base.unwrap_or_else(|| DEFAULT_BASE_REF.to_string()),
         fresh,
+        rebase_definition,
     })
 }
 
@@ -1423,19 +1561,23 @@ fn run_cli(parsed: &RunArgs) -> Res {
     Ok(())
 }
 
-/// Honor `--fresh` (shared by both `run` drivers): when set, append a new `RunStarted` for
-/// `criteria` so the run that follows starts a clean slice even if the latest run already
-/// matches (which `ensure_started` would adopt). A no-op when `--fresh` was not passed.
-/// Prints the new run id so the evented restart is visible in the operator's output.
+/// Begin (or adopt) and definition-PIN the run both `run` drivers drive (spec 13, unit 1).
+/// When `--fresh` is set it appends a new pinned `RunStarted` for `criteria` so the run starts
+/// a clean slice even if the latest run already matches (which `ensure_started` would adopt),
+/// printing the new run id. It then enforces the definition pin ([`enforce_definition_pin`]):
+/// a drifted live-run definition HALTS loudly unless `--rebase-definition` records the
+/// supersession and continues. A fresh or unchanged run continues silently.
 fn fresh_run_if_requested(
     parsed: &RunArgs,
     store: &dyn EventStore,
     criteria: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let definition = definition_hash(".")?;
     if parsed.fresh {
-        let run = runscope::start_fresh(store, criteria)?;
+        let run = runscope::start_fresh(store, criteria, &definition)?;
         println!("rigger: --fresh: began a new run {run} (the prior run stays in the log)");
     }
+    enforce_definition_pin(store, criteria, &definition, parsed.rebase_definition)?;
     Ok(())
 }
 
@@ -5156,6 +5298,23 @@ mod tests {
         assert!(a.fresh, "--fresh sets the fresh-restart flag");
         assert_eq!(a.spec.as_deref(), Some("spec.md"));
         assert!(a.driver == DriverKind::Cli, "--fresh leaves other defaults");
+        assert!(
+            !a.rebase_definition,
+            "--rebase-definition is off unless asked"
+        );
+    }
+
+    #[test]
+    fn parse_run_args_reads_rebase_definition() {
+        // `--rebase-definition` (spec 13, unit 1) is a bare boolean flag, off by default.
+        assert!(!parse_run_args(&[]).unwrap().rebase_definition);
+        let a =
+            parse_run_args(&["--rebase-definition".to_string(), "spec.md".to_string()]).unwrap();
+        assert!(
+            a.rebase_definition,
+            "--rebase-definition sets the mid-campaign-edit escape"
+        );
+        assert_eq!(a.spec.as_deref(), Some("spec.md"));
     }
 
     #[test]
@@ -5227,6 +5386,68 @@ mod tests {
         let a = s(&["--fresh", "--spec", "specs/12.md"]).unwrap();
         assert!(a.fresh, "--fresh sets the fresh-restart flag on a step");
         assert_eq!(a.spec.as_deref(), Some("specs/12.md"));
+
+        // `--rebase-definition` (spec 13, unit 1) is likewise a bare boolean, off by default.
+        assert!(
+            !s(&[]).unwrap().rebase_definition,
+            "--rebase-definition is off unless asked"
+        );
+        let a = s(&["--rebase-definition", "--base", "origin/next"]).unwrap();
+        assert!(
+            a.rebase_definition,
+            "--rebase-definition sets the mid-campaign-edit escape on a step"
+        );
+        assert_eq!(a.base, "origin/next");
+    }
+
+    /// The definition hash (spec 13, unit 1) is a DETERMINISTIC function of the on-disk
+    /// definition that CHANGES when any part of it - a prompt above all - changes, and is
+    /// independent of agent-file iteration order and of trailing-whitespace / line-ending noise.
+    #[test]
+    fn definition_hash_is_stable_and_content_sensitive() {
+        let write_def = |root: &std::path::Path, workflow: &str, prompt: &str| {
+            let agents = root.join(".rigger").join("agents");
+            std::fs::create_dir_all(&agents).unwrap();
+            std::fs::write(root.join(".rigger").join("workflow.yml"), workflow).unwrap();
+            std::fs::write(
+                agents.join("worker.md"),
+                format!("---\nid: worker\n---\n{prompt}\n"),
+            )
+            .unwrap();
+        };
+
+        let base = tempfile::tempdir().unwrap();
+        write_def(base.path(), "name: w\n", "Do the unit.");
+        let dir = base.path().to_str().unwrap();
+        let h0 = definition_hash(dir).unwrap();
+        // Deterministic: recomputing over the same on-disk definition is byte-identical.
+        assert_eq!(
+            h0,
+            definition_hash(dir).unwrap(),
+            "same definition, same hash"
+        );
+        // Canonicalization: trailing whitespace and CRLF do NOT change the hash.
+        write_def(base.path(), "name: w\r\n", "Do the unit.   ");
+        assert_eq!(
+            h0,
+            definition_hash(dir).unwrap(),
+            "trailing-ws / CRLF noise is canonicalized away"
+        );
+        // A PROMPT edit changes the hash - the mid-campaign edit spec 13 must catch.
+        write_def(base.path(), "name: w\n", "Do the unit differently.");
+        assert_ne!(
+            h0,
+            definition_hash(dir).unwrap(),
+            "a prompt edit changes the definition hash"
+        );
+        // A workflow.yml edit changes the hash too.
+        let with_wf = definition_hash(dir).unwrap();
+        write_def(base.path(), "name: changed\n", "Do the unit differently.");
+        assert_ne!(
+            with_wf,
+            definition_hash(dir).unwrap(),
+            "a workflow edit changes the hash"
+        );
     }
 
     /// With the default build (no `kurrentdb` feature), requesting the server store

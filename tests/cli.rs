@@ -2693,3 +2693,135 @@ fn validate_warns_when_the_project_id_is_absent_and_is_silent_after_minting() {
         "validate is silent about identity once project.id exists; stderr:\n{err2}"
     );
 }
+
+/// Overwrite the two-stage worker agent's PROMPT body in place (spec 13, unit 1), drifting
+/// the on-disk definition from what a prior `rigger step` pinned - the mid-campaign prompt
+/// edit that silently changes replay semantics, which pinning exists to catch.
+fn edit_worker_prompt(root: &Path, new_body: &str) {
+    std::fs::write(
+        root.join(".rigger").join("agents").join("worker.md"),
+        format!("---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\n{new_body}\n"),
+    )
+    .unwrap();
+}
+
+/// Definition pinning (spec 13, unit 1): a run pins its definition at start, and a LIVE-run
+/// step under a definition drifted mid-campaign HALTS loudly naming the drift; the operator's
+/// explicit `--rebase-definition` records the supersession and continues, after which plain
+/// steps no longer halt.
+#[test]
+fn step_halts_on_definition_drift_and_rebase_definition_continues() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+
+    // Step 1 pins the run's definition (and parks the first wave). This is the pin-at-start.
+    let (_out, err, ok) = run_rigger(root, &["step"]);
+    assert!(
+        ok,
+        "the first step must succeed and pin the definition; stderr: {err}"
+    );
+
+    // A mid-campaign prompt edit drifts the on-disk definition from the pinned hash.
+    edit_worker_prompt(root, "Do the unit, but differently now.");
+
+    // Step 2 (no flag) must HALT loudly: a non-zero exit whose stderr names the drift, and
+    // it must recommend the --rebase-definition escape. It must NOT print a wave (nothing ran).
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(
+        !ok,
+        "a drifted live-run step must fail (halt), not succeed; stdout: {out:?}"
+    );
+    assert!(
+        err.contains("definition drift"),
+        "the halt must name the definition drift; stderr: {err}"
+    );
+    assert!(
+        err.contains("--rebase-definition"),
+        "the halt must point at the --rebase-definition escape; stderr: {err}"
+    );
+    assert!(
+        !out.contains("\"wave\""),
+        "a halted step must not drive the conductor / print a wave; stdout: {out:?}"
+    );
+
+    // Re-running the plain step STILL halts - drift is a pure read, so it re-surfaces every
+    // step until it is resolved (never silently swallowed).
+    let (_out, err, ok) = run_rigger(root, &["step"]);
+    assert!(
+        !ok,
+        "the drift re-surfaces on every plain step; stderr: {err}"
+    );
+    assert!(err.contains("definition drift"));
+
+    // `--rebase-definition` records the supersession and CONTINUES: the step succeeds and
+    // reports the rebase on stderr.
+    let (_out, err, ok) = run_rigger(root, &["step", "--rebase-definition"]);
+    assert!(
+        ok,
+        "--rebase-definition must record the supersession and continue; stderr: {err}"
+    );
+    assert!(
+        err.contains("supersession"),
+        "the rebase must report the recorded supersession; stderr: {err}"
+    );
+
+    // After the rebase, a PLAIN step no longer halts: the effective pin advanced to the new
+    // definition, so the campaign continues cleanly.
+    let (_out, err, ok) = run_rigger(root, &["step"]);
+    assert!(
+        ok,
+        "after --rebase-definition a plain step must no longer halt; stderr: {err}"
+    );
+    assert!(
+        !err.contains("definition drift"),
+        "the rebased definition is the pin now - no residual drift; stderr: {err}"
+    );
+}
+
+/// Definition pinning, the new-run-is-free path (spec 13, unit 1): a FRESH run always pins the
+/// CURRENT definition and never halts, even when the on-disk definition differs from what an
+/// earlier run pinned - only a LIVE run pins, so a run boundary is always free to reconfigure.
+#[test]
+fn a_fresh_run_repins_the_current_definition_and_never_halts() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+
+    // A first run pins definition A.
+    let (_out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the first step must pin definition A; stderr: {err}");
+
+    // The definition drifts to B on disk. A plain step would halt (proven above)...
+    edit_worker_prompt(root, "A brand new prompt body.");
+
+    // ...but a FRESH run begins a new boundary pinning the CURRENT (B) definition and is free.
+    let (_out, err, ok) = run_rigger(root, &["step", "--fresh"]);
+    assert!(
+        ok,
+        "a --fresh run must pin the current definition and NOT halt on the prior pin; stderr: {err}"
+    );
+    assert!(
+        err.contains("began a new run"),
+        "the fresh run announces its new boundary; stderr: {err}"
+    );
+    assert!(
+        !err.contains("definition drift"),
+        "a fresh run is free - it never drifts against a prior run's pin; stderr: {err}"
+    );
+
+    // And the fresh run's pin is now B: a subsequent plain step is free on B but WOULD halt if
+    // the definition drifted again - re-editing and stepping halts, confirming the fresh run
+    // genuinely re-pinned (rather than disabling the check).
+    let (_out, err, ok) = run_rigger(root, &["step"]);
+    assert!(
+        ok,
+        "a plain step on the freshly-pinned definition is free; stderr: {err}"
+    );
+    edit_worker_prompt(root, "Yet another prompt body.");
+    let (_out, err, ok) = run_rigger(root, &["step"]);
+    assert!(
+        !ok && err.contains("definition drift"),
+        "the fresh run really re-pinned: a later drift against it halts; stderr: {err}"
+    );
+}
