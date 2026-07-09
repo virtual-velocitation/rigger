@@ -20,7 +20,8 @@ use crate::grounder::Grounder;
 use crate::ledger::{self, RunState};
 use crate::safety;
 use crate::spawn::{
-    self, lens_role, spawn_id, spawn_retry_id, ROLE_ADJUDICATOR, ROLE_ADVERSARY, ROLE_IMPLEMENTER,
+    self, lens_role, spawn_id, spawn_retry_id, speculation_group_id, ROLE_ADJUDICATOR,
+    ROLE_ADVERSARY, ROLE_IMPLEMENTER,
 };
 use crate::worktree::{self, Worktree};
 
@@ -181,6 +182,32 @@ pub const META_COMPENSATE_TARGET: &str = "compensate_target";
 /// out of `Integrated` (it must stay integrated until the drain actually reverts it). The
 /// real re-derivation signal is [`META_COMPENSATE_TARGET`], not this string.
 const STATUS_COMPENSATION_QUEUED: &str = "compensation-queued";
+
+/// The metadata key naming a first-green-wins speculation GROUP (spec 13, unit 3) on the
+/// events its candidates emit: the winner's `UnitIntegrated`, every cancelled candidate's
+/// `UnitStatus`, and each candidate's green/verified status carry it. It is audit metadata
+/// on the EXISTING vocabulary (no new event type), so folds and projections ignore it - the
+/// group / winner / losers are recoverable from the log by reading it back. Its value is the
+/// deterministic [`spawn::speculation_group_id`].
+pub const META_SPEC_GROUP: &str = "speculation_group";
+
+/// The metadata key naming a speculation group's WINNING candidate (spec 13, unit 3) on the
+/// winner's `UnitIntegrated`: the deterministic implementer spawn id
+/// ([`spawn::spawn_id`]`(unit, `[`ROLE_IMPLEMENTER`]`, lane)`) of the candidate that passed
+/// its gates AND the adjudicator first and integrated.
+pub const META_SPEC_WINNER: &str = "speculation_winner";
+
+/// The metadata key naming a speculation group's CANCELLED candidates (spec 13, unit 3) on
+/// the winner's `UnitIntegrated`: a comma-separated list of the losing candidates'
+/// implementer spawn ids - every parked candidate the winner displaced.
+pub const META_SPEC_LOSERS: &str = "speculation_losers";
+
+/// The `UnitStatus.status` token a CANCELLED speculation candidate carries (spec 13, unit 3).
+/// Like [`STATUS_COMPENSATION_QUEUED`] it is deliberately NOT a [`ledger::Status`] variant, so
+/// the ledger fold leaves the unit's real status (driven by the WINNER's lifecycle) untouched
+/// and the metrics fold ignores it: a cancelled candidate is a recorded fact about the losing
+/// lane, never the unit's terminal state.
+const STATUS_SPECULATION_CANCELLED: &str = "speculation-cancelled";
 
 /// The replay key for a gate's verdict, keyed by the `(unit, attempt, gate)` coordinate
 /// the gate ran under - so a step re-reaching an already-run gate REPLAYS its recorded
@@ -512,6 +539,18 @@ impl ReviewOutcome {
 struct Compensation {
     target: String,
     reason: String,
+}
+
+/// One parked-and-recorded first-green-wins speculation candidate (spec 13, unit 3) awaiting
+/// evaluation: its `lane` (which is also the attempt its gates/statuses/review key under), the
+/// isolated `wt` it committed into, that worktree's `dir`, and the `resolved_model` the worker
+/// reported (empty on a live driver that does not learn it). Held only inside
+/// [`RunCtx::run_speculation`] between the parallel-spawn phase and the winner-selection phase.
+struct SpecCandidate {
+    lane: u32,
+    wt: Worktree,
+    dir: String,
+    resolved_model: String,
 }
 
 /// The compensations STILL PENDING at run start (spec 12, unit 4): a durable
@@ -2476,6 +2515,14 @@ impl RunCtx<'_> {
         if is_fan_out(st) {
             return self.run_fan_out_stage(st);
         }
+        // First-green-wins speculation (spec 13, unit 3): a fresh unit class declaring
+        // `speculation_width: K > 1` races K parallel implementer candidates and integrates the
+        // first gate-green adjudicator-approved one. `run_speculation` owns the K isolated
+        // worktrees' whole lifecycle. Default width 1 falls through to the single-lane path
+        // below, byte-for-byte unchanged (speculation defaults off).
+        if self.speculates(st) {
+            return self.run_speculation(stages, st);
+        }
         // Resume-continuity: decide whether this unit CONTINUES from a prior window's
         // recorded phase (its deterministic branch carries committed work) or runs the
         // full lifecycle fresh. Computed before the worktree is created so a resumed
@@ -3180,6 +3227,364 @@ impl RunCtx<'_> {
             // otherwise loop and retry the stage (re-grounding + the prior-failure
             // block via build_prompt_with_failure)
         }
+    }
+
+    /// The effective first-green-wins speculation width for a unit class (spec 13, unit 3):
+    /// the stage's own `speculation_width` when set (`> 0`), else `defaults.speculation_width`,
+    /// with a floor of 1. Width 1 (the default) is speculation OFF - a single implementer
+    /// candidate, the historical [`run_single_stage`](RunCtx::run_single_stage) path unchanged.
+    fn effective_speculation_width(&self, st: &Stage) -> u32 {
+        let raw = if st.speculation_width > 0 {
+            st.speculation_width
+        } else {
+            self.cfg.workflow.defaults.speculation_width
+        };
+        raw.max(1)
+    }
+
+    /// Whether a unit runs first-green-wins speculation (spec 13, unit 3): its effective width
+    /// is `> 1`; it is a FRESH unit (a resumed unit continues its recorded candidate, it does
+    /// not re-fan-out); it names a real implementer agent that runs ISOLATED in a worktree
+    /// (speculation parks candidates in isolated worktrees, so a repo-less or `isolation: none`
+    /// unit cannot speculate); and it is not a producer (a planner emits a DAG, not a diff to
+    /// gate/review). Any false condition falls through to the single-lane `run_single_stage`,
+    /// so the default (width 1) changes no current behavior.
+    fn speculates(&self, st: &Stage) -> bool {
+        self.effective_speculation_width(st) > 1
+            && !st.agent.is_empty()
+            && !is_producer(st)
+            && !self.deps.repo.is_empty()
+            && self.agent_isolated(&st.agent)
+            && self.resume_phase(st) == ResumePhase::Fresh
+    }
+
+    /// The isolated worktree for speculation candidate `lane` (spec 13, unit 3). Candidate 0
+    /// uses the unit's CANONICAL deterministic worktree/branch, so a lane-0 winner integrates
+    /// exactly as the single-lane path; each candidate `lane > 0` gets a deterministic
+    /// lane-suffixed sibling (`...-spec<lane>` dir AND branch) so the K candidates never share
+    /// a worktree or a branch. Both derive purely from the unit id + lane (no per-process
+    /// uuid), so a resumed step recomputes the same path and [`Worktree::create`] ADOPTS the
+    /// candidate's prior committed work rather than re-implementing it.
+    fn speculation_lane_worktree(&self, st: &Stage, lane: u32) -> Result<Worktree, Error> {
+        let scratch = crate::worktree::scratch_root_from_env(
+            &self.deps.repo,
+            &self.cfg.workflow.defaults.workdir,
+        );
+        let dir = unit_worktree_dir(&scratch, &st.name);
+        let branch = unit_branch(&st.name);
+        if lane == 0 {
+            return Ok(Worktree::create(&self.deps.repo, &dir, &branch)?);
+        }
+        Ok(Worktree::create(
+            &self.deps.repo,
+            &format!("{dir}-spec{lane}"),
+            &format!("{branch}-spec{lane}"),
+        )?)
+    }
+
+    /// First-green-wins speculation (spec 13, unit 3). A unit class declaring
+    /// `speculation_width: K > 1` parks K parallel implementer candidates (one deterministic
+    /// speculation group) in isolated worktrees; the FIRST candidate to pass its gates AND the
+    /// adjudicator wins and integrates, and every other candidate is CANCELLED - the group,
+    /// winner, and losers recorded as metadata on the existing event vocabulary (no new event
+    /// type). Candidate `lane` runs at attempt `lane`, so each candidate's gates, statuses, and
+    /// review tiers key apart while staying a PURE function of the run structure (replay-safe).
+    ///
+    /// This REUSES the single mutation authorities - [`Self::run_gates`], [`Self::review_unit`],
+    /// [`Self::integrate_and_emit`] - and adds only the K-lane fan-out and winner selection;
+    /// the default-off (`run_single_stage`) path is untouched.
+    ///
+    /// PHASE A parks/spawns all K candidates, COLLECTING parks rather than propagating the
+    /// first, so under the stepwise/replay driver all K park in ONE step and a courier runs
+    /// them concurrently. Each candidate's implementer spawn is reserved against the global
+    /// spawn budget, so the breaker counts every candidate. PHASE B evaluates the candidates in
+    /// deterministic lane order and integrates the first gate-green adjudicator-approved one;
+    /// if none wins, the unit escalates (its K candidates were its attempts) rather than
+    /// re-fanning-out forever.
+    fn run_speculation(&self, stages: &BTreeMap<String, Stage>, st: &Stage) -> Result<bool, Error> {
+        let width = self.effective_speculation_width(st);
+        let group = speculation_group_id(&st.name);
+        let blast_radius = self.grounded_seed(st);
+        let agent_def = self
+            .cfg
+            .agents
+            .get(&st.agent)
+            .ok_or_else(|| {
+                Error(format!(
+                    "stage {:?} references unknown agent {:?}",
+                    st.name, st.agent
+                ))
+            })?
+            .clone();
+
+        // PHASE A: park/spawn every candidate. Lane worktree dirs are kept ALIVE across a
+        // park (removed only at a terminal outcome below), so the out-of-process worker
+        // always finds the pre-created candidate worktree the conductor owns - a lane's
+        // branch is not re-derivable from its SpawnRequest, so the conductor never lets the
+        // dir be reclaimed mid-flight.
+        let mut candidates: Vec<SpecCandidate> = Vec::with_capacity(width as usize);
+        let mut any_parked = false;
+        for lane in 0..width {
+            // Budget at spawn granularity (item 9): reserve THIS candidate's implementer
+            // spawn. A refusal (the budget is spent) sets `budget_broke` and unwinds the unit
+            // cleanly - the run loop trips the ONE breaker path - exactly like the single-lane
+            // implementer's `Ok(false)` refusal.
+            let impl_id = spawn_id(&st.name, ROLE_IMPLEMENTER, lane);
+            if !self.reserve_spawn(&impl_id) {
+                return Ok(false);
+            }
+            let wt = self.speculation_lane_worktree(st, lane)?;
+            let dir = wt.dir.clone();
+            let prompt = self.build_prompt_with_failure(st, &PriorFailure::default());
+            let emit = |t: &str, v: Value| self.emit_with_actor(&st.agent, t, v);
+            let isolation_check = self.assert_isolated_cwd("implementer", &st.agent, &dir);
+            match isolation_check.and_then(|()| {
+                self.deps.driver.spawn(
+                    &agent_def,
+                    &prompt,
+                    &SpawnOpts {
+                        system_prompt: self.build_system_prompt(&agent_def),
+                        dir: dir.clone(),
+                        isolation: true,
+                        parallel: true,
+                        blast_radius: blast_radius.clone(),
+                        id: impl_id.clone(),
+                        unit: st.name.clone(),
+                        stage: st.name.clone(),
+                        attempt: lane,
+                        run_id: self.run_id.clone(),
+                    },
+                    &emit,
+                )
+            }) {
+                Ok(result) => {
+                    // The candidate produced a diff: commit its worktree so the gates measure
+                    // exactly the committed artifact. Its `green` status is DEFERRED until it is
+                    // chosen the winner below - emitting a routing status (Green/Verified) per
+                    // candidate here would fold the unit out of `Fresh` and mis-route a resume
+                    // of a divergent group onto the canonical lane-0 branch (and collide the
+                    // lane-L candidate spawn id with lane-0 remediation attempt L). Keeping the
+                    // unit `Fresh` across phase B makes a resume re-enter `run_speculation`
+                    // deterministically (replaying the recorded candidates + gates + review).
+                    wt.commit(&format!("rigger: {} speculation candidate {lane}", st.name))?;
+                    candidates.push(SpecCandidate {
+                        lane,
+                        wt,
+                        dir,
+                        resolved_model: result.resolved_model,
+                    });
+                }
+                // A candidate parked (stepwise/replay frontier): collect it and keep going so
+                // ALL K candidates park this step. The dir persists for the worker.
+                Err(e) if is_parked(&e) => any_parked = true,
+                // A candidate CRASHED (usage limit, non-zero exit): it is simply absent from
+                // the group - a losing candidate that produced no diff. The remaining
+                // candidates still race; if none survives, the escalation tail fires.
+                Err(_) => {}
+            }
+        }
+        if any_parked {
+            // Every requested candidate parked together this step; unwind cleanly so a courier
+            // runs them in parallel and a later step evaluates the recorded group.
+            return Err(parked_spawn(&group));
+        }
+
+        // PHASE B: evaluate candidates in deterministic lane order; the FIRST gate-green
+        // adjudicator-approved candidate WINS and integrates, and every other candidate is
+        // cancelled. A candidate's review tiers park across steps exactly like the single-lane
+        // path (their spawns are keyed by the candidate's `lane` attempt).
+        for i in 0..candidates.len() {
+            let lane = candidates[i].lane;
+            let dir = candidates[i].dir.clone();
+            let gate_outcome =
+                self.run_gates(st, &dir, lane, GateSelection::Narrowed(&blast_radius))?;
+            if !gate_outcome.pass {
+                continue; // gate-red candidate loses; a later candidate may still win.
+            }
+            // This candidate's gates are green: review it. Its `verified` status is DEFERRED to
+            // the winner path below (see the phase-A note) so the review tiers can park across
+            // steps while the unit stays `Fresh`.
+            let review = self.review_unit(st, &dir, lane)?;
+            // A candidate's review may name a PRIOR integrated unit as the real defect source
+            // (spec 12, unit 4), independent of whether it approves this candidate: queue the
+            // rollback exactly as the single-lane path does, so the reverse gear is not lost.
+            if let Some(target) = &review.compensate {
+                if target != &st.name {
+                    self.emit_keyed_meta(
+                        &compensation_queued_key(&st.name, target, lane),
+                        ledger::TYPE_UNIT_STATUS,
+                        json!({
+                            "id": target,
+                            "status": STATUS_COMPENSATION_QUEUED,
+                            "evidence": {"compensation-queued": review.reason.trim()},
+                        }),
+                        &[
+                            (META_COMPENSATE_TARGET, target),
+                            (META_CONTRADICTION, review.reason.trim()),
+                        ],
+                    )?;
+                    self.compensations.lock().unwrap().push(Compensation {
+                        target: target.clone(),
+                        reason: review.reason.clone(),
+                    });
+                }
+            }
+            if !review.approved {
+                continue; // rejected candidate loses; try the next candidate.
+            }
+            // A WINNER. Assert the exhaustive suite (the integrate door, spec 12 unit 3) on the
+            // winning candidate before merging.
+            let full = self.run_gates(st, &dir, lane, GateSelection::Exhaustive)?;
+            if !full.pass {
+                continue; // even the winner's full suite is red; it cannot land - try the next.
+            }
+            // The winner is confirmed (gate-green, adjudicator-approved, exhaustive-green): NOW
+            // record its DEFERRED green + verified statuses (keyed by the winner lane, tagged
+            // with the speculation group and the requested/resolved model) so the winner's
+            // committed lifecycle is on the log for the metrics fold - the losing candidates
+            // never reach this point, so only the winner is `green`/`verified`.
+            let winner_alias = self.agent_model(&st.agent, lane);
+            let winner_resolved = candidates[i].resolved_model.clone();
+            let mut green = BTreeMap::new();
+            green.insert(
+                "green".to_string(),
+                format!("speculation winner {lane} implemented by {}", st.agent),
+            );
+            self.emit_keyed_meta(
+                &format!("{}/green#{lane}", st.name),
+                ledger::TYPE_UNIT_STATUS,
+                json!({"id": st.name, "status": "green", "evidence": green}),
+                &[
+                    (META_MODEL_ALIAS, &winner_alias),
+                    (META_MODEL_RESOLVED, &winner_resolved),
+                    (META_SPEC_GROUP, &group),
+                ],
+            )?;
+            self.emit_keyed_meta(
+                &format!("{}/verified#{lane}", st.name),
+                ledger::TYPE_UNIT_STATUS,
+                json!({
+                    "id": st.name,
+                    "status": "verified",
+                    "evidence": verified_evidence(&st.gates),
+                }),
+                &[
+                    (META_MODEL_ALIAS, &winner_alias),
+                    (META_MODEL_RESOLVED, &winner_resolved),
+                    (META_SPEC_GROUP, &group),
+                    (META_WORKTREE_SHA, &worktree::head_sha_of(&dir)),
+                ],
+            )?;
+            let losers: Vec<String> = candidates
+                .iter()
+                .filter(|c| c.lane != lane)
+                .map(|c| spawn_id(&st.name, ROLE_IMPLEMENTER, c.lane))
+                .collect();
+            if !integrates(st) {
+                // Verified + approved but never merges (`on_pass: none`): the group settled on
+                // a winner, but no code lands. Cancel the other candidates and stop.
+                self.cancel_speculation_candidates(st, &group, lane, &candidates)?;
+                return Ok(false);
+            }
+            let integration = self.integrate_and_emit(
+                stages,
+                Some(&candidates[i].wt),
+                st,
+                lane,
+                IntegrationApproval::approved(),
+            )?;
+            if integration.blocked.is_some() {
+                // The post-merge re-gate went RED (spec 12, unit 5): the merge was rolled back,
+                // so this candidate cannot land this step. Treat it as a loser and try the next.
+                continue;
+            }
+            // The winner integrated: record the group / winner / losers on the existing
+            // UnitIntegrated (no new event type), then cancel every displaced candidate.
+            self.emit_meta(
+                ledger::TYPE_UNIT_INTEGRATED,
+                json!({"id": st.name, "commit": integration.commit}),
+                &[
+                    (META_STALE, &integration.staled.join(",")),
+                    (META_SPEC_GROUP, &group),
+                    (
+                        META_SPEC_WINNER,
+                        &spawn_id(&st.name, ROLE_IMPLEMENTER, lane),
+                    ),
+                    (META_SPEC_LOSERS, &losers.join(",")),
+                ],
+            )?;
+            self.cancel_speculation_candidates(st, &group, lane, &candidates)?;
+            // The winner's work merged into the base: tear down its worktree and branch too,
+            // exactly as the single-lane path deletes an integrated unit's branch.
+            let _ = candidates[i].wt.remove();
+            let _ = Worktree::delete_branch(&self.deps.repo, &candidates[i].wt.branch);
+            return Ok(true);
+        }
+
+        // NO candidate won: every candidate was gate-red or review-rejected (or crashed). The K
+        // candidates were the unit's parallel attempts, so it ESCALATES rather than re-fanning
+        // out forever on the fresh re-entry. Clean up the losing candidates' worktrees.
+        for c in &candidates {
+            let _ = c.wt.remove();
+            let _ = Worktree::delete_branch(&self.deps.repo, &c.wt.branch);
+        }
+        self.emit_lesson(
+            None,
+            &st.name,
+            &format!(
+                "unit {:?} escalated: all {width} speculation candidates failed their gates or review",
+                st.name
+            ),
+        );
+        self.emit_meta(
+            ledger::TYPE_UNIT_ESCALATED,
+            json!({"id": st.name}),
+            &[(META_SPEC_GROUP, &group)],
+        )?;
+        Ok(false)
+    }
+
+    /// Cancel every non-winning speculation candidate (spec 13, unit 3): record each loser's
+    /// `speculation-cancelled` status (keyed per lane, tagged with the group so the log ties it
+    /// back to the winner) and tear down its worktree + branch - the winner's code already
+    /// landed, so the displaced candidates' isolated work is discarded. The `winner` lane is
+    /// SKIPPED here (its worktree/branch is the caller's to clean up: removed once it merged, or
+    /// kept as the verified-but-unmerged checkpoint on an `on_pass: none` unit).
+    /// `STATUS_SPECULATION_CANCELLED` is not a real lifecycle status, so folding it leaves the
+    /// unit's terminal state as the winner's `Integrated`.
+    fn cancel_speculation_candidates(
+        &self,
+        st: &Stage,
+        group: &str,
+        winner: u32,
+        candidates: &[SpecCandidate],
+    ) -> Result<(), Error> {
+        for c in candidates {
+            // The winner is NOT cancelled and its worktree/branch is the caller's to clean up
+            // (deleted once it MERGED, or kept as the verified-but-unmerged checkpoint on an
+            // `on_pass: none` unit), so skip it entirely here.
+            if c.lane == winner {
+                continue;
+            }
+            self.emit_keyed_meta(
+                &format!("{}/speculation-cancelled#{}", st.name, c.lane),
+                ledger::TYPE_UNIT_STATUS,
+                json!({
+                    "id": st.name,
+                    "status": STATUS_SPECULATION_CANCELLED,
+                    "evidence": {
+                        "speculation-cancelled": format!(
+                            "candidate {} displaced by winner {}",
+                            c.lane, winner
+                        ),
+                    },
+                }),
+                &[(META_SPEC_GROUP, group)],
+            )?;
+            let _ = c.wt.remove();
+            let _ = Worktree::delete_branch(&self.deps.repo, &c.wt.branch);
+        }
+        Ok(())
     }
 
     fn run_fan_out_stage(&self, st: &Stage) -> Result<bool, Error> {
@@ -9441,6 +9846,379 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A single-agent config with a review panel over a real repo, at the given
+    /// speculation width. The spec-13-unit-3 tests drive first-green-wins speculation.
+    fn spec_cfg(width: u32) -> Config {
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("adj".into(), agent("adj"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.defaults.review = config::ReviewPanel {
+            lenses: vec!["lens".into()],
+            adjudicator: "adj".into(),
+            ..Default::default()
+        };
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                speculation_width: width,
+                ..Default::default()
+            },
+        );
+        cfg
+    }
+
+    #[test]
+    fn speculation_width_2_runs_two_candidates_first_green_wins_rest_cancelled() {
+        // spec 13, unit 3 done-when: a unit class with speculation_width: K parks K
+        // deterministic parallel implementer candidates, the FIRST gate-green
+        // adjudicator-approved one integrates, the rest are CANCELLED, and the
+        // group / winner / losers are logged (K=2, including budget accounting).
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let cfg = spec_cfg(2);
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            write_file: Some("feature.rs".into()),
+            output: r#"{"verdict":"approve"}"#.into(),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "the first gate-green adjudicator-approved candidate integrates"
+        );
+
+        // TWO deterministic candidate implementers were spawned in one speculation group
+        // - budget accounting counts BOTH candidate spawns.
+        assert_eq!(
+            driver.spawn_count("worker"),
+            2,
+            "K=2 parks two parallel implementer candidates (budget counts both)"
+        );
+        let ids = driver.spawn_ids();
+        assert!(
+            ids.contains(&spawn_id("s", ROLE_IMPLEMENTER, 0)),
+            "candidate 0 has its deterministic implementer id"
+        );
+        assert!(
+            ids.contains(&spawn_id("s", ROLE_IMPLEMENTER, 1)),
+            "candidate 1 has its deterministic implementer id"
+        );
+
+        // The winner's UnitIntegrated carries the group, the winning candidate, and the
+        // losing candidates - the group / winner / losers logged on the existing event.
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let integrated = events
+            .iter()
+            .find(|e| {
+                e.type_ == ledger::TYPE_UNIT_INTEGRATED
+                    && String::from_utf8_lossy(&e.data).contains("\"id\":\"s\"")
+            })
+            .expect("the unit integrated");
+        assert_eq!(
+            integrated.meta.get(META_SPEC_GROUP).map(String::as_str),
+            Some(speculation_group_id("s").as_str()),
+            "the winner records its speculation group"
+        );
+        assert_eq!(
+            integrated.meta.get(META_SPEC_WINNER).map(String::as_str),
+            Some(spawn_id("s", ROLE_IMPLEMENTER, 0).as_str()),
+            "candidate 0 is the recorded winner"
+        );
+        assert_eq!(
+            integrated.meta.get(META_SPEC_LOSERS).map(String::as_str),
+            Some(spawn_id("s", ROLE_IMPLEMENTER, 1).as_str()),
+            "candidate 1 is the recorded loser"
+        );
+
+        // The displaced candidate is CANCELLED (recorded in the group), never a winner.
+        let cancelled = events.iter().any(|e| {
+            e.type_ == ledger::TYPE_UNIT_STATUS
+                && String::from_utf8_lossy(&e.data).contains(STATUS_SPECULATION_CANCELLED)
+                && e.meta.get(META_SPEC_GROUP).map(String::as_str)
+                    == Some(speculation_group_id("s").as_str())
+        });
+        assert!(
+            cancelled,
+            "the displaced candidate is recorded cancelled in the group"
+        );
+
+        // Only the WINNING candidate is reviewed - the cancelled candidate never reaches
+        // the review tiers (first-green-wins stops at the winner).
+        assert_eq!(
+            driver.spawn_count("adj"),
+            1,
+            "only the winning candidate is adjudicated; the loser is cancelled un-reviewed"
+        );
+    }
+
+    #[test]
+    fn speculation_budget_accounts_for_every_candidate_spawn() {
+        // Budget accounting (done-when): each parked candidate counts against the global
+        // spawn budget. With width 2 and budget 1 the FIRST candidate is admitted and the
+        // SECOND is refused - the breaker trips with BudgetExhausted, exactly like any
+        // over-budget spawn.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = spec_cfg(2);
+        cfg.workflow.defaults.budget = 1;
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            write_file: Some("feature.rs".into()),
+            output: r#"{"verdict":"approve"}"#.into(),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).expect("a tripped budget halts the run, it does not error");
+
+        assert_eq!(
+            driver.spawn_count("worker"),
+            1,
+            "budget 1 admits exactly one candidate; the second is refused over budget"
+        );
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(
+            events.iter().any(|e| e.type_ == TYPE_BUDGET_EXHAUSTED),
+            "the over-budget second candidate trips the breaker with BudgetExhausted"
+        );
+    }
+
+    #[test]
+    fn speculation_defaults_off_runs_a_single_candidate() {
+        // Global constraint: speculation defaults OFF. A stage with no speculation_width
+        // (effective width 1) runs exactly ONE implementer - the historical single-lane
+        // path - and its UnitIntegrated carries no speculation metadata.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let cfg = spec_cfg(0);
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            write_file: Some("feature.rs".into()),
+            output: r#"{"verdict":"approve"}"#.into(),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(rs.units["s"].status, ledger::Status::Integrated);
+        assert_eq!(
+            driver.spawn_count("worker"),
+            1,
+            "speculation off runs exactly one implementer candidate"
+        );
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let integrated = events
+            .iter()
+            .find(|e| {
+                e.type_ == ledger::TYPE_UNIT_INTEGRATED
+                    && String::from_utf8_lossy(&e.data).contains("\"id\":\"s\"")
+            })
+            .expect("the unit integrated");
+        assert!(
+            !integrated.meta.contains_key(META_SPEC_GROUP),
+            "a non-speculative unit carries no speculation-group metadata"
+        );
+    }
+
+    #[test]
+    fn speculation_parks_all_candidates_together_in_one_step() {
+        // The K candidates are parked TOGETHER in ONE step (parallel), not one-per-step:
+        // the replay/parking driver records BOTH deterministic implementer ids in a single
+        // step so a courier runs them concurrently. Uses on_pass: none so the step needs
+        // no integrate - it only proves the parallel park of the candidate group.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = spec_cfg(2);
+        // No review panel and no merge: this step only parks the two candidate spawns.
+        cfg.workflow.defaults.review = config::ReviewPanel::default();
+        if let Some(s) = cfg.workflow.stages.get_mut("s") {
+            s.on_pass = "none".into();
+        }
+        let store = Store::open(":memory:").unwrap();
+        let driver = crate::driver::replay::ReplayDriver::new(&store);
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).expect("a parked candidate frontier is not a run failure");
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(
+            crate::spawn::is_recorded(&events, &spawn_id("s", ROLE_IMPLEMENTER, 0)),
+            "candidate 0 parked this step"
+        );
+        assert!(
+            crate::spawn::is_recorded(&events, &spawn_id("s", ROLE_IMPLEMENTER, 1)),
+            "candidate 1 parked in the SAME step - the group parks in parallel"
+        );
+        assert_eq!(
+            crate::spawn::recorded(&events).unwrap().len(),
+            2,
+            "both candidates park together in one step, not one per step"
+        );
+    }
+
+    #[test]
+    fn speculation_defers_green_until_the_winner_and_integrates_across_replay_steps() {
+        // Resume coherence under the PRODUCTION stepwise/replay driver: a speculating unit must
+        // stay FRESH across every phase-B parking step (its winner's `green`/`verified` are
+        // DEFERRED until the adjudicator approves), so a resume RE-ENTERS `run_speculation`
+        // deterministically instead of mis-routing onto the single-lane canonical path. This
+        // drives the full park -> replay -> evaluate -> integrate flow across separate step
+        // processes, asserting the deferral holds while the review is still in flight.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let cfg = spec_cfg(2);
+
+        let store = Store::open(":memory:").unwrap();
+        let replay_step = |store: &Store| {
+            let driver = crate::driver::replay::ReplayDriver::new(store);
+            let deps = Deps {
+                store,
+                driver: &driver,
+                gates: &ExecRunner,
+                repo: repo_path.clone(),
+                grounder: None,
+                graph: None,
+                criteria: Vec::new(),
+            };
+            run(&cfg, &deps).expect("a parked frontier is not a run failure")
+        };
+        let has_status = |status: &str| {
+            store
+                .read_stream(STREAM, 0, Direction::Forward)
+                .unwrap()
+                .iter()
+                .any(|e| {
+                    e.type_ == ledger::TYPE_UNIT_STATUS
+                        && String::from_utf8_lossy(&e.data)
+                            .contains(&format!("\"status\":\"{status}\""))
+                })
+        };
+
+        let impl0 = spawn_id("s", ROLE_IMPLEMENTER, 0);
+        let impl1 = spawn_id("s", ROLE_IMPLEMENTER, 1);
+        let lens0 = spawn_id("s", &lens_role("lens"), 0);
+        let adj0 = spawn_id("s", ROLE_ADJUDICATOR, 0);
+
+        // Step 1: both candidates park TOGETHER. No lifecycle status yet.
+        replay_step(&store);
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(crate::spawn::is_recorded(&events, &impl0));
+        assert!(crate::spawn::is_recorded(&events, &impl1));
+        assert!(
+            !has_status("green"),
+            "no candidate emits a routing status before it is chosen the winner"
+        );
+        crate::spawn::record_result(&store, &crate::spawn::SpawnResult::ok(&impl0, "cand 0"))
+            .unwrap();
+        crate::spawn::record_result(&store, &crate::spawn::SpawnResult::ok(&impl1, "cand 1"))
+            .unwrap();
+
+        // Step 2: candidates replay, candidate 0's gates pass, its review LENS parks. The unit
+        // is still FRESH - green/verified are DEFERRED while the review is in flight.
+        replay_step(&store);
+        assert!(
+            crate::spawn::is_recorded(
+                &store.read_stream(STREAM, 0, Direction::Forward).unwrap(),
+                &lens0
+            ),
+            "candidate 0's review lens parked"
+        );
+        assert!(
+            !has_status("green") && !has_status("verified"),
+            "green/verified stay DEFERRED while the winner's review is still parking - the \
+             unit stays Fresh so a resume re-enters speculation, never the canonical single-lane path"
+        );
+        crate::spawn::record_result(
+            &store,
+            &crate::spawn::SpawnResult::ok(&lens0, "lens: no blocker"),
+        )
+        .unwrap();
+
+        // Step 3: the lens replays, the ADJUDICATOR parks.
+        replay_step(&store);
+        assert!(
+            crate::spawn::is_recorded(
+                &store.read_stream(STREAM, 0, Direction::Forward).unwrap(),
+                &adj0
+            ),
+            "candidate 0's adjudicator parked"
+        );
+        crate::spawn::record_result(
+            &store,
+            &crate::spawn::SpawnResult::ok(&adj0, r#"{"verdict":"approve"}"#),
+        )
+        .unwrap();
+
+        // Step 4: the adjudicator replays its approve -> candidate 0 WINS: its deferred
+        // green/verified land, it integrates, and the group/winner/losers are recorded.
+        let rs = replay_step(&store);
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "the approved winner integrates"
+        );
+        assert!(
+            has_status("green") && has_status("verified"),
+            "the winner's deferred green/verified land once it is chosen"
+        );
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let integrated = events
+            .iter()
+            .find(|e| {
+                e.type_ == ledger::TYPE_UNIT_INTEGRATED
+                    && String::from_utf8_lossy(&e.data).contains("\"id\":\"s\"")
+            })
+            .expect("the unit integrated");
+        assert_eq!(
+            integrated.meta.get(META_SPEC_WINNER).map(String::as_str),
+            Some(impl0.as_str()),
+            "candidate 0 is the recorded winner across the replay boundary"
+        );
+        assert_eq!(
+            integrated.meta.get(META_SPEC_LOSERS).map(String::as_str),
+            Some(impl1.as_str()),
+            "candidate 1 is the recorded loser"
+        );
     }
 
     #[test]
