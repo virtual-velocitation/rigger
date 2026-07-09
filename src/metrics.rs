@@ -17,7 +17,7 @@
 //!
 //! # Review approve/reject classification
 //!
-//! A unit's review outcome is read off the conductor's two review paths:
+//! A unit's review outcome is read off the conductor's three review paths:
 //!
 //! - **Per-unit review** (`run_single_stage`): the conductor emits a `verified`
 //!   `UnitStatus` once the gates pass, *then* runs the adjudicator. An approve
@@ -29,6 +29,17 @@
 //!   `verified`**. There is no per-unit cause discriminator on `UnitFailed`, so a
 //!   fan-out reject is inferred from the unit's `UnitStarted` carrying an **empty
 //!   `agent`** (the necessary condition for `is_fan_out`).
+//! - **Speculation candidates** (`run_speculation`): a first-green-wins group defers
+//!   the winner's `verified`/`reviewed` and emits nothing for a losing lane's
+//!   lifecycle - a rejected candidate cannot ride a `verified`+`UnitFailed` pair
+//!   without folding the shared unit out of `Fresh` and mis-routing a resume. So an
+//!   adjudicator-rejected candidate instead rides a fold-neutral
+//!   [`STATUS_SPECULATION_REJECTED`] `UnitStatus` marker (not a `ledger::Status`, so
+//!   the ledger fold ignores it) that this fold counts DIRECTLY as one review reject.
+//!   It is an EXACT signal (the conductor emits it only on an adjudicator reject), not
+//!   the lossy empty-`agent` heuristic, and being an in-process `UnitStatus` it
+//!   survives on a live driver - unlike the adjudicator `SpawnResult`, which only the
+//!   courier records.
 //!
 //! The empty-`agent` signal is a **lossy heuristic, not an exact classifier**: an
 //! empty agent is *necessary* for a fan-out / review-only stage but not
@@ -92,7 +103,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::conductor::{META_MODEL_ALIAS, META_MODEL_RESOLVED, META_WORKTREE_SHA};
+use crate::conductor::{
+    META_MODEL_ALIAS, META_MODEL_RESOLVED, META_WORKTREE_SHA, STATUS_SPECULATION_REJECTED,
+};
 use crate::contextgraph::{META_ACTOR, TYPE_GATE_VERDICT, TYPE_REVIEW_FINDING};
 use crate::eventstore::Event;
 use crate::ledger::{
@@ -161,8 +174,11 @@ impl GateCounts {
 pub struct Metrics {
     /// Distinct units that emitted a `UnitStarted` (deduplicated across resumes).
     pub units_started: u64,
-    /// Units that reached `Integrated` with zero `UnitFailed` for their id - a
-    /// clean first pass. The numerator of first-pass yield.
+    /// Units that reached `Integrated` with no failed attempt for their id - a clean
+    /// first pass. The numerator of first-pass yield. "Failed" here is any `UnitFailed`
+    /// OR a rejected speculation candidate (the [`STATUS_SPECULATION_REJECTED`] marker):
+    /// a first-green-wins unit whose review rejected one candidate is not a clean pass,
+    /// exactly as a single-lane unit that rejected then re-implemented is not.
     pub first_pass_clean: u64,
     /// Per-gate pass/fail tallies, excluding the artifact-tagged integrate-time
     /// `GateVerdict`s. Sorted by gate id (`BTreeMap`) for stable reporting.
@@ -175,12 +191,13 @@ pub struct Metrics {
     /// Reviews that rejected and looped back into `UnitFailed` without
     /// integrating on that attempt. Aggregate only.
     ///
-    /// Detected on both conductor review paths: the per-unit path arms on a
+    /// Detected on all three conductor review paths: the per-unit path arms on a
     /// `verified` `UnitStatus` then counts a `UnitFailed`-while-armed; the
     /// fan-out / review-only path is inferred from an empty-`agent` `UnitStarted`
-    /// then a `UnitFailed`. The fan-out signal is **lossy** - see the module doc
-    /// for the known/accepted false positive (an agentless gated stage's bare gate
-    /// failure).
+    /// then a `UnitFailed`; a rejected speculation candidate rides an exact
+    /// [`STATUS_SPECULATION_REJECTED`] marker counted directly. The fan-out signal is
+    /// **lossy** - see the module doc for the known/accepted false positive (an
+    /// agentless gated stage's bare gate failure).
     pub review_reject: u64,
     /// The spec-11 unit-1 review-QUALITY telemetry (is the review tier RIGHT, not just
     /// how often it rejects), folded from the sha-stamped review-boundary events, the
@@ -495,6 +512,25 @@ pub fn project(events: &[Event]) -> Metrics {
                             if u.rejected_shas.contains(sha) {
                                 metrics.review_quality.flip_flops += 1;
                             }
+                        }
+                    }
+                    // A speculation candidate the adjudicator REJECTED (spec 13, unit 3). The
+                    // producer cannot arm the shared unit with a real `verified`+`UnitFailed`
+                    // pair - that lifecycle status would fold the SHARED unit out of `Fresh` and
+                    // mis-route a resume of the still-racing group onto the canonical lane - so
+                    // the reject rides this fold-neutral marker (the ledger fold ignores it). It
+                    // is an EXACT reject signal: the conductor emits it only on an adjudicator
+                    // reject, so count it DIRECTLY (no `verified` arming needed), mirroring the
+                    // single-lane reject. Gated on `started` so the count stays a subset of
+                    // units_started, and it spoils first_pass_clean exactly as a single-lane
+                    // reject's `UnitFailed` does. The reviewed sha it carries pairs with a later
+                    // approve on the SAME sha for the flip-flop fold, symmetric with the
+                    // `UnitFailed` reject path.
+                    s if s == STATUS_SPECULATION_REJECTED && u.started => {
+                        metrics.review_reject += 1;
+                        u.failed = true;
+                        if let Some(sha) = e.meta.get(META_WORKTREE_SHA).filter(|s| !s.is_empty()) {
+                            u.rejected_shas.insert(sha.clone());
                         }
                     }
                     _ => {}
@@ -1258,6 +1294,58 @@ mod tests {
         let m = project(&events);
         assert_eq!(m.review_reject, 2);
         assert_eq!(m.review_approve, 0);
+    }
+
+    #[test]
+    fn a_rejected_speculation_candidate_counts_as_a_review_reject() {
+        // spec 13, unit 3 (adv-u13-speculation-losers-invisible-to-review-metrics): a
+        // first-green-wins group defers the winner's lifecycle statuses, so a losing
+        // candidate the adjudicator rejected rides an EXACT fold-neutral
+        // STATUS_SPECULATION_REJECTED marker instead of a `verified`+`UnitFailed` pair
+        // (which would fold the shared unit out of `Fresh`). The fold counts it directly as
+        // one review reject and it spoils first_pass_clean - exactly the approve=1/reject=1
+        // /not-clean shape single-lane records for identical review work. The marker is NOT
+        // a `ledger::Status`, so the unit's terminal state stays the winner's `reviewed`
+        // approve here.
+        let events = vec![
+            started("s", "impl"),
+            status("s", STATUS_SPECULATION_REJECTED), // lane 0: adjudicator rejected
+            status("s", "reviewed"),                  // lane 1: the winner's deferred approve
+            integrated("s"),
+        ];
+        let m = project(&events);
+        assert_eq!(m.review_reject, 1, "the rejected candidate is counted");
+        assert_eq!(
+            m.review_approve, 1,
+            "the winning candidate's approve is counted"
+        );
+        assert_eq!(
+            m.first_pass_clean, 0,
+            "a review reject means the unit is not a clean first pass"
+        );
+    }
+
+    #[test]
+    fn a_speculation_reject_marker_is_fold_neutral_for_the_ledger_but_not_the_metrics() {
+        // The marker must never fold the unit's ledger status (that would mis-route a
+        // resume): a unit that ONLY carries the reject marker (no integrate/escalate) is
+        // still counted as one review reject here, but it is not integrated - so it is
+        // neither a clean pass nor double-counted. Gated on `started`: an unstarted id
+        // carrying the marker counts nothing (subset-of-units_started invariant).
+        let started_events = vec![
+            started("s", "impl"),
+            status("s", STATUS_SPECULATION_REJECTED),
+        ];
+        let m = project(&started_events);
+        assert_eq!(m.review_reject, 1);
+        assert_eq!(m.first_pass_clean, 0);
+
+        let unstarted = vec![status("s", STATUS_SPECULATION_REJECTED)];
+        let m2 = project(&unstarted);
+        assert_eq!(
+            m2.review_reject, 0,
+            "the marker on a never-started unit counts nothing"
+        );
     }
 
     #[test]

@@ -209,6 +209,22 @@ pub const META_SPEC_LOSERS: &str = "speculation_losers";
 /// lane, never the unit's terminal state.
 const STATUS_SPECULATION_CANCELLED: &str = "speculation-cancelled";
 
+/// The `UnitStatus.status` token a REVIEW-REJECTED speculation candidate carries (spec 13,
+/// unit 3). Like [`STATUS_SPECULATION_CANCELLED`] it is deliberately NOT a [`ledger::Status`]
+/// variant, so the LEDGER fold leaves the shared unit's real status untouched - driven by the
+/// WINNER's lifecycle, or the group's escalation. A rejected candidate must never fold the
+/// unit out of `Fresh`, which would mis-route a resume of the still-racing group onto the
+/// canonical lane (the resume hazard the winner-status deferral is built to avoid). UNLIKE the
+/// cancelled marker, the METRICS fold DOES count it: it is the in-process review-reject signal
+/// that makes an adjudicator-rejected candidate visible to the spec-11 review-quality fold
+/// exactly as the single-lane `verified`-then-`UnitFailed` pair is, WITHOUT a resume-corrupting
+/// lifecycle status (addresses adv-u13-speculation-losers-invisible-to-review-metrics). It is
+/// recorded IN-PROCESS by the conductor (like every `UnitStatus`), so it survives on a live
+/// driver - unlike the adjudicator `SpawnResult` verdict, which only the courier/replay path
+/// records (adj-u1-verdict-reject-disjoint-attribution), so a fold keyed on that would be
+/// always-zero in production.
+pub const STATUS_SPECULATION_REJECTED: &str = "speculation-rejected";
+
 /// The `UnitStatus.status` token a review-tier ROUTING marker carries (spec 03
 /// "adaptive review depth", spec 13 unit 4 "risk-tiered review depth"). Like
 /// [`STATUS_COMPENSATION_QUEUED`] it is deliberately NOT a [`ledger::Status`] variant,
@@ -3722,6 +3738,12 @@ impl RunCtx<'_> {
                 }
             }
             if !review.approved {
+                // Record the reject on the review-quality fold BEFORE moving on: a losing
+                // candidate is otherwise invisible to it (all lifecycle statuses defer to the
+                // winner), so a speculating unit would report inflated review quality to the
+                // spec-13 self-improvement loop. A fold-neutral marker keeps the shared unit
+                // `Fresh` for resume while the metrics fold counts the reject.
+                self.record_speculation_reject(st, lane, &dir, &group)?;
                 continue; // rejected candidate loses; try the next candidate.
             }
             // A candidate that passed its narrowed gates AND the adjudicator. Assert the
@@ -3905,6 +3927,50 @@ impl RunCtx<'_> {
                 ],
             )?;
         }
+        Ok(())
+    }
+
+    /// Record a REVIEW-REJECTED speculation candidate on the review-quality fold (spec 13,
+    /// unit 3; addresses adv-u13-speculation-losers-invisible-to-review-metrics). A losing
+    /// candidate the adjudicator rejected used to just `continue`, emitting nothing, so the
+    /// spec-11/spec-01 review-quality fold never saw the reject and `first_pass_clean` counted
+    /// the unit clean - the exact review-reject-uncounted class the metrics fold was hardened
+    /// against on the fan-out path, re-introduced on this third review path.
+    ///
+    /// The reject CANNOT ride a real `verified`+`UnitFailed` pair: that lifecycle status folds
+    /// the SHARED unit id out of `Fresh` and mis-routes a resume of the still-racing group onto
+    /// the canonical lane (the exact hazard the winner-status deferral,
+    /// `d13-u3-defer-all-three-statuses`, exists to close). So it rides a FOLD-NEUTRAL
+    /// `UnitStatus` marker - like [`STATUS_SPECULATION_CANCELLED`], its status is not a
+    /// [`ledger::Status`] variant, so the ledger fold leaves the unit's real status untouched -
+    /// that the METRICS fold counts directly as a review reject. The fold stays the single
+    /// counting authority; the producer only records the fact. Keyed by lane so a resume
+    /// RE-EVALUATING the recorded candidate dedups it, tagged with the `group`, and stamped with
+    /// the reviewed sha so a later approve on the SAME sha reads as a flip-flop (spec 11).
+    fn record_speculation_reject(
+        &self,
+        st: &Stage,
+        lane: u32,
+        dir: &str,
+        group: &str,
+    ) -> Result<(), Error> {
+        self.emit_keyed_meta(
+            &format!("{}/spec-rejected#{lane}", st.name),
+            ledger::TYPE_UNIT_STATUS,
+            json!({
+                "id": st.name,
+                "status": STATUS_SPECULATION_REJECTED,
+                "evidence": {
+                    "speculation-rejected": format!(
+                        "candidate {lane} rejected by the adjudicator"
+                    ),
+                },
+            }),
+            &[
+                (META_SPEC_GROUP, group),
+                (META_WORKTREE_SHA, &worktree::head_sha_of(dir)),
+            ],
+        )?;
         Ok(())
     }
 
@@ -11710,6 +11776,65 @@ mod tests {
         assert!(
             logged_review_tier(&store, "light"),
             "the low-risk lanes routed to the light panel"
+        );
+    }
+
+    #[test]
+    fn speculation_rejected_loser_is_visible_to_the_review_quality_fold() {
+        // adv-u13-speculation-losers-invisible-to-review-metrics: a losing speculation
+        // candidate the adjudicator REJECTED must be counted on the spec-11/spec-01
+        // review-quality fold exactly as the single-lane path is - review_reject counts it
+        // and first_pass_clean excludes the unit - so a speculating unit does NOT report
+        // INFLATED review quality to the spec-13 self-improvement loop that consumes these
+        // metrics. Same scenario as `speculation_later_candidate_wins...`: lane 0 is
+        // adjudicator-REJECTED, lane 1 wins. Before the fix the fold read approve=1/reject=0
+        // /first_pass_clean=1 (a clean pass over an identical review that single-lane records
+        // as reject=1/not-clean); the fold-neutral `speculation-rejected` marker closes it.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let cfg = spec_cfg(2);
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            write_file: Some("feature.rs".into()),
+            output: r#"{"verdict":"approve"}"#.into(),
+            output_by_spawn_id: HashMap::from([(
+                spawn_id("s", ROLE_ADJUDICATOR, 0),
+                r#"{"verdict":"reject","issues":["lane 0 rejected by the adjudicator"]}"#.into(),
+            )]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        // The fold-neutral reject marker must NOT disturb the unit's real terminal state:
+        // the winner still integrates (the marker is not a `ledger::Status` variant).
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "the reject marker is fold-neutral - the winning lane still integrates the unit"
+        );
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let m = crate::metrics::project(&events);
+        assert_eq!(
+            m.review_approve, 1,
+            "the winning lane-1 candidate's adjudicator approve is counted once"
+        );
+        assert_eq!(
+            m.review_reject, 1,
+            "the adjudicator-rejected lane-0 candidate is counted as a review reject, exactly \
+             as single-lane review work rejecting one attempt records reject=1"
+        );
+        assert_eq!(
+            m.first_pass_clean, 0,
+            "a unit whose review rejected a candidate is NOT a clean first pass"
         );
     }
 
