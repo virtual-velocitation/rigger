@@ -43,7 +43,7 @@ use crate::conductor::{
 };
 use crate::config::{split_frontmatter, AgentDef, Config, ReviewPanel};
 use crate::contextgraph::TYPE_REVIEW_FINDING;
-use crate::eventstore::{Direction, Event, EventStore, ExpectedRevision};
+use crate::eventstore::{Event, EventStore, ExpectedRevision};
 use crate::ledger::TYPE_UNIT_STATUS;
 use crate::spawn::{lens_role, ROLE_ADJUDICATOR, ROLE_ADVERSARY};
 
@@ -564,18 +564,12 @@ fn is_batch_marker(e: &Event) -> bool {
         .unwrap_or(false)
 }
 
-/// Read a project's canary stream through the namespaced store, scoped to the latest run -
-/// the reporting seam `rigger stats --canary` folds.
-pub fn read_latest(store: &dyn EventStore) -> Result<Vec<Event>, Error> {
-    let events = store.read_stream(STREAM, 0, Direction::Forward)?;
-    Ok(latest_run(&events).to_vec())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::conductor::AgentResult;
     use crate::eventstore::sqlite::Store;
+    use crate::eventstore::Direction;
 
     fn agent(id: &str) -> AgentDef {
         AgentDef {
