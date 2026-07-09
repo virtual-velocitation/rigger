@@ -27,6 +27,7 @@ pub mod metrics;
 pub mod ort_runtime;
 #[cfg(feature = "turbovec")]
 pub mod ort_teardown;
+pub mod playbooks;
 pub mod progress;
 pub mod run;
 pub mod safety;

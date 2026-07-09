@@ -224,6 +224,83 @@ fn emit_appends_and_folds_then_peers_shows_it() {
     );
 }
 
+/// `rigger playbooks --rebuild` (spec 13b, unit 2) distills the recorded `LessonLearned`
+/// stream into a deduplicated, trigger-scoped playbook pool under `.rigger/playbooks/`,
+/// reconstructing it from the log. Two lessons carrying the SAME text collapse into ONE
+/// playbook whose trigger scope unions their `about` files; a distinct lesson is its own
+/// playbook; and the pool is a projection - re-running the rebuild is idempotent.
+#[test]
+fn playbooks_rebuild_distills_the_lesson_log_into_a_deduped_pool() {
+    let dir = temp_project();
+    let root = dir.path();
+    // A prior run created the store; the distiller only READS it.
+    seed_store(root);
+
+    // Two lessons with the SAME text about DIFFERENT files (they must dedup + union), plus
+    // one distinct lesson (its own playbook).
+    let lessons = [
+        (r#"{"id":"la","summary":"guard the checked add","about":["a.rs"]}"#),
+        (r#"{"id":"lb","summary":"guard the checked add","about":["b.rs"]}"#),
+        (r#"{"id":"lc","summary":"close the scratch file","about":["c.rs"]}"#),
+    ];
+    for l in lessons {
+        let (_out, err, ok) = run_rigger(root, &["emit", "LessonLearned", l]);
+        assert!(ok, "emit LessonLearned must succeed; stderr: {err}");
+    }
+
+    // Rebuild the pool from the log.
+    let (out, err, ok) = run_rigger(root, &["playbooks", "--rebuild"]);
+    assert!(ok, "playbooks --rebuild must succeed; stderr: {err}");
+    assert!(
+        out.contains("rebuilt 2 playbook(s)"),
+        "two distinct lessons distill to 2 playbooks; got: {out:?}"
+    );
+
+    // The pool is on disk as native agent-files.
+    let pool = root.join(".rigger").join("playbooks");
+    let read_pool = || -> (usize, String) {
+        let mut files = 0;
+        let mut bodies = String::new();
+        for entry in std::fs::read_dir(&pool).unwrap() {
+            let p = entry.unwrap().path();
+            if p.extension().and_then(|x| x.to_str()) == Some("md") {
+                files += 1;
+                bodies.push_str(&std::fs::read_to_string(&p).unwrap());
+            }
+        }
+        (files, bodies)
+    };
+    let (files, bodies) = read_pool();
+    assert_eq!(
+        files, 2,
+        "the deduped pool holds one file per distinct lesson"
+    );
+    // The deduped playbook unions both lessons' about files as its trigger predicate and
+    // records the fold count in its frontmatter.
+    assert!(
+        bodies.contains("guard the checked add") && bodies.contains("close the scratch file"),
+        "both distinct lesson bodies must be present; got:\n{bodies}"
+    );
+    assert!(
+        bodies.contains("- a.rs") && bodies.contains("- b.rs"),
+        "the deduped playbook's trigger scope must union both lessons' about files;\n{bodies}"
+    );
+    assert!(
+        bodies.contains("lessons: 2"),
+        "the deduped playbook must record it folded 2 lessons;\n{bodies}"
+    );
+
+    // The pool is a rebuildable PROJECTION: re-running over the same log is idempotent.
+    let (out2, _e, ok2) = run_rigger(root, &["playbooks", "--rebuild"]);
+    assert!(ok2, "a second rebuild must succeed");
+    assert!(out2.contains("rebuilt 2 playbook(s)"));
+    let (files2, _b2) = read_pool();
+    assert_eq!(
+        files2, 2,
+        "re-running the projection leaves no duplicate/leftover files"
+    );
+}
+
 /// `rigger emit` of a ReviewFinding shows back through `rigger peers` as a finding
 /// line (id, by, summary, about) - the same channel concurrent reviewers use.
 #[test]

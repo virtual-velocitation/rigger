@@ -4,7 +4,7 @@
 //! stream that both the ledger and the context graph project from. It is the
 //! top-level use case; it depends only on ports and domain, never on an adapter.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Mutex;
 
@@ -6117,6 +6117,16 @@ const DECISIONS_HEADER: &str =
 /// never crowds a current one out of the verbatim slice (sdet-u5 / arch-u5). `line` renders
 /// one entry's body (the sections differ: findings name the raising reviewer, the rest do
 /// not); `noun` names the unit in the elision note.
+///
+/// `by_relevance` selects the SINGLE lessons-slice divergence (spec 13b unit 2,
+/// d13b-u2-injection-relevance-seam): when set, nodes rank by blast-radius RELEVANCE
+/// (how many of the node's `recency_rel` targets fall inside the agent's grounded `seed`)
+/// as the PRIMARY key, with recency the deterministic tie-break - so a lesson whose trigger
+/// scope covers more of what the agent is about to touch outranks a merely-newer one. It is
+/// added as a primary sort key rather than a forked writer so the one capping path stays
+/// shared; the decisions and findings sections pass `false`, making relevance uniformly 0,
+/// which collapses the order back to (recency, id) BYTE-IDENTICALLY to before (spec exclusion:
+/// only the lessons slice gains relevance ranking).
 #[allow(clippy::too_many_arguments)]
 fn write_capped_section(
     b: &mut String,
@@ -6128,20 +6138,33 @@ fn write_capped_section(
     noun: &str,
     verbatim_n: usize,
     budget_bytes: usize,
+    by_relevance: bool,
     line: impl Fn(&contextgraph::Node) -> String,
 ) {
     // Recency per node id: the max source position of its own `recency_rel` edges. Those
     // edges point node -> file, so key on the `from` (node) side only; a SUPERSEDES edge
-    // (from = superseder) never dates the superseded node.
+    // (from = superseder) never dates the superseded node. When `by_relevance`, the SAME
+    // edge walk also tallies how many DISTINCT seed files each node is `recency_rel` to -
+    // its blast-radius relevance (0 for every node when the flag is off).
+    let seed_set: BTreeSet<&str> = seed.iter().map(String::as_str).collect();
     let mut recency: BTreeMap<&str, u64> = BTreeMap::new();
+    let mut relevance: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
     for e in &g.edges {
         if e.rel != recency_rel {
             continue;
         }
         let slot = recency.entry(e.from.as_str()).or_insert(0);
         *slot = (*slot).max(e.source);
+        if by_relevance && seed_set.contains(e.to.as_str()) {
+            relevance
+                .entry(e.from.as_str())
+                .or_default()
+                .insert(e.to.as_str());
+        }
     }
-    // The nodes of this kind with a non-empty summary, most-recent first.
+    let relevance_of = |id: &str| relevance.get(id).map(BTreeSet::len).unwrap_or(0);
+    // The nodes of this kind with a non-empty summary, ranked most-RELEVANT first (when
+    // `by_relevance`) then most-recent, id breaking any remaining tie for determinism.
     let mut nodes: Vec<&contextgraph::Node> = g
         .nodes
         .iter()
@@ -6151,7 +6174,10 @@ fn write_capped_section(
     nodes.sort_by(|a, c| {
         let ra = recency.get(a.id.as_str()).copied().unwrap_or(0);
         let rc = recency.get(c.id.as_str()).copied().unwrap_or(0);
-        rc.cmp(&ra).then_with(|| a.id.cmp(&c.id))
+        relevance_of(&c.id)
+            .cmp(&relevance_of(&a.id))
+            .then_with(|| rc.cmp(&ra))
+            .then_with(|| a.id.cmp(&c.id))
     });
     if nodes.is_empty() {
         return;
@@ -6208,6 +6234,8 @@ fn write_capped_decisions(b: &mut String, g: &Graph, seed: &[String]) {
         "decision",
         DECISIONS_VERBATIM_N,
         DECISIONS_BUDGET_BYTES,
+        // Decisions keep pure recency (spec exclusion: only the lessons slice gains relevance).
+        false,
         plain_node_line,
     );
 }
@@ -6226,6 +6254,10 @@ fn write_capped_lessons(b: &mut String, g: &Graph, seed: &[String]) {
         "lesson",
         LESSONS_VERBATIM_N,
         LESSONS_BUDGET_BYTES,
+        // The ONE relevance-ranked slice (spec 13b unit 2): a lesson whose trigger scope
+        // covers more of the agent's grounded seed outranks a merely-newer one, recency the
+        // tie-break, all within the unchanged lessons budget.
+        true,
         plain_node_line,
     );
 }
@@ -6247,6 +6279,8 @@ fn write_capped_findings(b: &mut String, g: &Graph, seed: &[String]) {
         "finding",
         FINDINGS_VERBATIM_N,
         FINDINGS_BUDGET_BYTES,
+        // Findings keep pure recency (spec exclusion: only the lessons slice gains relevance).
+        false,
         |n| {
             let by = n.attrs.get("by").map(String::as_str).unwrap_or("");
             if by.is_empty() {
@@ -8602,6 +8636,74 @@ mod tests {
         assert!(
             out.contains(&format!("+{} older lesson", total - LESSONS_VERBATIM_N)),
             "the elision note must name the count the N cap trims; output was:\n{out}"
+        );
+    }
+
+    // Build a lessons subgraph where each lesson carries its OWN `about` scope (not the
+    // uniform seed), applied in order so position grows (older first), then render the
+    // capped-lessons section for `seed`. Lets a test vary blast-radius RELEVANCE (how much
+    // a lesson's trigger scope overlaps the grounded seed) independently of recency.
+    fn render_capped_lessons_scoped(
+        lessons: &[(&str, &str, Vec<&str>)],
+        seed: &[String],
+    ) -> String {
+        let graph = crate::contextgraph::sqlite::Projector::open(":memory:").unwrap();
+        for (i, (id, summary, about)) in lessons.iter().enumerate() {
+            let mut e = Event::new(
+                contextgraph::TYPE_LESSON_LEARNED,
+                serde_json::to_vec(&json!({
+                    "id": id,
+                    "summary": summary,
+                    "about": about,
+                }))
+                .unwrap(),
+            );
+            e.position = (i as u64) + 1;
+            graph.apply(&e).unwrap();
+        }
+        let g = graph.subgraph(seed, 2).unwrap();
+        let mut b = String::new();
+        write_capped_lessons(&mut b, &g, seed);
+        b
+    }
+
+    #[test]
+    fn lessons_rank_by_blast_radius_relevance_over_pure_recency() {
+        // spec 13b unit 2 / d13b-u2-injection-relevance-seam: the lessons slice ranks by
+        // blast-radius RELEVANCE (overlap of the lesson's trigger scope with the agent's
+        // grounded seed files), with recency the deterministic tie-break - REPLACING the
+        // pure-recency order the decisions/findings sections keep. A lesson whose scope
+        // covers MORE of the seed must outrank a NEWER lesson whose scope barely overlaps,
+        // and among equal-relevance lessons the newer still wins.
+        let seed = vec!["a.rs".to_string(), "b.rs".to_string(), "c.rs".to_string()];
+        let lessons: Vec<(&str, &str, Vec<&str>)> = vec![
+            // Oldest, but covers ALL of the seed -> highest relevance (3).
+            ("l_broad_old", "BROAD_MARK", vec!["a.rs", "b.rs", "c.rs"]),
+            // Older shallow (relevance 1), newer than l_broad_old.
+            ("l_shallow_old", "SHALLOW_OLD_MARK", vec!["a.rs"]),
+            // Newest, but only overlaps ONE seed file -> low relevance (1).
+            ("l_shallow_new", "SHALLOW_NEW_MARK", vec!["a.rs"]),
+        ];
+        let out = render_capped_lessons_scoped(&lessons, &seed);
+        let pos = |m: &str| {
+            out.find(m)
+                .unwrap_or_else(|| panic!("{m} must render; output was:\n{out}"))
+        };
+        // Relevance beats recency: the OLDEST-but-broadest lesson outranks the newest.
+        assert!(
+            pos("BROAD_MARK") < pos("SHALLOW_NEW_MARK"),
+            "the highest-relevance lesson must rank first even though it is the oldest; \
+             output was:\n{out}"
+        );
+        assert!(
+            pos("BROAD_MARK") < pos("SHALLOW_OLD_MARK"),
+            "the highest-relevance lesson must outrank a shallower one; output was:\n{out}"
+        );
+        // Recency is the tie-break WITHIN equal relevance: both shallow lessons overlap the
+        // seed once, so the newer (l_shallow_new) precedes the older (l_shallow_old).
+        assert!(
+            pos("SHALLOW_NEW_MARK") < pos("SHALLOW_OLD_MARK"),
+            "within equal relevance the newer lesson must win the tie-break; output was:\n{out}"
         );
     }
 
