@@ -372,8 +372,14 @@ fn pct(f: f64) -> String {
     format!("{:.1}%", f * 100.0)
 }
 
-/// Total real gate runs across every gate in `m` - the denominator-free gate-activity
-/// summary the replay diff carries (a config edit that adds/removes a gate moves it).
+/// Total gate verdicts folded into `m` (summed across every gate) - the denominator-free
+/// gate-activity count the replay diff carries. This is a RAW fold over `m.gates`, so WHICH
+/// verdicts it counts is entirely determined by which the caller folded into `m`: it makes no
+/// config judgement of its own. `rigger replay` re-scopes the CANDIDATE `Metrics` UPSTREAM
+/// (in `cmd_replay`) to only the gates the re-drive actually reaches - a gate the candidate
+/// config removed or renamed has its seeded verdict dropped BEFORE this fold - so the
+/// candidate "gate runs" column reflects the candidate config, not the seeded baseline. The
+/// baseline `Metrics` is the raw recorded run, so its total is every gate the run really ran.
 fn gate_total(m: &Metrics) -> u64 {
     m.gates.values().map(|g| g.total()).sum()
 }

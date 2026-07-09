@@ -2074,12 +2074,21 @@ fn append_review_quality(lines: &mut Vec<String>, m: &Metrics) {
 /// campaign, because unit 1's pinned definition makes the baseline citable.
 ///
 /// The re-drive answers every agent spawn from the baseline's recorded `SpawnResult`s (the
-/// [`ReplayDriver`]) and every gate from its recorded `GateVerdict`s (the conductor's
-/// gate-verdict replay), so it runs NO agent and NO gate command - it re-derives only the
-/// run's SHAPE (which stages, which review tier, which budget the CANDIDATE config
-/// dictates) over the same recorded behaviour. A spawn the candidate config introduces that
-/// the trajectory never recorded simply parks, so the re-drive stops where the recorded
-/// behaviour runs out rather than fabricating one.
+/// [`ReplayDriver`]) and every gate the candidate still declares from its recorded
+/// `GateVerdict`s (the conductor's gate-verdict replay), so it runs NO agent and NO gate
+/// command - it re-derives only the run's SHAPE (which stages, which review tier, which
+/// budget, WHICH gates the CANDIDATE config dictates) over the same recorded behaviour. A
+/// spawn the candidate config introduces that the trajectory never recorded simply parks, so
+/// the re-drive stops where the recorded behaviour runs out rather than fabricating one.
+///
+/// The "gate runs" column is re-scoped to the candidate accordingly: the trajectory seeds
+/// every recorded gate verdict, but only the gates the candidate config still declares are
+/// re-reached, so a config edit that REMOVES or renames a gate lowers the candidate "gate
+/// runs" (a removed gate's seeded verdict is dropped by [`candidate_reaches_gate`] before the
+/// candidate fold), while an added gate the baseline never ran runs FAIL-SAFE (never a
+/// fabricated pass, see [`ReplayRunner`]). The one gate boundary the offline replay does not
+/// reproduce is the git-merge-specific POST-MERGE re-gate (d13-u2), whose recorded verdict is
+/// left as-is.
 ///
 /// ISOLATION (never the real project streams): the re-drive writes to a FRESH sqlite file
 /// under the scratch root, opened as a distinct [`Namespaced`] project - the real
@@ -2144,50 +2153,150 @@ fn cmd_replay(args: &[String]) -> Res {
 
     // 3. Seed the ISOLATED store (a separate scratch db + namespace) with a fresh RunStarted
     //    for the candidate criteria/definition, then the baseline's replayable trajectory.
-    let replay_db = Path::new(&scratch_root).join(format!(
-        "rigger-replay-{}.db",
-        uuid::Uuid::new_v4().simple()
-    ));
-    let iso_backend = Store::open(replay_db.to_str().unwrap_or_default())?;
-    let iso = Namespaced::new(&iso_backend, "rigger-replay");
-    runscope::start_fresh(&iso, &criteria, &candidate_definition)?;
-    let trajectory = conductor::replay_trajectory(baseline);
-    iso.append(conductor::STREAM, ExpectedRevision::Any, &trajectory)?;
+    //    The db lives in a THROWAWAY subdir removed wholesale below, so the WAL/SHM sidecars
+    //    a live WAL-mode sqlite opens beside the .db never leak under the scratch root.
+    let replay_dir =
+        Path::new(&scratch_root).join(format!("rigger-replay-{}", uuid::Uuid::new_v4().simple()));
+    std::fs::create_dir_all(&replay_dir)?;
+    let replay_db = replay_dir.join("events.db");
 
-    // 4. Re-drive the candidate config over the isolated store. Repo-less and grounder-less
-    //    (a pure offline re-fold), the ReplayDriver answers each spawn from the seeded
-    //    results, and ReplayRunner guarantees a candidate-config-only gate never shells out.
-    let driver = ReplayDriver::new(&iso);
-    let deps = Deps {
-        store: &iso,
-        driver: &driver,
-        gates: &ReplayRunner,
-        repo: String::new(),
-        grounder: None,
-        graph: None,
-        criteria,
+    // The store (and everything borrowing it - the namespaced view, the driver, the deps)
+    // is confined to this scope so it is DROPPED before the scratch subdir is removed: a
+    // WAL-mode sqlite only releases its `.db-wal`/`.db-shm` sidecars on close, so cleaning
+    // up while the connection is still open would leak them (adv-u13r-replay-scratch-wal-shm-leak).
+    let (candidate_metrics, drive_err) = {
+        let iso_backend = Store::open(replay_db.to_str().unwrap_or_default())?;
+        let iso = Namespaced::new(&iso_backend, "rigger-replay");
+        runscope::start_fresh(&iso, &criteria, &candidate_definition)?;
+        let trajectory = conductor::replay_trajectory(baseline);
+        iso.append(conductor::STREAM, ExpectedRevision::Any, &trajectory)?;
+
+        // 4. Re-drive the candidate config over the isolated store. Repo-less and grounder-less
+        //    (a pure offline re-fold), the ReplayDriver answers each spawn from the seeded
+        //    results, and ReplayRunner guarantees a candidate-config-only gate never shells out.
+        let driver = ReplayDriver::new(&iso);
+        let deps = Deps {
+            store: &iso,
+            driver: &driver,
+            gates: &ReplayRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria,
+        };
+        let drive = conductor::run(&candidate_cfg, &deps);
+
+        // 5. Fold the candidate metrics from the isolated run. The re-drive's own result is
+        //    reported but never fatal: a candidate config that parks (an uncovered spawn) still
+        //    yields a partial, honestly-labelled candidate column.
+        //
+        //    "gate runs" must reflect the CANDIDATE config, not echo the seeded baseline: the
+        //    trajectory seeds every recorded GateVerdict, but the re-drive only RE-REACHES the
+        //    gates the candidate config still declares (`run_gates` iterates the candidate's
+        //    `st.gates`), so a removed/renamed gate is never touched. Filter the isolated
+        //    current-run through `candidate_reaches_gate` before folding, so a seeded verdict
+        //    the candidate no longer reaches is dropped from the candidate "gate runs" count
+        //    (adv-u13r-gate-runs-echoes-seed-not-candidate). Every non-gate event folds
+        //    unchanged, so only the gate column is re-scoped.
+        let iso_events = iso.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+        let current = runscope::current_run(&iso_events);
+        let started = started_units(current);
+        let candidate_view: Vec<Event> = current
+            .iter()
+            .filter(|e| candidate_reaches_gate(e, &candidate_cfg, &started))
+            .cloned()
+            .collect();
+        (metrics::project(&candidate_view), drive.err())
     };
-    let drive = conductor::run(&candidate_cfg, &deps);
 
-    // 5. Fold the candidate metrics from the isolated run and print the diff. The re-drive's
-    //    own result is reported but never fatal: a candidate config that parks (an
-    //    uncovered spawn) still yields a partial, honestly-labelled candidate column.
-    let iso_events = iso.read_stream(conductor::STREAM, 0, Direction::Forward)?;
-    let candidate_metrics = metrics::project(runscope::current_run(&iso_events));
+    // 6. The isolated store is now dropped (closed): remove the whole throwaway db subdir -
+    //    the `.db` plus its `.db-wal` / `.db-shm` sidecars - in one call, so no sqlite file
+    //    leaks under the scratch root. Best-effort (the diff is already computed), so a
+    //    cleanup failure never fails the command.
+    let _ = std::fs::remove_dir_all(&replay_dir);
+
     for line in format_stats_diff(&baseline_id, &rev, &baseline_metrics, &candidate_metrics) {
         println!("{line}");
     }
-    if let Err(e) = drive {
+    if let Some(e) = drive_err {
         eprintln!(
             "rigger replay: the candidate re-drive did not complete ({e}); the candidate \
              column reflects the run up to where the recorded trajectory ran out"
         );
     }
-
-    // Best-effort scratch cleanup: the isolated db is throwaway (the diff is already
-    // printed), so a failure to unlink it never fails the command.
-    let _ = std::fs::remove_file(&replay_db);
     Ok(())
+}
+
+/// The set of unit ids the re-drive actually STARTED (emitted a `UnitStarted` for) in the
+/// isolated `events` slice. The seeded trajectory carries only SpawnResults + GateVerdicts
+/// ([`conductor::replay_trajectory`] strips the lifecycle), so every `UnitStarted` here is
+/// one the re-drive emitted for a unit the CANDIDATE config reached - the signal that lets
+/// [`candidate_reaches_gate`] drop the seeded gate verdicts of a stage the candidate removed
+/// (or a unit its DAG never reached), which the re-drive never re-started.
+fn started_units(events: &[Event]) -> std::collections::HashSet<String> {
+    events
+        .iter()
+        .filter(|e| e.type_ == ledger::TYPE_UNIT_STARTED)
+        .filter_map(|e| {
+            serde_json::from_slice::<serde_json::Value>(&e.data)
+                .ok()
+                .and_then(|v| v.get("id").and_then(|i| i.as_str()).map(String::from))
+        })
+        .collect()
+}
+
+/// Whether the candidate config still REACHES the gate a recorded `GateVerdict` scored, so it
+/// counts toward the candidate "gate runs" column of a `rigger replay` diff. Every non-gate
+/// event passes through unchanged (only the gate column is re-scoped to the candidate); a
+/// gate verdict is KEPT only when the offline re-drive would genuinely re-reach it:
+///
+/// - its stage/unit was STARTED in the re-drive (`started`) - a stage the candidate removed,
+///   or a unit its DAG never reached, is never re-driven, so its seeded verdicts do not count;
+/// - AND the candidate config's stage still DECLARES this gate - `run_gates` iterates the
+///   candidate's `st.gates`, so a static stage that dropped or renamed the gate never runs it,
+///   and its seeded verdict is not reached. A kept gate replays (counted), an added gate runs
+///   fail-safe (a fresh verdict, also for a declared gate, so counted), a removed/renamed gate
+///   drops out - exactly the set the re-drive reaches.
+///
+/// A verdict whose replay key carries no `/gate:` infix (an integrate-time GATED_BY artifact
+/// verdict, already excluded by [`metrics::project`]; or a post-merge re-gate keyed apart -
+/// the git-merge-specific boundary the offline replay never reproduces, per d13-u2) is left as
+/// recorded. A gate verdict on a started unit that is NOT a static workflow stage (a
+/// planner-proposed unit whose gate list cannot be re-scoped from the config) is likewise kept
+/// as recorded - the re-scoping never over-drops a verdict it cannot confidently place.
+fn candidate_reaches_gate(
+    e: &Event,
+    cfg: &config::Config,
+    started: &std::collections::HashSet<String>,
+) -> bool {
+    if e.type_ != contextgraph::TYPE_GATE_VERDICT {
+        return true;
+    }
+    // A verdict with no gate-RUN replay key (artifact / post-merge / skip) is not a re-scopable
+    // pre-merge gate run; leave it as recorded.
+    let Some(stage) = e
+        .meta
+        .get(conductor::META_REPLAY_KEY)
+        .and_then(|k| conductor::unit_of_gate_key(k))
+    else {
+        return true;
+    };
+    // The re-drive must have re-started this stage's unit; a removed stage is never re-driven.
+    if !started.contains(stage) {
+        return false;
+    }
+    let Some(gate) = serde_json::from_slice::<serde_json::Value>(&e.data)
+        .ok()
+        .and_then(|v| v.get("gate").and_then(|g| g.as_str()).map(String::from))
+    else {
+        return true;
+    };
+    // A static candidate stage that no longer lists this gate never runs it (removed/renamed);
+    // a non-static unit (no such stage) is kept as recorded rather than over-dropped.
+    match cfg.workflow.stages.get(stage) {
+        Some(st) => st.gates.iter().any(|g| g == &gate),
+        None => true,
+    }
 }
 
 /// Parse `rigger replay <run-id|latest> --against <rev>`. Exactly the run selector and the

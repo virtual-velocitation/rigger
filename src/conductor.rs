@@ -282,7 +282,13 @@ fn glob_matches(pattern: &str, path: &str) -> bool {
 /// off). A deferred key (`deferred/gate:{gate}`) yields `"deferred"`; a key with no
 /// `/gate:` marker yields `None`. Pure string parse - the single place the key's unit
 /// segment is recovered.
-fn unit_of_gate_key(key: &str) -> Option<&str> {
+///
+/// Also the one authority `rigger replay` reuses to re-scope the candidate "gate runs"
+/// column to the gates the re-drive actually reaches: it recovers the STAGE a seeded
+/// gate verdict ran under so the composition root can ask whether the candidate config
+/// still declares that gate (a post-merge / skip / artifact key carries no `/gate:` infix,
+/// so it yields `None` and is left as recorded).
+pub fn unit_of_gate_key(key: &str) -> Option<&str> {
     key.split_once("/gate:").map(|(unit, _)| unit)
 }
 
