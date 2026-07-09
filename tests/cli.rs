@@ -3483,3 +3483,162 @@ fn canary_rejects_unknown_arguments_and_a_missing_corpus() {
         "the error explains the corpus is empty; stderr: {err}"
     );
 }
+
+/// Seed `<root>/.rigger/events.db` under the pinned identity `project` with TWO runs on the
+/// conductor's run stream, each stamping a tier's resolved model on a unit-lifecycle event
+/// the way the conductor does (spec 05 line 52 / spec 13b unit 1): run `r1` resolves the
+/// `opus` alias to `prev_model`, run `r2` resolves it to `curr_model`. Passing the same model
+/// for both is the no-change control; a different `curr_model` seeds a silent alias re-point
+/// the drift monitor must catch. Mirrors the real stamps (META_RUN_ID + META_MODEL_ALIAS +
+/// META_MODEL_RESOLVED on a `green` status) so the binary folds them exactly as a live run's.
+fn seed_two_runs_with_models(root: &Path, project: &str, prev_model: &str, curr_model: &str) {
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Event, EventStore, ExpectedRevision};
+
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(&rigger).unwrap();
+    std::fs::write(rigger.join("project.id"), format!("{project}\n")).unwrap();
+
+    let backend = Store::open(rigger.join("events.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, project);
+    let run_id = rigger::run::META_RUN_ID;
+    let alias = rigger::conductor::META_MODEL_ALIAS;
+    let resolved = rigger::conductor::META_MODEL_RESOLVED;
+    let started = |run: &str| {
+        Event::new(
+            rigger::run::TYPE_RUN_STARTED,
+            format!(r#"{{"run":"{run}"}}"#).into_bytes(),
+        )
+        .with_meta(run_id, run)
+    };
+    let green = |run: &str, model: &str| {
+        Event::new(
+            rigger::ledger::TYPE_UNIT_STATUS,
+            r#"{"id":"u","status":"green"}"#.as_bytes().to_vec(),
+        )
+        .with_meta(run_id, run)
+        .with_meta(alias, "opus")
+        .with_meta(resolved, model)
+    };
+    let events = [
+        started("r1"),
+        green("r1", prev_model),
+        started("r2"),
+        green("r2", curr_model),
+    ];
+    store
+        .append(rigger::conductor::STREAM, ExpectedRevision::Any, &events)
+        .unwrap();
+}
+
+/// Spec 13b, unit 1 (`rigger validate` clause): a tier whose resolved model id re-pointed
+/// since the previous run makes `rigger validate` WARN on stderr (exit 0) and recommend the
+/// drift-gated canary, while an unchanged model stays silent. The no-change control and the
+/// seeded re-point are pinned side by side so the warning cannot fire on steady state.
+#[test]
+fn validate_warns_when_a_tier_resolved_model_repointed_between_runs() {
+    // The no-change control: both runs resolve `opus` identically -> validate is drift-silent.
+    let control = temp_project();
+    let croot = control.path();
+    let (_o, err, ok) = run_rigger(croot, &["init"]);
+    assert!(
+        ok,
+        "rigger init must scaffold a valid config; stderr:\n{err}"
+    );
+    seed_two_runs_with_models(croot, "drift-control", "claude-opus-4-1", "claude-opus-4-1");
+    let (out, err, ok) = run_rigger(croot, &["validate"]);
+    assert!(
+        ok,
+        "validate must succeed on a steady model; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("config valid"),
+        "validate still prints its config summary; stdout:\n{out}"
+    );
+    assert!(
+        !err.to_lowercase().contains("resolved model id changed"),
+        "an unchanged model must NOT warn about drift; stderr:\n{err}"
+    );
+
+    // The seeded re-point: `opus` resolves to a different concrete model in the second run.
+    let drift = temp_project();
+    let droot = drift.path();
+    let (_o, err, ok) = run_rigger(droot, &["init"]);
+    assert!(
+        ok,
+        "rigger init must scaffold a valid config; stderr:\n{err}"
+    );
+    seed_two_runs_with_models(droot, "drift-repoint", "claude-opus-4-1", "claude-opus-4-8");
+    let (_out, err, ok) = run_rigger(droot, &["validate"]);
+    assert!(
+        ok,
+        "validate WARNS but still exits 0 on model drift; stderr:\n{err}"
+    );
+    assert!(
+        err.to_lowercase().contains("resolved model id changed")
+            && err.contains("opus")
+            && err.contains("claude-opus-4-1")
+            && err.contains("claude-opus-4-8"),
+        "the advisory names the re-pointed tier and both model ids; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("rigger canary --if-model-changed"),
+        "the advisory recommends the drift-gated canary; stderr:\n{err}"
+    );
+}
+
+/// Spec 13b, unit 1 (`rigger canary --if-model-changed` clause), the no-change control: an
+/// unchanged resolved model runs NO canary. The gate precedes the corpus load, so the missing
+/// `--corpus` is never even consulted - the command exits 0 having deliberately done nothing.
+#[test]
+fn canary_if_model_changed_skips_when_the_model_is_unchanged() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_two_runs_with_models(root, "canary-steady", "claude-opus-4-1", "claude-opus-4-1");
+    let (out, err, ok) = run_rigger(
+        root,
+        &["canary", "--if-model-changed", "--corpus", "no-such-dir"],
+    );
+    assert!(
+        ok,
+        "an unchanged model must exit 0 without running the panel; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("no resolved-model change") && out.contains("skipping"),
+        "the skip is announced; stdout:\n{out}"
+    );
+    assert!(
+        !out.contains("running the panel"),
+        "no canary runs on an unchanged model; stdout:\n{out}"
+    );
+}
+
+/// Spec 13b, unit 1 (`rigger canary --if-model-changed` clause), the seeded model change: a
+/// re-pointed tier OPENS the gate so the canary runs. We point `--corpus` at a missing dir so
+/// the command stops right after the gate (no live review panel is spawned in a CLI test); the
+/// gate-open line on stdout proves the run was NOT skipped and reached corpus loading.
+#[test]
+fn canary_if_model_changed_runs_when_a_tier_resolved_model_repointed() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_two_runs_with_models(root, "canary-repoint", "claude-opus-4-1", "claude-opus-4-8");
+    let (out, err, ok) = run_rigger(
+        root,
+        &["canary", "--if-model-changed", "--corpus", "no-such-dir"],
+    );
+    assert!(
+        out.contains("resolved model changed for opus") && out.contains("running the panel"),
+        "a re-pointed model opens the gate; stdout:\n{out}"
+    );
+    assert!(
+        !out.contains("skipping"),
+        "a changed model is NOT skipped; stdout:\n{out}"
+    );
+    // Having opened the gate, the run proceeds into corpus loading (the missing `--corpus` is
+    // now consulted and fails), which proves the gate let it through rather than short-circuiting.
+    assert!(
+        !ok && err.contains("canary"),
+        "the gate opened and the run reached corpus loading; stderr:\n{err}"
+    );
+}

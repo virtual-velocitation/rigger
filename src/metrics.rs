@@ -92,13 +92,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::conductor::META_WORKTREE_SHA;
+use crate::conductor::{META_MODEL_ALIAS, META_MODEL_RESOLVED, META_WORKTREE_SHA};
 use crate::contextgraph::{META_ACTOR, TYPE_GATE_VERDICT, TYPE_REVIEW_FINDING};
 use crate::eventstore::Event;
 use crate::ledger::{
     TYPE_UNIT_ESCALATED, TYPE_UNIT_FAILED, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
     TYPE_UNIT_STATUS,
 };
+use crate::run::META_RUN_ID;
 use crate::spawn::{SpawnResult, ROLE_ADJUDICATOR, ROLE_ADVERSARY, TYPE_SPAWN_RESULT};
 
 /// The tier a review spawn belongs to, recovered from its deterministic
@@ -908,6 +909,106 @@ pub fn project_canary(events: &[Event]) -> CanaryMetrics {
         }
     }
     m
+}
+
+/// One tier's resolved-model change between two runs (spec 13b, unit 1). The `alias` is the
+/// tier's REQUESTED model alias (the stable [`META_MODEL_ALIAS`] config token the agent was
+/// spawned with); `previous` and `current` are the concrete resolved model ids
+/// ([`META_MODEL_RESOLVED`]) that alias actually ran as in the prior and current runs. A
+/// change is a SILENT ALIAS RE-POINT - the same requested alias resolving to a different
+/// concrete model - the exact drift the canary exists to re-measure the review panel against.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ModelChange {
+    /// The tier's requested model alias (the stable config token, e.g. `opus`).
+    pub alias: String,
+    /// The concrete model id the alias resolved to in the previous run.
+    pub previous: String,
+    /// The concrete model id the alias resolved to in the current run.
+    pub current: String,
+}
+
+/// The cross-run resolved-model drift between the current run and the most recent prior run
+/// (spec 13b, unit 1): the aliases whose resolved model id CHANGED. Unlike [`project`] and
+/// [`project_canary`], which fold a single run's slice, [`model_drift`] reads the WHOLE
+/// stream because drift is defined ACROSS runs. `changes` is empty when nothing drifted (or
+/// there is no comparable prior run); [`ModelDrift::changed`] is the trigger the `rigger
+/// validate` warning and `rigger canary --if-model-changed` both read.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ModelDrift {
+    /// The id of the prior run the current run was compared against (the most recent run
+    /// BEFORE the current that stamped any resolved model), or `None` when there was none.
+    pub previous_run: Option<String>,
+    /// The id of the current (latest model-bearing) run, or `None` when no run stamped a
+    /// resolved model at all.
+    pub current_run: Option<String>,
+    /// The tiers whose resolved model id differs from the prior run's, sorted by alias.
+    pub changes: Vec<ModelChange>,
+}
+
+impl ModelDrift {
+    /// Whether any tier's resolved model changed - the boolean the drift monitor gates on.
+    pub fn changed(&self) -> bool {
+        !self.changes.is_empty()
+    }
+}
+
+/// Fold the whole event stream into the cross-run resolved-model [`ModelDrift`] (spec 13b,
+/// unit 1). Every conductor-emitted event carries its run id ([`META_RUN_ID`]); a spawn's
+/// unit-lifecycle events additionally carry the requested alias ([`META_MODEL_ALIAS`]) and
+/// the resolved model the spawn ran as ([`META_MODEL_RESOLVED`], reported by the worker via
+/// `rigger result --meta`). This fold groups the resolved-model stamps by run, keyed by
+/// alias (last stamp wins within a run), then compares the two most recent runs that stamped
+/// ANY resolved model - so a run that recorded none (e.g. an in-process cli-driver run, which
+/// never learns the resolved id) is transparent to the comparison rather than masking a
+/// re-point across the runs that DID record one. An alias present in BOTH with a different
+/// resolved id is a re-point; a tier only the current run recorded (no prior baseline) is a
+/// NEW tier, not drift. Pure and replay-safe: events without the stamps are ignored, exactly
+/// like the sibling folds.
+pub fn model_drift(events: &[Event]) -> ModelDrift {
+    // The distinct run ids that stamped at least one resolved model, in first-appearance
+    // order, and each such run's alias -> resolved-model map.
+    let mut order: Vec<String> = Vec::new();
+    let mut per_run: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+    for e in events {
+        let (Some(run), Some(resolved)) = (
+            e.meta.get(META_RUN_ID).filter(|r| !r.is_empty()),
+            e.meta.get(META_MODEL_RESOLVED).filter(|m| !m.is_empty()),
+        ) else {
+            continue;
+        };
+        let alias = e.meta.get(META_MODEL_ALIAS).cloned().unwrap_or_default();
+        if !per_run.contains_key(run) {
+            order.push(run.clone());
+        }
+        per_run
+            .entry(run.clone())
+            .or_default()
+            .insert(alias, resolved.clone());
+    }
+
+    let mut drift = ModelDrift::default();
+    // Fewer than two model-bearing runs: no prior baseline, so nothing can drift.
+    if order.len() < 2 {
+        return drift;
+    }
+    let previous = &order[order.len() - 2];
+    let current = &order[order.len() - 1];
+    drift.previous_run = Some(previous.clone());
+    drift.current_run = Some(current.clone());
+    let prev_map = &per_run[previous];
+    let curr_map = &per_run[current];
+    for (alias, cur_model) in curr_map {
+        if let Some(prev_model) = prev_map.get(alias) {
+            if prev_model != cur_model {
+                drift.changes.push(ModelChange {
+                    alias: alias.clone(),
+                    previous: prev_model.clone(),
+                    current: cur_model.clone(),
+                });
+            }
+        }
+    }
+    drift
 }
 
 #[cfg(test)]
@@ -1824,5 +1925,112 @@ mod tests {
         assert_eq!(m.adjudicator_accuracy(), 0.0);
         assert_eq!(m.stability_rate(), 0.0);
         assert!(m.tier_catch.contains_key("lens") && m.tier_catch.contains_key("adversary"));
+    }
+
+    // ---- spec-13b unit-1 model-drift monitor (cross-run resolved-model comparison) ----
+
+    /// A run boundary carrying its run id (the conductor stamps [`META_RUN_ID`] on every
+    /// event, so the drift fold groups by it).
+    fn run_started(run: &str) -> Event {
+        ev(
+            crate::run::TYPE_RUN_STARTED,
+            &format!(r#"{{"run":"{run}"}}"#),
+        )
+        .with_meta(META_RUN_ID, run)
+    }
+
+    /// A conductor-emitted unit-lifecycle event as a spawn's model stamps ride it (spec 05
+    /// line 52): the run id, the requested alias, and the resolved model the tier ran as.
+    /// The drift fold reads only the metadata, so any lifecycle type stands in for the real
+    /// green/verified/reviewed statuses that carry these stamps.
+    fn model_status(run: &str, alias: &str, resolved: &str) -> Event {
+        status("u", "green")
+            .with_meta(META_RUN_ID, run)
+            .with_meta(META_MODEL_ALIAS, alias)
+            .with_meta(META_MODEL_RESOLVED, resolved)
+    }
+
+    #[test]
+    fn model_drift_flags_a_tier_whose_resolved_model_repointed_between_runs() {
+        // Two runs. The "opus" tier resolved to a DIFFERENT concrete model in r2 than in
+        // r1 - a silent alias re-point - while the "sonnet" tier held steady.
+        let events = vec![
+            run_started("r1"),
+            model_status("r1", "opus", "claude-opus-4-1"),
+            model_status("r1", "sonnet", "claude-sonnet-4-5"),
+            run_started("r2"),
+            model_status("r2", "opus", "claude-opus-4-8"),
+            model_status("r2", "sonnet", "claude-sonnet-4-5"),
+        ];
+        let d = model_drift(&events);
+        assert!(d.changed(), "a repointed alias is drift");
+        assert_eq!(d.previous_run.as_deref(), Some("r1"));
+        assert_eq!(d.current_run.as_deref(), Some("r2"));
+        assert_eq!(d.changes.len(), 1, "only the repointed tier is reported");
+        let c = &d.changes[0];
+        assert_eq!(c.alias, "opus");
+        assert_eq!(c.previous, "claude-opus-4-1");
+        assert_eq!(c.current, "claude-opus-4-8");
+    }
+
+    #[test]
+    fn model_drift_is_silent_when_every_tier_resolved_the_same_model() {
+        // The no-change control: both runs resolve every alias identically -> no drift.
+        let events = vec![
+            run_started("r1"),
+            model_status("r1", "opus", "claude-opus-4-1"),
+            model_status("r1", "sonnet", "claude-sonnet-4-5"),
+            run_started("r2"),
+            model_status("r2", "opus", "claude-opus-4-1"),
+            model_status("r2", "sonnet", "claude-sonnet-4-5"),
+        ];
+        let d = model_drift(&events);
+        assert!(!d.changed(), "identical resolved models are not drift");
+        assert!(d.changes.is_empty());
+    }
+
+    #[test]
+    fn model_drift_needs_a_prior_run_and_a_shared_tier() {
+        // A first run alone has no baseline to compare against.
+        let one = vec![
+            run_started("r1"),
+            model_status("r1", "opus", "claude-opus-4-1"),
+        ];
+        assert!(!model_drift(&one).changed(), "one run cannot drift");
+        // A tier only the current run recorded (no prior baseline for that alias) is a NEW
+        // tier, not a re-point - so it is not drift.
+        let novel = vec![
+            run_started("r1"),
+            model_status("r1", "opus", "claude-opus-4-1"),
+            run_started("r2"),
+            model_status("r2", "haiku", "claude-haiku-4-5"),
+        ];
+        assert!(
+            !model_drift(&novel).changed(),
+            "a tier with no prior-run baseline is not a re-point"
+        );
+    }
+
+    #[test]
+    fn model_drift_compares_against_the_most_recent_prior_run_that_stamped_a_model() {
+        // A run that recorded NO resolved model (e.g. a cli-driver run) is transparent to
+        // the comparison: r3's "opus" is measured against r1's, skipping the empty r2, so a
+        // real re-point across the two model-bearing runs is still caught.
+        let events = vec![
+            run_started("r1"),
+            model_status("r1", "opus", "claude-opus-4-1"),
+            run_started("r2"), // a run that stamped no resolved model at all
+            run_started("r3"),
+            model_status("r3", "opus", "claude-opus-4-8"),
+        ];
+        let d = model_drift(&events);
+        assert!(
+            d.changed(),
+            "the empty run is skipped, the re-point is caught"
+        );
+        assert_eq!(d.previous_run.as_deref(), Some("r1"));
+        assert_eq!(d.current_run.as_deref(), Some("r3"));
+        assert_eq!(d.changes.len(), 1);
+        assert_eq!(d.changes[0].alias, "opus");
     }
 }

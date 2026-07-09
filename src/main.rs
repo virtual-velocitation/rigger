@@ -2217,17 +2217,69 @@ fn format_canary_stats(m: &metrics::CanaryMetrics) -> Vec<String> {
     lines
 }
 
-/// `rigger canary [--corpus <dir>]` (spec 13, unit 5): run the review panel against every
-/// item in the seeded-defect corpus (default `./canaries`) and record the scored outcomes
-/// to the project's canary stream, then print the scorecard. This is the loop's only
-/// RECALL measurement - it judges the judges against known ground truth. The scores land
-/// in a DISTINCT stream from the run's, so a canary run never perturbs the project's
-/// operator metrics; `rigger stats --canary` re-reports them.
+/// Read the project's cross-run resolved-model drift (spec 13b, unit 1) from the embedded
+/// `events.db` at `path`, namespaced by `project`, folding the run stream via
+/// [`metrics::model_drift`]. Returns an EMPTY (no-drift) [`metrics::ModelDrift`] when there
+/// is no store yet - so a never-run project and a no-drift project are treated the same. It
+/// reads the SAME namespaced run stream `rigger stats` folds, so the `rigger validate`
+/// warning and the `rigger canary --if-model-changed` trigger fold ONE source of truth for
+/// what "the model changed" means - they can never disagree. Split off (path + project
+/// explicit) so the read is unit-testable off the process cwd, exactly like [`stats_lines`].
+fn read_model_drift(
+    path: &str,
+    project: &str,
+) -> Result<metrics::ModelDrift, Box<dyn std::error::Error>> {
+    if !Path::new(path).exists() {
+        return Ok(metrics::ModelDrift::default());
+    }
+    let backend = Store::open(path)?;
+    let store = Namespaced::new(&backend, project);
+    let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+    Ok(metrics::model_drift(&events))
+}
+
+/// The `rigger validate` model-drift advisory (spec 13b, unit 1): a stderr warning naming
+/// each tier whose resolved model id re-pointed since the previous run and recommending the
+/// drift-gated canary, or `None` when nothing drifted. Pure over the [`metrics::ModelDrift`]
+/// so it is asserted without touching the filesystem (like [`format_stats`]); the caller
+/// prints it without changing the exit status, exactly like the other validate advisories.
+fn model_drift_advisory(drift: &metrics::ModelDrift) -> Option<String> {
+    if !drift.changed() {
+        return None;
+    }
+    let mut msg = String::from(
+        "warning: a tier's resolved model id changed since the previous run (a silent alias \
+         re-point):",
+    );
+    for c in &drift.changes {
+        let alias = if c.alias.is_empty() {
+            "(unnamed tier)"
+        } else {
+            c.alias.as_str()
+        };
+        msg.push_str(&format!("\n  - {alias}: {} -> {}", c.previous, c.current));
+    }
+    msg.push_str(
+        "\nRun `rigger canary --if-model-changed` to re-measure the review panel against the \
+         seeded-defect corpus before trusting a run under the new model.",
+    );
+    Some(msg)
+}
+
+/// `rigger canary [--corpus <dir>] [--if-model-changed]` (spec 13, unit 5; drift trigger spec
+/// 13b, unit 1): run the review panel against every item in the seeded-defect corpus (default
+/// `./canaries`) and record the scored outcomes to the project's canary stream, then print the
+/// scorecard. This is the loop's only RECALL measurement - it judges the judges against known
+/// ground truth. The scores land in a DISTINCT stream from the run's, so a canary run never
+/// perturbs the project's operator metrics; `rigger stats --canary` re-reports them.
 ///
-/// The automatic model-change trigger (`--if-model-changed`) is unit 6's, not this
-/// command's - this unit ships the corpus, the runner, and the reporter only.
+/// With `--if-model-changed` the run is GATED on model drift: the canary runs ONLY when a
+/// tier's resolved model id re-pointed since the previous run (the same drift `rigger
+/// validate` warns about), and an unchanged model runs no canary - the automatic monitor for
+/// silent alias re-points. Without the flag the canary always runs.
 fn cmd_canary(args: &[String]) -> Res {
     let mut corpus_dir = "canaries".to_string();
+    let mut if_model_changed = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -2238,12 +2290,45 @@ fn cmd_canary(args: &[String]) -> Res {
                     .clone();
                 i += 2;
             }
+            "--if-model-changed" => {
+                if_model_changed = true;
+                i += 1;
+            }
             other => {
                 return Err(format!(
-                    "canary: unexpected argument {other:?} (usage: rigger canary [--corpus <dir>])"
+                    "canary: unexpected argument {other:?} (usage: rigger canary [--corpus <dir>] \
+                     [--if-model-changed])"
                 )
                 .into())
             }
+        }
+    }
+
+    // The drift gate (spec 13b, unit 1): with `--if-model-changed`, run the canary ONLY when a
+    // tier's resolved model re-pointed since the previous run; an unchanged model runs no
+    // canary (and needs no corpus, so the gate precedes the corpus load). The detection reads
+    // the SAME namespaced run stream `rigger validate`'s drift advisory folds, so the warning
+    // and this trigger can never disagree on what "the model changed" means.
+    if if_model_changed {
+        let drift = read_model_drift(&db_path("events.db"), &project_identity())?;
+        if !drift.changed() {
+            println!(
+                "canary: no resolved-model change since the previous run - skipping (run \
+                 `rigger canary` to force a run)."
+            );
+            return Ok(());
+        }
+        for c in &drift.changes {
+            let alias = if c.alias.is_empty() {
+                "(unnamed tier)"
+            } else {
+                c.alias.as_str()
+            };
+            println!(
+                "canary: resolved model changed for {alias} ({} -> {}) since the previous run - \
+                 running the panel.",
+                c.previous, c.current,
+            );
         }
     }
 
@@ -3415,6 +3500,15 @@ fn cmd_validate() -> Res {
     // deletes anything (cleanup stays with the step-start sweep).
     for advisory in residue_advisories(root, &cfg) {
         eprintln!("{advisory}");
+    }
+    // Model-drift advisory (spec 13b, unit 1): warn when a tier's resolved model id
+    // re-pointed since the previous run and recommend `rigger canary --if-model-changed`.
+    // A store-read failure just skips the advisory (never fails validate), exactly like the
+    // git-backed advisories above swallow a missing/erroring git.
+    if let Ok(drift) = read_model_drift(&db_path("events.db"), &project_identity()) {
+        if let Some(advisory) = model_drift_advisory(&drift) {
+            eprintln!("{advisory}");
+        }
     }
     Ok(())
 }
