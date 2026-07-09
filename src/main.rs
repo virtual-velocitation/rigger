@@ -9,6 +9,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use rigger::canary;
 use rigger::conductor::{self, Deps};
 use rigger::config;
 use rigger::contextgraph::{self, sqlite::Projector, Projection};
@@ -661,6 +662,7 @@ fn main() {
         "workflow" => cmd_workflow(&args[2..]),
         "graph" => cmd_graph(&args[2..]),
         "stats" => cmd_stats(&args[2..]),
+        "canary" => cmd_canary(&args[2..]),
         "replay" => cmd_replay(&args[2..]),
         "status" => cmd_status(&args[2..]),
         "dash" => cmd_dash(&args[2..]),
@@ -760,7 +762,13 @@ rigger serve [opts]         run as an MCP server the driver connects to\n  \
 rigger graph --around <id>  print the context subgraph around a node\n  \
 rigger stats                print the run's operator metrics: first-pass yield,\n                              \
 per-gate remediation counts, escalation rate, and\n                              \
-review approve/reject counts\n  \
+review approve/reject counts. --canary reports the\n                              \
+latest canary run's judge-the-judges recall scorecard\n  \
+rigger canary               run the review panel against the seeded-defect corpus\n            \
+[--corpus <dir>]         (default ./canaries) and score per-tier catch rate,\n                              \
+adjudicator correctness, and verdict stability under\n                              \
+finding-order shuffle, into the project's canary stream\n                              \
+(read back with `rigger stats --canary`)\n  \
 rigger replay <run|latest>  re-drive a completed run's recorded trajectory under a\n            \
 --against <rev>          candidate config (workflow + prompts at git <rev>) in an\n                              \
 isolated scratch namespace, and print the stats diff\n                              \
@@ -1869,14 +1877,20 @@ fn cmd_graph(args: &[String]) -> Res {
 /// `rigger stats` takes no arguments; any extra argument is a clear error.
 fn cmd_stats(args: &[String]) -> Res {
     // `rigger stats` reports the LATEST run; `rigger stats --all` reports the historical
-    // aggregate over every run in the store (spec 06, unit 1). No other argument is
-    // accepted.
+    // aggregate over every run in the store (spec 06, unit 1); `rigger stats --canary`
+    // reports the judge-the-judges scorecard of the latest canary run (spec 13, unit 5).
+    // No other argument is accepted.
+    if let [flag] = args {
+        if flag == "--canary" {
+            return cmd_stats_canary();
+        }
+    }
     let all = match args {
         [] => false,
         [flag] if flag == "--all" => true,
         _ => {
             return Err(format!(
-                "stats: expected no arguments or --all, got {}",
+                "stats: expected no arguments, --all, or --canary, got {}",
                 args.join(" ")
             )
             .into())
@@ -2111,6 +2125,163 @@ fn append_review_quality(lines: &mut Vec<String>, m: &Metrics) {
             ));
         }
     }
+}
+
+/// The message `rigger stats --canary` prints when no canary run has been recorded yet -
+/// either the project has never run (no `events.db`) or its canary stream is empty.
+const NO_CANARY_MESSAGE: &str =
+    "# Rigger: no canary run recorded yet (run `rigger canary` to score the review panel \
+     against the corpus, then `rigger stats --canary`).";
+
+/// `rigger stats --canary` (spec 13, unit 5): report the judge-the-judges scorecard of the
+/// LATEST canary run - per-tier catch rate, adjudicator correctness, and finding-order
+/// stability - folded from the project's DISTINCT canary stream (never the run stream).
+fn cmd_stats_canary() -> Res {
+    match canary_stats_lines(&db_path("events.db"), &project_identity())? {
+        Some(lines) => {
+            for line in lines {
+                println!("{line}");
+            }
+        }
+        None => println!("{NO_CANARY_MESSAGE}"),
+    }
+    Ok(())
+}
+
+/// The pure read-model core of `rigger stats --canary`: open the embedded `events.db`,
+/// read `project`'s namespaced `canary` stream, and fold it into the printable canary
+/// scorecard - `None` for the two "no canary run yet" edges (absent db / empty stream),
+/// so [`cmd_stats_canary`] prints one clear message for both. Split out for the same
+/// reason [`stats_lines`] is: the namespace-scoped read is unit-testable off the process
+/// cwd.
+fn canary_stats_lines(
+    path: &str,
+    project: &str,
+) -> Result<Option<Vec<String>>, Box<dyn std::error::Error>> {
+    if !Path::new(path).exists() {
+        return Ok(None);
+    }
+    let backend = Store::open(path)?;
+    let store = Namespaced::new(&backend, project);
+    let events = store.read_stream(canary::STREAM, 0, Direction::Forward)?;
+    if events.is_empty() {
+        return Ok(None);
+    }
+    // `project_canary` scopes internally to the latest canary run (its batch marker).
+    Ok(Some(format_canary_stats(&metrics::project_canary(&events))))
+}
+
+/// Render a [`metrics::CanaryMetrics`] scorecard into the lines `rigger stats --canary`
+/// prints. Pure over the metrics so it is asserted without touching the filesystem, and
+/// shared with `rigger canary`'s own post-run summary so the two agree.
+fn format_canary_stats(m: &metrics::CanaryMetrics) -> Vec<String> {
+    let mut lines = Vec::new();
+    lines.push("canary stats (judge-the-judges recall):".to_string());
+    lines.push(format!(
+        "  items scored       {} ({} planted, {} defect class(es) cataloged)",
+        m.items,
+        m.planted,
+        m.defect_classes.len(),
+    ));
+    lines.push("  catch rate by tier (planted defects each tier caught):".to_string());
+    for (tier, tc) in &m.tier_catch {
+        lines.push(format!(
+            "    {tier:<16} {}/{} ({:.1}%)",
+            tc.caught,
+            tc.planted,
+            tc.rate() * 100.0,
+        ));
+    }
+    lines.push(format!(
+        "  adjudicator        {}/{} correct ({:.1}%)",
+        m.adjudicator_correct,
+        m.items,
+        m.adjudicator_accuracy() * 100.0,
+    ));
+    lines.push(format!(
+        "  verdict stability  {}/{} stable ({:.1}%) under finding-order shuffle",
+        m.stable,
+        m.items,
+        m.stability_rate() * 100.0,
+    ));
+    if !m.defect_classes.is_empty() {
+        lines.push(format!(
+            "  defect classes     {}",
+            m.defect_classes
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", "),
+        ));
+    }
+    lines
+}
+
+/// `rigger canary [--corpus <dir>]` (spec 13, unit 5): run the review panel against every
+/// item in the seeded-defect corpus (default `./canaries`) and record the scored outcomes
+/// to the project's canary stream, then print the scorecard. This is the loop's only
+/// RECALL measurement - it judges the judges against known ground truth. The scores land
+/// in a DISTINCT stream from the run's, so a canary run never perturbs the project's
+/// operator metrics; `rigger stats --canary` re-reports them.
+///
+/// The automatic model-change trigger (`--if-model-changed`) is unit 6's, not this
+/// command's - this unit ships the corpus, the runner, and the reporter only.
+fn cmd_canary(args: &[String]) -> Res {
+    let mut corpus_dir = "canaries".to_string();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--corpus" => {
+                corpus_dir = args
+                    .get(i + 1)
+                    .ok_or("canary: --corpus needs a directory path")?
+                    .clone();
+                i += 2;
+            }
+            other => {
+                return Err(format!(
+                    "canary: unexpected argument {other:?} (usage: rigger canary [--corpus <dir>])"
+                )
+                .into())
+            }
+        }
+    }
+
+    let corpus = canary::load_corpus(Path::new(&corpus_dir))?;
+    if corpus.is_empty() {
+        return Err(format!(
+            "canary: the corpus at {corpus_dir:?} has no items (add `*.md` canary files)"
+        )
+        .into());
+    }
+
+    let cfg = config::load(".")?;
+    let panel = cfg.workflow.defaults.review.clone();
+    if panel.is_empty() {
+        return Err("canary: defaults.review declares no review panel to measure".into());
+    }
+
+    std::fs::create_dir_all(RIGGER_DIR)?;
+    // Sqlite is the canary's local measurement store; migrate a pre-spec-09 namespace once
+    // so the canary stream lands under the same identity `stats --canary` reads.
+    migrate_local_identity()?;
+    let backend = Store::open(&db_path("events.db"))?;
+    let store = Namespaced::new(&backend, &project_identity());
+    let driver = cli::Driver::default();
+
+    let report = canary::run_canary(&store, &driver, &cfg, &panel, &corpus)?;
+    println!(
+        "canary run {}: scored {} corpus item(s) against the review panel",
+        report.batch,
+        report.outcomes.len(),
+    );
+    // Re-read and fold from the store so the printed scorecard is exactly what
+    // `rigger stats --canary` will report from the same events.
+    let events = store.read_stream(canary::STREAM, 0, Direction::Forward)?;
+    for line in format_canary_stats(&metrics::project_canary(&events)) {
+        println!("{line}");
+    }
+    Ok(())
 }
 
 /// `rigger replay <run-id|latest> --against <rev>` - trajectory replay / config eval

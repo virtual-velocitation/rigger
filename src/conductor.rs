@@ -5935,7 +5935,11 @@ fn review_evidence(reason: &str) -> BTreeMap<String, String> {
 /// no JSON, no `verdict` field, prose, `reject`, or any unrecognized value - does
 /// NOT approve and routes the unit to remediation. A missing or unparseable verdict
 /// is treated as a non-approval, never a silent pass.
-fn verdict_approves(output: &str) -> bool {
+///
+/// `pub(crate)` so the canary runner (spec 13, unit 5) judges its adjudicator's verdict
+/// through the SAME single fail-closed authority the live review path uses - the canary
+/// measures the real gate, not a second parallel verdict parser that could disagree.
+pub(crate) fn verdict_approves(output: &str) -> bool {
     for line in output.lines().rev() {
         if let Ok(v) = serde_json::from_str::<Value>(line.trim()) {
             if let Some(verdict) = v.get("verdict").and_then(|x| x.as_str()) {
@@ -6014,7 +6018,11 @@ section governs the DISCIPLINE and cadence - follow it on every turn.";
 /// (empty body) still receives the discipline, so every spawned agent gets it; the
 /// persona, when present, leads so the role frames the discipline. This is the one
 /// place persona and discipline are joined, keeping both driver paths identical.
-fn build_system_prompt(persona: &str) -> String {
+///
+/// `pub(crate)` so the canary runner (spec 13, unit 5) composes a canary reviewer's
+/// system prompt through the SAME single authority, rather than a second copy that
+/// could drift from the discipline every live spawn receives.
+pub(crate) fn build_system_prompt(persona: &str) -> String {
     format!("{persona}{RIGGER_COMMUNICATION}")
 }
 
@@ -6037,7 +6045,11 @@ fn build_system_prompt(persona: &str) -> String {
 /// token (not the raw agent id) keeps it consistent with the [`spawn_id`] role the
 /// per-tier `SpawnResult` cost fold reads, so both driver paths attribute a finding the
 /// same single way. See [`crate::metrics`].
-fn review_protocol(actor: &str) -> String {
+///
+/// `pub(crate)` so the canary runner (spec 13, unit 5) appends the SAME finding-emission
+/// protocol to its reviewer prompts, so a canary reviewer attributes each finding by the
+/// same `by` role token the live review-quality folds key on - one protocol, not two.
+pub(crate) fn review_protocol(actor: &str) -> String {
     format!(
         "Record each review finding you raise by calling the rigger_emit tool the moment you raise it, with type \"ReviewFinding\" and data:\n\
          {{\"id\":\"<short-id>\",\"by\":\"{actor}\",\"summary\":\"<one line>\",\"about\":[\"<file>\"]}}\n\

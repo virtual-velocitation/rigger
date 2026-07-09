@@ -5,6 +5,7 @@
 //! ports. It generalizes a proven internal multi-agent dev-loop harness into a
 //! standalone, config-driven product.
 
+pub mod canary;
 pub mod conductor;
 pub mod config;
 pub mod contextgraph;
