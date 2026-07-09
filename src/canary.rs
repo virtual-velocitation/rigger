@@ -214,8 +214,11 @@ impl CanaryOutcome {
             "verdict_correct": self.verdict_correct,
             "stable": self.stable,
         });
-        Event::new(TYPE_UNIT_STATUS, serde_json::to_vec(&data).unwrap_or_default())
-            .with_meta(META_CANARY_BATCH, batch)
+        Event::new(
+            TYPE_UNIT_STATUS,
+            serde_json::to_vec(&data).unwrap_or_default(),
+        )
+        .with_meta(META_CANARY_BATCH, batch)
     }
 
     /// Decode a canary outcome from a canary-stream event, or `None` if it is not a
@@ -381,7 +384,9 @@ fn score_item(
     };
 
     let expected_reject = item.expect_reject();
-    let verdict_correct = (!approved) == expected_reject;
+    // Correct iff the adjudicator's approve/reject matches the expectation: a planted
+    // defect (expected_reject) must NOT be approved, a known-good control must be.
+    let verdict_correct = approved != expected_reject;
     Ok(CanaryOutcome {
         id: item.id.clone(),
         defect_class: item.defect_class.clone(),
@@ -779,8 +784,10 @@ mod tests {
         let canary = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
         assert_eq!(canary.len(), 3, "one batch marker + two outcomes");
         assert!(is_batch_marker(&canary[0]));
-        let outcomes: Vec<CanaryOutcome> =
-            canary.iter().filter_map(CanaryOutcome::from_event).collect();
+        let outcomes: Vec<CanaryOutcome> = canary
+            .iter()
+            .filter_map(CanaryOutcome::from_event)
+            .collect();
         assert_eq!(outcomes.len(), 2);
 
         // Nothing lands on the run stream - a canary run is fully isolated.
@@ -827,6 +834,58 @@ mod tests {
     }
 
     #[test]
+    fn the_shipped_corpus_loads_and_catalogs_at_least_three_defect_classes() {
+        // The Done-when bar (spec 13, unit 5): the versioned corpus under `canaries/`
+        // catalogs at least three planted defect classes, and every item is well-formed
+        // (loads through the strict loader, names an anchor, and carries code to review).
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("canaries");
+        let corpus = load_corpus(&dir).expect("the shipped canary corpus must load");
+        assert!(!corpus.is_empty(), "the shipped corpus must have items");
+        let classes = cataloged_classes(&corpus);
+        assert!(
+            classes.len() >= 3,
+            "the shipped corpus must catalog at least three planted defect classes; got {classes:?}"
+        );
+        // It must also carry at least one known-good control (the false-positive anchor).
+        assert!(
+            corpus.iter().any(|c| !c.planted),
+            "the corpus must include a known-good control"
+        );
+        for c in &corpus {
+            assert!(
+                !c.anchor.trim().is_empty(),
+                "canary {:?} has no anchor",
+                c.id
+            );
+            assert!(
+                !c.review.trim().is_empty(),
+                "canary {:?} has no code under review",
+                c.id
+            );
+            // A planted item expects a reject and names a defect class; a control expects
+            // an approve. The loader already enforced a valid verdict token.
+            if c.planted {
+                assert!(
+                    c.expect_reject(),
+                    "planted canary {:?} must expect reject",
+                    c.id
+                );
+                assert!(
+                    !c.defect_class.trim().is_empty() && c.defect_class != "none",
+                    "planted canary {:?} must name a defect class",
+                    c.id
+                );
+            } else {
+                assert!(
+                    !c.expect_reject(),
+                    "known-good canary {:?} must expect approve",
+                    c.id
+                );
+            }
+        }
+    }
+
+    #[test]
     fn latest_run_scopes_to_the_last_batch_marker() {
         let marker = || {
             Event::new(
@@ -855,6 +914,10 @@ mod tests {
             .filter_map(CanaryOutcome::from_event)
             .map(|o| o.id)
             .collect();
-        assert_eq!(ids, vec!["new".to_string()], "only the latest run is scoped");
+        assert_eq!(
+            ids,
+            vec!["new".to_string()],
+            "only the latest run is scoped"
+        );
     }
 }

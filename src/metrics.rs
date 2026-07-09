@@ -1743,11 +1743,35 @@ mod tests {
         let events = vec![
             canary_run_marker(),
             // planted, both tiers catch, correct + stable
-            canary_outcome("a", "off-by-one", true, true, &["lens", "adversary"], true, true),
+            canary_outcome(
+                "a",
+                "off-by-one",
+                true,
+                true,
+                &["lens", "adversary"],
+                true,
+                true,
+            ),
             // planted, only adversary catches, correct but UNSTABLE
-            canary_outcome("b", "resource-leak", true, true, &["adversary"], true, false),
+            canary_outcome(
+                "b",
+                "resource-leak",
+                true,
+                true,
+                &["adversary"],
+                true,
+                false,
+            ),
             // planted, only adversary catches, adjudicator WRONG (approved a defect), stable
-            canary_outcome("c", "fail-open-guard", true, true, &["adversary"], false, true),
+            canary_outcome(
+                "c",
+                "fail-open-guard",
+                true,
+                true,
+                &["adversary"],
+                false,
+                true,
+            ),
             // known-good control, nothing caught, correct + stable
             canary_outcome("d", "none", false, false, &[], true, true),
         ];

@@ -3322,3 +3322,164 @@ fn a_fresh_run_repins_the_current_definition_and_never_halts() {
         "the fresh run really re-pinned: a later drift against it halts; stderr: {err}"
     );
 }
+
+/// The canary namespace is DISTINCT from the run stream, so `rigger stats --canary`
+/// reports the judge-the-judges scorecard from a project's canary stream without ever
+/// touching its operator metrics (spec 13, unit 5). Seeds a canary run directly into the
+/// namespaced canary stream (a real `rigger canary` would spawn the review panel, which
+/// needs live agents), then drives the compiled binary and asserts the per-tier catch
+/// rate, adjudicator correctness, and finding-order stability the reporter folds.
+#[test]
+fn stats_canary_reports_the_per_tier_scorecard_from_the_canary_stream() {
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Event, EventStore, ExpectedRevision};
+
+    // A plain (non-git) project with a pinned identity, so the binary's namespace and the
+    // one we seed under agree exactly (no git-toplevel canonicalization in the way).
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(&rigger).unwrap();
+    std::fs::write(rigger.join("project.id"), "canary-proj\n").unwrap();
+
+    // Seed one canary run: a batch marker + four scored outcomes (3 planted, 1 control).
+    let backend = Store::open(rigger.join("events.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, "canary-proj");
+    let ty = rigger::ledger::TYPE_UNIT_STATUS;
+    let ev = |json: String| Event::new(ty, json.into_bytes());
+    let marker = ev(r#"{"id":"batch-1","status":"canary-run"}"#.to_string());
+    let outcome = |id: &str,
+                   class: &str,
+                   planted: bool,
+                   expect_reject: bool,
+                   caught: &str,
+                   correct: bool,
+                   stable: bool| {
+        let approved = if correct {
+            !expect_reject
+        } else {
+            expect_reject
+        };
+        ev(format!(
+            r#"{{"id":"{id}","status":"canary","defect_class":"{class}","planted":{planted},"expected_reject":{expect_reject},"expected_tier":"","caught_by":[{caught}],"verdict_approved":{approved},"verdict_correct":{correct},"stable":{stable}}}"#
+        ))
+    };
+    let events = [
+        marker,
+        outcome(
+            "a",
+            "off-by-one",
+            true,
+            true,
+            r#""lens","adversary""#,
+            true,
+            true,
+        ),
+        outcome(
+            "b",
+            "resource-leak",
+            true,
+            true,
+            r#""adversary""#,
+            true,
+            true,
+        ),
+        outcome(
+            "c",
+            "fail-open-guard",
+            true,
+            true,
+            r#""adversary""#,
+            true,
+            false,
+        ),
+        outcome("d", "none", false, false, "", true, true),
+    ];
+    store
+        .append("canary", ExpectedRevision::Any, &events)
+        .unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["stats", "--canary"]);
+    assert!(ok, "stats --canary must succeed; stderr: {err}");
+    assert!(
+        out.contains("items scored       4 (3 planted, 3 defect class(es) cataloged)"),
+        "reports the corpus size and cataloged classes; got:\n{out}"
+    );
+    // Catch rate BY TIER: the adversary caught all 3 planted, the lens only 1.
+    assert!(
+        out.contains("adversary        3/3 (100.0%)"),
+        "the adversary tier's catch rate; got:\n{out}"
+    );
+    assert!(
+        out.contains("lens             1/3 (33.3%)"),
+        "the lens tier's catch rate; got:\n{out}"
+    );
+    // Adjudicator correct on all 4; stable on 3 of 4 (item c flipped on order).
+    assert!(
+        out.contains("adjudicator        4/4 correct (100.0%)"),
+        "adjudicator correctness; got:\n{out}"
+    );
+    assert!(
+        out.contains("verdict stability  3/4 stable (75.0%)"),
+        "finding-order stability; got:\n{out}"
+    );
+    // The run stream is untouched by a canary run, so plain `rigger stats` sees no runs.
+    let (run_out, _e, run_ok) = run_rigger(root, &["stats"]);
+    assert!(run_ok);
+    assert!(
+        run_out.contains("no runs recorded yet"),
+        "a canary run never lands on the run stream; got:\n{run_out}"
+    );
+}
+
+/// `rigger stats --canary` on a project that has never run a canary says so clearly,
+/// rather than printing an empty/zero scorecard, and creates no false impression of a run.
+#[test]
+fn stats_canary_on_a_project_with_no_canary_run_says_so() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+    let (out, err, ok) = run_rigger(root, &["stats", "--canary"]);
+    assert!(ok, "stats --canary must succeed; stderr: {err}");
+    assert!(
+        out.contains("no canary run recorded yet"),
+        "an un-canaried project is told to run `rigger canary`; got:\n{out}"
+    );
+}
+
+/// `rigger canary`'s CLI glue (arg parsing + corpus loading) is exercised through the
+/// real binary on the paths that need no live review agent. The panel-spawning happy path
+/// is covered end-to-end by the library runner test (`canary::run_canary`) with a scripted
+/// driver; here we pin the binary's argument and corpus-loading contracts.
+#[test]
+fn canary_rejects_unknown_arguments_and_a_missing_corpus() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    // An unknown flag is refused (and does not silently no-op).
+    let (_o, err, ok) = run_rigger(root, &["canary", "--bogus"]);
+    assert!(!ok, "an unknown canary argument must be rejected");
+    assert!(
+        err.contains("unexpected argument"),
+        "the error names the bad argument; stderr: {err}"
+    );
+
+    // A missing corpus directory fails loudly rather than scoring an empty corpus.
+    let (_o, err, ok) = run_rigger(root, &["canary", "--corpus", "no-such-dir"]);
+    assert!(!ok, "a missing corpus dir must fail");
+    assert!(
+        err.contains("canary"),
+        "the error is a canary error; stderr: {err}"
+    );
+
+    // A present-but-empty corpus directory is also refused (not a silent zero-item run).
+    let empty = root.join("empty-corpus");
+    std::fs::create_dir_all(&empty).unwrap();
+    let (_o, err, ok) = run_rigger(root, &["canary", "--corpus", "empty-corpus"]);
+    assert!(!ok, "an empty corpus dir must fail");
+    assert!(
+        err.contains("no items"),
+        "the error explains the corpus is empty; stderr: {err}"
+    );
+}
