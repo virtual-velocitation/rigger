@@ -183,17 +183,40 @@ pub struct ReviewPanel {
     pub adversary: String,
     #[serde(default)]
     pub adjudicator: String,
+    /// The OPT-IN risk-tiered review-depth policy (spec 03 "adaptive review depth",
+    /// spec 13 unit 4). When set, THIS panel is the FULL panel and `tiers.light` is
+    /// the reduced roster a LOW-RISK unit reviews itself with; the conductor routes
+    /// each unit to light-or-full by its observable risk before running the tiers
+    /// (see `select_review_panel`). Absent (the shipped default and every existing
+    /// workflow) means every unit runs this full panel and behavior is byte-for-byte
+    /// unchanged - tiering is opt-in. Carried here (not on `Defaults`) so BOTH
+    /// `defaults.review` and a per-stage `review` override inherit tiering through the
+    /// one panel abstraction. Boxed to break the ReviewPanel -> ReviewDepth ->
+    /// ReviewPanel type recursion (a fixed-size pointer instead of an infinite value).
+    #[serde(default)]
+    pub tiers: Option<Box<ReviewDepth>>,
 }
 
 impl ReviewPanel {
     /// Whether this panel has any review tier configured. An empty panel runs no
-    /// per-unit review (the historical implement-then-integrate behavior).
+    /// per-unit review (the historical implement-then-integrate behavior). A
+    /// `tiers` policy alone (no roster) is meaningless - there is no full panel to
+    /// reduce from - so it does not make a panel non-empty.
     pub fn is_empty(&self) -> bool {
         self.lenses.is_empty() && self.adversary.is_empty() && self.adjudicator.is_empty()
     }
 
+    /// The configured risk-tiered depth policy, if any.
+    pub fn depth(&self) -> Option<&ReviewDepth> {
+        self.tiers.as_deref()
+    }
+
     /// Every agent id this panel references (the lenses, the adversary, the
-    /// adjudicator), for referential validation.
+    /// adjudicator, AND the light-tier roster when a depth policy is configured),
+    /// for referential validation. Extending this to the light panel is what makes
+    /// an unknown light-panel lens/adversary/adjudicator fail `config::load` like any
+    /// other unresolved reference (spec 03: the light panel's agent ids are validated
+    /// too). Terminates: the light panel's own `tiers` is `None` in every real config.
     pub fn agent_ids(&self) -> Vec<String> {
         let mut ids = self.lenses.clone();
         if !self.adversary.is_empty() {
@@ -202,8 +225,93 @@ impl ReviewPanel {
         if !self.adjudicator.is_empty() {
             ids.push(self.adjudicator.clone());
         }
+        if let Some(depth) = self.depth() {
+            ids.extend(depth.light.agent_ids());
+        }
         ids
     }
+
+    /// Validate the depth policy's structural invariant: the gating verdict is mandatory
+    /// on EVERY tier - only the adversary (and the extra lenses) flex (spec 03 / spec 13
+    /// unit 4) - so BOTH the reduced LIGHT tier AND the enclosing FULL panel this depth
+    /// policy sits on MUST name an adjudicator.
+    ///
+    /// The full-panel check closes the inverted-guarantee hole: a high-risk unit routes
+    /// to THIS (full) panel, and an empty full roster (or one that names no adjudicator)
+    /// would let `review_unit` approve it trivially via `panel.is_empty()` - so the
+    /// highest-risk units would get NO adjudicator while low-risk units got the light one.
+    /// A full panel that names an adjudicator is necessarily non-empty, so this one check
+    /// rejects both the empty-full-panel and the adjudicator-less-full-panel cases (and a
+    /// per-stage `review:` that declares ONLY a `tiers:` policy with no roster - which
+    /// `effective_review_panel` would otherwise silently discard back to defaults - now
+    /// fails `config::load` loudly instead). The light-panel check likewise guards the
+    /// low-risk route. Both fail `config::load` rather than silently, returning a bare
+    /// message the caller wraps into its `Error` with the offending scope.
+    pub fn validate_depth(&self) -> Result<(), String> {
+        if let Some(depth) = self.depth() {
+            // The enclosing FULL panel (this one) must name an adjudicator: a high-risk
+            // unit routes here, and an empty/adjudicator-less full panel would approve it
+            // trivially. A panel that names an adjudicator is necessarily non-empty, so
+            // this rejects both the empty-full-panel and the adjudicator-less cases.
+            if self.adjudicator.is_empty() {
+                return Err(
+                    "a review.tiers policy requires its enclosing (full) panel to name an \
+                     adjudicator (the gating verdict is mandatory on every review tier - a \
+                     high-risk unit routes to the full panel, so an empty/adjudicator-less \
+                     full panel would approve it with no verdict)"
+                        .to_string(),
+                );
+            }
+            // ...and the reduced LIGHT tier a low-risk unit routes to must name one too.
+            if depth.light.adjudicator.is_empty() {
+                return Err(
+                    "review.tiers.light must name an adjudicator (the gating verdict is \
+                     mandatory on every review tier - only the adversary flexes)"
+                        .to_string(),
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+/// ReviewDepth is the OPT-IN risk-tiered review policy (spec 03 "adaptive review
+/// depth", spec 13 unit 4). Declared under a `review` block's `tiers:`, it routes
+/// each implementer unit to the reduced `light` panel or the enclosing full panel by
+/// the unit's OBSERVABLE risk - the exact signals the loop already computes: the
+/// unit's grounded blast-radius file count against `threshold`, whether any
+/// blast-radius file matches a `high_risk_paths` prefix/glob, and whether the unit's
+/// gates FLAPPED (it needed remediation to reach green). The adjudicator and the full
+/// gate suite stay mandatory on every tier - only the adversary and the extra lenses
+/// flex - so the light route still gates integration.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct ReviewDepth {
+    /// The reduced roster a LOW-RISK unit reviews itself with (typically fewer lenses
+    /// and no adversary). It must name an adjudicator (`validate_depth`), and its
+    /// agent ids are validated like the full panel's (`agent_ids`).
+    #[serde(default)]
+    pub light: ReviewPanel,
+    /// The maximum grounded blast-radius file count for a unit to stay "low risk": a
+    /// unit whose blast radius exceeds this runs the full panel. `0` (the default)
+    /// means no unit qualifies as low-risk by size alone, so a workflow that declares
+    /// `tiers` but forgets `threshold` keeps the full panel for every non-empty unit -
+    /// tiering never silently weakens review.
+    ///
+    /// CEILING: the grounded blast radius is capped at the grounder's `k` (the conductor
+    /// grounds at most 8 distinct files - `grounded_seed`), so `blast_radius.len() <= 8`
+    /// always and a `threshold >= 8` is INERT by size alone - it can never be exceeded, so
+    /// only `high_risk_paths` (or a flapped gate, or an empty radius) can then force the
+    /// full panel. Author size thresholds below the grounder cap; use `high_risk_paths`
+    /// for breadth the size signal cannot express. (The cap also means the count reflects
+    /// grep-hit spread within the first 8 line-matches, not the change's full breadth.)
+    #[serde(default)]
+    pub threshold: usize,
+    /// Path prefixes / globs that force the FULL panel even for a small change: a unit
+    /// whose blast radius touches any of these is high-risk regardless of size (e.g. a
+    /// core trait or a spec file). An entry matches a blast-radius file by literal
+    /// prefix OR by the same glob semantics gate `inputs:` use.
+    #[serde(default)]
+    pub high_risk_paths: Vec<String>,
 }
 
 /// Defaults are workflow-wide fallbacks for stages that do not set their own.
@@ -579,7 +687,9 @@ impl Config {
     /// Validate checks that every reference resolves and the stage graph is acyclic.
     pub fn validate(&self) -> Result<(), Error> {
         let wf = &self.workflow;
-        // The default review panel (applied to every unit) must reference real agents.
+        // The default review panel (applied to every unit) must reference real agents,
+        // including its light-tier roster, and its depth policy must be structurally
+        // sound (a configured light tier names an adjudicator).
         for aid in wf.defaults.review.agent_ids() {
             if !self.agents.contains_key(&aid) {
                 return Err(err(format!(
@@ -587,6 +697,10 @@ impl Config {
                 )));
             }
         }
+        wf.defaults
+            .review
+            .validate_depth()
+            .map_err(|m| err(format!("defaults.{m}")))?;
         for (name, st) in &wf.stages {
             for need in &st.needs {
                 if !wf.stages.contains_key(need) {
@@ -605,6 +719,11 @@ impl Config {
                     return Err(err(format!("stage {name:?} references unknown gate {g:?}")));
                 }
             }
+            // A per-stage `review` override that declares a depth policy must satisfy the
+            // same light-tier-names-an-adjudicator invariant as the default panel.
+            st.review
+                .validate_depth()
+                .map_err(|m| err(format!("stage {name:?} {m}")))?;
         }
         if let Some(cyc) = find_cycle(&wf.stages) {
             return Err(err(format!(
@@ -954,6 +1073,186 @@ agent: worker\n";
             cfg.agents.insert(id.into(), agent_def(id));
         }
         assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn review_tiers_depth_policy_parses_from_yaml() {
+        // spec 03 / spec 13 unit 4: `defaults.review` carries an OPT-IN `tiers` depth
+        // policy - a light panel, a blast-radius threshold, and a high-risk path list -
+        // that parse from the workflow YAML alongside the full panel.
+        let yaml = "name: w\n\
+defaults:\n  \
+review:\n    \
+lenses: [archlens, techlens]\n    \
+adversary: adv\n    \
+adjudicator: adj\n    \
+tiers:\n      \
+threshold: 3\n      \
+high_risk_paths: [\"src/conductor.rs\", \"specs/**\"]\n      \
+light:\n        \
+lenses: [archlens]\n        \
+adjudicator: adj\n\
+stages:\n  \
+implement:\n    \
+agent: worker\n";
+        let wf: Workflow = serde_yaml::from_str(yaml).unwrap();
+        let review = &wf.defaults.review;
+        let depth = review.depth().expect("the tiers depth policy must parse");
+        assert_eq!(depth.threshold, 3);
+        assert_eq!(depth.high_risk_paths, ["src/conductor.rs", "specs/**"]);
+        assert_eq!(depth.light.lenses, ["archlens"]);
+        assert_eq!(depth.light.adjudicator, "adj");
+        assert!(
+            depth.light.adversary.is_empty(),
+            "the light panel typically omits the adversary"
+        );
+    }
+
+    #[test]
+    fn validate_catches_an_unknown_light_panel_agent() {
+        // The light panel's agent ids are validated exactly like the full panel's: an
+        // unknown light-panel lens/adversary/adjudicator fails `config::load` (spec 03).
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent_def("a"));
+        cfg.workflow.defaults.review = ReviewPanel {
+            lenses: vec!["a".into()],
+            adjudicator: "a".into(),
+            tiers: Some(Box::new(ReviewDepth {
+                light: ReviewPanel {
+                    lenses: vec!["ghost".into()],
+                    adjudicator: "a".into(),
+                    ..Default::default()
+                },
+                threshold: 2,
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        assert!(
+            cfg.validate().is_err(),
+            "an unknown light-panel lens must fail validation"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_a_light_panel_with_no_adjudicator() {
+        // The adjudicator's gating verdict is mandatory on every tier - only the
+        // adversary flexes (spec 03 / spec 13 unit 4). A configured light panel that
+        // names no adjudicator would let a low-risk unit approve trivially, so it fails
+        // `config::load` loudly.
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent_def("a"));
+        cfg.workflow.defaults.review = ReviewPanel {
+            lenses: vec!["a".into()],
+            adjudicator: "a".into(),
+            tiers: Some(Box::new(ReviewDepth {
+                light: ReviewPanel {
+                    lenses: vec!["a".into()],
+                    ..Default::default()
+                },
+                threshold: 2,
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        assert!(
+            cfg.validate().is_err(),
+            "a light panel with no adjudicator must fail validation"
+        );
+    }
+
+    #[test]
+    fn validate_accepts_a_well_formed_depth_policy() {
+        // A depth policy whose light panel names a known adjudicator and only known
+        // agents validates cleanly.
+        let mut cfg = Config::default();
+        for id in ["arch", "tech", "adv", "judge"] {
+            cfg.agents.insert(id.into(), agent_def(id));
+        }
+        cfg.workflow.defaults.review = ReviewPanel {
+            lenses: vec!["arch".into(), "tech".into()],
+            adversary: "adv".into(),
+            adjudicator: "judge".into(),
+            tiers: Some(Box::new(ReviewDepth {
+                light: ReviewPanel {
+                    lenses: vec!["arch".into()],
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                threshold: 3,
+                high_risk_paths: vec!["src/conductor.rs".into()],
+            })),
+        };
+        assert!(
+            cfg.validate().is_ok(),
+            "a well-formed depth policy must validate"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_a_tiers_policy_on_a_full_panel_with_no_adjudicator() {
+        // The gating verdict is mandatory on EVERY tier, including the FULL one a high-risk
+        // unit routes to (remediation of sdet-u13-empty-full-tiers-skips-adjudicator). A
+        // tiers policy whose ENCLOSING full panel names no adjudicator - even with a
+        // perfectly valid light tier - would let a high-risk unit route to a panel that
+        // approves trivially via `is_empty()`, skipping the adjudicator. So it must fail
+        // `config::load` loudly. Before the fix, `validate_depth` guarded only the light
+        // tier, so `{empty full roster + valid tiers.light}` was ACCEPTED.
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent_def("a"));
+        cfg.workflow.defaults.review = ReviewPanel {
+            // A full panel that names NO adjudicator (here, no roster at all).
+            tiers: Some(Box::new(ReviewDepth {
+                light: ReviewPanel {
+                    lenses: vec!["a".into()],
+                    adjudicator: "a".into(),
+                    ..Default::default()
+                },
+                threshold: 2,
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        assert!(
+            cfg.validate().is_err(),
+            "a tiers policy on a full panel that names no adjudicator must fail validation"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_a_stage_review_declaring_only_a_tiers_policy() {
+        // A per-stage `review:` that declares ONLY a tiers policy (no roster, so no
+        // adjudicator on the full panel) is malformed the same way: the per-stage
+        // `validate_depth` branch (remediation of sdet-u13-stage-override-tiers-untested,
+        // part a) now rejects it loudly instead of the runtime silently discarding it back
+        // to defaults. This pins the stage-level validation branch that was untested.
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent_def("a"));
+        cfg.workflow.stages.insert(
+            "implement".into(),
+            Stage {
+                name: "implement".into(),
+                agent: "a".into(),
+                review: ReviewPanel {
+                    // Only a tiers policy, no enclosing roster/adjudicator.
+                    tiers: Some(Box::new(ReviewDepth {
+                        light: ReviewPanel {
+                            lenses: vec!["a".into()],
+                            adjudicator: "a".into(),
+                            ..Default::default()
+                        },
+                        threshold: 2,
+                        ..Default::default()
+                    })),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        assert!(
+            cfg.validate().is_err(),
+            "a stage review declaring only a tiers policy (no full adjudicator) must fail validation"
+        );
     }
 
     fn agent_def(id: &str) -> AgentDef {

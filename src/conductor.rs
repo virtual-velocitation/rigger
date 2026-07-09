@@ -209,6 +209,19 @@ pub const META_SPEC_LOSERS: &str = "speculation_losers";
 /// lane, never the unit's terminal state.
 const STATUS_SPECULATION_CANCELLED: &str = "speculation-cancelled";
 
+/// The `UnitStatus.status` token a review-tier ROUTING marker carries (spec 03
+/// "adaptive review depth", spec 13 unit 4 "risk-tiered review depth"). Like
+/// [`STATUS_COMPENSATION_QUEUED`] it is deliberately NOT a [`ledger::Status`] variant,
+/// so the ledger fold leaves the unit's status untouched (`Status::parse` returns
+/// `None`) and the metrics fold ignores it - the marker exists ONLY to LOG which tier a
+/// unit's review was routed to, with the inputs that decided it, riding the existing
+/// `UnitStatus` vocabulary so no new event type is added (spec 13 global constraint).
+const STATUS_REVIEW_TIER: &str = "review-tier";
+/// The two review-depth tiers a unit routes to: `TIER_LIGHT` runs the reduced roster,
+/// `TIER_FULL` the whole panel (spec 03 / spec 13 unit 4).
+const TIER_LIGHT: &str = "light";
+const TIER_FULL: &str = "full";
+
 /// The replay key for a gate's verdict, keyed by the `(unit, attempt, gate)` coordinate
 /// the gate ran under - so a step re-reaching an already-run gate REPLAYS its recorded
 /// verdict instead of re-running the command (spec 04, criterion 4). Distinct attempts
@@ -301,6 +314,114 @@ fn glob_matches(pattern: &str, path: &str) -> bool {
     regex::Regex::new(&re)
         .map(|r| r.is_match(path))
         .unwrap_or(false)
+}
+
+/// Whether a `high_risk_paths` entry matches a blast-radius file (spec 03 / spec 13
+/// unit 4). An entry matches by literal path PREFIX (so `src/` or `src/conductor`
+/// flags `src/conductor.rs`) OR by the same glob semantics gate `inputs:` use (so
+/// `specs/**` or `src/*.rs` work). Either match forces the FULL review panel even for
+/// a small change - the "core trait / spec file" escape hatch the size threshold alone
+/// would miss.
+fn path_is_high_risk(pattern: &str, file: &str) -> bool {
+    file.starts_with(pattern) || glob_matches(pattern, file)
+}
+
+/// The review tier a unit was routed to and the OBSERVABLE inputs that decided it
+/// (spec 03 "adaptive review depth", spec 13 unit 4). Returned by [`route_review_tier`]
+/// so `review_unit` can both run the chosen panel and LOG the routing decision with its
+/// inputs ("every routing decision logged with its inputs").
+struct TierRouting<'a> {
+    /// The panel to run - the reduced light roster or the full panel.
+    panel: &'a crate::config::ReviewPanel,
+    /// [`TIER_LIGHT`] or [`TIER_FULL`].
+    tier: &'static str,
+    /// The unit's grounded blast-radius file count (the size signal).
+    blast_radius: usize,
+    /// The low-risk size threshold in effect (`0` when no policy is configured).
+    threshold: usize,
+    /// The first blast-radius file that matched a `high_risk_paths` entry, if any.
+    high_risk_hit: Option<String>,
+    /// Whether the grounded blast radius was EMPTY - no grounder configured, or a
+    /// coverage query that grounded to zero files. An absent risk signal is
+    /// UNASSESSABLE, so it fails SAFE to the FULL panel (never LIGHT): the size and
+    /// high-risk-path signals can say nothing about a radius with no files, and a
+    /// tiers-without-a-grounder workflow must not silently downgrade every unit to
+    /// light. Recorded so the routing log shows WHY the full panel ran.
+    empty_radius: bool,
+    /// Whether the unit's gates FLAPPED - it needed remediation to reach green (the
+    /// spec-13 "gate outcome" signal, observed as `attempt > 0`).
+    flapped: bool,
+    /// Whether a depth policy was configured at all. `false` means every unit runs the
+    /// full panel unchanged and NOTHING is logged - the shipped default.
+    policy: bool,
+}
+
+/// Route a unit's review to the LIGHT or FULL panel by its observable risk (spec 03
+/// "adaptive review depth", spec 13 unit 4 "risk-tiered review depth"). `full` is the
+/// unit's effective panel; when it carries no `tiers` depth policy every unit runs it
+/// unchanged (`policy: false`). Otherwise the unit runs the FULL panel if ANY high-risk
+/// signal holds - a blast-radius file matches a high-risk path, the blast-radius file
+/// count EXCEEDS the threshold, the gates flapped, or the blast radius is EMPTY - and the
+/// reduced LIGHT panel only when none of them do. The empty-radius arm is the FAIL-SAFE
+/// default: an absent risk signal (no grounder configured, or a coverage query that
+/// grounds to zero files) is unassessable, so it routes to FULL rather than LIGHT - the
+/// size and high-risk-path signals can prove nothing about a radius with no files, and a
+/// tiers-without-a-grounder workflow must never silently downgrade EVERY unit to light
+/// (the safety mechanism fails SAFE, not OPEN). The size `threshold` is bounded above by
+/// the grounder's `k` cap (`grounded_seed` grounds at most 8 distinct files), so a
+/// `threshold >= 8` is inert by size alone - only `high_risk_paths`/`flapped`/empty force
+/// full past the cap. The adjudicator and the full gate suite stay mandatory on every tier
+/// (config validation forces both the light AND the full panel to name an adjudicator; the
+/// gates run outside the review), so a light-routed unit still gets its gating verdict -
+/// only the adversary and the extra lenses flex. Pure over the panel + signals, so it is
+/// unit-tested directly.
+fn route_review_tier<'a>(
+    full: &'a crate::config::ReviewPanel,
+    blast_radius: &[String],
+    flapped: bool,
+) -> TierRouting<'a> {
+    let depth = match full.depth() {
+        None => {
+            return TierRouting {
+                panel: full,
+                tier: TIER_FULL,
+                blast_radius: blast_radius.len(),
+                threshold: 0,
+                high_risk_hit: None,
+                empty_radius: blast_radius.is_empty(),
+                flapped,
+                policy: false,
+            };
+        }
+        Some(d) => d,
+    };
+    let high_risk_hit = blast_radius
+        .iter()
+        .find(|f| {
+            depth
+                .high_risk_paths
+                .iter()
+                .any(|p| path_is_high_risk(p, f))
+        })
+        .cloned();
+    let over_threshold = blast_radius.len() > depth.threshold;
+    // An EMPTY grounded blast radius fails SAFE to the full panel: no grounder (or a
+    // zero-grounding coverage query) leaves the size/high-risk-path signals with nothing
+    // to assess, so routing LIGHT here would let a tiers-without-a-grounder workflow
+    // silently downgrade EVERY unit's review - a fail-OPEN in a safety mechanism. Full is
+    // the only defensible default when risk cannot be measured.
+    let empty_radius = blast_radius.is_empty();
+    let full_panel = empty_radius || high_risk_hit.is_some() || over_threshold || flapped;
+    TierRouting {
+        panel: if full_panel { full } else { &depth.light },
+        tier: if full_panel { TIER_FULL } else { TIER_LIGHT },
+        blast_radius: blast_radius.len(),
+        threshold: depth.threshold,
+        high_risk_hit,
+        empty_radius,
+        flapped,
+        policy: true,
+    }
 }
 
 /// The producing UNIT of a gate-verdict replay key (`{unit}/gate:{gate}#{attempt}`), used
@@ -2591,6 +2712,56 @@ impl RunCtx<'_> {
         }
     }
 
+    /// Select the review panel for a unit by its observable risk (spec 03 / spec 13
+    /// unit 4), routing to the LIGHT or FULL tier via [`route_review_tier`] over the
+    /// unit's [`effective_review_panel`](RunCtx::effective_review_panel). `blast_radius`
+    /// is the unit's grounded seed - the SAME set spawn/partition/staleness use, never a
+    /// second grounder call - and `flapped` is whether the unit's gates flapped (it took
+    /// remediation to reach green). When the effective panel carries no `tiers` policy,
+    /// every unit routes to the full panel unchanged.
+    fn select_review_panel<'a>(
+        &'a self,
+        st: &'a Stage,
+        blast_radius: &[String],
+        flapped: bool,
+    ) -> TierRouting<'a> {
+        route_review_tier(self.effective_review_panel(st), blast_radius, flapped)
+    }
+
+    /// Log a unit's review-tier routing decision with its inputs (spec 03 / spec 13
+    /// unit 4: "every routing decision logged with its inputs"). Rides the existing
+    /// `UnitStatus` vocabulary as the fold-neutral [`STATUS_REVIEW_TIER`] marker - a
+    /// token `Status::parse` does not recognize, so folding leaves the unit's status
+    /// untouched and adds NO new event type (spec 13 global constraint); the routing
+    /// inputs land in the unit's evidence (all stringified - evidence is
+    /// `BTreeMap<String, String>`). Keyed per unit + attempt so a stepwise resume
+    /// re-appends it exactly once. Called ONLY when a depth policy is configured, so a
+    /// workflow without tiers emits nothing new - the shipped default is byte-for-byte
+    /// unchanged.
+    fn log_review_tier(
+        &self,
+        st: &Stage,
+        attempt: u32,
+        routing: &TierRouting,
+    ) -> Result<(), Error> {
+        self.emit_keyed(
+            &format!("{}/review-tier#{attempt}", st.name),
+            ledger::TYPE_UNIT_STATUS,
+            json!({
+                "id": st.name,
+                "status": STATUS_REVIEW_TIER,
+                "evidence": {
+                    "review-tier": routing.tier,
+                    "blast-radius": routing.blast_radius.to_string(),
+                    "threshold": routing.threshold.to_string(),
+                    "high-risk-path": routing.high_risk_hit.clone().unwrap_or_default(),
+                    "empty-radius": routing.empty_radius.to_string(),
+                    "flapped": routing.flapped.to_string(),
+                },
+            }),
+        )
+    }
+
     /// The cwd-isolation invariant for EVERY spawned agent (the worktree-isolation
     /// fix): an agent NEVER runs in the live main-repo checkout. A spawn's `dir`
     /// becomes the agent's working directory (the cli driver's `current_dir`, the
@@ -2706,14 +2877,42 @@ impl RunCtx<'_> {
     /// ledger `Status::Reviewed`, which would route a resume to the review-SKIPPING
     /// `ResumePhase::Reviewed` path on the canonical lane. The single-lane path passes FALSE and
     /// emits inline, byte-for-byte unchanged.
+    ///
+    /// `flapped` (spec 03 / spec 13 unit 4) is the gate-outcome risk signal: TRUE when this
+    /// unit needed remediation to reach green, forcing the FULL panel even on a small radius.
+    /// The caller derives it, because it does NOT coincide with `attempt` on every path: the
+    /// single-lane path passes `attempts > 0` (a genuine remediation flap), but the speculation
+    /// path passes FALSE - a candidate's `lane` index is a parallel FIRST attempt in its own
+    /// worktree, not a remediation, so reusing `attempt > 0` there would force every lane>0 to
+    /// the FULL panel and fold a bogus `flapped=true` into the shared unit's evidence.
+    ///
+    /// `blast_radius` is the unit's grounded seed - the SAME set spawn/partition/staleness use -
+    /// threaded in so the risk-tier routing (spec 03 / spec 13 unit 4) selects the LIGHT or FULL
+    /// panel from the observable risk (blast-radius size, a high-risk-path hit, an empty radius,
+    /// or flapped gates) BEFORE running any tier. With no depth policy configured, routing
+    /// returns the effective panel unchanged and logs nothing, so behavior is byte-for-byte
+    /// unchanged (tiering is opt-in).
     fn review_unit(
         &self,
         st: &Stage,
         dir: &str,
         attempt: u32,
+        flapped: bool,
         defer_reviewed: bool,
+        blast_radius: &[String],
     ) -> Result<ReviewOutcome, Error> {
-        let panel = self.effective_review_panel(st);
+        // Risk-tiered review depth (spec 03 / spec 13 unit 4): route this unit to the
+        // LIGHT or FULL panel from its observable risk - the grounded blast-radius size,
+        // any high-risk-path hit, and whether the gates `flapped` (the caller-supplied
+        // gate-outcome signal) - BEFORE running any tier. When a depth policy is
+        // configured, LOG the decision with its inputs; when it is not, `routing.panel`
+        // IS the effective panel and nothing is logged, so behavior is byte-for-byte
+        // unchanged (tiering is opt-in).
+        let routing = self.select_review_panel(st, blast_radius, flapped);
+        if routing.policy {
+            self.log_review_tier(st, attempt, &routing)?;
+        }
+        let panel = routing.panel;
         if panel.is_empty() {
             return Ok(ReviewOutcome::approved(String::new()));
         }
@@ -3105,7 +3304,8 @@ impl RunCtx<'_> {
                             (META_WORKTREE_SHA, &reviewed_sha),
                         ],
                     )?;
-                    let review = self.review_unit(st, dir, attempts, false)?;
+                    let review =
+                        self.review_unit(st, dir, attempts, attempts > 0, false, &blast_radius)?;
                     // A contradiction against a PRIOR integrated unit (spec 12, unit 4): the
                     // adjudicator named another, already-integrated unit as the real defect
                     // source. QUEUE the rollback for the run loop to drain after this wave
@@ -3450,7 +3650,10 @@ impl RunCtx<'_> {
             // statuses are ALL DEFERRED to the winner path below (`defer_reviewed: true`) so a
             // candidate that is approved but does NOT win never folds the shared unit out of
             // `Fresh`, and the review tiers park across steps while the unit stays `Fresh`.
-            let review = self.review_unit(st, &dir, lane, true)?;
+            // `flapped: false` - a candidate `lane` is a parallel FIRST attempt, NOT a
+            // remediation, so the review tier routes by RISK per lane rather than force-routing
+            // every lane>0 to the FULL panel (sdet-u13rt-flapped-conflates-lane-in-speculation).
+            let review = self.review_unit(st, &dir, lane, false, true, &blast_radius)?;
             // A candidate's review may name a PRIOR integrated unit as the real defect source
             // (spec 12, unit 4), independent of whether it approves this candidate: queue the
             // rollback exactly as the single-lane path does, so the reverse gear is not lost.
@@ -9157,6 +9360,7 @@ mod tests {
                     lenses: vec!["lens".into()],
                     adversary: "adversary".into(),
                     adjudicator: "judge".into(),
+                    tiers: None,
                 },
                 ..Default::default()
             },
@@ -9348,6 +9552,7 @@ mod tests {
             lenses: vec!["lens".into()],
             adversary: "adversary".into(),
             adjudicator: "adj".into(),
+            tiers: None,
         };
         cfg.workflow.stages.insert(
             "implement".into(),
@@ -9834,6 +10039,7 @@ mod tests {
             lenses: vec!["lensA".into(), "lensB".into()],
             adversary: "adversary".into(),
             adjudicator: "adj".into(),
+            tiers: None,
         };
         cfg.workflow.stages.insert(
             "implement".into(),
@@ -9910,6 +10116,700 @@ mod tests {
         );
     }
 
+    // A depth policy wrapping `light` with a size `threshold` and a `high_risk` path list.
+    fn depth_tiers(
+        light: config::ReviewPanel,
+        threshold: usize,
+        high_risk: &[&str],
+    ) -> Option<Box<config::ReviewDepth>> {
+        Some(Box::new(config::ReviewDepth {
+            light,
+            threshold,
+            high_risk_paths: high_risk.iter().map(|s| s.to_string()).collect(),
+        }))
+    }
+
+    // The full panel used across the tiering tests: two lenses + adversary + adjudicator,
+    // reducing to a one-lens + adjudicator light tier under the given policy.
+    fn full_panel_with_tiers(tiers: Option<Box<config::ReviewDepth>>) -> config::ReviewPanel {
+        config::ReviewPanel {
+            lenses: vec!["lensA".into(), "lensB".into()],
+            adversary: "adversary".into(),
+            adjudicator: "adj".into(),
+            tiers,
+        }
+    }
+
+    fn strs(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn path_is_high_risk_matches_by_prefix_and_by_glob() {
+        // A high_risk_paths entry flags a blast-radius file by literal PREFIX or by glob.
+        assert!(
+            path_is_high_risk("src/conductor.rs", "src/conductor.rs"),
+            "exact"
+        );
+        assert!(
+            path_is_high_risk("src/", "src/conductor.rs"),
+            "directory prefix"
+        );
+        assert!(
+            !path_is_high_risk("src/", "docs/architecture.md"),
+            "non-matching prefix"
+        );
+        assert!(
+            path_is_high_risk("specs/**", "specs/13-wave-4.md"),
+            "** glob"
+        );
+        assert!(
+            path_is_high_risk("src/*.rs", "src/gate.rs"),
+            "* segment glob"
+        );
+        assert!(
+            !path_is_high_risk("src/*.rs", "src/contextgraph/mod.rs"),
+            "* does not cross /"
+        );
+    }
+
+    #[test]
+    fn route_review_tier_with_no_policy_is_the_full_panel_unchanged() {
+        // Without a `tiers` policy every unit routes to the full panel and `policy` is
+        // false, so nothing is logged - the shipped default is byte-for-byte unchanged.
+        let full = full_panel_with_tiers(None);
+        let routing = route_review_tier(&full, &strs(&["a.rs", "b.rs", "c.rs", "d.rs"]), true);
+        assert_eq!(routing.tier, TIER_FULL);
+        assert!(!routing.policy, "no policy configured");
+        assert_eq!(routing.panel.lenses, ["lensA", "lensB"]);
+        assert_eq!(routing.panel.adversary, "adversary");
+    }
+
+    #[test]
+    fn route_review_tier_routes_a_low_risk_unit_to_the_light_panel() {
+        // Small blast radius, no high-risk path, gates did not flap => the light panel.
+        let light = config::ReviewPanel {
+            lenses: vec!["lensA".into()],
+            adjudicator: "adj".into(),
+            ..Default::default()
+        };
+        let full = full_panel_with_tiers(depth_tiers(light, 3, &["src/conductor.rs"]));
+        let routing = route_review_tier(&full, &strs(&["leaf.rs"]), false);
+        assert_eq!(routing.tier, TIER_LIGHT);
+        assert!(routing.policy);
+        assert_eq!(routing.panel.lenses, ["lensA"], "the light roster runs");
+        assert!(
+            routing.panel.adversary.is_empty(),
+            "light omits the adversary"
+        );
+        assert_eq!(routing.blast_radius, 1);
+        assert!(routing.high_risk_hit.is_none());
+        assert!(!routing.flapped);
+    }
+
+    #[test]
+    fn route_review_tier_forces_full_on_a_high_risk_path_hit() {
+        let light = config::ReviewPanel {
+            lenses: vec!["lensA".into()],
+            adjudicator: "adj".into(),
+            ..Default::default()
+        };
+        let full = full_panel_with_tiers(depth_tiers(light, 3, &["src/conductor.rs"]));
+        // One small blast-radius file, but it matches a high-risk path => full panel.
+        let routing = route_review_tier(&full, &strs(&["src/conductor.rs"]), false);
+        assert_eq!(routing.tier, TIER_FULL);
+        assert_eq!(
+            routing.panel.adversary, "adversary",
+            "the full adversary runs"
+        );
+        assert_eq!(routing.high_risk_hit.as_deref(), Some("src/conductor.rs"));
+    }
+
+    #[test]
+    fn route_review_tier_forces_full_over_the_size_threshold() {
+        let light = config::ReviewPanel {
+            lenses: vec!["lensA".into()],
+            adjudicator: "adj".into(),
+            ..Default::default()
+        };
+        let full = full_panel_with_tiers(depth_tiers(light, 3, &[]));
+        // Exactly at the threshold stays LOW risk (threshold is the inclusive max)...
+        let at = route_review_tier(&full, &strs(&["a.rs", "b.rs", "c.rs"]), false);
+        assert_eq!(at.tier, TIER_LIGHT, "count == threshold is still low-risk");
+        // ...one over the threshold forces the full panel.
+        let over = route_review_tier(&full, &strs(&["a.rs", "b.rs", "c.rs", "d.rs"]), false);
+        assert_eq!(over.tier, TIER_FULL, "count > threshold is high-risk");
+    }
+
+    #[test]
+    fn route_review_tier_forces_full_when_the_gates_flapped() {
+        // The spec-13 "gate outcome" signal: a unit that needed remediation to reach green
+        // (flapped) gets the full adversarial panel even with a tiny, low-path blast radius.
+        let light = config::ReviewPanel {
+            lenses: vec!["lensA".into()],
+            adjudicator: "adj".into(),
+            ..Default::default()
+        };
+        let full = full_panel_with_tiers(depth_tiers(light, 3, &["src/conductor.rs"]));
+        let routing = route_review_tier(&full, &strs(&["leaf.rs"]), true);
+        assert_eq!(routing.tier, TIER_FULL);
+        assert!(routing.flapped);
+        assert_eq!(routing.panel.adversary, "adversary");
+    }
+
+    #[test]
+    fn route_review_tier_fails_safe_to_full_on_an_empty_blast_radius() {
+        // The FAIL-SAFE default (remediation of adv-u13-empty-blast-radius-routes-light):
+        // an EMPTY grounded blast radius (no grounder configured, or a coverage query that
+        // grounds to zero files) is UNASSESSABLE, so it must route to FULL - never LIGHT.
+        // Even at threshold 0 with a high_risk_paths list set (the config the docs claim
+        // keeps the full panel for every unit), the absent-signal case previously fell OPEN
+        // to light because `0 > 0` is false and no file can match a path; it now fails SAFE.
+        let light = config::ReviewPanel {
+            lenses: vec!["lensA".into()],
+            adjudicator: "adj".into(),
+            ..Default::default()
+        };
+        let full = full_panel_with_tiers(depth_tiers(light, 0, &["src/conductor.rs"]));
+        // Empty radius, gates did NOT flap (attempt 0): the ONLY thing forcing full here is
+        // the empty-radius fail-safe, so this pins that arm specifically.
+        let routing = route_review_tier(&full, &strs(&[]), false);
+        assert_eq!(
+            routing.tier, TIER_FULL,
+            "an empty blast radius must fail SAFE to the full panel, never light"
+        );
+        assert!(routing.empty_radius, "the empty-radius signal is recorded");
+        assert!(
+            !routing.flapped,
+            "full is forced by the empty radius, not a flap"
+        );
+        assert!(
+            routing.high_risk_hit.is_none(),
+            "no file to match a high-risk path"
+        );
+        assert_eq!(
+            routing.panel.adversary, "adversary",
+            "the full adversary runs on an unassessable unit"
+        );
+        assert_eq!(routing.blast_radius, 0);
+    }
+
+    // Drive a full per-unit lifecycle with a Grep grounder over `files` (each a
+    // (relative-path, contents) pair) rooted in a fresh tempdir, the given `coverage`
+    // query, and the given default review panel. Returns the recorded run state and the
+    // driver so a test can assert which review agents ran and that the routing was logged.
+    fn run_tiered_unit(
+        review: config::ReviewPanel,
+        coverage: &str,
+        files: &[(&str, &str)],
+    ) -> (RunState, Store) {
+        let dir = tempfile::tempdir().unwrap();
+        for (rel, contents) in files {
+            let p = dir.path().join(rel);
+            if let Some(parent) = p.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(p, contents).unwrap();
+        }
+        let mut cfg = Config::default();
+        for id in ["worker", "lensA", "lensB", "adversary", "adj"] {
+            cfg.agents.insert(id.into(), agent(id));
+        }
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.defaults.review = review;
+        cfg.workflow.stages.insert(
+            "implement".into(),
+            Stage {
+                name: "implement".into(),
+                agent: "worker".into(),
+                coverage: coverage.into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            output: r#"{"verdict":"approve"}"#.into(),
+            ..Stub::new()
+        };
+        let grep = crate::grounder::Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        // The caller asserts on the recorded run state + the store (the routing marker and
+        // the folded evidence); the tests that need the exact spawn set inline this setup so
+        // they keep the `driver` handle in scope.
+        (rs, st)
+    }
+
+    // Whether a `review-tier` routing marker with the given tier token was logged for the
+    // unit (spec 03 / spec 13 unit 4: every routing decision logged with its inputs).
+    fn logged_review_tier(st: &Store, tier: &str) -> bool {
+        st.read_all(0, Direction::Forward, &Filter::default())
+            .unwrap()
+            .iter()
+            .any(|e| {
+                e.type_ == ledger::TYPE_UNIT_STATUS && {
+                    let s = String::from_utf8_lossy(&e.data);
+                    s.contains("\"status\":\"review-tier\"")
+                        && s.contains(&format!("\"review-tier\":\"{tier}\""))
+                }
+            })
+    }
+
+    #[test]
+    fn a_low_risk_unit_runs_the_light_panel_and_logs_the_routing() {
+        // spec 03 / spec 13 unit 4, the LIGHT route: a unit whose grounded blast radius is
+        // small, hits no high-risk path, and did not flap runs the reduced light panel
+        // (one lens + adjudicator, NO adversary), and the routing decision is logged.
+        let light = config::ReviewPanel {
+            lenses: vec!["lensA".into()],
+            adjudicator: "adj".into(),
+            ..Default::default()
+        };
+        let review = full_panel_with_tiers(depth_tiers(light, 3, &["src/conductor.rs"]));
+        // Exactly one grounded file, well under the threshold and not a high-risk path.
+        let (rs, st) = run_tiered_unit(review, "widget", &[("leaf.rs", "fn widget() {}\n")]);
+        assert_eq!(
+            rs.units["implement"].status,
+            ledger::Status::Integrated,
+            "a light-panel-approved low-risk unit still integrates"
+        );
+        assert!(
+            logged_review_tier(&st, "light"),
+            "the light routing decision must be logged with its inputs"
+        );
+        // The unit's evidence carries the routing inputs (blast-radius size, flapped).
+        let ev = &rs.units["implement"].evidence;
+        assert_eq!(ev.get("review-tier").map(String::as_str), Some("light"));
+        assert_eq!(ev.get("blast-radius").map(String::as_str), Some("1"));
+        assert_eq!(ev.get("flapped").map(String::as_str), Some("false"));
+    }
+
+    #[test]
+    fn a_low_risk_unit_skips_the_adversary_and_extra_lens() {
+        // Assert on WHICH agents ran: the light route spawns only lensA + adj, never lensB
+        // or the adversary.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("leaf.rs"), "fn widget() {}\n").unwrap();
+        let light = config::ReviewPanel {
+            lenses: vec!["lensA".into()],
+            adjudicator: "adj".into(),
+            ..Default::default()
+        };
+        let mut cfg = Config::default();
+        for id in ["worker", "lensA", "lensB", "adversary", "adj"] {
+            cfg.agents.insert(id.into(), agent(id));
+        }
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.defaults.review =
+            full_panel_with_tiers(depth_tiers(light, 3, &["src/conductor.rs"]));
+        cfg.workflow.stages.insert(
+            "implement".into(),
+            Stage {
+                name: "implement".into(),
+                agent: "worker".into(),
+                coverage: "widget".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            output: r#"{"verdict":"approve"}"#.into(),
+            ..Stub::new()
+        };
+        let grep = crate::grounder::Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        assert!(driver.spawned("lensA"), "the light lens runs");
+        assert!(
+            driver.spawned("adj"),
+            "the adjudicator is mandatory on every tier"
+        );
+        assert!(
+            !driver.spawned("lensB"),
+            "the light panel drops the extra lens"
+        );
+        assert!(
+            !driver.spawned("adversary"),
+            "the light panel drops the adversary"
+        );
+    }
+
+    #[test]
+    fn a_high_risk_unit_runs_the_full_panel_and_logs_the_routing() {
+        // spec 03 / spec 13 unit 4, the FULL route: a unit whose blast radius touches a
+        // high-risk path runs the FULL panel (both lenses + adversary + adjudicator), and
+        // the routing decision is logged as `full` with the matched path.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/conductor.rs"), "fn widget() {}\n").unwrap();
+        let light = config::ReviewPanel {
+            lenses: vec!["lensA".into()],
+            adjudicator: "adj".into(),
+            ..Default::default()
+        };
+        let mut cfg = Config::default();
+        for id in ["worker", "lensA", "lensB", "adversary", "adj"] {
+            cfg.agents.insert(id.into(), agent(id));
+        }
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.defaults.review =
+            full_panel_with_tiers(depth_tiers(light, 3, &["src/conductor.rs"]));
+        cfg.workflow.stages.insert(
+            "implement".into(),
+            Stage {
+                name: "implement".into(),
+                agent: "worker".into(),
+                coverage: "widget".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            output: r#"{"verdict":"approve"}"#.into(),
+            ..Stub::new()
+        };
+        let grep = crate::grounder::Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        assert!(
+            driver.spawned("lensA") && driver.spawned("lensB"),
+            "both lenses run"
+        );
+        assert!(
+            driver.spawned("adversary"),
+            "the adversary runs on a high-risk unit"
+        );
+        assert!(driver.spawned("adj"), "the adjudicator runs");
+        assert!(
+            logged_review_tier(&st, "full"),
+            "the full routing decision must be logged"
+        );
+        assert_eq!(
+            rs.units["implement"]
+                .evidence
+                .get("high-risk-path")
+                .map(String::as_str),
+            Some("src/conductor.rs"),
+            "the routing log names the matched high-risk path"
+        );
+    }
+
+    #[test]
+    fn without_a_depth_policy_a_grounded_unit_runs_the_full_panel_and_logs_no_routing() {
+        // spec 03 backward compatibility: with a grounder present but NO `tiers` policy,
+        // every unit runs the full panel exactly as today and NO review-tier marker is
+        // emitted - the log is byte-for-byte what it was before tiering existed.
+        let review = full_panel_with_tiers(None); // full panel, no tiers policy
+        let (rs, st) = run_tiered_unit(review, "widget", &[("leaf.rs", "fn widget() {}\n")]);
+        assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        assert!(
+            !logged_review_tier(&st, "light") && !logged_review_tier(&st, "full"),
+            "no depth policy => no routing marker (behavior unchanged)"
+        );
+        assert!(
+            !rs.units["implement"].evidence.contains_key("review-tier"),
+            "no routing inputs are folded onto a unit without a depth policy"
+        );
+    }
+
+    #[test]
+    fn a_zero_grounding_unit_fails_safe_to_the_full_panel_and_logs_it() {
+        // The FAIL-SAFE end-to-end (remediation of adv-u13-empty-blast-radius-routes-light):
+        // a unit whose coverage query grounds to ZERO files - here a query that matches no
+        // file's contents - has an unassessable risk profile, so with a tiers policy set it
+        // must run the FULL panel (both lenses + adversary + adjudicator), NOT the light one,
+        // and the routing log must record the empty-radius fail-safe. Before the fix this
+        // routed LIGHT (0 > threshold is false, no file matches a high-risk path), silently
+        // downgrading review.
+        let light = config::ReviewPanel {
+            lenses: vec!["lensA".into()],
+            adjudicator: "adj".into(),
+            ..Default::default()
+        };
+        // threshold 0 + a high-risk-paths list: the config the docs say keeps the full panel
+        // for every unit. Only the empty radius decides here.
+        let review = full_panel_with_tiers(depth_tiers(light, 0, &["src/conductor.rs"]));
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("leaf.rs"), "fn widget() {}\n").unwrap();
+        let mut cfg = Config::default();
+        for id in ["worker", "lensA", "lensB", "adversary", "adj"] {
+            cfg.agents.insert(id.into(), agent(id));
+        }
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.defaults.review = review;
+        cfg.workflow.stages.insert(
+            "implement".into(),
+            Stage {
+                name: "implement".into(),
+                agent: "worker".into(),
+                // A coverage query that appears in NO file's contents grounds to zero files.
+                coverage: "this_token_is_in_no_file".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            output: r#"{"verdict":"approve"}"#.into(),
+            ..Stub::new()
+        };
+        let grep = crate::grounder::Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        assert!(
+            logged_review_tier(&st, "full"),
+            "an empty-radius unit must route (and log) FULL, not light"
+        );
+        assert!(
+            !logged_review_tier(&st, "light"),
+            "a zero-grounding unit must NEVER be downgraded to the light panel"
+        );
+        assert!(
+            driver.spawned("adversary") && driver.spawned("lensB"),
+            "the full panel (adversary + both lenses) runs on an unassessable unit"
+        );
+        let ev = &rs.units["implement"].evidence;
+        assert_eq!(
+            ev.get("blast-radius").map(String::as_str),
+            Some("0"),
+            "the grounded radius really was empty"
+        );
+        assert_eq!(
+            ev.get("empty-radius").map(String::as_str),
+            Some("true"),
+            "the routing log records the empty-radius fail-safe as the reason for full"
+        );
+    }
+
+    #[test]
+    fn a_flapped_unit_escalates_from_light_at_attempt_0_to_full_on_remediation() {
+        // The flapped->full escalation END-TO-END (remediation of
+        // sdet-u13-flapped-escalation-e2e-untested): a LOW-RISK unit routes LIGHT on
+        // attempt 0; the light adjudicator REJECTS it; on the remediation attempt the unit
+        // has flapped (attempt > 0), so it re-routes to the FULL panel, whose adjudicator
+        // approves. Two review-tier markers land (#0 light, #1 full, keyed per unit+attempt)
+        // and the full-only adversary spawns ONLY on the remediation attempt - proving the
+        // flapped signal actually changed the panel, not just the log.
+        let light = config::ReviewPanel {
+            lenses: vec!["lensA".into()],
+            adjudicator: "adj".into(),
+            ..Default::default()
+        };
+        // A small, non-high-risk radius so attempt 0 is low-risk (routes light); threshold 3
+        // keeps the single grounded file under the size bar, and the high-risk path does not
+        // match it - so ONLY the flap can force full.
+        let review = full_panel_with_tiers(depth_tiers(light, 3, &["src/conductor.rs"]));
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("leaf.rs"), "fn widget() {}\n").unwrap();
+        let mut cfg = Config::default();
+        for id in ["worker", "lensA", "lensB", "adversary", "adj"] {
+            cfg.agents.insert(id.into(), agent(id));
+        }
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.defaults.review = review;
+        cfg.workflow.defaults.max_retries = 3;
+        cfg.workflow.stages.insert(
+            "implement".into(),
+            Stage {
+                name: "implement".into(),
+                agent: "worker".into(),
+                coverage: "widget".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        // The adjudicator rejects its attempt-0 spawn (the light route) and approves its
+        // attempt-1 spawn (the full route); lenses/adversary return substantive narration.
+        let driver = Stub {
+            output: "reviewed the diff; no blocking defect".into(),
+            output_by_spawn_id: HashMap::from([
+                (
+                    spawn_id("implement", ROLE_ADJUDICATOR, 0),
+                    r#"{"verdict":"reject","issues":[]}"#.to_string(),
+                ),
+                (
+                    spawn_id("implement", ROLE_ADJUDICATOR, 1),
+                    r#"{"verdict":"approve"}"#.to_string(),
+                ),
+            ]),
+            ..Stub::new()
+        };
+        let grep = crate::grounder::Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs.units["implement"].status,
+            ledger::Status::Integrated,
+            "the unit integrates once the full-panel adjudicator approves the remediation"
+        );
+        // BOTH markers landed: attempt 0 routed light, attempt 1 (flapped) routed full.
+        assert!(
+            logged_review_tier(&st, "light"),
+            "attempt 0 routed to the light panel"
+        );
+        assert!(
+            logged_review_tier(&st, "full"),
+            "the flapped remediation attempt re-routed to the full panel"
+        );
+        // The two markers are keyed per unit+attempt, so exactly one of each landed.
+        let events = st
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        let tier_markers: Vec<String> = events
+            .iter()
+            .filter(|e| {
+                e.type_ == ledger::TYPE_UNIT_STATUS
+                    && String::from_utf8_lossy(&e.data).contains("\"status\":\"review-tier\"")
+            })
+            .map(|e| String::from_utf8_lossy(&e.data).into_owned())
+            .collect();
+        assert_eq!(
+            tier_markers.len(),
+            2,
+            "exactly two review-tier markers (attempt 0 light, attempt 1 full): {tier_markers:?}"
+        );
+        // The full-only adversary spawned ONLY on the remediation attempt, never at attempt 0
+        // (the light route drops it) - proving the flap actually widened the panel.
+        let ids = driver.spawn_ids();
+        assert!(
+            !ids.contains(&spawn_id("implement", ROLE_ADVERSARY, 0)),
+            "the light route at attempt 0 must NOT spawn the adversary: {ids:?}"
+        );
+        assert!(
+            ids.contains(&spawn_id("implement", ROLE_ADVERSARY, 1)),
+            "the full route on the flapped remediation MUST spawn the adversary: {ids:?}"
+        );
+    }
+
+    #[test]
+    fn a_stage_level_tiers_policy_routes_the_unit_by_risk() {
+        // The STAGE-OVERRIDE tiering path (remediation of sdet-u13-stage-override-tiers-
+        // untested): a tiers policy declared on a stage's OWN `review` block (not
+        // defaults.review) is honored - `effective_review_panel` picks the non-empty stage
+        // panel and `route_review_tier` runs over it, so a low-risk unit routes LIGHT. This
+        // pins d13-u4-tiers-on-reviewpanel's claim that BOTH defaults and stage.review
+        // inherit tiering through the one panel abstraction; only defaults was covered.
+        let light = config::ReviewPanel {
+            lenses: vec!["lensA".into()],
+            adjudicator: "adj".into(),
+            ..Default::default()
+        };
+        let stage_review = full_panel_with_tiers(depth_tiers(light, 3, &["src/conductor.rs"]));
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("leaf.rs"), "fn widget() {}\n").unwrap();
+        let mut cfg = Config::default();
+        for id in ["worker", "lensA", "lensB", "adversary", "adj"] {
+            cfg.agents.insert(id.into(), agent(id));
+        }
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        // defaults.review stays EMPTY: the tiering must come from the STAGE override alone.
+        cfg.workflow.stages.insert(
+            "implement".into(),
+            Stage {
+                name: "implement".into(),
+                agent: "worker".into(),
+                coverage: "widget".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                review: stage_review,
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            output: r#"{"verdict":"approve"}"#.into(),
+            ..Stub::new()
+        };
+        let grep = crate::grounder::Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        assert!(
+            logged_review_tier(&st, "light"),
+            "a low-risk unit under a STAGE-level tiers policy routes light"
+        );
+        assert!(
+            driver.spawned("lensA") && driver.spawned("adj"),
+            "the light roster (lens + mandatory adjudicator) runs"
+        );
+        assert!(
+            !driver.spawned("lensB") && !driver.spawned("adversary"),
+            "the stage-level light route drops the extra lens and the adversary"
+        );
+    }
+
     #[test]
     fn every_spawn_runs_in_a_worktree_never_the_main_repo_checkout() {
         // The worktree-isolation invariant (the headline fix): with a repo configured,
@@ -9932,6 +10832,7 @@ mod tests {
             lenses: vec!["lensA".into(), "lensB".into()],
             adversary: "adversary".into(),
             adjudicator: "adj".into(),
+            tiers: None,
         };
         cfg.workflow.stages.insert(
             "implement".into(),
@@ -10474,6 +11375,127 @@ mod tests {
         assert!(
             !has_key("s/green#0") && !has_key("s/verified#0") && !has_key("s/reviewed#0"),
             "the rejected lane 0 emits no lifecycle status (it never won)"
+        );
+    }
+
+    #[test]
+    fn speculation_low_risk_later_lane_winner_routes_light_not_falsely_flapped() {
+        // The COMPOSITION of risk-tiering (spec 13 unit 4) with first-green-wins speculation
+        // (unit 3) - closing sdet-u13rt-speculation-tiers-composition-untested and the
+        // sdet-u13rt-flapped-conflates-lane-in-speculation defect. A speculation candidate's
+        // `lane` index is NOT a remediation flap: each lane is a parallel FIRST attempt in its
+        // own worktree. Lane 0 is adjudicator-REJECTED and the LOW-RISK lane 1 wins; its review
+        // must route by observable RISK (LIGHT - no adversary), and no review-tier marker may
+        // record flapped=true. A regression that reuses `attempt>0` as the flapped signal on the
+        // speculation path force-routes lane 1 FULL (spawning the full-only adversary on a
+        // low-risk change) and folds a bogus flapped=true into the shared unit's evidence: the
+        // adversary-absence and no-false-flap assertions below FAIL.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        // A small, non-high-risk grounded radius so the unit is LOW risk by size AND path:
+        // one file, under threshold 3, not under the high_risk_paths prefix.
+        let gdir = tempfile::tempdir().unwrap();
+        std::fs::write(gdir.path().join("leaf.rs"), "fn widget() {}\n").unwrap();
+        let grep = crate::grounder::Grep {
+            root: gdir.path().to_string_lossy().into_owned(),
+        };
+        let light = config::ReviewPanel {
+            lenses: vec!["lensA".into()],
+            adjudicator: "adj".into(),
+            ..Default::default()
+        };
+        let mut cfg = Config::default();
+        for id in ["worker", "lensA", "lensB", "adversary", "adj"] {
+            cfg.agents.insert(id.into(), agent(id));
+        }
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.defaults.review =
+            full_panel_with_tiers(depth_tiers(light, 3, &["src/conductor.rs"]));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                coverage: "widget".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                speculation_width: 2,
+                ..Default::default()
+            },
+        );
+        let store = Store::open(":memory:").unwrap();
+        // Per-lane divergent adjudicator: lane 0's adjudicator spawn REJECTS, lane 1's (the
+        // default `output`) APPROVES - keyed on the deterministic adjudicator spawn id, which
+        // keys by lane. The adjudicator runs on BOTH tiers, so this holds whether lane 0 routes
+        // light or full.
+        let driver = Stub {
+            write_file: Some("feature.rs".into()),
+            output: r#"{"verdict":"approve"}"#.into(),
+            output_by_spawn_id: HashMap::from([(
+                spawn_id("s", ROLE_ADJUDICATOR, 0),
+                r#"{"verdict":"reject","issues":["lane 0 rejected by the adjudicator"]}"#.into(),
+            )]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path,
+            grounder: Some(&grep),
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "the low-risk lane 1 wins after lane 0 is rejected"
+        );
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let integrated = events
+            .iter()
+            .find(|e| {
+                e.type_ == ledger::TYPE_UNIT_INTEGRATED
+                    && String::from_utf8_lossy(&e.data).contains("\"id\":\"s\"")
+            })
+            .expect("the unit integrated");
+        assert_eq!(
+            integrated.meta.get(META_SPEC_WINNER).map(String::as_str),
+            Some(spawn_id("s", ROLE_IMPLEMENTER, 1).as_str()),
+            "lane 1 (NOT lane 0) is the recorded winner"
+        );
+        // The low-risk lane-1 winner routed LIGHT: its full-only adversary NEVER spawned. This
+        // is the discriminator - reusing `attempt>0` for flapped force-routes lane 1 FULL and
+        // this adversary spawn appears.
+        let ids = driver.spawn_ids();
+        assert!(
+            !ids.contains(&spawn_id("s", ROLE_ADVERSARY, 1)),
+            "the low-risk lane-1 winner must route LIGHT - the adversary must NOT spawn on lane 1: {ids:?}"
+        );
+        // No lane flapped: a lane index is not a remediation attempt, so no review-tier marker
+        // may fold a bogus flapped=true.
+        let tier_markers: Vec<String> = events
+            .iter()
+            .filter(|e| {
+                e.type_ == ledger::TYPE_UNIT_STATUS
+                    && String::from_utf8_lossy(&e.data).contains("\"status\":\"review-tier\"")
+            })
+            .map(|e| String::from_utf8_lossy(&e.data).into_owned())
+            .collect();
+        assert!(
+            !tier_markers.is_empty(),
+            "the tiers policy logs a routing decision per reviewed lane"
+        );
+        assert!(
+            tier_markers
+                .iter()
+                .all(|m| !m.contains("\"flapped\":\"true\"")),
+            "no speculation lane flapped - the lane index must not fold a bogus flapped=true: {tier_markers:?}"
+        );
+        assert!(
+            logged_review_tier(&store, "light"),
+            "the low-risk lanes routed to the light panel"
         );
     }
 
@@ -11125,6 +12147,7 @@ mod tests {
             lenses: vec!["lensA".into(), "lensB".into()],
             adversary: "adversary".into(),
             adjudicator: "adj".into(),
+            tiers: None,
         };
         cfg.workflow.stages.insert(
             "implement".into(),
@@ -11297,6 +12320,7 @@ mod tests {
             lenses: vec!["lens".into()],
             adversary: String::new(),
             adjudicator: "adj".into(),
+            tiers: None,
         };
         cfg.workflow.stages.insert(
             "plan".into(),
@@ -11378,6 +12402,7 @@ mod tests {
                     lenses: vec!["lens".into()],
                     adversary: "adversary".into(),
                     adjudicator: "adjudicator".into(),
+                    tiers: None,
                 },
                 ..Default::default()
             },
@@ -11460,6 +12485,7 @@ mod tests {
             lenses: vec!["lens".into()],
             adversary: "adversary".into(),
             adjudicator: "adj".into(),
+            tiers: None,
         };
         cfg.workflow.stages.insert(
             "implement".into(),
@@ -11535,6 +12561,7 @@ mod tests {
             lenses: vec!["lens".into()],
             adversary: "adversary".into(),
             adjudicator: "adj".into(),
+            tiers: None,
         };
         cfg.workflow.stages.insert(
             "implement".into(),
@@ -11638,6 +12665,7 @@ mod tests {
                 lenses: vec!["lens".into()],
                 adversary: "adversary".into(),
                 adjudicator: "adj".into(),
+                tiers: None,
             };
             cfg.workflow.defaults.max_retries = max_retries;
             cfg.workflow.stages.insert(
@@ -11732,6 +12760,7 @@ mod tests {
             lenses: vec!["lens".into()],
             adversary: "adversary".into(),
             adjudicator: "adj".into(),
+            tiers: None,
         };
         // NOTE: defaults.max_retries deliberately left unset (0 -> falls back to 3).
         assert_eq!(
@@ -11859,6 +12888,7 @@ mod tests {
             lenses: vec!["lens".into()],
             adversary: "adversary".into(),
             adjudicator: "adj".into(),
+            tiers: None,
         };
         cfg.workflow.defaults.max_retries = CAP;
         cfg.workflow.stages.insert(
@@ -11935,6 +12965,7 @@ mod tests {
             lenses: vec!["lens".into()],
             adversary: "adversary".into(),
             adjudicator: "adj".into(),
+            tiers: None,
         };
         cfg.workflow.defaults.max_retries = CAP;
         cfg.workflow.stages.insert(
@@ -14096,6 +15127,7 @@ mod tests {
             lenses: vec!["lens".into()],
             adversary: String::new(),
             adjudicator: "adj".into(),
+            tiers: None,
         };
         cfg.workflow.stages.insert(
             "implement".into(),
@@ -17222,6 +18254,7 @@ mod tests {
             lenses: vec!["lens".into()],
             adversary: "adversary".into(),
             adjudicator: "adj".into(),
+            tiers: None,
         };
         // `s` passes its inline gate but the adjudicator ALWAYS rejects, so it remediates
         // to the bound and ESCALATES. It also references the deferred whole-tree gate.
