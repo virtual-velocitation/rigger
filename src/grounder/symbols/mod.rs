@@ -80,11 +80,46 @@ pub fn index_one_file(root: &str, rel: &str, idx: &mut SymbolIndex, override_lan
     }
 }
 
+/// Re-extract ONLY `files` into `idx`, replacing each named file's entry and leaving every
+/// other file's symbols intact - the incremental freshening `reindex` runs after a unit
+/// integrates (re-parse the just-changed files, not the whole tree). Each file is freshened
+/// through the shared [`index_one_file`] authority, NOT a second extract loop, so a file is
+/// indexed IDENTICALLY whether the whole tree is built (`build_index`) or one file is
+/// re-parsed here (one mutation authority; the two paths cannot drift). A named file whose
+/// extension is unregistered, that cannot be read, or that parses to no symbols leaves its
+/// existing entry untouched, exactly as `index_one_file` does on the whole-tree walk.
+#[cfg(feature = "symbols")]
+pub fn reindex_files(
+    root: &str,
+    idx: &mut SymbolIndex,
+    files: &[String],
+    override_lang: Option<Lang>,
+) {
+    for rel in files {
+        index_one_file(root, rel, idx, override_lang);
+    }
+}
+
 #[cfg(test)]
 #[cfg(feature = "symbols")]
 mod tests {
     use super::*;
     use crate::grounder::symbols::model::Kind;
+
+    #[test]
+    fn reindex_replaces_only_the_named_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        std::fs::write(dir.path().join("a.rs"), "fn one() {}\n").unwrap();
+        std::fs::write(dir.path().join("b.rs"), "fn two() {}\n").unwrap();
+        let mut idx = build_index(root, None);
+        // Change only a.rs; reindex just that file.
+        std::fs::write(dir.path().join("a.rs"), "fn oneprime() {}\n").unwrap();
+        reindex_files(root, &mut idx, &["a.rs".into()], None);
+        assert_eq!(idx.definitions_named("oneprime").len(), 1); // a.rs's new symbol is in
+        assert!(idx.definitions_named("one").is_empty()); // a.rs's old symbol is gone (entry replaced)
+        assert_eq!(idx.definitions_named("two").len(), 1); // b.rs untouched
+    }
 
     #[test]
     fn build_index_walks_the_tree_and_skips_unparseable_files() {
