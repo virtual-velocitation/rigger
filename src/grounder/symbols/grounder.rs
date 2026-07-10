@@ -96,18 +96,26 @@ fn changed_files(
     changed
 }
 
-/// The query's symbol-candidate terms: the alphanumeric/underscore runs of length `>= 2`, so
-/// `apply_damage` stays ONE term and single-character noise is dropped. This is the ONE authority
-/// both [`Symbols::ground`] and [`Symbols::blast_radius`] extract terms with, so the two can never
-/// disagree on what a query means - a query that grounds to nothing (no terms) also has an empty
-/// blast radius. Keeping the extraction shared is exactly what lets `blast_radius` short-circuit
-/// to the empty fail-safe on a degenerate query (a one-char or all-punctuation query whose every
-/// token is dropped by the length filter) BEFORE it ever runs grep, rather than falling through to
-/// an unbounded whole-repo grep.
+/// The query's symbol-candidate terms: the alphanumeric/underscore runs of at least TWO Unicode
+/// characters, so `apply_damage` stays ONE term and single-character noise is dropped. The filter
+/// counts CHARACTERS (`chars().count()`), not bytes, so a single multibyte alphanumeric character
+/// (an accented letter, a CJK ideograph) is dropped exactly like an ASCII single char rather than
+/// surviving on its 2-3 byte length. This is the ONE authority both [`Symbols::ground`] and
+/// [`Symbols::blast_radius`] extract terms with, so the two can never disagree on what a query
+/// means - a query that grounds to nothing (no terms) also has an empty blast radius. Keeping the
+/// extraction shared is exactly what lets `blast_radius` short-circuit to the empty fail-safe on a
+/// degenerate query (a one-character or all-punctuation query whose every token is dropped by the
+/// character-count filter) BEFORE it ever runs grep, rather than falling through to an unbounded
+/// whole-repo grep.
 fn query_terms(query: &str) -> Vec<&str> {
     query
         .split(|c: char| !c.is_alphanumeric() && c != '_')
-        .filter(|t| t.len() >= 2)
+        // Count CHARACTERS, not bytes: `t.len()` is the byte length, so a single MULTIBYTE
+        // alphanumeric char (an accented letter, a CJK ideograph, the micro sign) is 2-3 bytes
+        // and a `len() >= 2` filter would keep it as a term - letting a degenerate single-char
+        // query slip past the empty-terms fail-safe and fall through to an uncapped whole-repo
+        // grep. `chars().count() >= 2` drops EVERY one-character token uniformly, ASCII or not.
+        .filter(|t| t.chars().count() >= 2)
         .collect()
 }
 
@@ -222,10 +230,13 @@ impl Grounder for Symbols {
     /// the tree in unsorted `read_dir` order, so without the sort `safe` would be set-deterministic
     /// but not order-deterministic. Sorting the tail makes the whole `safe` ordering reproducible
     /// across processes, which is what unit 3 needs to hash the seed-file list into a stable
-    /// `BlastRadiusComputed` audit event. With an empty query, a degenerate query whose every term
-    /// is dropped by the length filter (a single character or all punctuation - the same guard
-    /// `ground` applies), or no match, this returns empty views (the empty-radius fail-safe unit 3
-    /// routes to the full panel) WITHOUT running a whole-repo grep, never a partial or a panic.
+    /// `BlastRadiusComputed` audit event. An empty query, or a degenerate query whose every term is
+    /// dropped by the character-count filter (a single character - ASCII or multibyte - or all
+    /// punctuation, the same guard `ground` applies), returns empty views (the empty-radius
+    /// fail-safe unit 3 routes to the full panel) WITHOUT running a whole-repo grep, never a partial
+    /// or a panic. A query WITH real terms that simply matches nothing is ALSO empty, but that case
+    /// does run the uncapped grep - it just comes back empty; only the empty/degenerate-terms cases
+    /// short-circuit before grep.
     fn blast_radius(&self, query: &str, k: usize) -> BlastRadius {
         // The query's symbol candidates: the SAME alphanumeric/underscore terms `ground` extracts
         // through the shared `query_terms` authority (so `apply_damage` stays one term and
@@ -580,9 +591,12 @@ mod tests {
     }
 
     /// Spec 17 criterion 2 (plan17-c2-blast-radius-empty-terms-guard): a DEGENERATE query - one
-    /// whose only tokens are dropped by the `>= 2`-char term filter (a single character, or all
-    /// punctuation) - must yield an EMPTY blast radius, IDENTICAL in emptiness to `ground` on the
-    /// same query. This is distinct from the empty-QUERY case the sibling test already covers: the
+    /// whose only tokens are dropped by the character-count term filter (a single character, ASCII
+    /// OR multibyte, or all punctuation) - must yield an EMPTY blast radius, IDENTICAL in emptiness
+    /// to `ground` on the same query. The multibyte arm is the teeth: a byte-length filter keeps a
+    /// 2-byte character as a term and greps the whole tree, so counting CHARACTERS is what closes
+    /// the fail-safe for the full Unicode single-character class.
+    /// This is distinct from the empty-QUERY case the sibling test already covers: the
     /// query here is non-empty, but every term is filtered out. Before the guard, `ground`
     /// early-returned on empty terms while `blast_radius` fell through to an UNBOUNDED whole-repo
     /// grep (`grep.ground(query, usize::MAX)`), so `precise` was empty while `safe` covered almost
@@ -592,14 +606,21 @@ mod tests {
     #[test]
     fn blast_radius_on_a_degenerate_terms_query_is_empty_not_a_whole_repo_grep() {
         let dir = tempfile::tempdir().unwrap();
-        // Every file contains the letter `a`, so an UNGUARDED single-char grep for "a" would match
-        // every file - the whole-repo blow-up the guard exists to prevent.
-        std::fs::write(dir.path().join("alpha.rs"), "fn parse() {}\n").unwrap();
-        std::fs::write(dir.path().join("beta.rs"), "fn draw() { parse(); }\n").unwrap();
+        // Every file contains the letter `a` AND the multibyte char U+00E9 (`\u{e9}`, an accented
+        // `e`, TWO UTF-8 bytes but ONE Unicode character), so an UNGUARDED single-character grep
+        // for either would match every file - the whole-repo blow-up the guard exists to prevent.
+        // The `\u{e9}` escape keeps the source ASCII while the runtime string is the real 2-byte
+        // character, which is exactly the class the byte-length filter used to miss.
+        std::fs::write(dir.path().join("alpha.rs"), "fn parse() {} // \u{e9}\n").unwrap();
+        std::fs::write(
+            dir.path().join("beta.rs"),
+            "fn draw() { parse(); } // \u{e9}\n",
+        )
+        .unwrap();
         let g = Symbols::open(dir.path().to_str().unwrap(), None);
 
-        // A single-character query: its only token is length 1, dropped by the `>= 2`-char filter,
-        // so it has NO symbol terms. `ground` returns nothing...
+        // A single-character query: its only token is one CHARACTER, dropped by the char-count term
+        // filter, so it has NO symbol terms. `ground` returns nothing...
         assert!(
             g.ground("a", 8).is_empty(),
             "a degenerate single-char query grounds to nothing"
@@ -611,6 +632,27 @@ mod tests {
             BlastRadius::default(),
             "a degenerate single-char query is the empty fail-safe radius (empty precise, empty \
              safe, no serialize), not an unbounded whole-repo grep; got {one_char:?}"
+        );
+
+        // A single MULTIBYTE character (U+00E9: 2 UTF-8 bytes, but still ONE Unicode character).
+        // The term filter must drop it by CHARACTER count, not byte length - a byte-length `>= 2`
+        // filter would keep this 2-byte token, miss the empty-terms guard, and fall through to the
+        // uncapped whole-repo grep (which matches BOTH files here since each contains the char).
+        // `ground` returns nothing (no symbol named `\u{e9}`)...
+        let multibyte = "\u{e9}";
+        assert!(
+            g.ground(multibyte, 8).is_empty(),
+            "a degenerate single-MULTIBYTE-char query grounds to nothing"
+        );
+        // ...and `blast_radius` must be the IDENTICAL empty radius, NOT a whole-repo grep for the
+        // 2-byte character. This arm is RED under a byte-length filter (safe = both files) and
+        // GREEN once the filter counts CHARACTERS.
+        let one_multibyte = g.blast_radius(multibyte, 8);
+        assert_eq!(
+            one_multibyte,
+            BlastRadius::default(),
+            "a single multibyte char (2 bytes, ONE char) is the empty fail-safe radius, not an \
+             unbounded whole-repo grep for the substring; got {one_multibyte:?}"
         );
 
         // An all-punctuation query splits into only empty/dropped tokens - the same empty radius,
