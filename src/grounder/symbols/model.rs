@@ -114,16 +114,25 @@ impl SymbolIndex {
             .count()
     }
 
-    /// Whether `name` is a HUB WITHIN `lang` - its per-language reference degree is at or above
-    /// the `percentile` of THAT language's OWN reference-degree distribution (5.5.2). Scoped to
-    /// `lang` on BOTH axes: the degree counted for `name` and the distribution the cutoff is
-    /// drawn from are each restricted to `lang`, so a name that over-links in another language
-    /// (a Python `parse`) never flags the same name in this one (a Rust `parse`) - the
-    /// cross-language collision per-language scoping exists to prevent. A relative threshold,
-    /// not an absolute magic number a monorepo would blow past: `new` / `parse` / `build`
-    /// over-link every like-named definition, so the graph the grounder and persistence share
-    /// must be able to down-weight them. This exposes the read-only fan-out primitive; wiring it
-    /// into any partitioning or blast-radius decision is spec 16, deliberately out of scope here.
+    /// Whether `name` is a HUB WITHIN `lang` - a STRICT high-degree OUTLIER against THAT
+    /// language's OWN reference-degree distribution (5.5.2): its per-language reference degree is
+    /// STRICTLY ABOVE the `percentile` cutoff of the distinct-name degrees. Scoped to `lang` on
+    /// BOTH axes: the degree counted for `name` and the distribution the cutoff is drawn from are
+    /// each restricted to `lang`, so a name that over-links in another language (a Python `parse`)
+    /// never flags the same name in this one (a Rust `parse`) - the cross-language collision
+    /// per-language scoping exists to prevent. A relative threshold, not an absolute magic number
+    /// a monorepo would blow past: `new` / `parse` / `build` over-link every like-named definition,
+    /// so the graph the grounder and persistence share must be able to down-weight them.
+    ///
+    /// The outlier definition is deliberate. A realistic reference graph is a long tail: most names
+    /// are referenced once or twice (hapax), a few over-link. A cutoff drawn as the degree AT the
+    /// percentile rank, matched with `>=`, collapses to 1 on such a tail (the rank lands inside the
+    /// mass of degree-1 names) and then flags EVERY referenced name - so every unit would serialize
+    /// and parallelism-retention would collapse to near zero. Requiring the degree to be STRICTLY
+    /// ABOVE the cutoff makes a hub a genuine outlier: a flat or long-tail-only distribution with no
+    /// meaningful spread yields NO hubs (nothing exceeds the bulk), and the fraction flagged stays
+    /// near the top `(1 - percentile)` decile, never approaching all. This exposes the read-only
+    /// fan-out primitive; wiring it into any partitioning or blast-radius decision is spec 16.
     pub fn is_hub(&self, name: &str, lang: Lang, percentile: f64) -> bool {
         // The degree of every referenced name IN `lang`, one entry per distinct name.
         let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
@@ -140,16 +149,22 @@ impl SymbolIndex {
         }
         let mut degrees: Vec<usize> = counts.into_values().collect();
         degrees.sort_unstable();
-        // Nearest-rank percentile over the distinct-name degree distribution: the cutoff is
-        // the degree at rank `floor(N * percentile)` (0-based, clamped to the top entry). With
-        // a two-name distribution [1, 20] and the 90th percentile this picks 20 - so only the
-        // genuine hub clears the bar, not the degree-1 name. (A `(N - 1) * percentile` index
-        // would pick 1 here and wrongly flag every referenced name.)
-        let cutoff_idx = ((degrees.len() as f64) * percentile).floor() as usize;
-        let cutoff = degrees[cutoff_idx.min(degrees.len() - 1)];
-        // `cutoff > 0` keeps a repo whose entire distribution is zero-degree from flagging
-        // everything; the name must actually reach the cutoff to count as a hub.
-        cutoff > 0 && self.reference_degree(name, lang) >= cutoff
+        // Nearest-rank percentile over the distinct-name degree distribution, drawn as the degree
+        // at 0-based rank `floor((N - 1) * percentile)` - always in bounds (the index never exceeds
+        // `N - 1`), so no clamp is needed. This lands the cutoff on a TYPICAL degree the outliers
+        // rise above rather than on the top element itself: with a two-name distribution [1, 20] at
+        // the 90th percentile it picks 1, and the STRICT `>` below then flags only `20` as a hub,
+        // never the degree-1 name. On a long tail dominated by degree-1 names the cutoff is 1 and
+        // `>` flags only the names that genuinely rise above the tail; on a FLAT distribution the
+        // cutoff equals the shared degree and `>` flags nothing (no meaningful spread, no hub). A
+        // `floor(N * percentile)` index with `>=` would instead sit ON the tail value and flag
+        // every referenced name - the degeneration this outlier definition exists to prevent.
+        let cutoff_idx = (((degrees.len() - 1) as f64) * percentile).floor() as usize;
+        let cutoff = degrees[cutoff_idx];
+        // STRICTLY above the cutoff: the name must be a genuine high-degree outlier, not merely
+        // reach the typical degree. Every counted degree is >= 1, so `cutoff >= 1` and a hub needs
+        // degree >= 2 at minimum - a lone or flat reference set can never manufacture a hub.
+        self.reference_degree(name, lang) > cutoff
     }
 }
 
@@ -241,6 +256,102 @@ mod tests {
     }
 
     #[test]
+    fn hub_detection_does_not_flag_nearly_all_on_a_degree_one_dominated_distribution() {
+        // The realistic long-tail (hapax-heavy) distribution the robust cutoff must survive: a
+        // large tail of single-reference (degree-1) names plus a couple of genuine high-degree
+        // outliers. The old nearest-rank `floor(N * percentile)` cutoff collapses to 1 on this
+        // shape and the `>=` comparison then flags EVERY referenced name as a hub - so every unit
+        // serializes and parallelism-retention collapses to near zero. A hub must be a STRICT
+        // high-degree outlier: only the genuine outliers clear the bar, and the flagged fraction
+        // stays near the top decile, never approaching all.
+        let mut idx = SymbolIndex::default();
+        let mut refs: Vec<SymRef> = Vec::new();
+        // 30 hapax names, each referenced exactly once (degree 1) - the long tail.
+        for i in 0..30 {
+            refs.push(SymRef {
+                name: format!("hapax_{i}"),
+                line: 1,
+            });
+        }
+        // Two genuine high-degree outliers (degree 15 each) - the real hubs.
+        for _ in 0..15 {
+            refs.push(SymRef {
+                name: "hub_a".into(),
+                line: 1,
+            });
+            refs.push(SymRef {
+                name: "hub_b".into(),
+                line: 1,
+            });
+        }
+        idx.insert_file(
+            "big.rs".into(),
+            FileSymbols {
+                lang: Lang::Rust,
+                defs: vec![],
+                refs,
+            },
+        );
+
+        // The two genuine outliers ARE hubs; a degree-1 tail name is NOT.
+        assert!(idx.is_hub("hub_a", Lang::Rust, 0.90));
+        assert!(idx.is_hub("hub_b", Lang::Rust, 0.90));
+        assert!(!idx.is_hub("hapax_0", Lang::Rust, 0.90));
+
+        // The load-bearing property: across ALL 32 distinct referenced names, only the genuine
+        // outliers are flagged - the fraction stays small, never approaching all (the exact
+        // regression the old `floor(N * p)` + `>=` rule caused: it would flag all 32 here).
+        let all_names: Vec<String> = (0..30)
+            .map(|i| format!("hapax_{i}"))
+            .chain(["hub_a".to_string(), "hub_b".to_string()])
+            .collect();
+        let flagged: Vec<&String> = all_names
+            .iter()
+            .filter(|n| idx.is_hub(n, Lang::Rust, 0.90))
+            .collect();
+        assert_eq!(
+            flagged.len(),
+            2,
+            "only the two genuine outliers are hubs on a degree-one-dominated distribution, \
+             not the 30 hapax names; got {flagged:?}"
+        );
+        assert!(
+            (flagged.len() as f64) / (all_names.len() as f64) < 0.25,
+            "the flagged fraction must stay near the top decile on a degree-one-dominated \
+             distribution, never approaching all; got {}/{}",
+            flagged.len(),
+            all_names.len()
+        );
+
+        // A FLAT distribution (no meaningful spread) yields NO hubs: with every name at the same
+        // degree there is no outlier to flag, even at a low percentile.
+        let mut flat = SymbolIndex::default();
+        let mut flat_refs: Vec<SymRef> = Vec::new();
+        for name in ["alpha", "beta", "gamma", "delta"] {
+            for _ in 0..5 {
+                flat_refs.push(SymRef {
+                    name: name.into(),
+                    line: 1,
+                });
+            }
+        }
+        flat.insert_file(
+            "flat.rs".into(),
+            FileSymbols {
+                lang: Lang::Rust,
+                defs: vec![],
+                refs: flat_refs,
+            },
+        );
+        for name in ["alpha", "beta", "gamma", "delta"] {
+            assert!(
+                !flat.is_hub(name, Lang::Rust, 0.90),
+                "a flat distribution has no meaningful spread, so no name is a hub; {name} was flagged"
+            );
+        }
+    }
+
+    #[test]
     fn fan_out_suppression_is_language_scoped_no_cross_language_inflation() {
         // The exact cross-language collision per-language scoping exists to prevent (5.5.2):
         // the name `parse` is referenced ONCE in Rust but TWENTY times in Python. A
@@ -291,13 +402,17 @@ mod tests {
         assert_eq!(idx.reference_degree("parse", Lang::Python), 20);
         assert_eq!(idx.reference_degree("new", Lang::Rust), 10);
         // The Rust `parse` is NOT a hub: measured against Rust's OWN distribution ([1, 10] for
-        // {parse, new}) its degree 1 is below the cutoff, even at the 50th percentile - even
-        // though the SAME name is a hub in Python. Rust's real hub is `new`.
+        // {parse, new}) it does not rise above the cutoff (the typical degree 1), even at the 50th
+        // percentile - even though the SAME name over-links in Python. Rust's real hub is `new`,
+        // which is a genuine outlier above Rust's own tail.
         assert!(!idx.is_hub("parse", Lang::Rust, 0.50));
         assert!(idx.is_hub("new", Lang::Rust, 0.50));
-        // Python's `parse` IS a hub within its own (single-name) distribution.
-        assert!(idx.is_hub("parse", Lang::Python, 0.50));
-        // And the Python hub-ness of `parse` never leaks into Rust's verdict at any percentile.
+        // Python's `parse` is NOT a hub either: its distribution is a SINGLE name ([20]), which has
+        // no spread, so there is no outlier to flag - a hub is a STRICT high-degree outlier, and a
+        // lone name cannot rise above itself. (This is the over-serialization a single-name
+        // per-language distribution used to cause; a robust cutoff yields no hub without spread.)
+        assert!(!idx.is_hub("parse", Lang::Python, 0.50));
+        // And the Python usage of `parse` never leaks into Rust's verdict at any percentile.
         assert!(!idx.is_hub("parse", Lang::Rust, 0.90));
     }
 
