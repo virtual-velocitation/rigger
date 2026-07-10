@@ -78,20 +78,31 @@ pub fn build_index(root: &str, override_lang: Option<Lang>) -> SymbolIndex {
 
 /// Extract the single file at relative path `rel` (under `root`) into `idx`, keyed by `rel`, if
 /// the registry resolves a grammar for it. This is the ONE per-file extraction authority: the
-/// whole-tree `build_index` and unit 3's incremental `reindex_files` both freshen a file
-/// through here, so a file is indexed identically whether the whole tree is built or one file
-/// is re-parsed. An unresolved extension, an unreadable file, or a parse that recovers to no
-/// symbols each leaves `idx` untouched for that file rather than crashing.
+/// whole-tree `build_index` and the incremental `reindex_files` both freshen a file through here,
+/// so a file is indexed identically whether the whole tree is built or one file is re-parsed.
+///
+/// The miss arms keep the incremental index equal to a fresh `build_index` over the current tree,
+/// and none of them crashes the walk:
+/// - an UNRESOLVED extension leaves `idx` untouched - a fresh build never indexes such a file, so
+///   there is no entry to hold or drop;
+/// - a file that can no longer be READ (deleted or unreadable) or that fails to EXTRACT (a
+///   tags-query failure) has its entry REMOVED via [`SymbolIndex::remove_file`], so reindexing a
+///   deleted file purges its stale symbols rather than grounding a file a fresh build never visits;
+/// - a parse that recovers to NO symbols still returns `Ok` and INSERTS an empty entry (replacing
+///   any prior one), so a file edited down to its last symbol overwrites to empty rather than
+///   keeping stale defs.
 #[cfg(feature = "symbols")]
 pub fn index_one_file(root: &str, rel: &str, idx: &mut SymbolIndex, override_lang: Option<Lang>) {
     let Some(entry) = registry::for_path(rel, override_lang) else {
         return;
     };
     let abs = Path::new(root).join(rel);
-    if let Ok(src) = std::fs::read_to_string(&abs) {
-        if let Ok(fs) = extract::extract(&src, entry.lang, &entry.language, entry.tags_query) {
-            idx.insert_file(rel.to_string(), fs);
-        }
+    match std::fs::read_to_string(&abs)
+        .ok()
+        .and_then(|src| extract::extract(&src, entry.lang, &entry.language, entry.tags_query).ok())
+    {
+        Some(fs) => idx.insert_file(rel.to_string(), fs),
+        None => idx.remove_file(rel),
     }
 }
 
@@ -100,9 +111,11 @@ pub fn index_one_file(root: &str, rel: &str, idx: &mut SymbolIndex, override_lan
 /// integrates (re-parse the just-changed files, not the whole tree). Each file is freshened
 /// through the shared [`index_one_file`] authority, NOT a second extract loop, so a file is
 /// indexed IDENTICALLY whether the whole tree is built (`build_index`) or one file is
-/// re-parsed here (one mutation authority; the two paths cannot drift). A named file whose
-/// extension is unregistered, that cannot be read, or that parses to no symbols leaves its
-/// existing entry untouched, exactly as `index_one_file` does on the whole-tree walk.
+/// re-parsed here (one mutation authority; the two paths cannot drift). A named file that can no
+/// longer be read (deleted or unreadable) or that fails to extract has its entry REMOVED, so
+/// reindexing a deletion leaves the index equal to a fresh `build_index` over the surviving tree;
+/// a file with an unregistered extension leaves `idx` untouched, exactly as `index_one_file` does
+/// on the whole-tree walk.
 #[cfg(feature = "symbols")]
 pub fn reindex_files(
     root: &str,
@@ -134,6 +147,32 @@ mod tests {
         assert_eq!(idx.definitions_named("oneprime").len(), 1); // a.rs's new symbol is in
         assert!(idx.definitions_named("one").is_empty()); // a.rs's old symbol is gone (entry replaced)
         assert_eq!(idx.definitions_named("two").len(), 1); // b.rs untouched
+    }
+
+    #[test]
+    fn reindex_over_a_deleted_file_removes_its_symbols_and_equals_a_fresh_build() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        std::fs::write(dir.path().join("a.rs"), "fn gone_symbol() {}\n").unwrap();
+        std::fs::write(dir.path().join("b.rs"), "fn kept_symbol() {}\n").unwrap();
+        let mut idx = build_index(root, None);
+        assert_eq!(idx.definitions_named("gone_symbol").len(), 1);
+
+        // Delete a.rs, then reindex JUST it - the incremental freshening a post-integrate reindex
+        // runs. The gone file's stale symbols must be PURGED, not left grounding a file that no
+        // longer exists.
+        std::fs::remove_file(dir.path().join("a.rs")).unwrap();
+        reindex_files(root, &mut idx, &["a.rs".into()], None);
+
+        // The deleted file's symbol is gone and its entry is dropped; the untouched file stands.
+        assert!(idx.definitions_named("gone_symbol").is_empty());
+        assert!(!idx.files().contains_key("a.rs"));
+        assert_eq!(idx.definitions_named("kept_symbol").len(), 1);
+
+        // The incremental index over the deletion EQUALS a fresh whole-tree build over the
+        // surviving tree - the invariant reindex must hold (it never visits the gone file either).
+        let fresh = build_index(root, None);
+        assert_eq!(idx, fresh);
     }
 
     #[test]
