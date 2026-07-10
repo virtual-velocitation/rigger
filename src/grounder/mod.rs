@@ -350,26 +350,22 @@ mod tests {
             root: dir.path().to_string_lossy().into_owned(),
         };
 
-        // The default view is the DISTINCT files of `ground(query, k)`, in ground order.
-        let want: Vec<String> = {
-            let mut files: Vec<String> = Vec::new();
-            for r in g.ground("apply_damage", 8) {
-                if !files.contains(&r.file) {
-                    files.push(r.file);
-                }
-            }
-            files
-        };
-        assert!(want.len() >= 2, "the fixture should ground both files");
-
         let br = g.blast_radius("apply_damage", 8);
-        // precise == safe == the grep radius, and no hub composition on the default path.
+        // The default radius is EXACTLY these two grep-matched files - a CONCRETE expected list, not
+        // a re-run of the impl's own dedup loop (which would pass tautologically for any impl). Grep
+        // walks the tree in unsorted `read_dir` order, so compare the SET (sorted); the two views'
+        // element-for-element ORDER equality is pinned separately just below.
+        let mut got = br.precise.clone();
+        got.sort();
         assert_eq!(
-            br.precise, want,
-            "precise view is the grounder's top-k radius"
+            got,
+            vec!["combat.rs".to_string(), "notes.rs".to_string()],
+            "the default radius is exactly the two files grep matches; got {br:?}"
         );
+        // Both views are the SAME grep radius - equal element-for-element, in the same order (safe is
+        // the trivial superset of precise on the default path) - and it never serializes.
         assert_eq!(
-            br.safe, want,
+            br.precise, br.safe,
             "the default safe view equals the precise view (grep radius, a trivial superset)"
         );
         assert!(!br.serialize, "the default path never serializes");

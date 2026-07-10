@@ -112,6 +112,115 @@ impl Grounder for Hybrid {
         #[cfg(feature = "turbovec")]
         self.vector.reindex(src_dir, files);
     }
+
+    /// The two-view blast radius (architecture 5.5.1, spec 16 unit 1) forwards to the inner
+    /// [`Symbols`] index. `Hybrid` is symbols-ACTIVE - it composes a real `Symbols` - so its safe
+    /// view MUST be the structural-union-grep superset with a hub serializing, exactly the
+    /// [`Symbols::blast_radius`] contract, NOT the grep-only trait default a non-symbols grounder
+    /// inherits (which would cap the safe view at `k`, miss the grep-only references, and never
+    /// serialize). The semantic (turbovec) axis is deliberately NOT unioned in: the safe contract
+    /// is defined as `structural ∪ grep` (5.5.9), and `blast_radius` grounds partitioning safety,
+    /// not the prompt recall the vector pass fills. So the composite delegates to the structural
+    /// axis that owns the two-view query - it re-implements neither engine, exactly as `ground` and
+    /// `reindex` do.
+    fn blast_radius(&self, query: &str, k: usize) -> crate::grounder::BlastRadius {
+        self.symbols.blast_radius(query, k)
+    }
+}
+
+// The two-view `blast_radius` invariant over the COMPOSITE grounder (spec 16 unit 1). `Hybrid`
+// composes an inner `Symbols` index, so it is symbols-ACTIVE and MUST serve the structural
+// two-view contract - NOT the grep-only trait default a non-symbols grounder inherits. This
+// module is gated ONLY on `test` (hybrid.rs itself compiles only under the `symbols` feature),
+// so it runs in BOTH symbols-on lanes: the default `turbovec` lane (where `Hybrid::open` builds a
+// real vector engine, hence `#[file_serial(turbovec_model)]`) AND the `--no-default-features
+// --features symbols` degrade lane (no model built). blast_radius forwards to the inner `Symbols`
+// and never touches the semantic axis, so the invariant is identical in both.
+#[cfg(test)]
+mod blast_radius_tests {
+    use super::*;
+    use crate::grounder::symbols::grounder::Symbols;
+    use crate::grounder::Grounder;
+
+    /// The composite `Hybrid` grounder's `blast_radius` serves the safe-superset + serialize-on-hub
+    /// contract, NOT the grep-only trait default. This is the exact invariant the shipped
+    /// `defaults.grounder: hybrid` broke by inheriting the default: its safe view was `ground(q,k)`
+    /// capped at `k`, missing the grep-only references and never serializing a hub. We pin all three
+    /// facets over a hub fixture:
+    /// - `serialize == true` for a hub symbol (never truncated),
+    /// - the safe view RECOVERS a comment-only grep reference the structural graph misses (a grep
+    ///   superset), and is UNCAPPED (carries every hub file past the small `k`),
+    /// - a degree-1 symbol in the same repo does NOT serialize.
+    ///
+    /// And, decisively, that `Hybrid::blast_radius` EQUALS its inner `Symbols::blast_radius` - the
+    /// forward is exact, so the whole well-tested `Symbols` two-view contract holds for `Hybrid`.
+    /// `#[cfg_attr(feature = "turbovec", ...)]` applies `#[file_serial]` ONLY in the lane where
+    /// `Hybrid::open` builds an ort/model session (it must never race another test's build); in the
+    /// no-turbovec degrade lane it builds no model and needs no serialization.
+    #[test]
+    #[cfg_attr(feature = "turbovec", serial_test::file_serial(turbovec_model))]
+    fn hybrid_blast_radius_forwards_the_two_view_contract_not_the_grep_default() {
+        let dir = tempfile::tempdir().unwrap();
+        // `spawn` is referenced across many files (a hub); `def.rs` defines it.
+        std::fs::write(dir.path().join("def.rs"), "fn spawn() {}\n").unwrap();
+        let mut expected: Vec<String> = vec!["def.rs".to_string()];
+        for i in 0..12 {
+            let name = format!("f{i}.rs");
+            std::fs::write(dir.path().join(&name), "fn c() { spawn(); }\n").unwrap();
+            expected.push(name);
+        }
+        // A comment-only mention of `spawn`: NOT a symbol, so the structural graph misses it, but a
+        // literal grep recovers it - the recall the safe superset exists to backstop.
+        std::fs::write(
+            dir.path().join("notes.rs"),
+            "// spawn is discussed but never called here\n",
+        )
+        .unwrap();
+        // A degree-1 symbol so the per-language distribution has a genuine low-degree name.
+        std::fs::write(dir.path().join("rare.rs"), "fn r() { rare_call(); }\n").unwrap();
+        let root = dir.path().to_str().unwrap();
+        let hybrid = Hybrid::open(root, None).expect("hybrid opens");
+
+        // A SMALL cap proves the safe view is uncapped: there are 13 `spawn` files plus the comment.
+        let br = hybrid.blast_radius("spawn", 8);
+        assert!(
+            br.serialize,
+            "the composite hybrid must serialize a hub, not inherit the never-serialize grep default; got {br:?}"
+        );
+        assert!(
+            br.safe.contains(&"notes.rs".to_string()),
+            "the hybrid safe view must recover the grep-only reference the structural graph misses (a grep superset), not the k-capped grep default; got {br:?}"
+        );
+        for f in &expected {
+            assert!(
+                br.safe.contains(f),
+                "the hybrid safe view is uncapped and must not truncate {f}; got {br:?}"
+            );
+        }
+        assert!(
+            br.safe.len() > 8,
+            "the hybrid safe view must exceed the {k}-cap the grep default would impose; got {n} in {br:?}",
+            k = 8,
+            n = br.safe.len()
+        );
+
+        // A degree-1 symbol is NOT a hub and must not serialize.
+        let rare = hybrid.blast_radius("rare_call", 8);
+        assert!(
+            !rare.serialize,
+            "a degree-1 symbol is not a hub; got {rare:?}"
+        );
+
+        // Decisive: the forward is EXACT - hybrid's blast_radius equals the inner symbols'. Building
+        // a bare `Symbols` over the same root (no model) is cheap and proves the composition adds
+        // nothing to and drops nothing from the two-view contract.
+        let symbols = Symbols::open(root, None);
+        assert_eq!(
+            hybrid.blast_radius("spawn", 8),
+            symbols.blast_radius("spawn", 8),
+            "Hybrid::blast_radius must forward exactly to the inner Symbols::blast_radius"
+        );
+    }
 }
 
 #[cfg(all(test, feature = "turbovec"))]

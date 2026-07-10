@@ -204,9 +204,13 @@ impl Grounder for Symbols {
     ///   the unit its own batch - NEVER by truncating `safe` (which still carries every file).
     ///
     /// Determinism is by construction: `files()` is a `BTreeMap`, so both structural passes visit
-    /// files in sorted path order, and grep walks the shared guarded skeleton. With an empty query
-    /// or no match this returns empty views (the empty-radius fail-safe unit 3 routes to the full
-    /// panel), never a partial or a panic.
+    /// files in sorted path order (the ranked `precise` / structural head of `safe`), and the
+    /// grep-recovered tail of `safe` is explicitly SORTED before it is appended - grep itself walks
+    /// the tree in unsorted `read_dir` order, so without the sort `safe` would be set-deterministic
+    /// but not order-deterministic. Sorting the tail makes the whole `safe` ordering reproducible
+    /// across processes, which is what unit 3 needs to hash the seed-file list into a stable
+    /// `BlastRadiusComputed` audit event. With an empty query or no match this returns empty views
+    /// (the empty-radius fail-safe unit 3 routes to the full panel), never a partial or a panic.
     fn blast_radius(&self, query: &str, k: usize) -> BlastRadius {
         // The query's symbol candidates: the SAME alphanumeric/underscore terms `ground` extracts
         // (so `apply_damage` stays one term and single-char noise is dropped).
@@ -267,11 +271,20 @@ impl Grounder for Symbols {
         let grep = Grep {
             root: self.root.clone(),
         };
+        // The grep-recovered tail: the files grep matched that the structural view missed. Grep
+        // walks the tree in unsorted `read_dir` order, so collect the tail and SORT it before
+        // appending - the structural head is already `BTreeMap`-sorted, so this makes the whole
+        // `safe` ordering reproducible across processes (unit 3 hashes the seed-file list into a
+        // `BlastRadiusComputed` event that must be cross-process byte-identical). Sorting a set of
+        // distinct paths (not the raw grep hits) keeps this O(tail log tail), not per-line.
+        let mut grep_tail: Vec<String> = Vec::new();
         for r in grep.ground(query, usize::MAX) {
             if seen.insert(r.file.clone()) {
-                safe.push(r.file);
+                grep_tail.push(r.file);
             }
         }
+        grep_tail.sort();
+        safe.extend(grep_tail);
 
         // The precise view is the ranked structural set capped at `k`; the safe view stays uncapped.
         let mut precise = structural;
@@ -433,6 +446,92 @@ mod tests {
             !rare.serialize,
             "a degree-1 symbol is not a hub; got {rare:?}"
         );
+    }
+
+    /// The blast-radius fail-safe paths (spec 16 unit 1): an empty query and a no-match query each
+    /// return EMPTY views and never serialize (unit 3 routes an empty radius to the full,
+    /// unpartitioned panel). A `k=0` cap collapses the PRECISE view to empty, but the SAFE view is
+    /// UNCAPPED by design - it still carries the full structural-union-grep radius so the
+    /// partitioning consumer can never under-include just because the prompt budget was zero.
+    #[test]
+    fn blast_radius_empty_and_no_match_are_the_empty_failsafe_and_k0_keeps_safe_uncapped() {
+        let dir = tempfile::tempdir().unwrap();
+        // A definer and a real referencer of `parse`, so the radius is non-empty for a real query.
+        std::fs::write(dir.path().join("def.rs"), "fn parse() {}\n").unwrap();
+        std::fs::write(dir.path().join("call.rs"), "fn run() { parse(); }\n").unwrap();
+        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+
+        // Empty query -> no terms -> empty views, never serialize.
+        let empty = g.blast_radius("", 8);
+        assert!(
+            empty.precise.is_empty() && empty.safe.is_empty() && !empty.serialize,
+            "an empty query is the empty fail-safe: both views empty, no serialize; got {empty:?}"
+        );
+
+        // A name that appears nowhere -> nothing structural AND nothing grep -> empty views.
+        let none = g.blast_radius("nonexistent_symbol_zzz", 8);
+        assert!(
+            none.precise.is_empty() && none.safe.is_empty() && !none.serialize,
+            "a no-match query is the empty fail-safe: both views empty, no serialize; got {none:?}"
+        );
+
+        // k=0 caps the PRECISE view to empty; the SAFE view is uncapped and still carries the radius.
+        let k0 = g.blast_radius("parse", 0);
+        assert!(
+            k0.precise.is_empty(),
+            "k=0 caps the precise view to empty; got {k0:?}"
+        );
+        assert!(
+            k0.safe.contains(&"def.rs".to_string()) && k0.safe.contains(&"call.rs".to_string()),
+            "the safe view is uncapped even at k=0 - it carries the full radius; got {k0:?}"
+        );
+    }
+
+    /// Spec 16 unit 1, the cross-language over-inclusion fixture (sdet-u16-1-structural-view-cross
+    /// -language): the structural referencer scan iterates `files()` and matches refs BY NAME across
+    /// ALL languages, mirroring `ground`'s own cross-language matching. So a query for a Rust symbol
+    /// pulls in a Python file that references the same name - the OVER-inclusion (safe) direction,
+    /// which is correct by construction (definers/referencers are deliberately cross-language for
+    /// grounding recall; only the fan-out HUB verdict is per-language). This pins that a Python
+    /// referencer of a Rust-defined name lands in the precise AND safe views, and that safe stays a
+    /// superset of precise. Gated behind the `symbols` feature like every test here (real parsing).
+    #[test]
+    fn structural_view_is_cross_language_a_python_referencer_of_a_rust_symbol_is_included() {
+        let dir = tempfile::tempdir().unwrap();
+        // Rust DEFINES `render`; Python CALLS `render` (a real symbol reference, in another
+        // language) and a comment-only mention grep alone recovers.
+        std::fs::write(dir.path().join("view.rs"), "fn render() {}\n").unwrap();
+        std::fs::write(dir.path().join("client.py"), "def draw():\n    render()\n").unwrap();
+        std::fs::write(
+            dir.path().join("notes.py"),
+            "# render is described in prose only, never called\n",
+        )
+        .unwrap();
+        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+
+        let br = g.blast_radius("render", 8);
+        // The Rust definer is present (the precise structural view).
+        assert!(
+            br.precise.contains(&"view.rs".to_string()),
+            "the Rust definer must be in the precise view; got {br:?}"
+        );
+        // The Python CALL SITE is a cross-language structural referencer, pulled into precise.
+        assert!(
+            br.precise.contains(&"client.py".to_string()),
+            "the cross-language Python referencer must be in the precise structural view (over-inclusion); got {br:?}"
+        );
+        // The comment-only Python mention is no symbol; grep recovers it into the safe superset.
+        assert!(
+            br.safe.contains(&"notes.py".to_string()),
+            "the safe view must recover the comment-only cross-language grep reference; got {br:?}"
+        );
+        // Safe is a superset of precise.
+        for f in &br.precise {
+            assert!(
+                br.safe.contains(f),
+                "safe must be a superset of precise; missing {f} in {br:?}"
+            );
+        }
     }
 
     #[test]
