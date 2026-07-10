@@ -3208,7 +3208,7 @@ impl RunCtx<'_> {
             // incl. the empty-radius fail-safe). On the non-symbols default `.safe` equals the seed,
             // so routing is unchanged and no audit is emitted.
             let radius = self.grounded_blast_radius(st);
-            self.record_blast_radius(st, attempts, &radius)?;
+            self.record_blast_radius(st, attempts, &blast_radius, &radius)?;
             let mut spawn_err: Option<String> = None;
             // The RESOLVED model id the implementer reported for THIS attempt, surfaced by
             // the replay driver from the worker's `--meta` report. Empty until the spawn's
@@ -3651,7 +3651,7 @@ impl RunCtx<'_> {
         // `.safe` equals the seed and no audit is emitted.
         let blast_radius = self.grounded_seed(st);
         let radius = self.grounded_blast_radius(st);
-        self.record_blast_radius(st, 0, &radius)?;
+        self.record_blast_radius(st, 0, &blast_radius, &radius)?;
         let agent_def = self
             .cfg
             .agents
@@ -5664,10 +5664,13 @@ impl RunCtx<'_> {
     /// is the safe error (a missed reference could co-schedule two conflicting units, route a
     /// wide/high-risk change to the light panel, or leave a stale downstream unit reusing its
     /// cached-green gate verdicts against changed code); `.serialize` marks a hub radius
-    /// for its OWN batch; and the whole radius is the payload of the `BlastRadiusComputed` audit.
-    /// The `.precise` field is the ranked view (recorded for provenance); the operational SEED is
-    /// [`grounded_seed`](Self::grounded_seed), which stays the cheap `ground` path so the many
-    /// per-unit / per-reviewer seed calls never pay for the uncapped safe walk. With no grounder
+    /// for its OWN batch. The `.safe` view and `.serialize` verdict are the `BlastRadiusComputed`
+    /// audit's payload; the audit's `precise` is instead the actual prompt SEED
+    /// ([`grounded_seed`](Self::grounded_seed)), because this radius's `.precise` - a k-FILE
+    /// structural rank - DIVERGES from the seed (distinct FILES of the k-LINE `ground` pass) past
+    /// the cap (spec 17, 4b), so `record_blast_radius` records the seed the agent actually saw and
+    /// `.precise` here has no production reader. `grounded_seed` stays the cheap `ground` path so the
+    /// many per-unit / per-reviewer seed calls never pay for the uncapped safe walk. With no grounder
     /// configured this is the empty fail-safe (`BlastRadius::default()`). On the symbols-INACTIVE
     /// path the default [`Grounder::blast_radius`] returns `ground(query, k)` as BOTH views and
     /// never serializes, so `.safe == .precise ==` the pre-unit-3 seed - every consumer that keys
@@ -5719,10 +5722,22 @@ impl RunCtx<'_> {
     /// index provenance - enough to reconstruct the partition and drive the runtime
     /// parallelism-retention metric offline (`metrics::project`). It is pure audit: the
     /// context-graph projector matches no fold arm for it, so it folds to no node/edge idempotently.
+    ///
+    /// The recorded `precise` is the actual prompt `seed` - the caller's
+    /// [`grounded_seed`](Self::grounded_seed), the distinct FILES of `ground(query, k)` that seed
+    /// the agent - NOT the radius's `precise` view (spec 17, 4b). The two DIVERGE past the cap:
+    /// `grounded_seed` truncates at k LINES then dedups to distinct files, while the radius's
+    /// `precise` is a k-FILE structural rank, so beyond the cap the recorded files would otherwise
+    /// name files the prompt was never seeded on. The same `seed` seeds the spawn and is recorded
+    /// here (derive-both-from-one-pass), so the audit provenance always matches what the agent saw.
+    /// The `safe` view and `serialize` verdict still come from the two-view `radius`, and
+    /// `metrics::project` reads only those - so recording the seed as `precise` does not perturb the
+    /// retention metric.
     fn record_blast_radius(
         &self,
         st: &Stage,
         attempt: u32,
+        seed: &[String],
         radius: &BlastRadius,
     ) -> Result<(), Error> {
         let stamp = self
@@ -5741,7 +5756,7 @@ impl RunCtx<'_> {
             json!({
                 "id": st.name,
                 "unit": st.name,
-                "precise": radius.precise,
+                "precise": seed,
                 "safe": radius.safe,
                 "serialize": radius.serialize,
                 "index_stamp": stamp,
@@ -16666,6 +16681,126 @@ mod tests {
                 .parallelism_retention
                 .is_none(),
             "with no audit events the runtime retention metric is absent, never a spurious value"
+        );
+    }
+
+    /// spec 17 unit 6 (criterion 6, `plan17-c6`): the two-facet fix, proven in ONE scenario under
+    /// the `hybrid` grounder.
+    ///
+    /// (4a) A `BlastRadiusComputed` event IS emitted under `defaults.grounder: hybrid`. `Hybrid`
+    /// composes an inner `Symbols`, so it MUST delegate `index_stamp` to it - a non-empty stamp is
+    /// the structural-active signal `record_blast_radius` keys the audit off. Before the fix `Hybrid`
+    /// inherited the empty-string trait default, so `record_blast_radius` hit its empty-stamp early
+    /// return and NO audit ever emitted for a hybrid run (retention unmeasurable).
+    ///
+    /// (4b) The recorded `precise` equals the files that SEEDED the prompt at AND beyond the
+    /// truncation cap. The prompt seed is `grounded_seed` - the distinct FILES of `ground(query, k)`,
+    /// a k-LINE-truncated pass - while the radius's `precise` is a k-FILE-truncated structural rank;
+    /// past the cap the two diverge. The fixture makes the divergence unmissable: `busy.rs`
+    /// references `target` on many LINES, consuming the k-LINE `ground` budget so the distinct-FILE
+    /// seed is just {def.rs, busy.rs}; the structural `precise` instead ranks def-then-referencers
+    /// truncated at k FILES, carrying `x0.rs..x5.rs` - files that never seeded the prompt. The audit
+    /// must record the 2-file seed, not the beyond-cap structural rank.
+    ///
+    /// Runs under a REAL `Hybrid` in BOTH symbols lanes: the default `turbovec` lane (a real vector
+    /// engine is built, hence `#[file_serial(turbovec_model)]`) and `--features symbols` alone
+    /// (Hybrid degrades to symbols-only, no model). Excluded from `--no-default-features` (no
+    /// `symbols`, no tree-sitter) by the `cfg` gate.
+    #[cfg(feature = "symbols")]
+    #[test]
+    #[cfg_attr(feature = "turbovec", serial_test::file_serial(turbovec_model))]
+    fn under_hybrid_the_audit_emits_and_records_the_prompt_seed_as_precise() {
+        use crate::grounder::symbols::hybrid::Hybrid;
+
+        let dir = tempfile::tempdir().unwrap();
+        // `def.rs` DEFINES `target` (the sole definer). `busy.rs` REFERENCES it on 12 LINES, so it
+        // eats the k-LINE `ground` budget and the distinct-FILE seed stays {def.rs, busy.rs}.
+        std::fs::write(dir.path().join("def.rs"), "fn target() {}\n").unwrap();
+        let body: String = "    target();\n".repeat(12);
+        std::fs::write(
+            dir.path().join("busy.rs"),
+            format!("fn caller() {{\n{body}}}\n"),
+        )
+        .unwrap();
+        // Ten more single-reference files: the STRUCTURAL precise (def, then referencers, truncated
+        // at k FILES) ranks these into its top-k, but they NEVER seed the prompt.
+        for i in 0..10 {
+            std::fs::write(
+                dir.path().join(format!("x{i}.rs")),
+                format!("fn r{i}() {{ target(); }}\n"),
+            )
+            .unwrap();
+        }
+        let root = dir.path().to_str().unwrap();
+        let hybrid = Hybrid::open(root, None).expect("hybrid opens");
+
+        // A non-producer stage grounds on its `coverage`, so this grounds every path on `target`.
+        let st = Stage {
+            name: "u".into(),
+            coverage: "target".into(),
+            ..Default::default()
+        };
+        let cfg = Config::default();
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&hybrid),
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+
+        // The EXACT production call sequence (`run_single_stage` / `run_speculation`): the prompt
+        // SEED, the two-view radius, then the audit keyed at the attempt.
+        let seed = ctx.grounded_seed(&st);
+        let radius = ctx.grounded_blast_radius(&st);
+        ctx.record_blast_radius(&st, 0, &seed, &radius).unwrap();
+
+        // The seed is the small distinct-FILE set; the structural precise diverges past the cap.
+        assert_eq!(
+            seed,
+            vec!["def.rs".to_string(), "busy.rs".to_string()],
+            "the prompt seed is the distinct FILES of ground(target, k): {seed:?}"
+        );
+        assert!(
+            radius.precise.len() > seed.len() && radius.precise.contains(&"x0.rs".to_string()),
+            "precondition: the structural precise diverges past the cap, carrying x*.rs files the \
+             seed never did: {:?}",
+            radius.precise
+        );
+
+        // (4a) `Hybrid::index_stamp` delegates to the inner `Symbols` (non-empty), so the audit is
+        // NOT skipped by the empty-stamp early return.
+        assert!(
+            !hybrid.index_stamp().is_empty(),
+            "Hybrid::index_stamp must delegate to its inner Symbols (a non-empty structural stamp)"
+        );
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let audit = events
+            .iter()
+            .find(|e| e.type_ == TYPE_BLAST_RADIUS_COMPUTED)
+            .expect("a BlastRadiusComputed audit IS emitted under the hybrid grounder");
+
+        // (4b) The recorded `precise` equals the prompt seed, NOT the beyond-cap structural rank.
+        let v: Value = serde_json::from_slice(&audit.data).unwrap();
+        let recorded_precise: Vec<String> = v["precise"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f.as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            recorded_precise, seed,
+            "the audit must record the prompt seed as precise, not the k-FILE structural rank"
+        );
+        assert!(
+            !recorded_precise.contains(&"x0.rs".to_string()),
+            "the recorded precise must NOT carry a beyond-cap structural file the prompt never \
+             seeded on: {recorded_precise:?}"
         );
     }
 
