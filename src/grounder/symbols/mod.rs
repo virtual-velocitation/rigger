@@ -10,6 +10,11 @@
 
 pub mod model;
 
+/// Persist + load the index (unit 3). UNGATED like `model`: it is a projection of the
+/// parser-free model onto disk, names no `tree_sitter::` type, and its cross-process
+/// determinism-by-construction tests therefore run in BOTH feature lanes.
+pub mod store;
+
 /// Tags-based extraction over an INJECTED `(grammar, tag query)` pair - the ONE place
 /// tree-sitter is touched. Feature-gated: the light lane drops it entirely.
 #[cfg(feature = "symbols")]
