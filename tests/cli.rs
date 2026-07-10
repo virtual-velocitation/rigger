@@ -730,6 +730,39 @@ fn reindex_requires_at_least_one_file() {
     );
 }
 
+/// Criterion 3 (spec 15): the persisted symbol index is BYTE-IDENTICAL when built in two
+/// SEPARATE processes over the same tree. This is the guard the in-process lib test
+/// structurally CANNOT make: Rust `HashMap`/`HashSet` seed randomization differs only ACROSS
+/// processes, so a `HashMap` that leaked onto the serialized path would pass every in-process
+/// test yet diverge here. The `rigger symbols-index` harness builds + persists unit 3's index
+/// directly (independent of grounder selection - so this test needs nothing from unit 4), and
+/// each `run_rigger` is a genuinely fresh process with its own hash seed; a stable diff proves
+/// the determinism-by-construction (`BTreeMap`, never `HashMap`) the persistence relies on.
+#[cfg(feature = "symbols")]
+#[test]
+fn symbol_index_is_byte_identical_across_processes() {
+    let dir = temp_project();
+    let root = dir.path();
+    std::fs::write(root.join("m.rs"), "fn a(){} fn b(){} fn c(){}\n").unwrap();
+    let index = root.join(".rigger").join("symbols").join("index.json");
+
+    // Process 1 builds + persists the index.
+    let (_out, err1, ok1) = run_rigger(root, &["symbols-index"]);
+    assert!(ok1, "first symbols-index must succeed; stderr: {err1}");
+    let first = std::fs::read(&index).expect("the first process must persist the index");
+
+    // Remove it, then a SECOND, independent process rebuilds it over the same tree.
+    std::fs::remove_file(&index).unwrap();
+    let (_out, err2, ok2) = run_rigger(root, &["symbols-index"]);
+    assert!(ok2, "second symbols-index must succeed; stderr: {err2}");
+    let second = std::fs::read(&index).expect("the second process must persist the index");
+
+    assert_eq!(
+        first, second,
+        "the persisted index must be byte-identical across processes"
+    );
+}
+
 /// `rigger reindex <file>` against the turbovec grounder UPDATES the persisted
 /// grounding store incrementally: a term written into a file AFTER the index is first
 /// built becomes findable via `rigger ground` once that file is reindexed - the CLI

@@ -669,6 +669,7 @@ fn main() {
         "dash" => cmd_dash(&args[2..]),
         "ground" => cmd_ground(&args[2..]),
         "reindex" => cmd_reindex(&args[2..]),
+        "symbols-index" => cmd_symbols_index(&args[2..]),
         "emit" => cmd_emit(&args[2..]),
         "progress" => cmd_progress(&args[2..]),
         "result" => cmd_result(&args[2..]),
@@ -793,6 +794,9 @@ configured grounder finds for <query>, as `file:line: text`\n  \
 rigger reindex <file>...    incrementally re-embed the named files in the project's\n                              \
 persisted grounding index (the grounder's reindex), so a\n                              \
 later `rigger ground` reflects just-landed changes\n  \
+rigger symbols-index [dir]  build + persist the structural symbol index over [dir]\n                              \
+(default .) and print its path + file count - the fresh-\n                              \
+process determinism harness for the symbols grounder (spec 15)\n  \
 rigger emit <type> <json>   append {{type, data:<json>}} to the event store and fold\n                              \
 it into the context graph (the CLI form of rigger_emit)\n  \
 rigger progress <id> <act>  record one live progress line for spawn <id> to the\n                              \
@@ -3047,6 +3051,51 @@ fn cmd_reindex(args: &[String]) -> Res {
         args.join(", ")
     );
     Ok(())
+}
+
+/// `rigger symbols-index [<dir>]` - the criterion-3 fresh-process determinism harness for the
+/// `symbols` structural index (spec 15, unit 3). It builds the whole-project symbol index over
+/// `<dir>` (default `.`) via [`rigger::grounder::symbols::build_index`] and persists it with
+/// [`rigger::grounder::symbols::store::save`], then prints the persisted path and file count.
+///
+/// It is DELIBERATELY independent of [`select_grounder`] / `defaults.grounder`: it drives unit
+/// 3's own build+persist path directly, so a determinism test can re-index the SAME tree in two
+/// SEPARATE `rigger` processes and diff the persisted `index.json` byte-for-byte - the
+/// cross-process check the in-process lib test structurally cannot make, since one process
+/// shares a single hash seed. Keeping this off the grounder-selection wiring also keeps the
+/// spec-15 unit DAG acyclic (this harness needs only unit 3's code, never unit 4's selection).
+///
+/// Feature-gated on `symbols`: a build without it has no structural index, so the command
+/// errors loudly rather than pretending to build one (the same no-silent-degrade rule the
+/// grounder selection follows).
+fn cmd_symbols_index(args: &[String]) -> Res {
+    #[cfg(feature = "symbols")]
+    {
+        if args.len() > 1 {
+            return Err(format!(
+                "symbols-index: expected at most a directory, got {} arguments",
+                args.len()
+            )
+            .into());
+        }
+        let dir = args.first().map(String::as_str).unwrap_or(".");
+        let idx = rigger::grounder::symbols::build_index(dir, None);
+        rigger::grounder::symbols::store::save(&idx, dir)?;
+        println!(
+            "symbols index: {} file(s) -> {}",
+            idx.files().len(),
+            rigger::grounder::symbols::store::index_path(dir).display()
+        );
+        Ok(())
+    }
+    #[cfg(not(feature = "symbols"))]
+    {
+        let _ = args;
+        Err(
+            "symbols-index requires the `symbols` feature; rebuild with the default features"
+                .into(),
+        )
+    }
 }
 
 /// `rigger emit <type> '<json-object>'` - append an event `{type: <type>, data:
