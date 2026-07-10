@@ -19,13 +19,31 @@ path = "src/main.rs"
 # the loop is meant to run, so a plain `cargo build` / `cargo install` ships it.
 # It pulls the ONNX runtime + fastembed and downloads an embedding model on first
 # use, so `--no-default-features` is the deliberate light opt-out (grep-only).
-default = ["turbovec"]
+default = ["turbovec", "symbols"]
 # The real turbovec engine (semantic vector grounding) + fastembed. `ort` is the
 # ONNX Runtime backend fastembed already pulls; we depend on it directly only to
 # reach its execution-provider types (CUDA/CPU), so the grounder can request a
 # GPU EP with a CPU fallback. fastembed's `ort-download-binaries` still provides
 # the runtime itself - we pin the SAME ort version and take no default features.
 turbovec = ["dep:turbovec", "dep:fastembed", "dep:ort", "dep:ort-sys", "dep:libc"]
+# Deterministic, dependency-light STRUCTURAL grounding (spec 15): tree-sitter parsers +
+# the tags mechanism, compiled into the binary (no runtime-loaded artifacts). Carried in
+# `default` exactly as `turbovec` is, so a plain `cargo build` ships it; a minimal build
+# drops it via `--no-default-features`. Unit 1 gates ONLY the tree-sitter-touching code
+# (extraction); the parser-free data model compiles in BOTH lanes. The grammar crates
+# depend on `tree-sitter` only as a dev-dep and couple at runtime through
+# `tree-sitter-language`, so this set is ABI-pinned by `tree-sitter-tags` (which requires
+# an exact `tree-sitter` minor); unit 2 extends this feature with the other four grammars.
+symbols = [
+    "dep:tree-sitter",
+    "dep:tree-sitter-tags",
+    "dep:tree-sitter-rust",
+    "dep:tree-sitter-c-sharp",
+    "dep:tree-sitter-javascript",
+    "dep:tree-sitter-typescript",
+    "dep:tree-sitter-go",
+    "dep:tree-sitter-python",
+]
 # The KurrentDB EventStore adapter (the trait's server-backed implementation). It
 # pulls the async gRPC client + a tokio runtime; testcontainers drives its
 # contract test against a real KurrentDB.
@@ -87,6 +105,28 @@ libc = { version = "0.2", optional = true }
 kurrentdb = { version = "1.2", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "time"], optional = true }
 testcontainers = { version = "0.27", optional = true }
+# Structural grounding (spec 15, `symbols` feature). tree-sitter parses source into a
+# concrete syntax tree; tree-sitter-tags runs each grammar's `tags` query to yield uniform
+# definition/reference tags. `tree-sitter-tags` requires an exact `tree-sitter` MINOR, so it
+# pins the runtime version; grammar crates couple only through `tree-sitter-language`, so a
+# grammar's `LANGUAGE` (a `LanguageFn`) converts to `tree_sitter::Language` via `.into()`
+# regardless of which `tree-sitter` minor built it. Unit 1 ships the Rust grammar; unit 2
+# adds the remaining four on this same base. All optional, all under the `symbols` feature.
+tree-sitter = { version = "0.25", optional = true }
+tree-sitter-tags = { version = "0.25", optional = true }
+tree-sitter-rust = { version = "0.24", optional = true }
+# The remaining four shipped languages (unit 2). Each couples to the runtime only through
+# `tree-sitter-language` (its `LANGUAGE` is a `LanguageFn` that `.into()`s to
+# `tree_sitter::Language`), so the pinned `tree-sitter` / `tree-sitter-tags` 0.25 ABI drives
+# resolution and these grammar minors are chosen to match it. All optional, all under the
+# `symbols` feature. The JavaScript/TypeScript family is two crates (one grammar each);
+# `tree-sitter-typescript` exposes `LANGUAGE_TYPESCRIPT` (and `LANGUAGE_TSX`), so `.ts`/`.tsx`
+# both resolve through it.
+tree-sitter-c-sharp = { version = "0.23", optional = true }
+tree-sitter-javascript = { version = "0.23", optional = true }
+tree-sitter-typescript = { version = "0.23", optional = true }
+tree-sitter-go = { version = "0.23", optional = true }
+tree-sitter-python = { version = "0.23", optional = true }
 
 [dev-dependencies]
 tempfile = "3"

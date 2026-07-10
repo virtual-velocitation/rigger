@@ -35,3 +35,11 @@ pub mod sidecar;
 pub mod spawn;
 pub mod spec;
 pub mod worktree;
+
+/// Spec 16 unit 2 - the partitioning + routing SAFETY EVAL (architecture 5.5.8). A GATE, not a
+/// runtime surface: it is compiled ONLY under `cfg(test)`, adds no API and no event, and its
+/// quantified arms are feature-gated behind `symbols` internally. It authorizes unit 3 wiring
+/// `blast_radius` into the conductor by proving the safe view is a grep superset and that the
+/// safe-superset partitioning retains parallelism and a non-collapsed tier split.
+#[cfg(test)]
+mod blast_radius_eval;

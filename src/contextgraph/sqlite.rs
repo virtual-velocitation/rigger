@@ -431,6 +431,39 @@ mod tests {
     }
 
     #[test]
+    fn a_blast_radius_computed_event_folds_to_nothing_idempotently() {
+        // spec 16 unit 3: BlastRadiusComputed is PURE AUDIT - the projector matches no fold arm
+        // for it (it falls to the `_ => {}` sink), so it adds NO node and NO edge, and re-applying
+        // the SAME position (a replay) stays a no-op. This is what lets the audit ride the shared
+        // stream without perturbing the context graph the reviewers read.
+        let p = Projector::open(":memory:").unwrap();
+        let payload = serde_json::json!({
+            "id": "u1",
+            "unit": "u1",
+            "precise": ["a.rs"],
+            "safe": ["a.rs", "b.rs"],
+            "serialize": false,
+            "index_stamp": "h/v",
+        });
+        let mut e = Event::new(
+            crate::conductor::TYPE_BLAST_RADIUS_COMPUTED,
+            serde_json::to_vec(&payload).unwrap(),
+        );
+        e.position = 1;
+        p.apply(&e).unwrap();
+        p.apply(&e).unwrap(); // same position, replayed: still a no-op
+        for seed in [["u1"], ["a.rs"], ["b.rs"]] {
+            let g = p
+                .subgraph(&seed.iter().map(|s| s.to_string()).collect::<Vec<_>>(), 2)
+                .unwrap();
+            assert!(
+                g.nodes.is_empty() && g.edges.is_empty(),
+                "a BlastRadiusComputed event folds to no node/edge; got {g:?}"
+            );
+        }
+    }
+
+    #[test]
     fn decided_edge_links_the_acting_agent() {
         let p = Projector::open(":memory:").unwrap();
         let payload = serde_json::json!({"id": "d1", "summary": "x", "governs": ["mod.rs"]});

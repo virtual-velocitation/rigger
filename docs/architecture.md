@@ -648,6 +648,200 @@ fastembed embeddings). The CLI selects turbovec when compiled with `-F turbovec`
 **falls back to grep** if its embedding model is unavailable, so the default build stays
 light.
 
+### 5.5 Structural grounding: the symbol index  **[DESIGN]**
+
+Grounding is hybrid on two axes today: a **semantic** one (turbovec vectors - "find code
+like this") and a **decision-relational** one (the context graph - "what decisions govern
+these files"). A third axis - the **structural** one ("where is this symbol defined, what
+references it, what does changing this file reach") - is only ever **approximated**, from the
+grounder's fuzzy top-`k` (`grounded_seed`). That approximation feeds the conductor's most
+consequential decisions - partitioning for parallelism, gate selection, review-tier routing
+- so improving it matters. The **symbol index** supplies the structural axis: a
+deterministic, dependency-light projection of the code tree. But "better" is not "exact
+everywhere," and one tension is load-bearing enough to organize the rest of this section.
+
+#### 5.5.1 One index, two contracts (opposite error costs)
+
+The index is a **projection of the code tree, designed once for its several consumers** -
+rather than a one-off behind the `Grounder` port - which is the decision that keeps the
+boundaries between the specs below falling where the shared model says, not where each spec
+guesses. (It is *not* a sibling of the context graph in mechanism - no `Projection` trait,
+no bi-temporality; "designed once for N consumers" is the whole justification, and no more
+is claimed.) The consumers, crucially, do **not** want the same thing:
+
+- **Grounding** (what an agent *reads*) wants **precision** - the few most-relevant
+  locations, ranked and capped. A spurious extra location merely wastes a little context.
+- **Partitioning and high-risk routing** (what the conductor may *run in parallel*, and
+  which units get the full review panel) want **recall**. `partition_by_blast_radius`
+  co-schedules two units only when their file sets are **disjoint**, so a *missed* reference
+  can place two genuinely-conflicting units in one parallel batch and silently merge
+  incompatible edits. Here over-inclusion is the *safe* error and under-inclusion is a bug.
+
+So the index serves **two contracts**. The **grounding** contract is precise, ranked, and
+capped. The **safety** contract is a **superset** - never narrower than the grep radius it
+augments (`structural ∪ grep`), uncapped, halting-and-escalating rather than silently
+truncating on overflow. Collapsing the two - applying "exact and authoritative" to the
+consumer where narrow is dangerous - is the trap this design must not fall into.
+
+#### 5.5.2 Data model
+
+Per file: its **definitions** (a `kind` from a rigger-owned enum, a `name`, a `span` as
+plain byte/line integers) and its **references** (a `name`, a `span`). **No tree-sitter type
+crosses into this model** - spans are integers, not `tree_sitter::Range` - so the model the
+grounder, persistence, and `blast_radius` all share never imports the parser (dependency
+direction, principle 7). The derived **cross-reference graph** maps each symbol to its
+definition and reference sites, **scoped per language** (a `parse` in a `.rs` file never
+links one in a `.py` file).
+
+The graph is **name-level, not resolved**, and honesty about what that costs is load-bearing:
+name-level linking both **misses** references (macro-expanded calls, trait / dynamic
+dispatch, re-exports, reflection - no scope or type resolution) *and* **over-links** common
+names (`new`, `parse`, `build` link to every like-named definition). The first is why the
+safety contract must be a *superset* over grep (5.5.1); the second is why the graph carries
+**high-fan-out suppression** (a frequency-weighted stop-symbol set) and, for the partitioning
+consumer, a **hub-symbol degree cap that fails safe by serialization** - a symbol whose
+reference degree exceeds a **percentile of the repo's own degree distribution** (computed at
+index time, not an absolute constant a monorepo would blow past) is treated as
+conflict-with-everything (correctness kept, parallelism reduced), never truncated out. The
+stop-symbol and degree-cap percentiles are the two knobs that jointly set the
+parallelism-versus-safety balance the eval measures (5.5.8). What name-level buys is
+**determinism** - same tree -> same graph -> replay-clean - worth more here than an LSP's
+precision-at-fragility.
+
+#### 5.5.3 Extraction: a grammar registry, languages as data
+
+One extraction path, driven by tree-sitter's **tags** mechanism: each grammar carries a tag
+query (`tags.scm`) that maps *its* AST nodes onto **uniform tag categories**
+(`definition.function`, `definition.type`, `reference.call`, ...). The extractor runs that
+query and reads uniform tags. The extractor is a **single function over an injected
+`(grammar, tag query)` pair - tree-sitter is confined here and nowhere else** - so
+per-language work is a **registration** (`extension -> (grammar, tag query)`), not bespoke
+AST-walking code. Where a grammar ships no (or a weak) tag query, Rigger carries its own.
+
+The registry is **static and self-contained**: grammars are compiled into the binary, never
+runtime-loaded artifacts - the deliberate opposite of a dynamically-located dependency,
+whose "cannot open the shared library" failure mode this subsystem exists to *avoid*.
+Parsing is lazy per file, so a grammar is instantiated only when a file of its type is seen
+and an unused language costs nothing at runtime; the "overhead of other languages" is purely
+build-time (binary size), and the whole set is **feature-gated** (like `turbovec`) so a
+minimal build drops it. Ships with five: **Rust**, **C#**, the **JavaScript/TypeScript
+family** (`.js/.mjs/.cjs/.jsx` -> `tree-sitter-javascript`, `.ts/.tsx` ->
+`tree-sitter-typescript`; Node is the JS runtime, not a separate grammar), **Go**,
+**Python**. Language is **auto-detected by extension**; `--language` is an optional override
+for an ambiguous extension or to restrict scope, never the load mechanism.
+
+#### 5.5.4 Persistence + incremental freshening
+
+**One substrate:** a native persisted index under `.rigger/` per project, keyed by a
+**line-ending-normalized** per-file content hash; a `reindex(files)` after a unit integrates
+re-parses only what changed. Determinism is **by construction, not assertion**: the
+serialization uses **stable sort keys** (symbols by `(name, span.start)`, files by normalized
+relative path) and **never serializes from a hash-ordered container** (Rust `HashMap` /
+`HashSet` iteration is per-process randomized), so "same tree + same grammar / tag-query
+version -> byte-identical index" holds *across processes and platforms*. The determinism test
+must therefore re-index in a **fresh process**, not re-serialize one in-memory structure
+(which would pass trivially and miss the hash-seed hazard). This is the turbovec index's
+lifecycle, not an event-log projection's.
+
+#### 5.5.5 The query contract + its consumers (no new surface)
+
+`blast_radius(file|symbol)` returns **two views** (5.5.1): a **precise / ranked** view and a
+**safe superset** view (`structural ∪ grep`, uncapped). Plus `ground(query, k)` and
+(deferred) `search / callers / members / source`. It plugs into seams that **already exist**,
+adding **no MCP server**:
+
+- **The `Grounder` port** - a `symbols` mode and a `hybrid` mode (structure composed with
+  turbovec's semantics), serving the **precise** contract, capped and ranked, exactly as
+  grep does today, in *every* driver.
+- **`grounded_seed` in the conductor** - the **precise** view seeds the prompt; the
+  **safe-superset** view feeds *every* safety consumer: partitioning, both review-tier signals,
+  cross-wave staleness (`stale_downstream_units`), and decomposition rule-6 conflict detection
+  (`dag_unit_blast_radii`) - the last two moved onto the safe superset in spec 17 (a reference
+  visible only to grep still stales a downstream unit and still surfaces a shared-radius conflict).
+  High-risk-path
+  membership is tested over the **uncapped** view (a beyond-cap high-risk file must still
+  force the full panel - the size cap must never gate the membership test). And the size
+  signal now **uses the true structural width** instead of the old `<= 8` fuzzy count: a
+  change that structurally reaches many files is genuinely high-radius and earns the full
+  panel, so the tier `threshold` is **re-tuned on the structural-width distribution** and
+  gated by a tier-routing-distribution eval (5.5.8) - the router *uses* the signal this
+  campaign produces rather than being blinded to it. With symbols inactive, `grounded_seed`
+  is byte-for-byte unchanged.
+- **(Deferred) the *existing* `rigger serve` MCP server** - an interactive query is at most
+  one more tool on `mcpserver::Server` (as `rigger_activity` was), never a second server, and
+  evidence-gated. An agent already holds its worktree and its grounded context, so this is a
+  nice-to-have, not a foundation.
+
+#### 5.5.6 Ranking (the grounding contract)
+
+For the precise contract, `ground(query, k)` ranks a name match above a merely-related file,
+above a **reference** site, above an **incidental prose mention** (a comment or string a grep
+would rank equally); a definition above its references. This is the grounding "beats fuzzy"
+mechanism - measured against turbovec, not asserted (5.5.8).
+
+#### 5.5.7 The campaign: two specs on one seam
+
+- **Symbol index + grounder** (spec 15): the tree-sitter-free data model with per-language
+  scoping and fan-out suppression (5.5.2), the injected-grammar registry and its five
+  languages (5.5.3), the pinned-serialization persistence (5.5.4), and the `symbols` /
+  `hybrid` grounders serving the **precise** contract (5.5.5-6) - validated against the
+  **turbovec** default (5.5.8).
+- **Structural blast-radius** (spec 16): the **two-contract** `blast_radius`, the
+  **safe-superset** partitioning / high-risk composition wired into `grounded_seed` with the
+  size signal normalized and the decision audited (5.5.9) - **gated behind a
+  partitioning-safety eval** (5.5.8), and safe by construction (a superset of grep can never
+  under-partition).
+- **Deferred, a property of the seam not a spec:** more languages are registrations; the
+  interactive query surface is an evidence-gated tool on the existing server.
+
+#### 5.5.8 Validation: two evals, the right opponents
+
+- **Grounding quality** - `rigger replay <run> --against <config>` diffs first-pass yield /
+  escalation for `symbols` and `hybrid` against **turbovec** (the shipped default; grep is a
+  floor that proves nothing), behind a **quantified meets-or-exceeds-by-a-stated-margin**
+  gate, not an eyeball.
+- **Partitioning + routing safety** has two arms with different jobs. (1) An
+  **implementation-invariant guard**: on an adversarial corpus (macro, trait-object,
+  re-export, reflection, common-name) the safety view must be a superset of grep - this can
+  only go red if the *union is built wrong* (it intersects, or drops the grep side), since
+  recall cannot regress by construction; it is a regression guard, not a discovery mechanism.
+  (2) The real **go / no-go, quantified**: a **parallelism-retention** gate on a **pinned**
+  polyglot repo (`>= X%` of units stay co-schedulable versus the grep baseline; median
+  safety-radius `<= Y`), plus a **tier-routing-distribution** check (the light / full split
+  under symbols must not collapse to all-full versus the turbovec / grep baseline). These are
+  the arms that can actually fail, and they gate wiring spec 16 into the conductor at all. A
+  **runtime** wave-level parallelism-retention metric (derivable from `BlastRadiusComputed`)
+  with a warn threshold makes a fleet silently serializing observable in production, not only
+  pre-ship.
+
+Determinism (a fresh-process re-index yields a byte-identical index, 5.5.4) and per-language
+extraction tests round it out.
+
+#### 5.5.9 Failure modes + auditability
+
+An unparseable file, unregistered language, or unindexed file grounds to an **empty**
+structural radius and routes to the full review panel and the unpartitioned path - never a
+silent downgrade. A **wrong-but-nonempty** radius (a missed reference) cannot under-partition,
+because the safety view is `structural ∪ grep` (5.5.1); a **name-collision over-link** or
+**hub symbol** cannot silently explode into an unsafe co-schedule, because it degree-caps to
+serialize (5.5.2).
+
+The governance decision is **audited by an event.** A `BlastRadiusComputed` event records,
+per unit, the seed files that formed its radius, which view produced it, and the index
+**content-hash + grammar / tag-query version** behind it - so a past partition is
+reconstructable (two units co-batched iff their recorded radii were disjoint) and
+**replay-faithful** even under a newer binary or a regrammared index. It is emitted on
+**every** path including the empty-radius fail-safe (so "why the full panel?" is always
+answerable), and the context-graph projector (5.2) **ignores it idempotently** - it is pure
+audit, never a folded edge. This is the one new event type the campaign adds, justified
+precisely because blast-radius governs partitioning safety, gate depth, and tier routing -
+the quantity most worth auditing.
+
+One honest cost this buys: the safety view runs **both engines** - `structural ∪ grep` walks
+the tree for grep *and* reads the index - so off the grounding hot path the safety consumer
+is strictly more work than grep alone. That is the correct trade where under-inclusion is a
+correctness bug, and it is named here rather than hidden.
+
 ---
 
 ## 6. The agent driver: pluggable spawning  **[AS-BUILT]**
