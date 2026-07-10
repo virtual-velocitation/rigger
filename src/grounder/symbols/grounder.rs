@@ -69,8 +69,9 @@ impl Symbols {
 /// content is unchanged (including one that changed ONLY its line endings, which `content_hash`
 /// normalizes away) is filtered out, so reindex re-parses and re-persists ONLY genuinely-changed
 /// files. A file that cannot be read (deleted/unreadable) is returned as changed with its stale
-/// fingerprint dropped, so the shared `index_one_file` authority still runs for it (and leaves its
-/// existing entry, exactly as it does on the whole-tree walk).
+/// fingerprint dropped, so the shared `index_one_file` authority still runs for it and REMOVES its
+/// entry - the deleted file's stale symbols are purged, leaving the index equal to a fresh
+/// whole-tree build that never visits it.
 fn changed_files(
     root: &str,
     files: &[String],
@@ -753,6 +754,36 @@ mod tests {
         assert!(
             !g.ground("two", 5).is_empty(),
             "the untouched file must stand"
+        );
+    }
+
+    #[test]
+    fn reindex_over_a_deleted_file_stops_grounding_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        std::fs::write(dir.path().join("a.rs"), "fn gone_symbol() {}\n").unwrap();
+        std::fs::write(dir.path().join("b.rs"), "fn kept_symbol() {}\n").unwrap();
+        let g = Symbols::open(root, None);
+        assert!(!g.ground("gone_symbol", 5).is_empty());
+
+        // Delete a.rs and reindex it: the grounder must stop surfacing the gone file as a seed
+        // (a deleted file's defs must not keep grounding), while the surviving file still grounds.
+        std::fs::remove_file(dir.path().join("a.rs")).unwrap();
+        g.reindex(root, &["a.rs".to_string()]);
+        assert!(
+            g.ground("gone_symbol", 5).is_empty(),
+            "a deleted file's symbol must not keep grounding"
+        );
+        assert!(
+            !g.ground("kept_symbol", 5).is_empty(),
+            "the surviving file must still ground"
+        );
+
+        // The removal is PERSISTED: a fresh reader (a separate process) never grounds it either.
+        let reader = Symbols::open(root, None);
+        assert!(
+            reader.ground("gone_symbol", 5).is_empty(),
+            "the deleted file's symbols must be purged from the persisted index"
         );
     }
 }

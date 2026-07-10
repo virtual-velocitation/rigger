@@ -74,6 +74,16 @@ impl SymbolIndex {
         self.files.insert(rel_path, fs);
     }
 
+    /// Drop a file's symbols from the index (a no-op when no entry is held for `rel_path`). The
+    /// incremental reindex path calls this when a changed file can no longer be read or extracted
+    /// (it was deleted or became unreadable), so the freshened index matches a fresh whole-tree
+    /// `build_index`, which never visits the gone file: a stale definition or reference from a
+    /// removed file must not keep grounding. Parser-free by construction, so it stays in the light
+    /// lane exactly like the rest of the model.
+    pub fn remove_file(&mut self, rel_path: &str) {
+        self.files.remove(rel_path);
+    }
+
     /// Every definition whose name equals `name`, across languages. Grounding wants precision,
     /// so the cross-language reach is fine here; references are the language-scoped view.
     pub fn definitions_named(&self, name: &str) -> Vec<&Def> {
