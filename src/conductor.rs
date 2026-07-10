@@ -4550,10 +4550,13 @@ impl RunCtx<'_> {
     /// files (Unit 1, spec 10). These are the baseline + planner-proposed units the
     /// plan-critique gate reviews: a stage that carries an implementer `agent`, is not
     /// the producer, is not the fan-out TEMPLATE (which is removed once expanded but
-    /// guarded here defensively), and is not the gate itself. Each unit's blast radius is
-    /// the SAME grounding [`grounded_seed`](Self::grounded_seed) uses (so rule-6 conflicts
-    /// are computed against exactly the files the implementer will be grounded on), in the
-    /// stages' stable (BTreeMap) name order so the analysis is deterministic across steps.
+    /// guarded here defensively), and is not the gate itself. Each unit's blast radius is the
+    /// SAFE-superset view [`grounded_blast_radius`](Self::grounded_blast_radius) computes, NOT the
+    /// precise seed (spec 17 unit 3, 3b): rule-6 conflict detection is a SAFETY consumer, so it
+    /// grounds on the same safe superset `partition_wave` uses - two units that share a reference
+    /// visible only to grep (a macro body, a re-export, a reflection string) are detected as
+    /// conflicting at decomposition time, not merely serialized at runtime. Computed in the stages'
+    /// stable (BTreeMap) name order so the analysis is deterministic across steps.
     /// The units the plan-critique gate critiques: the implement-lifecycle units that will
     /// actually FAN OUT this run. An already-INTEGRATED or TERMINAL (escalated/superseded)
     /// unit is EXCLUDED (Gap 22): it is settled, not a decomposition candidate, so its blast
@@ -4581,7 +4584,7 @@ impl RunCtx<'_> {
             {
                 continue;
             }
-            units.push((name.clone(), self.grounded_seed(st)));
+            units.push((name.clone(), self.grounded_blast_radius(st).safe));
         }
         units
     }
@@ -5655,9 +5658,12 @@ impl RunCtx<'_> {
 
     /// The unit's TWO-VIEW blast radius (spec 16 unit 3, architecture 5.5.1): computed from the
     /// grounder over the unit's grounding query at the [`GROUNDED_SEED_K`] cap. The UNCAPPED
-    /// `.safe`-superset view is what unit 3 wires `partition_wave` and `route_review_tier` to key
-    /// on (over-inclusion is the safe error - a missed reference could co-schedule two conflicting
-    /// units, or route a wide/high-risk change to the light panel); `.serialize` marks a hub radius
+    /// `.safe`-superset view is what every SAFETY consumer keys on: `partition_wave` and
+    /// `route_review_tier` (spec 16 unit 3), plus cross-wave staleness (`stale_downstream_units`)
+    /// and rule-6 conflict detection (`dag_unit_blast_radii`) (spec 17 unit 3, 3a/3b) - over-inclusion
+    /// is the safe error (a missed reference could co-schedule two conflicting units, route a
+    /// wide/high-risk change to the light panel, or leave a stale downstream unit reusing its
+    /// cached-green gate verdicts against changed code); `.serialize` marks a hub radius
     /// for its OWN batch; and the whole radius is the payload of the `BlastRadiusComputed` audit.
     /// The `.precise` field is the ranked view (recorded for provenance); the operational SEED is
     /// [`grounded_seed`](Self::grounded_seed), which stays the cheap `ground` path so the many
@@ -5678,11 +5684,13 @@ impl RunCtx<'_> {
     /// (§5.3). For the `symbols` grounder `ground` IS the precise structural contract (a definition
     /// ranked above a reference, capped at `k`, architecture 5.5.6), so this seeds the prompt from
     /// the precise view (spec 16 unit 3). It is the same grounding `build_prompt` seeds the graph
-    /// context from, the spawn's `blast_radius` field carries, the blast-radius-narrowed gate loop
-    /// selects on, and staleness / rule-6 conflict analysis key off - so the side-car filters peer
-    /// decisions against exactly the files the agent was grounded on. Kept on the cheap `ground`
-    /// path (NOT the uncapped safe walk) because it is called per-unit and per-reviewer; unit 3's
-    /// safe-superset view rides only the partition / tier / audit consumers via
+    /// context from, the spawn's `blast_radius` field carries, and the blast-radius-narrowed gate
+    /// loop selects on - so the side-car filters peer decisions against exactly the files the agent
+    /// was grounded on. The SAFETY consumers do NOT read this precise seed: cross-wave staleness and
+    /// rule-6 conflict detection key off the safe-superset view (spec 17 unit 3, 3a/3b), alongside
+    /// partitioning and tier routing. Kept on the cheap `ground` path (NOT the uncapped safe walk)
+    /// because it is called per-unit and per-reviewer; unit 3's safe-superset view rides only the
+    /// partition / tier / audit / staleness / rule-6-conflict consumers via
     /// [`grounded_blast_radius`](Self::grounded_blast_radius). Empty when no grounder is configured
     /// (best-effort but real, not always empty).
     fn grounded_seed(&self, st: &Stage) -> Vec<String> {
@@ -6645,8 +6653,10 @@ pub fn partition_with_serialize(items: &[(String, Vec<String>, bool)]) -> Vec<Ve
 /// The rule-6 blast-radius conflicts in a proposed decomposition (Unit 1, spec 10;
 /// `docs/handbook/authoring-loops.md` rule 6: "criteria that share a blast radius
 /// belong in ONE unit"). `units` pairs each fan-out unit's id with the distinct
-/// files in its blast radius (the same grounding [`RunCtx::grounded_seed`] /
-/// [`partition_by_blast_radius`] use). It returns every unordered pair of DISTINCT
+/// files in its blast radius - the SAFE-superset view [`RunCtx::grounded_blast_radius`]
+/// computes (spec 17 unit 3, 3b: rule-6 detection is a SAFETY consumer, so it reads the same
+/// `structural union grep` superset [`partition_by_blast_radius`] does, NOT the precise seed).
+/// It returns every unordered pair of DISTINCT
 /// units whose blast radii INTERSECT, each with the shared files, so a decomposition
 /// that splits one blast radius across two units is surfaced as concrete evidence the
 /// plan-critique reviewers judge. The order is deterministic (input order for the
@@ -6740,13 +6750,18 @@ fn stale_units_from_log(prior_events: &[Event]) -> HashSet<String> {
 /// in exactly one place.
 ///
 /// A unit's blast radius is the files the grounder surfaces for its grounding query (its
-/// `coverage`, else its name) - the same seed [`RunCtx::grounded_seed`] computes, so the
-/// staleness set is measured against the SAME radius the unit was grounded and
-/// partitioned on. The integrating unit never stales itself, and PRODUCER (planner)
-/// stages are skipped: they emit a DAG, not code, so they have no gate verdict to
-/// invalidate. With no grounder no radius is computable, so nothing is staled (best-effort
-/// but real, exactly like `grounded_seed`). The result is sorted + deduped so the mark is
-/// stable across runs (replay determinism).
+/// `coverage`, else its name), taken as the SAFE-superset (`structural union grep`, uncapped) view
+/// via [`Grounder::blast_radius`] `.safe` - NOT the precise seed (spec 17 unit 3, 3a). Cross-wave
+/// staleness is a SAFETY consumer: a reference visible only to grep (a macro body, a re-export, a
+/// reflection string) must STILL mark a downstream unit stale, or its cached green gate verdicts
+/// are reused and it integrates against changed code - the exact fail-open the safe view exists to
+/// close. This is the same safe superset `partition_wave` partitions on, so staleness is measured
+/// against the radius the unit is partitioned by. The integrating unit never stales itself, and
+/// PRODUCER (planner) stages are skipped: they emit a DAG, not code, so they have no gate verdict to
+/// invalidate. With no grounder no radius is computable, so nothing is staled (the empty fail-safe,
+/// best-effort but real). The result is sorted + deduped so the mark is stable across runs (replay
+/// determinism). On the symbols-INACTIVE default path the grounder's `.safe` equals its `ground`
+/// radius, so this is byte-for-byte the pre-change precise intersection.
 fn stale_downstream_units(
     stages: &BTreeMap<String, Stage>,
     grounder: Option<&dyn Grounder>,
@@ -6774,9 +6789,10 @@ fn stale_downstream_units(
             st.coverage.as_str()
         };
         let intersects = grounder
-            .ground(query, 8)
-            .into_iter()
-            .any(|r| touched.contains(r.file.as_str()));
+            .blast_radius(query, GROUNDED_SEED_K)
+            .safe
+            .iter()
+            .any(|f| touched.contains(f.as_str()));
         if intersects {
             stale.push(name.clone());
         }
@@ -16863,6 +16879,162 @@ mod tests {
         assert!(
             stale_downstream_units(&stages, None, "up", &touched).is_empty(),
             "with no grounder there is no blast radius to intersect, so nothing is staled"
+        );
+    }
+
+    #[test]
+    fn staleness_grounds_on_the_safe_superset_so_a_grep_only_reference_still_stales_a_downstream_unit(
+    ) {
+        // spec 17 unit 3 (3a): stale_downstream_units must ground on the SAFE-superset view, not the
+        // precise (name-level) view. A downstream unit whose PRECISE radius misses a reference that
+        // is visible only to grep (a macro body / re-export / reflection string) must STILL be marked
+        // stale when the integrating unit touches that grep-only file - otherwise its cached green
+        // gate verdicts are reused and it integrates against changed code (the fail-open the safe
+        // view exists to close). With symbols INACTIVE (safe == precise) the behavior is unchanged.
+        let mut stages: BTreeMap<String, Stage> = BTreeMap::new();
+        for name in ["up", "hidden"] {
+            stages.insert(
+                name.into(),
+                Stage {
+                    name: name.into(),
+                    coverage: name.into(),
+                    ..Default::default()
+                },
+            );
+        }
+        // `hidden`'s PRECISE view is only hidden.rs; its SAFE view adds macros.rs - a reference
+        // visible ONLY to grep, exactly the symbols grounder's uncapped structural-union-grep radius.
+        let structural = StructuralStubGrounder {
+            by_query: HashMap::from([(
+                "hidden".to_string(),
+                BlastRadius {
+                    precise: vec!["hidden.rs".to_string()],
+                    safe: vec!["hidden.rs".to_string(), "macros.rs".to_string()],
+                    serialize: false,
+                },
+            )]),
+            stamp: "idxhash/ts-tags-v1".to_string(),
+        };
+        let touched = vec!["macros.rs".to_string()];
+        assert_eq!(
+            stale_downstream_units(&stages, Some(&structural), "up", &touched),
+            vec!["hidden".to_string()],
+            "the grep-only reference macros.rs lives in `hidden`'s SAFE view but not its precise \
+             view; grounding staleness on the safe superset marks `hidden` stale, closing the \
+             cached-green fail-open a precise-only intersection would leave open"
+        );
+
+        // Symbols INACTIVE: a grounder that inherits the DEFAULT blast_radius returns safe == precise
+        // == ground. `hidden` grounds ONLY to hidden.rs there, so touching the grep-only macros.rs
+        // stales nothing - the shipped default is byte-for-byte unchanged.
+        let plain = StubGrounder {
+            by_query: HashMap::from([("hidden".to_string(), vec!["hidden.rs".to_string()])]),
+        };
+        assert!(
+            stale_downstream_units(&stages, Some(&plain), "up", &touched).is_empty(),
+            "with symbols inactive safe == precise, so a grep-only file outside the precise radius \
+             stales nothing - the default path is unchanged"
+        );
+    }
+
+    #[test]
+    fn rule6_conflict_detection_grounds_on_the_safe_superset_so_a_grep_only_shared_reference_conflicts(
+    ) {
+        // spec 17 unit 3 (3b): dag_unit_blast_radii must feed rule-6 conflict detection the
+        // SAFE-superset view, not the precise seed. Two units whose PRECISE radii are DISJOINT but
+        // whose SAFE radii both include one grep-only file (a shared macro / re-export) TRULY share a
+        // blast radius; grounding the analysis on the safe superset detects them as conflicting at
+        // decomposition time. On the precise view the shared grep-only file is invisible and the
+        // conflict is missed. With symbols INACTIVE (safe == precise) the two disjoint units raise
+        // nothing - the shipped default is unchanged.
+        let mut stages: BTreeMap<String, Stage> = BTreeMap::new();
+        for name in ["u1", "u2"] {
+            stages.insert(
+                name.into(),
+                Stage {
+                    name: name.into(),
+                    agent: "worker".into(),
+                    coverage: name.into(),
+                    ..Default::default()
+                },
+            );
+        }
+        // Precise radii are disjoint (u1.rs vs u2.rs); both SAFE radii add shared_macro.rs, a
+        // reference visible only to grep that both units truly reach.
+        let structural = StructuralStubGrounder {
+            by_query: HashMap::from([
+                (
+                    "u1".to_string(),
+                    BlastRadius {
+                        precise: vec!["u1.rs".to_string()],
+                        safe: vec!["u1.rs".to_string(), "shared_macro.rs".to_string()],
+                        serialize: false,
+                    },
+                ),
+                (
+                    "u2".to_string(),
+                    BlastRadius {
+                        precise: vec!["u2.rs".to_string()],
+                        safe: vec!["u2.rs".to_string(), "shared_macro.rs".to_string()],
+                        serialize: false,
+                    },
+                ),
+            ]),
+            stamp: "idxhash/ts-tags-v1".to_string(),
+        };
+        let cfg = Config::default();
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let runner = RecordingRunner::new(&[]);
+        let none: HashSet<String> = HashSet::new();
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: String::new(),
+            grounder: Some(&structural),
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+        let radii = ctx.dag_unit_blast_radii(&stages, "gate", &none, &none);
+        let conflicts = blast_radius_conflicts(&radii);
+        assert_eq!(
+            conflicts,
+            vec![(
+                "u1".to_string(),
+                "u2".to_string(),
+                vec!["shared_macro.rs".to_string()]
+            )],
+            "u1 and u2 have DISJOINT precise seeds but share the grep-only shared_macro.rs in their \
+             safe views; grounding rule-6 detection on the safe superset surfaces the conflict a \
+             precise-only analysis would miss: {radii:?}"
+        );
+
+        // Symbols INACTIVE: a StubGrounder inherits the DEFAULT blast_radius (safe == precise), so
+        // each unit's safe radius is just its disjoint precise seed and no conflict is raised - the
+        // shipped default decomposition analysis is byte-for-byte unchanged.
+        let plain = StubGrounder {
+            by_query: HashMap::from([
+                ("u1".to_string(), vec!["u1.rs".to_string()]),
+                ("u2".to_string(), vec!["u2.rs".to_string()]),
+            ]),
+        };
+        let plain_deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: String::new(),
+            grounder: Some(&plain),
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let plain_ctx = RunCtx::for_test(&cfg, &plain_deps);
+        let plain_radii = plain_ctx.dag_unit_blast_radii(&stages, "gate", &none, &none);
+        assert!(
+            blast_radius_conflicts(&plain_radii).is_empty(),
+            "with symbols inactive safe == precise; the two disjoint units share no file and raise \
+             no rule-6 conflict: {plain_radii:?}"
         );
     }
 

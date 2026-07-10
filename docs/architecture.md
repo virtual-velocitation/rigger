@@ -754,7 +754,11 @@ adding **no MCP server**:
   turbovec's semantics), serving the **precise** contract, capped and ranked, exactly as
   grep does today, in *every* driver.
 - **`grounded_seed` in the conductor** - the **precise** view seeds the prompt; the
-  **safe-superset** view feeds partitioning and both review-tier signals. High-risk-path
+  **safe-superset** view feeds *every* safety consumer: partitioning, both review-tier signals,
+  cross-wave staleness (`stale_downstream_units`), and decomposition rule-6 conflict detection
+  (`dag_unit_blast_radii`) - the last two moved onto the safe superset in spec 17 (a reference
+  visible only to grep still stales a downstream unit and still surfaces a shared-radius conflict).
+  High-risk-path
   membership is tested over the **uncapped** view (a beyond-cap high-risk file must still
   force the full panel - the size cap must never gate the membership test). And the size
   signal now **uses the true structural width** instead of the old `<= 8` fuzzy count: a
