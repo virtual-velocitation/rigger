@@ -730,6 +730,251 @@ fn reindex_requires_at_least_one_file() {
     );
 }
 
+/// Criterion 3 (spec 15): the persisted symbol index is BYTE-IDENTICAL when built in two
+/// SEPARATE processes over the same tree. This is the guard the in-process lib test
+/// structurally CANNOT make: Rust `HashMap`/`HashSet` seed randomization differs only ACROSS
+/// processes, so a `HashMap` that leaked onto the serialized path would pass every in-process
+/// test yet diverge here. The `rigger symbols-index` harness builds + persists unit 3's index
+/// directly (independent of grounder selection - so this test needs nothing from unit 4), and
+/// each `run_rigger` is a genuinely fresh process with its own hash seed; a stable diff proves
+/// the determinism-by-construction (`BTreeMap`, never `HashMap`) the persistence relies on.
+#[cfg(feature = "symbols")]
+#[test]
+fn symbol_index_is_byte_identical_across_processes() {
+    let dir = temp_project();
+    let root = dir.path();
+    // TWO source files with distinct symbols, NOT one: a single-key map serializes identically
+    // whether it is a `BTreeMap` or a `HashMap`, so the cross-process guard only bites with >= 2
+    // keys whose rel-path ordering a `HashMap` seed would scramble. Their names also let us assert
+    // the index is NON-EMPTY, so a total extraction failure (an empty index in BOTH processes,
+    // which is vacuously byte-identical) cannot pass this test green.
+    std::fs::write(root.join("m.rs"), "fn alpha(){} fn beta(){}\n").unwrap();
+    std::fs::write(root.join("z.rs"), "fn gamma(){} fn delta(){}\n").unwrap();
+    let index = root.join(".rigger").join("symbols").join("index.json");
+
+    // Process 1 builds + persists the index.
+    let (out1, err1, ok1) = run_rigger(root, &["symbols-index"]);
+    assert!(ok1, "first symbols-index must succeed; stderr: {err1}");
+    assert!(
+        out1.contains("2 file(s)"),
+        "the harness must report both indexed files, not a vacuous empty index; stdout: {out1}"
+    );
+    let first = std::fs::read(&index).expect("the first process must persist the index");
+    let first_text = String::from_utf8(first.clone()).expect("index.json is UTF-8");
+    // The index must actually reflect the tree, so byte-identity is over MEANINGFUL content.
+    for name in ["alpha", "beta", "gamma", "delta"] {
+        assert!(
+            first_text.contains(name),
+            "the persisted index must contain the extracted symbol {name:?}; got: {first_text}"
+        );
+    }
+
+    // Remove it, then a SECOND, independent process rebuilds it over the same tree.
+    std::fs::remove_file(&index).unwrap();
+    let (_out2, err2, ok2) = run_rigger(root, &["symbols-index"]);
+    assert!(ok2, "second symbols-index must succeed; stderr: {err2}");
+    let second = std::fs::read(&index).expect("the second process must persist the index");
+
+    assert_eq!(
+        first, second,
+        "the persisted multi-file index must be byte-identical across processes"
+    );
+}
+
+/// End-to-end selection wiring (spec 15, unit 4): with `defaults.grounder: symbols`, `rigger
+/// ground` resolves the real `Symbols` grounder through `select_grounder` - building + persisting
+/// the structural index over the project - and ranks a DEFINITION above an incidental prose
+/// mention. This drives the whole feature-on path (config -> select_grounder -> Symbols::open ->
+/// build_index -> ground) that a lib test rooted at `.` cannot exercise over a controlled tree.
+#[cfg(feature = "symbols")]
+#[test]
+fn ground_via_symbols_grounder_ranks_a_definition_first() {
+    let dir = temp_project();
+    let root = dir.path();
+    // Pin `defaults.grounder: symbols` (the helper also creates the `agents/` dir `config::load`
+    // needs, so the pinned grounder actually takes effect rather than falling back to the default).
+    write_grounder_workflow(root, "symbols");
+    // combat.rs DEFINES apply_damage; notes.rs only mentions it in a comment (prose, not a symbol).
+    std::fs::write(
+        root.join("combat.rs"),
+        "fn apply_damage(x: u8) -> u8 { x }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("notes.rs"),
+        "// TODO: revisit apply_damage later\nfn unrelated() {}\n",
+    )
+    .unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["ground", "apply_damage", "5"]);
+    assert!(
+        ok,
+        "ground via the symbols grounder must succeed; stderr: {err}"
+    );
+    let first_line = out.lines().next().unwrap_or_default();
+    assert!(
+        first_line.starts_with("combat.rs:"),
+        "the definition site must be grounded first; stdout: {out}"
+    );
+    assert!(
+        !out.contains("notes.rs"),
+        "an incidental prose mention must not be grounded as a symbol; stdout: {out}"
+    );
+}
+
+/// End-to-end reindex wiring (spec 15, unit 4): with `defaults.grounder: symbols`, the shipped
+/// `rigger reindex <file>` CLI must resolve the SAME real `Symbols` grounder through
+/// `select_reindex_grounder` that `rigger ground` resolves through `select_grounder` - NOT die
+/// with the false `symbols_feature_missing_error` while the feature is built. It must exit 0 AND
+/// actually freshen: a symbol written into a file AFTER the index is first built becomes findable
+/// via `rigger ground` once that file is reindexed. This is the symmetric guard to
+/// `ground_via_symbols_grounder_ranks_a_definition_first`; without the symbols arm in
+/// `select_reindex_grounder` (both cfg lanes) it turns RED at the very first `reindex` exit code.
+#[cfg(feature = "symbols")]
+#[test]
+fn reindex_via_symbols_grounder_updates_the_persisted_index() {
+    let dir = temp_project();
+    let root = dir.path();
+    // Pin `defaults.grounder: symbols` (the helper also creates the `agents/` dir `config::load`
+    // needs, so the pinned grounder actually takes effect rather than falling back to the default).
+    write_grounder_workflow(root, "symbols");
+    std::fs::write(root.join("combat.rs"), "fn apply_damage() {}\n").unwrap();
+
+    // First ground builds + persists the structural index (cold path) under .rigger/symbols/.
+    let (_out, err, ok) = run_rigger(root, &["ground", "apply_damage", "1"]);
+    assert!(ok, "the initial ground must build the index; stderr: {err}");
+    assert!(
+        root.join(".rigger")
+            .join("symbols")
+            .join("index.json")
+            .exists(),
+        "grounding via symbols must persist the structural index to .rigger/symbols/"
+    );
+
+    // The change lands: combat.rs gains teleport_player (a symbol absent from the built index).
+    std::fs::write(
+        root.join("combat.rs"),
+        "fn apply_damage() {}\nfn teleport_player() {}\n",
+    )
+    .unwrap();
+
+    // Reindex ONLY that file via the shipped CLI. Under `defaults.grounder: symbols` with the
+    // feature BUILT this MUST exit 0 (the selector-drift regression made it exit 1 with a false
+    // feature-missing error), and it must name the reindexed file.
+    let (out, err, ok) = run_rigger(root, &["reindex", "combat.rs"]);
+    assert!(
+        ok,
+        "reindex under defaults.grounder: symbols must succeed, not falsely report a missing \
+         feature; stderr: {err}"
+    );
+    assert!(
+        out.contains("combat.rs"),
+        "reindex prints a confirmation naming the file; got: {out:?}"
+    );
+
+    // The just-landed symbol is now findable through the SAME persisted index a later ground uses -
+    // the reindex freshened the on-disk store, not just an in-process copy.
+    let (out, err, ok) = run_rigger(root, &["ground", "teleport_player", "1"]);
+    assert!(ok, "ground after reindex must succeed; stderr: {err}");
+    assert!(
+        out.lines()
+            .next()
+            .map(|l| l.starts_with("combat.rs:"))
+            .unwrap_or(false),
+        "after the reindex CLI freshens the symbols index, the new symbol must ground to \
+         combat.rs; got: {out:?}"
+    );
+}
+
+/// End-to-end selection wiring for the `hybrid` grounder (spec 15, unit 5): with
+/// `defaults.grounder: hybrid` and BOTH features built, `rigger ground` must resolve the real
+/// `Hybrid` through `select_grounder` and `rigger reindex` must resolve it through
+/// `select_reindex_grounder` - the SAME symmetric CLI surface unit 4 was rejected for omitting for
+/// `symbols`. It pins the composition end-to-end: the structural definition (`combat.rs`) ranks
+/// FIRST and the semantic pass still fills a file the name match misses (`enemy.rs`, which defines
+/// no matching symbol), and the shipped `rigger reindex <file>` exits 0 (NOT the false
+/// unknown/feature error) and freshens both axes so a just-landed symbol becomes findable.
+/// Gated to the both-features lane and `file_serial(turbovec_model)` because it spawns a `rigger`
+/// subprocess that builds an ort/model session, which must never race another model construction.
+#[cfg(all(feature = "symbols", feature = "turbovec"))]
+#[test]
+#[serial_test::file_serial(turbovec_model)]
+fn hybrid_grounds_and_reindexes_via_the_shipped_cli() {
+    let dir = temp_project();
+    let root = dir.path();
+    // Pin `defaults.grounder: hybrid` (the helper also creates the `agents/` dir `config::load`
+    // needs, so the pinned grounder actually takes effect rather than falling back to the default).
+    write_grounder_workflow(root, "hybrid");
+    // combat.rs DEFINES apply_damage (a structural hit); enemy.rs is semantically about dealing
+    // damage but defines NO such symbol (a semantic-only hit the structural axis alone misses).
+    std::fs::write(
+        root.join("combat.rs"),
+        "fn apply_damage(target: &mut Entity, amount: f32) {\n    target.health -= amount;\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("enemy.rs"),
+        "fn reduce_hitpoints(enemy: &mut Enemy, blow: f32) {\n    enemy.hp -= blow;\n}\n",
+    )
+    .unwrap();
+
+    // `rigger ground` resolves `hybrid` via select_grounder: structural definition first, then the
+    // semantic pass fills the recall the name match missed.
+    let (out, err, ok) = run_rigger(root, &["ground", "apply_damage", "5"]);
+    assert!(
+        ok,
+        "ground via the hybrid grounder must succeed; stderr: {err}"
+    );
+    assert!(
+        out.lines()
+            .next()
+            .map(|l| l.starts_with("combat.rs:"))
+            .unwrap_or(false),
+        "the structural definition must be grounded FIRST; stdout: {out}"
+    );
+    assert!(
+        out.contains("enemy.rs"),
+        "the semantic pass must fill the recall the name match misses (enemy.rs); stdout: {out}"
+    );
+
+    // The change lands: combat.rs gains teleport_player (a symbol absent from the built index).
+    std::fs::write(
+        root.join("combat.rs"),
+        "fn apply_damage(target: &mut Entity, amount: f32) {\n    target.health -= amount;\n}\n\
+         fn teleport_player(player: &mut Player, dest: Tile) {\n    player.position = dest;\n}\n",
+    )
+    .unwrap();
+
+    // `rigger reindex <file>` resolves `hybrid` via select_reindex_grounder and MUST exit 0 (the
+    // omitted-arm regression made the symbols surface exit 1 with a false feature-missing error).
+    let (out, err, ok) = run_rigger(root, &["reindex", "combat.rs"]);
+    assert!(
+        ok,
+        "reindex under defaults.grounder: hybrid must succeed, not falsely report an unknown or \
+         missing grounder; stderr: {err}"
+    );
+    assert!(
+        out.contains("combat.rs"),
+        "reindex prints a confirmation naming the file; got: {out:?}"
+    );
+
+    // The just-landed symbol is findable through the freshened index a later ground uses - the
+    // reindex updated the on-disk structural store, proving the hybrid reindex fans out for real.
+    let (out, err, ok) = run_rigger(root, &["ground", "teleport_player", "1"]);
+    assert!(
+        ok,
+        "ground after the hybrid reindex must succeed; stderr: {err}"
+    );
+    assert!(
+        out.lines()
+            .next()
+            .map(|l| l.starts_with("combat.rs:"))
+            .unwrap_or(false),
+        "after the reindex CLI freshens the hybrid index, the new symbol must ground to \
+         combat.rs; got: {out:?}"
+    );
+}
+
 /// `rigger reindex <file>` against the turbovec grounder UPDATES the persisted
 /// grounding store incrementally: a term written into a file AFTER the index is first
 /// built becomes findable via `rigger ground` once that file is reindexed - the CLI
