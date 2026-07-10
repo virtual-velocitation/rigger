@@ -7,10 +7,17 @@
 
 use crate::grounder::symbols::model::{Lang, SymbolIndex};
 use crate::grounder::symbols::{build_index, reindex_files, store};
-use crate::grounder::{Grounder, Ref};
-use std::collections::BTreeMap;
+use crate::grounder::{BlastRadius, Grep, Grounder, Ref};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
 use std::sync::Mutex;
+
+/// The degree percentile at or above which a symbol is treated as a HUB and its blast radius
+/// SERIALIZES (architecture 5.5.2). Drawn from the repo's OWN per-language reference-degree
+/// distribution (not an absolute constant a monorepo would blow past): the 90th percentile flags
+/// only the top decile of highest-degree names, so a hub serializes conservatively rather than
+/// truncating. Unit 2's eval measures the parallelism this knob retains; unit 3 owns any retune.
+const HUB_DEGREE_PERCENTILE: f64 = 0.90;
 
 /// The `symbols` grounder over the persisted index. `open` loads the persisted index (building and
 /// persisting it on a cold start); `ground` ranks name matches by the precise contract; `reindex`
@@ -178,6 +185,103 @@ impl Grounder for Symbols {
             reindex_files(&self.root, base, &changed, self.override_lang);
         });
     }
+
+    /// The two-view blast radius over the cross-reference graph (architecture 5.5.1, spec 16 unit
+    /// 1) - the `symbols` override of the grep-only trait default:
+    ///
+    /// - `precise` (the grounding contract) is the STRUCTURAL view - the files that DEFINE the
+    ///   queried symbol ranked ABOVE the files that REFERENCE it - capped at `k`. It is what seeds
+    ///   an agent's prompt, so it favors precision.
+    /// - `safe` (the safety contract) is the UNION of the structural view and grep, UNCAPPED. It
+    ///   runs BOTH engines - the structural graph AND the EXISTING [`Grep`] grounder over the same
+    ///   root - so it is never narrower than today's grep radius (5.5.9). Name-level linking MISSES
+    ///   references (macros, dynamic dispatch, re-exports, a mention the tags query never indexes as
+    ///   a symbol); the grep union recovers them, so the partitioning consumer can never
+    ///   under-partition.
+    /// - `serialize` is set when ANY query term is a HUB in ANY present language (its per-language
+    ///   reference degree clears [`HUB_DEGREE_PERCENTILE`] of that language's OWN degree
+    ///   distribution). A hub's radius fails SAFE by conflict-with-everything - the consumer gives
+    ///   the unit its own batch - NEVER by truncating `safe` (which still carries every file).
+    ///
+    /// Determinism is by construction: `files()` is a `BTreeMap`, so both structural passes visit
+    /// files in sorted path order, and grep walks the shared guarded skeleton. With an empty query
+    /// or no match this returns empty views (the empty-radius fail-safe unit 3 routes to the full
+    /// panel), never a partial or a panic.
+    fn blast_radius(&self, query: &str, k: usize) -> BlastRadius {
+        // The query's symbol candidates: the SAME alphanumeric/underscore terms `ground` extracts
+        // (so `apply_damage` stays one term and single-char noise is dropped).
+        let terms: Vec<&str> = query
+            .split(|c: char| !c.is_alphanumeric() && c != '_')
+            .filter(|t| t.len() >= 2)
+            .collect();
+
+        // The STRUCTURAL view, ranked (definer files, then referencer files not already a definer),
+        // plus the hub verdict - all computed under ONE read lock over the index, returned as a
+        // tuple so neither binding needs a dead pre-initialization before the locked block.
+        let (structural, serialize): (Vec<String>, bool) = {
+            let idx = self.idx.lock().unwrap();
+            // Iterate `files()` directly to KEEP each hit's owning file: `definitions_named` drops
+            // it (the arch-u15-1-defsnamed-drops-file cohesion note), which would force a rescan.
+            // `files()` is a BTreeMap, so this is sorted-path-order and deterministic.
+            let mut definers: Vec<&str> = Vec::new();
+            let mut referencers: Vec<&str> = Vec::new();
+            for (path, fs) in idx.files() {
+                if fs.defs.iter().any(|d| terms.contains(&d.name.as_str())) {
+                    definers.push(path.as_str());
+                }
+                if fs.refs.iter().any(|r| terms.contains(&r.name.as_str())) {
+                    referencers.push(path.as_str());
+                }
+            }
+            // Ranked: every definer file first, then each referencer that is not also a definer.
+            let mut ranked: Vec<String> = Vec::new();
+            for f in &definers {
+                ranked.push((*f).to_string());
+            }
+            for f in &referencers {
+                if !definers.contains(f) {
+                    ranked.push((*f).to_string());
+                }
+            }
+            // Hub composition: serialize if ANY term is a hub WITHIN ANY language the index holds.
+            // The per-language scope is drawn from the languages actually present, so a name that
+            // over-links in another language never flags this one (the 5.5.2 cross-language fix).
+            let langs: BTreeSet<Lang> = idx.files().values().map(|f| f.lang).collect();
+            let hub = terms.iter().any(|t| {
+                langs
+                    .iter()
+                    .any(|&l| idx.is_hub(t, l, HUB_DEGREE_PERCENTILE))
+            });
+            (ranked, hub)
+        };
+
+        // The SAFE-SUPERSET view: the FULL (untruncated) structural set UNIONed with an UNCAPPED
+        // grep over the same root - the honest "both engines" cost (5.5.9). This clone happens
+        // BEFORE `precise` is capped, so the safe view is never bounded by `k`; do not reorder the
+        // truncation above it or the uncapped-superset contract breaks. `usize::MAX` makes grep
+        // collect every matching file, not a top-`k` slice. A `seen` set keeps the dedup O(lines)
+        // rather than O(lines * files): grep yields one hit per matching LINE and the safe view is
+        // uncapped, so a per-file linear scan would be quadratic on a wide radius.
+        let mut safe = structural.clone();
+        let mut seen: HashSet<String> = safe.iter().cloned().collect();
+        let grep = Grep {
+            root: self.root.clone(),
+        };
+        for r in grep.ground(query, usize::MAX) {
+            if seen.insert(r.file.clone()) {
+                safe.push(r.file);
+            }
+        }
+
+        // The precise view is the ranked structural set capped at `k`; the safe view stays uncapped.
+        let mut precise = structural;
+        precise.truncate(k);
+        BlastRadius {
+            precise,
+            safe,
+            serialize,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -208,6 +312,126 @@ mod tests {
         assert!(
             !refs.iter().any(|r| r.file == "notes.rs"),
             "an incidental prose mention is not indexed as a symbol and must not be grounded; got {refs:?}"
+        );
+    }
+
+    /// Spec 16 unit 1, the criterion-1 recall fixture: the SAFE-SUPERSET view recovers a reference
+    /// the name-level structural graph alone MISSES. `apply_damage` is defined in one file, called
+    /// (a real symbol reference the graph links) in another, and mentioned ONLY in a COMMENT in a
+    /// third - a comment is not a symbol, so the tags query never indexes it and the structural
+    /// graph misses that file, but a literal grep matches the substring. `structural ∪ grep`
+    /// recovers it, so the safe view is strictly a superset of the structural (precise) view - the
+    /// recall the partitioning consumer needs, safe by construction.
+    #[test]
+    fn safe_superset_recovers_a_grep_only_reference_the_structural_graph_misses() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("combat.rs"),
+            "fn apply_damage(x: u8) -> u8 { x }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("caller.rs"),
+            "fn go() { apply_damage(1); }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("notes.rs"),
+            "// apply_damage is discussed but never called here\n",
+        )
+        .unwrap();
+        // A higher-degree symbol (`helper`, referenced twice) so the per-language degree
+        // distribution is non-degenerate: `apply_damage` (degree 1) then sits BELOW the hub
+        // percentile, making the `!serialize` assertion below meaningful rather than a single-name
+        // artifact (a lone referenced name would trivially be its own 100th percentile).
+        std::fs::write(dir.path().join("h1.rs"), "fn a() { helper(); }\n").unwrap();
+        std::fs::write(dir.path().join("h2.rs"), "fn b() { helper(); }\n").unwrap();
+        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+
+        let br = g.blast_radius("apply_damage", 8);
+        // The precise view IS the structural cross-reference graph: the definer and the real call
+        // site, ranked - and NOT the comment-only mention (which is no symbol).
+        assert!(
+            br.precise.contains(&"combat.rs".to_string()),
+            "the definer must be in the precise view; got {br:?}"
+        );
+        assert!(
+            br.precise.contains(&"caller.rs".to_string()),
+            "the real call site must be in the precise view; got {br:?}"
+        );
+        assert!(
+            !br.precise.contains(&"notes.rs".to_string()),
+            "a comment-only mention is not a symbol; the precise view must exclude it; got {br:?}"
+        );
+        // The definer ranks ABOVE the referencer in the precise view.
+        let combat_at = br.precise.iter().position(|f| f == "combat.rs").unwrap();
+        let caller_at = br.precise.iter().position(|f| f == "caller.rs").unwrap();
+        assert!(
+            combat_at < caller_at,
+            "the definer must rank above the referencer; got {br:?}"
+        );
+        // The safe-superset view UNIONs an uncapped grep, so it RECOVERS the comment mention the
+        // structural graph missed - the miss the safety contract exists to backstop.
+        assert!(
+            br.safe.contains(&"notes.rs".to_string()),
+            "the safe view must recover the grep-only reference the structural graph misses; got {br:?}"
+        );
+        // And it is a strict superset of the precise (structural) view.
+        for f in &br.precise {
+            assert!(
+                br.safe.contains(f),
+                "safe must be a superset of precise; missing {f} in {br:?}"
+            );
+        }
+        assert!(
+            !br.serialize,
+            "apply_damage is not a hub, so this radius does not serialize; got {br:?}"
+        );
+    }
+
+    /// Spec 16 unit 1, the criterion-1 hub fixture: a HUB symbol (degree at or above the repo's
+    /// per-language degree percentile) fails SAFE by SERIALIZING (flagged conflict-with-everything)
+    /// rather than TRUNCATING its large file set. The safe view still carries EVERY file (never
+    /// dropped, even past the `k` cap); `serialize` tells the partitioning consumer to give the
+    /// unit its own batch. A degree-1 symbol in the same repo does not serialize.
+    #[test]
+    fn a_hub_symbol_serializes_and_its_safe_view_is_not_truncated() {
+        let dir = tempfile::tempdir().unwrap();
+        // `spawn` is referenced across many files (a hub); `rare_call` in exactly one, so the
+        // per-language degree distribution has a genuine high-degree name to clear the percentile.
+        std::fs::write(dir.path().join("def.rs"), "fn spawn() {}\n").unwrap();
+        let mut expected: Vec<String> = vec!["def.rs".to_string()];
+        for i in 0..12 {
+            let name = format!("f{i}.rs");
+            std::fs::write(dir.path().join(&name), "fn c() { spawn(); }\n").unwrap();
+            expected.push(name);
+        }
+        std::fs::write(dir.path().join("rare.rs"), "fn r() { rare_call(); }\n").unwrap();
+        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+
+        // A SMALL cap proves the safe view is uncapped: there are 13 `spawn` files, more than k=8.
+        let br = g.blast_radius("spawn", 8);
+        assert!(
+            br.serialize,
+            "a hub symbol must serialize (conflict-with-everything), never truncate; got {br:?}"
+        );
+        for f in &expected {
+            assert!(
+                br.safe.contains(f),
+                "the hub safe view must not truncate {f}; got {br:?}"
+            );
+        }
+        assert!(
+            br.safe.len() >= expected.len(),
+            "the safe view is uncapped: all {} hub files must be present, not capped at 8; got {} in {br:?}",
+            expected.len(),
+            br.safe.len()
+        );
+        // A degree-1 symbol in the SAME repo is NOT a hub and does not serialize.
+        let rare = g.blast_radius("rare_call", 8);
+        assert!(
+            !rare.serialize,
+            "a degree-1 symbol is not a hub; got {rare:?}"
         );
     }
 

@@ -114,6 +114,37 @@ pub struct Ref {
     pub text: String,
 }
 
+/// The two-view blast radius of a query (architecture 5.5.1, spec 16 unit 1). Blast-radius has
+/// OPPOSITE error costs for its two consumers, so it delivers TWO views over the same query:
+///
+/// - `precise` - the ranked, capped view (definers ranked above referencers) that seeds an
+///   agent's prompt. A spurious extra file here merely wastes a little context, so precision
+///   is what it optimizes for.
+/// - `safe` - the SAFE-SUPERSET view (the union of the structural view and grep, uncapped) that
+///   the conductor partitions and routes review tiers by. `partition_by_blast_radius` co-schedules
+///   two units only when their file sets are DISJOINT, so a MISSED reference could co-schedule two
+///   conflicting units in one parallel batch. Over-inclusion is the safe error; this view is
+///   therefore never narrower than the grep radius it augments and is never capped.
+///
+/// `serialize` is the fail-safe for a HUB symbol - one whose per-language reference degree
+/// exceeds the repo's degree-distribution percentile (5.5.2). Rather than truncating its huge
+/// (often whole-repo) file set, a hub radius is flagged conflict-with-everything: the partitioning
+/// consumer (unit 3) places such a unit in its own batch instead of co-scheduling it. Correctness
+/// is kept, parallelism reduced - never the reverse. `safe` still carries the real files (never
+/// truncated); `serialize` only tells the consumer to conflict this radius against all others.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BlastRadius {
+    /// The precise / ranked view: definer files first, then referencer files, capped at `k`.
+    pub precise: Vec<String>,
+    /// The safe-superset view: the union of `precise` and grep, uncapped - always a superset of the
+    /// grep radius.
+    pub safe: Vec<String>,
+    /// Whether this radius must serialize (conflict-with-everything) because the queried symbol
+    /// is a hub. The partitioning consumer never co-schedules a serialize radius; the files in
+    /// `safe` are NOT truncated when this is set.
+    pub serialize: bool,
+}
+
 /// Grounder returns up to k locations relevant to a query.
 pub trait Grounder: Send + Sync {
     fn ground(&self, query: &str, k: usize) -> Vec<Ref>;
@@ -122,6 +153,28 @@ pub trait Grounder: Send + Sync {
     /// on the accepted code (turbovec reindexDelta). The default is a no-op - grep
     /// re-reads the tree each time and needs no index.
     fn reindex(&self, _src_dir: &str, _files: &[String]) {}
+
+    /// The two-view blast radius of `query` (architecture 5.5.1, spec 16). The DEFAULT impl - the
+    /// one a grep / turbovec / nop grounder inherits - returns this grounder's OWN top-`k` radius
+    /// (the distinct files it grounds, in ground order) as BOTH views and never serializes. So a
+    /// non-symbols grounder's blast radius is EXACTLY its grep/top-k radius: `precise == safe`, no
+    /// hub composition, no extra work. This is what keeps unit 3's symbols-inactive `grounded_seed`
+    /// (which reads `precise`) byte-for-byte unchanged - it is the same `ground(query, k)` file set
+    /// it produces today. Only the `symbols` grounder overrides this to union the structural
+    /// cross-reference graph with an uncapped grep and to flag hub symbols as serialize.
+    fn blast_radius(&self, query: &str, k: usize) -> BlastRadius {
+        let mut files: Vec<String> = Vec::new();
+        for r in self.ground(query, k) {
+            if !files.contains(&r.file) {
+                files.push(r.file);
+            }
+        }
+        BlastRadius {
+            precise: files.clone(),
+            safe: files,
+            serialize: false,
+        }
+    }
 }
 
 /// Nop grounds nothing.
@@ -275,6 +328,55 @@ mod tests {
         let refs = g.ground("apply_damage", 5);
         assert!(refs.iter().any(|r| r.text.contains("apply_damage")));
         assert!(g.ground("apply_damage", 0).is_empty());
+    }
+
+    /// The DEFAULT `blast_radius` (the one a non-symbols grounder inherits) is EXACTLY the
+    /// grounder's own top-`k` radius: `precise == safe` = the distinct files it grounds, and it
+    /// NEVER serializes. This is the contract that keeps unit 3's symbols-inactive `grounded_seed`
+    /// (which reads `precise`) byte-for-byte unchanged - it is the same `ground(query, k)` file set.
+    /// This test is ungated: it holds identically in both feature lanes because the default impl
+    /// touches no structural index.
+    #[test]
+    fn default_blast_radius_is_the_grounders_own_top_k_radius_both_views_never_serialize() {
+        let dir = tempfile::tempdir().unwrap();
+        // Two files both matching the needle so the radius has more than one file.
+        std::fs::write(dir.path().join("combat.rs"), "fn apply_damage() {}\n").unwrap();
+        std::fs::write(
+            dir.path().join("notes.rs"),
+            "// apply_damage is called here\n",
+        )
+        .unwrap();
+        let g = Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+
+        // The default view is the DISTINCT files of `ground(query, k)`, in ground order.
+        let want: Vec<String> = {
+            let mut files: Vec<String> = Vec::new();
+            for r in g.ground("apply_damage", 8) {
+                if !files.contains(&r.file) {
+                    files.push(r.file);
+                }
+            }
+            files
+        };
+        assert!(want.len() >= 2, "the fixture should ground both files");
+
+        let br = g.blast_radius("apply_damage", 8);
+        // precise == safe == the grep radius, and no hub composition on the default path.
+        assert_eq!(
+            br.precise, want,
+            "precise view is the grounder's top-k radius"
+        );
+        assert_eq!(
+            br.safe, want,
+            "the default safe view equals the precise view (grep radius, a trivial superset)"
+        );
+        assert!(!br.serialize, "the default path never serializes");
+
+        // An empty query / k=0 grounds nothing, so both views are empty (the empty fail-safe).
+        let empty = g.blast_radius("apply_damage", 0);
+        assert!(empty.precise.is_empty() && empty.safe.is_empty() && !empty.serialize);
     }
 
     /// The grep grounder's walk must SKIP the shared denied dirs - in particular
