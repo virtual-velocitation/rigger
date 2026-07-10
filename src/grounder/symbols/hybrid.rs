@@ -126,6 +126,20 @@ impl Grounder for Hybrid {
     fn blast_radius(&self, query: &str, k: usize) -> crate::grounder::BlastRadius {
         self.symbols.blast_radius(query, k)
     }
+
+    /// The provenance stamp forwards to the inner structural [`Symbols`] index, exactly as
+    /// `blast_radius` does. `Hybrid` is symbols-ACTIVE, so its stamp MUST be the non-empty
+    /// `<index-content-hash>/<grammar-tags-version>` the `Symbols` grounder computes - NOT the
+    /// empty-string trait default a non-symbols grounder inherits. That default is the signal the
+    /// conductor keys the `BlastRadiusComputed` audit off (spec 16 unit 3): inheriting it means
+    /// `record_blast_radius` hits its empty-stamp early return and NO audit ever emits under
+    /// `defaults.grounder: hybrid`, leaving the parallelism-retention metric unmeasurable for every
+    /// hybrid run (spec 17, 4a). The semantic (turbovec) axis carries no structural provenance - the
+    /// audit reconstructs which SYMBOL-index generation grounded a radius - so the stamp is exactly
+    /// the inner index's, one authority, not a recomposed hash.
+    fn index_stamp(&self) -> String {
+        self.symbols.index_stamp()
+    }
 }
 
 // The two-view `blast_radius` invariant over the COMPOSITE grounder (spec 16 unit 1). `Hybrid`
