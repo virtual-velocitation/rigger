@@ -4839,6 +4839,15 @@ fn select_grounder(name: &str) -> Result<Box<dyn Grounder>, Box<dyn std::error::
             .map_err(|e| format!("turbovec grounder unavailable: {e}"))?;
         return Ok(Box::new(tv));
     }
+    // `symbols` resolves to the real structural grounder when the feature is built (it opens or
+    // builds+persists the index over the repo root); a build WITHOUT the feature falls through to
+    // `grounder_for`, whose `symbols` arm is the loud no-silent-degrade error.
+    #[cfg(feature = "symbols")]
+    if name.trim().eq_ignore_ascii_case("symbols") {
+        return Ok(Box::new(
+            rigger::grounder::symbols::grounder::Symbols::open(".", None),
+        ));
+    }
     Ok(rigger::grounder::grounder_for(name, ".")?)
 }
 
@@ -4847,6 +4856,14 @@ fn select_grounder(name: &str) -> Result<Box<dyn Grounder>, Box<dyn std::error::
     // No turbovec feature compiled in: `grounder_for` returns the loud
     // "built without the turbovec feature" error for the default / turbovec names,
     // and resolves grep / nop normally. We never silently degrade to grep.
+    // `symbols` still resolves to the structural grounder when THAT feature is built (it is
+    // independent of turbovec); without it, `grounder_for` returns the loud symbols error.
+    #[cfg(feature = "symbols")]
+    if name.trim().eq_ignore_ascii_case("symbols") {
+        return Ok(Box::new(
+            rigger::grounder::symbols::grounder::Symbols::open(".", None),
+        ));
+    }
     Ok(rigger::grounder::grounder_for(name, ".")?)
 }
 

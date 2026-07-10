@@ -743,23 +743,82 @@ fn reindex_requires_at_least_one_file() {
 fn symbol_index_is_byte_identical_across_processes() {
     let dir = temp_project();
     let root = dir.path();
-    std::fs::write(root.join("m.rs"), "fn a(){} fn b(){} fn c(){}\n").unwrap();
+    // TWO source files with distinct symbols, NOT one: a single-key map serializes identically
+    // whether it is a `BTreeMap` or a `HashMap`, so the cross-process guard only bites with >= 2
+    // keys whose rel-path ordering a `HashMap` seed would scramble. Their names also let us assert
+    // the index is NON-EMPTY, so a total extraction failure (an empty index in BOTH processes,
+    // which is vacuously byte-identical) cannot pass this test green.
+    std::fs::write(root.join("m.rs"), "fn alpha(){} fn beta(){}\n").unwrap();
+    std::fs::write(root.join("z.rs"), "fn gamma(){} fn delta(){}\n").unwrap();
     let index = root.join(".rigger").join("symbols").join("index.json");
 
     // Process 1 builds + persists the index.
-    let (_out, err1, ok1) = run_rigger(root, &["symbols-index"]);
+    let (out1, err1, ok1) = run_rigger(root, &["symbols-index"]);
     assert!(ok1, "first symbols-index must succeed; stderr: {err1}");
+    assert!(
+        out1.contains("2 file(s)"),
+        "the harness must report both indexed files, not a vacuous empty index; stdout: {out1}"
+    );
     let first = std::fs::read(&index).expect("the first process must persist the index");
+    let first_text = String::from_utf8(first.clone()).expect("index.json is UTF-8");
+    // The index must actually reflect the tree, so byte-identity is over MEANINGFUL content.
+    for name in ["alpha", "beta", "gamma", "delta"] {
+        assert!(
+            first_text.contains(name),
+            "the persisted index must contain the extracted symbol {name:?}; got: {first_text}"
+        );
+    }
 
     // Remove it, then a SECOND, independent process rebuilds it over the same tree.
     std::fs::remove_file(&index).unwrap();
-    let (_out, err2, ok2) = run_rigger(root, &["symbols-index"]);
+    let (_out2, err2, ok2) = run_rigger(root, &["symbols-index"]);
     assert!(ok2, "second symbols-index must succeed; stderr: {err2}");
     let second = std::fs::read(&index).expect("the second process must persist the index");
 
     assert_eq!(
         first, second,
-        "the persisted index must be byte-identical across processes"
+        "the persisted multi-file index must be byte-identical across processes"
+    );
+}
+
+/// End-to-end selection wiring (spec 15, unit 4): with `defaults.grounder: symbols`, `rigger
+/// ground` resolves the real `Symbols` grounder through `select_grounder` - building + persisting
+/// the structural index over the project - and ranks a DEFINITION above an incidental prose
+/// mention. This drives the whole feature-on path (config -> select_grounder -> Symbols::open ->
+/// build_index -> ground) that a lib test rooted at `.` cannot exercise over a controlled tree.
+#[cfg(feature = "symbols")]
+#[test]
+fn ground_via_symbols_grounder_ranks_a_definition_first() {
+    let dir = temp_project();
+    let root = dir.path();
+    // Pin `defaults.grounder: symbols` (the helper also creates the `agents/` dir `config::load`
+    // needs, so the pinned grounder actually takes effect rather than falling back to the default).
+    write_grounder_workflow(root, "symbols");
+    // combat.rs DEFINES apply_damage; notes.rs only mentions it in a comment (prose, not a symbol).
+    std::fs::write(
+        root.join("combat.rs"),
+        "fn apply_damage(x: u8) -> u8 { x }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("notes.rs"),
+        "// TODO: revisit apply_damage later\nfn unrelated() {}\n",
+    )
+    .unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["ground", "apply_damage", "5"]);
+    assert!(
+        ok,
+        "ground via the symbols grounder must succeed; stderr: {err}"
+    );
+    let first_line = out.lines().next().unwrap_or_default();
+    assert!(
+        first_line.starts_with("combat.rs:"),
+        "the definition site must be grounded first; stdout: {out}"
+    );
+    assert!(
+        !out.contains("notes.rs"),
+        "an incidental prose mention must not be grounded as a symbol; stdout: {out}"
     );
 }
 

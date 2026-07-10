@@ -27,6 +27,14 @@ pub mod extract;
 #[cfg(feature = "symbols")]
 pub mod registry;
 
+/// The `symbols` grounder (unit 4): the `Grounder` port over the persisted index, ranking a
+/// definition-name match above a reference above an incidental prose mention. It consumes the
+/// gated extraction path (`build_index`/`index_one_file`), so it is confined to the `symbols`
+/// feature; `main::select_grounder` wires it when the feature is built, and `grounder_for`
+/// returns a loud error when it is not.
+#[cfg(feature = "symbols")]
+pub mod grounder;
+
 #[cfg(feature = "symbols")]
 use crate::grounder::symbols::model::{Lang, SymbolIndex};
 #[cfg(feature = "symbols")]

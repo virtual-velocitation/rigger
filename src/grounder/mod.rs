@@ -161,6 +161,19 @@ pub fn turbovec_feature_missing_error(name: &str) -> String {
     )
 }
 
+/// The loud error returned when `defaults.grounder: symbols` is configured but this binary was
+/// built WITHOUT the `symbols` feature (the structural index and its grammars). Selecting a
+/// grounder must NEVER silently degrade to grep - the same no-silent-degrade rule as turbovec -
+/// so this is surfaced to the caller, which fails the process. When the feature IS built,
+/// `main::select_grounder` resolves `symbols` to the real `Symbols` grounder BEFORE delegating
+/// here, so this arm is reached only by a feature-off binary (or a direct call).
+pub fn symbols_feature_missing_error() -> String {
+    "grounder \"symbols\" is configured but this binary was built without the symbols feature; \
+     rebuild with the default features, or set `defaults.grounder: grep` explicitly to use the \
+     literal grep grounder"
+        .to_string()
+}
+
 /// Select a grounder by the configured `defaults.grounder` name, rooted at `root`
 /// (§3.2, §5.4, R4). This is the FEATURE-INDEPENDENT part of the choice and the
 /// grep-only build's resolver:
@@ -177,8 +190,11 @@ pub fn grounder_for(name: &str, root: &str) -> Result<Box<dyn Grounder>, String>
         "nop" => Ok(Box::new(Nop)),
         "grep" => Ok(Box::new(Grep { root: root.into() })),
         _ if resolves_to_turbovec(name) => Err(turbovec_feature_missing_error(name)),
+        // `symbols` resolves to the real grounder in `select_grounder` when the feature is built;
+        // here (the feature-independent resolver) it is a LOUD error, never a silent grep degrade.
+        "symbols" => Err(symbols_feature_missing_error()),
         other => Err(format!(
-            "unknown grounder {other:?}; valid names are turbovec (default), grep, nop"
+            "unknown grounder {other:?}; valid names are turbovec (default), symbols, grep, nop"
         )),
     }
 }
@@ -403,5 +419,23 @@ mod tests {
         // grep / nop still resolve fine.
         assert!(grounder_for("grep", "/tmp").is_ok());
         assert!(grounder_for("nop", "/tmp").is_ok());
+    }
+
+    /// The feature-INDEPENDENT resolver never returns a `Symbols` grounder: `symbols` is a LOUD
+    /// error here (naming the feature), never a silent grep degrade - the same rule as turbovec.
+    /// When the `symbols` feature IS built, `main::select_grounder` intercepts the name first; this
+    /// arm is the feature-off behavior. It holds identically in BOTH feature lanes (this resolver
+    /// is feature-independent), so the test is ungated.
+    #[test]
+    fn symbols_without_the_feature_is_a_loud_error_not_a_grep_fallback() {
+        let err = grounder_for("symbols", ".")
+            .err()
+            .expect("symbols must be a loud error in the feature-independent resolver");
+        assert!(
+            err.to_lowercase().contains("symbols")
+                && err.contains("feature")
+                && err.contains("grep"),
+            "the loud error must name symbols, the feature, and the grep opt-out; got: {err}"
+        );
     }
 }

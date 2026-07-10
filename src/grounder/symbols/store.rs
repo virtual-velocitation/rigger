@@ -27,30 +27,111 @@ pub fn index_path(dir: &str) -> PathBuf {
         .join("index.json")
 }
 
-/// A line-ending-normalized content hash: `"a\r\nb\r\n"` and `"a\nb\n"` hash identically, so
-/// the SAME source keys the SAME cache entry whether it was checked out with CRLF (Windows) or
-/// LF (Unix). Deterministic across processes: `DefaultHasher::new()` seeds from fixed keys (it
-/// is the per-process randomization of `HashMap`'s `RandomState`, not of `DefaultHasher`
-/// itself, that varies), so this is a stable content key. It is the content-identity primitive
-/// the incremental freshening path keys on to decide a file is unchanged.
-pub fn content_hash(src: &str) -> String {
-    use std::hash::{Hash, Hasher};
-    let normalized = src.replace("\r\n", "\n");
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    normalized.hash(&mut h);
-    format!("{:016x}", h.finish())
+/// The advisory-lock file guarding a write of [`index_path`]: a sibling of the index under the
+/// same (gitignored) `.rigger/symbols/` dir, carrying no data - it exists only to be the `flock`
+/// target that serializes concurrent [`save`]s across processes.
+fn lock_path(dir: &str) -> PathBuf {
+    Path::new(dir)
+        .join(".rigger")
+        .join("symbols")
+        .join("index.lock")
 }
 
-/// Serialize the index deterministically to [`index_path`], creating the parent dir. Byte-stable
-/// across processes because `SymbolIndex` is `BTreeMap`-backed (see the module docs); we never
-/// iterate a `HashMap` here.
+/// A line-ending-normalized content hash: `"a\r\nb\r\n"` and `"a\nb\n"` hash identically, so the
+/// SAME source keys the SAME cache entry whether it was checked out with CRLF (Windows) or LF
+/// (Unix). Uses a fixed-seed FNV-1a - the SAME stable-content-hash discipline the semantic
+/// grounder's `hash_content` deliberately chose over `DefaultHasher` (whose seed the stdlib does
+/// NOT guarantee stable across builds) - so the value is a stable content key across processes,
+/// builds, and machines. (A single crate-level hash primitive shared by every open-coded copy is
+/// the broader cross-cutting refactor already recorded as `arch-u2i-fnv1a-fourth-parallel-copy`;
+/// the semantic grounder's copy is feature-gated and private, so this ungated module cannot call
+/// it and matches its algorithm instead.) It is the content-identity primitive the `symbols`
+/// grounder's reindex freshening gate keys on to decide a named file is unchanged and skip
+/// re-parsing it.
+pub fn content_hash(src: &str) -> String {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    let normalized = src.replace("\r\n", "\n");
+    let mut hash = FNV_OFFSET;
+    for byte in normalized.as_bytes() {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    format!("{hash:016x}")
+}
+
+/// Serialize the index deterministically to [`index_path`], creating the parent dir. The bytes are
+/// byte-stable across processes because `SymbolIndex` is `BTreeMap`-backed (see the module docs);
+/// we never iterate a `HashMap` here.
+///
+/// The write is ATOMIC and cross-process SERIALIZED so a concurrent reader (a `Symbols` grounder
+/// opening the index in another process) never observes a torn file. We hold an `fs2` exclusive
+/// advisory lock - the project's one cross-process lock authority, non-optional in both feature
+/// lanes, the same `acquire_step_lock` uses (`libc::flock` is confined to the turbovec feature, so
+/// this ungated module cannot reach it) - across the write, and publish the bytes by writing a
+/// sibling temp file, fsync-ing it, and `rename`-ing it over the index: `rename(2)` within one
+/// directory is atomic, so a reader sees either the whole old file or the whole new one.
 pub fn save(idx: &SymbolIndex, dir: &str) -> Result<(), String> {
+    use fs2::FileExt;
     let path = index_path(dir);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("symbols: mkdir: {e}"))?;
     }
+    // Serialize BEFORE touching disk so a serialization failure aborts with no partial artifact.
     let bytes = serde_json::to_vec_pretty(idx).map_err(|e| format!("symbols: serialize: {e}"))?;
-    std::fs::write(&path, bytes).map_err(|e| format!("symbols: write {}: {e}", path.display()))
+
+    // Hold the cross-process write lock for the whole publish. The lock file is created if absent;
+    // the exclusive lock releases when `lock` drops (or the process dies), so a crashed writer
+    // never wedges the next one.
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(lock_path(dir))
+        .map_err(|e| format!("symbols: open lock: {e}"))?;
+    lock.lock_exclusive()
+        .map_err(|e| format!("symbols: lock index: {e}"))?;
+
+    let result = write_atomic(&path, &bytes);
+    // Release explicitly for clarity (drop would too); report a write error over an unlock error.
+    let _ = FileExt::unlock(&lock);
+    result
+}
+
+/// Publish `bytes` at `path` atomically: write to a sibling temp file, fsync it, then `rename` it
+/// over `path`. `rename(2)` within one directory is atomic, so a concurrent reader observes either
+/// the whole old file or the whole new one, never the truncating write in progress. The temp is
+/// per-pid so two writers' temps never collide (though [`save`]'s lock already serializes them),
+/// and is cleaned up on a rename failure so the dir is not littered with a stale `.tmp`.
+fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let dir = path
+        .parent()
+        .ok_or_else(|| format!("symbols: {} has no parent dir", path.display()))?;
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| format!("symbols: {} has no file name", path.display()))?;
+    let tmp = dir.join(format!(".{file_name}.{}.tmp", std::process::id()));
+    {
+        use std::io::Write;
+        let mut f = std::fs::File::create(&tmp)
+            .map_err(|e| format!("symbols: create temp {}: {e}", tmp.display()))?;
+        f.write_all(bytes)
+            .map_err(|e| format!("symbols: write temp {}: {e}", tmp.display()))?;
+        // fsync so the bytes hit disk before the rename publishes the file; otherwise a crash right
+        // after the rename could leave the new name pointing at empty data.
+        f.sync_all()
+            .map_err(|e| format!("symbols: fsync temp {}: {e}", tmp.display()))?;
+    }
+    std::fs::rename(&tmp, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!(
+            "symbols: rename {} -> {}: {e}",
+            tmp.display(),
+            path.display()
+        )
+    })
 }
 
 /// Load the persisted index, or `None` when it is absent or unreadable (a cold start - the
@@ -116,5 +197,39 @@ mod tests {
     #[test]
     fn content_hash_is_line_ending_normalized() {
         assert_eq!(content_hash("a\r\nb\r\n"), content_hash("a\nb\n"));
+    }
+
+    #[test]
+    fn content_hash_is_a_stable_fixed_seed_value() {
+        // Pin the FNV-1a lowering so an accidental swap back to a non-guaranteed-stable hasher
+        // (the freshening gate keys on this value ACROSS processes) is caught. Empty input is the
+        // bare FNV offset basis; a known string pins the mixing.
+        assert_eq!(content_hash(""), "cbf29ce484222325");
+        assert_eq!(content_hash("a\nb\n"), content_hash("a\r\nb\r\n"));
+        assert_ne!(content_hash("a"), content_hash("b"));
+    }
+
+    #[test]
+    fn save_publishes_atomically_and_leaves_no_temp_residue() {
+        // The atomic write must leave the index in place and NO `.tmp` sibling behind, so a reader
+        // that lists the dir never trips over a half-written scratch file.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        save(&sample(), root).unwrap();
+        assert!(load(root).unwrap() == sample());
+        let symbols_dir = index_path(root).parent().unwrap().to_path_buf();
+        let leftover: Vec<_> = std::fs::read_dir(&symbols_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".tmp"))
+            .collect();
+        assert!(
+            leftover.is_empty(),
+            "no .tmp residue expected, found {leftover:?}"
+        );
+        // A second save over the same dir still round-trips (the lock file is reused, not doubled).
+        save(&sample(), root).unwrap();
+        assert!(load(root).unwrap() == sample());
     }
 }
