@@ -401,10 +401,15 @@ struct TierRouting<'a> {
 /// grounds to zero files) is unassessable, so it routes to FULL rather than LIGHT - the
 /// size and high-risk-path signals can prove nothing about a radius with no files, and a
 /// tiers-without-a-grounder workflow must never silently downgrade EVERY unit to light
-/// (the safety mechanism fails SAFE, not OPEN). The size `threshold` is bounded above by
-/// the grounder's `k` cap (`grounded_seed` grounds at most 8 distinct files), so a
-/// `threshold >= 8` is inert by size alone - only `high_risk_paths`/`flapped`/empty force
-/// full past the cap. The adjudicator and the full gate suite stay mandatory on every tier
+/// (the safety mechanism fails SAFE, not OPEN). The size signal `blast_radius` is the
+/// unit's `.safe` structural blast-radius view (spec 16 unit 3): on the STRUCTURAL
+/// grounder it is the UNCAPPED structural-width superset, so `threshold` is a LIVE gate
+/// over the change's true width and a `threshold >= 8` is NOT inert - any wider change
+/// routes to the full panel; on the default / grep lane `.safe` equals the capped
+/// grounded seed, so the threshold behaves exactly as it did before unit 3 (tune it to
+/// the structural-width distribution - see
+/// [`ReviewDepth::threshold`](crate::config::ReviewDepth::threshold)).
+/// The adjudicator and the full gate suite stay mandatory on every tier
 /// (config validation forces both the light AND the full panel to name an adjudicator; the
 /// gates run outside the review), so a light-routed unit still gets its gating verdict -
 /// only the adversary and the extra lenses flex. Pure over the panel + signals, so it is
@@ -2797,8 +2802,11 @@ impl RunCtx<'_> {
     /// Select the review panel for a unit by its observable risk (spec 03 / spec 13
     /// unit 4), routing to the LIGHT or FULL tier via [`route_review_tier`] over the
     /// unit's [`effective_review_panel`](RunCtx::effective_review_panel). `blast_radius`
-    /// is the unit's grounded seed - the SAME set spawn/partition/staleness use, never a
-    /// second grounder call - and `flapped` is whether the unit's gates flapped (it took
+    /// is the unit's `.safe` structural blast-radius view (spec 16 unit 3), passed down from
+    /// [`review_unit`](RunCtx::review_unit) via a separate
+    /// [`grounded_blast_radius`](RunCtx::grounded_blast_radius) call - the UNCAPPED
+    /// structural-width superset on the symbols grounder, equal to the grounded seed on the
+    /// default lane - and `flapped` is whether the unit's gates flapped (it took
     /// remediation to reach green). When the effective panel carries no `tiers` policy,
     /// every unit routes to the full panel unchanged.
     fn select_review_panel<'a>(
@@ -2968,8 +2976,10 @@ impl RunCtx<'_> {
     /// worktree, not a remediation, so reusing `attempt > 0` there would force every lane>0 to
     /// the FULL panel and fold a bogus `flapped=true` into the shared unit's evidence.
     ///
-    /// `blast_radius` is the unit's grounded seed - the SAME set spawn/partition/staleness use -
-    /// threaded in so the risk-tier routing (spec 03 / spec 13 unit 4) selects the LIGHT or FULL
+    /// `blast_radius` is the unit's `.safe` structural blast-radius view (spec 16 unit 3) - the
+    /// UNCAPPED structural-width superset on the symbols grounder, equal to the grounded seed on
+    /// the default lane - threaded in so the risk-tier routing (spec 03 / spec 13 unit 4) selects
+    /// the LIGHT or FULL
     /// panel from the observable risk (blast-radius size, a high-risk-path hit, an empty radius,
     /// or flapped gates) BEFORE running any tier. With no depth policy configured, routing
     /// returns the effective panel unchanged and logs nothing, so behavior is byte-for-byte
