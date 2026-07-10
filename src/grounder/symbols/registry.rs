@@ -132,10 +132,22 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
 /// `.txt` can be indexed as Rust); with no override, a file whose extension is unregistered
 /// resolves to `None` and is skipped.
 pub fn for_path(path: &str, override_lang: Option<Lang>) -> Option<LanguageEntry> {
+    let file_ext = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str());
     if let Some(l) = override_lang {
-        // Map the forced language back to one of its registered extensions and resolve through
-        // the same table, so the override and auto-detection share ONE grammar-resolution path.
-        let ext = match l {
+        // When the file's OWN extension already resolves to the forced language, honor it so a
+        // `.tsx` under `--language ts` keeps the JSX-aware grammar rather than collapsing to the
+        // plain TypeScript one (both are `Lang::Ts`, but only the `.tsx` entry parses JSX). Only
+        // when the extension disagrees (or is unregistered) do we map the forced language to its
+        // canonical extension, so `--language rust` on a `.txt` still indexes as Rust. Either
+        // branch resolves through the one `for_extension` table.
+        if let Some(entry) = file_ext.and_then(for_extension) {
+            if entry.lang == l {
+                return Some(entry);
+            }
+        }
+        let canonical = match l {
             Lang::Rust => "rs",
             Lang::CSharp => "cs",
             Lang::Ts => "ts",
@@ -143,10 +155,9 @@ pub fn for_path(path: &str, override_lang: Option<Lang>) -> Option<LanguageEntry
             Lang::Go => "go",
             Lang::Python => "py",
         };
-        return for_extension(ext);
+        return for_extension(canonical);
     }
-    let ext = std::path::Path::new(path).extension()?.to_str()?;
-    for_extension(ext)
+    for_extension(file_ext?)
 }
 
 #[cfg(test)]
@@ -204,6 +215,25 @@ mod tests {
             "tsx grammar should extract the Panel component def, got {:?}",
             fs.defs
         );
+    }
+
+    #[test]
+    fn language_override_keeps_the_tsx_jsx_grammar_for_a_tsx_file() {
+        // `--language ts` on a `.tsx` file must still parse the JSX body: the override forces the
+        // LANGUAGE, but the file's own extension refines WHICH grammar (JSX-aware vs plain). The
+        // plain TypeScript grammar errors on JSX, so a mis-resolved override would drop the def.
+        let entry = for_path("Panel.tsx", Some(Lang::Ts)).unwrap();
+        assert_eq!(entry.lang, Lang::Ts);
+        let src = "function Panel() { return <div>{title}</div>; }\n";
+        let fs = extract(src, entry.lang, &entry.language, entry.tags_query).unwrap();
+        assert!(
+            fs.defs.iter().any(|d| d.name == "Panel"),
+            "override --language ts on a .tsx file should keep the JSX-aware grammar, got {:?}",
+            fs.defs
+        );
+        // The forcing behavior is preserved where the extension DISAGREES: `--language ts` on a
+        // `.rs` file still forces TypeScript (the plain grammar, since `.rs` is not a TS file).
+        assert_eq!(for_path("main.rs", Some(Lang::Ts)).unwrap().lang, Lang::Ts);
     }
 
     #[test]
