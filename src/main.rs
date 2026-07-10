@@ -4848,6 +4848,17 @@ fn select_grounder(name: &str) -> Result<Box<dyn Grounder>, Box<dyn std::error::
             rigger::grounder::symbols::grounder::Symbols::open(".", None),
         ));
     }
+    // `hybrid` composes symbols (structural) with turbovec (semantic); with the feature built it
+    // opens BOTH and ranks structure first. Absent turbovec, `Hybrid::open` degrades to exactly
+    // the symbols mode - the degrade lives in ONE authority, so this arm is IDENTICAL in both cfg
+    // lanes. A build WITHOUT the symbols feature falls through to `grounder_for` (loud error).
+    #[cfg(feature = "symbols")]
+    if name.trim().eq_ignore_ascii_case("hybrid") {
+        return Ok(Box::new(
+            rigger::grounder::symbols::hybrid::Hybrid::open(".", None)
+                .map_err(|e| format!("hybrid grounder unavailable: {e}"))?,
+        ));
+    }
     Ok(rigger::grounder::grounder_for(name, ".")?)
 }
 
@@ -4862,6 +4873,16 @@ fn select_grounder(name: &str) -> Result<Box<dyn Grounder>, Box<dyn std::error::
     if name.trim().eq_ignore_ascii_case("symbols") {
         return Ok(Box::new(
             rigger::grounder::symbols::grounder::Symbols::open(".", None),
+        ));
+    }
+    // `hybrid` resolves via the SAME `Hybrid::open` as the turbovec-on lane; without turbovec it
+    // degrades to exactly the symbols mode (the degrade is intrinsic to `Hybrid`, so this arm does
+    // not differ by cfg lane). Without the symbols feature, `grounder_for` returns the loud error.
+    #[cfg(feature = "symbols")]
+    if name.trim().eq_ignore_ascii_case("hybrid") {
+        return Ok(Box::new(
+            rigger::grounder::symbols::hybrid::Hybrid::open(".", None)
+                .map_err(|e| format!("hybrid grounder unavailable: {e}"))?,
         ));
     }
     Ok(rigger::grounder::grounder_for(name, ".")?)
@@ -4897,6 +4918,17 @@ fn select_reindex_grounder(name: &str) -> Result<Box<dyn Grounder>, Box<dyn std:
             rigger::grounder::symbols::grounder::Symbols::open(".", None),
         ));
     }
+    // `hybrid` for reindex opens both axes via the reindex constructors: turbovec loads the
+    // persisted store WITHOUT a whole-tree freshen (`new_for_reindex`), so `reindex` re-embeds only
+    // the named files and never double-embeds. Carried in BOTH cfg lanes exactly like the `symbols`
+    // arm, so `rigger reindex` under `defaults.grounder: hybrid` freshens instead of erroring.
+    #[cfg(feature = "symbols")]
+    if name.trim().eq_ignore_ascii_case("hybrid") {
+        return Ok(Box::new(
+            rigger::grounder::symbols::hybrid::Hybrid::open_for_reindex(".", None)
+                .map_err(|e| format!("hybrid grounder unavailable: {e}"))?,
+        ));
+    }
     Ok(rigger::grounder::grounder_for(name, ".")?)
 }
 
@@ -4908,6 +4940,16 @@ fn select_reindex_grounder(name: &str) -> Result<Box<dyn Grounder>, Box<dyn std:
     if name.trim().eq_ignore_ascii_case("symbols") {
         return Ok(Box::new(
             rigger::grounder::symbols::grounder::Symbols::open(".", None),
+        ));
+    }
+    // `hybrid` for reindex without turbovec degrades to exactly the symbols mode via the same
+    // `Hybrid::open_for_reindex` as the turbovec-on lane; without the symbols feature,
+    // `grounder_for` returns the loud error.
+    #[cfg(feature = "symbols")]
+    if name.trim().eq_ignore_ascii_case("hybrid") {
+        return Ok(Box::new(
+            rigger::grounder::symbols::hybrid::Hybrid::open_for_reindex(".", None)
+                .map_err(|e| format!("hybrid grounder unavailable: {e}"))?,
         ));
     }
     Ok(rigger::grounder::grounder_for(name, ".")?)

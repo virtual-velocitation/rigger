@@ -99,3 +99,53 @@ edge is **not** enough, so noise cannot flip a load-bearing default.
 disposition, not a deferral of code: the code path to flip the default is deliberately absent
 from this spec (`defaults.grounder` is untouched everywhere), so clearing the gate later is a
 one-line config change an operator makes on the evidence above, never a code change here.
+
+## `hybrid` vs turbovec-alone (spec 15, unit 5)
+
+Spec 15, unit 5, done-when criterion 5: the `hybrid` grounder (structural symbol matches
+first, turbovec's semantic pass filling the recall a name match misses) is **measured by
+replay against turbovec-alone**, and - like `symbols` - does NOT become the shipped default
+until it clears a stated margin over the turbovec baseline.
+
+The methodology is IDENTICAL to the symbols-vs-turbovec gate above, only the candidate config
+differs (`defaults.grounder: hybrid`):
+
+- **Offline shape-neutrality (Step A)**: `rigger replay <run> --against <hybrid-rev>` is
+  **shape-neutral by construction** for the same reason - swapping `defaults.grounder` changes
+  no stage/tier/budget/gate, and replay re-grounds nothing - so its stats diff is expected to
+  be **zero**. It confirms the config edit does not perturb the trajectory; it does NOT measure
+  grounding quality.
+- **Live A/B (Step B, operator-run)**: the real quality gate. Run the fixed corpus a third way,
+  identical except `defaults.grounder: hybrid`, alongside the turbovec baseline (and the grep
+  floor). `hybrid` should never do WORSE than `symbols` on recall (it is `symbols` plus a
+  semantic fill), so the interesting comparison is hybrid vs turbovec-alone.
+
+### Stated margin for `hybrid` (objective pass/fail)
+
+`hybrid` replaces turbovec as the shipped default **only if**, over a live A/B (Step B)
+covering **at least 3 runs totaling at least 20 units**, ALL of the following hold:
+
+1. **first-pass yield**: hybrid >= turbovec **+ 5 percentage points** (the same stated margin
+   as symbols - a raw tie or sub-5pp edge is not enough);
+2. **escalation rate**: hybrid <= turbovec (no regression); and
+3. **review-reject rate**: hybrid <= turbovec (no regression);
+
+and Step A is a zero diff on every run. `grep` is only the floor and never counts toward
+clearing the gate. If any clause fails, the default stays turbovec.
+
+### Recorded status (2026-07-10)
+
+- **Composition + selectability**: DONE and pinned. `defaults.grounder: hybrid` selects the
+  real `Hybrid` grounder via `main::select_grounder`/`select_reindex_grounder` (both cfg lanes),
+  and the turbovec-off degrade to exactly the `symbols` mode lives in one authority (`Hybrid`).
+  Pinned by `symbols::hybrid::tests::hybrid_ranks_structure_first_then_fills_semantic_recall`
+  (turbovec present: structure leads, the semantic pass fills a file the name match misses) and
+  the feature-off control `symbols::hybrid::degrade_tests::without_turbovec_hybrid_is_exactly_the_symbols_mode`.
+- **Offline shape-neutrality (Step A)**: not yet recorded here - identical to the symbols case,
+  it needs a recorded baseline run to replay and a committed `<hybrid-rev>`; expected zero diff.
+- **Live A/B yield (Step B)**: NOT RUN - a multi-run live campaign, out of scope for an
+  automated unit.
+
+**Gate outcome for `hybrid`: UNCLEARED -> default unchanged (turbovec).** Same spec-15 hard
+freeze: `defaults.grounder` is untouched, so flipping to `hybrid` later is a one-line config
+change on the evidence above, never a code change here.
