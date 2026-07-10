@@ -109,12 +109,16 @@ fn median_width(radii: &[UnitRadius]) -> usize {
     }
 }
 
-/// A tier size `threshold` RE-TUNED to a width distribution: the nearest-rank `percentile`
-/// value of the sorted widths - the SAME cutoff rule [`crate::grounder::symbols::model`]'s
-/// `is_hub` draws over the degree distribution (`floor(N * percentile)`, clamped to the top).
-/// Unit 3 owns the PRODUCTION re-tune; unit 2 uses this only to demonstrate that a
-/// distribution-tuned threshold keeps the light/full split non-degenerate where the un-retuned
-/// absolute `8` collapses it.
+/// A tier size `threshold` RE-TUNED to a width distribution: the nearest-rank `percentile` value
+/// of the sorted widths (the degree at 0-based rank `floor(N * percentile)`, clamped to the top).
+/// This is the TIER-ROUTING split point over the radius-WIDTH distribution - a distinct concern
+/// from `model::is_hub`, which detects a strict high-degree OUTLIER over the reference-DEGREE
+/// distribution (`floor((N - 1) * percentile)` with a strict `>`). The two used to share the
+/// `floor(N * percentile)` rule, but hub detection was retuned to an outlier definition so it does
+/// not degenerate on a long tail; this tier threshold keeps the nearest-rank percentile because it
+/// wants a split POINT, not outlier detection. Unit 3 owns the PRODUCTION re-tune; unit 2 uses this
+/// only to demonstrate that a distribution-tuned threshold keeps the light/full split non-degenerate
+/// where the un-retuned absolute `8` collapses it.
 fn width_threshold(widths: &[usize], percentile: f64) -> usize {
     if widths.is_empty() {
         return 0;
@@ -209,9 +213,12 @@ mod pure_metric_tests {
     }
 
     #[test]
-    fn width_threshold_is_the_nearest_rank_percentile_like_is_hub() {
-        // Mirrors model::is_hub's example: [1, 20] at the 90th percentile picks 20 (floor(2 *
-        // 0.9) = 1 => index 1), not 1 - so only the genuine outlier clears the bar.
+    fn width_threshold_is_the_tier_width_nearest_rank_percentile() {
+        // The tier-routing width split point is nearest-rank floor(N * percentile): [1, 20] at the
+        // 90th percentile picks 20 (floor(2 * 0.9) = 1 => index 1), not 1. This is deliberately a
+        // DIFFERENT rule than model::is_hub's outlier cutoff (which uses floor((N - 1) * percentile)
+        // with a strict `>` so it does not degenerate on a long tail); width_threshold wants a split
+        // POINT over the width distribution, not high-degree outlier detection.
         assert_eq!(width_threshold(&[1, 20], 0.90), 20);
         // Order-independent (it sorts).
         assert_eq!(width_threshold(&[20, 1], 0.90), 20);
@@ -651,6 +658,98 @@ mod corpus_gates {
             tuned_full < naive_full,
             "re-tuning must strictly reduce the full-panel share versus the collapsed naive \
              threshold ({tuned_full} !< {naive_full})"
+        );
+    }
+
+    /// The hapax-heavy (degree-one-dominated) referenced-name counts arm-c materializes: a long
+    /// tail of `TAIL_NAMES` single-reference names plus two genuine high-degree outliers. This is
+    /// the realistic long-tail distribution `model::is_hub` must not degenerate on - the shape the
+    /// all-distinct-degree arm-b corpus never exercises.
+    const TAIL_NAMES: usize = 20;
+    const HUB_DEGREE: usize = 10;
+
+    /// Materialize a hapax-heavy Rust repo: `TAIL_NAMES` names each referenced exactly once
+    /// (degree 1) and two names (`hub_a`, `hub_b`) each referenced `HUB_DEGREE` times. Every
+    /// referencer file references exactly one name, so the per-language degree distribution is a
+    /// long tail of 1s with two genuine outliers. Returns the full name list (tail then hubs).
+    fn build_hapax_heavy_repo(root: &Path) -> Vec<String> {
+        let mut names: Vec<String> = Vec::new();
+        for i in 0..TAIL_NAMES {
+            let name = format!("hapax_{i}");
+            std::fs::write(
+                root.join(format!("tail_{i}.rs")),
+                format!("fn caller() {{ {name}(); }}\n"),
+            )
+            .unwrap();
+            names.push(name);
+        }
+        for hub in ["hub_a", "hub_b"] {
+            for i in 0..HUB_DEGREE {
+                std::fs::write(
+                    root.join(format!("{hub}_ref_{i}.rs")),
+                    format!("fn caller() {{ {hub}(); }}\n"),
+                )
+                .unwrap();
+            }
+            names.push(hub.to_string());
+        }
+        names
+    }
+
+    /// Arm (c) - the hapax-heavy red-on-regression arm that guards `model::is_hub`'s robustness
+    /// through the real grounder. On a degree-one-dominated distribution the hub check (which
+    /// drives `BlastRadius::serialize`) must flag ONLY the genuine high-degree outliers, never
+    /// nearly every referenced name. The old nearest-rank `floor(N * percentile)` cutoff with the
+    /// `>=` comparison collapses to 1 on this long tail and flags EVERY name as a hub - so every
+    /// unit serializes and parallelism-retention collapses to near zero. This arm goes RED for
+    /// exactly that over-serializing cutoff, while the all-distinct-degree arm-b corpus (which
+    /// never enters the long-tail failure mode) still passes.
+    #[test]
+    fn arm_c_hub_detection_does_not_over_serialize_a_hapax_heavy_distribution() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let names = build_hapax_heavy_repo(root);
+        let symbols = Symbols::open(root.to_str().unwrap(), None);
+
+        // A single-name query's serialize verdict IS its hub verdict (serialize fires if any query
+        // term is a hub in any present language). Collect every name the hub check serializes.
+        let serialized: Vec<String> = names
+            .iter()
+            .filter(|n| symbols.blast_radius(n, GROUND_K).serialize)
+            .cloned()
+            .collect();
+
+        // The two genuine outliers serialize; a degree-1 tail name never does.
+        assert!(
+            symbols.blast_radius("hub_a", GROUND_K).serialize,
+            "the genuine high-degree outlier hub_a must serialize"
+        );
+        assert!(
+            symbols.blast_radius("hub_b", GROUND_K).serialize,
+            "the genuine high-degree outlier hub_b must serialize"
+        );
+        assert!(
+            !symbols.blast_radius("hapax_0", GROUND_K).serialize,
+            "a degree-1 tail name is not a hub and must not serialize"
+        );
+
+        // RED-ON-REGRESSION: an over-serializing cutoff floods this long tail, flagging nearly
+        // every name. A robust cutoff flags only the genuine outliers, so the serialized fraction
+        // stays near the top decile, never approaching all.
+        let fraction = serialized.len() as f64 / names.len() as f64;
+        assert!(
+            fraction <= 0.20,
+            "hub detection over-serialized a hapax-heavy distribution: {}/{} = {fraction:.3} names \
+             flagged (an over-serializing cutoff floods a degree-one-dominated distribution); a \
+             robust cutoff flags only the genuine high-degree outliers",
+            serialized.len(),
+            names.len()
+        );
+        assert_eq!(
+            serialized,
+            vec!["hub_a".to_string(), "hub_b".to_string()],
+            "only the two genuine high-degree outliers serialize on a degree-one-dominated \
+             distribution; got {serialized:?}"
         );
     }
 }
