@@ -240,6 +240,24 @@ pub fn symbols_feature_missing_error() -> String {
         .to_string()
 }
 
+/// The loud error returned when `defaults.grounder: hybrid` is configured but this binary was
+/// built WITHOUT the `symbols` feature. Hybrid COMPOSES the structural symbol index with semantic
+/// search, so it needs the `symbols` feature (with turbovec absent it degrades to exactly the
+/// symbols mode - but never below it); a build without `symbols` cannot provide it at all. Selecting
+/// a grounder must NEVER silently degrade to grep - the same no-silent-degrade rule as turbovec and
+/// symbols - so this is surfaced to the caller, which fails the process. When the feature IS built,
+/// `main::select_grounder` / `select_reindex_grounder` resolve `hybrid` to the real `Hybrid`
+/// grounder BEFORE delegating here, so this arm is reached only by a feature-off binary. The message
+/// names `hybrid`, the missing `symbols` feature, and the explicit `grep` escape hatch - it must
+/// NEVER be the generic `unknown grounder` message, which would misdescribe a supported config as a
+/// typo.
+pub fn hybrid_feature_missing_error() -> String {
+    "grounder \"hybrid\" is configured but this binary was built without the symbols feature that \
+     hybrid composes; rebuild with the default features, or set `defaults.grounder: grep` \
+     explicitly to use the literal grep grounder"
+        .to_string()
+}
+
 /// Select a grounder by the configured `defaults.grounder` name, rooted at `root`
 /// (§3.2, §5.4, R4). This is the FEATURE-INDEPENDENT part of the choice and the
 /// grep-only build's resolver:
@@ -259,8 +277,13 @@ pub fn grounder_for(name: &str, root: &str) -> Result<Box<dyn Grounder>, String>
         // `symbols` resolves to the real grounder in `select_grounder` when the feature is built;
         // here (the feature-independent resolver) it is a LOUD error, never a silent grep degrade.
         "symbols" => Err(symbols_feature_missing_error()),
+        // `hybrid` resolves to the real composite grounder in `select_grounder` when the `symbols`
+        // feature is built; here (the feature-off resolver) it must give the SAME actionable
+        // feature-missing error as `symbols`, never the generic `unknown grounder` message (which
+        // would misdescribe a supported config as a typo) and never a silent grep degrade.
+        "hybrid" => Err(hybrid_feature_missing_error()),
         other => Err(format!(
-            "unknown grounder {other:?}; valid names are turbovec (default), symbols, grep, nop"
+            "unknown grounder {other:?}; valid names are turbovec (default), symbols, hybrid, grep, nop"
         )),
     }
 }
@@ -570,5 +593,34 @@ mod tests {
                 && err.contains("grep"),
             "the loud error must name symbols, the feature, and the grep opt-out; got: {err}"
         );
+    }
+
+    /// `defaults.grounder: hybrid` on a binary built WITHOUT the `symbols` feature must yield the
+    /// ACTIONABLE feature-missing error, NOT the misleading generic `unknown grounder` message.
+    /// Hybrid composes the structural symbol index with semantic search, so it needs the `symbols`
+    /// feature; when that feature is absent both `select_grounder` cfg lanes fall through to this
+    /// feature-independent resolver, whose `hybrid` arm must fail LOUDLY - naming `hybrid`, the
+    /// missing `symbols` feature, and the explicit `grep` escape hatch - never silently degrade to
+    /// grep and never emit `unknown grounder`. Like the `symbols` sibling test, this holds in BOTH
+    /// feature lanes (the resolver is feature-independent), so it is ungated.
+    #[test]
+    fn hybrid_without_the_feature_is_the_actionable_feature_error_not_unknown_grounder() {
+        let err = grounder_for("hybrid", ".")
+            .err()
+            .expect("hybrid must be a loud error in the feature-independent resolver");
+        assert!(
+            err.to_lowercase().contains("hybrid")
+                && err.contains("feature")
+                && err.contains("symbols")
+                && err.contains("grep"),
+            "the loud error must name hybrid, the missing symbols feature, and the grep opt-out; \
+             got: {err}"
+        );
+        assert!(
+            !err.contains("unknown grounder"),
+            "hybrid must NOT hit the generic unknown-grounder arm; got: {err}"
+        );
+        // Case-insensitive and whitespace-trimmed, exactly like the other resolver names.
+        assert!(grounder_for("  Hybrid ", ".").is_err());
     }
 }
