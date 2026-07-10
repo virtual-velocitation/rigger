@@ -24,8 +24,12 @@
 //!   assertions rather than hand-chosen (adv-quant-bound-unpinned).
 //!
 //! The co-scheduling measure REUSES [`crate::conductor::partition_by_blast_radius`] - the ONE
-//! partitioner authority the run itself uses - so the eval measures the ACTUAL partition, never
-//! a parallel model. It deliberately does NOT drive the production `route_review_tier`: that
+//! partitioner authority the run itself uses - for the file-set grouping, so THAT dimension is
+//! the ACTUAL partition, not a parallel re-implementation. The serialize->own-singleton-batch
+//! dimension, by contrast, IS a model of unit 3's not-yet-written wiring (see [`partition`]): the
+//! production `partition_by_blast_radius` has no serialize concept, so this gate holds unit 3 to
+//! wiring `serialize` with EXACTLY these own-singleton-batch semantics - it stays valid only if
+//! unit 3 does. It deliberately does NOT drive the production `route_review_tier`: that
 //! router's size `threshold` is the un-retuned `8`, and against an UNCAPPED safe radius every
 //! unit would clear it and the split would collapse to all-full - a deadlock that is unit-3's
 //! re-tune to fix (adv-tier-threshold-coupling). The tier arm instead models a
@@ -209,8 +213,12 @@ mod pure_metric_tests {
         // Mirrors model::is_hub's example: [1, 20] at the 90th percentile picks 20 (floor(2 *
         // 0.9) = 1 => index 1), not 1 - so only the genuine outlier clears the bar.
         assert_eq!(width_threshold(&[1, 20], 0.90), 20);
-        assert_eq!(width_threshold(&[20, 1], 0.90), 20); // order-independent (it sorts)
-                                                         // The median (0.50) of a six-wide spread is the lower-middle element.
+        // Order-independent (it sorts).
+        assert_eq!(width_threshold(&[20, 1], 0.90), 20);
+        // width_threshold is nearest-rank floor(n*p): index floor(6*0.5)=3 of the sorted spread
+        // is 12, the UPPER-middle element (11 is the lower-middle). This is deliberately a
+        // DIFFERENT median than median_width's lower median (n-1)/2=11; arm_b pins BOTH (tuned
+        // threshold 12 AND median radius 11), so the two formulas must NOT be reconciled.
         assert_eq!(width_threshold(&[9, 10, 11, 12, 13, 15], 0.50), 12);
         assert_eq!(width_threshold(&[], 0.90), 0);
     }
@@ -237,6 +245,19 @@ mod pure_metric_tests {
             ]),
             2
         );
+        // Even count: the LOWER median (n-1)/2 picks the lower of the two middles. For widths
+        // [1,2,3,4] that is index 1 => 2, where the UPPER median n/2 would be index 2 => 3. This
+        // pins the lower-vs-upper choice in BOTH feature lanes: a `(n-1)/2 -> n/2` mutation trips
+        // HERE (a grounder-agnostic pure-metric test), not only in the symbols-gated arm_b.
+        assert_eq!(
+            median_width(&[
+                u("a", &["1"], false),
+                u("b", &["1", "2"], false),
+                u("c", &["1", "2", "3"], false),
+                u("d", &["1", "2", "3", "4"], false),
+            ]),
+            2
+        );
         assert_eq!(median_width(&[]), 0);
     }
 }
@@ -257,10 +278,13 @@ mod corpus_gates {
     use std::collections::HashSet;
     use std::path::Path;
 
-    /// The distinct-file cap `grounded_seed` grounds at today (conductor.rs `grounded_seed`).
-    /// The grep baseline radius is grep's own view at this cap; the symbols safe view is uncapped
-    /// by construction, so passing the same `k` gives grep the capped baseline AND symbols the
-    /// uncapped superset from ONE accessor.
+    /// The distinct-file cap `grounded_seed` grounds at today (conductor.rs `grounded_seed`). It
+    /// bounds the SUBJECT symbols view at the production cap - though the symbols safe view is
+    /// uncapped by construction regardless, so `k` only bounds the precise seed. The grep
+    /// BASELINE, by contrast, runs UNCAPPED (`usize::MAX`) in `measure`: grep's trait-default
+    /// `blast_radius` returns `ground(q, k)` for both views, so a capped baseline would be a
+    /// read_dir-order nondeterministic WHICH-`k` slice, unfit for a frozen gate
+    /// (d16-u2-retention-isolates-serialize-cost). Arm (a) likewise runs grep uncapped.
     const GROUND_K: usize = 8;
 
     /// The queries whose `subject` safe view is NOT a superset of grep's UNCAPPED radius - the
@@ -386,6 +410,29 @@ mod corpus_gates {
         );
         // And the real definition IS in both views (the structural graph does see the def).
         assert!(compute.precise.contains(&"compute_impl.rs".to_string()));
+
+        // Second cross-file teeth class: `render` is CALLED only inside a macro body. The
+        // name-level tags query parses the macro_rules transcriber as an unresolved token tree,
+        // so the precise structural view does NOT link macros.rs; grep matches the `render`
+        // substring there, so the union MUST recover it into safe. A `safe = structural`
+        // (drop-grep) or `safe = structural ∩ grep` (intersect) mutation drops macros.rs and
+        // trips the superset guard for this class too. (The remaining three classes -
+        // new/common-name, draw/trait-object, helper/re-export - keep the definition and the
+        // hard-to-resolve reference in the SAME file, so precise == safe and they carry no
+        // drop-grep teeth; only the reflection and macro classes are load-bearing here.)
+        let render = symbols.blast_radius("render", GROUND_K);
+        assert!(
+            render.safe.contains(&"macros.rs".to_string()),
+            "the safe union must recover the macro-body call grep matches in macros.rs; got {render:?}"
+        );
+        assert!(
+            !render.precise.contains(&"macros.rs".to_string()),
+            "a macro-body call is not a resolved reference; the precise structural view must miss \
+             macros.rs (which is exactly why the grep union is load-bearing for the macro class); \
+             got {render:?}"
+        );
+        // And the real definition IS in both views (the structural graph does see the def).
+        assert!(render.precise.contains(&"widget.rs".to_string()));
     }
 
     /// The unit ids and queries of the PINNED polyglot repo (arm b). Each entry is
@@ -463,8 +510,8 @@ mod corpus_gates {
     }
 
     /// Compute the per-unit radii under the grep baseline and under the symbols safe view. The
-    /// baseline is grep's own `blast_radius` (its top-k radius, never serializing); the subject
-    /// is the symbols safe superset with its hub serialize verdict.
+    /// baseline is grep's own `blast_radius` run UNCAPPED (its full radius, never serializing);
+    /// the subject is the symbols safe superset with its hub serialize verdict.
     fn measure(root: &Path) -> (Vec<UnitRadius>, Vec<UnitRadius>) {
         let symbols = Symbols::open(root.to_str().unwrap(), None);
         let grep = Grep {
@@ -473,7 +520,13 @@ mod corpus_gates {
         let mut baseline = Vec::new();
         let mut subject = Vec::new();
         for (unit, query, ..) in pinned_polyglot_units() {
-            let g: BlastRadius = grep.blast_radius(query, GROUND_K);
+            // The grep BASELINE runs UNCAPPED (usize::MAX), matching arm-a's uncapped grep and
+            // honoring d16-u2-retention-isolates-serialize-cost: grep's trait-default blast_radius
+            // returns ground(q, k) for both views, so a capped baseline would be a read_dir-order
+            // nondeterministic WHICH-k slice, unfit for a frozen gate. Uncapped, the baseline IS
+            // the full grep radius, so it equals the safe superset at the file-set level and the
+            // ONLY thing that can differ is the hub serialize verdict.
+            let g: BlastRadius = grep.blast_radius(query, usize::MAX);
             baseline.push(UnitRadius {
                 unit: unit.to_string(),
                 files: g.safe,
@@ -522,9 +575,11 @@ mod corpus_gates {
             "the grep baseline never serializes"
         );
 
-        // The safe view is a file-set superset of the grep baseline for every unit (safe by
-        // construction: structural ⊆ grep, so safe == the grep radius here), so the ONLY thing
-        // that can cost parallelism is the hub serialize - which is what retention measures.
+        // The safe view is a file-set superset of the grep baseline for every unit, and because
+        // the baseline runs UNCAPPED (measure passes usize::MAX) it IS the full grep radius; with
+        // structural ⊆ grep on this corpus that makes safe == the baseline grep radius EXACTLY
+        // (both are widths 9..=15). So the ONLY thing that can cost parallelism is the hub
+        // serialize - which is what retention measures.
         for (b, s) in baseline.iter().zip(subject.iter()) {
             let bset: HashSet<&String> = b.files.iter().collect();
             let sset: HashSet<&String> = s.files.iter().collect();
