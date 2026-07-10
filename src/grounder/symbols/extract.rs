@@ -55,7 +55,11 @@ pub fn extract(
         let line = tag.span.start.row as u32 + 1;
         if tag.is_definition {
             let syntax = config.syntax_type_name(tag.syntax_type_id);
-            defs.push(Def { kind: kind_of(syntax), name, line });
+            defs.push(Def {
+                kind: kind_of(syntax),
+                name,
+                line,
+            });
         } else {
             refs.push(SymRef { name, line });
         }

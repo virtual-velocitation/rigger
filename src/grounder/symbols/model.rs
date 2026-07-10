@@ -151,15 +151,26 @@ mod tests {
             "a.rs".into(),
             FileSymbols {
                 lang: Lang::Rust,
-                defs: vec![Def { kind: Kind::Function, name: "parse".into(), line: 3 }],
-                refs: vec![SymRef { name: "parse".into(), line: 9 }],
+                defs: vec![Def {
+                    kind: Kind::Function,
+                    name: "parse".into(),
+                    line: 3,
+                }],
+                refs: vec![SymRef {
+                    name: "parse".into(),
+                    line: 9,
+                }],
             },
         );
         idx.insert_file(
             "b.py".into(),
             FileSymbols {
                 lang: Lang::Python,
-                defs: vec![Def { kind: Kind::Function, name: "parse".into(), line: 1 }],
+                defs: vec![Def {
+                    kind: Kind::Function,
+                    name: "parse".into(),
+                    line: 1,
+                }],
                 refs: vec![],
             },
         );
@@ -182,7 +193,10 @@ mod tests {
                 FileSymbols {
                     lang: Lang::Rust,
                     defs: vec![],
-                    refs: vec![SymRef { name: "new".into(), line: 1 }],
+                    refs: vec![SymRef {
+                        name: "new".into(),
+                        line: 1,
+                    }],
                 },
             );
         }
@@ -190,8 +204,15 @@ mod tests {
             "combat.rs".into(),
             FileSymbols {
                 lang: Lang::Rust,
-                defs: vec![Def { kind: Kind::Function, name: "apply_damage".into(), line: 1 }],
-                refs: vec![SymRef { name: "apply_damage".into(), line: 2 }],
+                defs: vec![Def {
+                    kind: Kind::Function,
+                    name: "apply_damage".into(),
+                    line: 1,
+                }],
+                refs: vec![SymRef {
+                    name: "apply_damage".into(),
+                    line: 2,
+                }],
             },
         );
         assert_eq!(idx.reference_degree("new"), 20);
@@ -218,8 +239,15 @@ mod tests {
             "combat.rs".into(),
             FileSymbols {
                 lang: Lang::Rust,
-                defs: vec![Def { kind: Kind::Method, name: "apply_damage".into(), line: 7 }],
-                refs: vec![SymRef { name: "clamp".into(), line: 9 }],
+                defs: vec![Def {
+                    kind: Kind::Method,
+                    name: "apply_damage".into(),
+                    line: 7,
+                }],
+                refs: vec![SymRef {
+                    name: "clamp".into(),
+                    line: 9,
+                }],
             },
         );
         let json = serde_json::to_string(&idx).expect("model serializes with plain serde");
