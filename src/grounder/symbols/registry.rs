@@ -7,6 +7,13 @@
 use crate::grounder::symbols::model::Lang;
 use std::sync::OnceLock;
 
+/// The version of the grammar / tag-query set this build indexes with (architecture 5.5.3),
+/// stamped into unit 3's `BlastRadiusComputed` audit event (via `Symbols::index_stamp`) so a
+/// recorded radius names the tag-query generation that produced it. Bump it when a shipped
+/// grammar or an authored tags query changes, so a radius computed under an older grammar set
+/// is distinguishable on replay from one the current set would produce.
+pub const GRAMMAR_TAGS_VERSION: &str = "ts-tags-v1";
+
 /// The C# `tags` query. The upstream `tree-sitter-c-sharp` crate ships a `tags.scm` whose last
 /// pattern captures a bare `@module`, which `tree-sitter-tags` rejects (it accepts only
 /// `@definition.*` / `@reference.*` / `@name` / `@doc` / `@local.*`), so the shipped query fails

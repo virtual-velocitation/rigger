@@ -295,12 +295,62 @@ impl Grounder for Symbols {
             serialize,
         }
     }
+
+    /// The provenance stamp for unit 3's `BlastRadiusComputed` audit event: the content-hash of
+    /// the CURRENT in-memory index unioned with the grammar / tag-query version, as
+    /// `<index-content-hash>/<grammar-tags-version>`. The `symbols` grounder is STRUCTURAL, so it
+    /// returns a NON-EMPTY stamp - the signal unit 3's conductor keys the audit + retention metric
+    /// off (a grep / turbovec / nop grounder inherits the empty default and emits neither). The
+    /// hash is over the deterministic `serde_json` of the `BTreeMap`-backed index (the same
+    /// byte-stable serialization `store::save` writes), so the SAME index state yields the SAME
+    /// stamp across processes, and a reindex that changes the graph changes the stamp - which is
+    /// exactly what makes a recorded radius reconstruct which index generation grounded it.
+    fn index_stamp(&self) -> String {
+        let idx = self.idx.lock().unwrap();
+        let serialized = serde_json::to_string(&*idx).unwrap_or_default();
+        format!(
+            "{}/{}",
+            store::content_hash(&serialized),
+            crate::grounder::symbols::registry::GRAMMAR_TAGS_VERSION
+        )
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::grounder::Grounder;
+
+    /// The `symbols` grounder is STRUCTURAL, so its `index_stamp` (unit 3's audit provenance +
+    /// the structural-active signal the conductor keys the `BlastRadiusComputed` audit off) is
+    /// NON-EMPTY, shaped `<index-content-hash>/<grammar-tags-version>`, and CHANGES with the
+    /// index content - so a recorded radius reconstructs which index generation grounded it.
+    #[test]
+    fn index_stamp_is_nonempty_and_tracks_index_content() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.rs"), "fn foo() {}\n").unwrap();
+        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+        let stamp = g.index_stamp();
+        assert!(
+            !stamp.is_empty(),
+            "symbols is structural: the audit stamp must be non-empty so the conductor emits the audit"
+        );
+        assert!(
+            stamp.contains('/')
+                && stamp.ends_with(crate::grounder::symbols::registry::GRAMMAR_TAGS_VERSION),
+            "the stamp is <index-content-hash>/<grammar-tags-version>; got {stamp:?}"
+        );
+        // A DIFFERENT index (different symbols) yields a different content-hash half, so a radius
+        // recorded under one index generation is distinguishable from one under another.
+        let dir2 = tempfile::tempdir().unwrap();
+        std::fs::write(dir2.path().join("b.rs"), "fn bar() {}\nfn baz() {}\n").unwrap();
+        let g2 = Symbols::open(dir2.path().to_str().unwrap(), None);
+        assert_ne!(
+            g.index_stamp(),
+            g2.index_stamp(),
+            "distinct index content must yield a distinct provenance stamp"
+        );
+    }
 
     #[test]
     fn ranks_a_definition_above_an_incidental_prose_mention() {

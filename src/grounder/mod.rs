@@ -175,6 +175,19 @@ pub trait Grounder: Send + Sync {
             serialize: false,
         }
     }
+
+    /// A provenance stamp for the `BlastRadiusComputed` audit event (spec 16 unit 3,
+    /// architecture 5.5.9): the index content-hash + grammar / tag-query version that
+    /// produced this grounder's radii, so a recorded radius reconstructs which index state
+    /// grounded it and staleness is answerable ("why the full panel?"). It is ALSO the
+    /// structural-active signal unit 3's conductor keys the audit off: the DEFAULT (grep /
+    /// turbovec / nop - no structural cross-reference index) returns an EMPTY stamp, so the
+    /// conductor emits NO audit event and drives NO retention metric on that path, keeping the
+    /// shipped default byte-for-byte unchanged. Only the `symbols` grounder overrides this to a
+    /// non-empty `<index-content-hash>/<grammar-tags-version>` stamp.
+    fn index_stamp(&self) -> String {
+        String::new()
+    }
 }
 
 /// Nop grounds nothing.
@@ -451,6 +464,28 @@ mod tests {
             nested.iter().filter(|r| r.file == "sub/nested.rs").count(),
             1,
             "the nested match must be found exactly once, not re-entered via the cycle"
+        );
+    }
+
+    /// A non-structural grounder (grep / nop / the trait default) has NO cross-reference index,
+    /// so its `index_stamp` is EMPTY. That empty stamp is the signal unit 3's conductor reads to
+    /// emit NO `BlastRadiusComputed` audit and drive NO retention metric on this path - the exact
+    /// mechanism that keeps the shipped (non-symbols) default byte-for-byte unchanged. Ungated: it
+    /// holds identically in both feature lanes (the default impl touches no structural index).
+    #[test]
+    fn default_index_stamp_is_empty_so_the_default_path_drives_no_audit() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.rs"), "fn foo() {}\n").unwrap();
+        let g = Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+        assert!(
+            g.index_stamp().is_empty(),
+            "grep is not structural; an empty stamp keeps the default path byte-for-byte unchanged"
+        );
+        assert!(
+            Nop.index_stamp().is_empty(),
+            "nop grounds nothing and stamps nothing"
         );
     }
 
