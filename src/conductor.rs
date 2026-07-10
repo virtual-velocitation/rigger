@@ -2594,35 +2594,28 @@ impl RunCtx<'_> {
         // Each unit is partitioned by its SAFE-SUPERSET view (spec 16 unit 3): the union of the
         // structural cross-reference graph and grep, uncapped, so a name-level miss can never
         // co-schedule two conflicting units. On the non-symbols default the safe view equals the
-        // old `ground(query, 8)` file set, so this partition is byte-for-byte the pre-unit-3 one.
-        // A HUB radius (`serialize`) fails SAFE by conflict-with-everything - it takes its OWN
-        // singleton batch rather than joining the disjointness grouping - the EXACT own-batch model
-        // unit 2's safety eval froze (`blast_radius_eval::partition`): the shareable radii go through
-        // the ONE `partition_by_blast_radius` authority, and each serialize unit is a batch of one.
-        let mut shareable: Vec<(String, Vec<String>)> = Vec::new();
-        let mut serialized: Vec<String> = Vec::new();
-        for name in ready {
-            let st = &stages[name];
-            let query = if st.coverage.is_empty() {
-                name.as_str()
-            } else {
-                st.coverage.as_str()
-            };
-            let radius = grounder.blast_radius(query, GROUNDED_SEED_K);
-            if radius.serialize {
-                serialized.push(name.clone());
-            } else {
-                let mut files = radius.safe;
-                files.sort();
-                files.dedup();
-                shareable.push((name.clone(), files));
-            }
-        }
-        let mut batches = partition_by_blast_radius(&shareable);
-        for name in serialized {
-            batches.push(vec![name]);
-        }
-        batches
+        // old `ground(query, 8)` file set, so a NON-empty partition is byte-for-byte the pre-unit-3
+        // one. A HUB radius (`serialize`) OR an EMPTY radius (a total, unassessable grounding miss)
+        // fails SAFE by taking its OWN singleton batch rather than joining the disjointness grouping
+        // - the empty-radius own-batch matches the SAME fail-safe `route_review_tier` takes (empty
+        // -> full panel), closing the fail-OPEN where an empty want-set is disjoint from every batch
+        // and would collapse into the first shared one. The shareable radii go through the ONE
+        // `partition_by_blast_radius` authority; both fail-safes ride the shared
+        // `partition_with_serialize` writer, the same own-batch model unit 2's eval froze.
+        let items: Vec<(String, Vec<String>, bool)> = ready
+            .iter()
+            .map(|name| {
+                let st = &stages[name];
+                let query = if st.coverage.is_empty() {
+                    name.as_str()
+                } else {
+                    st.coverage.as_str()
+                };
+                let radius = grounder.blast_radius(query, GROUNDED_SEED_K);
+                (name.clone(), radius.safe, radius.serialize)
+            })
+            .collect();
+        partition_with_serialize(&items)
     }
 
     /// Whether by-blast-radius partitioning is requested for this wave (§3.2, §8): a
@@ -6599,6 +6592,42 @@ pub fn partition_by_blast_radius(items: &[(String, Vec<String>)]) -> Vec<Vec<Str
             batches.push(vec![name.clone()]);
             batch_files.push(want);
         }
+    }
+    batches
+}
+
+/// The ONE serialize/empty-aware partition authority (spec 16 unit 3): group `items` -
+/// each `(name, safe-superset files, serialize)` - into batches that never co-schedule two
+/// units that must not run together. A unit is UNPARTITIONED (takes its OWN singleton batch,
+/// never fed to the disjointness grouping) when EITHER its radius is a hub (`serialize`) OR
+/// its safe view is EMPTY. Empty is treated exactly like a hub because an empty radius is a
+/// TOTAL grounding MISS - the worst UNASSESSABLE case - and the whole hazard this partition
+/// exists to prevent is co-scheduling two units that share a file the grounding failed to
+/// surface: `partition_by_blast_radius` reads an empty want-set as disjoint from EVERY batch,
+/// so an empty radius would otherwise fail OPEN into the first shared batch. Own-batching it
+/// is the SAME fail-SAFE stance [`route_review_tier`] takes (empty -> full panel): when risk
+/// cannot be measured, isolate. The remaining shareable radii (non-serialize, non-empty) go
+/// through the ONE [`partition_by_blast_radius`] disjointness authority; own-batch units are
+/// appended after, in input order, so the result is deterministic for a stable input. This is
+/// the SINGLE writer of the serialize/empty own-batch rule - `partition_wave` (the conductor)
+/// and `metrics::parallelism_retention_of` (the runtime warn metric) both call it, so the two
+/// can never drift.
+pub fn partition_with_serialize(items: &[(String, Vec<String>, bool)]) -> Vec<Vec<String>> {
+    let mut shareable: Vec<(String, Vec<String>)> = Vec::new();
+    let mut own_batch: Vec<String> = Vec::new();
+    for (name, files, serialize) in items {
+        if *serialize || files.is_empty() {
+            own_batch.push(name.clone());
+        } else {
+            let mut files = files.clone();
+            files.sort();
+            files.dedup();
+            shareable.push((name.clone(), files));
+        }
+    }
+    let mut batches = partition_by_blast_radius(&shareable);
+    for name in own_batch {
+        batches.push(vec![name]);
     }
     batches
 }
@@ -16612,6 +16641,165 @@ mod tests {
                 .is_none(),
             "with no audit events the runtime retention metric is absent, never a spurious value"
         );
+    }
+
+    /// spec 16 unit 3, the BLOCKING empty-radius partition fail-safe (adj-u3-empty-radius-partitions-
+    /// fail-open): `partition_wave` must UNPARTITION an EMPTY radius - a total, unassessable grounding
+    /// miss - into its OWN singleton batch, exactly like a HUB (`serialize`) radius, and NEVER
+    /// co-schedule it with a real unit. An empty want-set is disjoint from every batch, so the
+    /// pre-fix code collapsed it into the FIRST shared batch (the fail-OPEN direction, the OPPOSITE
+    /// of `route_review_tier`'s empty -> full stance). This MULTI-unit test drives `partition_wave`
+    /// directly over a structural grounder and pins the whole own-batch + append path: two disjoint
+    /// shareable units co-schedule, while the empty-radius unit AND the hub unit each take their own
+    /// batch. Runs in BOTH lanes (the StructuralStubGrounder is not symbols-gated).
+    #[test]
+    fn partition_wave_own_batches_an_empty_radius_never_co_scheduling_it() {
+        let br = |files: &[&str], serialize: bool| BlastRadius {
+            precise: files.iter().map(|s| s.to_string()).collect(),
+            safe: files.iter().map(|s| s.to_string()).collect(),
+            serialize,
+        };
+        // u_a / u_b are disjoint shareable radii; u_empty grounds to NOTHING (no by_query entry
+        // => BlastRadius::default, empty safe, serialize false); u_hub is a hub (serialize true).
+        let grounder = StructuralStubGrounder {
+            by_query: HashMap::from([
+                ("u_a".to_string(), br(&["a.rs"], false)),
+                ("u_b".to_string(), br(&["b.rs"], false)),
+                ("u_hub".to_string(), br(&["h.rs"], true)),
+            ]),
+            stamp: "idxhash/ts-tags-v1".to_string(),
+        };
+        let cfg = Config::default();
+        let mut stages: BTreeMap<String, Stage> = BTreeMap::new();
+        let ready: Vec<String> = ["u_a", "u_b", "u_empty", "u_hub"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        for name in &ready {
+            stages.insert(
+                name.clone(),
+                Stage {
+                    name: name.clone(),
+                    coverage: name.clone(),
+                    partition: "by-blast-radius".into(),
+                    ..Default::default()
+                },
+            );
+        }
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let runner = RecordingRunner::new(&[]);
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: String::new(),
+            grounder: Some(&grounder),
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+        let batches = ctx.partition_wave(&stages, &ready);
+
+        let batch_of = |unit: &str| {
+            batches
+                .iter()
+                .find(|b| b.iter().any(|n| n == unit))
+                .cloned()
+                .unwrap_or_else(|| panic!("{unit} landed in no batch: {batches:?}"))
+        };
+        let a_batch = batch_of("u_a");
+        assert!(
+            a_batch.contains(&"u_b".to_string()),
+            "two disjoint shareable units co-schedule in one batch: {batches:?}"
+        );
+        assert!(
+            !a_batch.contains(&"u_empty".to_string()),
+            "an EMPTY radius must NOT co-schedule with a real unit (the fail-open is closed): {batches:?}"
+        );
+        assert_eq!(
+            batch_of("u_empty"),
+            vec!["u_empty".to_string()],
+            "an empty radius is unassessable and takes its OWN singleton batch: {batches:?}"
+        );
+        assert_eq!(
+            batch_of("u_hub"),
+            vec!["u_hub".to_string()],
+            "a hub radius takes its OWN singleton batch: {batches:?}"
+        );
+    }
+
+    /// spec 16 unit 3, the SPECULATION-path wiring (sdet-u16-3-speculation-wiring-untested): the
+    /// first-green-wins speculation path must record the `BlastRadiusComputed` audit at attempt 0
+    /// AND route the winner's review tier over the UNCAPPED SAFE view, exactly like the single-lane
+    /// path - so a beyond-cap high-risk file present only in `.safe` still forces the FULL panel. A
+    /// regression routing speculation over the capped precise seed, or dropping the speculation
+    /// audit, would go green without this test.
+    #[test]
+    fn speculation_over_a_structural_grounder_records_the_audit_and_routes_full() {
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+
+        // precise (the capped seed): 8 low-risk src files, none high-risk. safe (uncapped): those
+        // PLUS a high-risk spec file the cap excludes - the ONLY thing that can force full is the
+        // beyond-cap high-risk membership over the safe view, so routing over precise would go light.
+        let precise: Vec<String> = (0..8).map(|i| format!("src/f{i}.rs")).collect();
+        let mut safe = precise.clone();
+        safe.push("specs/core.md".to_string());
+        let grounder = StructuralStubGrounder {
+            by_query: HashMap::from([(
+                "s".to_string(),
+                BlastRadius {
+                    precise,
+                    safe,
+                    serialize: false,
+                },
+            )]),
+            stamp: "idxhash/ts-tags-v1".to_string(),
+        };
+
+        // A tiered stage at speculation width 2 (K>1 routes through `run_speculation`).
+        let mut stage = tiered_stage(20, &["specs/"]);
+        stage.speculation_width = 2;
+        let cfg = tiered_cfg(stage);
+        let store = Store::open(":memory:").unwrap();
+        let driver = CacheDriver {
+            contents: vec!["work\n".into()],
+            approve_at: 0,
+        };
+        let runner = RecordingRunner::new(&[]);
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo_path,
+            grounder: Some(&grounder),
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(rs.units["s"].status, ledger::Status::Integrated);
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        // (1) the speculation path recorded the blast-radius audit (record_blast_radius at attempt 0).
+        let audits = blast_radius_audits(&events);
+        let (unit, safe_recorded, _serialize) = audits
+            .first()
+            .expect("the speculation path records the blast-radius audit");
+        assert_eq!(unit, "s");
+        assert!(
+            safe_recorded.iter().any(|f| f == "specs/core.md"),
+            "the recorded safe view carries the beyond-cap high-risk file: {safe_recorded:?}"
+        );
+        // (2) the winner's review tier routed FULL over the SAFE view (routing the capped precise
+        // seed, which excludes specs/core.md, would have gone light).
+        let evidence = review_tier_evidence(&events).expect("a tiers policy logs the routing");
+        assert_eq!(
+            evidence["review-tier"],
+            json!(TIER_FULL),
+            "speculation routes the review tier over the safe view: {evidence}"
+        );
+        assert_eq!(evidence["high-risk-path"], json!("specs/core.md"));
     }
 
     #[test]

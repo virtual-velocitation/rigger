@@ -301,10 +301,13 @@ impl Grounder for Symbols {
     /// `<index-content-hash>/<grammar-tags-version>`. The `symbols` grounder is STRUCTURAL, so it
     /// returns a NON-EMPTY stamp - the signal unit 3's conductor keys the audit + retention metric
     /// off (a grep / turbovec / nop grounder inherits the empty default and emits neither). The
-    /// hash is over the deterministic `serde_json` of the `BTreeMap`-backed index (the same
-    /// byte-stable serialization `store::save` writes), so the SAME index state yields the SAME
-    /// stamp across processes, and a reindex that changes the graph changes the stamp - which is
-    /// exactly what makes a recorded radius reconstruct which index generation grounded it.
+    /// hash is over the COMPACT `serde_json::to_string` of the `BTreeMap`-backed index. Because the
+    /// index is `BTreeMap`-backed it serializes in sorted-key order, so this is DETERMINISTIC: the
+    /// SAME index state yields the SAME stamp across processes, and a reindex that changes the graph
+    /// changes the stamp - which is exactly what makes a recorded radius reconstruct which index
+    /// generation grounded it. (This is a DIFFERENT byte stream than `store::save`, which pretty-
+    /// prints via `to_vec_pretty`; both are deterministic, but the stamp is not the on-disk bytes -
+    /// it need only be stable across processes for the same index, which the compact form is.)
     fn index_stamp(&self) -> String {
         let idx = self.idx.lock().unwrap();
         let serialized = serde_json::to_string(&*idx).unwrap_or_default();
@@ -349,6 +352,20 @@ mod tests {
             g.index_stamp(),
             g2.index_stamp(),
             "distinct index content must yield a distinct provenance stamp"
+        );
+        // DETERMINISM (the load-bearing provenance/replay property): the SAME tree opened by a
+        // SECOND grounder must yield the SAME stamp - the compact `BTreeMap` serialization is
+        // sorted-key stable, so a radius replayed in another process reconstructs to the same
+        // index generation. A `to_string` -> `to_vec` drift, or a non-deterministic index order,
+        // would trip this.
+        let dir3 = tempfile::tempdir().unwrap();
+        std::fs::write(dir3.path().join("a.rs"), "fn foo() {}\n").unwrap();
+        let g3a = Symbols::open(dir3.path().to_str().unwrap(), None);
+        let g3b = Symbols::open(dir3.path().to_str().unwrap(), None);
+        assert_eq!(
+            g3a.index_stamp(),
+            g3b.index_stamp(),
+            "the same tree opened twice must yield the SAME stamp (cross-process determinism)"
         );
     }
 
