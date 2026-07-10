@@ -100,26 +100,39 @@ impl SymbolIndex {
         &self.files
     }
 
-    /// How many references (across all files and languages) name `name`. This is the raw
-    /// fan-out the suppression threshold is computed against.
-    pub fn reference_degree(&self, name: &str) -> usize {
+    /// How many references name `name` WITHIN `lang` - the per-language fan-out degree, the raw
+    /// fan-out the suppression threshold is computed against. SCOPED to `lang`, mirroring
+    /// `references_named`: the cross-reference graph is per-language (5.5.2), so the degree over
+    /// it is too. A name that over-links in another language never inflates this count (a Python
+    /// `parse` leaves the Rust `parse` degree untouched).
+    pub fn reference_degree(&self, name: &str, lang: Lang) -> usize {
         self.files
             .values()
+            .filter(|f| f.lang == lang)
             .flat_map(|f| f.refs.iter())
             .filter(|r| r.name == name)
             .count()
     }
 
-    /// Whether `name` is a HUB - its reference degree is at or above the `percentile` of the
-    /// repo's OWN reference-degree distribution (5.5.2). A relative threshold, not an absolute
-    /// magic number a monorepo would blow past: `new` / `parse` / `build` over-link every
-    /// like-named definition, so the graph the grounder and persistence share must be able to
-    /// down-weight them. This exposes the read-only fan-out primitive; wiring it into any
-    /// partitioning or blast-radius decision is spec 16, deliberately out of scope here.
-    pub fn is_hub(&self, name: &str, percentile: f64) -> bool {
-        // The degree of every referenced name, one entry per distinct name.
+    /// Whether `name` is a HUB WITHIN `lang` - its per-language reference degree is at or above
+    /// the `percentile` of THAT language's OWN reference-degree distribution (5.5.2). Scoped to
+    /// `lang` on BOTH axes: the degree counted for `name` and the distribution the cutoff is
+    /// drawn from are each restricted to `lang`, so a name that over-links in another language
+    /// (a Python `parse`) never flags the same name in this one (a Rust `parse`) - the
+    /// cross-language collision per-language scoping exists to prevent. A relative threshold,
+    /// not an absolute magic number a monorepo would blow past: `new` / `parse` / `build`
+    /// over-link every like-named definition, so the graph the grounder and persistence share
+    /// must be able to down-weight them. This exposes the read-only fan-out primitive; wiring it
+    /// into any partitioning or blast-radius decision is spec 16, deliberately out of scope here.
+    pub fn is_hub(&self, name: &str, lang: Lang, percentile: f64) -> bool {
+        // The degree of every referenced name IN `lang`, one entry per distinct name.
         let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
-        for r in self.files.values().flat_map(|f| f.refs.iter()) {
+        for r in self
+            .files
+            .values()
+            .filter(|f| f.lang == lang)
+            .flat_map(|f| f.refs.iter())
+        {
             *counts.entry(r.name.as_str()).or_insert(0) += 1;
         }
         if counts.is_empty() {
@@ -136,7 +149,7 @@ impl SymbolIndex {
         let cutoff = degrees[cutoff_idx.min(degrees.len() - 1)];
         // `cutoff > 0` keeps a repo whose entire distribution is zero-degree from flagging
         // everything; the name must actually reach the cutoff to count as a hub.
-        cutoff > 0 && self.reference_degree(name) >= cutoff
+        cutoff > 0 && self.reference_degree(name, lang) >= cutoff
     }
 }
 
@@ -215,16 +228,77 @@ mod tests {
                 }],
             },
         );
-        assert_eq!(idx.reference_degree("new"), 20);
-        assert_eq!(idx.reference_degree("apply_damage"), 1);
+        assert_eq!(idx.reference_degree("new", Lang::Rust), 20);
+        assert_eq!(idx.reference_degree("apply_damage", Lang::Rust), 1);
         // At the 90th percentile of the degree distribution, `new` is a hub, `apply_damage`
         // is not. The threshold is repo-relative, not an absolute constant a monorepo blows
         // past (5.5.2).
-        assert!(idx.is_hub("new", 0.90));
-        assert!(!idx.is_hub("apply_damage", 0.90));
+        assert!(idx.is_hub("new", Lang::Rust, 0.90));
+        assert!(!idx.is_hub("apply_damage", Lang::Rust, 0.90));
         // A name with no references is never a hub, and an empty index has no hubs.
-        assert!(!idx.is_hub("absent", 0.90));
-        assert!(!SymbolIndex::default().is_hub("anything", 0.90));
+        assert!(!idx.is_hub("absent", Lang::Rust, 0.90));
+        assert!(!SymbolIndex::default().is_hub("anything", Lang::Rust, 0.90));
+    }
+
+    #[test]
+    fn fan_out_suppression_is_language_scoped_no_cross_language_inflation() {
+        // The exact cross-language collision per-language scoping exists to prevent (5.5.2):
+        // the name `parse` is referenced ONCE in Rust but TWENTY times in Python. A
+        // language-BLIND degree would report 21 and flag the Rust `parse` as a hub purely from
+        // Python usage. Per-language scoping must keep the two graphs disjoint.
+        let mut idx = SymbolIndex::default();
+        for i in 0..20 {
+            idx.insert_file(
+                format!("py/f{i}.py"),
+                FileSymbols {
+                    lang: Lang::Python,
+                    defs: vec![],
+                    refs: vec![SymRef {
+                        name: "parse".into(),
+                        line: 1,
+                    }],
+                },
+            );
+        }
+        // Rust references `parse` once and `new` ten times, so Rust's OWN hub is `new`.
+        idx.insert_file(
+            "a.rs".into(),
+            FileSymbols {
+                lang: Lang::Rust,
+                defs: vec![],
+                refs: vec![SymRef {
+                    name: "parse".into(),
+                    line: 3,
+                }],
+            },
+        );
+        for i in 0..10 {
+            idx.insert_file(
+                format!("rs/f{i}.rs"),
+                FileSymbols {
+                    lang: Lang::Rust,
+                    defs: vec![],
+                    refs: vec![SymRef {
+                        name: "new".into(),
+                        line: 1,
+                    }],
+                },
+            );
+        }
+        // Degree is per-language: the 20 Python refs do NOT inflate the Rust `parse` degree,
+        // and vice versa.
+        assert_eq!(idx.reference_degree("parse", Lang::Rust), 1);
+        assert_eq!(idx.reference_degree("parse", Lang::Python), 20);
+        assert_eq!(idx.reference_degree("new", Lang::Rust), 10);
+        // The Rust `parse` is NOT a hub: measured against Rust's OWN distribution ([1, 10] for
+        // {parse, new}) its degree 1 is below the cutoff, even at the 50th percentile - even
+        // though the SAME name is a hub in Python. Rust's real hub is `new`.
+        assert!(!idx.is_hub("parse", Lang::Rust, 0.50));
+        assert!(idx.is_hub("new", Lang::Rust, 0.50));
+        // Python's `parse` IS a hub within its own (single-name) distribution.
+        assert!(idx.is_hub("parse", Lang::Python, 0.50));
+        // And the Python hub-ness of `parse` never leaks into Rust's verdict at any percentile.
+        assert!(!idx.is_hub("parse", Lang::Rust, 0.90));
     }
 
     #[test]

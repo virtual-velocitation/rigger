@@ -89,7 +89,9 @@ mod tests {
     }
 
     #[test]
-    fn probe_rust_kinds() {
+    fn rust_grammar_kind_mapping_is_characterized() {
+        // Drives every reachable `kind_of` arm through the ONLY shipped grammar and pins the
+        // real observed lowering, so the mapping has actual coverage (not an eprintln probe).
         let src = "\
 struct Widget;
 enum State { On, Off }
@@ -103,20 +105,61 @@ fn free() {}
 ";
         let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
         let fs = extract(src, Lang::Rust, &language, tree_sitter_rust::TAGS_QUERY).unwrap();
-        for d in &fs.defs {
-            eprintln!("DEF name={} kind={:?} line={}", d.name, d.kind, d.line);
-        }
-        for r in &fs.refs {
-            eprintln!("REF name={} line={}", r.name, r.line);
-        }
-        eprintln!("total defs={} refs={}", fs.defs.len(), fs.refs.len());
+        let kind_of_def = |name: &str| fs.defs.iter().find(|d| d.name == name).map(|d| d.kind);
+
+        // Reachable arms with the Rust grammar: struct/enum -> Type, method -> Method,
+        // module -> Module, function -> Function, macro (unknown category) -> Other.
+        assert_eq!(kind_of_def("Widget"), Some(Kind::Type));
+        assert_eq!(kind_of_def("State"), Some(Kind::Type));
+        assert_eq!(kind_of_def("draw"), Some(Kind::Method));
+        assert_eq!(kind_of_def("inner"), Some(Kind::Module));
+        assert_eq!(kind_of_def("free"), Some(Kind::Function));
+        assert_eq!(kind_of_def("mymac"), Some(Kind::Other));
+
+        // KNOWN grammar limitation (NON-BLOCKING; a unit-2 tag-query concern, characterized
+        // here rather than changed in unit 1): the Rust `tags.scm` tags a `trait` under the
+        // "interface" category, so `Drawable` lowers to Kind::Type, NOT Kind::Trait - i.e.
+        // Kind::Trait is an unreachable arm with the only shipped grammar today.
+        assert_eq!(kind_of_def("Drawable"), Some(Kind::Type));
+        // The Rust tags query emits no tag for an `impl` block, a `const`, or a `static`, so
+        // those definitions are absent (Kind::Impl / Kind::Constant are likewise unreachable
+        // with this grammar - the const/static drop is the same unit-2 tag-query concern).
+        assert_eq!(kind_of_def("MAX"), None);
+        assert_eq!(kind_of_def("GLOBAL"), None);
+        assert_eq!(kind_of_def("impl"), None);
+        // Exactly the seven tagged definitions above; the lone reference is the `Drawable`
+        // bound named in the `impl` header.
+        assert_eq!(fs.defs.len(), 7);
+        assert!(fs.refs.iter().any(|r| r.name == "Drawable"));
     }
 
     #[test]
-    fn probe_extract_error_and_skip_paths() {
+    fn malformed_tags_query_surfaces_as_err_not_panic() {
         let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
-        // A malformed tags query should surface as Err, not panic.
+        // A malformed tags query must return Err from the config step, never panic, so a bad
+        // registry entry degrades loudly instead of crashing the indexer.
         let bad = extract("fn f(){}", Lang::Rust, &language, "(this is not valid scm");
-        eprintln!("bad-query result is_err={}", bad.is_err());
+        assert!(bad.is_err(), "malformed query should be Err, got {bad:?}");
+        let msg = bad.unwrap_err();
+        assert!(
+            msg.starts_with("symbols: tags config:"),
+            "error should come from the tags-config step, got: {msg}"
+        );
+        // The happy path over the SAME grammar still succeeds - the Err above is the query, not
+        // the language: `f` is extracted as a function definition.
+        let ok = extract(
+            "fn f(){}",
+            Lang::Rust,
+            &language,
+            tree_sitter_rust::TAGS_QUERY,
+        )
+        .expect("valid query extracts");
+        assert!(ok
+            .defs
+            .iter()
+            .any(|d| d.name == "f" && d.kind == Kind::Function));
+        // The name-slice guard (`source.get(..)` -> `continue`) is a defensive arm the tags
+        // mechanism never triggers for valid UTF-8 boundaries; it is exercised for its Some
+        // side by every extraction here and by `extracts_a_rust_definition_and_a_reference`.
     }
 }
