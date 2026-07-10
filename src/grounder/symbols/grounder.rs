@@ -96,17 +96,30 @@ fn changed_files(
     changed
 }
 
+/// The query's symbol-candidate terms: the alphanumeric/underscore runs of length `>= 2`, so
+/// `apply_damage` stays ONE term and single-character noise is dropped. This is the ONE authority
+/// both [`Symbols::ground`] and [`Symbols::blast_radius`] extract terms with, so the two can never
+/// disagree on what a query means - a query that grounds to nothing (no terms) also has an empty
+/// blast radius. Keeping the extraction shared is exactly what lets `blast_radius` short-circuit
+/// to the empty fail-safe on a degenerate query (a one-char or all-punctuation query whose every
+/// token is dropped by the length filter) BEFORE it ever runs grep, rather than falling through to
+/// an unbounded whole-repo grep.
+fn query_terms(query: &str) -> Vec<&str> {
+    query
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .filter(|t| t.len() >= 2)
+        .collect()
+}
+
 impl Grounder for Symbols {
     fn ground(&self, query: &str, k: usize) -> Vec<Ref> {
         if query.is_empty() || k == 0 {
             return Vec::new();
         }
         // The query's alphanumeric/underscore terms are the symbol candidates (so `apply_damage`
-        // stays one term). Single-character terms are dropped as noise.
-        let terms: Vec<&str> = query
-            .split(|c: char| !c.is_alphanumeric() && c != '_')
-            .filter(|t| t.len() >= 2)
-            .collect();
+        // stays one term). Single-character terms are dropped as noise. `blast_radius` extracts
+        // terms through the SAME `query_terms` authority, so the two views agree on emptiness.
+        let terms = query_terms(query);
         if terms.is_empty() {
             return Vec::new();
         }
@@ -209,15 +222,27 @@ impl Grounder for Symbols {
     /// the tree in unsorted `read_dir` order, so without the sort `safe` would be set-deterministic
     /// but not order-deterministic. Sorting the tail makes the whole `safe` ordering reproducible
     /// across processes, which is what unit 3 needs to hash the seed-file list into a stable
-    /// `BlastRadiusComputed` audit event. With an empty query or no match this returns empty views
-    /// (the empty-radius fail-safe unit 3 routes to the full panel), never a partial or a panic.
+    /// `BlastRadiusComputed` audit event. With an empty query, a degenerate query whose every term
+    /// is dropped by the length filter (a single character or all punctuation - the same guard
+    /// `ground` applies), or no match, this returns empty views (the empty-radius fail-safe unit 3
+    /// routes to the full panel) WITHOUT running a whole-repo grep, never a partial or a panic.
     fn blast_radius(&self, query: &str, k: usize) -> BlastRadius {
         // The query's symbol candidates: the SAME alphanumeric/underscore terms `ground` extracts
-        // (so `apply_damage` stays one term and single-char noise is dropped).
-        let terms: Vec<&str> = query
-            .split(|c: char| !c.is_alphanumeric() && c != '_')
-            .filter(|t| t.len() >= 2)
-            .collect();
+        // through the shared `query_terms` authority (so `apply_damage` stays one term and
+        // single-char noise is dropped).
+        let terms = query_terms(query);
+        // The empty-terms fail-safe, applied BEFORE any index read or grep: a degenerate query (an
+        // empty query, a single character, or all punctuation) that drops EVERY term grounds to
+        // nothing, so its blast radius is the empty radius too - matching `ground`, which
+        // early-returns on the same condition. Without this short-circuit `blast_radius` would fall
+        // through to the UNCAPPED `grep.ground(query, usize::MAX)` below, and a one-char query would
+        // match nearly every line in the tree - an unbounded whole-repo grep that leaves `precise`
+        // empty but `safe` covering almost the entire repo, forcing the full panel and corrupting
+        // the retention metric. `BlastRadius::default()` is empty precise, empty safe, not-serialize
+        // - the same empty fail-safe unit 3 routes to the full, unpartitioned panel.
+        if terms.is_empty() {
+            return BlastRadius::default();
+        }
 
         // The STRUCTURAL view, ranked (definer files, then referencer files not already a definer),
         // plus the hub verdict - all computed under ONE read lock over the index, returned as a
@@ -551,6 +576,54 @@ mod tests {
         assert!(
             k0.safe.contains(&"def.rs".to_string()) && k0.safe.contains(&"call.rs".to_string()),
             "the safe view is uncapped even at k=0 - it carries the full radius; got {k0:?}"
+        );
+    }
+
+    /// Spec 17 criterion 2 (plan17-c2-blast-radius-empty-terms-guard): a DEGENERATE query - one
+    /// whose only tokens are dropped by the `>= 2`-char term filter (a single character, or all
+    /// punctuation) - must yield an EMPTY blast radius, IDENTICAL in emptiness to `ground` on the
+    /// same query. This is distinct from the empty-QUERY case the sibling test already covers: the
+    /// query here is non-empty, but every term is filtered out. Before the guard, `ground`
+    /// early-returned on empty terms while `blast_radius` fell through to an UNBOUNDED whole-repo
+    /// grep (`grep.ground(query, usize::MAX)`), so `precise` was empty while `safe` covered almost
+    /// the entire tree - forcing the full review panel and corrupting the retention metric. The
+    /// single shared `query_terms` authority makes the two agree: no terms -> the empty fail-safe
+    /// radius, BEFORE grep is ever run.
+    #[test]
+    fn blast_radius_on_a_degenerate_terms_query_is_empty_not_a_whole_repo_grep() {
+        let dir = tempfile::tempdir().unwrap();
+        // Every file contains the letter `a`, so an UNGUARDED single-char grep for "a" would match
+        // every file - the whole-repo blow-up the guard exists to prevent.
+        std::fs::write(dir.path().join("alpha.rs"), "fn parse() {}\n").unwrap();
+        std::fs::write(dir.path().join("beta.rs"), "fn draw() { parse(); }\n").unwrap();
+        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+
+        // A single-character query: its only token is length 1, dropped by the `>= 2`-char filter,
+        // so it has NO symbol terms. `ground` returns nothing...
+        assert!(
+            g.ground("a", 8).is_empty(),
+            "a degenerate single-char query grounds to nothing"
+        );
+        // ...and `blast_radius` must be the IDENTICAL empty radius - not a whole-repo grep for "a".
+        let one_char = g.blast_radius("a", 8);
+        assert_eq!(
+            one_char,
+            BlastRadius::default(),
+            "a degenerate single-char query is the empty fail-safe radius (empty precise, empty \
+             safe, no serialize), not an unbounded whole-repo grep; got {one_char:?}"
+        );
+
+        // An all-punctuation query splits into only empty/dropped tokens - the same empty radius,
+        // again matching `ground`.
+        assert!(
+            g.ground("!!!", 8).is_empty(),
+            "an all-punctuation query grounds to nothing"
+        );
+        let punct = g.blast_radius("!!!", 8);
+        assert_eq!(
+            punct,
+            BlastRadius::default(),
+            "an all-punctuation query is the empty fail-safe radius, not a grep set; got {punct:?}"
         );
     }
 
