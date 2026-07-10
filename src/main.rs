@@ -1631,6 +1631,20 @@ fn run_cli(parsed: &RunArgs) -> Res {
     };
     let rs = conductor::run(&cfg, &deps)?;
     print_run_state(&rs);
+    // spec 17 criterion 4c: a silently-serializing fleet must WARN during a run, not only when the
+    // operator later runs `rigger stats`. Re-project this run's metrics from the log and, if the
+    // parallelism-retention floor was breached under structural grounding, log the SAME line the
+    // stats row shows (one authority) to stderr. Best-effort: a read hiccup never fails a run that
+    // already succeeded, and on the shipped non-symbols default retention is unmeasured so nothing
+    // prints and the default run output is unchanged.
+    if let Ok(events) = store.read_stream(conductor::STREAM, 0, Direction::Forward) {
+        let m = metrics::project(runscope::current_run(&events));
+        if let Some(line) = parallelism_retention_line(&m) {
+            if m.parallelism_retention_warns() {
+                eprintln!("rigger: {line}");
+            }
+        }
+    }
     Ok(())
 }
 
@@ -1978,6 +1992,35 @@ fn stats_lines(
 const NO_RUNS_MESSAGE: &str =
     "# Rigger: no runs recorded yet (run `rigger run` to start a run, then `rigger stats`).";
 
+/// The operator-facing parallelism-retention line for a run (spec 17 criterion 4c), or `None`
+/// when the metric was NOT measured: [`parallelism_retention`](Metrics::parallelism_retention) is
+/// `None` because no `BlastRadiusComputed` audit was recorded, which is the shipped non-symbols
+/// default. Both operator surfaces then omit the line, so default output is byte-for-byte unchanged.
+///
+/// When measured it reports the share of grounded units that stay co-schedulable (the
+/// wave-parallelism the fleet retained), and a fleet that has quietly serialized itself - a
+/// retention below [`metrics::PARALLELISM_RETENTION_WARN`], per
+/// [`parallelism_retention_warns`](Metrics::parallelism_retention_warns) - gets a loud inline
+/// `WARN` naming the floor.
+///
+/// Single-sourced so the `rigger stats` retention row and the end-of-`rigger run` stderr notice
+/// render IDENTICALLY: the warn text and its firing condition have ONE authority and cannot drift.
+fn parallelism_retention_line(m: &Metrics) -> Option<String> {
+    let retention = m.parallelism_retention?;
+    let mut line = format!(
+        "{:.1}% of grounded units stay co-schedulable (wave-parallelism retained)",
+        retention * 100.0,
+    );
+    if m.parallelism_retention_warns() {
+        line.push_str(&format!(
+            " - WARN: below the {:.1}% floor, the fleet is largely serializing (most units \
+             alone in their partition batch)",
+            metrics::PARALLELISM_RETENTION_WARN * 100.0,
+        ));
+    }
+    Some(line)
+}
+
 /// Render a [`Metrics`] value into the lines `rigger stats` prints, one metric group
 /// per line. Split from [`cmd_stats`] (which does the I/O) so the formatting is a
 /// pure function of the metrics and can be asserted in a unit test without touching
@@ -2008,6 +2051,13 @@ fn format_stats(m: &Metrics) -> Vec<String> {
         "  review             {} approved / {} rejected",
         m.review_approve, m.review_reject,
     ));
+    // The runtime parallelism-retention row (spec 17 criterion 4c): shown only when structural
+    // grounding measured it (`Some`); omitted on the shipped non-symbols default so that output
+    // is unchanged. A below-floor share carries a loud inline WARN (single-sourced via
+    // `parallelism_retention_line`, shared with the end-of-run stderr notice).
+    if let Some(body) = parallelism_retention_line(m) {
+        lines.push(format!("  parallelism        {body}"));
+    }
     if m.gates.is_empty() {
         lines.push("  gates              (no gate runs recorded)".to_string());
     } else {
@@ -7668,6 +7718,93 @@ mod tests {
         );
     }
 
+    /// spec 17 criterion 4c: the runtime parallelism-retention metric must REACH an operator on
+    /// the production `rigger stats` render (previously it was computed by `metrics::project` but
+    /// no path surfaced it). A MEASURED retention shows a row with the co-schedulable share; a
+    /// retention below [`metrics::PARALLELISM_RETENTION_WARN`] adds a loud inline WARN naming the
+    /// floor so a silently-serializing fleet is visible; and an UNMEASURED retention (`None` - the
+    /// shipped non-symbols default records no `BlastRadiusComputed` audit) OMITS the row entirely,
+    /// so the default `rigger stats` output is byte-for-byte unchanged.
+    #[test]
+    fn format_stats_surfaces_parallelism_retention_and_warns_below_the_floor() {
+        // Measured and above the floor: a row with the share, no WARN.
+        let healthy = Metrics {
+            parallelism_retention: Some(0.95),
+            ..Default::default()
+        };
+        let out = format_stats(&healthy).join("\n");
+        assert!(
+            out.contains("parallelism        95.0%"),
+            "a measured retention must appear on an operator-visible stats row:\n{out}"
+        );
+        assert!(
+            !out.contains("WARN"),
+            "a healthy fleet at or above the floor must not warn:\n{out}"
+        );
+
+        // Measured and below the floor: the share is still shown AND a loud WARN names the floor.
+        let serializing = Metrics {
+            parallelism_retention: Some(0.5),
+            ..Default::default()
+        };
+        let out = format_stats(&serializing).join("\n");
+        assert!(
+            out.contains("parallelism        50.0%"),
+            "the below-floor retention share must still be shown:\n{out}"
+        );
+        assert!(
+            out.contains("WARN") && out.contains("80.0% floor"),
+            "a below-floor retention must warn and name the 80.0% floor:\n{out}"
+        );
+
+        // Unmeasured (the shipped non-symbols default): no retention row at all.
+        let unmeasured = Metrics {
+            parallelism_retention: None,
+            ..Default::default()
+        };
+        let out = format_stats(&unmeasured).join("\n");
+        assert!(
+            !out.contains("parallelism"),
+            "an unmeasured retention (default lane) must omit the row, keeping default stats \
+             output unchanged:\n{out}"
+        );
+    }
+
+    /// The parallelism-retention line is single-sourced through [`parallelism_retention_line`] so
+    /// the `rigger stats` row and the end-of-`rigger run` stderr notice (spec 17 4c's "logged
+    /// warning when retention drops below the threshold on a run") render IDENTICALLY and cannot
+    /// drift: `None` when unmeasured, no `WARN` at or above the floor, and a `WARN` naming the
+    /// floor below it.
+    #[test]
+    fn parallelism_retention_line_is_single_sourced_and_warns_below_the_floor() {
+        assert!(
+            parallelism_retention_line(&Metrics {
+                parallelism_retention: None,
+                ..Default::default()
+            })
+            .is_none(),
+            "an unmeasured retention yields no line (nothing to surface)"
+        );
+        let healthy = parallelism_retention_line(&Metrics {
+            parallelism_retention: Some(0.9),
+            ..Default::default()
+        })
+        .expect("a measured retention yields a line");
+        assert!(
+            healthy.contains("90.0%") && !healthy.contains("WARN"),
+            "a healthy retention shows the share without a warning: {healthy}"
+        );
+        let warn = parallelism_retention_line(&Metrics {
+            parallelism_retention: Some(0.4),
+            ..Default::default()
+        })
+        .expect("a measured retention yields a line");
+        assert!(
+            warn.contains("40.0%") && warn.contains("WARN") && warn.contains("80.0% floor"),
+            "a below-floor retention warns and names the floor: {warn}"
+        );
+    }
+
     /// spec 11 remediation: an in-process (cli) run has findings but records NO adjudicator
     /// verdict (no SpawnResult), so the upheld-based folds are unfed. The render must
     /// DISCLOSE that honestly rather than let a reader misread the 0% survival as the
@@ -8023,11 +8160,29 @@ mod tests {
             err.to_string().contains(STEP_BUSY_TOKEN),
             "the refusal must carry the busy token for the driver: {err}"
         );
-        // Releasing the first frees the lock so a later step proceeds - the refusal is
-        // transient, not a wedge.
+        // Releasing the first frees the lock so a LATER step proceeds - the refusal is
+        // transient, not a wedge. Assert that eventual-acquire contract with a bounded
+        // backoff, not a single instantaneous try: in a saturated parallel test binary a
+        // concurrently spawned subprocess can momentarily inherit the just-released lock fd
+        // across its fork/exec window (before close-on-exec fires and drops it), so an
+        // immediate reacquire can still observe a spurious BUSY. That transient refusal is
+        // precisely what the driver is built to ride - back off on STEP_BUSY_TOKEN and retry -
+        // so the test models the same protocol rather than racing an exact instant.
         drop(held);
-        let _reacquired =
-            acquire_step_lock().expect("after the first releases, a later step acquires cleanly");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let _reacquired = loop {
+            match acquire_step_lock() {
+                Ok(f) => break f,
+                Err(e) => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "after the first releases, a later step must acquire cleanly; still \
+                         refused at the backoff deadline (last refusal: {e})"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+            }
+        };
     }
 
     /// The no-runs message single-sourced for both the absent-db and empty-stream
