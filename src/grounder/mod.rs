@@ -6,6 +6,13 @@
 #[cfg(feature = "turbovec")]
 pub mod turbovec;
 
+// The structural grounding axis (spec 15): a symbol index projected from the code tree.
+// Declared UNGATED on purpose - the parser-free data model (`symbols::model`) must compile
+// in the light (`--no-default-features`) lane, where tree-sitter is not even linked, which
+// is the compile-time proof that no tree-sitter type crosses into the model API. Only the
+// tree-sitter-touching submodules inside `symbols` carry `#[cfg(feature = "symbols")]`.
+pub mod symbols;
+
 use std::collections::HashSet;
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
@@ -107,6 +114,37 @@ pub struct Ref {
     pub text: String,
 }
 
+/// The two-view blast radius of a query (architecture 5.5.1, spec 16 unit 1). Blast-radius has
+/// OPPOSITE error costs for its two consumers, so it delivers TWO views over the same query:
+///
+/// - `precise` - the ranked, capped view (definers ranked above referencers) that seeds an
+///   agent's prompt. A spurious extra file here merely wastes a little context, so precision
+///   is what it optimizes for.
+/// - `safe` - the SAFE-SUPERSET view (the union of the structural view and grep, uncapped) that
+///   the conductor partitions and routes review tiers by. `partition_by_blast_radius` co-schedules
+///   two units only when their file sets are DISJOINT, so a MISSED reference could co-schedule two
+///   conflicting units in one parallel batch. Over-inclusion is the safe error; this view is
+///   therefore never narrower than the grep radius it augments and is never capped.
+///
+/// `serialize` is the fail-safe for a HUB symbol - one whose per-language reference degree
+/// exceeds the repo's degree-distribution percentile (5.5.2). Rather than truncating its huge
+/// (often whole-repo) file set, a hub radius is flagged conflict-with-everything: the partitioning
+/// consumer (unit 3) places such a unit in its own batch instead of co-scheduling it. Correctness
+/// is kept, parallelism reduced - never the reverse. `safe` still carries the real files (never
+/// truncated); `serialize` only tells the consumer to conflict this radius against all others.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BlastRadius {
+    /// The precise / ranked view: definer files first, then referencer files, capped at `k`.
+    pub precise: Vec<String>,
+    /// The safe-superset view: the union of `precise` and grep, uncapped - always a superset of the
+    /// grep radius.
+    pub safe: Vec<String>,
+    /// Whether this radius must serialize (conflict-with-everything) because the queried symbol
+    /// is a hub. The partitioning consumer never co-schedules a serialize radius; the files in
+    /// `safe` are NOT truncated when this is set.
+    pub serialize: bool,
+}
+
 /// Grounder returns up to k locations relevant to a query.
 pub trait Grounder: Send + Sync {
     fn ground(&self, query: &str, k: usize) -> Vec<Ref>;
@@ -115,6 +153,41 @@ pub trait Grounder: Send + Sync {
     /// on the accepted code (turbovec reindexDelta). The default is a no-op - grep
     /// re-reads the tree each time and needs no index.
     fn reindex(&self, _src_dir: &str, _files: &[String]) {}
+
+    /// The two-view blast radius of `query` (architecture 5.5.1, spec 16). The DEFAULT impl - the
+    /// one a grep / turbovec / nop grounder inherits - returns this grounder's OWN top-`k` radius
+    /// (the distinct files it grounds, in ground order) as BOTH views and never serializes. So a
+    /// non-symbols grounder's blast radius is EXACTLY its grep/top-k radius: `precise == safe`, no
+    /// hub composition, no extra work. This is what keeps unit 3's symbols-inactive `grounded_seed`
+    /// (which reads `precise`) byte-for-byte unchanged - it is the same `ground(query, k)` file set
+    /// it produces today. Only the `symbols` grounder overrides this to union the structural
+    /// cross-reference graph with an uncapped grep and to flag hub symbols as serialize.
+    fn blast_radius(&self, query: &str, k: usize) -> BlastRadius {
+        let mut files: Vec<String> = Vec::new();
+        for r in self.ground(query, k) {
+            if !files.contains(&r.file) {
+                files.push(r.file);
+            }
+        }
+        BlastRadius {
+            precise: files.clone(),
+            safe: files,
+            serialize: false,
+        }
+    }
+
+    /// A provenance stamp for the `BlastRadiusComputed` audit event (spec 16 unit 3,
+    /// architecture 5.5.9): the index content-hash + grammar / tag-query version that
+    /// produced this grounder's radii, so a recorded radius reconstructs which index state
+    /// grounded it and staleness is answerable ("why the full panel?"). It is ALSO the
+    /// structural-active signal unit 3's conductor keys the audit off: the DEFAULT (grep /
+    /// turbovec / nop - no structural cross-reference index) returns an EMPTY stamp, so the
+    /// conductor emits NO audit event and drives NO retention metric on that path, keeping the
+    /// shipped default byte-for-byte unchanged. Only the `symbols` grounder overrides this to a
+    /// non-empty `<index-content-hash>/<grammar-tags-version>` stamp.
+    fn index_stamp(&self) -> String {
+        String::new()
+    }
 }
 
 /// Nop grounds nothing.
@@ -154,6 +227,37 @@ pub fn turbovec_feature_missing_error(name: &str) -> String {
     )
 }
 
+/// The loud error returned when `defaults.grounder: symbols` is configured but this binary was
+/// built WITHOUT the `symbols` feature (the structural index and its grammars). Selecting a
+/// grounder must NEVER silently degrade to grep - the same no-silent-degrade rule as turbovec -
+/// so this is surfaced to the caller, which fails the process. When the feature IS built,
+/// `main::select_grounder` resolves `symbols` to the real `Symbols` grounder BEFORE delegating
+/// here, so this arm is reached only by a feature-off binary (or a direct call).
+pub fn symbols_feature_missing_error() -> String {
+    "grounder \"symbols\" is configured but this binary was built without the symbols feature; \
+     rebuild with the default features, or set `defaults.grounder: grep` explicitly to use the \
+     literal grep grounder"
+        .to_string()
+}
+
+/// The loud error returned when `defaults.grounder: hybrid` is configured but this binary was
+/// built WITHOUT the `symbols` feature. Hybrid COMPOSES the structural symbol index with semantic
+/// search, so it needs the `symbols` feature (with turbovec absent it degrades to exactly the
+/// symbols mode - but never below it); a build without `symbols` cannot provide it at all. Selecting
+/// a grounder must NEVER silently degrade to grep - the same no-silent-degrade rule as turbovec and
+/// symbols - so this is surfaced to the caller, which fails the process. When the feature IS built,
+/// `main::select_grounder` / `select_reindex_grounder` resolve `hybrid` to the real `Hybrid`
+/// grounder BEFORE delegating here, so this arm is reached only by a feature-off binary. The message
+/// names `hybrid`, the missing `symbols` feature, and the explicit `grep` escape hatch - it must
+/// NEVER be the generic `unknown grounder` message, which would misdescribe a supported config as a
+/// typo.
+pub fn hybrid_feature_missing_error() -> String {
+    "grounder \"hybrid\" is configured but this binary was built without the symbols feature that \
+     hybrid composes; rebuild with the default features, or set `defaults.grounder: grep` \
+     explicitly to use the literal grep grounder"
+        .to_string()
+}
+
 /// Select a grounder by the configured `defaults.grounder` name, rooted at `root`
 /// (§3.2, §5.4, R4). This is the FEATURE-INDEPENDENT part of the choice and the
 /// grep-only build's resolver:
@@ -170,8 +274,16 @@ pub fn grounder_for(name: &str, root: &str) -> Result<Box<dyn Grounder>, String>
         "nop" => Ok(Box::new(Nop)),
         "grep" => Ok(Box::new(Grep { root: root.into() })),
         _ if resolves_to_turbovec(name) => Err(turbovec_feature_missing_error(name)),
+        // `symbols` resolves to the real grounder in `select_grounder` when the feature is built;
+        // here (the feature-independent resolver) it is a LOUD error, never a silent grep degrade.
+        "symbols" => Err(symbols_feature_missing_error()),
+        // `hybrid` resolves to the real composite grounder in `select_grounder` when the `symbols`
+        // feature is built; here (the feature-off resolver) it must give the SAME actionable
+        // feature-missing error as `symbols`, never the generic `unknown grounder` message (which
+        // would misdescribe a supported config as a typo) and never a silent grep degrade.
+        "hybrid" => Err(hybrid_feature_missing_error()),
         other => Err(format!(
-            "unknown grounder {other:?}; valid names are turbovec (default), grep, nop"
+            "unknown grounder {other:?}; valid names are turbovec (default), symbols, hybrid, grep, nop"
         )),
     }
 }
@@ -254,6 +366,51 @@ mod tests {
         assert!(g.ground("apply_damage", 0).is_empty());
     }
 
+    /// The DEFAULT `blast_radius` (the one a non-symbols grounder inherits) is EXACTLY the
+    /// grounder's own top-`k` radius: `precise == safe` = the distinct files it grounds, and it
+    /// NEVER serializes. This is the contract that keeps unit 3's symbols-inactive `grounded_seed`
+    /// (which reads `precise`) byte-for-byte unchanged - it is the same `ground(query, k)` file set.
+    /// This test is ungated: it holds identically in both feature lanes because the default impl
+    /// touches no structural index.
+    #[test]
+    fn default_blast_radius_is_the_grounders_own_top_k_radius_both_views_never_serialize() {
+        let dir = tempfile::tempdir().unwrap();
+        // Two files both matching the needle so the radius has more than one file.
+        std::fs::write(dir.path().join("combat.rs"), "fn apply_damage() {}\n").unwrap();
+        std::fs::write(
+            dir.path().join("notes.rs"),
+            "// apply_damage is called here\n",
+        )
+        .unwrap();
+        let g = Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+
+        let br = g.blast_radius("apply_damage", 8);
+        // The default radius is EXACTLY these two grep-matched files - a CONCRETE expected list, not
+        // a re-run of the impl's own dedup loop (which would pass tautologically for any impl). Grep
+        // walks the tree in unsorted `read_dir` order, so compare the SET (sorted); the two views'
+        // element-for-element ORDER equality is pinned separately just below.
+        let mut got = br.precise.clone();
+        got.sort();
+        assert_eq!(
+            got,
+            vec!["combat.rs".to_string(), "notes.rs".to_string()],
+            "the default radius is exactly the two files grep matches; got {br:?}"
+        );
+        // Both views are the SAME grep radius - equal element-for-element, in the same order (safe is
+        // the trivial superset of precise on the default path) - and it never serializes.
+        assert_eq!(
+            br.precise, br.safe,
+            "the default safe view equals the precise view (grep radius, a trivial superset)"
+        );
+        assert!(!br.serialize, "the default path never serializes");
+
+        // An empty query / k=0 grounds nothing, so both views are empty (the empty fail-safe).
+        let empty = g.blast_radius("apply_damage", 0);
+        assert!(empty.precise.is_empty() && empty.safe.is_empty() && !empty.serialize);
+    }
+
     /// The grep grounder's walk must SKIP the shared denied dirs - in particular
     /// `.fastembed_cache` (the ~128 MB model cache): the documented
     /// `defaults.grounder: grep` fallback must not index the model blobs. Before the
@@ -333,6 +490,28 @@ mod tests {
         );
     }
 
+    /// A non-structural grounder (grep / nop / the trait default) has NO cross-reference index,
+    /// so its `index_stamp` is EMPTY. That empty stamp is the signal unit 3's conductor reads to
+    /// emit NO `BlastRadiusComputed` audit and drive NO retention metric on this path - the exact
+    /// mechanism that keeps the shipped (non-symbols) default byte-for-byte unchanged. Ungated: it
+    /// holds identically in both feature lanes (the default impl touches no structural index).
+    #[test]
+    fn default_index_stamp_is_empty_so_the_default_path_drives_no_audit() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.rs"), "fn foo() {}\n").unwrap();
+        let g = Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+        assert!(
+            g.index_stamp().is_empty(),
+            "grep is not structural; an empty stamp keeps the default path byte-for-byte unchanged"
+        );
+        assert!(
+            Nop.index_stamp().is_empty(),
+            "nop grounds nothing and stamps nothing"
+        );
+    }
+
     #[test]
     fn grounder_for_selects_by_name() {
         let dir = tempfile::tempdir().unwrap();
@@ -396,5 +575,52 @@ mod tests {
         // grep / nop still resolve fine.
         assert!(grounder_for("grep", "/tmp").is_ok());
         assert!(grounder_for("nop", "/tmp").is_ok());
+    }
+
+    /// The feature-INDEPENDENT resolver never returns a `Symbols` grounder: `symbols` is a LOUD
+    /// error here (naming the feature), never a silent grep degrade - the same rule as turbovec.
+    /// When the `symbols` feature IS built, `main::select_grounder` intercepts the name first; this
+    /// arm is the feature-off behavior. It holds identically in BOTH feature lanes (this resolver
+    /// is feature-independent), so the test is ungated.
+    #[test]
+    fn symbols_without_the_feature_is_a_loud_error_not_a_grep_fallback() {
+        let err = grounder_for("symbols", ".")
+            .err()
+            .expect("symbols must be a loud error in the feature-independent resolver");
+        assert!(
+            err.to_lowercase().contains("symbols")
+                && err.contains("feature")
+                && err.contains("grep"),
+            "the loud error must name symbols, the feature, and the grep opt-out; got: {err}"
+        );
+    }
+
+    /// `defaults.grounder: hybrid` on a binary built WITHOUT the `symbols` feature must yield the
+    /// ACTIONABLE feature-missing error, NOT the misleading generic `unknown grounder` message.
+    /// Hybrid composes the structural symbol index with semantic search, so it needs the `symbols`
+    /// feature; when that feature is absent both `select_grounder` cfg lanes fall through to this
+    /// feature-independent resolver, whose `hybrid` arm must fail LOUDLY - naming `hybrid`, the
+    /// missing `symbols` feature, and the explicit `grep` escape hatch - never silently degrade to
+    /// grep and never emit `unknown grounder`. Like the `symbols` sibling test, this holds in BOTH
+    /// feature lanes (the resolver is feature-independent), so it is ungated.
+    #[test]
+    fn hybrid_without_the_feature_is_the_actionable_feature_error_not_unknown_grounder() {
+        let err = grounder_for("hybrid", ".")
+            .err()
+            .expect("hybrid must be a loud error in the feature-independent resolver");
+        assert!(
+            err.to_lowercase().contains("hybrid")
+                && err.contains("feature")
+                && err.contains("symbols")
+                && err.contains("grep"),
+            "the loud error must name hybrid, the missing symbols feature, and the grep opt-out; \
+             got: {err}"
+        );
+        assert!(
+            !err.contains("unknown grounder"),
+            "hybrid must NOT hit the generic unknown-grounder arm; got: {err}"
+        );
+        // Case-insensitive and whitespace-trimmed, exactly like the other resolver names.
+        assert!(grounder_for("  Hybrid ", ".").is_err());
     }
 }

@@ -297,13 +297,19 @@ pub struct ReviewDepth {
     /// `tiers` but forgets `threshold` keeps the full panel for every non-empty unit -
     /// tiering never silently weakens review.
     ///
-    /// CEILING: the grounded blast radius is capped at the grounder's `k` (the conductor
-    /// grounds at most 8 distinct files - `grounded_seed`), so `blast_radius.len() <= 8`
-    /// always and a `threshold >= 8` is INERT by size alone - it can never be exceeded, so
-    /// only `high_risk_paths` (or a flapped gate, or an empty radius) can then force the
-    /// full panel. Author size thresholds below the grounder cap; use `high_risk_paths`
-    /// for breadth the size signal cannot express. (The cap also means the count reflects
-    /// grep-hit spread within the first 8 line-matches, not the change's full breadth.)
+    /// SIZE SIGNAL (spec 16 unit 3): the file count measured against `threshold` is the
+    /// unit's `.safe` structural blast-radius view, NOT the capped grounded seed. On the
+    /// STRUCTURAL (symbols) grounder `.safe` is the UNCAPPED grep-union-structural superset
+    /// (the change's true structural width), so `threshold` is a LIVE size gate over that
+    /// full width: it is NOT bounded above by the grounder's `k`, and a `threshold >= 8` is
+    /// NO LONGER inert, so any change wider than the threshold routes to the full panel. Tune
+    /// it to the structural-width distribution of your repo: set it too low and every unit
+    /// exceeds it, collapsing tier routing to all-full and defeating the parallelism the
+    /// light tier exists to retain; use `high_risk_paths` for breadth the size signal
+    /// cannot express. On the default / turbovec / grep lane `.safe` equals the capped
+    /// grounded seed (safe == precise == the pre-unit-3 seed), so there the count is still
+    /// the grep-hit spread within the first `k` line-matches and this threshold behaves
+    /// exactly as it did before unit 3.
     #[serde(default)]
     pub threshold: usize,
     /// Path prefixes / globs that force the FULL panel even for a small change: a unit

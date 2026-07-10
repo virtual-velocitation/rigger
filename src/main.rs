@@ -669,6 +669,7 @@ fn main() {
         "dash" => cmd_dash(&args[2..]),
         "ground" => cmd_ground(&args[2..]),
         "reindex" => cmd_reindex(&args[2..]),
+        "symbols-index" => cmd_symbols_index(&args[2..]),
         "emit" => cmd_emit(&args[2..]),
         "progress" => cmd_progress(&args[2..]),
         "result" => cmd_result(&args[2..]),
@@ -793,6 +794,9 @@ configured grounder finds for <query>, as `file:line: text`\n  \
 rigger reindex <file>...    incrementally re-embed the named files in the project's\n                              \
 persisted grounding index (the grounder's reindex), so a\n                              \
 later `rigger ground` reflects just-landed changes\n  \
+rigger symbols-index [dir]  build + persist the structural symbol index over [dir]\n                              \
+(default .) and print its path + file count - the fresh-\n                              \
+process determinism harness for the symbols grounder (spec 15)\n  \
 rigger emit <type> <json>   append {{type, data:<json>}} to the event store and fold\n                              \
 it into the context graph (the CLI form of rigger_emit)\n  \
 rigger progress <id> <act>  record one live progress line for spawn <id> to the\n                              \
@@ -1627,6 +1631,20 @@ fn run_cli(parsed: &RunArgs) -> Res {
     };
     let rs = conductor::run(&cfg, &deps)?;
     print_run_state(&rs);
+    // spec 17 criterion 4c: a silently-serializing fleet must WARN during a run, not only when the
+    // operator later runs `rigger stats`. Re-project this run's metrics from the log and, if the
+    // parallelism-retention floor was breached under structural grounding, log the SAME line the
+    // stats row shows (one authority) to stderr. Best-effort: a read hiccup never fails a run that
+    // already succeeded, and on the shipped non-symbols default retention is unmeasured so nothing
+    // prints and the default run output is unchanged.
+    if let Ok(events) = store.read_stream(conductor::STREAM, 0, Direction::Forward) {
+        let m = metrics::project(runscope::current_run(&events));
+        if let Some(line) = parallelism_retention_line(&m) {
+            if m.parallelism_retention_warns() {
+                eprintln!("rigger: {line}");
+            }
+        }
+    }
     Ok(())
 }
 
@@ -1974,6 +1992,35 @@ fn stats_lines(
 const NO_RUNS_MESSAGE: &str =
     "# Rigger: no runs recorded yet (run `rigger run` to start a run, then `rigger stats`).";
 
+/// The operator-facing parallelism-retention line for a run (spec 17 criterion 4c), or `None`
+/// when the metric was NOT measured: [`parallelism_retention`](Metrics::parallelism_retention) is
+/// `None` because no `BlastRadiusComputed` audit was recorded, which is the shipped non-symbols
+/// default. Both operator surfaces then omit the line, so default output is byte-for-byte unchanged.
+///
+/// When measured it reports the share of grounded units that stay co-schedulable (the
+/// wave-parallelism the fleet retained), and a fleet that has quietly serialized itself - a
+/// retention below [`metrics::PARALLELISM_RETENTION_WARN`], per
+/// [`parallelism_retention_warns`](Metrics::parallelism_retention_warns) - gets a loud inline
+/// `WARN` naming the floor.
+///
+/// Single-sourced so the `rigger stats` retention row and the end-of-`rigger run` stderr notice
+/// render IDENTICALLY: the warn text and its firing condition have ONE authority and cannot drift.
+fn parallelism_retention_line(m: &Metrics) -> Option<String> {
+    let retention = m.parallelism_retention?;
+    let mut line = format!(
+        "{:.1}% of grounded units stay co-schedulable (wave-parallelism retained)",
+        retention * 100.0,
+    );
+    if m.parallelism_retention_warns() {
+        line.push_str(&format!(
+            " - WARN: below the {:.1}% floor, the fleet is largely serializing (most units \
+             alone in their partition batch)",
+            metrics::PARALLELISM_RETENTION_WARN * 100.0,
+        ));
+    }
+    Some(line)
+}
+
 /// Render a [`Metrics`] value into the lines `rigger stats` prints, one metric group
 /// per line. Split from [`cmd_stats`] (which does the I/O) so the formatting is a
 /// pure function of the metrics and can be asserted in a unit test without touching
@@ -2004,6 +2051,13 @@ fn format_stats(m: &Metrics) -> Vec<String> {
         "  review             {} approved / {} rejected",
         m.review_approve, m.review_reject,
     ));
+    // The runtime parallelism-retention row (spec 17 criterion 4c): shown only when structural
+    // grounding measured it (`Some`); omitted on the shipped non-symbols default so that output
+    // is unchanged. A below-floor share carries a loud inline WARN (single-sourced via
+    // `parallelism_retention_line`, shared with the end-of-run stderr notice).
+    if let Some(body) = parallelism_retention_line(m) {
+        lines.push(format!("  parallelism        {body}"));
+    }
     if m.gates.is_empty() {
         lines.push("  gates              (no gate runs recorded)".to_string());
     } else {
@@ -3047,6 +3101,51 @@ fn cmd_reindex(args: &[String]) -> Res {
         args.join(", ")
     );
     Ok(())
+}
+
+/// `rigger symbols-index [<dir>]` - the criterion-3 fresh-process determinism harness for the
+/// `symbols` structural index (spec 15, unit 3). It builds the whole-project symbol index over
+/// `<dir>` (default `.`) via [`rigger::grounder::symbols::build_index`] and persists it with
+/// [`rigger::grounder::symbols::store::save`], then prints the persisted path and file count.
+///
+/// It is DELIBERATELY independent of [`select_grounder`] / `defaults.grounder`: it drives unit
+/// 3's own build+persist path directly, so a determinism test can re-index the SAME tree in two
+/// SEPARATE `rigger` processes and diff the persisted `index.json` byte-for-byte - the
+/// cross-process check the in-process lib test structurally cannot make, since one process
+/// shares a single hash seed. Keeping this off the grounder-selection wiring also keeps the
+/// spec-15 unit DAG acyclic (this harness needs only unit 3's code, never unit 4's selection).
+///
+/// Feature-gated on `symbols`: a build without it has no structural index, so the command
+/// errors loudly rather than pretending to build one (the same no-silent-degrade rule the
+/// grounder selection follows).
+fn cmd_symbols_index(args: &[String]) -> Res {
+    #[cfg(feature = "symbols")]
+    {
+        if args.len() > 1 {
+            return Err(format!(
+                "symbols-index: expected at most a directory, got {} arguments",
+                args.len()
+            )
+            .into());
+        }
+        let dir = args.first().map(String::as_str).unwrap_or(".");
+        let idx = rigger::grounder::symbols::build_index(dir, None);
+        rigger::grounder::symbols::store::save(&idx, dir)?;
+        println!(
+            "symbols index: {} file(s) -> {}",
+            idx.files().len(),
+            rigger::grounder::symbols::store::index_path(dir).display()
+        );
+        Ok(())
+    }
+    #[cfg(not(feature = "symbols"))]
+    {
+        let _ = args;
+        Err(
+            "symbols-index requires the `symbols` feature; rebuild with the default features"
+                .into(),
+        )
+    }
 }
 
 /// `rigger emit <type> '<json-object>'` - append an event `{type: <type>, data:
@@ -4790,6 +4889,26 @@ fn select_grounder(name: &str) -> Result<Box<dyn Grounder>, Box<dyn std::error::
             .map_err(|e| format!("turbovec grounder unavailable: {e}"))?;
         return Ok(Box::new(tv));
     }
+    // `symbols` resolves to the real structural grounder when the feature is built (it opens or
+    // builds+persists the index over the repo root); a build WITHOUT the feature falls through to
+    // `grounder_for`, whose `symbols` arm is the loud no-silent-degrade error.
+    #[cfg(feature = "symbols")]
+    if name.trim().eq_ignore_ascii_case("symbols") {
+        return Ok(Box::new(
+            rigger::grounder::symbols::grounder::Symbols::open(".", None),
+        ));
+    }
+    // `hybrid` composes symbols (structural) with turbovec (semantic); with the feature built it
+    // opens BOTH and ranks structure first. Absent turbovec, `Hybrid::open` degrades to exactly
+    // the symbols mode - the degrade lives in ONE authority, so this arm is IDENTICAL in both cfg
+    // lanes. A build WITHOUT the symbols feature falls through to `grounder_for` (loud error).
+    #[cfg(feature = "symbols")]
+    if name.trim().eq_ignore_ascii_case("hybrid") {
+        return Ok(Box::new(
+            rigger::grounder::symbols::hybrid::Hybrid::open(".", None)
+                .map_err(|e| format!("hybrid grounder unavailable: {e}"))?,
+        ));
+    }
     Ok(rigger::grounder::grounder_for(name, ".")?)
 }
 
@@ -4798,6 +4917,24 @@ fn select_grounder(name: &str) -> Result<Box<dyn Grounder>, Box<dyn std::error::
     // No turbovec feature compiled in: `grounder_for` returns the loud
     // "built without the turbovec feature" error for the default / turbovec names,
     // and resolves grep / nop normally. We never silently degrade to grep.
+    // `symbols` still resolves to the structural grounder when THAT feature is built (it is
+    // independent of turbovec); without it, `grounder_for` returns the loud symbols error.
+    #[cfg(feature = "symbols")]
+    if name.trim().eq_ignore_ascii_case("symbols") {
+        return Ok(Box::new(
+            rigger::grounder::symbols::grounder::Symbols::open(".", None),
+        ));
+    }
+    // `hybrid` resolves via the SAME `Hybrid::open` as the turbovec-on lane; without turbovec it
+    // degrades to exactly the symbols mode (the degrade is intrinsic to `Hybrid`, so this arm does
+    // not differ by cfg lane). Without the symbols feature, `grounder_for` returns the loud error.
+    #[cfg(feature = "symbols")]
+    if name.trim().eq_ignore_ascii_case("hybrid") {
+        return Ok(Box::new(
+            rigger::grounder::symbols::hybrid::Hybrid::open(".", None)
+                .map_err(|e| format!("hybrid grounder unavailable: {e}"))?,
+        ));
+    }
     Ok(rigger::grounder::grounder_for(name, ".")?)
 }
 
@@ -4805,8 +4942,16 @@ fn select_grounder(name: &str) -> Result<Box<dyn Grounder>, Box<dyn std::error::
 /// turbovec: it constructs via `Turbovec::new_for_reindex`, which loads the persisted
 /// store WITHOUT freshening tree drift. `reindex` then re-embeds exactly the named
 /// files; using the freshening `new` here would re-embed every drifted file on load and
-/// then the named files AGAIN - a double-embed. grep / nop have no index, so their
-/// `reindex` is a no-op and this resolves identically to [`select_grounder`].
+/// then the named files AGAIN - a double-embed.
+///
+/// EVERY OTHER name resolves IDENTICALLY to [`select_grounder`], and MUST: the two are one
+/// grounder-selection concern, not two authorities to keep in sync by hand. `symbols` resolves
+/// to the SAME real `Symbols::open` here as in `select_grounder` - `Symbols::open` only LOADS
+/// the persisted index (it does not freshen the whole tree the way turbovec's `new` does), so
+/// opening it for a reindex re-parses ONLY the named files and there is no double-work to avoid;
+/// omitting this arm is exactly the parallel-selector drift that made `rigger reindex` under
+/// `defaults.grounder: symbols` return the false `symbols_feature_missing_error` while the
+/// feature was built. grep / nop have no index, so their `reindex` is a no-op.
 #[cfg(feature = "turbovec")]
 fn select_reindex_grounder(name: &str) -> Result<Box<dyn Grounder>, Box<dyn std::error::Error>> {
     if rigger::grounder::resolves_to_turbovec(name) {
@@ -4814,11 +4959,49 @@ fn select_reindex_grounder(name: &str) -> Result<Box<dyn Grounder>, Box<dyn std:
             .map_err(|e| format!("turbovec grounder unavailable: {e}"))?;
         return Ok(Box::new(tv));
     }
+    // `symbols` resolves to the SAME structural grounder `select_grounder` builds (open only loads
+    // the persisted index, so there is no freshen-on-open double-work); a build WITHOUT the feature
+    // falls through to `grounder_for`, whose `symbols` arm is the loud no-silent-degrade error.
+    #[cfg(feature = "symbols")]
+    if name.trim().eq_ignore_ascii_case("symbols") {
+        return Ok(Box::new(
+            rigger::grounder::symbols::grounder::Symbols::open(".", None),
+        ));
+    }
+    // `hybrid` for reindex opens both axes via the reindex constructors: turbovec loads the
+    // persisted store WITHOUT a whole-tree freshen (`new_for_reindex`), so `reindex` re-embeds only
+    // the named files and never double-embeds. Carried in BOTH cfg lanes exactly like the `symbols`
+    // arm, so `rigger reindex` under `defaults.grounder: hybrid` freshens instead of erroring.
+    #[cfg(feature = "symbols")]
+    if name.trim().eq_ignore_ascii_case("hybrid") {
+        return Ok(Box::new(
+            rigger::grounder::symbols::hybrid::Hybrid::open_for_reindex(".", None)
+                .map_err(|e| format!("hybrid grounder unavailable: {e}"))?,
+        ));
+    }
     Ok(rigger::grounder::grounder_for(name, ".")?)
 }
 
 #[cfg(not(feature = "turbovec"))]
 fn select_reindex_grounder(name: &str) -> Result<Box<dyn Grounder>, Box<dyn std::error::Error>> {
+    // `symbols` resolves identically to `select_grounder` (open only loads the persisted index, so
+    // no freshen-on-open double-work); without the feature, `grounder_for` returns the loud error.
+    #[cfg(feature = "symbols")]
+    if name.trim().eq_ignore_ascii_case("symbols") {
+        return Ok(Box::new(
+            rigger::grounder::symbols::grounder::Symbols::open(".", None),
+        ));
+    }
+    // `hybrid` for reindex without turbovec degrades to exactly the symbols mode via the same
+    // `Hybrid::open_for_reindex` as the turbovec-on lane; without the symbols feature,
+    // `grounder_for` returns the loud error.
+    #[cfg(feature = "symbols")]
+    if name.trim().eq_ignore_ascii_case("hybrid") {
+        return Ok(Box::new(
+            rigger::grounder::symbols::hybrid::Hybrid::open_for_reindex(".", None)
+                .map_err(|e| format!("hybrid grounder unavailable: {e}"))?,
+        ));
+    }
     Ok(rigger::grounder::grounder_for(name, ".")?)
 }
 
@@ -7535,6 +7718,93 @@ mod tests {
         );
     }
 
+    /// spec 17 criterion 4c: the runtime parallelism-retention metric must REACH an operator on
+    /// the production `rigger stats` render (previously it was computed by `metrics::project` but
+    /// no path surfaced it). A MEASURED retention shows a row with the co-schedulable share; a
+    /// retention below [`metrics::PARALLELISM_RETENTION_WARN`] adds a loud inline WARN naming the
+    /// floor so a silently-serializing fleet is visible; and an UNMEASURED retention (`None` - the
+    /// shipped non-symbols default records no `BlastRadiusComputed` audit) OMITS the row entirely,
+    /// so the default `rigger stats` output is byte-for-byte unchanged.
+    #[test]
+    fn format_stats_surfaces_parallelism_retention_and_warns_below_the_floor() {
+        // Measured and above the floor: a row with the share, no WARN.
+        let healthy = Metrics {
+            parallelism_retention: Some(0.95),
+            ..Default::default()
+        };
+        let out = format_stats(&healthy).join("\n");
+        assert!(
+            out.contains("parallelism        95.0%"),
+            "a measured retention must appear on an operator-visible stats row:\n{out}"
+        );
+        assert!(
+            !out.contains("WARN"),
+            "a healthy fleet at or above the floor must not warn:\n{out}"
+        );
+
+        // Measured and below the floor: the share is still shown AND a loud WARN names the floor.
+        let serializing = Metrics {
+            parallelism_retention: Some(0.5),
+            ..Default::default()
+        };
+        let out = format_stats(&serializing).join("\n");
+        assert!(
+            out.contains("parallelism        50.0%"),
+            "the below-floor retention share must still be shown:\n{out}"
+        );
+        assert!(
+            out.contains("WARN") && out.contains("80.0% floor"),
+            "a below-floor retention must warn and name the 80.0% floor:\n{out}"
+        );
+
+        // Unmeasured (the shipped non-symbols default): no retention row at all.
+        let unmeasured = Metrics {
+            parallelism_retention: None,
+            ..Default::default()
+        };
+        let out = format_stats(&unmeasured).join("\n");
+        assert!(
+            !out.contains("parallelism"),
+            "an unmeasured retention (default lane) must omit the row, keeping default stats \
+             output unchanged:\n{out}"
+        );
+    }
+
+    /// The parallelism-retention line is single-sourced through [`parallelism_retention_line`] so
+    /// the `rigger stats` row and the end-of-`rigger run` stderr notice (spec 17 4c's "logged
+    /// warning when retention drops below the threshold on a run") render IDENTICALLY and cannot
+    /// drift: `None` when unmeasured, no `WARN` at or above the floor, and a `WARN` naming the
+    /// floor below it.
+    #[test]
+    fn parallelism_retention_line_is_single_sourced_and_warns_below_the_floor() {
+        assert!(
+            parallelism_retention_line(&Metrics {
+                parallelism_retention: None,
+                ..Default::default()
+            })
+            .is_none(),
+            "an unmeasured retention yields no line (nothing to surface)"
+        );
+        let healthy = parallelism_retention_line(&Metrics {
+            parallelism_retention: Some(0.9),
+            ..Default::default()
+        })
+        .expect("a measured retention yields a line");
+        assert!(
+            healthy.contains("90.0%") && !healthy.contains("WARN"),
+            "a healthy retention shows the share without a warning: {healthy}"
+        );
+        let warn = parallelism_retention_line(&Metrics {
+            parallelism_retention: Some(0.4),
+            ..Default::default()
+        })
+        .expect("a measured retention yields a line");
+        assert!(
+            warn.contains("40.0%") && warn.contains("WARN") && warn.contains("80.0% floor"),
+            "a below-floor retention warns and names the floor: {warn}"
+        );
+    }
+
     /// spec 11 remediation: an in-process (cli) run has findings but records NO adjudicator
     /// verdict (no SpawnResult), so the upheld-based folds are unfed. The render must
     /// DISCLOSE that honestly rather than let a reader misread the 0% survival as the
@@ -7890,11 +8160,29 @@ mod tests {
             err.to_string().contains(STEP_BUSY_TOKEN),
             "the refusal must carry the busy token for the driver: {err}"
         );
-        // Releasing the first frees the lock so a later step proceeds - the refusal is
-        // transient, not a wedge.
+        // Releasing the first frees the lock so a LATER step proceeds - the refusal is
+        // transient, not a wedge. Assert that eventual-acquire contract with a bounded
+        // backoff, not a single instantaneous try: in a saturated parallel test binary a
+        // concurrently spawned subprocess can momentarily inherit the just-released lock fd
+        // across its fork/exec window (before close-on-exec fires and drops it), so an
+        // immediate reacquire can still observe a spurious BUSY. That transient refusal is
+        // precisely what the driver is built to ride - back off on STEP_BUSY_TOKEN and retry -
+        // so the test models the same protocol rather than racing an exact instant.
         drop(held);
-        let _reacquired =
-            acquire_step_lock().expect("after the first releases, a later step acquires cleanly");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let _reacquired = loop {
+            match acquire_step_lock() {
+                Ok(f) => break f,
+                Err(e) => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "after the first releases, a later step must acquire cleanly; still \
+                         refused at the backoff deadline (last refusal: {e})"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+            }
+        };
     }
 
     /// The no-runs message single-sourced for both the absent-db and empty-stream

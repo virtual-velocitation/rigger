@@ -16,6 +16,9 @@
 .rigger/grounding/
 # The `rigger step` serialization lock (fs2 flock target): runtime-only, per-machine.
 .rigger/step.lock
+# Persisted symbol index (spec 15): a rebuildable projection of the tree, per-machine
+# derived data, never committed.
+.rigger/symbols/
 # Distilled playbook pool (spec 13, unit 7): a rebuildable projection of the log
 # (`rigger playbooks --rebuild`), derived per-machine, never hand-edited state.
 .rigger/playbooks/

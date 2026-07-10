@@ -16,7 +16,7 @@ use crate::contextgraph::{self, Graph, Projection};
 use crate::eventstore::{Direction, Event, EventStore, ExpectedRevision};
 use crate::failure::{self, Signal};
 use crate::gate::{self, Gate};
-use crate::grounder::Grounder;
+use crate::grounder::{BlastRadius, Grounder};
 use crate::ledger::{self, RunState};
 use crate::safety;
 use crate::spawn::{
@@ -58,6 +58,24 @@ pub const TYPE_MANUAL_REVIEW: &str = ledger::TYPE_MANUAL_REVIEW;
 /// never reported fully done with a red deferred gate. Kept in sync with
 /// `ledger::TYPE_DEFERRED_GATE_FAILED`.
 pub const TYPE_DEFERRED_GATE_FAILED: &str = ledger::TYPE_DEFERRED_GATE_FAILED;
+
+/// A unit's computed two-view blast radius, recorded as PURE AUDIT (spec 16 unit 3,
+/// architecture 5.5.9). It carries the unit, the `precise` seed view, the uncapped
+/// `safe`-superset view partitioning and tier-routing key on, the `serialize` (hub) verdict,
+/// and the grounder's `index_stamp` provenance - emitted on EVERY structural-grounding path
+/// including the empty-radius fail-safe, so "why the full panel?" is always answerable and the
+/// wave-level parallelism-retention metric (`metrics::project`) is reconstructable from the log.
+/// It adds no graph node/edge: the context-graph projector matches no fold arm for it and so
+/// ignores it idempotently. It rides ONLY when a STRUCTURAL grounder is active (a non-empty
+/// `index_stamp`); the shipped non-symbols default emits nothing new and stays byte-for-byte
+/// unchanged. This is the ONE new event type the spec authorizes.
+pub const TYPE_BLAST_RADIUS_COMPUTED: &str = "BlastRadiusComputed";
+
+/// The grounder `k` cap the conductor seeds every unit's PRECISE view at (§5.3): at most this
+/// many distinct files seed a prompt and drive the blast-radius-narrowed gate loop. The
+/// safe-superset view unit 3 partitions and routes tiers by is UNCAPPED (never bounded by this),
+/// so a wide structural change's true width reaches the tier size signal.
+const GROUNDED_SEED_K: usize = 8;
 
 /// The metadata key carrying an event's deterministic REPLAY KEY (spec 04, criterion
 /// 4). A stepwise/replay run re-executes `conductor::run` over recorded history on
@@ -383,10 +401,15 @@ struct TierRouting<'a> {
 /// grounds to zero files) is unassessable, so it routes to FULL rather than LIGHT - the
 /// size and high-risk-path signals can prove nothing about a radius with no files, and a
 /// tiers-without-a-grounder workflow must never silently downgrade EVERY unit to light
-/// (the safety mechanism fails SAFE, not OPEN). The size `threshold` is bounded above by
-/// the grounder's `k` cap (`grounded_seed` grounds at most 8 distinct files), so a
-/// `threshold >= 8` is inert by size alone - only `high_risk_paths`/`flapped`/empty force
-/// full past the cap. The adjudicator and the full gate suite stay mandatory on every tier
+/// (the safety mechanism fails SAFE, not OPEN). The size signal `blast_radius` is the
+/// unit's `.safe` structural blast-radius view (spec 16 unit 3): on the STRUCTURAL
+/// grounder it is the UNCAPPED structural-width superset, so `threshold` is a LIVE gate
+/// over the change's true width and a `threshold >= 8` is NOT inert - any wider change
+/// routes to the full panel; on the default / grep lane `.safe` equals the capped
+/// grounded seed, so the threshold behaves exactly as it did before unit 3 (tune it to
+/// the structural-width distribution - see
+/// [`ReviewDepth::threshold`](crate::config::ReviewDepth::threshold)).
+/// The adjudicator and the full gate suite stay mandatory on every tier
 /// (config validation forces both the light AND the full panel to name an adjudicator; the
 /// gates run outside the review), so a light-routed unit still gets its gating verdict -
 /// only the adversary and the extra lenses flex. Pure over the panel + signals, so it is
@@ -2573,7 +2596,18 @@ impl RunCtx<'_> {
             Some(g) if self.partition_requested(stages, ready) => g,
             _ => return vec![ready.to_vec()],
         };
-        let items: Vec<(String, Vec<String>)> = ready
+        // Each unit is partitioned by its SAFE-SUPERSET view (spec 16 unit 3): the union of the
+        // structural cross-reference graph and grep, uncapped, so a name-level miss can never
+        // co-schedule two conflicting units. On the non-symbols default the safe view equals the
+        // old `ground(query, 8)` file set, so a NON-empty partition is byte-for-byte the pre-unit-3
+        // one. A HUB radius (`serialize`) OR an EMPTY radius (a total, unassessable grounding miss)
+        // fails SAFE by taking its OWN singleton batch rather than joining the disjointness grouping
+        // - the empty-radius own-batch matches the SAME fail-safe `route_review_tier` takes (empty
+        // -> full panel), closing the fail-OPEN where an empty want-set is disjoint from every batch
+        // and would collapse into the first shared one. The shareable radii go through the ONE
+        // `partition_by_blast_radius` authority; both fail-safes ride the shared
+        // `partition_with_serialize` writer, the same own-batch model unit 2's eval froze.
+        let items: Vec<(String, Vec<String>, bool)> = ready
             .iter()
             .map(|name| {
                 let st = &stages[name];
@@ -2582,17 +2616,11 @@ impl RunCtx<'_> {
                 } else {
                     st.coverage.as_str()
                 };
-                let mut files: Vec<String> = grounder
-                    .ground(query, 8)
-                    .into_iter()
-                    .map(|r| r.file)
-                    .collect();
-                files.sort();
-                files.dedup();
-                (name.clone(), files)
+                let radius = grounder.blast_radius(query, GROUNDED_SEED_K);
+                (name.clone(), radius.safe, radius.serialize)
             })
             .collect();
-        partition_by_blast_radius(&items)
+        partition_with_serialize(&items)
     }
 
     /// Whether by-blast-radius partitioning is requested for this wave (§3.2, §8): a
@@ -2774,8 +2802,11 @@ impl RunCtx<'_> {
     /// Select the review panel for a unit by its observable risk (spec 03 / spec 13
     /// unit 4), routing to the LIGHT or FULL tier via [`route_review_tier`] over the
     /// unit's [`effective_review_panel`](RunCtx::effective_review_panel). `blast_radius`
-    /// is the unit's grounded seed - the SAME set spawn/partition/staleness use, never a
-    /// second grounder call - and `flapped` is whether the unit's gates flapped (it took
+    /// is the unit's `.safe` structural blast-radius view (spec 16 unit 3), passed down from
+    /// [`review_unit`](RunCtx::review_unit) via a separate
+    /// [`grounded_blast_radius`](RunCtx::grounded_blast_radius) call - the UNCAPPED
+    /// structural-width superset on the symbols grounder, equal to the grounded seed on the
+    /// default lane - and `flapped` is whether the unit's gates flapped (it took
     /// remediation to reach green). When the effective panel carries no `tiers` policy,
     /// every unit routes to the full panel unchanged.
     fn select_review_panel<'a>(
@@ -2945,8 +2976,10 @@ impl RunCtx<'_> {
     /// worktree, not a remediation, so reusing `attempt > 0` there would force every lane>0 to
     /// the FULL panel and fold a bogus `flapped=true` into the shared unit's evidence.
     ///
-    /// `blast_radius` is the unit's grounded seed - the SAME set spawn/partition/staleness use -
-    /// threaded in so the risk-tier routing (spec 03 / spec 13 unit 4) selects the LIGHT or FULL
+    /// `blast_radius` is the unit's `.safe` structural blast-radius view (spec 16 unit 3) - the
+    /// UNCAPPED structural-width superset on the symbols grounder, equal to the grounded seed on
+    /// the default lane - threaded in so the risk-tier routing (spec 03 / spec 13 unit 4) selects
+    /// the LIGHT or FULL
     /// panel from the observable risk (blast-radius size, a high-risk-path hit, an empty radius,
     /// or flapped gates) BEFORE running any tier. With no depth policy configured, routing
     /// returns the effective panel unchanged and logs nothing, so behavior is byte-for-byte
@@ -3163,12 +3196,19 @@ impl RunCtx<'_> {
             // (spec 10 unit 4) escalates one rung per remediation attempt - the same rung
             // the driver spawns on for `attempts`. Empty for an agentless stage.
             let impl_alias = self.agent_model(&st.agent, attempts);
-            // The unit's grounded blast radius for THIS attempt, computed ONCE (the SAME
-            // grounding `grounded_seed` returns): it seeds the implementer spawn's
-            // `blast_radius` AND selects which gates the blast-radius-narrowed inner loop runs
-            // (spec 12, unit 3), so the gates a remediation iteration re-verifies are exactly
-            // the files the implementer was grounded on.
+            // The PRECISE seed for THIS attempt: it seeds the implementer spawn's `blast_radius`
+            // AND selects which gates the blast-radius-narrowed inner loop runs (spec 12, unit 3),
+            // so the gates a remediation iteration re-verifies are exactly the files the implementer
+            // was grounded on.
             let blast_radius = self.grounded_seed(st);
+            // The unit's two-view radius (spec 16 unit 3): the UNCAPPED `.safe`-superset view routes
+            // the review tier (below) - high-risk membership and the size signal read true
+            // structural width, so a beyond-cap high-risk file still forces the full panel - and the
+            // whole radius is recorded as a `BlastRadiusComputed` audit (structural grounder only,
+            // incl. the empty-radius fail-safe). On the non-symbols default `.safe` equals the seed,
+            // so routing is unchanged and no audit is emitted.
+            let radius = self.grounded_blast_radius(st);
+            self.record_blast_radius(st, attempts, &blast_radius, &radius)?;
             let mut spawn_err: Option<String> = None;
             // The RESOLVED model id the implementer reported for THIS attempt, surfaced by
             // the replay driver from the worker's `--meta` report. Empty until the spawn's
@@ -3363,8 +3403,13 @@ impl RunCtx<'_> {
                             (META_WORKTREE_SHA, &reviewed_sha),
                         ],
                     )?;
+                    // Route the review tier over the UNCAPPED safe-superset view (spec 16 unit 3),
+                    // not the capped precise seed: high-risk membership tested over the full
+                    // structural width forces the full panel for a beyond-cap high-risk file, and a
+                    // wide structural change earns the full panel by size. On the non-symbols
+                    // default `radius.safe == radius.precise`, so routing is byte-for-byte unchanged.
                     let review =
-                        self.review_unit(st, dir, attempts, attempts > 0, false, &blast_radius)?;
+                        self.review_unit(st, dir, attempts, attempts > 0, false, &radius.safe)?;
                     // A contradiction against a PRIOR integrated unit (spec 12, unit 4): the
                     // adjudicator named another, already-integrated unit as the real defect
                     // source. QUEUE the rollback for the run loop to drain after this wave
@@ -3599,7 +3644,14 @@ impl RunCtx<'_> {
     fn run_speculation(&self, stages: &BTreeMap<String, Stage>, st: &Stage) -> Result<bool, Error> {
         let width = self.effective_speculation_width(st);
         let group = speculation_group_id(&st.name);
+        // The PRECISE seed seeds every lane's spawn + the blast-radius-narrowed gate loop. The
+        // unit's two-view radius (spec 16 unit 3) supplies the UNCAPPED `.safe` view that routes
+        // each lane's review tier. A speculation group is ONE unit reviewed per lane, so the audit
+        // event is recorded once for the unit (keyed at attempt 0); on the non-symbols default
+        // `.safe` equals the seed and no audit is emitted.
         let blast_radius = self.grounded_seed(st);
+        let radius = self.grounded_blast_radius(st);
+        self.record_blast_radius(st, 0, &blast_radius, &radius)?;
         let agent_def = self
             .cfg
             .agents
@@ -3712,7 +3764,9 @@ impl RunCtx<'_> {
             // `flapped: false` - a candidate `lane` is a parallel FIRST attempt, NOT a
             // remediation, so the review tier routes by RISK per lane rather than force-routing
             // every lane>0 to the FULL panel (sdet-u13rt-flapped-conflates-lane-in-speculation).
-            let review = self.review_unit(st, &dir, lane, false, true, &blast_radius)?;
+            // Route the tier over the UNCAPPED safe-superset view (spec 16 unit 3), as the
+            // single-lane path does; `radius.safe == radius.precise` on the non-symbols default.
+            let review = self.review_unit(st, &dir, lane, false, true, &radius.safe)?;
             // A candidate's review may name a PRIOR integrated unit as the real defect source
             // (spec 12, unit 4), independent of whether it approves this candidate: queue the
             // rollback exactly as the single-lane path does, so the reverse gear is not lost.
@@ -4496,10 +4550,13 @@ impl RunCtx<'_> {
     /// files (Unit 1, spec 10). These are the baseline + planner-proposed units the
     /// plan-critique gate reviews: a stage that carries an implementer `agent`, is not
     /// the producer, is not the fan-out TEMPLATE (which is removed once expanded but
-    /// guarded here defensively), and is not the gate itself. Each unit's blast radius is
-    /// the SAME grounding [`grounded_seed`](Self::grounded_seed) uses (so rule-6 conflicts
-    /// are computed against exactly the files the implementer will be grounded on), in the
-    /// stages' stable (BTreeMap) name order so the analysis is deterministic across steps.
+    /// guarded here defensively), and is not the gate itself. Each unit's blast radius is the
+    /// SAFE-superset view [`grounded_blast_radius`](Self::grounded_blast_radius) computes, NOT the
+    /// precise seed (spec 17 unit 3, 3b): rule-6 conflict detection is a SAFETY consumer, so it
+    /// grounds on the same safe superset `partition_wave` uses - two units that share a reference
+    /// visible only to grep (a macro body, a re-export, a reflection string) are detected as
+    /// conflicting at decomposition time, not merely serialized at runtime. Computed in the stages'
+    /// stable (BTreeMap) name order so the analysis is deterministic across steps.
     /// The units the plan-critique gate critiques: the implement-lifecycle units that will
     /// actually FAN OUT this run. An already-INTEGRATED or TERMINAL (escalated/superseded)
     /// unit is EXCLUDED (Gap 22): it is settled, not a decomposition candidate, so its blast
@@ -4527,7 +4584,7 @@ impl RunCtx<'_> {
             {
                 continue;
             }
-            units.push((name.clone(), self.grounded_seed(st)));
+            units.push((name.clone(), self.grounded_blast_radius(st).safe));
         }
         units
     }
@@ -5599,13 +5656,46 @@ impl RunCtx<'_> {
         )
     }
 
-    /// The stage's blast-radius: the distinct files the grounder surfaces for the
-    /// stage's grounding query (its `coverage`/name, or the spec criteria for a
-    /// planner), in ground order (§5.3). This is the same grounding `build_prompt` seeds
-    /// the graph context from and `partition_wave` partitions by, so the blast-radius
-    /// the side-car filters peer decisions against is exactly the files the agent was
-    /// grounded on. Empty when no grounder is configured (best-effort but real, not
-    /// always empty).
+    /// The unit's TWO-VIEW blast radius (spec 16 unit 3, architecture 5.5.1): computed from the
+    /// grounder over the unit's grounding query at the [`GROUNDED_SEED_K`] cap. The UNCAPPED
+    /// `.safe`-superset view is what every SAFETY consumer keys on: `partition_wave` and
+    /// `route_review_tier` (spec 16 unit 3), plus cross-wave staleness (`stale_downstream_units`)
+    /// and rule-6 conflict detection (`dag_unit_blast_radii`) (spec 17 unit 3, 3a/3b) - over-inclusion
+    /// is the safe error (a missed reference could co-schedule two conflicting units, route a
+    /// wide/high-risk change to the light panel, or leave a stale downstream unit reusing its
+    /// cached-green gate verdicts against changed code); `.serialize` marks a hub radius
+    /// for its OWN batch. The `.safe` view and `.serialize` verdict are the `BlastRadiusComputed`
+    /// audit's payload; the audit's `precise` is instead the actual prompt SEED
+    /// ([`grounded_seed`](Self::grounded_seed)), because this radius's `.precise` - a k-FILE
+    /// structural rank - DIVERGES from the seed (distinct FILES of the k-LINE `ground` pass) past
+    /// the cap (spec 17, 4b), so `record_blast_radius` records the seed the agent actually saw and
+    /// `.precise` here has no production reader. `grounded_seed` stays the cheap `ground` path so the
+    /// many per-unit / per-reviewer seed calls never pay for the uncapped safe walk. With no grounder
+    /// configured this is the empty fail-safe (`BlastRadius::default()`). On the symbols-INACTIVE
+    /// path the default [`Grounder::blast_radius`] returns `ground(query, k)` as BOTH views and
+    /// never serializes, so `.safe == .precise ==` the pre-unit-3 seed - every consumer that keys
+    /// on `.safe` behaves exactly as it did before, and the shipped default is unaffected.
+    fn grounded_blast_radius(&self, st: &Stage) -> BlastRadius {
+        match self.deps.grounder {
+            Some(g) => g.blast_radius(&self.ground_query(st), GROUNDED_SEED_K),
+            None => BlastRadius::default(),
+        }
+    }
+
+    /// The stage's PRECISE grounded seed: the distinct files the grounder surfaces for the stage's
+    /// grounding query (its `coverage`/name, or the spec criteria for a planner), in ground order
+    /// (§5.3). For the `symbols` grounder `ground` IS the precise structural contract (a definition
+    /// ranked above a reference, capped at `k`, architecture 5.5.6), so this seeds the prompt from
+    /// the precise view (spec 16 unit 3). It is the same grounding `build_prompt` seeds the graph
+    /// context from, the spawn's `blast_radius` field carries, and the blast-radius-narrowed gate
+    /// loop selects on - so the side-car filters peer decisions against exactly the files the agent
+    /// was grounded on. The SAFETY consumers do NOT read this precise seed: cross-wave staleness and
+    /// rule-6 conflict detection key off the safe-superset view (spec 17 unit 3, 3a/3b), alongside
+    /// partitioning and tier routing. Kept on the cheap `ground` path (NOT the uncapped safe walk)
+    /// because it is called per-unit and per-reviewer; unit 3's safe-superset view rides only the
+    /// partition / tier / audit / staleness / rule-6-conflict consumers via
+    /// [`grounded_blast_radius`](Self::grounded_blast_radius). Empty when no grounder is configured
+    /// (best-effort but real, not always empty).
     fn grounded_seed(&self, st: &Stage) -> Vec<String> {
         let gr = match self.deps.grounder {
             Some(g) => g,
@@ -5613,12 +5703,65 @@ impl RunCtx<'_> {
         };
         let query = self.ground_query(st);
         let mut seed: Vec<String> = Vec::new();
-        for r in gr.ground(&query, 8) {
+        for r in gr.ground(&query, GROUNDED_SEED_K) {
             if !seed.contains(&r.file) {
                 seed.push(r.file);
             }
         }
         seed
+    }
+
+    /// Record a unit's computed blast radius as a `BlastRadiusComputed` audit event (spec 16 unit
+    /// 3, architecture 5.5.9), keyed per unit + `attempt` so a stepwise/replay driver appends it
+    /// exactly once. It rides ONLY when a STRUCTURAL grounder is active - detected by a non-empty
+    /// [`Grounder::index_stamp`], the same signal that provides the provenance - so a grep /
+    /// turbovec / nop / no-grounder path emits nothing new and stays byte-for-byte unchanged. When
+    /// structural, it is emitted on EVERY path INCLUDING the empty-radius fail-safe (the index, and
+    /// so the stamp, is present even when a query grounds to nothing), so "why the full panel?" is
+    /// always answerable. The payload carries the unit, both views, the serialize verdict, and the
+    /// index provenance - enough to reconstruct the partition and drive the runtime
+    /// parallelism-retention metric offline (`metrics::project`). It is pure audit: the
+    /// context-graph projector matches no fold arm for it, so it folds to no node/edge idempotently.
+    ///
+    /// The recorded `precise` is the actual prompt `seed` - the caller's
+    /// [`grounded_seed`](Self::grounded_seed), the distinct FILES of `ground(query, k)` that seed
+    /// the agent - NOT the radius's `precise` view (spec 17, 4b). The two DIVERGE past the cap:
+    /// `grounded_seed` truncates at k LINES then dedups to distinct files, while the radius's
+    /// `precise` is a k-FILE structural rank, so beyond the cap the recorded files would otherwise
+    /// name files the prompt was never seeded on. The same `seed` seeds the spawn and is recorded
+    /// here (derive-both-from-one-pass), so the audit provenance always matches what the agent saw.
+    /// The `safe` view and `serialize` verdict still come from the two-view `radius`, and
+    /// `metrics::project` reads only those - so recording the seed as `precise` does not perturb the
+    /// retention metric.
+    fn record_blast_radius(
+        &self,
+        st: &Stage,
+        attempt: u32,
+        seed: &[String],
+        radius: &BlastRadius,
+    ) -> Result<(), Error> {
+        let stamp = self
+            .deps
+            .grounder
+            .map(|g| g.index_stamp())
+            .unwrap_or_default();
+        if stamp.is_empty() {
+            // Non-structural grounder (or none): no audit, no retention metric - the shipped
+            // default path is byte-for-byte unchanged.
+            return Ok(());
+        }
+        self.emit_keyed(
+            &format!("{}/blast-radius#{attempt}", st.name),
+            TYPE_BLAST_RADIUS_COMPUTED,
+            json!({
+                "id": st.name,
+                "unit": st.name,
+                "precise": seed,
+                "safe": radius.safe,
+                "serialize": radius.serialize,
+                "index_stamp": stamp,
+            }),
+        )
     }
 
     fn build_prompt(&self, st: &Stage) -> String {
@@ -6486,11 +6629,49 @@ pub fn partition_by_blast_radius(items: &[(String, Vec<String>)]) -> Vec<Vec<Str
     batches
 }
 
+/// The ONE serialize/empty-aware partition authority (spec 16 unit 3): group `items` -
+/// each `(name, safe-superset files, serialize)` - into batches that never co-schedule two
+/// units that must not run together. A unit is UNPARTITIONED (takes its OWN singleton batch,
+/// never fed to the disjointness grouping) when EITHER its radius is a hub (`serialize`) OR
+/// its safe view is EMPTY. Empty is treated exactly like a hub because an empty radius is a
+/// TOTAL grounding MISS - the worst UNASSESSABLE case - and the whole hazard this partition
+/// exists to prevent is co-scheduling two units that share a file the grounding failed to
+/// surface: `partition_by_blast_radius` reads an empty want-set as disjoint from EVERY batch,
+/// so an empty radius would otherwise fail OPEN into the first shared batch. Own-batching it
+/// is the SAME fail-SAFE stance [`route_review_tier`] takes (empty -> full panel): when risk
+/// cannot be measured, isolate. The remaining shareable radii (non-serialize, non-empty) go
+/// through the ONE [`partition_by_blast_radius`] disjointness authority; own-batch units are
+/// appended after, in input order, so the result is deterministic for a stable input. This is
+/// the SINGLE writer of the serialize/empty own-batch rule - `partition_wave` (the conductor)
+/// and `metrics::parallelism_retention_of` (the runtime warn metric) both call it, so the two
+/// can never drift.
+pub fn partition_with_serialize(items: &[(String, Vec<String>, bool)]) -> Vec<Vec<String>> {
+    let mut shareable: Vec<(String, Vec<String>)> = Vec::new();
+    let mut own_batch: Vec<String> = Vec::new();
+    for (name, files, serialize) in items {
+        if *serialize || files.is_empty() {
+            own_batch.push(name.clone());
+        } else {
+            let mut files = files.clone();
+            files.sort();
+            files.dedup();
+            shareable.push((name.clone(), files));
+        }
+    }
+    let mut batches = partition_by_blast_radius(&shareable);
+    for name in own_batch {
+        batches.push(vec![name]);
+    }
+    batches
+}
+
 /// The rule-6 blast-radius conflicts in a proposed decomposition (Unit 1, spec 10;
 /// `docs/handbook/authoring-loops.md` rule 6: "criteria that share a blast radius
 /// belong in ONE unit"). `units` pairs each fan-out unit's id with the distinct
-/// files in its blast radius (the same grounding [`RunCtx::grounded_seed`] /
-/// [`partition_by_blast_radius`] use). It returns every unordered pair of DISTINCT
+/// files in its blast radius - the SAFE-superset view [`RunCtx::grounded_blast_radius`]
+/// computes (spec 17 unit 3, 3b: rule-6 detection is a SAFETY consumer, so it reads the same
+/// `structural union grep` superset [`partition_by_blast_radius`] does, NOT the precise seed).
+/// It returns every unordered pair of DISTINCT
 /// units whose blast radii INTERSECT, each with the shared files, so a decomposition
 /// that splits one blast radius across two units is surfaced as concrete evidence the
 /// plan-critique reviewers judge. The order is deterministic (input order for the
@@ -6584,13 +6765,18 @@ fn stale_units_from_log(prior_events: &[Event]) -> HashSet<String> {
 /// in exactly one place.
 ///
 /// A unit's blast radius is the files the grounder surfaces for its grounding query (its
-/// `coverage`, else its name) - the same seed [`RunCtx::grounded_seed`] computes, so the
-/// staleness set is measured against the SAME radius the unit was grounded and
-/// partitioned on. The integrating unit never stales itself, and PRODUCER (planner)
-/// stages are skipped: they emit a DAG, not code, so they have no gate verdict to
-/// invalidate. With no grounder no radius is computable, so nothing is staled (best-effort
-/// but real, exactly like `grounded_seed`). The result is sorted + deduped so the mark is
-/// stable across runs (replay determinism).
+/// `coverage`, else its name), taken as the SAFE-superset (`structural union grep`, uncapped) view
+/// via [`Grounder::blast_radius`] `.safe` - NOT the precise seed (spec 17 unit 3, 3a). Cross-wave
+/// staleness is a SAFETY consumer: a reference visible only to grep (a macro body, a re-export, a
+/// reflection string) must STILL mark a downstream unit stale, or its cached green gate verdicts
+/// are reused and it integrates against changed code - the exact fail-open the safe view exists to
+/// close. This is the same safe superset `partition_wave` partitions on, so staleness is measured
+/// against the radius the unit is partitioned by. The integrating unit never stales itself, and
+/// PRODUCER (planner) stages are skipped: they emit a DAG, not code, so they have no gate verdict to
+/// invalidate. With no grounder no radius is computable, so nothing is staled (the empty fail-safe,
+/// best-effort but real). The result is sorted + deduped so the mark is stable across runs (replay
+/// determinism). On the symbols-INACTIVE default path the grounder's `.safe` equals its `ground`
+/// radius, so this is byte-for-byte the pre-change precise intersection.
 fn stale_downstream_units(
     stages: &BTreeMap<String, Stage>,
     grounder: Option<&dyn Grounder>,
@@ -6618,9 +6804,10 @@ fn stale_downstream_units(
             st.coverage.as_str()
         };
         let intersects = grounder
-            .ground(query, 8)
-            .into_iter()
-            .any(|r| touched.contains(r.file.as_str()));
+            .blast_radius(query, GROUNDED_SEED_K)
+            .safe
+            .iter()
+            .any(|f| touched.contains(f.as_str()));
         if intersects {
             stale.push(name.clone());
         }
@@ -16221,6 +16408,561 @@ mod tests {
         }
     }
 
+    /// A grounder that returns a CANNED two-view blast radius per query and a configurable
+    /// `index_stamp`, so a unit-3 wiring test controls the precise SEED view, the uncapped SAFE
+    /// view, the hub `serialize` verdict, AND the structural-active audit signal independently of
+    /// any real tree. `ground` returns the PRECISE view as refs (what `build_prompt` seeds from).
+    struct StructuralStubGrounder {
+        by_query: HashMap<String, BlastRadius>,
+        stamp: String,
+    }
+    impl Grounder for StructuralStubGrounder {
+        fn ground(&self, query: &str, k: usize) -> Vec<crate::grounder::Ref> {
+            self.by_query
+                .get(query)
+                .map(|br| {
+                    br.precise
+                        .iter()
+                        .take(k)
+                        .map(|file| crate::grounder::Ref {
+                            file: file.clone(),
+                            line: 0,
+                            text: String::new(),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        }
+        fn blast_radius(&self, query: &str, _k: usize) -> BlastRadius {
+            self.by_query.get(query).cloned().unwrap_or_default()
+        }
+        fn index_stamp(&self) -> String {
+            self.stamp.clone()
+        }
+    }
+
+    /// The BlastRadiusComputed events a run recorded, decoded to `(unit, safe, serialize)`.
+    fn blast_radius_audits(events: &[Event]) -> Vec<(String, Vec<String>, bool)> {
+        events
+            .iter()
+            .filter(|e| e.type_ == TYPE_BLAST_RADIUS_COMPUTED)
+            .map(|e| {
+                let v: Value = serde_json::from_slice(&e.data).unwrap();
+                let safe = v["safe"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|f| f.as_str().unwrap().to_string())
+                    .collect();
+                (
+                    v["id"].as_str().unwrap().to_string(),
+                    safe,
+                    v["serialize"].as_bool().unwrap(),
+                )
+            })
+            .collect()
+    }
+
+    /// The review-tier routing decision a tiers-policy run logged, decoded to its evidence map.
+    fn review_tier_evidence(events: &[Event]) -> Option<Value> {
+        events.iter().find_map(|e| {
+            if e.type_ != ledger::TYPE_UNIT_STATUS {
+                return None;
+            }
+            let v: Value = serde_json::from_slice(&e.data).ok()?;
+            (v.get("status").and_then(|s| s.as_str()) == Some(STATUS_REVIEW_TIER))
+                .then(|| v["evidence"].clone())
+        })
+    }
+
+    /// A stage that integrates on green and reviews under a two-tier depth policy: the LIGHT tier
+    /// is one lens + the adjudicator; the FULL tier adds a second lens. `threshold` and
+    /// `high_risk` tune the size / path signals the routing reads over the SAFE view.
+    fn tiered_stage(threshold: usize, high_risk: &[&str]) -> Stage {
+        let light = crate::config::ReviewPanel {
+            lenses: vec!["lensA".into()],
+            adjudicator: "judge".into(),
+            ..Default::default()
+        };
+        Stage {
+            name: "s".into(),
+            agent: "worker".into(),
+            coverage: "s".into(),
+            on_pass: "merge".into(),
+            review: crate::config::ReviewPanel {
+                lenses: vec!["lensA".into(), "lensB".into()],
+                adjudicator: "judge".into(),
+                tiers: Some(Box::new(crate::config::ReviewDepth {
+                    light,
+                    threshold,
+                    high_risk_paths: high_risk.iter().map(|s| s.to_string()).collect(),
+                })),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    fn tiered_cfg(stage: Stage) -> Config {
+        let mut cfg = Config::default();
+        for a in ["worker", "lensA", "lensB", "judge"] {
+            cfg.agents.insert(a.into(), agent(a));
+        }
+        cfg.workflow.stages.insert("s".into(), stage);
+        cfg
+    }
+
+    /// spec 16 unit 3, the symbols-ACTIVE pins: with a STRUCTURAL grounder (a non-empty
+    /// `index_stamp`) the conductor (1) records each unit's radius on a `BlastRadiusComputed`
+    /// audit event carrying the SAFE view + `serialize` (so the partition is reconstructable from
+    /// the log), (2) routes the review tier over the UNCAPPED SAFE view - so a high-risk file
+    /// present ONLY in the safe view (BEYOND the precise k-cap) still forces the FULL panel, which
+    /// routing over the capped precise seed would miss - and (3) drives the runtime
+    /// parallelism-retention metric from those events.
+    #[test]
+    fn a_structural_grounder_records_the_audit_and_routes_full_on_a_beyond_cap_high_risk_file() {
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+
+        // precise (the capped seed): GROUNDED_SEED_K low-risk src files, none high-risk. safe
+        // (uncapped): those PLUS a high-risk spec file the cap excludes from precise. threshold 20
+        // so the SIZE signal never fires - the ONLY thing that can force full is the beyond-cap
+        // high-risk membership over the safe view.
+        let precise: Vec<String> = (0..8).map(|i| format!("src/f{i}.rs")).collect();
+        let mut safe = precise.clone();
+        safe.push("specs/core.md".to_string());
+        let grounder = StructuralStubGrounder {
+            by_query: HashMap::from([(
+                "s".to_string(),
+                BlastRadius {
+                    precise,
+                    safe,
+                    serialize: false,
+                },
+            )]),
+            stamp: "idxhash/ts-tags-v1".to_string(),
+        };
+
+        let cfg = tiered_cfg(tiered_stage(20, &["specs/"]));
+        let store = Store::open(":memory:").unwrap();
+        let driver = CacheDriver {
+            contents: vec!["work\n".into()],
+            approve_at: 0,
+        };
+        let runner = RecordingRunner::new(&[]);
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo_path,
+            grounder: Some(&grounder),
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(rs.units["s"].status, ledger::Status::Integrated);
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+
+        // (1) the audit event is recorded, carrying the safe view + serialize (reconstructable).
+        let audits = blast_radius_audits(&events);
+        let (unit, safe_recorded, serialize) = audits
+            .first()
+            .expect("a structural grounder records the blast-radius audit");
+        assert_eq!(unit, "s");
+        assert!(!serialize);
+        assert!(
+            safe_recorded.iter().any(|f| f == "specs/core.md"),
+            "the recorded safe view (which reconstructs the partition) carries the beyond-cap \
+             high-risk file: {safe_recorded:?}"
+        );
+
+        // (2) the review-tier routed FULL because the beyond-cap high-risk file is in the SAFE view
+        // (routing the capped precise seed - which excludes specs/core.md - would have gone light).
+        let evidence = review_tier_evidence(&events).expect("a tiers policy logs the routing");
+        assert_eq!(
+            evidence["review-tier"],
+            json!(TIER_FULL),
+            "a beyond-cap high-risk file in the safe view forces the full panel: {evidence}"
+        );
+        assert_eq!(evidence["high-risk-path"], json!("specs/core.md"));
+
+        // (3) the audit events DRIVE the runtime retention metric (a lone disjoint unit: 0/1).
+        let m = crate::metrics::project(&events);
+        assert!(
+            m.parallelism_retention.is_some(),
+            "the BlastRadiusComputed audit drives the runtime parallelism-retention metric"
+        );
+    }
+
+    /// spec 16 unit 3, the empty fail-safe pin: a STRUCTURAL grounder whose query grounds to
+    /// NOTHING still records the audit event (the index - and so the stamp - is present even when
+    /// a query matches no symbol), so "why the full panel?" is answerable, and the empty radius
+    /// routes to FULL (unassessable => fail-safe), never light.
+    #[test]
+    fn the_empty_radius_fail_safe_still_records_the_audit_and_routes_full() {
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        // No entry for "s" => an empty two-view radius, but a non-empty stamp (the index exists).
+        let grounder = StructuralStubGrounder {
+            by_query: HashMap::new(),
+            stamp: "idxhash/ts-tags-v1".to_string(),
+        };
+        let cfg = tiered_cfg(tiered_stage(20, &["specs/"]));
+        let store = Store::open(":memory:").unwrap();
+        let driver = CacheDriver {
+            contents: vec!["work\n".into()],
+            approve_at: 0,
+        };
+        let runner = RecordingRunner::new(&[]);
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo_path,
+            grounder: Some(&grounder),
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let audits = blast_radius_audits(&events);
+        assert_eq!(
+            audits.len(),
+            1,
+            "the empty-radius fail-safe still records the audit event"
+        );
+        assert!(audits[0].1.is_empty(), "the recorded safe view is empty");
+        let evidence = review_tier_evidence(&events).expect("a tiers policy logs the routing");
+        assert_eq!(
+            evidence["review-tier"],
+            json!(TIER_FULL),
+            "an empty radius is unassessable and fails SAFE to the full panel: {evidence}"
+        );
+        assert_eq!(evidence["empty-radius"], json!("true"));
+    }
+
+    /// spec 16 unit 3, the symbols-INACTIVE control: a NON-structural grounder (an empty
+    /// `index_stamp`, the grep / turbovec / nop default) records NO `BlastRadiusComputed` event
+    /// and drives no retention metric - the shipped default is byte-for-byte unchanged on the
+    /// audit dimension. `StubGrounder` inherits the empty default stamp, exactly like the shipped
+    /// non-symbols grounders.
+    #[test]
+    fn a_non_structural_grounder_records_no_blast_radius_audit() {
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let grounder = StubGrounder {
+            by_query: HashMap::from([("s".to_string(), vec!["src/f0.rs".to_string()])]),
+        };
+        let cfg = tiered_cfg(tiered_stage(20, &["specs/"]));
+        let store = Store::open(":memory:").unwrap();
+        let driver = CacheDriver {
+            contents: vec!["work\n".into()],
+            approve_at: 0,
+        };
+        let runner = RecordingRunner::new(&[]);
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo_path,
+            grounder: Some(&grounder),
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(
+            blast_radius_audits(&events).is_empty(),
+            "a non-structural grounder (empty index_stamp) emits no BlastRadiusComputed audit"
+        );
+        assert!(
+            crate::metrics::project(&events)
+                .parallelism_retention
+                .is_none(),
+            "with no audit events the runtime retention metric is absent, never a spurious value"
+        );
+    }
+
+    /// spec 17 unit 6 (criterion 6, `plan17-c6`): the two-facet fix, proven in ONE scenario under
+    /// the `hybrid` grounder.
+    ///
+    /// (4a) A `BlastRadiusComputed` event IS emitted under `defaults.grounder: hybrid`. `Hybrid`
+    /// composes an inner `Symbols`, so it MUST delegate `index_stamp` to it - a non-empty stamp is
+    /// the structural-active signal `record_blast_radius` keys the audit off. Before the fix `Hybrid`
+    /// inherited the empty-string trait default, so `record_blast_radius` hit its empty-stamp early
+    /// return and NO audit ever emitted for a hybrid run (retention unmeasurable).
+    ///
+    /// (4b) The recorded `precise` equals the files that SEEDED the prompt at AND beyond the
+    /// truncation cap. The prompt seed is `grounded_seed` - the distinct FILES of `ground(query, k)`,
+    /// a k-LINE-truncated pass - while the radius's `precise` is a k-FILE-truncated structural rank;
+    /// past the cap the two diverge. The fixture makes the divergence unmissable: `busy.rs`
+    /// references `target` on many LINES, consuming the k-LINE `ground` budget so the distinct-FILE
+    /// seed is just {def.rs, busy.rs}; the structural `precise` instead ranks def-then-referencers
+    /// truncated at k FILES, carrying `x0.rs..x5.rs` - files that never seeded the prompt. The audit
+    /// must record the 2-file seed, not the beyond-cap structural rank.
+    ///
+    /// Runs under a REAL `Hybrid` in BOTH symbols lanes: the default `turbovec` lane (a real vector
+    /// engine is built, hence `#[file_serial(turbovec_model)]`) and `--features symbols` alone
+    /// (Hybrid degrades to symbols-only, no model). Excluded from `--no-default-features` (no
+    /// `symbols`, no tree-sitter) by the `cfg` gate.
+    #[cfg(feature = "symbols")]
+    #[test]
+    #[cfg_attr(feature = "turbovec", serial_test::file_serial(turbovec_model))]
+    fn under_hybrid_the_audit_emits_and_records_the_prompt_seed_as_precise() {
+        use crate::grounder::symbols::hybrid::Hybrid;
+
+        let dir = tempfile::tempdir().unwrap();
+        // `def.rs` DEFINES `target` (the sole definer). `busy.rs` REFERENCES it on 12 LINES, so it
+        // eats the k-LINE `ground` budget and the distinct-FILE seed stays {def.rs, busy.rs}.
+        std::fs::write(dir.path().join("def.rs"), "fn target() {}\n").unwrap();
+        let body: String = "    target();\n".repeat(12);
+        std::fs::write(
+            dir.path().join("busy.rs"),
+            format!("fn caller() {{\n{body}}}\n"),
+        )
+        .unwrap();
+        // Ten more single-reference files: the STRUCTURAL precise (def, then referencers, truncated
+        // at k FILES) ranks these into its top-k, but they NEVER seed the prompt.
+        for i in 0..10 {
+            std::fs::write(
+                dir.path().join(format!("x{i}.rs")),
+                format!("fn r{i}() {{ target(); }}\n"),
+            )
+            .unwrap();
+        }
+        let root = dir.path().to_str().unwrap();
+        let hybrid = Hybrid::open(root, None).expect("hybrid opens");
+
+        // A non-producer stage grounds on its `coverage`, so this grounds every path on `target`.
+        let st = Stage {
+            name: "u".into(),
+            coverage: "target".into(),
+            ..Default::default()
+        };
+        let cfg = Config::default();
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&hybrid),
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+
+        // The EXACT production call sequence (`run_single_stage` / `run_speculation`): the prompt
+        // SEED, the two-view radius, then the audit keyed at the attempt.
+        let seed = ctx.grounded_seed(&st);
+        let radius = ctx.grounded_blast_radius(&st);
+        ctx.record_blast_radius(&st, 0, &seed, &radius).unwrap();
+
+        // The seed is the small distinct-FILE set; the structural precise diverges past the cap.
+        assert_eq!(
+            seed,
+            vec!["def.rs".to_string(), "busy.rs".to_string()],
+            "the prompt seed is the distinct FILES of ground(target, k): {seed:?}"
+        );
+        assert!(
+            radius.precise.len() > seed.len() && radius.precise.contains(&"x0.rs".to_string()),
+            "precondition: the structural precise diverges past the cap, carrying x*.rs files the \
+             seed never did: {:?}",
+            radius.precise
+        );
+
+        // (4a) `Hybrid::index_stamp` delegates to the inner `Symbols` (non-empty), so the audit is
+        // NOT skipped by the empty-stamp early return.
+        assert!(
+            !hybrid.index_stamp().is_empty(),
+            "Hybrid::index_stamp must delegate to its inner Symbols (a non-empty structural stamp)"
+        );
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let audit = events
+            .iter()
+            .find(|e| e.type_ == TYPE_BLAST_RADIUS_COMPUTED)
+            .expect("a BlastRadiusComputed audit IS emitted under the hybrid grounder");
+
+        // (4b) The recorded `precise` equals the prompt seed, NOT the beyond-cap structural rank.
+        let v: Value = serde_json::from_slice(&audit.data).unwrap();
+        let recorded_precise: Vec<String> = v["precise"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f.as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            recorded_precise, seed,
+            "the audit must record the prompt seed as precise, not the k-FILE structural rank"
+        );
+        assert!(
+            !recorded_precise.contains(&"x0.rs".to_string()),
+            "the recorded precise must NOT carry a beyond-cap structural file the prompt never \
+             seeded on: {recorded_precise:?}"
+        );
+    }
+
+    /// spec 16 unit 3, the BLOCKING empty-radius partition fail-safe (adj-u3-empty-radius-partitions-
+    /// fail-open): `partition_wave` must UNPARTITION an EMPTY radius - a total, unassessable grounding
+    /// miss - into its OWN singleton batch, exactly like a HUB (`serialize`) radius, and NEVER
+    /// co-schedule it with a real unit. An empty want-set is disjoint from every batch, so the
+    /// pre-fix code collapsed it into the FIRST shared batch (the fail-OPEN direction, the OPPOSITE
+    /// of `route_review_tier`'s empty -> full stance). This MULTI-unit test drives `partition_wave`
+    /// directly over a structural grounder and pins the whole own-batch + append path: two disjoint
+    /// shareable units co-schedule, while the empty-radius unit AND the hub unit each take their own
+    /// batch. Runs in BOTH lanes (the StructuralStubGrounder is not symbols-gated).
+    #[test]
+    fn partition_wave_own_batches_an_empty_radius_never_co_scheduling_it() {
+        let br = |files: &[&str], serialize: bool| BlastRadius {
+            precise: files.iter().map(|s| s.to_string()).collect(),
+            safe: files.iter().map(|s| s.to_string()).collect(),
+            serialize,
+        };
+        // u_a / u_b are disjoint shareable radii; u_empty grounds to NOTHING (no by_query entry
+        // => BlastRadius::default, empty safe, serialize false); u_hub is a hub (serialize true).
+        let grounder = StructuralStubGrounder {
+            by_query: HashMap::from([
+                ("u_a".to_string(), br(&["a.rs"], false)),
+                ("u_b".to_string(), br(&["b.rs"], false)),
+                ("u_hub".to_string(), br(&["h.rs"], true)),
+            ]),
+            stamp: "idxhash/ts-tags-v1".to_string(),
+        };
+        let cfg = Config::default();
+        let mut stages: BTreeMap<String, Stage> = BTreeMap::new();
+        let ready: Vec<String> = ["u_a", "u_b", "u_empty", "u_hub"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        for name in &ready {
+            stages.insert(
+                name.clone(),
+                Stage {
+                    name: name.clone(),
+                    coverage: name.clone(),
+                    partition: "by-blast-radius".into(),
+                    ..Default::default()
+                },
+            );
+        }
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let runner = RecordingRunner::new(&[]);
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: String::new(),
+            grounder: Some(&grounder),
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+        let batches = ctx.partition_wave(&stages, &ready);
+
+        let batch_of = |unit: &str| {
+            batches
+                .iter()
+                .find(|b| b.iter().any(|n| n == unit))
+                .cloned()
+                .unwrap_or_else(|| panic!("{unit} landed in no batch: {batches:?}"))
+        };
+        let a_batch = batch_of("u_a");
+        assert!(
+            a_batch.contains(&"u_b".to_string()),
+            "two disjoint shareable units co-schedule in one batch: {batches:?}"
+        );
+        assert!(
+            !a_batch.contains(&"u_empty".to_string()),
+            "an EMPTY radius must NOT co-schedule with a real unit (the fail-open is closed): {batches:?}"
+        );
+        assert_eq!(
+            batch_of("u_empty"),
+            vec!["u_empty".to_string()],
+            "an empty radius is unassessable and takes its OWN singleton batch: {batches:?}"
+        );
+        assert_eq!(
+            batch_of("u_hub"),
+            vec!["u_hub".to_string()],
+            "a hub radius takes its OWN singleton batch: {batches:?}"
+        );
+    }
+
+    /// spec 16 unit 3, the SPECULATION-path wiring (sdet-u16-3-speculation-wiring-untested): the
+    /// first-green-wins speculation path must record the `BlastRadiusComputed` audit at attempt 0
+    /// AND route the winner's review tier over the UNCAPPED SAFE view, exactly like the single-lane
+    /// path - so a beyond-cap high-risk file present only in `.safe` still forces the FULL panel. A
+    /// regression routing speculation over the capped precise seed, or dropping the speculation
+    /// audit, would go green without this test.
+    #[test]
+    fn speculation_over_a_structural_grounder_records_the_audit_and_routes_full() {
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+
+        // precise (the capped seed): 8 low-risk src files, none high-risk. safe (uncapped): those
+        // PLUS a high-risk spec file the cap excludes - the ONLY thing that can force full is the
+        // beyond-cap high-risk membership over the safe view, so routing over precise would go light.
+        let precise: Vec<String> = (0..8).map(|i| format!("src/f{i}.rs")).collect();
+        let mut safe = precise.clone();
+        safe.push("specs/core.md".to_string());
+        let grounder = StructuralStubGrounder {
+            by_query: HashMap::from([(
+                "s".to_string(),
+                BlastRadius {
+                    precise,
+                    safe,
+                    serialize: false,
+                },
+            )]),
+            stamp: "idxhash/ts-tags-v1".to_string(),
+        };
+
+        // A tiered stage at speculation width 2 (K>1 routes through `run_speculation`).
+        let mut stage = tiered_stage(20, &["specs/"]);
+        stage.speculation_width = 2;
+        let cfg = tiered_cfg(stage);
+        let store = Store::open(":memory:").unwrap();
+        let driver = CacheDriver {
+            contents: vec!["work\n".into()],
+            approve_at: 0,
+        };
+        let runner = RecordingRunner::new(&[]);
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo_path,
+            grounder: Some(&grounder),
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(rs.units["s"].status, ledger::Status::Integrated);
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        // (1) the speculation path recorded the blast-radius audit (record_blast_radius at attempt 0).
+        let audits = blast_radius_audits(&events);
+        let (unit, safe_recorded, _serialize) = audits
+            .first()
+            .expect("the speculation path records the blast-radius audit");
+        assert_eq!(unit, "s");
+        assert!(
+            safe_recorded.iter().any(|f| f == "specs/core.md"),
+            "the recorded safe view carries the beyond-cap high-risk file: {safe_recorded:?}"
+        );
+        // (2) the winner's review tier routed FULL over the SAFE view (routing the capped precise
+        // seed, which excludes specs/core.md, would have gone light).
+        let evidence = review_tier_evidence(&events).expect("a tiers policy logs the routing");
+        assert_eq!(
+            evidence["review-tier"],
+            json!(TIER_FULL),
+            "speculation routes the review tier over the safe view: {evidence}"
+        );
+        assert_eq!(evidence["high-risk-path"], json!("specs/core.md"));
+    }
+
     #[test]
     fn staleness_flags_only_downstream_units_whose_radius_intersects_the_touched_files() {
         // spec 12, unit 2 (the marking authority, in isolation): when a unit integrates
@@ -16272,6 +17014,162 @@ mod tests {
         assert!(
             stale_downstream_units(&stages, None, "up", &touched).is_empty(),
             "with no grounder there is no blast radius to intersect, so nothing is staled"
+        );
+    }
+
+    #[test]
+    fn staleness_grounds_on_the_safe_superset_so_a_grep_only_reference_still_stales_a_downstream_unit(
+    ) {
+        // spec 17 unit 3 (3a): stale_downstream_units must ground on the SAFE-superset view, not the
+        // precise (name-level) view. A downstream unit whose PRECISE radius misses a reference that
+        // is visible only to grep (a macro body / re-export / reflection string) must STILL be marked
+        // stale when the integrating unit touches that grep-only file - otherwise its cached green
+        // gate verdicts are reused and it integrates against changed code (the fail-open the safe
+        // view exists to close). With symbols INACTIVE (safe == precise) the behavior is unchanged.
+        let mut stages: BTreeMap<String, Stage> = BTreeMap::new();
+        for name in ["up", "hidden"] {
+            stages.insert(
+                name.into(),
+                Stage {
+                    name: name.into(),
+                    coverage: name.into(),
+                    ..Default::default()
+                },
+            );
+        }
+        // `hidden`'s PRECISE view is only hidden.rs; its SAFE view adds macros.rs - a reference
+        // visible ONLY to grep, exactly the symbols grounder's uncapped structural-union-grep radius.
+        let structural = StructuralStubGrounder {
+            by_query: HashMap::from([(
+                "hidden".to_string(),
+                BlastRadius {
+                    precise: vec!["hidden.rs".to_string()],
+                    safe: vec!["hidden.rs".to_string(), "macros.rs".to_string()],
+                    serialize: false,
+                },
+            )]),
+            stamp: "idxhash/ts-tags-v1".to_string(),
+        };
+        let touched = vec!["macros.rs".to_string()];
+        assert_eq!(
+            stale_downstream_units(&stages, Some(&structural), "up", &touched),
+            vec!["hidden".to_string()],
+            "the grep-only reference macros.rs lives in `hidden`'s SAFE view but not its precise \
+             view; grounding staleness on the safe superset marks `hidden` stale, closing the \
+             cached-green fail-open a precise-only intersection would leave open"
+        );
+
+        // Symbols INACTIVE: a grounder that inherits the DEFAULT blast_radius returns safe == precise
+        // == ground. `hidden` grounds ONLY to hidden.rs there, so touching the grep-only macros.rs
+        // stales nothing - the shipped default is byte-for-byte unchanged.
+        let plain = StubGrounder {
+            by_query: HashMap::from([("hidden".to_string(), vec!["hidden.rs".to_string()])]),
+        };
+        assert!(
+            stale_downstream_units(&stages, Some(&plain), "up", &touched).is_empty(),
+            "with symbols inactive safe == precise, so a grep-only file outside the precise radius \
+             stales nothing - the default path is unchanged"
+        );
+    }
+
+    #[test]
+    fn rule6_conflict_detection_grounds_on_the_safe_superset_so_a_grep_only_shared_reference_conflicts(
+    ) {
+        // spec 17 unit 3 (3b): dag_unit_blast_radii must feed rule-6 conflict detection the
+        // SAFE-superset view, not the precise seed. Two units whose PRECISE radii are DISJOINT but
+        // whose SAFE radii both include one grep-only file (a shared macro / re-export) TRULY share a
+        // blast radius; grounding the analysis on the safe superset detects them as conflicting at
+        // decomposition time. On the precise view the shared grep-only file is invisible and the
+        // conflict is missed. With symbols INACTIVE (safe == precise) the two disjoint units raise
+        // nothing - the shipped default is unchanged.
+        let mut stages: BTreeMap<String, Stage> = BTreeMap::new();
+        for name in ["u1", "u2"] {
+            stages.insert(
+                name.into(),
+                Stage {
+                    name: name.into(),
+                    agent: "worker".into(),
+                    coverage: name.into(),
+                    ..Default::default()
+                },
+            );
+        }
+        // Precise radii are disjoint (u1.rs vs u2.rs); both SAFE radii add shared_macro.rs, a
+        // reference visible only to grep that both units truly reach.
+        let structural = StructuralStubGrounder {
+            by_query: HashMap::from([
+                (
+                    "u1".to_string(),
+                    BlastRadius {
+                        precise: vec!["u1.rs".to_string()],
+                        safe: vec!["u1.rs".to_string(), "shared_macro.rs".to_string()],
+                        serialize: false,
+                    },
+                ),
+                (
+                    "u2".to_string(),
+                    BlastRadius {
+                        precise: vec!["u2.rs".to_string()],
+                        safe: vec!["u2.rs".to_string(), "shared_macro.rs".to_string()],
+                        serialize: false,
+                    },
+                ),
+            ]),
+            stamp: "idxhash/ts-tags-v1".to_string(),
+        };
+        let cfg = Config::default();
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let runner = RecordingRunner::new(&[]);
+        let none: HashSet<String> = HashSet::new();
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: String::new(),
+            grounder: Some(&structural),
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+        let radii = ctx.dag_unit_blast_radii(&stages, "gate", &none, &none);
+        let conflicts = blast_radius_conflicts(&radii);
+        assert_eq!(
+            conflicts,
+            vec![(
+                "u1".to_string(),
+                "u2".to_string(),
+                vec!["shared_macro.rs".to_string()]
+            )],
+            "u1 and u2 have DISJOINT precise seeds but share the grep-only shared_macro.rs in their \
+             safe views; grounding rule-6 detection on the safe superset surfaces the conflict a \
+             precise-only analysis would miss: {radii:?}"
+        );
+
+        // Symbols INACTIVE: a StubGrounder inherits the DEFAULT blast_radius (safe == precise), so
+        // each unit's safe radius is just its disjoint precise seed and no conflict is raised - the
+        // shipped default decomposition analysis is byte-for-byte unchanged.
+        let plain = StubGrounder {
+            by_query: HashMap::from([
+                ("u1".to_string(), vec!["u1.rs".to_string()]),
+                ("u2".to_string(), vec!["u2.rs".to_string()]),
+            ]),
+        };
+        let plain_deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: String::new(),
+            grounder: Some(&plain),
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let plain_ctx = RunCtx::for_test(&cfg, &plain_deps);
+        let plain_radii = plain_ctx.dag_unit_blast_radii(&stages, "gate", &none, &none);
+        assert!(
+            blast_radius_conflicts(&plain_radii).is_empty(),
+            "with symbols inactive safe == precise; the two disjoint units share no file and raise \
+             no rule-6 conflict: {plain_radii:?}"
         );
     }
 
