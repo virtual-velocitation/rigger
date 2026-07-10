@@ -87,4 +87,36 @@ mod tests {
         // The extracted file carries the language it was parsed as.
         assert_eq!(fs.lang, Lang::Rust);
     }
+
+    #[test]
+    fn probe_rust_kinds() {
+        let src = "\
+struct Widget;
+enum State { On, Off }
+trait Drawable { fn draw(&self); }
+impl Drawable for Widget { fn draw(&self) {} }
+const MAX: u8 = 9;
+static GLOBAL: u8 = 1;
+mod inner {}
+macro_rules! mymac { () => {} }
+fn free() {}
+";
+        let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
+        let fs = extract(src, Lang::Rust, &language, tree_sitter_rust::TAGS_QUERY).unwrap();
+        for d in &fs.defs {
+            eprintln!("DEF name={} kind={:?} line={}", d.name, d.kind, d.line);
+        }
+        for r in &fs.refs {
+            eprintln!("REF name={} line={}", r.name, r.line);
+        }
+        eprintln!("total defs={} refs={}", fs.defs.len(), fs.refs.len());
+    }
+
+    #[test]
+    fn probe_extract_error_and_skip_paths() {
+        let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
+        // A malformed tags query should surface as Err, not panic.
+        let bad = extract("fn f(){}", Lang::Rust, &language, "(this is not valid scm");
+        eprintln!("bad-query result is_err={}", bad.is_err());
+    }
 }
