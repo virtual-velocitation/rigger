@@ -60,29 +60,20 @@ pub fn content_hash(src: &str) -> String {
     format!("{hash:016x}")
 }
 
-/// Serialize the index deterministically to [`index_path`], creating the parent dir. The bytes are
-/// byte-stable across processes because `SymbolIndex` is `BTreeMap`-backed (see the module docs);
-/// we never iterate a `HashMap` here.
-///
-/// The write is ATOMIC and cross-process SERIALIZED so a concurrent reader (a `Symbols` grounder
-/// opening the index in another process) never observes a torn file. We hold an `fs2` exclusive
+/// Acquire the cross-process EXCLUSIVE write lock guarding [`index_path`], run `write` under it,
+/// then release. This is the ONE cross-process write-lock authority both [`save`] (publish a whole
+/// snapshot) and [`reindex_under_lock`] (reload-modify-publish) go through, so there is a single
+/// `flock` discipline over the index, not two parallel ones. The lock is an `fs2` exclusive
 /// advisory lock - the project's one cross-process lock authority, non-optional in both feature
 /// lanes, the same `acquire_step_lock` uses (`libc::flock` is confined to the turbovec feature, so
-/// this ungated module cannot reach it) - across the write, and publish the bytes by writing a
-/// sibling temp file, fsync-ing it, and `rename`-ing it over the index: `rename(2)` within one
-/// directory is atomic, so a reader sees either the whole old file or the whole new one.
-pub fn save(idx: &SymbolIndex, dir: &str) -> Result<(), String> {
+/// this ungated module cannot reach it). The lock file is created if absent; the lock releases when
+/// `lock` drops (or the process dies), so a crashed writer never wedges the next one. A write error
+/// is reported over an unlock error.
+fn with_write_lock<F>(dir: &str, write: F) -> Result<(), String>
+where
+    F: FnOnce() -> Result<(), String>,
+{
     use fs2::FileExt;
-    let path = index_path(dir);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("symbols: mkdir: {e}"))?;
-    }
-    // Serialize BEFORE touching disk so a serialization failure aborts with no partial artifact.
-    let bytes = serde_json::to_vec_pretty(idx).map_err(|e| format!("symbols: serialize: {e}"))?;
-
-    // Hold the cross-process write lock for the whole publish. The lock file is created if absent;
-    // the exclusive lock releases when `lock` drops (or the process dies), so a crashed writer
-    // never wedges the next one.
     let lock = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -92,11 +83,77 @@ pub fn save(idx: &SymbolIndex, dir: &str) -> Result<(), String> {
         .map_err(|e| format!("symbols: open lock: {e}"))?;
     lock.lock_exclusive()
         .map_err(|e| format!("symbols: lock index: {e}"))?;
-
-    let result = write_atomic(&path, &bytes);
-    // Release explicitly for clarity (drop would too); report a write error over an unlock error.
+    let result = write();
+    // Release explicitly for clarity (drop would too).
     let _ = FileExt::unlock(&lock);
     result
+}
+
+/// Serialize the index deterministically to [`index_path`], creating the parent dir. The bytes are
+/// byte-stable across processes because `SymbolIndex` is `BTreeMap`-backed (see the module docs);
+/// we never iterate a `HashMap` here.
+///
+/// The write is ATOMIC and cross-process SERIALIZED so a concurrent reader (a `Symbols` grounder
+/// opening the index in another process) never observes a torn file. We hold the exclusive
+/// [`with_write_lock`] across the write and publish the bytes by writing a sibling temp file,
+/// fsync-ing it, and `rename`-ing it over the index: `rename(2)` within one directory is atomic, so
+/// a reader sees either the whole old file or the whole new one.
+///
+/// [`save`] publishes the WHOLE snapshot it is handed (the cold-start build in [`Symbols::open`],
+/// which has nothing to reload). A grounder freshening a long-lived in-memory index must instead go
+/// through [`reindex_under_lock`], which reloads the persisted base under the SAME held lock before
+/// writing, so a concurrent writer is folded in rather than clobbered.
+///
+/// [`Symbols::open`]: crate::grounder::symbols::grounder::Symbols::open
+pub fn save(idx: &SymbolIndex, dir: &str) -> Result<(), String> {
+    let path = index_path(dir);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("symbols: mkdir: {e}"))?;
+    }
+    // Serialize BEFORE touching disk so a serialization failure aborts with no partial artifact.
+    let bytes = serde_json::to_vec_pretty(idx).map_err(|e| format!("symbols: serialize: {e}"))?;
+    with_write_lock(dir, || write_atomic(&path, &bytes))
+}
+
+/// Freshen the persisted index under ONE continuously-held write lock, closing the cross-process
+/// LOST-UPDATE window a bare load-once-then-[`save`] leaves open. Under the exclusive
+/// [`with_write_lock`] it (1) RELOADS the persisted index into `base` if one is on disk - folding
+/// in any write a concurrent `rigger` process made since this grounder loaded its in-memory copy;
+/// (2) hands that reloaded base to `mutate` to apply the caller's per-file delta; (3) publishes the
+/// result atomically - all WITHOUT releasing the lock between the reload and the write.
+///
+/// This mirrors turbovec's `reload_persisted_locked` read-modify-write discipline. A long-lived
+/// grounder (held for a whole `rigger run`) whose in-memory index has gone stale because a separate
+/// `rigger reindex` process wrote since can no longer clobber that write with its stale snapshot: it
+/// reloads the peer's bytes first, then layers ONLY its own changed files on top, so both survive.
+///
+/// When NOTHING is persisted yet, or the on-disk file is unreadable/torn, `base` is kept as-is
+/// (there is nothing safe to adopt; the publish below heals the store) - the same "keep the
+/// in-memory base" fallback turbovec's reload takes. On return `base` holds the freshened,
+/// persisted state (reloaded base + the caller's delta), so the grounder's next `ground` serves it.
+pub fn reindex_under_lock<F>(base: &mut SymbolIndex, dir: &str, mutate: F) -> Result<(), String>
+where
+    F: FnOnce(&mut SymbolIndex),
+{
+    let path = index_path(dir);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("symbols: mkdir: {e}"))?;
+    }
+    with_write_lock(dir, || {
+        // Reload the persisted base under the held lock so the caller's delta applies to the LATEST
+        // on-disk state, folding in a concurrent writer rather than overwriting it. Keep the
+        // in-memory base when nothing is persisted / it is unreadable (a cold or torn store) - the
+        // publish below writes a consistent file from what we hold.
+        if let Some(disk) = load(dir) {
+            *base = disk;
+        }
+        mutate(base);
+        // Serialize the reloaded+mutated base under the lock (turbovec serializes under its lock
+        // too); a serialization failure aborts with no partial artifact written.
+        let bytes =
+            serde_json::to_vec_pretty(base).map_err(|e| format!("symbols: serialize: {e}"))?;
+        write_atomic(&path, &bytes)
+    })
 }
 
 /// Publish `bytes` at `path` atomically: write to a sibling temp file, fsync it, then `rename` it

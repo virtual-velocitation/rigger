@@ -822,6 +822,70 @@ fn ground_via_symbols_grounder_ranks_a_definition_first() {
     );
 }
 
+/// End-to-end reindex wiring (spec 15, unit 4): with `defaults.grounder: symbols`, the shipped
+/// `rigger reindex <file>` CLI must resolve the SAME real `Symbols` grounder through
+/// `select_reindex_grounder` that `rigger ground` resolves through `select_grounder` - NOT die
+/// with the false `symbols_feature_missing_error` while the feature is built. It must exit 0 AND
+/// actually freshen: a symbol written into a file AFTER the index is first built becomes findable
+/// via `rigger ground` once that file is reindexed. This is the symmetric guard to
+/// `ground_via_symbols_grounder_ranks_a_definition_first`; without the symbols arm in
+/// `select_reindex_grounder` (both cfg lanes) it turns RED at the very first `reindex` exit code.
+#[cfg(feature = "symbols")]
+#[test]
+fn reindex_via_symbols_grounder_updates_the_persisted_index() {
+    let dir = temp_project();
+    let root = dir.path();
+    // Pin `defaults.grounder: symbols` (the helper also creates the `agents/` dir `config::load`
+    // needs, so the pinned grounder actually takes effect rather than falling back to the default).
+    write_grounder_workflow(root, "symbols");
+    std::fs::write(root.join("combat.rs"), "fn apply_damage() {}\n").unwrap();
+
+    // First ground builds + persists the structural index (cold path) under .rigger/symbols/.
+    let (_out, err, ok) = run_rigger(root, &["ground", "apply_damage", "1"]);
+    assert!(ok, "the initial ground must build the index; stderr: {err}");
+    assert!(
+        root.join(".rigger")
+            .join("symbols")
+            .join("index.json")
+            .exists(),
+        "grounding via symbols must persist the structural index to .rigger/symbols/"
+    );
+
+    // The change lands: combat.rs gains teleport_player (a symbol absent from the built index).
+    std::fs::write(
+        root.join("combat.rs"),
+        "fn apply_damage() {}\nfn teleport_player() {}\n",
+    )
+    .unwrap();
+
+    // Reindex ONLY that file via the shipped CLI. Under `defaults.grounder: symbols` with the
+    // feature BUILT this MUST exit 0 (the selector-drift regression made it exit 1 with a false
+    // feature-missing error), and it must name the reindexed file.
+    let (out, err, ok) = run_rigger(root, &["reindex", "combat.rs"]);
+    assert!(
+        ok,
+        "reindex under defaults.grounder: symbols must succeed, not falsely report a missing \
+         feature; stderr: {err}"
+    );
+    assert!(
+        out.contains("combat.rs"),
+        "reindex prints a confirmation naming the file; got: {out:?}"
+    );
+
+    // The just-landed symbol is now findable through the SAME persisted index a later ground uses -
+    // the reindex freshened the on-disk store, not just an in-process copy.
+    let (out, err, ok) = run_rigger(root, &["ground", "teleport_player", "1"]);
+    assert!(ok, "ground after reindex must succeed; stderr: {err}");
+    assert!(
+        out.lines()
+            .next()
+            .map(|l| l.starts_with("combat.rs:"))
+            .unwrap_or(false),
+        "after the reindex CLI freshens the symbols index, the new symbol must ground to \
+         combat.rs; got: {out:?}"
+    );
+}
+
 /// `rigger reindex <file>` against the turbovec grounder UPDATES the persisted
 /// grounding store incrementally: a term written into a file AFTER the index is first
 /// built becomes findable via `rigger ground` once that file is reindexed - the CLI

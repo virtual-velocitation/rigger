@@ -6,7 +6,7 @@
 //! extraction, registry, and store.
 
 use crate::grounder::symbols::model::{Lang, SymbolIndex};
-use crate::grounder::symbols::{build_index, index_one_file, store};
+use crate::grounder::symbols::{build_index, reindex_files, store};
 use crate::grounder::{Grounder, Ref};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -155,10 +155,10 @@ impl Grounder for Symbols {
     }
 
     fn reindex(&self, _src_dir: &str, files: &[String]) {
-        // Decide which named files ACTUALLY changed (the content-hash freshening gate), then
-        // re-parse only those through the shared `index_one_file` authority (via `reindex_files`
-        // semantics) - never a second extraction path. Persist only when something changed, so a
-        // reindex of unchanged files touches neither the parser nor the disk.
+        // Decide which named files ACTUALLY changed (the content-hash freshening gate). Persist only
+        // when something changed, so a reindex of unchanged files touches neither the parser nor the
+        // disk. The fingerprints are process-local and gate only redundant work, so this check is
+        // deliberately OUTSIDE the write lock; `index_one_file` re-reads each file at parse time.
         let changed = {
             let mut fps = self.fingerprints.lock().unwrap();
             changed_files(&self.root, files, &mut fps)
@@ -166,11 +166,17 @@ impl Grounder for Symbols {
         if changed.is_empty() {
             return;
         }
+        // ONE `idx` lock across the whole freshen, and INSIDE `store::reindex_under_lock` the
+        // cross-process write lock across reload -> apply -> persist - the single mutation
+        // authority. The reload (under the held lock) folds in any change a concurrent `rigger
+        // reindex` process persisted since this grounder loaded its in-memory copy, so our stale
+        // snapshot cannot clobber that write (a cross-process lost update). We then re-parse ONLY
+        // the changed files through the shared `reindex_files` authority - never a second
+        // extraction path - on top of the reloaded base, and it publishes atomically.
         let mut idx = self.idx.lock().unwrap();
-        for rel in &changed {
-            index_one_file(&self.root, rel, &mut idx, self.override_lang);
-        }
-        let _ = store::save(&idx, &self.root);
+        let _ = store::reindex_under_lock(&mut idx, &self.root, |base| {
+            reindex_files(&self.root, base, &changed, self.override_lang);
+        });
     }
 }
 
@@ -288,6 +294,49 @@ mod tests {
         assert_eq!(
             changed_files(root, std::slice::from_ref(&rel), &mut fps),
             vec![rel.clone()]
+        );
+    }
+
+    #[test]
+    fn a_concurrent_reindex_from_a_second_grounder_is_not_clobbered() {
+        // Two `Symbols` grounders over the SAME root model two long-lived processes: a conductor
+        // holding one for a whole `rigger run` while a separate `rigger reindex` process opens
+        // another. Each reindexes a DIFFERENT file. `Symbols::open` loads the index ONCE, so the
+        // conductor's in-memory copy goes STALE the moment the other process persists. Without
+        // reload-under-lock, the conductor's later reindex would write its stale snapshot over the
+        // peer's freshly-persisted change - a cross-process LOST UPDATE. Reloading the persisted
+        // base under the held write lock before applying its own delta folds the peer's write in,
+        // so BOTH changes survive.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        std::fs::write(dir.path().join("a.rs"), "fn one() {}\n").unwrap();
+        std::fs::write(dir.path().join("b.rs"), "fn two() {}\n").unwrap();
+        // Both open over the SAME initial on-disk index {a: one, b: two}, each into its own memory.
+        let conductor = Symbols::open(root, None);
+        let other_process = Symbols::open(root, None);
+
+        // The "other process" reindexes b.rs -> twoprime and PERSISTS it. Disk is now {a, b'}.
+        std::fs::write(dir.path().join("b.rs"), "fn twoprime() {}\n").unwrap();
+        other_process.reindex(root, &["b.rs".to_string()]);
+
+        // The conductor still holds the STALE in-memory index {a: one, b: two}. It reindexes a.rs.
+        // Its persist MUST fold in the peer's twoprime rather than clobber it back to two.
+        std::fs::write(dir.path().join("a.rs"), "fn oneprime() {}\n").unwrap();
+        conductor.reindex(root, &["a.rs".to_string()]);
+
+        // A fresh reader (a third process) sees BOTH changes on disk.
+        let reader = Symbols::open(root, None);
+        assert!(
+            !reader.ground("oneprime", 5).is_empty(),
+            "the conductor's own reindex must be persisted"
+        );
+        assert!(
+            !reader.ground("twoprime", 5).is_empty(),
+            "the peer's concurrent reindex must NOT be clobbered by the conductor's stale snapshot"
+        );
+        assert!(
+            reader.ground("two", 5).is_empty(),
+            "the superseded symbol must be gone"
         );
     }
 

@@ -4871,8 +4871,16 @@ fn select_grounder(name: &str) -> Result<Box<dyn Grounder>, Box<dyn std::error::
 /// turbovec: it constructs via `Turbovec::new_for_reindex`, which loads the persisted
 /// store WITHOUT freshening tree drift. `reindex` then re-embeds exactly the named
 /// files; using the freshening `new` here would re-embed every drifted file on load and
-/// then the named files AGAIN - a double-embed. grep / nop have no index, so their
-/// `reindex` is a no-op and this resolves identically to [`select_grounder`].
+/// then the named files AGAIN - a double-embed.
+///
+/// EVERY OTHER name resolves IDENTICALLY to [`select_grounder`], and MUST: the two are one
+/// grounder-selection concern, not two authorities to keep in sync by hand. `symbols` resolves
+/// to the SAME real `Symbols::open` here as in `select_grounder` - `Symbols::open` only LOADS
+/// the persisted index (it does not freshen the whole tree the way turbovec's `new` does), so
+/// opening it for a reindex re-parses ONLY the named files and there is no double-work to avoid;
+/// omitting this arm is exactly the parallel-selector drift that made `rigger reindex` under
+/// `defaults.grounder: symbols` return the false `symbols_feature_missing_error` while the
+/// feature was built. grep / nop have no index, so their `reindex` is a no-op.
 #[cfg(feature = "turbovec")]
 fn select_reindex_grounder(name: &str) -> Result<Box<dyn Grounder>, Box<dyn std::error::Error>> {
     if rigger::grounder::resolves_to_turbovec(name) {
@@ -4880,11 +4888,28 @@ fn select_reindex_grounder(name: &str) -> Result<Box<dyn Grounder>, Box<dyn std:
             .map_err(|e| format!("turbovec grounder unavailable: {e}"))?;
         return Ok(Box::new(tv));
     }
+    // `symbols` resolves to the SAME structural grounder `select_grounder` builds (open only loads
+    // the persisted index, so there is no freshen-on-open double-work); a build WITHOUT the feature
+    // falls through to `grounder_for`, whose `symbols` arm is the loud no-silent-degrade error.
+    #[cfg(feature = "symbols")]
+    if name.trim().eq_ignore_ascii_case("symbols") {
+        return Ok(Box::new(
+            rigger::grounder::symbols::grounder::Symbols::open(".", None),
+        ));
+    }
     Ok(rigger::grounder::grounder_for(name, ".")?)
 }
 
 #[cfg(not(feature = "turbovec"))]
 fn select_reindex_grounder(name: &str) -> Result<Box<dyn Grounder>, Box<dyn std::error::Error>> {
+    // `symbols` resolves identically to `select_grounder` (open only loads the persisted index, so
+    // no freshen-on-open double-work); without the feature, `grounder_for` returns the loud error.
+    #[cfg(feature = "symbols")]
+    if name.trim().eq_ignore_ascii_case("symbols") {
+        return Ok(Box::new(
+            rigger::grounder::symbols::grounder::Symbols::open(".", None),
+        ));
+    }
     Ok(rigger::grounder::grounder_for(name, ".")?)
 }
 
