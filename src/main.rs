@@ -8160,11 +8160,29 @@ mod tests {
             err.to_string().contains(STEP_BUSY_TOKEN),
             "the refusal must carry the busy token for the driver: {err}"
         );
-        // Releasing the first frees the lock so a later step proceeds - the refusal is
-        // transient, not a wedge.
+        // Releasing the first frees the lock so a LATER step proceeds - the refusal is
+        // transient, not a wedge. Assert that eventual-acquire contract with a bounded
+        // backoff, not a single instantaneous try: in a saturated parallel test binary a
+        // concurrently spawned subprocess can momentarily inherit the just-released lock fd
+        // across its fork/exec window (before close-on-exec fires and drops it), so an
+        // immediate reacquire can still observe a spurious BUSY. That transient refusal is
+        // precisely what the driver is built to ride - back off on STEP_BUSY_TOKEN and retry -
+        // so the test models the same protocol rather than racing an exact instant.
         drop(held);
-        let _reacquired =
-            acquire_step_lock().expect("after the first releases, a later step acquires cleanly");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let _reacquired = loop {
+            match acquire_step_lock() {
+                Ok(f) => break f,
+                Err(e) => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "after the first releases, a later step must acquire cleanly; still \
+                         refused at the backoff deadline (last refusal: {e})"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+            }
+        };
     }
 
     /// The no-runs message single-sourced for both the absent-db and empty-stream
