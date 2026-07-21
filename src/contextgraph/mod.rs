@@ -310,6 +310,16 @@ pub(crate) struct EdgeInferred {
     /// supersedes its prior edges regardless of whether it defines anything.
     #[serde(default, skip_serializing_if = "is_false")]
     pub fresh: bool,
+    /// The enclosing definition this reference was attributed to during extraction (spec 37): the
+    /// caller's name, same-file. `None` for a top-level reference outside every definition (an
+    /// import or an `impl`-header bound). The emit pass carries what extraction attributed onto the
+    /// `SymRef`; the fold, when it is present, adds a `<file>::<caller> --CALLS--> <callee>` edge
+    /// ALONGSIDE the existing file-level `REFERENCES` edge (a later criterion owns that fold).
+    /// Serde-defaulted and omitted when `None`, so a pre-37 log folds as caller-less and a
+    /// caller-less reference serializes byte-identically to before - the CALLS edge is purely
+    /// additive to the code layer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller: Option<String>,
 }
 
 /// Serde `skip_serializing_if` predicate: keep the `fresh` boundary marker off the wire for the
