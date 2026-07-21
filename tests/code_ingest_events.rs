@@ -303,6 +303,203 @@ fn real_extraction_tiers_every_structural_edge_through_the_emit_fold_pipeline() 
 
 #[cfg(feature = "symbols")]
 #[test]
+fn real_extraction_folds_caller_attributed_calls_edges_at_every_tier() {
+    use rigger::contextgraph::{REL_CALLS, TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED};
+    use rigger::grounder::symbols::build_index;
+    use rigger::grounder::symbols::events::index_events;
+
+    // Spec 37 criterion 3, through the WHOLE real chain (extractor attribution -> emit -> fold), not
+    // hand-built events: a call inside `fn caller` folds a `combat.rs::caller --CALLS--> <callee>`
+    // edge keyed by the REAL enclosing function the extractor attributed - the boundary the in-crate
+    // fold test (which hand-sets `caller`) is structurally blind to. The three callees exercise every
+    // tier the CALLS edge inherits from its REFERENCES twin: `apply_damage` (same file -> EXTRACTED);
+    // `shared` (defined in another file, and because `build_index` emits files in sorted path order
+    // combat.rs's call folds BEFORE util.rs's definition -> AMBIGUOUS, then promoted INFERRED by the
+    // definition arm's convergent upgrade over `rel IN (REFERENCES, CALLS)`); `undefined_thing`
+    // (defined nowhere -> AMBIGUOUS). A regression that dropped the emit caller, folded the wrong
+    // caller, or forgot to promote CALLS with its twin reds here while every hand-built unit stays
+    // green.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("util.rs"), "fn shared() {}\n").unwrap();
+    std::fs::write(
+        dir.path().join("combat.rs"),
+        "fn apply_damage() {}\nfn caller() { apply_damage(); shared(); undefined_thing(); }\n",
+    )
+    .unwrap();
+
+    let idx = build_index(dir.path().to_str().unwrap(), None);
+    let p = Projector::open(":memory:", "test").unwrap();
+    for (i, mut e) in index_events(&idx).into_iter().enumerate() {
+        e.position = (i + 1) as u64;
+        p.apply(&e).unwrap();
+    }
+
+    let g = p.subgraph(&["combat.rs".to_string()], 3).unwrap();
+    let calls_tier = |callee: &str| {
+        g.edges
+            .iter()
+            .find(|e| e.rel == REL_CALLS && e.from == "combat.rs::caller" && e.to == callee)
+            .unwrap_or_else(|| {
+                panic!(
+                    "a CALLS edge from combat.rs::caller to {callee} folded; got {:?}",
+                    g.edges
+                )
+            })
+            .tier
+            .clone()
+    };
+    assert_eq!(
+        calls_tier("combat.rs::apply_damage"),
+        TIER_EXTRACTED,
+        "a real same-file call folds EXTRACTED, mirroring its REFERENCES twin"
+    );
+    assert_eq!(
+        calls_tier("combat.rs::shared"),
+        TIER_INFERRED,
+        "a real cross-file call upgrades AMBIGUOUS -> INFERRED with its REFERENCES twin (the \
+         definition folds after the call in sorted file order)"
+    );
+    assert_eq!(
+        calls_tier("combat.rs::undefined_thing"),
+        TIER_AMBIGUOUS,
+        "a real call to a name defined nowhere folds AMBIGUOUS"
+    );
+    // Every CALLS edge is keyed by the ENCLOSING function, never the bare file container: the
+    // extractor attributed each call to `caller`, so no CALLS edge hangs off the `combat.rs` node.
+    assert!(
+        !g.edges
+            .iter()
+            .any(|e| e.rel == REL_CALLS && e.from == "combat.rs"),
+        "no CALLS edge hangs off the bare file node; the caller is the enclosing fn; got {:?}",
+        g.edges
+    );
+}
+
+#[cfg(feature = "symbols")]
+#[test]
+fn re_extracting_a_file_that_drops_a_call_supersedes_its_calls_edge_end_to_end() {
+    use rigger::contextgraph::REL_CALLS;
+    use rigger::grounder::symbols::build_index;
+    use rigger::grounder::symbols::events::index_events;
+
+    // Spec 37 + spec 29a criterion 3, through the REAL pipeline: a CALLS edge hangs off
+    // `<file>::<caller>` (the enclosing definition), NOT the bare file node, so the supersede must
+    // match it by an exact `<file>::` id prefix. Re-extract a file whose caller drops a call and the
+    // stale CALLS edge must leave the live subgraph - the hand-built unit test proves the prefix
+    // match on a fabricated from_id; this proves it against the REAL `<file>::caller` id the extractor
+    // mints, composed with the emit-side `fresh` batch stamping.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("combat.rs");
+    std::fs::write(
+        &path,
+        "fn apply_damage() {}\nfn heal() {}\nfn caller() { apply_damage(); heal(); }\n",
+    )
+    .unwrap();
+    let first = index_events(&build_index(dir.path().to_str().unwrap(), None));
+    let p = Projector::open(":memory:", "test").unwrap();
+    let mut pos = 0u64;
+    for mut e in first {
+        pos += 1;
+        e.position = pos;
+        p.apply(&e).unwrap();
+    }
+
+    // Precondition: caller calls heal - a live CALLS edge before the change.
+    let g0 = p.subgraph(&["combat.rs".to_string()], 3).unwrap();
+    assert!(
+        g0.edges.iter().any(|e| e.rel == REL_CALLS
+            && e.from == "combat.rs::caller"
+            && e.to == "combat.rs::heal"),
+        "precondition: combat.rs::caller --CALLS--> combat.rs::heal is live before re-extraction; \
+         got {:?}",
+        g0.edges
+    );
+
+    // The file CHANGES: the call to `heal` is removed. Re-extract, emit, fold the second batch onto
+    // the same projection at fresh positions.
+    std::fs::write(
+        &path,
+        "fn apply_damage() {}\nfn caller() { apply_damage(); }\n",
+    )
+    .unwrap();
+    let second = index_events(&build_index(dir.path().to_str().unwrap(), None));
+    for mut e in second {
+        pos += 1;
+        e.position = pos;
+        p.apply(&e).unwrap();
+    }
+
+    let g1 = p.subgraph(&["combat.rs".to_string()], 3).unwrap();
+    // The removed call's CALLS edge is superseded - gone from the live subgraph, not accreted.
+    assert!(
+        !g1.edges
+            .iter()
+            .any(|e| e.rel == REL_CALLS && e.to == "combat.rs::heal"),
+        "the removed call's CALLS edge is superseded on re-extraction; got {:?}",
+        g1.edges
+    );
+    // The surviving call is still folded fresh: caller --CALLS--> apply_damage stays live.
+    assert!(
+        g1.edges.iter().any(|e| e.rel == REL_CALLS
+            && e.from == "combat.rs::caller"
+            && e.to == "combat.rs::apply_damage"),
+        "the surviving call's CALLS edge remains live after re-extraction; got {:?}",
+        g1.edges
+    );
+}
+
+#[test]
+fn the_public_calls_edge_folds_only_for_a_caller_carrying_reference_event() {
+    use rigger::contextgraph::{REL_CALLS, TIER_EXTRACTED};
+
+    // Wire + public-API contract under BOTH feature lanes (no real extractor needed): the fold reads
+    // the `caller` key off the raw EdgeInferred JSON - the exact wire the emit pass writes - and adds
+    // a `<file>::<caller> --CALLS--> <callee>` edge identified by the PUBLIC `REL_CALLS` const an
+    // external consumer imports. A pre-37 / top-level reference event carries NO `caller` key and
+    // folds NO CALLS edge (purely additive, back-compatible). This pins the emit->fold serialization
+    // KEY and the additive boundary at the library surface, driving the raw on-log JSON rather than
+    // the in-crate payload struct.
+    let p = Projector::open(":memory:", "test").unwrap();
+    let file = "src/a.rs";
+
+    apply_def_json(&p, 1, file, "worker"); // the enclosing caller definition
+    apply_def_json(&p, 2, file, "helper"); // the callee the caller calls
+    apply_def_json(&p, 3, file, "util"); // a second callee, referenced caller-lessly
+                                         // A caller-carrying reference (a call inside `worker`): the raw wire the emit pass writes.
+    apply_json(
+        &p,
+        4,
+        TYPE_EDGE_INFERRED,
+        serde_json::json!({ "file": file, "name": "helper", "caller": "worker" }),
+    );
+    // A caller-less reference (a top-level / pre-37 event): no `caller` key at all.
+    apply_ref_json(&p, 5, file, "util");
+
+    let g = p.subgraph(&[file.to_string()], 3).unwrap();
+    // The caller-carrying event folds the public CALLS edge, keyed by the enclosing definition, at
+    // the same EXTRACTED tier as its same-file REFERENCES twin.
+    assert!(
+        g.edges.iter().any(|e| e.rel == REL_CALLS
+            && e.from == "src/a.rs::worker"
+            && e.to == "src/a.rs::helper"
+            && e.tier == TIER_EXTRACTED),
+        "the caller-carrying event folds src/a.rs::worker --CALLS--> src/a.rs::helper at EXTRACTED; \
+         got {:?}",
+        g.edges
+    );
+    // The caller-less event folds NO CALLS edge (additive / back-compat): the ONLY CALLS edge is the
+    // caller-carrying one, so a stray edge to `util` or off the bare file node would red here.
+    let calls: Vec<_> = g.edges.iter().filter(|e| e.rel == REL_CALLS).collect();
+    assert_eq!(
+        calls.len(),
+        1,
+        "exactly one CALLS edge folds - the caller-carrying one; the caller-less reference adds \
+         none; got {calls:?}"
+    );
+}
+
+#[cfg(feature = "symbols")]
+#[test]
 fn the_emit_api_is_deterministic_and_emits_definitions_before_references() {
     use rigger::grounder::symbols::build_index;
     use rigger::grounder::symbols::events::index_events;
