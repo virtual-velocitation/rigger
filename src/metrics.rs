@@ -114,7 +114,7 @@ use crate::ledger::{
     TYPE_UNIT_STATUS,
 };
 use crate::run::META_RUN_ID;
-use crate::spawn::{SpawnResult, ROLE_ADJUDICATOR, ROLE_ADVERSARY, TYPE_SPAWN_RESULT};
+use crate::spawn::{spawn_role, SpawnResult, ROLE_ADJUDICATOR, ROLE_ADVERSARY, TYPE_SPAWN_RESULT};
 
 /// The tier a review spawn belongs to, recovered from its deterministic
 /// [`spawn_id`](crate::spawn::spawn_id) `{unit}/{role}#{attempt}` (a retry id may add a
@@ -122,11 +122,7 @@ use crate::spawn::{SpawnResult, ROLE_ADJUDICATOR, ROLE_ADVERSARY, TYPE_SPAWN_RES
 /// under - `"lens"`, `"adversary"`, `"adjudicator"` - or `None` for a non-review spawn
 /// (the implementer). The `lens:` role prefix mirrors [`crate::spawn::lens_role`].
 fn review_tier(spawn_id: &str) -> Option<&'static str> {
-    let role = spawn_id
-        .rsplit_once('/')
-        .map(|(_, r)| r)
-        .unwrap_or(spawn_id);
-    let role = role.split(['#', '~']).next().unwrap_or(role);
+    let role = spawn_role(spawn_id);
     if role == ROLE_ADVERSARY {
         Some("adversary")
     } else if role == ROLE_ADJUDICATOR {
@@ -723,20 +719,22 @@ pub fn project(events: &[Event]) -> Metrics {
                     continue;
                 };
                 *tier_spawns.entry(tier.to_string()).or_default() += 1;
-                if tier == "adjudicator" {
-                    if let Some(adj) = parse_adjudication(&res.output) {
-                        // A verdict was RECORDED on this run's driver (the courier path):
-                        // the upheld-based folds have a numerator source to fold from.
-                        metrics.review_quality.adjudications += 1;
-                        for fid in adj.upheld {
-                            upheld.insert(fid);
-                        }
-                        // The cause rides only a REJECT verdict (contract); stash it for the
-                        // matching review-reject UnitFailed, keyed by this spawn's unit.
-                        if let Some(cause) = adj.cause {
-                            let unit = res.id.split('/').next().unwrap_or(&res.id).to_string();
-                            pending_cause.insert(unit, cause);
-                        }
+                // The adjudicator's disposition, read through the single
+                // `SpawnResult::adjudication` authority (self-gates on the adjudicator role,
+                // so a non-adjudicator result yields `None`); the context-graph finding-expiry
+                // reads the SAME parse, so the metric and the graph never diverge.
+                if let Some(adj) = res.adjudication() {
+                    // A verdict was RECORDED on this run's driver (the courier path):
+                    // the upheld-based folds have a numerator source to fold from.
+                    metrics.review_quality.adjudications += 1;
+                    for fid in adj.upheld {
+                        upheld.insert(fid);
+                    }
+                    // The cause rides only a REJECT verdict (contract); stash it for the
+                    // matching review-reject UnitFailed, keyed by this spawn's unit.
+                    if let Some(cause) = adj.cause {
+                        let unit = res.id.split('/').next().unwrap_or(&res.id).to_string();
+                        pending_cause.insert(unit, cause);
                     }
                 }
             }
@@ -889,47 +887,6 @@ fn field_str_vec(e: &Event, key: &str) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
-}
-
-/// The review-quality fields this fold reads off an adjudicator's grown verdict line.
-struct Adjudication {
-    /// The finding ids the adjudicator upheld (its `upheld` array).
-    upheld: Vec<String>,
-    /// The rejection `cause`, present only on a reject verdict (`None` on approve or when
-    /// the adjudicator declared none).
-    cause: Option<String>,
-}
-
-/// Parse an adjudicator's raw output for its grown JSON verdict line (spec 11): the LAST
-/// JSON object line carrying a `verdict`, `upheld`, or `discarded` field. Returns the
-/// upheld finding ids and the rejection cause, or `None` when no verdict line is present
-/// (an old-contract adjudicator, or unparseable output) - the fold then attributes
-/// nothing, exactly like the empty per-tier reject split on a log that never stamped it.
-fn parse_adjudication(output: &str) -> Option<Adjudication> {
-    for line in output.lines().rev() {
-        let Ok(v) = serde_json::from_str::<Value>(line.trim()) else {
-            continue;
-        };
-        if v.get("verdict").is_none() && v.get("upheld").is_none() && v.get("discarded").is_none() {
-            continue;
-        }
-        let upheld = v
-            .get("upheld")
-            .and_then(Value::as_array)
-            .map(|a| {
-                a.iter()
-                    .filter_map(|x| x.as_str().map(str::to_owned))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let cause = v
-            .get("cause")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-            .filter(|s| !s.is_empty());
-        return Some(Adjudication { upheld, cause });
-    }
-    None
 }
 
 // ---------------------------------------------------------------------------

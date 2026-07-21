@@ -2,7 +2,7 @@
 //! frontmatter) and a workflow YAML, loaded and validated into runtime types.
 //! Plain value types plus a loader; nothing here depends on the conductor.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 use std::time::Duration;
 
@@ -231,6 +231,23 @@ impl ReviewPanel {
         ids
     }
 
+    /// The GATING agent ids this panel names: the adjudicator on this tier and,
+    /// recursively, the light tier's adjudicator. A gating agent's result-channel
+    /// verdict gates integration; the lenses and the adversary do NOT render a gating
+    /// verdict (the adversary "does not render the final verdict"), so only adjudicators
+    /// are collected here. This is the roster the verdict-line lint
+    /// ([`lint_gating_verdict_lines`]) inspects.
+    pub fn gating_agent_ids(&self) -> Vec<String> {
+        let mut ids = Vec::new();
+        if !self.adjudicator.is_empty() {
+            ids.push(self.adjudicator.clone());
+        }
+        if let Some(depth) = self.depth() {
+            ids.extend(depth.light.gating_agent_ids());
+        }
+        ids
+    }
+
     /// Validate the depth policy's structural invariant: the gating verdict is mandatory
     /// on EVERY tier - only the adversary (and the extra lenses) flex (spec 03 / spec 13
     /// unit 4) - so BOTH the reduced LIGHT tier AND the enclosing FULL panel this depth
@@ -391,6 +408,32 @@ pub struct Defaults {
     /// spec-07 infra-vs-product semantics.
     #[serde(default)]
     pub failure_rules: Vec<FailureRuleDef>,
+    /// Whether the always-on SDET periphery-test AUTHOR role is spawned (spec 32). The
+    /// sdet-author writes the periphery test layer (contract / API / integration) at the
+    /// build seam so no boundary surface a unit exposes lands untested; it self-scopes to a
+    /// fast no-op on a purely-internal unit. Read through the single resolution authority
+    /// [`sdet_author_enabled`](Self::sdet_author_enabled): `None` (the default, and every
+    /// workflow that omits the field) is ON, an explicit `false` opts a workflow out.
+    ///
+    /// Modeled as `Option<bool>` (not a bare `bool`) SO the on-by-default rule holds whether
+    /// the field OR the whole `defaults:` block is omitted. `Defaults` derives `Default` and
+    /// `Workflow.defaults` is `#[serde(default)]`, so a workflow with no `defaults:` block
+    /// constructs the DERIVED `Defaults::default()` - where a bare `bool` reads `false` and
+    /// would silently DISABLE the role. `Option::default()` is `None`, which
+    /// `sdet_author_enabled` maps to ON, so the derived default and a serde omission agree.
+    #[serde(default)]
+    pub sdet_author: Option<bool>,
+}
+
+impl Defaults {
+    /// Whether the SDET periphery-test author role is spawned (spec 32) - the single
+    /// resolution authority for the on-by-default toggle. Unset (`None`, the default) is ON;
+    /// only an explicit `sdet_author: false` disables it. The conductor's build-seam reads
+    /// through here, so the on-by-default rule lives in exactly one place and cannot drift
+    /// between the derived `Default` and a from-YAML omission.
+    pub fn sdet_author_enabled(&self) -> bool {
+        self.sdet_author.unwrap_or(true)
+    }
 }
 
 /// Stage is one node of the workflow DAG.
@@ -449,6 +492,17 @@ pub struct Stage {
     /// and every planner-proposed unit.
     #[serde(skip)]
     pub baseline: bool,
+    /// The STABLE id of the acceptance criterion this baseline serves (spec 18 §3.3):
+    /// its 1-based position plus a content hash of the normalized criterion text,
+    /// computed by `conductor::criterion_stable_id`. Set by the conductor (never
+    /// authored, hence `serde(skip)`) on the per-criterion baseline units only. The
+    /// planner is shown this id next to each criterion and echoes it on every
+    /// proposal, so `harvest_proposed` matches a proposal to its baseline by this id
+    /// rather than by re-normalized prose - a paraphrase or truncation of a long
+    /// criterion the planner was told to copy verbatim no longer silently spawns a
+    /// duplicate. Empty for every non-baseline stage.
+    #[serde(skip)]
+    pub criterion_id: String,
 }
 
 impl AgentDef {
@@ -744,6 +798,531 @@ impl Config {
     }
 }
 
+/// The gating (verdict-bearing) agent ids across the WHOLE config: every review panel's
+/// adjudicator (the `defaults.review` panel and every per-stage `review` override, each
+/// including its light tier via [`ReviewPanel::gating_agent_ids`]) plus every stage's
+/// own standalone `adjudicator` (the plan-critique / decomposition-review gate). Deduped
+/// and ordered by a `BTreeSet` so the lint below reports a deterministic first offender.
+fn gating_agent_ids(cfg: &Config) -> BTreeSet<String> {
+    let critique_gate = plan_critique_gate_name(cfg);
+    let mut ids: BTreeSet<String> = BTreeSet::new();
+    ids.extend(cfg.workflow.defaults.review.gating_agent_ids());
+    for (name, st) in &cfg.workflow.stages {
+        // Skip the plan-critique gate stage's standalone adjudicator: the conductor builds ITS
+        // prompt via `build_dag_critique_prompt`, which ALWAYS appends the result-channel verdict
+        // line, so its persona need not carry one (adj-u18-1r3 FP#2). If that same agent id ALSO
+        // serves a per-unit review adjudicator (via `defaults.review` above, or another stage's
+        // `review`/`adjudicator` below), it is still collected through those paths and stays
+        // linted - the per-unit `build_prompt` path injects no verdict line.
+        if !st.adjudicator.is_empty() && critique_gate.as_deref() != Some(name.as_str()) {
+            ids.insert(st.adjudicator.clone());
+        }
+        ids.extend(st.review.gating_agent_ids());
+    }
+    ids
+}
+
+/// The name of the plan-critique / DAG-critique gate stage, if the workflow wires one - the
+/// review-only stage (no `agent`) that carries a standalone `adjudicator` and `needs` the producer
+/// (the planner). This mirrors `conductor::critique_gate_name`'s ROLE-based recognition over the
+/// same `Stage` fields. The conductor drives THAT gate's adjudicator with a prompt from
+/// `build_dag_critique_prompt`, which appends the result-channel verdict line unconditionally, so
+/// the gate's own persona need not carry it (adj-u18-1r3 FP#2). `config` is the lower layer and
+/// cannot depend upward on `conductor`, so this small structural predicate is read here directly
+/// from the config; it is a CLASSIFIER over the same fields, not a second copy of the gate's
+/// behavior. Returns `None` for a non-decomposing workflow (no producer) or one with no such gate,
+/// so an ordinary standalone stage adjudicator is never mistaken for the injected gate.
+fn plan_critique_gate_name(cfg: &Config) -> Option<String> {
+    let producer = cfg
+        .workflow
+        .stages
+        .iter()
+        .find(|(_, st)| !st.produces.is_empty())
+        .map(|(name, _)| name.clone())?;
+    cfg.workflow
+        .stages
+        .iter()
+        .find(|(_, st)| {
+            st.agent.is_empty() && !st.adjudicator.is_empty() && st.needs.contains(&producer)
+        })
+        .map(|(name, _)| name.clone())
+}
+
+/// Static lint (spec 18, unit 1): every GATING agent's persona prompt must instruct it to
+/// put its verdict on the RESULT channel - the integration gate reads a gating spawn's
+/// result output for a `{"verdict":...}` line and NEVER reads emitted events, so a persona
+/// whose only verdict path is `rigger_emit` is a guaranteed stall (the gate finds no
+/// verdict, folds it as a non-approval, and the unit remediates until it escalates). The
+/// check is deterministic (a certain hang), so it is a HARD error naming the exact fix.
+///
+/// Called from `rigger validate` (and, once wired by unit 2, at run start) - NOT from
+/// [`load`], so the run-start refusal stays a separate, deliberate wiring over this one
+/// authority rather than a second copy of the check.
+pub fn lint_gating_verdict_lines(cfg: &Config) -> Result<(), Error> {
+    for id in gating_agent_ids(cfg) {
+        // A missing id is already a referential error (`Config::validate`); skip here so
+        // this lint reports only the verdict-line defect, never a duplicate "unknown agent".
+        let Some(agent) = cfg.agents.get(&id) else {
+            continue;
+        };
+        if !puts_verdict_on_result_channel(&agent.prompt) {
+            return Err(err(format!(
+                "agent {id:?} is a gating role but its prompt never instructs it to end its \
+                 output with a verdict line (e.g. {{\"verdict\":\"approve\"}}). The integration \
+                 gate reads the result channel, not emitted events; a verdict emitted only via \
+                 rigger_emit will never gate. Add the verdict line to the agent's output."
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Advisory (spec 19c, unit 3): warn when `defaults.max_wall_clock` is unbounded (`0`) AND
+/// some GATING role carries no per-agent bound, so a gating agent that hangs is never swept
+/// (the liveness watchdog only times out a spawn with a resolved bound - see
+/// [`resolve_wall_clocks`], which no-ops on a `0` default). Returns the warning line naming
+/// the unbounded gating roles and the fix, or `None` when the risk is absent (a bounded
+/// default, or every gating role sets its own `max_wall_clock`).
+///
+/// Reuses the single [`gating_agent_ids`] authority - the SAME gating-role set the
+/// verdict-line lint ([`lint_gating_verdict_lines`]) inspects - so "which roles gate" is
+/// defined once, never a second parallel definition. Non-fatal by construction: the caller
+/// (`rigger validate`) prints it to stderr without changing the exit status, like the other
+/// advisories.
+pub fn unbounded_wall_clock_advisory(cfg: &Config) -> Option<String> {
+    // Only the unbounded default is at risk: a non-zero default is folded onto every unset
+    // agent at load time, so every gating role is already swept.
+    if cfg.workflow.defaults.max_wall_clock != 0 {
+        return None;
+    }
+    // The gating roles left unbounded under that `0` default. `gating_agent_ids` returns a
+    // sorted `BTreeSet`, so the collected roster is deterministic. A gating id absent from
+    // `agents` is a referential error (`Config::validate`), reported there, not here.
+    let unbounded: Vec<String> = gating_agent_ids(cfg)
+        .into_iter()
+        .filter(|id| {
+            cfg.agents
+                .get(id)
+                .is_some_and(|a| a.max_wall_clock.is_none())
+        })
+        .map(|id| format!("{id:?}"))
+        .collect();
+    if unbounded.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "warning: defaults.max_wall_clock is unbounded (0) and gating role(s) {} carry no \
+         per-agent bound, so a hung gating agent is never swept and the run stalls silently. \
+         Set defaults.max_wall_clock (seconds), or a per-agent max_wall_clock on those roles.",
+        unbounded.join(", ")
+    ))
+}
+
+/// Whole words (lowercased) that present their clause as the agent's OUTPUT/RESULT - the
+/// place the integration gate reads. Within a `{"verdict"` literal's own introducing clause
+/// (see [`introducing_clause`]) any of these means the literal is presented as output, so it
+/// is on the result channel even if an emit instruction shares that same clause. Over-
+/// inclusion here is SAFE: it can only make a prompt PASS the lint (a false negative, which
+/// is acceptable), never fail a compliant one. This whitelist is only ONE of three PASS signals
+/// (alongside "no emit in the clause" and "the literal is presented AS the verdict" - see
+/// [`is_result_channel_occurrence`]); a compliant clause need not hit it, because a literal is
+/// flagged only when it genuinely follows an emit-payload construct.
+const OUTPUT_CUES: &[&str] = &[
+    "end",
+    "ends",
+    "output",
+    "outputs",
+    "result",
+    "results",
+    "final",
+    "last",
+    "line",
+    "lines",
+    "print",
+    "prints",
+    "return",
+    "returns",
+    "respond",
+    "response",
+    "reply",
+    "stdout",
+    "conclude",
+    "concludes",
+    "conclusion",
+    "write",
+    "writes",
+    "written",
+    "finish",
+    "finishes",
+    "answer",
+    "answers",
+    "state",
+    "states",
+    "give",
+    "gives",
+    "provide",
+    "provides",
+    "close",
+    "closing",
+];
+
+/// Whole words (lowercased) that mark their clause as a `rigger_emit` instruction (the
+/// literal `rigger_emit` itself is matched separately as a substring). An emit token in a
+/// `{"verdict"` literal's clause is NECESSARY but not sufficient for the stall: the literal is
+/// flagged only when it GENUINELY follows an emit-payload construct (see
+/// [`literal_is_emit_payload`]), never merely because an unrelated emit word shares the clause.
+const EMIT_CUES: &[&str] = &["emit", "emits", "emitted", "emitting"];
+
+/// Whole words (lowercased) that join a trailing verdict literal to an earlier payload-bound
+/// verdict literal as a list ALTERNATION (`... data {"verdict":"approve"} to approve OR
+/// {"verdict":"reject"} to reject`). When the trailing literal abuts one of these and an earlier
+/// `{"verdict"` sibling is the emit payload, the trailing literal is a payload alternative too (see
+/// [`trailing_literal_is_payload_alternation`]). Kept narrow to genuine connectives so an ordinary
+/// word before the literal never triggers the alternation path.
+const ALT_CONNECTIVES: &[&str] = &["or", "and", "nor"];
+
+/// Whole words (lowercased) that name the DATA/PAYLOAD slot of a `rigger_emit` call - the
+/// argument the emit verb serializes. A `{"verdict"` literal is GENUINELY the emit payload only
+/// when one of these words IMMEDIATELY introduces its own brace after an emit token
+/// (`rigger_emit ... data {..}` - see [`brace_is_payload_bound`]),
+/// the stall this lint targets. This list is the crux of false-positive freedom, so it is kept to
+/// GENUINE emit-API tokens (the words a persona uses for the serialized argument) and deliberately
+/// EXCLUDES ambiguous common nouns - `value`/`values`/`object`/`content`/`contents`/`field`/
+/// `fields` - that read naturally as the verdict OUTPUT itself ("your verdict value is {..}", "the
+/// verdict object", "report the value {..}"). Including those over-bound compliant personas
+/// (adj-u18-1rr REJECT); narrowing them out biases the ambiguous case to PASS (Design L32). Also
+/// excludes `json`/`type`/`with`, which appear in compliant "the JSON {..}" / "type Verdict"
+/// phrasings.
+const PAYLOAD_SLOT_WORDS: &[&str] = &[
+    "data",
+    "payload",
+    "body",
+    "argument",
+    "arguments",
+    "arg",
+    "args",
+    "param",
+    "params",
+    "parameter",
+    "parameters",
+];
+
+/// Whole words (lowercased) that, when they immediately precede a `verdict` word, mark it as the
+/// SUBJECT being presented ("your verdict", "the verdict", "a final verdict") - so the literal
+/// after it is the verdict OUTPUT, not the emit payload. Excludes the emit type name `type
+/// Verdict` (preceded by `type`, not a determiner) and the JSON key `{"verdict"` (preceded by a
+/// quote). Generous by design: a wider set only makes more prompts PASS (an acceptable false
+/// negative), never fails a compliant one (spec 18 unit 1: never a false positive).
+const VERDICT_DETERMINERS: &[&str] = &[
+    "your",
+    "the",
+    "a",
+    "an",
+    "its",
+    "my",
+    "our",
+    "their",
+    "final",
+    "single",
+    "one",
+    "own",
+    "overall",
+    "closing",
+    "last",
+    "this",
+    "that",
+    "following",
+    "resulting",
+    "chosen",
+    "actual",
+];
+
+/// Whether `prompt` puts a `{"verdict"...}` literal on the RESULT channel (what the
+/// integration gate reads), rather than exclusively as the payload of a `rigger_emit`
+/// instruction.
+///
+/// Returns `true` (compliant) when at least one `{"verdict"` literal is presented as output -
+/// carrying an [`OUTPUT_CUES`] word in its clause, presented AS the verdict in its clause, or
+/// with no emit instruction in its clause at all (a standalone example, or one whose only nearby
+/// emit mention lives in a neighbouring sentence). Returns `false` (the stall this lint targets)
+/// only when the prompt contains `{"verdict"` literals and EVERY one of them genuinely follows an
+/// emit-payload construct in its own clause (see [`is_result_channel_occurrence`]). A prompt with
+/// NO `{"verdict"` literal returns `true`: there is no literal to judge, and the lint deliberately
+/// trades that false negative away to keep its promise that a prompt which DOES put the verdict on
+/// the result is never flagged.
+fn puts_verdict_on_result_channel(prompt: &str) -> bool {
+    let lower = prompt.to_lowercase();
+    let positions = verdict_literal_positions(&lower);
+    if positions.is_empty() {
+        return true;
+    }
+    positions
+        .iter()
+        .any(|&pos| is_result_channel_occurrence(&lower, pos))
+}
+
+/// Byte offsets in `lower` (an already-lowercased prompt) of every `{"verdict"` JSON
+/// literal - a `"verdict"` key whose nearest preceding non-whitespace character is `{`.
+/// This matches `{"verdict"`, `{ "verdict"`, and a `{` then a newline then `"verdict"`.
+fn verdict_literal_positions(lower: &str) -> Vec<usize> {
+    lower
+        .match_indices("\"verdict\"")
+        .filter(|(idx, _)| lower[..*idx].trim_end().ends_with('{'))
+        .map(|(idx, _)| idx)
+        .collect()
+}
+
+/// Whether the `{"verdict"` literal at byte offset `pos` in `lower` reads as a
+/// result-channel verdict.
+///
+/// The judgement is scoped to the literal's OWN introducing clause (the sentence that presents
+/// it - see [`introducing_clause`]). This is the crux of false-positive freedom (spec 18 unit
+/// 1's one hard promise): rigger's own communication discipline tells every gating persona to
+/// record decisions via `rigger_emit`, so an emit instruction is near-universal. The literal is
+/// bound to emit - flagged as the stall - ONLY when it GENUINELY follows an emit-payload
+/// construct; every other shape biases to PASS. A literal is on the result channel when:
+/// - an OUTPUT cue appears in the clause -> presented as output, even if an emit instruction
+///   shares the clause; or
+/// - the clause has NO emit instruction at all (a standalone example, or the only nearby emit
+///   mention lives in a neighbouring sentence); or
+/// - the clause presents the literal AS the verdict (a determiner-preceded `verdict` word whose
+///   span to the literal carries no emit-payload marker - `your verdict must be {..}`), even
+///   though an unrelated emit instruction ("emit a DecisionMade") shares the sentence.
+///
+/// It is the stall ONLY when the clause has an emit instruction, no output cue, does not present
+/// the literal as the verdict, AND the literal directly follows an emit-payload construct
+/// (`rigger_emit ... data {..}` or a bare `emit {..}` - see [`literal_is_emit_payload`]). This
+/// is what the earlier "any emit word in the clause" heuristic got wrong: it flagged a compliant
+/// "you must emit a DecisionMade ... and your verdict must be {..}" because an unrelated emit
+/// word shared the sentence, even though that emit governs a DIFFERENT target and the verdict is
+/// independently presented as output.
+fn is_result_channel_occurrence(lower: &str, pos: usize) -> bool {
+    let clause = introducing_clause(lower, pos);
+    // (a) An output cue anywhere in the clause presents the literal as output.
+    if OUTPUT_CUES.iter().any(|w| contains_word(clause, w)) {
+        return true;
+    }
+    // (c) No emit instruction in the clause at all: standalone example, or the only nearby emit
+    // mention is in a neighbouring sentence - the literal is on the result channel.
+    if !clause_mentions_emit(clause) {
+        return true;
+    }
+    // (b) The literal is presented AS the verdict ("your verdict is {..}"), not as the emit
+    // payload, even though an (unrelated) emit instruction shares the clause.
+    if verdict_presented_as_output(clause) {
+        return true;
+    }
+    // The clause has an emit instruction, no output cue, and does not present the literal as the
+    // verdict. Flag it ONLY when the literal GENUINELY follows an emit-payload construct; every
+    // other ambiguous shape biases to PASS (Design L32 / done-when L111: never a false positive).
+    !literal_is_emit_payload(clause)
+}
+
+/// Whether `clause` mentions any `rigger_emit` instruction - the literal `rigger_emit` substring
+/// or an [`EMIT_CUES`] whole word (`emit`/`emits`/`emitted`/`emitting`).
+fn clause_mentions_emit(clause: &str) -> bool {
+    clause.contains("rigger_emit") || EMIT_CUES.iter().any(|w| contains_word(clause, w))
+}
+
+/// Whether `clause` presents its trailing `{"verdict"` literal AS the verdict output: it
+/// contains a `verdict` whole word introduced by a determiner ([`VERDICT_DETERMINERS`]) - `your
+/// verdict`, `the verdict`, `a final verdict` - whose SPAN to the trailing literal is free of an
+/// emit-payload binding, so the literal is NOT the serialized emit data.
+///
+/// The determiner-verdict presents the trailing literal ONLY when the run of text from that
+/// `verdict` word to the literal carries NO [`PAYLOAD_SLOT_WORDS`]/emit token immediately
+/// introducing a brace (see [`span_has_emit_payload_binding`]). Scoping the emit-payload test to
+/// this SPAN - not the whole clause - is the crux of adj-u18-1r3 FP#1: an UNRELATED emit-payload
+/// EXAMPLE brace EARLIER in the clause (`... rigger_emit with data {id}, and your verdict is {..}`,
+/// the exact wording rigger's own communication discipline mandates of every gating persona) sits
+/// BEFORE the `verdict` word, so it no longer defeats the presentation. A payload word abutting the
+/// trailing literal itself (`your verdict as data {..}`) IS in the span and still defeats it - the
+/// genuine EMIT_ONLY stall. A payload common-noun used descriptively in the span but not abutting a
+/// brace (`the verdict payload is {..}`, `your verdict value is {..}`) is not a binding, so it does
+/// NOT defeat the presentation (adj-u18-1rr). The determiner requirement excludes the emit type name
+/// `type Verdict` and the JSON key `{"verdict"`. Reached only when the clause already mentions emit
+/// (signal c passed), so a span binding genuinely marks the literal as that emit's data.
+fn verdict_presented_as_output(clause: &str) -> bool {
+    for idx in whole_word_positions(clause, "verdict") {
+        // Skip a JSON-key `verdict` (`{"verdict"` / `"verdict"`): its immediate predecessor is a
+        // double quote, never a determiner.
+        if clause[..idx].ends_with('"') {
+            continue;
+        }
+        let Some(det) = preceding_word(clause, idx) else {
+            continue;
+        };
+        if !VERDICT_DETERMINERS.contains(&det) {
+            continue;
+        }
+        // The determiner-verdict presents the trailing literal only when the span from this
+        // `verdict` word onward carries no emit-payload binding. An example brace EARLIER in the
+        // clause is outside this span and cannot defeat the presentation.
+        let span_start = idx + "verdict".len();
+        if !span_has_emit_payload_binding(&clause[span_start..]) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether the trailing `{"verdict"` literal of `clause` is GENUINELY the emit payload - the narrow
+/// shape that is a real stall. Reached (signal d) only when the clause already has an emit
+/// instruction, no output cue, and does not present the literal as the verdict, so every OTHER
+/// ambiguous shape has already biased to PASS.
+///
+/// The literal is the emit payload when EITHER:
+/// - its OWN brace directly follows a [`PAYLOAD_SLOT_WORDS`]/emit token (`... data {..}`,
+///   `rigger_emit {..}`), the direct `emit ... data {verdict}` stall; OR
+/// - it is a disjunctive/conjunctive ALTERNATION continuation of an earlier payload-bound verdict
+///   literal (`... data {"verdict":"approve"} to approve or {"verdict":"reject"} to reject`), where
+///   the trailing literal abuts a connective (`or`/`and`/`nor`) rather than the payload word
+///   directly, yet is still the emit's serialized argument (see
+///   [`trailing_literal_is_payload_alternation`]).
+///
+/// Scoping the direct test to the trailing literal's OWN brace (not any brace in the clause) is what
+/// keeps an UNRELATED `data {id}` example brace from marking a non-payload literal as emit data
+/// (adj-u18-1r3 FP#1). A clause with no emit instruction is never the emit payload.
+fn literal_is_emit_payload(clause: &str) -> bool {
+    if last_emit_end(clause).is_none() {
+        return false;
+    }
+    trailing_brace_is_payload_bound(clause) || trailing_literal_is_payload_alternation(clause)
+}
+
+/// Whether the `{` at byte offset `idx` in `s` is IMMEDIATELY introduced by an emit-payload marker -
+/// a [`PAYLOAD_SLOT_WORDS`] word, `rigger_emit`, or an [`EMIT_CUES`] word (`data {..}`,
+/// `rigger_emit {..}`, `emit {..}`). The single "this brace is the serialized emit argument" test.
+fn brace_is_payload_bound(s: &str, idx: usize) -> bool {
+    matches!(preceding_word(s, idx), Some(w)
+        if PAYLOAD_SLOT_WORDS.contains(&w) || w == "rigger_emit" || EMIT_CUES.contains(&w))
+}
+
+/// Whether `span` contains ANY brace immediately introduced by an emit-payload marker (see
+/// [`brace_is_payload_bound`]). Unlike [`literal_is_emit_payload`] it does NOT require an emit token
+/// to also appear in `span`: it reads only the payload marker abutting a brace, because the emit
+/// instruction may sit BEFORE `span` (`rigger_emit your verdict as data {..}` - the emit precedes the
+/// determiner-verdict word, the `data {..}` binding follows it). This is the span-scoped test
+/// [`verdict_presented_as_output`] applies from the `verdict` word to the trailing literal.
+fn span_has_emit_payload_binding(span: &str) -> bool {
+    span.match_indices('{')
+        .any(|(idx, _)| brace_is_payload_bound(span, idx))
+}
+
+/// Whether the trailing `{` of `clause` (the trailing verdict literal's own brace) directly follows
+/// an emit-payload marker (see [`brace_is_payload_bound`]).
+fn trailing_brace_is_payload_bound(clause: &str) -> bool {
+    clause
+        .rfind('{')
+        .is_some_and(|idx| brace_is_payload_bound(clause, idx))
+}
+
+/// Whether the trailing verdict literal of `clause` is a list ALTERNATION continuation of an EARLIER
+/// verdict literal that is itself the emit payload - the `... data {"verdict":"approve"} to approve
+/// or {"verdict":"reject"} to reject` shape. The trailing literal abuts a connective
+/// ([`ALT_CONNECTIVES`]) rather than the payload word directly, but an earlier `{"verdict"` brace in
+/// the clause IS payload-bound, so both literals are the serialized emit alternatives and the whole
+/// persona is the emit-only stall. Requiring the earlier sibling to be a `{"verdict"` literal (not
+/// any payload-bound brace) keeps an unrelated `data {id}` example from making a connective-joined
+/// trailing literal look like an alternation (biases the ambiguous case to PASS).
+fn trailing_literal_is_payload_alternation(clause: &str) -> bool {
+    let Some(last) = clause.rfind('{') else {
+        return false;
+    };
+    let abuts_connective =
+        matches!(preceding_word(clause, last), Some(w) if ALT_CONNECTIVES.contains(&w));
+    if !abuts_connective {
+        return false;
+    }
+    clause
+        .match_indices('{')
+        .filter(|(idx, _)| *idx < last)
+        .filter(|(idx, _)| clause[idx + 1..].trim_start().starts_with("\"verdict\""))
+        .any(|(idx, _)| brace_is_payload_bound(clause, idx))
+}
+
+/// Byte offset just past the LAST emit token in `clause` (`rigger_emit` substring or an
+/// [`EMIT_CUES`] whole word), or `None` if the clause mentions no emit instruction. The last
+/// (nearest) emit token gives the narrowest emit->literal window, biasing the payload test toward
+/// PASS.
+fn last_emit_end(clause: &str) -> Option<usize> {
+    let mut end = clause.rfind("rigger_emit").map(|i| i + "rigger_emit".len());
+    for cue in EMIT_CUES {
+        for start in whole_word_positions(clause, cue) {
+            let e = start + cue.len();
+            end = Some(end.map_or(e, |cur: usize| cur.max(e)));
+        }
+    }
+    end
+}
+
+/// The introducing clause of the `{"verdict"` literal at byte offset `pos`: the run of text
+/// from the nearest preceding clause boundary (`.`, `!`, `?`, `;`, or a line break) up to the
+/// literal. This is the single instruction that presents the literal, scoped to one sentence
+/// so an emit mention in a neighbouring sentence cannot bind it. `rfind` returns a char
+/// boundary, so slicing a multi-byte prompt never panics.
+fn introducing_clause(lower: &str, pos: usize) -> &str {
+    let start = lower[..pos]
+        .rfind(['.', '!', '?', ';', '\n', '\r'])
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    &lower[start..pos]
+}
+
+/// Start byte offsets of every WHOLE-word occurrence of `word` (lowercase ASCII) in `hay`
+/// (already lowercased) - bounded on both sides by a non-word byte (anything that is not
+/// `[A-Za-z0-9_]`). This is the single whole-word scanner the lint uses; [`contains_word`] is the
+/// any-match view over it. Whole-word matching is what gives the lint teeth without false alarms:
+/// it catches "end" in "end your output" but not in "append"/"recommend", and "emit" as its own
+/// word but not buried inside "rigger_emit" (matched separately as a substring).
+fn whole_word_positions(hay: &str, word: &str) -> Vec<usize> {
+    let bytes = hay.as_bytes();
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(rel) = hay[from..].find(word) {
+        let start = from + rel;
+        let end = start + word.len();
+        let before_ok = start == 0 || !is_word_byte(bytes[start - 1]);
+        let after_ok = end == bytes.len() || !is_word_byte(bytes[end]);
+        if before_ok && after_ok {
+            out.push(start);
+        }
+        from = start + 1;
+    }
+    out
+}
+
+/// Whether `word` occurs in `hay` as a WHOLE word (see [`whole_word_positions`]).
+fn contains_word(hay: &str, word: &str) -> bool {
+    !whole_word_positions(hay, word).is_empty()
+}
+
+/// The whole word (lowercase ASCII) immediately preceding byte offset `idx` in `s`, skipping any
+/// run of non-word bytes (spaces, punctuation, quotes) between them; `None` if there is no
+/// preceding word. Used to read the determiner in front of a `verdict` subject. Boundaries land
+/// on non-word bytes (multi-byte UTF-8 bytes are all `>= 0x80`, hence non-word), so slicing never
+/// splits a char and never panics.
+fn preceding_word(s: &str, idx: usize) -> Option<&str> {
+    let bytes = s.as_bytes();
+    let mut end = idx;
+    while end > 0 && !is_word_byte(bytes[end - 1]) {
+        end -= 1;
+    }
+    if end == 0 {
+        return None;
+    }
+    let mut start = end;
+    while start > 0 && is_word_byte(bytes[start - 1]) {
+        start -= 1;
+    }
+    Some(&s[start..end])
+}
+
+/// Whether `b` is a word byte (`[A-Za-z0-9_]`) for [`contains_word`]'s boundary test.
+fn is_word_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum Color {
     White,
@@ -789,6 +1368,475 @@ fn find_cycle(stages: &BTreeMap<String, Stage>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- spec 18, unit 1: gating-persona verdict-line static lint ----
+
+    fn agent(id: &str, prompt: &str) -> AgentDef {
+        AgentDef {
+            id: id.into(),
+            prompt: prompt.into(),
+            ..Default::default()
+        }
+    }
+
+    /// A config whose default review panel gates on an adjudicator carrying `prompt`.
+    fn config_with_default_adjudicator(prompt: &str) -> Config {
+        let mut cfg = Config::default();
+        cfg.agents.insert("adj".into(), agent("adj", prompt));
+        cfg.workflow.defaults.review.adjudicator = "adj".into();
+        cfg
+    }
+
+    /// An adjudicator persona whose ONLY verdict path is `rigger_emit`: the guaranteed
+    /// stall this lint targets (the gate reads the result channel and finds no verdict).
+    const EMIT_ONLY: &str = "You are the Adjudicator. Weigh the lenses against the adversary \
+        and decide. Record your verdict the moment you reach it via the rigger_emit tool with \
+        type Verdict and data {\"verdict\":\"approve\"} to approve or {\"verdict\":\"reject\"} \
+        to reject. Do not add anything after you emit.";
+
+    /// The compliant twin of [`EMIT_ONLY`]: it still records reasoning via `rigger_emit` but
+    /// ENDS ITS OUTPUT with the verdict line the integration gate actually reads.
+    const RESULT_LINE: &str = "You are the Adjudicator. Weigh the lenses against the adversary \
+        and decide. Record your reasoning via the rigger_emit tool as you go. End your output \
+        with a single line: {\"verdict\":\"approve\"} to approve or {\"verdict\":\"reject\"} to \
+        reject.";
+
+    #[test]
+    fn verdict_line_matcher_flags_emit_only_and_passes_a_result_line_prompt() {
+        assert!(
+            !puts_verdict_on_result_channel(EMIT_ONLY),
+            "a persona that records the verdict ONLY via rigger_emit puts no verdict on the \
+             result channel"
+        );
+        assert!(
+            puts_verdict_on_result_channel(RESULT_LINE),
+            "a persona that ends its output with the verdict line is compliant (even though it \
+             also emits reasoning)"
+        );
+    }
+
+    #[test]
+    fn verdict_line_matcher_never_flags_a_prompt_that_puts_the_verdict_on_the_result() {
+        // A standalone JSON example with no emit instruction near it is on the result channel.
+        assert!(puts_verdict_on_result_channel(
+            "Decide, then write {\"verdict\":\"approve\"} and stop."
+        ));
+        // A prompt with no verdict literal at all is not flagged: there is no literal to judge,
+        // and the lint trades that false negative away to never false-positive a compliant one.
+        assert!(puts_verdict_on_result_channel(
+            "Adjudicate the unit and record your decision."
+        ));
+    }
+
+    /// spec 18, unit 1 hard promise (Design L32 / done-when L111): the lint may have false
+    /// NEGATIVES but never a false POSITIVE - a persona that DOES present the verdict as its
+    /// output must never be flagged. This pins that promise against the exact class the
+    /// heuristic used to break on: a COMPLIANT verdict-line clause that happens to use words
+    /// outside the output whitelist, while an UNRELATED `rigger_emit` instruction sits in a
+    /// neighbouring sentence (rigger's own communication discipline puts one in every gating
+    /// persona). Each of these presents `{"verdict"...}` AS OUTPUT and must pass.
+    #[test]
+    fn verdict_line_lint_never_false_positives_a_compliant_but_non_whitelisted_persona() {
+        // Every string below is emit-adjacent (a `rigger_emit` / emit instruction is nearby,
+        // as the discipline requires) yet presents the verdict literal as its OUTPUT, using
+        // vocabulary the fixed output whitelist does not contain (finish/answer/closing/write).
+        let compliant = [
+            "Emit your reasoning as you go via rigger_emit. Then write your verdict as the \
+             closing JSON: {\"verdict\":\"approve\"}",
+            "Your verdict is the JSON {\"verdict\":\"approve\"}; also emit a DecisionMade as you \
+             go.",
+            "Weigh the lenses, record notes via rigger_emit. Finish with the JSON \
+             {\"verdict\":\"approve\"}.",
+            "Record your reasoning via rigger_emit. Your closing JSON must be \
+             {\"verdict\":\"approve\"}.",
+            "Emit each decision via rigger_emit. Write {\"verdict\":\"approve\"} as the closing \
+             token.",
+            "Deliberate and emit your reasoning via rigger_emit. Your answer is \
+             {\"verdict\":\"approve\"}.",
+        ];
+        for prompt in compliant {
+            assert!(
+                puts_verdict_on_result_channel(prompt),
+                "a persona that presents the verdict AS OUTPUT must never be flagged, even when \
+                 an emit instruction sits in a neighbouring sentence and the verdict clause \
+                 avoids the output whitelist:\n{prompt}"
+            );
+        }
+        // The stall this lint targets is unchanged: a verdict literal that is genuinely the
+        // payload of an emit call in its OWN clause, with no output cue, stays flagged.
+        assert!(
+            !puts_verdict_on_result_channel(EMIT_ONLY),
+            "a persona whose verdict literal is the rigger_emit payload in its own clause is \
+             still the stall this lint refuses"
+        );
+    }
+
+    /// spec 18 unit 1's hard promise, pinned against the RESIDUAL false-positive class the prior
+    /// fix left reachable (adj-u18-1 REJECT / adv-u18-1-residual-false-positive-same-clause-emit):
+    /// an unrelated emit instruction sharing the SAME sentence as a verdict-output clause must NOT
+    /// bind the literal. The earlier "any emit word in the clause" rule flagged these because an
+    /// emit word (governing a DIFFERENT target - a DecisionMade, reasoning) sat in the clause with
+    /// no whitelisted output cue; each nonetheless presents `{"verdict"...}` AS the verdict output
+    /// and must PASS. None of these strings hit [`OUTPUT_CUES`], so they pin the emit-payload
+    /// binding itself, not the whitelist. Compliance must NOT flip on clause order.
+    #[test]
+    fn verdict_line_lint_passes_an_unrelated_same_sentence_emit_before_a_verdict_output_clause() {
+        let compliant = [
+            // The exact string the adjudicator's directive named: an unrelated `emit a
+            // DecisionMade` instruction precedes a non-whitelisted verdict-output clause.
+            "You must emit a DecisionMade for each call and your verdict must be \
+             {\"verdict\":\"approve\"}.",
+            // Emit-clause first, verdict-output clause second, one sentence (no cue word).
+            "Emit each decision via rigger_emit, then your verdict is the JSON \
+             {\"verdict\":\"approve\"}.",
+            "Having emitted your reasoning, your verdict {\"verdict\":\"approve\"} governs.",
+            // The ORDER-FLIP of a previously-blessed string: verdict-first passed before; the
+            // emit-first reordering must pass too - compliance cannot flip on clause order.
+            "Also emit a DecisionMade as you go and your verdict is the JSON \
+             {\"verdict\":\"approve\"}.",
+            "Record each DecisionMade via rigger_emit as you go, and your verdict is \
+             {\"verdict\":\"approve\"}.",
+            "After you emit your DecisionMade events, your verdict is {\"verdict\":\"approve\"}.",
+            "Deliver two things: reasoning emitted via rigger_emit, and the verdict \
+             {\"verdict\":\"approve\"}.",
+        ];
+        for prompt in compliant {
+            assert!(
+                puts_verdict_on_result_channel(prompt),
+                "an unrelated emit instruction in the same sentence must not bind a verdict that \
+                 is independently presented as output:\n{prompt}"
+            );
+        }
+        // Teeth preserved even IN-sentence: when the emit verb GENUINELY serializes the verdict
+        // as its `data` payload (not an unrelated target), it is still the stall - regardless of a
+        // determiner-`verdict` phrase, because the span to the literal carries the payload marker.
+        for stall in [
+            "Emit a note, then rigger_emit your verdict as data {\"verdict\":\"approve\"}.",
+            "Record notes and rigger_emit the verdict with data {\"verdict\":\"approve\"}.",
+        ] {
+            assert!(
+                !puts_verdict_on_result_channel(stall),
+                "a verdict serialized as the emit `data` payload is still the stall:\n{stall}"
+            );
+        }
+    }
+
+    /// spec 18 unit 1's hard promise, pinned against the PAYLOAD-SLOT residual false-positive class
+    /// (adj-u18-1rr REJECT / adv-u18-1rr-residual-fp-defeats-your-verdict-escape): an explicit
+    /// determiner-`verdict` presentation ("your verdict ... is {..}") is on the result channel even
+    /// when a payload-slot noun sits in the span but does NOT abut the literal. The prior rule
+    /// treated ANY payload-slot word in the span as defeating the presentation, so it flagged these
+    /// clearly-compliant personas; only a payload word IMMEDIATELY abutting the literal ("as data
+    /// {..}") marks it as the serialized emit data. None of these strings carries an output-cue
+    /// word, and each shares its sentence with an unrelated emit instruction, so they pin the
+    /// determiner-verdict escape against a payload noun in the span - not the output whitelist.
+    #[test]
+    fn verdict_line_lint_passes_a_determiner_verdict_when_a_payload_noun_sits_in_the_span() {
+        let compliant = [
+            // A dropped ambiguous common noun ("value"/"object") after the verdict subject.
+            "Emit each decision via rigger_emit and your verdict value is {\"verdict\":\"approve\"}.",
+            "Emit each decision via rigger_emit and your verdict object is \
+             {\"verdict\":\"approve\"}.",
+            // A KEPT emit-API token ("payload"/"data") that does NOT abut the literal - descriptive
+            // here, not the serialized argument, so the determiner-verdict presentation stands.
+            "Emit each decision via rigger_emit and the verdict payload is \
+             {\"verdict\":\"approve\"}.",
+            "Record notes via rigger_emit as you go, and your verdict data is \
+             {\"verdict\":\"approve\"}.",
+        ];
+        for prompt in compliant {
+            assert!(
+                puts_verdict_on_result_channel(prompt),
+                "a determiner-verdict presentation is on the result channel even when a payload \
+                 noun sits in its span but does not abut the literal:\n{prompt}"
+            );
+        }
+        // Teeth: when the payload word IMMEDIATELY abuts the literal after an emit, the verdict IS
+        // the serialized emit data - still the stall, even behind a determiner-`verdict` phrase.
+        for stall in [
+            "Emit a note, then rigger_emit your verdict as data {\"verdict\":\"approve\"}.",
+            "Record decisions, then rigger_emit the verdict payload {\"verdict\":\"approve\"}.",
+        ] {
+            assert!(
+                !puts_verdict_on_result_channel(stall),
+                "a verdict literal a payload word directly introduces is the serialized emit data \
+                 - still the stall:\n{stall}"
+            );
+        }
+    }
+
+    /// spec 18 unit 1's hard promise, pinned against the UNRELATED-EMIT-EXAMPLE-BRACE false-positive
+    /// class (adj-u18-1r3 REJECT, FP#1): an explicit determiner-`verdict` presentation
+    /// ("your verdict is {..}") is on the result channel even when an UNRELATED emit-payload EXAMPLE
+    /// brace ("... data {id} ...") shares its clause EARLIER, before the `verdict` word. The prior
+    /// rule scanned EVERY brace in the clause, so a different literal's `data {id}` example
+    /// short-circuited the determiner-verdict escape to a false flag - it fired on the EXACT wording
+    /// rigger's own communication discipline mandates of every gating persona. The fix scopes the
+    /// emit-payload test to the SPAN from the `verdict` word to the trailing literal, so an example
+    /// brace before the presentation no longer defeats it. None of these strings carries an output
+    /// cue, and each shares its sentence with a genuine `rigger_emit ... data {id}` example.
+    #[test]
+    fn verdict_line_lint_passes_a_determiner_verdict_when_an_unrelated_emit_example_brace_precedes_it(
+    ) {
+        let compliant = [
+            // A/B delta of the reject: only difference from a passing twin is an inline `data {id}`
+            // example after the emit token; the determiner-verdict escape must survive it.
+            "Record each decision via rigger_emit with data {id}, and your verdict is \
+             {\"verdict\":\"approve\"}.",
+            // The A-side twin (no example brace) - a control that must also pass.
+            "Record each decision via rigger_emit with a DecisionMade payload, and your verdict is \
+             {\"verdict\":\"approve\"}.",
+            // The EXACT rigger DecisionMade-discipline wording mandated of every gating persona: an
+            // emit-payload example `data {id,summary}` precedes the determiner-verdict presentation.
+            "Record every decision via rigger_emit with type DecisionMade and data {id,summary}, \
+             then your verdict is {\"verdict\":\"approve\"}.",
+            // The example brace can even be a `{id}` immediately after `rigger_emit`; still unrelated
+            // to the trailing determiner-verdict literal.
+            "Emit each decision as rigger_emit {id}, and your verdict is {\"verdict\":\"approve\"}.",
+        ];
+        for prompt in compliant {
+            assert!(
+                puts_verdict_on_result_channel(prompt),
+                "an unrelated emit-payload EXAMPLE brace earlier in the clause must not defeat a \
+                 determiner-verdict presentation of the trailing literal:\n{prompt}"
+            );
+        }
+        // Teeth preserved: when the payload word abuts the TRAILING verdict literal itself (in the
+        // presentation span), it IS the serialized emit data - still the stall, even behind a
+        // determiner-`verdict` phrase and even with an unrelated example brace elsewhere.
+        for stall in [
+            "Record notes via rigger_emit {id}, then rigger_emit your verdict as data \
+             {\"verdict\":\"approve\"}.",
+            "Emit a note with data {id}, then rigger_emit the verdict with data \
+             {\"verdict\":\"approve\"}.",
+        ] {
+            assert!(
+                !puts_verdict_on_result_channel(stall),
+                "a verdict literal a payload word directly introduces IN the presentation span is \
+                 the serialized emit data - still the stall:\n{stall}"
+            );
+        }
+    }
+
+    /// spec 18 unit 1 residual class (adj-u18-1rr): a natural output verb OUTSIDE the fixed output
+    /// whitelist ("report"/"deliver"/"send"), whose object is a dropped ambiguous common noun
+    /// ("the value {..}"/"the object {..}"), presents the verdict as output and must PASS. Each
+    /// string reaches the final emit-payload test (signal d: an emit instruction in the clause, no
+    /// output cue, no determiner-verdict) and passes ONLY because the literal is NOT the serialized
+    /// emit data. This pins the `literal_is_emit_payload == false` direction directly (mutation gap
+    /// adv/sdet-u18-1r-emit-payload-narrowing-unpinned): forcing it TRUE turns every line RED.
+    #[test]
+    fn verdict_line_lint_passes_a_natural_output_verb_only_via_the_literal_not_being_emit_payload()
+    {
+        let compliant = [
+            "Emit your reasoning via rigger_emit, then report the value {\"verdict\":\"approve\"}.",
+            "Emit your reasoning via rigger_emit, then deliver the object {\"verdict\":\"approve\"}.",
+            "Emit your reasoning via rigger_emit, then send the value {\"verdict\":\"approve\"}.",
+            // A KEPT emit-API token ("data") in the clause but not abutting the literal.
+            "Emit your reasoning as structured data via rigger_emit, then {\"verdict\":\"approve\"}.",
+        ];
+        for prompt in compliant {
+            assert!(
+                puts_verdict_on_result_channel(prompt),
+                "a natural output verb outside the whitelist, whose object is not an emit \
+                 payload-slot word abutting the literal, presents the verdict as output - it must \
+                 PASS:\n{prompt}"
+            );
+        }
+    }
+
+    /// Direct pin on the emit-payload recognizer (mutation gap adv/sdet-u18-1r-emit-payload-
+    /// narrowing-unpinned): the literal is the serialized emit data ONLY when a payload-slot word
+    /// (or the emit verb) IMMEDIATELY abuts it, never when a payload noun sits earlier in the
+    /// clause. This pins BOTH directions - mutating `literal_is_emit_payload` to a constant turns
+    /// one arm RED. The argument is the lowercased introducing clause, which ends at the `{` of the
+    /// literal (see [`introducing_clause`]).
+    #[test]
+    fn literal_is_emit_payload_binds_only_an_abutting_payload_or_emit_word() {
+        // Abutting payload word after an emit -> genuinely the serialized emit data.
+        assert!(literal_is_emit_payload(
+            "record notes and rigger_emit the verdict with data {"
+        ));
+        // Bare emit abutting the literal -> the emit verb directly introduces it.
+        assert!(literal_is_emit_payload("record notes, then rigger_emit {"));
+        // Payload word present but NOT abutting the literal ("value is {") -> not the emit data.
+        assert!(!literal_is_emit_payload(
+            "emit each decision via rigger_emit and your verdict value is {"
+        ));
+        // A dropped common noun abutting the literal -> not a payload slot at all.
+        assert!(!literal_is_emit_payload(
+            "emit your reasoning via rigger_emit, then report the value {"
+        ));
+        // No emit instruction in the clause -> never the emit data, even with an abutting payload.
+        assert!(!literal_is_emit_payload("here is the data {"));
+
+        // Alternation continuation: the trailing literal abuts a connective (`or`) but an earlier
+        // `{"verdict"` sibling IS payload-bound (`data {"verdict":"approve"}`), so it is the emit's
+        // other serialized alternative - still the payload. This pins
+        // `trailing_literal_is_payload_alternation`: neutralizing it turns the EMIT_ONLY alternation
+        // GREEN (a false negative the reject demanded stay FLAGGED).
+        assert!(literal_is_emit_payload(
+            "rigger_emit with data {\"verdict\":\"approve\"} to approve or {"
+        ));
+        // But a connective-joined trailing literal whose earlier sibling is an UNRELATED example
+        // brace (`data {id}`, not a `{"verdict"` literal) is NOT an alternation - biases to PASS.
+        assert!(!literal_is_emit_payload("rigger_emit with data {id} or {"));
+        // A connective with no payload-bound `{"verdict"` sibling at all is not an alternation.
+        assert!(!literal_is_emit_payload(
+            "emit each decision via rigger_emit, then finish with a or {"
+        ));
+    }
+
+    #[test]
+    fn lint_hard_errors_on_an_emit_only_gating_adjudicator_naming_the_fix() {
+        let cfg = config_with_default_adjudicator(EMIT_ONLY);
+        let msg = lint_gating_verdict_lines(&cfg).unwrap_err().to_string();
+        assert!(msg.contains("\"adj\""), "names the offending agent: {msg}");
+        assert!(
+            msg.contains("gating role") && msg.contains("verdict line"),
+            "names the defect: {msg}"
+        );
+        assert!(
+            msg.contains("rigger_emit will never gate"),
+            "names why an emit-only verdict never gates: {msg}"
+        );
+    }
+
+    #[test]
+    fn lint_passes_a_gating_adjudicator_that_ends_with_the_verdict_line() {
+        let cfg = config_with_default_adjudicator(RESULT_LINE);
+        assert!(lint_gating_verdict_lines(&cfg).is_ok());
+    }
+
+    #[test]
+    fn the_verdict_line_lint_ignores_non_gating_roles() {
+        // Only the adjudicator's result-channel verdict gates integration; an emit-only lens or
+        // adversary is not a gating role, so the lint leaves it alone.
+        let mut cfg = Config::default();
+        cfg.agents.insert("adj".into(), agent("adj", RESULT_LINE));
+        cfg.agents.insert("adv".into(), agent("adv", EMIT_ONLY));
+        cfg.agents.insert("lens".into(), agent("lens", EMIT_ONLY));
+        cfg.workflow.defaults.review.adjudicator = "adj".into();
+        cfg.workflow.defaults.review.adversary = "adv".into();
+        cfg.workflow.defaults.review.lenses = vec!["lens".into()];
+        assert!(
+            lint_gating_verdict_lines(&cfg).is_ok(),
+            "a compliant adjudicator passes even when the adversary/lens personas are emit-only"
+        );
+    }
+
+    #[test]
+    fn the_verdict_line_lint_reaches_the_light_tier_adjudicator() {
+        let mut cfg = Config::default();
+        cfg.agents.insert("full".into(), agent("full", RESULT_LINE));
+        cfg.agents.insert("light".into(), agent("light", EMIT_ONLY));
+        cfg.workflow.defaults.review.adjudicator = "full".into();
+        let mut depth = ReviewDepth::default();
+        depth.light.adjudicator = "light".into();
+        cfg.workflow.defaults.review.tiers = Some(Box::new(depth));
+        let msg = lint_gating_verdict_lines(&cfg).unwrap_err().to_string();
+        assert!(
+            msg.contains("\"light\""),
+            "the light-tier adjudicator is a gating role too: {msg}"
+        );
+    }
+
+    #[test]
+    fn the_verdict_line_lint_reaches_a_standalone_stage_adjudicator_that_is_not_a_critique_gate() {
+        // A stage's own `adjudicator` renders a gating verdict, so its persona is linted like a
+        // review-panel adjudicator. This stage is NOT the conductor-injected plan-critique gate
+        // (there is no producer stage for it to `needs`, and `build_dag_critique_prompt` only
+        // injects the verdict line for that gate), so its persona must carry the verdict line
+        // itself and an emit-only one is flagged. The excluded critique-gate case is pinned
+        // separately by `the_verdict_line_lint_excludes_the_conductor_injected_plan_critique_gate`.
+        let mut cfg = Config::default();
+        cfg.agents
+            .insert("critic".into(), agent("critic", EMIT_ONLY));
+        let st = Stage {
+            adjudicator: "critic".into(),
+            ..Default::default()
+        };
+        cfg.workflow.stages.insert("decision-gate".into(), st);
+        let msg = lint_gating_verdict_lines(&cfg).unwrap_err().to_string();
+        assert!(
+            msg.contains("\"critic\""),
+            "a standalone stage adjudicator that is not the injected critique gate is linted: {msg}"
+        );
+    }
+
+    /// spec 18 unit 1's hard promise, pinned against the PLAN-CRITIQUE false-positive class
+    /// (adj-u18-1r3 REJECT, FP#2): the conductor builds the plan-critique / DAG-critique gate
+    /// adjudicator's prompt via `build_dag_critique_prompt`, which ALWAYS appends the result-channel
+    /// verdict line ("Render your final verdict as a JSON line: {..}"). So that gate's persona need
+    /// NOT carry the verdict line, and linting an emit-only DAG-critique adjudicator is a false
+    /// positive that would REFUSE a legitimate run (unit 2 escalates the lint to a run-start
+    /// refusal). `gating_agent_ids` excludes the critique-gate stage's standalone adjudicator; the
+    /// per-unit review adjudicator (whose `build_prompt` injects nothing) stays linted.
+    #[test]
+    fn the_verdict_line_lint_excludes_the_conductor_injected_plan_critique_gate() {
+        // A DEDICATED emit-only DAG-critique adjudicator, used ONLY at the plan-critique gate: the
+        // conductor injects its verdict line, so it must NOT be flagged.
+        let mut cfg = Config::default();
+        cfg.agents
+            .insert("planner".into(), agent("planner", RESULT_LINE));
+        cfg.agents
+            .insert("dag-critic".into(), agent("dag-critic", EMIT_ONLY));
+        cfg.agents.insert("adj".into(), agent("adj", RESULT_LINE));
+        // The producer stage (a planner that `produces` a DAG).
+        let plan = Stage {
+            agent: "planner".into(),
+            produces: "dag".into(),
+            ..Default::default()
+        };
+        cfg.workflow.stages.insert("plan".into(), plan);
+        // The plan-critique gate: review-only (no `agent`), carries an adjudicator, needs the
+        // producer - exactly `conductor::critique_gate_name`'s recognition.
+        let gate = Stage {
+            adjudicator: "dag-critic".into(),
+            needs: vec!["plan".into()],
+            ..Default::default()
+        };
+        cfg.workflow.stages.insert("plan-critique".into(), gate);
+        // A compliant per-unit review adjudicator so the config is otherwise clean.
+        cfg.workflow.defaults.review.adjudicator = "adj".into();
+        assert!(
+            lint_gating_verdict_lines(&cfg).is_ok(),
+            "the conductor-injected plan-critique gate adjudicator must not be flagged for an \
+             emit-only persona: {:?}",
+            lint_gating_verdict_lines(&cfg)
+        );
+
+        // But if that SAME emit-only persona ALSO serves the per-unit review adjudicator (whose
+        // build_prompt injects no verdict line), it is a real stall and stays flagged - the
+        // exclusion is scoped to the critique-gate role, not the agent id everywhere.
+        let mut cfg2 = cfg.clone();
+        cfg2.workflow.defaults.review.adjudicator = "dag-critic".into();
+        let msg = lint_gating_verdict_lines(&cfg2).unwrap_err().to_string();
+        assert!(
+            msg.contains("\"dag-critic\""),
+            "an emit-only adjudicator that also gates per-unit review (build_prompt injects \
+             nothing) is still flagged: {msg}"
+        );
+    }
+
+    #[test]
+    fn the_verdict_line_lint_reaches_a_stage_review_override_adjudicator() {
+        // A per-stage `review:` override names its OWN adjudicator, a gating role spec 18
+        // enumerates; the lint reaches it through `st.review.gating_agent_ids()`. This pins the
+        // stage-review collection line directly (the standalone-adjudicator test above exercises a
+        // different field), so dropping it can no longer ship green.
+        let mut cfg = Config::default();
+        cfg.agents
+            .insert("sjudge".into(), agent("sjudge", EMIT_ONLY));
+        let mut st = Stage::default();
+        st.review.adjudicator = "sjudge".into();
+        cfg.workflow.stages.insert("implement".into(), st);
+        let msg = lint_gating_verdict_lines(&cfg).unwrap_err().to_string();
+        assert!(
+            msg.contains("\"sjudge\""),
+            "a stage review-override adjudicator is a gating role too: {msg}"
+        );
+    }
 
     #[test]
     fn parses_agent_frontmatter_and_body() {
@@ -908,6 +1956,92 @@ mod tests {
     }
 
     #[test]
+    fn sdet_author_is_a_distinct_write_capable_agent_separate_from_the_read_only_sdet_lens() {
+        // Spec 32 c1: a NEW write-capable SDET-AUTHOR role exists as the shipped
+        // `.rigger/agents/sdet-author.md` with Edit/Write tools + `isolation: worktree`,
+        // DISTINCT from the read-only `sdet` review lens (which has neither Edit nor Write).
+        // Proven over the REAL committed files (read from the crate manifest dir), so this
+        // asserts the artifact the loop actually spawns, not a fixture.
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let author = parse_agent(
+            &std::fs::read(root.join(".rigger/agents/sdet-author.md"))
+                .expect("the shipped .rigger/agents/sdet-author.md must exist"),
+        )
+        .expect("sdet-author.md parses as an agent definition");
+        assert_eq!(author.id, "sdet-author");
+
+        // Write-capable: it grants BOTH Edit and Write (case-insensitive), and neither is
+        // stripped by fan-out filtering (they are not spawn tools), so an isolated spawn of
+        // this agent keeps its authoring capability.
+        let grants =
+            |a: &AgentDef, tool: &str| a.tools.iter().any(|t| t.eq_ignore_ascii_case(tool));
+        assert!(grants(&author, "Edit"), "sdet-author must grant Edit");
+        assert!(grants(&author, "Write"), "sdet-author must grant Write");
+        let allowed = author.allowed_tools();
+        assert!(
+            allowed.iter().any(|t| t.eq_ignore_ascii_case("Edit"))
+                && allowed.iter().any(|t| t.eq_ignore_ascii_case("Write")),
+            "Edit/Write survive fan-out stripping - the spawned author can actually write"
+        );
+
+        // `isolation: worktree`: it authors its periphery tests IN an isolated worktree.
+        assert_eq!(author.isolation, "worktree");
+        assert!(author.isolated());
+
+        // DISTINCT from the read-only `sdet` review lens: a different agent id, and the lens
+        // has NEITHER Edit nor Write - it only reviews, it cannot author. This is the
+        // independence the spec demands: authorship and review are separate roles.
+        let lens = parse_agent(
+            &std::fs::read(root.join(".rigger/agents/sdet.md"))
+                .expect("the shipped .rigger/agents/sdet.md must exist"),
+        )
+        .expect("sdet.md parses as an agent definition");
+        assert_ne!(
+            author.id, lens.id,
+            "the author and the review lens are distinct agents"
+        );
+        assert!(
+            !grants(&lens, "Edit") && !grants(&lens, "Write"),
+            "the sdet review lens stays read-only (no Edit/Write) - it reviews, never authors"
+        );
+
+        // The role token exists in src/spawn.rs and names this agent's role.
+        assert_eq!(crate::spawn::ROLE_SDET_AUTHOR, "sdet-author");
+    }
+
+    #[test]
+    fn the_sdet_author_role_is_on_by_default_and_opt_out() {
+        // Spec 32: the SDET-author role is ALWAYS-ON (config-driven, default on) and
+        // self-scopes. The on-by-default rule must hold whether the `sdet_author:` field, or
+        // the whole `defaults:` block, is omitted - so it is checked against the DERIVED
+        // `Defaults::default()` (which a missing `defaults:` block constructs) AND both
+        // from-YAML omission paths, not just a hand-set `None`.
+        assert!(
+            Defaults::default().sdet_author_enabled(),
+            "the sdet-author role is on by default (derived Default)"
+        );
+        // A present-but-empty `defaults:` block: still on.
+        let empty_defaults: Workflow = serde_yaml::from_str("name: w\ndefaults: {}\n").unwrap();
+        assert!(empty_defaults.defaults.sdet_author_enabled());
+        // No `defaults:` block at all: still on (this is exactly the case a bare `bool` with
+        // a serde default-true would silently flip OFF, because the missing block builds the
+        // derived Default).
+        let no_defaults: Workflow = serde_yaml::from_str("name: w\n").unwrap();
+        assert!(no_defaults.defaults.sdet_author_enabled());
+        // Explicit opt-out: off.
+        let off: Workflow =
+            serde_yaml::from_str("name: w\ndefaults:\n  sdet_author: false\n").unwrap();
+        assert!(
+            !off.defaults.sdet_author_enabled(),
+            "an explicit `sdet_author: false` opts the workflow out"
+        );
+        // Explicit opt-in: on.
+        let on: Workflow =
+            serde_yaml::from_str("name: w\ndefaults:\n  sdet_author: true\n").unwrap();
+        assert!(on.defaults.sdet_author_enabled());
+    }
+
+    #[test]
     fn resolve_wall_clocks_folds_the_default_only_onto_unset_agents() {
         let mut agents = BTreeMap::new();
         agents.insert(
@@ -958,6 +2092,66 @@ mod tests {
         assert_eq!(
             agents["a"].max_wall_clock, None,
             "a zero (absent) default leaves an unset agent unbounded, back-compatible"
+        );
+    }
+
+    // ---- spec 19c, unit 3: `rigger validate` warns on an unbounded default ----
+
+    #[test]
+    fn unbounded_wall_clock_advisory_fires_when_default_unbounded_and_a_gating_role_is_unbounded() {
+        // `config_with_default_adjudicator` leaves `defaults.max_wall_clock` at its `0`
+        // (unbounded) default and inserts a gating adjudicator "adj" with no per-agent bound.
+        let cfg = config_with_default_adjudicator(RESULT_LINE);
+        let msg = unbounded_wall_clock_advisory(&cfg)
+            .expect("an unbounded default over an unbounded gating role must warn");
+        assert!(
+            msg.contains("\"adj\""),
+            "names the unbounded gating role: {msg}"
+        );
+        assert!(
+            msg.contains("defaults.max_wall_clock"),
+            "names the fix knob: {msg}"
+        );
+        assert!(
+            msg.to_lowercase().contains("swept"),
+            "explains a hung gating agent is never swept: {msg}"
+        );
+    }
+
+    #[test]
+    fn unbounded_wall_clock_advisory_is_silent_when_the_default_is_bounded() {
+        let mut cfg = config_with_default_adjudicator(RESULT_LINE);
+        cfg.workflow.defaults.max_wall_clock = 600;
+        assert!(
+            unbounded_wall_clock_advisory(&cfg).is_none(),
+            "a bounded default sweeps every inheriting gating role, so no warning"
+        );
+    }
+
+    #[test]
+    fn unbounded_wall_clock_advisory_is_silent_when_every_gating_role_sets_its_own_bound() {
+        let mut cfg = config_with_default_adjudicator(RESULT_LINE);
+        // Default stays unbounded, but the gating role carries its own per-agent bound.
+        cfg.agents.get_mut("adj").unwrap().max_wall_clock = Some(300);
+        assert!(
+            unbounded_wall_clock_advisory(&cfg).is_none(),
+            "a per-agent bound on every gating role covers the risk even under a 0 default"
+        );
+    }
+
+    #[test]
+    fn unbounded_wall_clock_advisory_names_only_gating_roles_not_lenses() {
+        // A lens/adversary that hangs is not a GATING role; the advisory targets only the
+        // verdict-bearing roles the gate awaits, so an unbounded lens is not named.
+        let mut cfg = config_with_default_adjudicator(RESULT_LINE);
+        cfg.agents.insert("lens".into(), agent("lens", RESULT_LINE));
+        cfg.workflow.defaults.review.lenses = vec!["lens".into()];
+        let msg = unbounded_wall_clock_advisory(&cfg)
+            .expect("the unbounded gating adjudicator still warns");
+        assert!(msg.contains("\"adj\""), "names the gating role: {msg}");
+        assert!(
+            !msg.contains("\"lens\""),
+            "an unbounded lens is not a gating role and must not be named: {msg}"
         );
     }
 

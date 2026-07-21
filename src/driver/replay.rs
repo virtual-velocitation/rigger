@@ -19,12 +19,46 @@
 //! The blocking drivers (`cli`, `workflow`) are unaffected: they never park, and they
 //! ignore the [`SpawnOpts`] id/unit/stage fields this driver keys on.
 
+use std::path::{Path, PathBuf};
+
 use serde_json::Value;
 
 use crate::conductor::{parked_spawn, AgentDriver, AgentResult, Error, SpawnOpts, STREAM};
 use crate::config::AgentDef;
 use crate::eventstore::{Direction, EventStore};
 use crate::spawn::{self, SpawnRequest};
+
+/// The scratch subdirectory a spawn's dedicated per-spawn scratch lives under, a sibling of
+/// the worktrees and the `agent-live` liveness markers. It is the SAME `agent-scratch` tree
+/// the clean-fixpoint reclaim clears (the shared scratch parent a worker parks build/verify
+/// output under); a per-spawn dir nests one level deeper under it, keyed by run and spawn id.
+const SPAWN_SCRATCH_SUBDIR: &str = "agent-scratch";
+
+/// The dedicated scratch dir rigger assigns spawn `spawn_id` under `scratch_root`:
+/// `<scratch_root>/agent-scratch/<sanitized run_id>/<sanitized spawn_id>` (an EMPTY `run_id`
+/// omits the run subdir, mirroring [`crate::liveness::marker_path`]).
+///
+/// The SINGLE authority for where a spawn's build/verify scratch lives, so the park that
+/// ASSIGNS it ([`ReplayDriver::spawn`]) and `rigger result`'s reclaim-on-completion
+/// (`cmd_result`) derive the SAME path (spec 34, criterion 1: per-spawn reclamation on
+/// completion) - a re-hardcoded layout on either side could never make the assign and the
+/// reclaim diverge. It nests UNDER `agent-scratch` (the scratch parent the clean-fixpoint
+/// reclaim already clears and the orphan-sweep backstop already covers) so per-spawn reclaim
+/// composes with them instead of introducing a second scratch tree. The `run_id` component
+/// gives the scratch RUN IDENTITY: a re-run that reuses a unit-title slug computes the same
+/// spawn id, but a different run gets a different subdir, so one run never reclaims another's
+/// scratch. Both id components are made filesystem-safe by the ONE such rule,
+/// [`crate::liveness::marker_filename`] (a spawn id is `{unit}/{role}#{n}`; the `/` and `#`
+/// collapse to `_`).
+pub fn spawn_scratch_path(scratch_root: &str, run_id: &str, spawn_id: &str) -> PathBuf {
+    let dir = Path::new(scratch_root).join(SPAWN_SCRATCH_SUBDIR);
+    let dir = if run_id.is_empty() {
+        dir
+    } else {
+        dir.join(crate::liveness::marker_filename(run_id))
+    };
+    dir.join(crate::liveness::marker_filename(spawn_id))
+}
 
 /// A replay driver answers each `spawn` from the run's event log: it replays an
 /// already-recorded spawn or parks an unrecorded one.
@@ -66,6 +100,10 @@ fn spawn_request(agent: &AgentDef, prompt: &str, opts: &SpawnOpts) -> SpawnReque
         dir: opts.dir.clone(),
         blast_radius: opts.blast_radius.clone(),
         max_wall_clock: agent.max_wall_clock,
+        // The live work-line (spec 19a, c4): copy the conductor-threaded unit criterion onto
+        // the parked request so the persisted `SpawnRequested` - and the wave `rigger step`
+        // prints from it - carry the WORK the thin driver narrates.
+        title: opts.title.clone(),
     }
 }
 
@@ -134,6 +172,25 @@ impl AgentDriver for ReplayDriver<'_> {
             // conductor threaded the current run id onto `opts`, so the persisted
             // `SpawnRequested` carries the same run-id metadata as the run's other events.
             spawn::park_in_run(self.store, &req, &opts.run_id).map_err(|e| Error(e.to_string()))?;
+            // ASSIGN this spawn its dedicated scratch dir (spec 34, criterion 1): the moment
+            // rigger REQUESTS a spawn it allocates a rigger-owned per-spawn scratch location
+            // under the run's scratch root, so a verify/build lands there (not an ad-hoc
+            // top-level target) and `rigger result` reclaims exactly it on completion. The
+            // scratch root is the PARENT of the assigned worktree (`opts.dir` =
+            // `<scratch_root>/rigger-wt-<slug>`, the conductor's `unit_worktree_dir`), so
+            // assignment and reclaim resolve the same root; a worktree-less spawn
+            // (`isolation: none`, empty `dir`) has no per-spawn scratch to assign. Assigned
+            // once (this parks only an id not already recorded, so it never re-runs after the
+            // request lands) and best-effort - a create failure never blocks parking.
+            if !opts.dir.is_empty() {
+                if let Some(scratch_root) = Path::new(&opts.dir).parent() {
+                    let _ = std::fs::create_dir_all(spawn_scratch_path(
+                        &scratch_root.to_string_lossy(),
+                        &opts.run_id,
+                        &opts.id,
+                    ));
+                }
+            }
         }
 
         // Signal the parked frontier. The conductor unwinds this unit cleanly (no
@@ -172,6 +229,76 @@ mod tests {
             stage: "u".into(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn parking_a_spawn_assigns_its_dedicated_scratch_dir() {
+        // Spec 34, criterion 1: rigger ASSIGNS each spawn a dedicated scratch dir under the
+        // run's scratch root the moment it requests (parks) the spawn - so a verify/build
+        // lands in a rigger-owned per-spawn location that `rigger result` reclaims on
+        // completion, not an ad-hoc top-level target the reclaim can never find.
+        let store = Store::open(":memory:").unwrap();
+        let driver = ReplayDriver::new(&store);
+        let scratch = tempfile::tempdir().unwrap();
+        // The conductor assigns an isolated spawn a worktree `<scratch_root>/rigger-wt-<slug>`
+        // (`unit_worktree_dir`); its parent is the run's scratch root.
+        let worktree = scratch.path().join("rigger-wt-u");
+        let opts = SpawnOpts {
+            id: "u/implementer#0".into(),
+            unit: "u".into(),
+            stage: "u".into(),
+            dir: worktree.to_string_lossy().into_owned(),
+            run_id: "r1".into(),
+            ..Default::default()
+        };
+        // An unrecorded spawn parks (and signals the parked frontier)...
+        let err = driver
+            .spawn(&worker(), "do it", &opts, &no_emit)
+            .unwrap_err();
+        assert!(is_parked(&err), "an unrecorded spawn must park");
+        // ...and rigger has assigned (created) its dedicated per-spawn scratch dir at the
+        // single-authority path `rigger result`'s reclaim later removes, run-scoped under
+        // `agent-scratch` and keyed by the filesystem-safe spawn id.
+        let assigned =
+            spawn_scratch_path(&scratch.path().to_string_lossy(), "r1", "u/implementer#0");
+        assert!(
+            assigned.is_dir(),
+            "parking must assign (create) the spawn's dedicated scratch dir at {}",
+            assigned.display()
+        );
+        assert_eq!(
+            assigned,
+            scratch
+                .path()
+                .join("agent-scratch")
+                .join("r1")
+                .join("u_implementer_0"),
+            "the assigned scratch is run-scoped under agent-scratch, keyed by the sanitized id"
+        );
+    }
+
+    #[test]
+    fn a_worktree_less_spawn_parks_without_assigning_scratch() {
+        // An `isolation: none` spawn runs in the project cwd and gets no worktree (empty
+        // `dir`), so there is no run scratch root to key a per-spawn dir on: parking must
+        // still succeed and must not panic deriving a parent of the empty path.
+        let store = Store::open(":memory:").unwrap();
+        let driver = ReplayDriver::new(&store);
+        let opts = SpawnOpts {
+            run_id: "r1".into(),
+            ..opts_for("u/implementer#0")
+        };
+        assert!(
+            opts.dir.is_empty(),
+            "an isolation:none spawn has an empty dir"
+        );
+        let err = driver
+            .spawn(&worker(), "do it", &opts, &no_emit)
+            .unwrap_err();
+        assert!(
+            is_parked(&err),
+            "a worktree-less spawn must still park cleanly"
+        );
     }
 
     #[test]
@@ -1351,6 +1478,410 @@ mod tests {
                     && String::from_utf8_lossy(&e.data).contains("\"status\":\"reviewed\"")
             }),
             "the review folds and the unit reaches reviewed"
+        );
+    }
+
+    #[test]
+    fn an_emit_only_approve_gating_persona_hard_errors_on_the_replay_driver() {
+        // Spec 18, unit 3 done-when (line 43) on the PRODUCTION stepwise/replay driver -
+        // the REAL failure path the in-process Stub fixtures cannot reach (the reject the
+        // prior attempt earned: the backstop was captured SOLELY from the in-process emit
+        // callback, so it was RUNTIME-DEAD here). A gating adjudicator that ran OUT OF
+        // PROCESS recorded its approve-shaped verdict via rigger_emit straight to the STORE
+        // (never the callback the replay driver leaves `_emit` unused) and reported a
+        // substantive result carrying NO parseable verdict line. Replaying that recorded
+        // result, the conductor must HARD-ERROR the unit with the result-channel fix
+        // message - sourcing the emitted approve from the store, correlated to this spawn by
+        // its [`META_SPAWN`] stamp (the native courier's `rigger emit --spawn <id>` records it
+        // at emit time) - instead of folding the empty verdict as a reject and remediating.
+        // The couriers seed the store EXACTLY as they do across steps: each spawn parked then
+        // answered, the adjudicator's STAMPED emit landing between its own SpawnRequested and
+        // SpawnResult.
+        let store = Store::open(":memory:").unwrap();
+        let cfg = reviewed_unit_cfg();
+        // Production ordering: the run starts before any courier records (the run-scoped
+        // replay lookup answers only results inside the current run's slice).
+        crate::run::ensure_started(&store, &[]).unwrap();
+
+        // The implementer and the lens ran and were answered substantively.
+        courier_records(&store, &spawn_id("u", ROLE_IMPLEMENTER, 0), "implemented");
+        courier_records(
+            &store,
+            &spawn_id("u", &lens_role("sdet"), 0),
+            "lens: no blocker",
+        );
+
+        // The adjudicator was PARKED, then - while it ran out-of-process - it emitted an
+        // approve-shaped verdict straight to the store STAMPED with its own spawn id (the
+        // native courier's `rigger emit --spawn <id>`), then reported a substantive result
+        // with NO verdict line. Seeded in that exact order (park < emit < result).
+        let adj_id = spawn_id("u", ROLE_ADJUDICATOR, 0);
+        spawn::park(
+            &store,
+            &spawn::SpawnRequest::new("u", "u", ROLE_ADJUDICATOR, 0, "adjudicate"),
+        )
+        .unwrap();
+        let approve = crate::eventstore::Event::new(
+            crate::contextgraph::TYPE_DECISION_MADE,
+            serde_json::to_vec(&serde_json::json!({"id": "verdict", "verdict": "approve"}))
+                .unwrap(),
+        )
+        .with_meta(crate::conductor::META_SPAWN, adj_id.as_str());
+        store
+            .append(
+                STREAM,
+                crate::eventstore::ExpectedRevision::Any,
+                std::slice::from_ref(&approve),
+            )
+            .unwrap();
+        courier_records(
+            &store,
+            &adj_id,
+            "I have reviewed the unit and it looks good to me.",
+        );
+
+        // Replaying the recorded adjudicator result HARD-ERRORS with the result-channel fix.
+        let err = replay_step(&store, &cfg).expect_err(
+            "an emit-only-approve gating persona must hard-error on the replay driver, \
+             not fold as a silent reject",
+        );
+        assert!(
+            err.0
+                .contains("the gate reads the result channel, not emitted events")
+                && err.0.contains("end your output with the verdict line"),
+            "the hard error carries the result-channel fix message: {err:?}"
+        );
+        // The internal recognition sentinel is stripped before it surfaces.
+        assert!(
+            !err.0.contains('\u{1}'),
+            "the internal mismatch marker is stripped from the surfaced message: {err:?}"
+        );
+
+        // NOT folded as a reject and remediated: the persona fault charges the unit no
+        // attempt (no UnitFailed) and does not escalate it, exactly like the degenerate
+        // halt - the fault is the operator's gating persona, not the unit under review.
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.type_ == crate::ledger::TYPE_UNIT_FAILED),
+            "a verdict-channel mismatch must not charge the unit a remediation attempt"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.type_ == crate::ledger::TYPE_UNIT_ESCALATED),
+            "a verdict-channel mismatch must not escalate the unit"
+        );
+        assert!(
+            !events.iter().any(|e| {
+                e.type_ == crate::ledger::TYPE_UNIT_STATUS
+                    && String::from_utf8_lossy(&e.data).contains("\"status\":\"reviewed\"")
+            }),
+            "nothing was approved on the result channel, so no `reviewed` status is folded"
+        );
+    }
+
+    #[test]
+    fn a_concurrent_sibling_approve_does_not_hard_error_a_units_genuine_empty_verdict_reject() {
+        // Reject-fix guard (spec 18, unit 3): the store-sourced backstop must correlate the
+        // emitted approve to THIS spawn's OWN emit by its [`META_SPAWN`] stamp, NEVER to a
+        // shared-stream position window a CONCURRENT sibling can fall inside. `run_batch` runs
+        // up to MAX_CONCURRENCY sibling units in parallel, all emitting to the ONE store, so a
+        // sibling adjudicator's approve can be recorded BETWEEN this unit's own adjudicator park
+        // and result. This promotes the differential repro the adversary proved
+        // (adv-u18-3r-cross-unit-approve-pollutes-window): a unit `u` whose adjudicator returned
+        // a GENUINE empty-verdict reject (a non-degenerate result with NO verdict line, having
+        // emitted NO approve of its own) must NOT be hard-errored as a verdict-channel mismatch
+        // just because a concurrent sibling unit `v` emitted an approve whose position lands
+        // between `u`'s park and result. The sibling's native emit is STAMPED with the SIBLING's
+        // spawn id, so it is UNAMBIGUOUSLY the sibling's - it can never be attributed to `u`,
+        // whatever their positions. `u` folds as an ordinary reject (which charges a remediation
+        // attempt), never the run-halting halt that would blame the innocent unit.
+        let store = Store::open(":memory:").unwrap();
+        let cfg = reviewed_unit_cfg();
+        crate::run::ensure_started(&store, &[]).unwrap();
+
+        // Unit `u`'s implementer and lens ran and were answered substantively.
+        courier_records(&store, &spawn_id("u", ROLE_IMPLEMENTER, 0), "implemented");
+        courier_records(
+            &store,
+            &spawn_id("u", &lens_role("sdet"), 0),
+            "lens: no blocker",
+        );
+
+        // `u`'s adjudicator PARKS - the LOWER bracket of its window.
+        let u_adj = spawn_id("u", ROLE_ADJUDICATOR, 0);
+        spawn::park(
+            &store,
+            &spawn::SpawnRequest::new("u", "u", ROLE_ADJUDICATOR, 0, "adjudicate"),
+        )
+        .unwrap();
+
+        // A CONCURRENT SIBLING unit `v`'s adjudicator (a DIFFERENT spawn id) runs INSIDE `u`'s
+        // position span: it parks, emits an approve-shaped verdict straight to the store STAMPED
+        // with its OWN spawn id, then results - the sibling's approve positioned within (u_adj
+        // park, u_adj result]. This is exactly the interleaving the shared store produces under
+        // the parallel fan-out; the stamp is what keeps it the sibling's, not the position.
+        let v_adj = spawn_id("v", ROLE_ADJUDICATOR, 0);
+        spawn::park(
+            &store,
+            &spawn::SpawnRequest::new("v", "v", ROLE_ADJUDICATOR, 0, "adjudicate"),
+        )
+        .unwrap();
+        let sibling_approve = crate::eventstore::Event::new(
+            crate::contextgraph::TYPE_DECISION_MADE,
+            serde_json::to_vec(&serde_json::json!({"id": "verdict", "verdict": "approve"}))
+                .unwrap(),
+        )
+        .with_meta(crate::conductor::META_SPAWN, v_adj.as_str());
+        store
+            .append(
+                STREAM,
+                crate::eventstore::ExpectedRevision::Any,
+                std::slice::from_ref(&sibling_approve),
+            )
+            .unwrap();
+        spawn::record_result(&store, &spawn::SpawnResult::ok(&v_adj, "sibling approved")).unwrap();
+
+        // `u`'s adjudicator reports a substantive result with NO verdict line, having emitted
+        // NO approve of its own - a GENUINE empty-verdict reject. The sibling's approve lands at
+        // a position within `u`'s (park, result] span, so a position window WOULD misattribute
+        // it; the stamp is what keeps it the sibling's.
+        courier_records(
+            &store,
+            &u_adj,
+            "I reviewed the unit; it is not acceptable as-is.",
+        );
+
+        // Replaying `u`'s recorded result must NOT hard-error: the sibling's approve is stamped
+        // with the SIBLING's id, so it is never attributed to `u`, whose empty verdict folds as
+        // an ordinary reject, not the verdict-channel-mismatch halt.
+        replay_step(&store, &cfg).expect(
+            "a concurrent sibling's approve must not turn a unit's genuine empty-verdict \
+             reject into a run-halting verdict-channel mismatch",
+        );
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        // Folded as an ORDINARY reject: it charged the unit a remediation attempt (UnitFailed),
+        // the exact opposite of the mismatch halt (which charges none and returns an Err).
+        assert!(
+            events
+                .iter()
+                .any(|e| e.type_ == crate::ledger::TYPE_UNIT_FAILED),
+            "the genuine empty-verdict reject folds as an ordinary reject that charges an attempt"
+        );
+        // Nothing was approved on `u`'s result channel, so no `reviewed` status is folded - the
+        // sibling's approve never leaked into `u`'s gate.
+        assert!(
+            !events.iter().any(|e| {
+                e.type_ == crate::ledger::TYPE_UNIT_STATUS
+                    && String::from_utf8_lossy(&e.data).contains("\"status\":\"reviewed\"")
+            }),
+            "a sibling's approve must not approve this unit"
+        );
+    }
+
+    #[test]
+    fn a_parked_unanswered_sibling_does_not_suppress_this_units_own_approve_backstop() {
+        // Reject-fix guard (spec 18, unit 3, adv-u18-3r3-parked-sibling-open-window-suppresses-
+        // backstop-on-replay): the emit-only-approve backstop must STILL fire when a concurrent
+        // sibling spawn is parked-but-UNANSWERED (no recorded result) below this adjudicator's
+        // own approve. `run_batch` runs units in parallel, so an earlier-parked sibling with no
+        // result yet is the COMMON case under fan-out, not a corner. This unit `u`'s adjudicator
+        // emitted its OWN approve-shaped verdict STAMPED with its spawn id and reported a
+        // substantive result with NO verdict line - the exact emit-only-approve persona the
+        // backstop exists to catch. A sibling `v`'s implementer merely PARKED below that approve
+        // and emitted NOTHING. Because attribution is by the stamp, no sibling window - open or
+        // closed - can suppress `u`'s own stamped approve; the backstop fires regardless.
+        let store = Store::open(":memory:").unwrap();
+        let cfg = reviewed_unit_cfg();
+        crate::run::ensure_started(&store, &[]).unwrap();
+
+        // `u`'s implementer and lens ran and were answered substantively.
+        courier_records(&store, &spawn_id("u", ROLE_IMPLEMENTER, 0), "implemented");
+        courier_records(
+            &store,
+            &spawn_id("u", &lens_role("sdet"), 0),
+            "lens: no blocker",
+        );
+
+        // `u`'s adjudicator PARKS.
+        let u_adj = spawn_id("u", ROLE_ADJUDICATOR, 0);
+        spawn::park(
+            &store,
+            &spawn::SpawnRequest::new("u", "u", ROLE_ADJUDICATOR, 0, "adjudicate"),
+        )
+        .unwrap();
+
+        // A CONCURRENT SIBLING unit `v`'s implementer PARKS below the approve and is never
+        // answered (result=None) - it emitted NOTHING. This is the parked-unanswered sibling
+        // the adversary proved suppressed the backstop under the old is_none_or bracket; under
+        // stamp attribution its window is simply irrelevant.
+        spawn::park(
+            &store,
+            &spawn::SpawnRequest::new("v", "v", ROLE_IMPLEMENTER, 0, "implement"),
+        )
+        .unwrap();
+
+        // `u`'s adjudicator emits its OWN approve-shaped verdict straight to the store STAMPED
+        // with its own spawn id (the native courier's `rigger emit --spawn <id>`), ABOVE the
+        // sibling's park.
+        let approve = crate::eventstore::Event::new(
+            crate::contextgraph::TYPE_DECISION_MADE,
+            serde_json::to_vec(&serde_json::json!({"id": "verdict", "verdict": "approve"}))
+                .unwrap(),
+        )
+        .with_meta(crate::conductor::META_SPAWN, u_adj.as_str());
+        store
+            .append(
+                STREAM,
+                crate::eventstore::ExpectedRevision::Any,
+                std::slice::from_ref(&approve),
+            )
+            .unwrap();
+
+        // `u`'s adjudicator reports a substantive result with NO verdict line - the emit-only
+        // persona.
+        courier_records(
+            &store,
+            &u_adj,
+            "I have reviewed the unit and it looks good to me.",
+        );
+
+        // Replaying `u`'s recorded result must STILL HARD-ERROR: `u`'s approve is stamped with
+        // `u`'s own id, so the parked-unanswered sibling's window cannot suppress it.
+        let err = replay_step(&store, &cfg).expect_err(
+            "a parked-unanswered sibling must not suppress this unit's own emit-only-approve \
+             backstop on the replay driver",
+        );
+        assert!(
+            err.0
+                .contains("the gate reads the result channel, not emitted events")
+                && err.0.contains("end your output with the verdict line"),
+            "the hard error carries the result-channel fix message: {err:?}"
+        );
+        assert!(
+            !err.0.contains('\u{1}'),
+            "the internal mismatch marker is stripped from the surfaced message: {err:?}"
+        );
+
+        // The persona fault charges the unit no attempt and does not escalate it.
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.type_ == crate::ledger::TYPE_UNIT_FAILED),
+            "a verdict-channel mismatch must not charge the unit a remediation attempt"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.type_ == crate::ledger::TYPE_UNIT_ESCALATED),
+            "a verdict-channel mismatch must not escalate the unit"
+        );
+    }
+
+    #[test]
+    fn a_closed_sibling_window_overlapping_this_units_own_approve_still_hard_errors() {
+        // Reject-fix guard (spec 18, unit 3, adj-u18-3r4 + sdet-u18-3r4-closed-sibling-window-
+        // overlap-suppresses-own-approve-on-replay): the emit-only-approve backstop must STILL
+        // fire when a WELL-BEHAVED concurrent sibling RECORDED a result - a CLOSED (park, result]
+        // window - whose span merely OVERLAPS this adjudicator's own approve position. Under the
+        // retired position-window logic this was the COMMON fan-out false-NEGATIVE (a sibling
+        // that parks before `u`'s adjudicator emits and finishes after made other_window_brackets
+        // TRUE, silently EXCLUDING `u`'s own emit-only approve). With attribution by the
+        // [`META_SPAWN`] stamp, `u`'s approve carries `u`'s id and is matched EXACTLY, so the
+        // overlapping sibling window is irrelevant and the backstop fires. Seeds the exact
+        // interleaving the prior fix missed: v_impl park < u approve < v_impl result < u result.
+        let store = Store::open(":memory:").unwrap();
+        let cfg = reviewed_unit_cfg();
+        crate::run::ensure_started(&store, &[]).unwrap();
+
+        // `u`'s implementer and lens ran and were answered substantively.
+        courier_records(&store, &spawn_id("u", ROLE_IMPLEMENTER, 0), "implemented");
+        courier_records(
+            &store,
+            &spawn_id("u", &lens_role("sdet"), 0),
+            "lens: no blocker",
+        );
+
+        // `u`'s adjudicator PARKS.
+        let u_adj = spawn_id("u", ROLE_ADJUDICATOR, 0);
+        spawn::park(
+            &store,
+            &spawn::SpawnRequest::new("u", "u", ROLE_ADJUDICATOR, 0, "adjudicate"),
+        )
+        .unwrap();
+
+        // A CONCURRENT SIBLING unit `v`'s implementer PARKS below `u`'s coming approve (the LOWER
+        // edge of a window that will OVERLAP it).
+        let v_impl = spawn_id("v", ROLE_IMPLEMENTER, 0);
+        spawn::park(
+            &store,
+            &spawn::SpawnRequest::new("v", "v", ROLE_IMPLEMENTER, 0, "implement"),
+        )
+        .unwrap();
+
+        // `u`'s adjudicator emits its OWN approve-shaped verdict STAMPED with its spawn id,
+        // positioned INSIDE the sibling's (soon-to-close) window.
+        let approve = crate::eventstore::Event::new(
+            crate::contextgraph::TYPE_DECISION_MADE,
+            serde_json::to_vec(&serde_json::json!({"id": "verdict", "verdict": "approve"}))
+                .unwrap(),
+        )
+        .with_meta(crate::conductor::META_SPAWN, u_adj.as_str());
+        store
+            .append(
+                STREAM,
+                crate::eventstore::ExpectedRevision::Any,
+                std::slice::from_ref(&approve),
+            )
+            .unwrap();
+
+        // The sibling RECORDS its result ABOVE `u`'s approve - CLOSING its window so (v_impl
+        // park, v_impl result] brackets `u`'s approve position. This is the overlap the retired
+        // bracket rule turned into a silent false-negative.
+        spawn::record_result(&store, &spawn::SpawnResult::ok(&v_impl, "implemented")).unwrap();
+
+        // `u`'s adjudicator reports a substantive result with NO verdict line - the emit-only
+        // persona.
+        courier_records(
+            &store,
+            &u_adj,
+            "I have reviewed the unit and it looks good to me.",
+        );
+
+        // Replaying `u`'s recorded result must STILL HARD-ERROR: the overlapping CLOSED sibling
+        // window does not suppress `u`'s own STAMPED approve.
+        let err = replay_step(&store, &cfg).expect_err(
+            "a closed sibling window overlapping this unit's own approve must not suppress the \
+             emit-only-approve backstop on the replay driver",
+        );
+        assert!(
+            err.0
+                .contains("the gate reads the result channel, not emitted events")
+                && err.0.contains("end your output with the verdict line"),
+            "the hard error carries the result-channel fix message: {err:?}"
+        );
+        assert!(
+            !err.0.contains('\u{1}'),
+            "the internal mismatch marker is stripped from the surfaced message: {err:?}"
+        );
+
+        // The persona fault charges the unit no attempt and does not escalate it.
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.type_ == crate::ledger::TYPE_UNIT_FAILED),
+            "a verdict-channel mismatch must not charge the unit a remediation attempt"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.type_ == crate::ledger::TYPE_UNIT_ESCALATED),
+            "a verdict-channel mismatch must not escalate the unit"
         );
     }
 }

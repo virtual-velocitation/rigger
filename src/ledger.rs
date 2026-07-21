@@ -300,6 +300,26 @@ impl RunState {
         )
     }
 
+    /// The ids of every unit that ESCALATED - it exhausted remediation and went terminal
+    /// WITHOUT integrating (§4.6, spec 19c unit 1). Lexically ordered (the `units` map is a
+    /// [`BTreeMap`] keyed by id) so the set is deterministic for the serialized wire.
+    ///
+    /// This is the honest wedge set: a fixpoint reached with any escalated unit is NOT a
+    /// clean completion, so `rigger step` copies this onto its printed `Step` and the thin
+    /// driver stops loudly on a wedged terminus, exactly as it does for a budget halt. It is
+    /// deliberately `Escalated`-ONLY, not "every unit that never integrated": a
+    /// terminal-by-design unit (`on_pass: none`) rests unintegrated at a clean fixpoint by
+    /// intent and must NOT be surfaced as a wedge (finding
+    /// adv-u1-approved-not-integrated-false-positive-on-onpass-none) - only a unit that gave
+    /// up at the retry bound is a genuine wedge.
+    pub fn escalated_units(&self) -> Vec<String> {
+        self.units
+            .values()
+            .filter(|u| u.status == Status::Escalated)
+            .map(|u| u.id.clone())
+            .collect()
+    }
+
     /// Fold the manual-review inbox into [`RunState::manual_review`]: distinct unit ids that
     /// have a [`TYPE_MANUAL_REVIEW`] event and are NOT (yet) terminal.
     ///

@@ -20,6 +20,13 @@ pub mod store;
 #[cfg(feature = "symbols")]
 pub mod extract;
 
+/// The code-to-events emit pass (spec 29a): lowers an extracted index into
+/// `CodeEntityExtracted` / `EdgeInferred` events the context-graph fold ingests, so code
+/// structure becomes a rebuildable projection over the log. Feature-gated with the rest of the
+/// extraction pass; the always-compiled fold arms in `contextgraph::sqlite` ingest what it emits.
+#[cfg(feature = "symbols")]
+pub mod events;
+
 /// The `extension -> (grammar, tag query)` registry: maps a file to the grammar the
 /// extractor injects, for the five shipped languages, with a `--language` override
 /// (unit 2). Names `tree_sitter::Language` types, so it is confined to the `symbols`

@@ -301,18 +301,44 @@ impl Worktree {
         branch: &str,
         base: &str,
     ) -> Result<RunBranchSetup, Error> {
-        if branch_exists(repo, branch) {
-            if current_branch(repo).as_deref() != Some(branch) {
-                git(repo, &["checkout", branch])?;
+        // Classify once (the single authority), then apply only the matching checkout.
+        match Self::planned_run_branch_setup(repo, branch, base) {
+            RunBranchSetup::Reused => {
+                if current_branch(repo).as_deref() != Some(branch) {
+                    git(repo, &["checkout", branch])?;
+                }
+                Ok(RunBranchSetup::Reused)
             }
-            return Ok(RunBranchSetup::Reused);
+            RunBranchSetup::CreatedFromBase => {
+                git(repo, &["checkout", "-B", branch, base])?;
+                Ok(RunBranchSetup::CreatedFromBase)
+            }
+            RunBranchSetup::CreatedFromHead => {
+                git(repo, &["checkout", "-B", branch])?;
+                Ok(RunBranchSetup::CreatedFromHead)
+            }
         }
-        if ref_resolves(repo, base) {
-            git(repo, &["checkout", "-B", branch, base])?;
-            Ok(RunBranchSetup::CreatedFromBase)
+    }
+
+    /// What [`Self::ensure_run_branch`] WOULD establish for `branch`/`base` in `repo`,
+    /// computed WITHOUT any side effect (no checkout, no branch creation). The SINGLE
+    /// authority for the three-way run-branch classification: `ensure_run_branch` dispatches
+    /// on this and adds only the matching checkout, so the peek and the act can never diverge.
+    ///
+    /// A run entry uses this to run the missing-files base check (spec 18, criterion 7) BEFORE
+    /// the run branch is anchored: an obviously-wrong base is then refused without ever creating
+    /// a run branch that would have to be rolled back, and the corrected `--base` retry re-anchors
+    /// fresh because the refused first attempt left no branch. The classification mirrors
+    /// `ensure_run_branch` exactly - an existing branch is [`RunBranchSetup::Reused`], an absent
+    /// branch with a resolvable `base` is [`RunBranchSetup::CreatedFromBase`], and an absent branch
+    /// with an unresolvable `base` is [`RunBranchSetup::CreatedFromHead`].
+    pub fn planned_run_branch_setup(repo: &str, branch: &str, base: &str) -> RunBranchSetup {
+        if branch_exists(repo, branch) {
+            RunBranchSetup::Reused
+        } else if ref_resolves(repo, base) {
+            RunBranchSetup::CreatedFromBase
         } else {
-            git(repo, &["checkout", "-B", branch])?;
-            Ok(RunBranchSetup::CreatedFromHead)
+            RunBranchSetup::CreatedFromHead
         }
     }
 
@@ -444,6 +470,12 @@ impl Worktree {
     /// partition. Reclamation is best-effort - a review worktree or an un-built unit has no
     /// such sibling and it is a no-op there - and never changes the removal's result.
     pub fn remove(&self) -> Result<(), Error> {
+        // Reap any process still rooted inside this worktree BEFORE git removes the dir (spec
+        // 23): otherwise a build or tool an agent left running holds a now-deleted cwd and
+        // outlives its worktree, leaking memory. Scoped to this EXACT dir, so a process rooted
+        // at the repo root or outside rigger's scratch is never touched. Best-effort and a
+        // graceful no-op off Linux; it never changes the removal's result.
+        crate::reap::reap_processes_rooted_under(std::path::Path::new(&self.dir));
         git(&self.repo, &["worktree", "remove", "--force", &self.dir])?;
         reclaim_cache_sibling(&self.dir);
         Ok(())
@@ -498,8 +530,10 @@ fn branch_exists(repo: &str, branch: &str) -> bool {
 /// or sha). Used by [`Worktree::ensure_run_branch`] to distinguish a base ref it can
 /// anchor the run branch to from a not-yet-present default (e.g. `origin/main` on a
 /// repo with no remote), which triggers the create-off-HEAD fallback rather than an
-/// error.
-fn ref_resolves(repo: &str, r: &str) -> bool {
+/// error. Public so a run entry can guard the missing-files base check on a base that
+/// actually resolves (an unresolvable base has no tree to look paths up in - checking
+/// against it would read as "every path absent" and refuse spuriously).
+pub fn ref_resolves(repo: &str, r: &str) -> bool {
     run_git(
         repo,
         &[
@@ -510,6 +544,19 @@ fn ref_resolves(repo: &str, r: &str) -> bool {
         ],
     )
     .is_ok()
+}
+
+/// Whether the repo-relative `path` exists in the tree of the commit `base_ref` names -
+/// as either a blob (file) or a sub-tree (directory). Implemented with
+/// `git cat-file -e <base_ref>:<path>`, which exits 0 when the object is present and
+/// non-zero (with a captured, non-leaking diagnostic) when it is absent or `base_ref`
+/// does not resolve. A run entry uses this to check the path-like tokens a spec's criteria
+/// reference against the base the run is anchored on, so an obviously-wrong base (none of
+/// the spec's paths present) is refused before the run parks its first unit (spec 18).
+/// Callers must have already confirmed `base_ref` resolves (see [`ref_resolves`]); against
+/// an unresolvable ref every path reads as absent.
+pub fn path_in_ref(repo: &str, base_ref: &str, path: &str) -> bool {
+    run_git(repo, &["cat-file", "-e", &format!("{base_ref}:{path}")]).is_ok()
 }
 
 /// The name of the branch currently checked out in `repo`, or None on a detached
@@ -778,6 +825,24 @@ mod tests {
             run_git(p, args).unwrap();
         }
         dir
+    }
+
+    #[test]
+    fn path_in_ref_sees_committed_files_and_directories_only() {
+        let repo = init_repo();
+        let p = repo.path().to_str().unwrap();
+        std::fs::create_dir_all(repo.path().join("src")).unwrap();
+        std::fs::write(repo.path().join("src").join("main.rs"), "fn main() {}\n").unwrap();
+        run_git(p, &["add", "src/main.rs"]).unwrap();
+        run_git(p, &["commit", "-q", "-m", "add main"]).unwrap();
+
+        // A committed file and its containing directory both resolve in HEAD's tree.
+        assert!(path_in_ref(p, "HEAD", "src/main.rs"));
+        assert!(path_in_ref(p, "HEAD", "src"));
+        // A path never committed does not, and neither does one against an unresolvable ref.
+        assert!(!path_in_ref(p, "HEAD", "src/does_not_exist.rs"));
+        assert!(!path_in_ref(p, "HEAD", "crates/foo/src/bar.rs"));
+        assert!(!path_in_ref(p, "no-such-ref", "src/main.rs"));
     }
 
     #[test]
@@ -1731,5 +1796,86 @@ mod tests {
         std::fs::write(wt_path.join("a file.txt"), "work\n").unwrap();
         assert_eq!(wt.changed_files().unwrap(), ["a file.txt"]);
         wt.remove().unwrap();
+    }
+
+    #[test]
+    fn remove_reaps_a_process_rooted_inside_the_worktree_and_spares_one_outside() {
+        // spec 23 done-when: tearing a worktree down first REAPS every process whose cwd is
+        // inside it (SIGTERM then SIGKILL after a grace), so nothing outlives the removed dir -
+        // proven with a child that IGNORES SIGTERM (only the SIGKILL escalation can end it). A
+        // second child rooted OUTSIDE the worktree, at the repo root, is proven STILL alive:
+        // the reap is scoped strictly to the dir being removed and never reaches the repo root.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        // Mirror production: the worktree lives under `<repo>/.rigger/tmp/`.
+        let scratch = repo.path().join(".rigger").join("tmp");
+        std::fs::create_dir_all(&scratch).unwrap();
+        let wt_dir = scratch.join("rigger-wt-reaptest");
+        let wt =
+            Worktree::create(&repo_path, wt_dir.to_str().unwrap(), "rigger/u/reaptest").unwrap();
+
+        // Inside: a process rooted in the worktree that ignores SIGTERM, so only the SIGKILL
+        // escalation reaps it. Outside: a plain sleeper rooted at the repo root.
+        let mut inside = Command::new("sh")
+            .arg("-c")
+            .arg("trap '' TERM; while :; do sleep 1; done")
+            .current_dir(&wt_dir)
+            .spawn()
+            .expect("spawn inside child");
+        let mut outside = Command::new("sleep")
+            .arg("300")
+            .current_dir(repo.path())
+            .spawn()
+            .expect("spawn outside child");
+
+        // Wait until the inside child is actually rooted in the worktree before tearing down.
+        let detected = (0..200).any(|_| {
+            if crate::reap::processes_rooted_under(&wt_dir)
+                .iter()
+                .any(|(pid, _)| *pid == inside.id())
+            {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            false
+        });
+        assert!(
+            detected,
+            "precondition: the inside child is rooted in the worktree"
+        );
+
+        wt.remove().unwrap();
+
+        // The inside child is no longer alive (reaped before the dir was removed).
+        let inside_died = (0..200).any(|_| {
+            if matches!(inside.try_wait(), Ok(Some(_))) {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            false
+        });
+        // The outside child is still alive - the safety boundary held.
+        let outside_alive = matches!(outside.try_wait(), Ok(None));
+
+        // Clean up the fixtures before asserting so a failure never leaks processes.
+        let _ = outside.kill();
+        let _ = outside.wait();
+        if !inside_died {
+            let _ = inside.kill();
+            let _ = inside.wait();
+        }
+
+        assert!(
+            inside_died,
+            "a process rooted inside the worktree must be reaped by remove() (SIGTERM then SIGKILL)"
+        );
+        assert!(
+            outside_alive,
+            "a process rooted at the repo root (OUTSIDE the worktree) must survive - the safety boundary"
+        );
+        assert!(
+            !wt_dir.exists(),
+            "the worktree dir is removed after its rooted processes are reaped"
+        );
     }
 }

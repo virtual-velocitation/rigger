@@ -12,10 +12,12 @@
 //! conductor-emitted event carries) lives here so those modules share one source of
 //! truth rather than re-declaring it.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::conductor::STREAM;
-use crate::contextgraph::TYPE_DECISION_MADE;
+use crate::contextgraph::{TYPE_DECISION_MADE, TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING};
 use crate::eventstore::{Direction, Error, Event, EventStore, ExpectedRevision};
 
 /// The event a run opens with: a fresh run id plus the acceptance criteria the run
@@ -108,6 +110,89 @@ pub fn current_run(events: &[Event]) -> &[Event] {
 /// The id of the current (latest) run, or `None` when no run has started.
 pub fn current_run_id(events: &[Event]) -> Option<String> {
     latest(events).map(|r| r.run)
+}
+
+/// How a provenance-bearing event is attributed to a run (spec 21, unit 1).
+///
+/// The context graph spans runs by design (a unit inherits prior decisions), so a
+/// decision or finding must be traced to the run whose `[RunStarted, next RunStarted)`
+/// window contains the event that produced it - that provenance is what tells a live
+/// decision from dead-run noise. This is the SINGLE authority for run attribution:
+/// `rigger reset --runs` and `rigger peers` both derive their disposition from this one
+/// window rule, never a second inline boundary scan.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RunOf {
+    /// A decision or finding that falls inside a run's window: it belongs to this run id.
+    Run(String),
+    /// A decision or finding recorded BEFORE the first [`TYPE_RUN_STARTED`]. It belongs to
+    /// no run (pre-boundary) - it is neither the active run nor a lesson, so it is dead-run
+    /// noise that `reset --runs` drops and `rigger peers` labels historical.
+    PreBoundary,
+    /// A [`TYPE_LESSON_LEARNED`]: durable cross-run value, EXEMPT from attribution. A lesson
+    /// is never placed in a run and so is never pruned as dead-run noise, regardless of its
+    /// position (even one recorded before the first boundary). This is the "never attributed
+    /// away" guarantee - a lesson is kept by its own rule, not by belonging to the active run.
+    Lesson,
+}
+
+impl RunOf {
+    /// Whether this node belongs to the ACTIVE run `active` (the id from
+    /// [`current_run_id`]). This is the single `not-active => historical` rule both read
+    /// paths reuse: `rigger peers` labels a decision LIVE when this holds and HISTORICAL
+    /// otherwise, and `reset --runs` keeps a node when this holds OR it is a lesson. A
+    /// [`RunOf::Lesson`] is deliberately NOT "live" (it is exempt, kept by a different rule)
+    /// and a [`RunOf::PreBoundary`] never matches (it belongs to no run).
+    pub fn is_live(&self, active: Option<&str>) -> bool {
+        matches!((self, active), (RunOf::Run(run), Some(a)) if run == a)
+    }
+}
+
+/// Attribute every provenance-bearing event in the ordered stream to its run (spec 21,
+/// unit 1) - the single authority the prune and the peers labels both reuse.
+///
+/// Returns a map from an event's index in `events` to its [`RunOf`], with an entry ONLY
+/// for the three provenance types ([`TYPE_DECISION_MADE`], [`TYPE_REVIEW_FINDING`],
+/// [`TYPE_LESSON_LEARNED`]); a [`TYPE_RUN_STARTED`] or any lifecycle event is absent.
+/// Keying by index (not the event's own metadata) is deliberate: an agent-emitted
+/// decision carries no run id in its metadata, so only its POSITION relative to the
+/// `RunStarted` boundaries can attribute it - the window is the one uniform source.
+///
+/// `events` MUST be the whole [`STREAM`] in forward (append) order, exactly as
+/// [`current_run`] expects; the window boundaries are read from it. The rule is a single
+/// forward fold: the "current run" starts empty (no boundary seen yet) and advances to
+/// each `RunStarted`'s id as the fold passes it, so a decision/finding is attributed to
+/// the last boundary at or before it ([`RunOf::Run`]) or to [`RunOf::PreBoundary`] when
+/// none precedes it. A `LessonLearned` is always [`RunOf::Lesson`] regardless of window -
+/// it is exempt and never attributed away. The `BTreeMap` iterates in index order, so the
+/// derivation is deterministic (a spec-21 global constraint).
+pub fn run_attribution(events: &[Event]) -> BTreeMap<usize, RunOf> {
+    let mut attribution = BTreeMap::new();
+    let mut current: Option<String> = None;
+    for (i, e) in events.iter().enumerate() {
+        match e.type_.as_str() {
+            TYPE_RUN_STARTED => {
+                // Advance the window: every event after this boundary (until the next
+                // RunStarted) belongs to this run. Decoded from the body, the same source
+                // `current_run_id` reads, never the event's own metadata.
+                if let Some(rs) = RunStarted::from_event(e) {
+                    current = Some(rs.run);
+                }
+            }
+            TYPE_LESSON_LEARNED => {
+                // Exempt regardless of window - a lesson is never attributed away.
+                attribution.insert(i, RunOf::Lesson);
+            }
+            TYPE_DECISION_MADE | TYPE_REVIEW_FINDING => {
+                let run_of = match &current {
+                    Some(run) => RunOf::Run(run.clone()),
+                    None => RunOf::PreBoundary,
+                };
+                attribution.insert(i, run_of);
+            }
+            _ => {}
+        }
+    }
+    attribution
 }
 
 /// The definition hash currently in force for a run (spec 13, unit 1): the hash the run
@@ -324,6 +409,90 @@ mod tests {
         }
         .to_event()
         .unwrap()
+    }
+
+    fn decision(id: &str) -> Event {
+        ev(TYPE_DECISION_MADE, &format!(r#"{{"id":"{id}"}}"#))
+    }
+    fn finding(id: &str) -> Event {
+        ev(TYPE_REVIEW_FINDING, &format!(r#"{{"id":"{id}"}}"#))
+    }
+    fn lesson(id: &str) -> Event {
+        ev(TYPE_LESSON_LEARNED, &format!(r#"{{"id":"{id}"}}"#))
+    }
+
+    #[test]
+    fn run_attribution_maps_decisions_to_their_window_and_never_attributes_lessons_away() {
+        // Spec 21, unit 1 done-when: a decision/finding is attributed to the run whose
+        // [RunStarted, next RunStarted) window contains its producing event, and a
+        // LessonLearned is NEVER attributed away - it is exempt, even before the first
+        // boundary. One store, two runs, plus pre-boundary residue.
+        let events = vec![
+            // Pre-boundary: recorded before any RunStarted - belongs to no run.
+            decision("pre-d"),                      // 0
+            finding("pre-f"),                       // 1
+            lesson("pre-lesson"), // 2  a lesson before any boundary - still exempt
+            run_started("r1", &["crit"]), // 3
+            decision("d1"),       // 4
+            finding("f1"),        // 5
+            lesson("lesson-1"),   // 6  a lesson inside r1's window - exempt, not Run(r1)
+            ev("UnitStarted", r#"{"id":"noise"}"#), // 7  not a provenance event
+            run_started("r2", &["crit"]), // 8
+            decision("d2"),       // 9
+            lesson("lesson-2"),   // 10
+        ];
+
+        let attr = run_attribution(&events);
+
+        // Pre-boundary decision/finding => PreBoundary (dead-run noise, belongs to no run).
+        assert_eq!(attr.get(&0), Some(&RunOf::PreBoundary));
+        assert_eq!(attr.get(&1), Some(&RunOf::PreBoundary));
+        // A lesson is exempt regardless of position - even a pre-boundary one is Lesson.
+        assert_eq!(attr.get(&2), Some(&RunOf::Lesson));
+        // r1's decision and finding are attributed to r1's window.
+        assert_eq!(attr.get(&4), Some(&RunOf::Run("r1".into())));
+        assert_eq!(attr.get(&5), Some(&RunOf::Run("r1".into())));
+        // A lesson INSIDE a run's window is still exempt - Lesson, never Run("r1").
+        assert_eq!(attr.get(&6), Some(&RunOf::Lesson));
+        // r2's decision is attributed to r2's window.
+        assert_eq!(attr.get(&9), Some(&RunOf::Run("r2".into())));
+        assert_eq!(attr.get(&10), Some(&RunOf::Lesson));
+        // Boundaries and non-provenance events carry no attribution entry.
+        assert!(!attr.contains_key(&3), "a RunStarted is not attributed");
+        assert!(
+            !attr.contains_key(&7),
+            "a lifecycle event is not attributed"
+        );
+        assert!(!attr.contains_key(&8), "a RunStarted is not attributed");
+        // Exactly the provenance events (3 decisions + 2 findings + 3 lessons), and only
+        // those - the two boundaries and the lifecycle event carry no entry.
+        assert_eq!(
+            attr.len(),
+            8,
+            "every decision/finding/lesson event, and only those"
+        );
+
+        // The shared not-active => historical rule (c2 and c3 reuse it): with r2 the active
+        // run, r2's decision is LIVE and r1's is HISTORICAL; a lesson is never "live" (kept
+        // by its own exempt rule) and a pre-boundary node never matches the active run.
+        let active = current_run_id(&events);
+        assert_eq!(active.as_deref(), Some("r2"));
+        assert!(
+            attr[&9].is_live(active.as_deref()),
+            "active-run decision is live"
+        );
+        assert!(
+            !attr[&4].is_live(active.as_deref()),
+            "superseded-run decision is historical"
+        );
+        assert!(
+            !attr[&10].is_live(active.as_deref()),
+            "a lesson is exempt, not live"
+        );
+        assert!(
+            !attr[&0].is_live(active.as_deref()),
+            "a pre-boundary node is historical"
+        );
     }
 
     #[test]

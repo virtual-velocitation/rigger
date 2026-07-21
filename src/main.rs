@@ -7,15 +7,16 @@
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
+use rigger::blocker;
 use rigger::canary;
 use rigger::conductor::{self, Deps};
 use rigger::config;
 use rigger::contextgraph::{self, sqlite::Projector, Projection};
 use rigger::dash;
 use rigger::driver::cli;
-use rigger::driver::replay::ReplayDriver;
+use rigger::driver::replay::{spawn_scratch_path, ReplayDriver};
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::{sqlite::Store, Direction, Event, EventStore, ExpectedRevision, Filter};
 use rigger::gate::{ExecRunner, Gate, GateResult, Runner};
@@ -28,6 +29,12 @@ use rigger::worktree::{RunBranchSetup, Worktree};
 use rigger::{hooks, mcpserver, playbooks, progress, spawn, spec};
 
 const RIGGER_DIR: &str = ".rigger";
+
+/// The breadcrumb file, under [`RIGGER_DIR`], where a run driver records the URL of the
+/// dashboard it auto-started (spec 19b, unit 1), so `rigger status` - a separate process -
+/// can surface it. Read-only discoverability; a stale file after a finished run is a
+/// lifecycle concern owned by unit 3's reaping, not this unit's start + discoverability.
+const DASH_URL_FILE: &str = "dash.url";
 
 /// The tracked file under `.rigger/` that carries the durable project identity (spec 09,
 /// Gap 20): one trimmed line committed to git, so the identity survives directory renames
@@ -83,7 +90,47 @@ fn workflow_path(root: &Path) -> std::path::PathBuf {
     root.join(".claude").join("workflows").join("rigger.js")
 }
 
+/// Where `rigger docs` writes the rendered `using-rigger` skill, relative to the project
+/// root. It is committed and drift-checked (spec 20, unit 2) and installed into
+/// `.claude/skills/` by `rigger setup` (unit 3), so it is a file DISTINCT from the
+/// `/rigger` workflow at [`workflow_path`]. The single source of this path.
+const USING_RIGGER_SKILL_REL: &str = "skills/using-rigger/SKILL.md";
+
+/// Where `rigger docs` writes the rendered handbook discipline chapter, relative to the
+/// project root. It lives beside the other handbook chapters and is drift-checked against
+/// a fresh render (spec 20, unit 2). The single source of this path.
+const HANDBOOK_DISCIPLINE_REL: &str = "docs/handbook/using-rigger.md";
+
+/// The default location this repo keeps its specs, surfaced in the rendered discipline as
+/// a project specific a repo overlay (spec 20, unit 3) can override without editing the
+/// shared discipline source.
+const DEFAULT_SPECS_LOCATION: &str = "specs/";
+
 type Res = Result<(), Box<dyn std::error::Error>>;
+
+/// The build-provenance identifier (a git commit/describe id) that `build.rs` embeds at
+/// compile time, so a running binary can report WHICH source it was built from. Always
+/// non-empty (the build script falls back to a sentinel outside a git checkout). This is the
+/// single authority for the value: the workflow-drift diagnostic reads the SAME const to name
+/// which side is stale, rather than re-deriving provenance a second way.
+const BUILD_PROVENANCE: &str = env!("RIGGER_BUILD_PROVENANCE");
+
+/// The one-line version identity: the crate version plus the embedded build provenance. Sole
+/// source of the version string, so `rigger version` and `rigger --version` cannot drift.
+fn version_line() -> String {
+    format!(
+        "rigger {} (build {})",
+        env!("CARGO_PKG_VERSION"),
+        BUILD_PROVENANCE
+    )
+}
+
+/// `rigger version` (and `rigger --version` / `-V`): print the crate version and the build
+/// provenance, so any agent can identify the exact binary without guessing.
+fn cmd_version() -> Res {
+    println!("{}", version_line());
+    Ok(())
+}
 
 /// Which agent driver a `run` uses (§10): `cli` is the standalone `claude`
 /// subprocess path; `workflow` is the in-Claude-Code MCP-server path.
@@ -119,11 +166,17 @@ struct RunArgs {
     /// on the new definition, instead of HALTING loudly. The operator's explicit "I meant to
     /// edit the definition mid-campaign" escape.
     rebase_definition: bool,
+    /// `--base <ref>` (spec 18, criterion 6): the run-branch base a run entry anchors on,
+    /// exactly as `rigger step --base` does. `None` when the flag is absent, so the effective
+    /// base resolves (via [`resolve_run_base`]) to the `RIGGER_BASE` env override or the
+    /// load-bearing [`DEFAULT_BASE_REF`] (`origin/main`) - the default stays unchanged.
+    base: Option<String>,
 }
 
 /// Parse `rigger run`'s flags: `--driver <cli|workflow>`, `--eventstore
-/// <sqlite|kurrentdb>`, `--conn <url>`, and a single positional spec path. Unknown
-/// flags and a second positional are rejected (§10).
+/// <sqlite|kurrentdb>`, `--conn <url>`, `--base <ref>` (the run-branch base, spec 18
+/// criterion 6), and a single positional spec path. Unknown flags and a second positional
+/// are rejected (§10).
 fn parse_run_args(args: &[String]) -> Result<RunArgs, Box<dyn std::error::Error>> {
     let mut driver = DriverKind::Cli;
     let mut store = StoreKind::Sqlite;
@@ -131,11 +184,19 @@ fn parse_run_args(args: &[String]) -> Result<RunArgs, Box<dyn std::error::Error>
     let mut spec = None;
     let mut fresh = false;
     let mut rebase_definition = false;
+    let mut base = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--fresh" => fresh = true,
             "--rebase-definition" => rebase_definition = true,
+            "--base" => {
+                i += 1;
+                base = match args.get(i) {
+                    Some(r) => Some(r.clone()),
+                    None => return Err("run: --base expects a ref".into()),
+                };
+            }
             "--driver" => {
                 i += 1;
                 driver = match args.get(i).map(String::as_str) {
@@ -190,7 +251,27 @@ fn parse_run_args(args: &[String]) -> Result<RunArgs, Box<dyn std::error::Error>
         spec,
         fresh,
         rebase_definition,
+        base,
     })
+}
+
+/// Resolve the effective run-branch base for a run entry (spec 18, criterion 6), and
+/// whether it was chosen explicitly. Precedence: an explicit `--base <ref>` on the argv
+/// (`argv_base`), then the `RIGGER_BASE` environment override (`env_base`) - the channel
+/// `rigger workflow` threads its `--base` down through the shim to the served `rigger
+/// serve`, since the shim spawns the child with the inherited environment (the same
+/// mechanism it already uses for `RIGGER_BIN`) - then the load-bearing [`DEFAULT_BASE_REF`]
+/// (`origin/main`). An empty override is treated as unset so a run never anchors on "".
+/// The bool is `true` when the base came from the flag or the env (used only to warn when
+/// an operator's chosen base is ignored because the run branch already exists).
+fn resolve_run_base(argv_base: Option<&str>, env_base: Option<&str>) -> (String, bool) {
+    let chosen = argv_base
+        .filter(|s| !s.is_empty())
+        .or_else(|| env_base.filter(|s| !s.is_empty()));
+    match chosen {
+        Some(b) => (b.to_string(), true),
+        None => (DEFAULT_BASE_REF.to_string(), false),
+    }
 }
 
 /// Construct the selected event-store backend as a boxed port (§10). `sqlite` (the
@@ -564,7 +645,7 @@ fn migrate_project_identity(
     backend: &Store,
     minted: &str,
     legacy: &str,
-    graph: Option<&dyn Projection>,
+    graph: Option<&Projector>,
 ) -> Result<Option<usize>, Box<dyn std::error::Error>> {
     let legacy_ns = format!("proj-{legacy}-");
     let minted_ns = format!("proj-{minted}-");
@@ -579,6 +660,29 @@ fn migrate_project_identity(
         )
         .into()),
         MigrationOutcome::Rename => {
+            // Re-key the graph the SAME way the streams are renamed (spec 28 GC5 backward-compat):
+            // the migration renames event streams, but the graph folds incrementally so the
+            // renamed streams are never re-folded - its pre-mint rows keep the legacy scope and,
+            // once the read filter scopes reads to the minted identity, that history would be
+            // silently orphaned. Re-scope the graph rows legacy -> minted so a single-project
+            // deployment reads EXACTLY as before across the mint. Skipped when no graph is wired
+            // (a store-only unit test).
+            //
+            // ORDER MATTERS for crash-safety: the graph and the streams live in two separate
+            // databases with no shared transaction, so re-key the graph FIRST and rename the
+            // streams LAST. `decide_migration` returns `Rename` ONLY while the legacy namespace
+            // still holds streams, and `rename_stream_prefix` is the SOLE step that clears it - so
+            // the stream rename is the irreversible commit point. If the process dies (or the
+            // re-key errors: a composite (id, project) collision, or a locked shared backend) after
+            // the re-key but before the rename, the legacy namespace is still populated, a re-open
+            // decides `Rename` again, and the idempotent re-key (which moves 0 rows once done)
+            // replays cleanly to completion. Renaming first would empty the legacy namespace, so a
+            // failed re-key would NoOp forever and orphan the pre-mint graph rows. Re-keying first
+            // also keeps the minted graph scope empty until the DecisionMade fold below, so the
+            // composite (id, project) key never collides.
+            if let Some(g) = graph {
+                g.migrate_project(legacy, minted)?;
+            }
             let n = backend.rename_stream_prefix(&legacy_ns, &minted_ns)?;
             // Record the migration as a DecisionMade in the MINTED namespace (spec 09: the
             // migration is recorded with the existing DecisionMade, NO new event type) - old
@@ -598,8 +702,13 @@ fn migrate_project_identity(
                 "type": contextgraph::TYPE_DECISION_MADE,
                 "data": data,
             });
-            mcpserver::emit_event(&store, conductor::STREAM, graph, &args)
-                .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+            mcpserver::emit_event(
+                &store,
+                conductor::STREAM,
+                graph.map(|g| g as &dyn Projection),
+                &args,
+            )
+            .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
             Ok(Some(n))
         }
     }
@@ -624,7 +733,7 @@ fn migrate_local_identity() -> Res {
         return Ok(()); // no minted identity distinct from the basename
     }
     let backend = Store::open(&store_path)?;
-    let graph = Projector::open(&db_path("graph.db"))?;
+    let graph = Projector::open(&db_path("graph.db"), &minted)?;
     if let Some(n) = migrate_project_identity(&backend, &minted, &legacy, Some(&graph))? {
         eprintln!(
             "rigger: migrated project identity - renamed {n} stream(s) from the legacy \
@@ -633,6 +742,44 @@ fn migrate_local_identity() -> Res {
     }
     Ok(())
 }
+
+/// The canonical command surface, in dispatch order. This is the SINGLE list of
+/// subcommand names: the runtime reads it (the unknown-command help below names the
+/// known commands from it) and `rigger docs` reads it so the generated discipline's
+/// command list is code-derived, not hand-copied. Keep it in step with the `main`
+/// dispatch match below - the same must-agree discipline [`RUN_BRANCH`] keeps with the
+/// JS driver. `docs_context` and the `commands_registry_agrees_with_dispatch` test guard
+/// it against drift.
+const SUBCOMMANDS: &[&str] = &[
+    "run",
+    "step",
+    "reported",
+    "prompt",
+    "serve",
+    "workflow",
+    "graph",
+    "stats",
+    "canary",
+    "playbooks",
+    "replay",
+    "status",
+    "dash",
+    "ground",
+    "reindex",
+    "symbols-index",
+    "emit",
+    "progress",
+    "result",
+    "peers",
+    "reset",
+    "validate",
+    "init",
+    "setup",
+    "docs",
+    "prime",
+    "version",
+    "help",
+];
 
 fn main() {
     // Point `ort` at a CUDA-enabled ONNX Runtime `.so` to `dlopen` (it is built with
@@ -674,16 +821,20 @@ fn main() {
         "progress" => cmd_progress(&args[2..]),
         "result" => cmd_result(&args[2..]),
         "peers" => cmd_peers(&args[2..]),
-        "validate" => cmd_validate(),
+        "reset" => cmd_reset(&args[2..]),
+        "validate" => cmd_validate(&args[2..]),
         "init" => cmd_init(),
         "setup" => cmd_setup(&args[2..]),
+        "docs" => cmd_docs(&args[2..]),
         "prime" => cmd_prime(),
+        "version" | "--version" | "-V" => cmd_version(),
         "help" | "-h" | "--help" => {
             usage();
             Ok(())
         }
         other => {
             eprintln!("rigger: unknown command {other:?}");
+            eprintln!("known commands: {}", SUBCOMMANDS.join(", "));
             usage();
             std::process::exit(2);
         }
@@ -810,6 +961,11 @@ if the id has no result; --meta <json> adds bookkeeping\n  \
 rigger peers [file ...]     print peer decisions, lessons, and findings from the\n                              \
 context graph, scoped to the given files (the CLI form of\n                              \
 rigger_peers)\n  \
+rigger reset --runs         drop every superseded / dead run's decisions and\n                              \
+findings from the context graph, keeping every lesson and\n                              \
+the active run's own decisions/findings. Sheds dead-run\n                              \
+grounding noise without wiping the store - the event log\n                              \
+is left untouched\n  \
 rigger validate             load and validate the workflow + agents\n  \
 rigger init                 set up a project: scaffold .rigger/ (workflow.yml +\n                              \
 an agents/ folder) and install the Claude Code\n                              \
@@ -819,7 +975,10 @@ native /rigger Claude Code workflow (.claude/workflows/\n                       
 rigger.js) and provision the JS driver (.rigger/shim/ +\n                              \
 npm install). After it: run `/rigger <spec>` in Claude\n                              \
 Code (primary), or `rigger workflow` as a fallback\n  \
-rigger prime                print recent decisions (what the hook runs)\n\n\
+rigger prime                print recent decisions (what the hook runs)\n  \
+rigger version              print the crate version and the build-provenance id\n                              \
+(a git commit/describe embedded at build time) so an\n                              \
+agent can identify the exact binary. Also `--version`\n\n\
 run/serve options:\n  \
 --driver <cli|workflow>          cli (default): standalone claude subprocess;\n                                   \
 workflow: in-Claude-Code MCP server\n  \
@@ -1086,6 +1245,25 @@ fn result_advisories(events: &[Event], id: &str, will_supersede: bool) -> Vec<St
     notes
 }
 
+/// Load the config a RUN will drive, refusing to start when a gating persona guarantees an
+/// integration-gate stall (spec 18, unit 2). This is the single load seam every run entry
+/// (`cmd_step`, `run_cli`, `run_workflow`) shares, so the run-start refusal cannot be present
+/// at one entry and silently missing at another.
+///
+/// The integration gate reads a gating agent's RESULT channel for a `{"verdict":...}` line and
+/// never reads emitted events (a deliberate load-bearing decision); a gating persona (a review
+/// adjudicator on any tier, or a plan-critique adjudicator) that records its verdict ONLY via
+/// `rigger_emit` is therefore a guaranteed stall - the gate finds no verdict, folds it as a
+/// non-approval, and the unit remediates until it escalates. Rather than begin that doomed run,
+/// `rigger run`/`workflow`/`step` refuse up front with the SAME deterministic fix message
+/// `rigger validate` gives. The check itself has ONE authority - `config::lint_gating_verdict_lines`
+/// (spec 18, unit 1) - reused here, never re-derived; this seam only wires it onto the run path.
+fn load_run_config(dir: &str) -> Result<config::Config, Box<dyn std::error::Error>> {
+    let cfg = config::load(dir)?;
+    config::lint_gating_verdict_lines(&cfg)?;
+    Ok(cfg)
+}
+
 fn cmd_run(args: &[String]) -> Res {
     let parsed = parse_run_args(args)?;
     // `--driver workflow` is the equivalent of `rigger serve`: the in-Claude-Code
@@ -1175,7 +1353,10 @@ fn acquire_step_lock() -> Result<std::fs::File, Box<dyn std::error::Error>> {
 
 fn cmd_step(args: &[String]) -> Res {
     let args = parse_step_args(args)?;
-    let cfg = config::load(".")?;
+    // Refuse a doomed run up front: a gating persona that never puts its verdict on the result
+    // channel would stall the integration gate (spec 18, unit 2). This reuses unit 1's lint at
+    // the run's config-load seam, before any unit is parked.
+    let cfg = load_run_config(".")?;
     let criteria = load_criteria(args.spec.as_deref())?;
     std::fs::create_dir_all(RIGGER_DIR)?;
 
@@ -1197,6 +1378,13 @@ fn cmd_step(args: &[String]) -> Res {
     // the conductor on the wrong branch - isolation is a precondition, not best-effort.
     let repo = git_repo();
     if !repo.is_empty() {
+        // Refuse an obviously-wrong base BEFORE the run branch is anchored (spec 18, criterion
+        // 7). Gating on the PLANNED anchor (a side-effect-free peek) - not on the created branch
+        // - means a refused first step leaves NO wrong-base run branch behind, so the corrected
+        // `--base` retry re-runs this check and re-anchors fresh instead of reusing (and thus
+        // self-disarming on) the wrong-base branch.
+        let planned = Worktree::planned_run_branch_setup(&repo, RUN_BRANCH, &args.base);
+        refuse_when_base_lacks_spec_paths(&repo, "rigger step", &args.base, planned, &criteria)?;
         let setup = Worktree::ensure_run_branch(&repo, RUN_BRANCH, &args.base).map_err(|e| {
             format!(
                 "rigger step: could not prepare the run branch {RUN_BRANCH:?} (base {:?}): {e}. \
@@ -1204,7 +1392,7 @@ fn cmd_step(args: &[String]) -> Res {
                 args.base
             )
         })?;
-        warn_on_run_branch_divergence(setup, &args);
+        warn_on_run_branch_divergence("rigger step", setup, &args.base, args.base_explicit);
         // The maintenance half of Gap 14: every step starts by sweeping the scratch
         // root's terminal worktrees (integrated units, review scaffolding), so leaks
         // from crashed or superseded step processes are reclaimed by the loop itself
@@ -1242,13 +1430,9 @@ fn cmd_step(args: &[String]) -> Res {
         eprintln!("rigger step: --fresh: began a new run {run} (the prior run stays in the log)");
     }
 
-    // Definition pinning (spec 13, unit 1): pin this run's definition (a fresh run) or enforce
-    // it (a live run). A drifted live-run definition WITHOUT `--rebase-definition` HALTS here,
-    // loudly and before any worktree work, so a mid-campaign prompt edit can never silently
-    // change replay semantics; `--rebase-definition` records the supersession and continues.
-    enforce_definition_pin(&store, &criteria, &definition, args.rebase_definition)?;
-
-    // Captured before `repo` moves into Deps: the fixpoint sweep below needs it.
+    // Captured before `repo` moves into Deps: the fixpoint/terminal teardown below needs it, and
+    // computed BEFORE the definition-pin check so a definition-drift HALT can reclaim run-level
+    // scratch on its way out (spec 34, criterion 3).
     let scratch_root = if repo.is_empty() {
         None
     } else {
@@ -1258,7 +1442,36 @@ fn cmd_step(args: &[String]) -> Res {
         ))
     };
 
-    let graph = Projector::open(&db_path("graph.db"))?;
+    // Definition pinning (spec 13, unit 1): pin this run's definition (a fresh run) or enforce
+    // it (a live run). A drifted live-run definition WITHOUT `--rebase-definition` HALTS here,
+    // loudly and before any worktree work, so a mid-campaign prompt edit can never silently
+    // change replay semantics; `--rebase-definition` records the supersession and continues.
+    if let Err(e) = enforce_definition_pin(&store, &criteria, &definition, args.rebase_definition) {
+        // A definition-drift HALT is a terminal state for this run process (spec 34, criterion
+        // 3): reclaim the run-level shared scratch before propagating the loud halt, so a halted
+        // run leaves no shared build cache or agent scratch behind - the same run-teardown a
+        // clean fixpoint gets. Gated on the SAME `terminal_and_no_live_worker` predicate the
+        // terminal-fixpoint teardown below uses (ONE authority, so the two sites can never
+        // diverge): the run must be at a terminal state with NO live worker - an empty pending
+        // frontier, no hung-but-possibly-alive spawn, AND no still-pending manual-review pause. A
+        // still-in-flight worker, OR a hung spawn whose liveness fault counts as "answered" yet
+        // leaves a worker the operator may still resume with `--rebase-definition`, OR a unit
+        // paused awaiting a human (its persisted `ManualReview` from an EARLIER step folds into the
+        // inbox this predicate reads from the full stream), is STILL ADVANCING - so its scratch is
+        // never pulled out from under it (the never-delete-live-owned rail). An unreadable/malformed
+        // stream reads as NOT safe, so uncertainty never reclaims. Best-effort; the halt is
+        // surfaced regardless.
+        if let Some(root) = &scratch_root {
+            if let Ok(events) = store.read_stream(conductor::STREAM, 0, Direction::Forward) {
+                if terminal_and_no_live_worker(&events).unwrap_or(false) {
+                    reclaim_run_scratch(root);
+                }
+            }
+        }
+        return Err(e);
+    }
+
+    let graph = Projector::open(&db_path("graph.db"), &project_identity())?;
     let grounder = select_grounder(&cfg.workflow.defaults.grounder)?;
     // Liveness sweep (spec 10, unit 3): BEFORE the conductor replays the frontier, classify
     // any IN-FLIGHT spawn whose per-spawn heartbeat marker went stale beyond its
@@ -1293,6 +1506,34 @@ fn cmd_step(args: &[String]) -> Res {
                 }
             }
             Err(e) => eprintln!("rigger step: liveness sweep skipped (taxonomy: {e})"),
+        }
+    }
+
+    // Orphan-sweep backstop (spec 34, criterion 2): reclaim any scratch under the root that no
+    // LIVE unit of the CURRENT run owns - a prior run's stranded worktree/build cache, or a
+    // `cargo-target-<slug>` an agent wrote outside its assigned path (the unbounded per-agent
+    // leak). Keyed on liveness ownership (the SAME `worktree_belongs_to_live` predicate the
+    // `rigger validate` residue report reads), so it can never remove a worktree an in-flight
+    // reviewer is reading or a cache a live unit is building, and it deliberately spares the
+    // shared `agent-scratch`/`agent-live`/bare-`cargo-target` areas a running spawn may still
+    // be writing into. This runs AFTER `enforce_definition_pin` above so a `--fresh` restart's
+    // just-superseded prior-run scratch reads as non-live and is reclaimed; it re-runs
+    // idempotently each step (an already-clean root sweeps nothing). Broader than the git-only
+    // `sweep_terminal` above, which reclaims only integrated worktrees. Best-effort - a sweep
+    // failure only warns and never blocks the step.
+    if let Some(root) = &scratch_root {
+        match store.read_stream(conductor::STREAM, 0, Direction::Forward) {
+            Ok(events) => {
+                let run_units = current_run_units(&events);
+                let removed = reclaim_orphan_scratch(&repo, root, &run_units);
+                if removed > 0 {
+                    eprintln!(
+                        "rigger step: reclaimed {removed} orphaned scratch entr{} under {root}",
+                        if removed == 1 { "y" } else { "ies" }
+                    );
+                }
+            }
+            Err(e) => eprintln!("rigger step: orphan sweep skipped: {e}"),
         }
     }
 
@@ -1338,40 +1579,195 @@ fn cmd_step(args: &[String]) -> Res {
     // `budget_halt` from its in-process breaker when a trip left ready work unscheduled, so
     // the printed `Step` carries a halt reason (`{"...","done":true,"halted":"..."}`) the
     // thin driver stops LOUDLY on - instead of reading a starved run as a clean completion.
+    //
+    // Surface a WEDGED terminus (spec 19c, unit 1) distinct from a clean completion, ALONGSIDE
+    // the budget halt: the set of units that escalated (exhausted remediation and went
+    // terminal without integrating), taken from the conductor's projected run state - the
+    // single authority for the escalated set, reusing the folded `UnitEscalated` status.
+    // Omitted from the wire when empty, so a clean run's `{"wave":[],"done":true}` shape is
+    // unchanged; when non-empty the driver treats a `done` fixpoint carrying it as a LOUD stop
+    // (exactly as for a budget halt), so a unit that can never pass review no longer
+    // masquerades as a clean "run complete". Escalation-and-continue MID-run is untouched -
+    // only the driver's read of the final terminus changes, and it gates on `step.done`.
+    // Stamped BEFORE the `halted` move below (which consumes `rs.budget_halt`), as it borrows
+    // `rs`.
+    step.escalated = rs.escalated_units();
     step.halted = rs.budget_halt;
-    // Surface hung agents (spec 10, unit 3): any spawn whose LATEST result is a liveness
-    // fault is a hung, unrecovered agent. Halt LOUDLY - like the budget breaker - so the
-    // driver stops on a named reason instead of reading a stalled wave as a clean fixpoint;
-    // a hung agent can no longer stall the wave invisibly. A budget halt already on the
-    // channel takes precedence (it is the harder global rail). Recovery: record a real
-    // result on the named spawn (last-write-wins supersedes the fault), then re-drive.
-    if step.halted.is_none() {
-        let hung = rigger::liveness::hung_spawns(runscope::current_run(&events))
-            .map_err(|e| e.to_string())?;
-        if !hung.is_empty() {
-            step.halted = Some(rigger::liveness::halt_reason(&hung));
-        }
+    // Hung agents (spec 10, unit 3): any spawn whose LATEST result is a liveness fault is a
+    // hung, unrecovered agent whose worker may STILL be alive and writing under the shared
+    // scratch. Surfaced as a loud halt so the driver stops on a named reason instead of reading
+    // a stalled wave as a clean fixpoint. A budget halt already on the channel takes precedence
+    // for the surfaced REASON (it is the harder global rail), so the hung reason is only stamped
+    // when no budget halt is set. (The teardown's never-delete-live guard reads the same hung set
+    // through `terminal_and_no_live_worker` below, so a hung-but-alive worker is spared under any
+    // halt - not just when its reason is the one surfaced here.)
+    let hung =
+        rigger::liveness::hung_spawns(runscope::current_run(&events)).map_err(|e| e.to_string())?;
+    if step.halted.is_none() && !hung.is_empty() {
+        // Recovery: record a real result on the named spawn (last-write-wins supersedes the
+        // fault), then re-drive.
+        step.halted = Some(rigger::liveness::halt_reason(&hung));
     }
-    // At a CLEAN fixpoint, reclaim the run's shared scratch areas: `agent-scratch` (probe
-    // repos, verification builds workers park under <scratch-root>/agent-scratch per the
-    // driver's scratch policy) and `agent-live` (the per-spawn liveness markers, spec 10
-    // unit 3) - both exist only to serve in-flight spawns, and leaving them is how a run
-    // leaks gigabytes of build debris (Gap 14) or unbounded stale markers. Gated on
-    // `halted.is_none()`: a liveness halt sets `done` while a spawn is still hung (a
-    // liveness-fault result counts as answered), and an abandoned-but-possibly-alive worker
-    // may still be writing under agent-scratch - so a halted step must NOT wipe the areas out
-    // from under it; only a genuine, unhalted convergence reclaims. Best-effort - never fails
-    // the step.
-    if step.done && step.halted.is_none() {
+    // RUN TEARDOWN at a terminal run state (spec 34, criterion 3): reclaim the run's run-level
+    // shared scratch - `agent-scratch` (probe repos + verification builds a worker parks under
+    // <scratch-root>/agent-scratch per the driver's scratch policy), `agent-live` (per-spawn
+    // liveness markers, spec 10 unit 3), and the SHARED build cache (`cargo-target`/`target`
+    // directly under the root, the driver's `CARGO_TARGET_DIR` - the unbounded multi-GB leak
+    // spec 34 names). These exist only to serve in-flight spawns, so once the run is terminal
+    // with no spawn live they are pure residue; leaving them is how a wedged/halted run leaks
+    // gigabytes of build debris (Gap 14). The orphan-sweep backstop (criterion 2) deliberately
+    // SPARES these shared areas while the run steps (a live spawn may still be building into
+    // them), so their reclamation is exactly this run-level teardown - fired for EVERY terminal
+    // state, not just a clean fixpoint: a wedge/escalation and a budget halt reclaim too.
+    //
+    // Gated on the SINGLE `terminal_and_no_live_worker` predicate (the never-delete-live-owned
+    // rail): the pending frontier is empty, no liveness-fault spawn may still be alive, AND no
+    // manual-review pause is still pending. The SAME predicate gates the definition-drift teardown
+    // above, so EVERY still-advancing condition is inherited by both sites and none can drift
+    // between them. It generalizes the former clean-fixpoint-only guard (`step.done &&
+    // halted.is_none()`) to also fire on a budget halt / escalation while still sparing a liveness
+    // halt or a manual-review pause. Best-effort - never fails the step. `?` here can never
+    // actually err: all three sub-reads (`step_result`, `hung_spawns`, `ledger::project`) already
+    // succeeded above on this same `events` (the last inside `conductor::run`, which produced
+    // `rs`), so the predicate is pure recomputation over an in-memory slice.
+    //
+    // The frontier+hung core is NECESSARY but not SUFFICIENT for run terminality: a manual-review
+    // PAUSE (`autonomy: manual` on a gated stage, §4.3) emits `ManualReview` and returns its unit
+    // pending WITHOUT ever parking an implementer spawn, so it leaves an EMPTY frontier and no hung
+    // spawn - the core reads terminal - yet the run is manual-review-pending, i.e. NOT converged
+    // and STILL ADVANCING (a human will approve+integrate it on a later step). That is exactly a
+    // run this rail must SPARE. The manual-review exclusion is FOLDED INTO the shared predicate
+    // (it projects the `manual_review` inbox from the scoped events), so both this terminal site
+    // and the drift early-return above spare a paused run without any per-caller guard to keep in
+    // sync. (A budget halt / escalation IS terminal per criterion 3 and leaves the inbox empty, so
+    // those still reclaim - only a non-terminal manual-review pause is excluded.)
+    if terminal_and_no_live_worker(&events)? {
         if let Some(root) = &scratch_root {
-            let _ = std::fs::remove_dir_all(std::path::Path::new(root).join("agent-scratch"));
-            let _ = std::fs::remove_dir_all(
-                std::path::Path::new(root).join(rigger::liveness::MARKER_SUBDIR),
-            );
+            reclaim_run_scratch(root);
         }
     }
     println!("{}", serde_json::to_string(&step)?);
     Ok(())
+}
+
+/// The NO-STILL-ADVANCING-WORK core of the never-delete-live-owned rail as ONE predicate (spec 34,
+/// criterion 3): true when the current run has NO worker that may still be alive under the shared
+/// scratch AND no unit still awaiting a human. Both run-teardown sites - the definition-drift
+/// early-return in [`cmd_step`] and the terminal-fixpoint teardown after `conductor::run` - gate on
+/// THIS function, so every still-advancing condition is inherited by both and none can drift into a
+/// divergent per-caller copy (the divergence that once let the drift path reclaim on an empty
+/// frontier ALONE - first omitting the hung check, then the manual-review check).
+///
+/// Three conditions, all required:
+/// - the pending frontier is EMPTY (`spawn::step_result(...).done`): every recorded spawn has a
+///   result, so no in-flight wave and no obviously-live worker; and
+/// - NO spawn is HUNG (`liveness::hung_spawns(...)` is empty): a liveness-fault result counts as
+///   "answered" (so it does NOT keep the frontier non-empty) yet leaves a worker that may still
+///   be alive and writing under the shared scratch - and which the operator may yet recover - so
+///   its presence must still block reclamation; and
+/// - NO manual-review PAUSE is pending (`ledger::project(...).manual_review` is empty): a
+///   `autonomy: manual` gate (§4.3) emits a PERSISTED `ManualReview` and returns its unit pending
+///   WITHOUT parking any spawn, so it leaves an empty frontier and no hung spawn - the frontier+hung
+///   core alone reads terminal - yet the run is manual-review-pending, i.e. NON-terminal and STILL
+///   ADVANCING (a human will approve+integrate it on a later step). That persisted pause is a
+///   property of the LOG, not of whether `conductor::run` ran this step, so it is folded in HERE
+///   rather than at a caller: the drift early-return runs BEFORE `conductor::run`, but it reads the
+///   full stream (which already carries a prior step's `ManualReview`), so it needs the exclusion
+///   too. Folding it into this shared core keeps a single authority for "no still-advancing work"
+///   and closes the never-delete-live breach a per-caller guard re-opened.
+///
+/// Scoped to the CURRENT run only (`runscope::current_run`), so a prior run's unanswered spawns or
+/// paused units never gate this run's teardown. Errs only if a malformed stored event cannot be
+/// replayed; callers treat an `Err` as "not safe to reclaim" (never delete on uncertainty).
+fn terminal_and_no_live_worker(events: &[Event]) -> Result<bool, String> {
+    let scoped = runscope::current_run(events);
+    let frontier_empty = spawn::step_result(scoped).map_err(|e| e.to_string())?.done;
+    let no_hung = rigger::liveness::hung_spawns(scoped)
+        .map_err(|e| e.to_string())?
+        .is_empty();
+    // The manual-review inbox, projected from the SAME scoped slice - the single authority for
+    // which units still await a human. A non-terminal manual-review PAUSE leaves an empty frontier
+    // and no hung spawn (it parks no spawn), so the frontier+hung core alone reads terminal even
+    // though the run is still advancing. Folding the exclusion HERE - not at each caller - means
+    // both teardown sites inherit it structurally and the guard can never diverge between them.
+    let no_manual_review = ledger::project(scoped)
+        .map_err(|e| e.to_string())?
+        .manual_review
+        .is_empty();
+    Ok(frontier_empty && no_hung && no_manual_review)
+}
+
+/// Reclaim the run's run-level shared scratch at a terminal run state (spec 34, criterion 3):
+/// `agent-scratch` (probe repos + verify builds a worker parks there), `agent-live` (per-spawn
+/// liveness markers), and the SHARED build cache - `cargo-target` and `target` directly under
+/// the scratch root, the driver's `CARGO_TARGET_DIR`, the unbounded multi-GB leak. These are the
+/// run-level areas the orphan-sweep backstop deliberately spares while the run is stepping (a
+/// live spawn may still be building into them); once the run is terminal and no spawn is live
+/// they are pure residue, so this teardown - and only this teardown - reclaims them. The two
+/// build-cache names mirror exactly what `rigger validate`'s residue report flags as a shared
+/// cache (`scan_residue`), so validate-reports and step-reclaims stay in lockstep.
+///
+/// Each area is reaped-then-removed (spec 23): any process still rooted in it is reaped BEFORE
+/// the dir is removed so nothing outlives a dir holding a now-deleted cwd. Scoped to the EXACT
+/// dir removed under the resolved scratch `root` (`RIGGER_TMPDIR` > `defaults.workdir` > repo
+/// default), never a hardcoded `.rigger/tmp`, so a relocated scratch root stays safe and only
+/// rigger's own scratch is ever reaped. Every half is best-effort - a missing area is a graceful
+/// no-op (platform-tolerant, idempotent), never an error that fails the step. Per-unit worktrees
+/// and their `cargo-target-<slug>` caches are NOT this function's concern - those are reclaimed
+/// when their unit goes terminal (`Worktree::remove` / `sweep_terminal` / the orphan-sweep),
+/// never while a later stage of the same unit still needs them.
+///
+/// The bare `cargo-target`/`target` removals are the first code to delete those names directly
+/// under the root (the orphan-sweep and `rigger validate` only ever touch the per-unit
+/// `cargo-target-<slug>` siblings), so this is safe ONLY because `root` is the RESOLVED rigger
+/// scratch root (`RIGGER_TMPDIR` > `defaults.workdir` > the repo default `.rigger/tmp`), a
+/// directory rigger owns end to end - never the repo root. An operator who misconfigures the
+/// scratch root TO the repo root would have rigger park every worker's scratch there too, so the
+/// misconfiguration is self-evident long before this teardown; this function does not re-derive
+/// or second-guess `root`, it trusts the one resolution authority all scratch paths share.
+fn reclaim_run_scratch(root: &str) {
+    let base = std::path::Path::new(root);
+    reap_then_remove_dir(&base.join("agent-scratch"));
+    reap_then_remove_dir(&base.join(rigger::liveness::MARKER_SUBDIR));
+    reap_then_remove_dir(&base.join("cargo-target"));
+    reap_then_remove_dir(&base.join("target"));
+}
+
+/// Reap any process rooted in `dir` (spec 23), then remove the dir. The reap runs BEFORE the
+/// removal so no process outlives the dir holding a now-deleted cwd; both halves are
+/// best-effort and never fail the step. The reap is scoped to the EXACT `dir` (the scan
+/// canonicalizes it) and only ever reaches processes rooted strictly inside it, so it is safe
+/// on any relocated scratch root and never touches a process outside rigger's own dir. Off a
+/// platform without `/proc` the reap is a graceful no-op and only the removal runs. This is the
+/// shared teardown for the fixpoint scratch-area sweep in [`cmd_step`]; the worktree-removal
+/// reap point is [`rigger::worktree::Worktree::remove`].
+fn reap_then_remove_dir(dir: &std::path::Path) {
+    rigger::reap::reap_processes_rooted_under(dir);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Reap any process rooted in a leftover unit worktree `dir` (spec 23), then reclaim the dir -
+/// the worktree half of the spec-34 orphan-sweep, the analog of [`reap_then_remove_dir`] for a
+/// scratch entry git may still track. A killed step can leave a `rigger-wt-<slug>` worktree
+/// still REGISTERED, so a plain `remove_dir_all` would strand a dangling admin entry; `git
+/// worktree remove --force` deregisters it (and tolerates a dirty tree). A bare leftover dir
+/// git never tracked makes that command fail, so it falls through to the plain removal, and any
+/// dangling admin entry a partial removal leaves is pruned by [`rigger::worktree::sweep_terminal`]
+/// at the next step start. Best-effort - a failed reclaim never aborts the sweep.
+fn reap_then_remove_worktree(repo: &str, dir: &std::path::Path) {
+    rigger::reap::reap_processes_rooted_under(dir);
+    let deregistered = !repo.is_empty()
+        && Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(["worktree", "remove", "--force"])
+            .arg(dir)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+    if !deregistered {
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }
 
 /// `rigger reported <id>` - exit 0 iff spawn `<id>` already has a recorded result in this
@@ -1568,39 +1964,154 @@ fn parse_step_args(args: &[String]) -> Result<StepArgs, Box<dyn std::error::Erro
 
 /// Warn on stderr when the run branch was anchored somewhere OTHER than the base the
 /// operator asked for, so a divergence is never silent (the old behavior silently
-/// no-op'd an unresolvable base and silently ignored `--base` on every step after the
-/// first). The `{wave,done}` JSON still goes to stdout untouched; these are stderr
-/// advisories, not errors - isolation is intact in every case, only the anchor differs.
-fn warn_on_run_branch_divergence(setup: RunBranchSetup, args: &StepArgs) {
+/// no-op'd an unresolvable base and silently ignored `--base` on every run after the
+/// first). `cmd` names the invoking command (e.g. `"rigger step"`, `"rigger run"`) so the
+/// advisory reads true for whichever run entry anchored. Any primary output (the step's
+/// `{wave,done}` JSON) still goes to stdout untouched; these are stderr advisories, not
+/// errors - isolation is intact in every case, only the anchor differs.
+fn warn_on_run_branch_divergence(
+    cmd: &str,
+    setup: RunBranchSetup,
+    base: &str,
+    base_explicit: bool,
+) {
     match setup {
         RunBranchSetup::CreatedFromHead => eprintln!(
-            "rigger step: base {:?} did not resolve, so the run branch {RUN_BRANCH:?} was anchored \
-             on the current HEAD instead (unit isolation is intact, but not anchored on {:?}). \
-             Fetch the base or pass an existing ref as --base to anchor there.",
-            args.base, args.base
+            "{cmd}: base {base:?} did not resolve, so the run branch {RUN_BRANCH:?} was anchored \
+             on the current HEAD instead (unit isolation is intact, but not anchored on {base:?}). \
+             Fetch the base or pass an existing ref as --base to anchor there."
         ),
         // The run branch already exists and was reused. Reusing the default base every
-        // step is the expected steady state and stays silent; only an EXPLICIT --base
+        // run is the expected steady state and stays silent; only an EXPLICIT --base
         // that got ignored (because re-anchoring would orphan integrated work) is worth a
         // word, so the operator is not left thinking their re-anchor took effect.
-        RunBranchSetup::Reused if args.base_explicit => eprintln!(
-            "rigger step: the run branch {RUN_BRANCH:?} already exists and was reused (its \
-             integrated work is preserved); --base {:?} was NOT applied. Re-anchoring an existing \
-             run branch would discard integrated units; to anchor a run on {:?}, start it on a \
-             repo without {RUN_BRANCH:?} (or delete that branch first).",
-            args.base, args.base
+        RunBranchSetup::Reused if base_explicit => eprintln!(
+            "{cmd}: the run branch {RUN_BRANCH:?} already exists and was reused (its \
+             integrated work is preserved); --base {base:?} was NOT applied. Re-anchoring an existing \
+             run branch would discard integrated units; to anchor a run on {base:?}, start it on a \
+             repo without {RUN_BRANCH:?} (or delete that branch first)."
         ),
         RunBranchSetup::Reused | RunBranchSetup::CreatedFromBase => {}
     }
+}
+
+/// Anchor the run branch off `base` before a run entry drives the conductor, so every
+/// unit worktree branches off [`RUN_BRANCH`] and integration merges never land on the
+/// operator's own branch (spec 18, criterion 6 threads `--base` here). Creates and checks
+/// out [`RUN_BRANCH`] off `base` (or off HEAD when `base` does not resolve - the same
+/// fallback `cmd_step` uses), reusing an existing run branch untouched. `cmd` labels the
+/// command in the error and the divergence advisory. A failure aborts the run with an
+/// actionable error rather than driving the conductor on the wrong branch - isolation is a
+/// precondition, not best-effort. Callers guard this on a real repo (a repo-less invocation
+/// skips run-branch setup entirely). The missing-files base check (criterion 7) runs BEFORE
+/// this, gated on [`Worktree::planned_run_branch_setup`], so a wrong-base run is refused
+/// without ever creating a branch to anchor here.
+fn anchor_run_branch(repo: &str, cmd: &str, base: &str, base_explicit: bool) -> Res {
+    let setup = Worktree::ensure_run_branch(repo, RUN_BRANCH, base).map_err(|e| {
+        format!(
+            "{cmd}: could not prepare the run branch {RUN_BRANCH:?} (base {base:?}): {e}. \
+             The run did not start; resolve the git state (e.g. commit or stash a dirty tree) and retry."
+        )
+    })?;
+    warn_on_run_branch_divergence(cmd, setup, base, base_explicit);
+    Ok(())
+}
+
+/// Before a run parks its first unit, guard against an operator anchoring the run on the
+/// WRONG base: extract the path-like tokens the spec's `criteria` reference and check them
+/// against `base`. When the criteria name paths but NONE of them resolve in `base`, that is
+/// a strong wrong-base signal - the files the units must edit live on another branch - so
+/// REFUSE with an error naming a missing path and the `--base` fix, rather than driving a
+/// doomed run whose unit worktrees branch off a tree that lacks those very files. A PARTIAL
+/// match only WARNS and proceeds: a spec legitimately names to-be-created files, so the
+/// absence of SOME paths is not a wrong-base signal. No path tokens means nothing to check.
+///
+/// This runs BEFORE the run branch is anchored, gated on the PLANNED anchor
+/// ([`Worktree::planned_run_branch_setup`], a side-effect-free peek) rather than an
+/// already-created branch. That ordering is what makes the refusal actionable: a refused step
+/// creates no run branch, so the operator who obeys the message and retries with a corrected
+/// `--base` re-runs this check (which then passes) and anchors the run FRESH on the right base -
+/// it can never end up stuck on the wrong-base branch a post-anchor check would have left behind.
+///
+/// `setup` (the planned anchor) gates WHEN this runs. Only a run branch that WOULD be freshly
+/// [`RunBranchSetup::CreatedFromBase`] is at "before a run parks its first unit" with a base that
+/// is known to resolve. A would-be REUSED branch means one already exists - a real run is already
+/// under way (re-checking every step would spuriously refuse a spec of not-yet-created files
+/// mid-run) - and a would-be HEAD fallback ([`RunBranchSetup::CreatedFromHead`]) has no resolvable
+/// base to look paths up in. Both skip. `cmd` labels the command in the refusal and the advisory
+/// (matching [`anchor_run_branch`] / [`warn_on_run_branch_divergence`]). Spec 18, criterion 7.
+fn refuse_when_base_lacks_spec_paths(
+    repo: &str,
+    cmd: &str,
+    base: &str,
+    setup: RunBranchSetup,
+    criteria: &[String],
+) -> Res {
+    if !matches!(setup, RunBranchSetup::CreatedFromBase) {
+        return Ok(());
+    }
+    let tokens = spec::path_tokens(criteria);
+    if tokens.is_empty() {
+        return Ok(());
+    }
+    // `partition` preserves token order, so `absent[0]` (the path named in either message)
+    // is deterministic - the first path-like token the criteria reference, in order.
+    let (present, absent): (Vec<&String>, Vec<&String>) = tokens
+        .iter()
+        .partition(|t| rigger::worktree::path_in_ref(repo, base, t));
+    if present.is_empty() {
+        // Total absence: the strong wrong-base signal (`absent` is non-empty here because
+        // `tokens` was non-empty and none of them are present).
+        return Err(format!(
+            "{cmd}: the spec's criteria reference {n} path(s) - e.g. {first:?} - but NONE of them \
+             exist in the base ref {base:?}. This usually means the base is wrong (the files live \
+             on another branch). No run branch was created, so just re-run with --base <your-branch> \
+             pointing where these paths exist to anchor the run there.",
+            n = absent.len(),
+            first = absent[0],
+        )
+        .into());
+    }
+    if !absent.is_empty() {
+        eprintln!(
+            "{cmd}: {n} spec-referenced path(s) are absent from the base ref {base:?} (e.g. \
+             {first:?}); proceeding because others are present. If the base is wrong, delete the \
+             {RUN_BRANCH} branch and re-run with --base <your-branch>.",
+            n = absent.len(),
+            first = absent[0],
+        );
+    }
+    Ok(())
 }
 
 /// The standalone CLI path: ground, spawn agents as `claude` subprocesses, drive
 /// the DAG to integration. The store is selected by flag and wrapped in the
 /// per-project namespace decorator before it is injected (§5.1.1, R9).
 fn run_cli(parsed: &RunArgs) -> Res {
-    let cfg = config::load(".")?;
+    // Refuse before starting if a gating persona would stall the integration gate (spec 18,
+    // unit 2); `load_run_config` reuses unit 1's lint at this run's config-load seam.
+    let cfg = load_run_config(".")?;
     let criteria = load_criteria(parsed.spec.as_deref())?;
     std::fs::create_dir_all(RIGGER_DIR)?;
+    // Anchor + check out the run branch off `--base` (spec 18, criterion 6) BEFORE the
+    // conductor branches any unit worktree off HEAD, so machine-generated units never
+    // branch/merge onto the operator's own branch. `--base` threads here exactly as it does
+    // for `rigger step`; the effective base is the flag, then the `RIGGER_BASE` env override
+    // (how `rigger workflow` threads its `--base` through the shim), then `origin/main`.
+    // Guarded on a real repo, so the repo-less path is untouched.
+    let repo = git_repo();
+    if !repo.is_empty() {
+        let (base, base_explicit) = resolve_run_base(
+            parsed.base.as_deref(),
+            std::env::var("RIGGER_BASE").ok().as_deref(),
+        );
+        // Refuse an obviously-wrong base BEFORE anchoring (spec 18, criterion 7), gating on the
+        // side-effect-free planned anchor so no wrong-base run branch is ever created and the
+        // corrected `--base` retry re-anchors fresh.
+        let planned = Worktree::planned_run_branch_setup(&repo, RUN_BRANCH, &base);
+        refuse_when_base_lacks_spec_paths(&repo, "rigger run", &base, planned, &criteria)?;
+        anchor_run_branch(&repo, "rigger run", &base, base_explicit)?;
+    }
     // The boxed backend and its namespaced wrapper both live here, in this stack
     // frame, for the whole run: the decorator borrows the concrete store, and both
     // outlive the `conductor::run` call below.
@@ -1617,18 +2128,22 @@ fn run_cli(parsed: &RunArgs) -> Res {
     // `runscope::start_fresh` - the evented restart for a terminal escalation on an
     // unchanged spec.
     fresh_run_if_requested(parsed, &store, &criteria)?;
-    let graph = Projector::open(&db_path("graph.db"))?;
+    let graph = Projector::open(&db_path("graph.db"), &project_identity())?;
     let driver = cli::Driver::default();
     let grounder = select_grounder(&cfg.workflow.defaults.grounder)?;
     let deps = Deps {
         store: &store,
         driver: &driver,
         gates: &ExecRunner,
-        repo: git_repo(),
+        repo,
         grounder: Some(grounder.as_ref()),
         graph: Some(&graph),
         criteria,
     };
+    // Always-on dash (spec 19b, unit 1): auto-start a `rigger dash` serving this run before
+    // the loop begins, so an active harness is never invisible. Held for the whole run - the
+    // guard reaps the dash when this scope ends (unit 3's reaping mechanism).
+    let _dash = start_run_dashboard();
     let rs = conductor::run(&cfg, &deps)?;
     print_run_state(&rs);
     // spec 17 criterion 4c: a silently-serializing fleet must WARN during a run, not only when the
@@ -1674,9 +2189,32 @@ fn fresh_run_if_requested(
 /// the per-project namespace decorator before it is injected into BOTH the
 /// conductor and the side-car (§5.1.1, R9).
 fn run_workflow(parsed: &RunArgs) -> Res {
-    let cfg = config::load(".")?;
+    // Refuse before starting if a gating persona would stall the integration gate (spec 18,
+    // unit 2); `load_run_config` reuses unit 1's lint at this run's config-load seam.
+    let cfg = load_run_config(".")?;
     let criteria = load_criteria(parsed.spec.as_deref())?;
     std::fs::create_dir_all(RIGGER_DIR)?;
+    // Anchor + check out the run branch off `--base` (spec 18, criterion 6) before the
+    // conductor branches any unit worktree off HEAD, mirroring `rigger step`. `rigger
+    // workflow` threads its `--base` here through the shim via the inherited `RIGGER_BASE`
+    // env (the shim spawns this `rigger serve` with the inherited environment); an explicit
+    // `--base` on `rigger serve` / `rigger run --driver workflow` takes precedence. Guarded
+    // on a real repo, so the repo-less path is untouched.
+    {
+        let repo = git_repo();
+        if !repo.is_empty() {
+            let (base, base_explicit) = resolve_run_base(
+                parsed.base.as_deref(),
+                std::env::var("RIGGER_BASE").ok().as_deref(),
+            );
+            // Refuse an obviously-wrong base BEFORE anchoring (spec 18, criterion 7), gating on
+            // the side-effect-free planned anchor so no wrong-base run branch is ever created and
+            // the corrected `--base` retry re-anchors fresh.
+            let planned = Worktree::planned_run_branch_setup(&repo, RUN_BRANCH, &base);
+            refuse_when_base_lacks_spec_paths(&repo, "rigger workflow", &base, planned, &criteria)?;
+            anchor_run_branch(&repo, "rigger workflow", &base, base_explicit)?;
+        }
+    }
     // One-time spec-09 identity migration before opening the run backend (local-sqlite only).
     if parsed.store == StoreKind::Sqlite {
         migrate_local_identity()?;
@@ -1686,7 +2224,7 @@ fn run_workflow(parsed: &RunArgs) -> Res {
     // `--fresh`: begin a NEW run before the conductor thread starts, so its `ensure_started`
     // adopts this boundary rather than the latest (possibly wedged) run.
     fresh_run_if_requested(parsed, &store, &criteria)?;
-    let graph = Projector::open(&db_path("graph.db"))?;
+    let graph = Projector::open(&db_path("graph.db"), &project_identity())?;
     let driver = rigger::driver::workflow::Driver::new();
     let grounder = select_grounder(&cfg.workflow.defaults.grounder)?;
     let peers = rigger::sidecar::Sidecar::start(&store, 0, Filter::default())?;
@@ -1706,6 +2244,12 @@ fn run_workflow(parsed: &RunArgs) -> Res {
             rigger::worktree::scratch_root_from_env(&repo, &cfg.workflow.defaults.workdir)
         }
     };
+
+    // Always-on dash (spec 19b, unit 1): auto-start a `rigger dash` serving this run for the
+    // whole MCP session, so an active harness is never invisible. Held here (not inside the
+    // scope) so it is reaped when `run_workflow` returns - after the session ends - by unit
+    // 3's guard.
+    let _dash = start_run_dashboard();
 
     // The conductor orchestrates in the background; this thread serves the MCP
     // bridge over stdio. The shim drains spawns via rigger_next/result; closing
@@ -1751,21 +2295,53 @@ fn cmd_serve(args: &[String]) -> Res {
     run_workflow(&parsed)
 }
 
-/// `rigger workflow [spec]` is the turn-key one-command activation of the workflow
-/// driver: it execs the Node shim (`shim/shim.mjs`), which spawns `rigger serve`
-/// (this same binary, via `RIGGER_BIN`), connects an MCP client to it, and drives
-/// the agent loop via the Claude Agent SDK. The user runs ONE command instead of
-/// hand-wiring `rigger serve` into an MCP host.
-fn cmd_workflow(args: &[String]) -> Res {
-    // The shim takes an optional spec path; reject extra positionals so a typo is a
-    // clear error, not a silently-ignored argument.
-    if args.len() > 1 {
-        return Err(format!(
-            "workflow: expected at most one spec path, got {} arguments",
-            args.len()
-        )
-        .into());
+/// Parse `rigger workflow`'s arguments: an optional positional spec path and an optional
+/// `--base <ref>` (the run-branch base, spec 18 criterion 6). A second positional, an
+/// unknown flag, and a valueless `--base` are clear errors, so a typo never silently
+/// changes what runs or which base a run anchors on.
+fn parse_workflow_args(
+    args: &[String],
+) -> Result<(Option<String>, Option<String>), Box<dyn std::error::Error>> {
+    let mut spec = None;
+    let mut base = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--base" => {
+                i += 1;
+                base = match args.get(i) {
+                    Some(r) => Some(r.clone()),
+                    None => return Err("workflow: --base expects a ref".into()),
+                };
+            }
+            flag if flag.starts_with("--") => {
+                return Err(format!("workflow: unknown flag {flag:?}").into());
+            }
+            positional => {
+                if spec.is_some() {
+                    return Err(format!(
+                        "workflow: expected at most one spec path, got a second {positional:?}"
+                    )
+                    .into());
+                }
+                spec = Some(positional.to_string());
+            }
+        }
+        i += 1;
     }
+    Ok((spec, base))
+}
+
+/// `rigger workflow [spec] [--base <ref>]` is the turn-key one-command activation of the
+/// workflow driver: it execs the Node shim (`shim/shim.mjs`), which spawns `rigger serve`
+/// (this same binary, via `RIGGER_BIN`), connects an MCP client to it, and drives the agent
+/// loop via the Claude Agent SDK. The user runs ONE command instead of hand-wiring `rigger
+/// serve` into an MCP host. `--base` (spec 18, criterion 6) threads to the served run's
+/// branch anchor through the inherited `RIGGER_BASE` environment.
+fn cmd_workflow(args: &[String]) -> Res {
+    // `rigger workflow [spec] [--base <ref>]`: an optional spec path and the run-branch base
+    // (spec 18, criterion 6). A second positional or a valueless --base is a clear error.
+    let (spec, base) = parse_workflow_args(args)?;
     let shim = locate_shim(Path::new("."))?;
     // The shim spawns `rigger serve` itself; point it at THIS binary so the driver
     // and the served conductor are always the same build (no PATH ambiguity).
@@ -1776,10 +2352,17 @@ fn cmd_workflow(args: &[String]) -> Res {
     let node = std::env::var("RIGGER_NODE").unwrap_or_else(|_| "node".to_string());
     let mut cmd = Command::new(&node);
     cmd.arg(&shim);
-    if let Some(spec) = args.first() {
+    if let Some(spec) = &spec {
         cmd.arg(spec);
     }
     cmd.env("RIGGER_BIN", &rigger_bin);
+    // Thread --base to the served `rigger serve` the shim spawns: the shim inherits this
+    // process's environment (the same channel it uses for RIGGER_BIN), so RIGGER_BASE reaches
+    // `run_workflow`'s run-branch anchor, where `resolve_run_base` reads it. Set only when the
+    // operator passed --base, so the no-flag default (origin/main) is unchanged.
+    if let Some(base) = &base {
+        cmd.env("RIGGER_BASE", base);
+    }
 
     let status = cmd.status().map_err(|e| {
         format!(
@@ -1867,7 +2450,7 @@ fn cmd_graph(args: &[String]) -> Res {
     if around.is_empty() {
         return Err("graph: --around <id> is required".into());
     }
-    let gp = Projector::open(&db_path("graph.db"))?;
+    let gp = Projector::open(&db_path("graph.db"), &project_identity())?;
     let g = gp.subgraph(&[around.clone()], depth)?;
     println!("subgraph around {around:?} (depth {depth}):");
     for n in &g.nodes {
@@ -2873,6 +3456,67 @@ impl Runner for ReplayRunner {
 /// first and watch the run populate it. The context graph is best-effort: a grep-only run
 /// never builds one, and an absent or unreadable `graph.db` yields an empty graph rather
 /// than failing the whole page.
+/// Auto-start a read-only `rigger dash` for the run a driver is about to drive, so an active
+/// harness is never invisible (spec 19b, unit 1: always-on, no opt-in flag). The dash binds
+/// [`dash::DEFAULT_PORT`] or the next free loopback port (so two concurrent harnesses each
+/// get their OWN); its URL is printed at run start and recorded in `.rigger/`[`DASH_URL_FILE`]
+/// so `rigger status` can surface it.
+///
+/// Returns the [`dash::ReapedChild`] guard the DRIVER holds for the whole run: dropping it
+/// (on a normal finish OR an unwinding panic) reaps the dash. That guard is unit 3's reaping
+/// mechanism, reused here as the single reaper - THIS unit owns only start + discoverability,
+/// never stopping. Best-effort: if the dash cannot be started the run still proceeds (the
+/// dash is observability, not the deliverable), so a port-starved or spawn-refused
+/// environment degrades to a headless run rather than aborting one.
+fn start_run_dashboard() -> Option<dash::ReapedChild> {
+    match spawn_run_dashboard() {
+        Ok((guard, url)) => {
+            // Stderr, not stdout: in the workflow driver (`rigger serve`) stdout is the MCP
+            // transport, which the run-start pointer must never corrupt.
+            eprintln!("rigger dash: serving this run at {url}");
+            Some(guard)
+        }
+        Err(e) => {
+            eprintln!(
+                "rigger: could not auto-start the dashboard ({e}); the run continues headless"
+            );
+            None
+        }
+    }
+}
+
+/// Pick a free port, spawn `rigger dash --port <n>` as a child of the current executable,
+/// and record its URL in `.rigger/`[`DASH_URL_FILE`] for `rigger status`. The child's stdout
+/// is silenced (in the MCP `rigger serve` driver the parent's stdout is the protocol
+/// transport, which the dash child must never write to) and its stdin is closed; the dash
+/// logs only to its own stderr. Returns the guard plus the URL for the run-start pointer.
+fn spawn_run_dashboard() -> Result<(dash::ReapedChild, String), Box<dyn std::error::Error>> {
+    let port = dash::free_port_from(dash::DEFAULT_PORT)?;
+    let exe = std::env::current_exe()?;
+    let child = Command::new(exe)
+        .arg("dash")
+        .arg("--port")
+        .arg(port.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .spawn()?;
+    let url = format!("http://127.0.0.1:{port}/");
+    // Discoverability breadcrumb for `rigger status`; best-effort and overwritten each run.
+    // `.rigger/` already exists (the driver created it before reaching here).
+    let _ = std::fs::write(db_path(DASH_URL_FILE), &url);
+    Ok((dash::ReapedChild::new(child), url))
+}
+
+/// The URL of the dash a driver auto-started for THIS run, recorded in `.rigger/`[`DASH_URL_FILE`]
+/// (spec 19b, unit 1 discoverability). Absent when no driver started one (e.g. `rigger status`
+/// run before any run began), in which case `rigger status` shows no dashboard line. Purely a
+/// read: `rigger status` never starts or stops a dash.
+fn recorded_dash_url(loc: &StoreLocation) -> Option<String> {
+    let url = std::fs::read_to_string(loc.file(DASH_URL_FILE)).ok()?;
+    let url = url.trim().to_string();
+    (!url.is_empty()).then_some(url)
+}
+
 fn cmd_dash(args: &[String]) -> Res {
     // `--export <path>` and/or `--port <n>`; loopback only (no host flag by design).
     let mut export: Option<String> = None;
@@ -2906,8 +3550,10 @@ fn cmd_dash(args: &[String]) -> Res {
     let identity = project_identity();
     // The scratch root whose markers rigger stats to present each agent's liveness age (spec
     // 14). Resolved once; a repo-less invocation leaves it empty and the view omits ages.
-    let workdir = config::load(".")
-        .map(|c| c.workflow.defaults.workdir)
+    // The configured remediation bound (same config) sets the `#n/max` on a current-blocker
+    // `reject-recurrence` line so the dashboard and `rigger status` agree.
+    let (workdir, max_retries) = config::load(".")
+        .map(|c| (c.workflow.defaults.workdir, c.workflow.defaults.max_retries))
         .unwrap_or_default();
     let scratch_root = {
         let repo = git_repo();
@@ -2922,7 +3568,7 @@ fn cmd_dash(args: &[String]) -> Res {
     // what lets the dash start before the store exists and pick the run up once it does.
     let provider = move || -> Result<dash::DashInputs, String> {
         let events = dash_read_run(&events_db, &identity).map_err(|e| e.to_string())?;
-        let graph = dash_read_graph(&graph_db, &events);
+        let graph = dash_read_graph(&graph_db, &identity, &events);
         let run_id = runscope::current_run_id(&events).unwrap_or_default();
         let progress = dash_read_progress(&progress_db, &identity, &run_id);
         let liveness = dash_read_liveness(&events, &scratch_root, &run_id);
@@ -2933,14 +3579,14 @@ fn cmd_dash(args: &[String]) -> Res {
         Some(path) => {
             let (events, graph, progress, liveness) =
                 provider().map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
-            let html = dash::render_export(&events, &graph, &progress, &liveness)?;
+            let html = dash::render_export(&events, &graph, &progress, &liveness, max_retries)?;
             std::fs::write(&path, html)?;
             println!("wrote dash snapshot to {path}");
             Ok(())
         }
         None => {
             let addr = SocketAddr::from(([127, 0, 0, 1], port));
-            dash::serve(addr, provider)?;
+            dash::serve(addr, provider, max_retries)?;
             Ok(())
         }
     }
@@ -2966,7 +3612,7 @@ fn dash_read_run(
 /// `graph_db` (seeds via [`dash::graph_seeds`]). Best-effort: an absent graph (a grep-only
 /// run never builds one) or any query error yields an empty graph, so the rest of the dash
 /// still serves.
-fn dash_read_graph(graph_db: &str, events: &[Event]) -> contextgraph::Graph {
+fn dash_read_graph(graph_db: &str, identity: &str, events: &[Event]) -> contextgraph::Graph {
     if !Path::new(graph_db).exists() {
         return contextgraph::Graph::default();
     }
@@ -2974,7 +3620,7 @@ fn dash_read_graph(graph_db: &str, events: &[Event]) -> contextgraph::Graph {
     if seeds.is_empty() {
         return contextgraph::Graph::default();
     }
-    match Projector::open(graph_db) {
+    match Projector::open(graph_db, identity) {
         Ok(p) => p.subgraph(&seeds, 2).unwrap_or_default(),
         Err(_) => contextgraph::Graph::default(),
     }
@@ -3155,16 +3801,38 @@ fn cmd_symbols_index(args: &[String]) -> Res {
 /// per-project event store and the `graph.db` projector on the `conductor::STREAM`.
 /// A bad / non-object JSON payload is a clear error to stderr with a non-zero exit.
 fn cmd_emit(args: &[String]) -> Res {
-    let typ = args
+    // Optional `--spawn <id>`: stamp the emit with the EMITTING spawn's id
+    // ([`META_SPAWN`](conductor::META_SPAWN)) at RECORD time. A native courier's `rigger emit`
+    // is otherwise unattributable once the conductor replays it (the conductor never touched
+    // it), so the verdict-channel-mismatch backstop (spec 18, unit 3) could not tell a GATING
+    // adjudicator's OWN approve from a concurrent sibling's by position alone. The workflow
+    // threads the worker's own spawn id here, exactly as the cli emit callback and the workflow
+    // MCP server stamp their emits, so the recording the ReplayDriver later folds already
+    // names its emitting spawn and is correlated by identity, never a shared-stream position.
+    let mut spawn: Option<&str> = None;
+    let mut positional: Vec<&String> = Vec::new();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if a == "--spawn" {
+            spawn = Some(
+                it.next()
+                    .ok_or("emit: --spawn expects a spawn id: rigger emit --spawn <id> <type> '<json-object>'")?
+                    .as_str(),
+            );
+        } else {
+            positional.push(a);
+        }
+    }
+    let typ = positional
         .first()
-        .ok_or("emit: expected a type: rigger emit <type> '<json-object>'")?;
-    let json_arg = args
+        .ok_or("emit: expected a type: rigger emit [--spawn <id>] <type> '<json-object>'")?;
+    let json_arg = positional
         .get(1)
-        .ok_or("emit: expected a JSON object: rigger emit <type> '<json-object>'")?;
-    if args.len() > 2 {
+        .ok_or("emit: expected a JSON object: rigger emit [--spawn <id>] <type> '<json-object>'")?;
+    if positional.len() > 2 {
         return Err(format!(
             "emit: expected a type and a single JSON object, got {} arguments",
-            args.len()
+            positional.len()
         )
         .into());
     }
@@ -3184,11 +3852,23 @@ fn cmd_emit(args: &[String]) -> Res {
     let loc = require_store_dir()?;
     let backend = Store::open(&loc.file("events.db"))?;
     let store = Namespaced::new(&backend, &loc.identity());
-    let graph = Projector::open(&loc.file("graph.db"))?;
+    let graph = Projector::open(&loc.file("graph.db"), &loc.identity())?;
 
     // Same args shape the MCP tool receives, so emit_event - the shared core both
-    // surfaces call - behaves identically here and over MCP.
-    let tool_args = serde_json::json!({ "type": typ, "data": data });
+    // surfaces call - behaves identically here and over MCP. A non-empty `--spawn <id>`
+    // rides in `meta.spawn`, the same key the MCP server's `stamp_current_spawn` writes.
+    let mut tool_args = serde_json::json!({ "type": typ, "data": data });
+    if let Some(spawn) = spawn.filter(|s| !s.is_empty()) {
+        let mut meta = serde_json::Map::new();
+        meta.insert(
+            conductor::META_SPAWN.to_string(),
+            serde_json::Value::String(spawn.to_string()),
+        );
+        tool_args
+            .as_object_mut()
+            .expect("json! built an object")
+            .insert("meta".to_string(), serde_json::Value::Object(meta));
+    }
     let pos = mcpserver::emit_event(&store, conductor::STREAM, Some(&graph), &tool_args)?;
     println!("emitted {typ} (position {pos}) and folded it into the context graph");
     Ok(())
@@ -3281,9 +3961,11 @@ fn cmd_status(args: &[String]) -> Res {
     };
 
     // Liveness ages: rigger stats each in-flight spawn's marker IN RUST here (this is what
-    // the JS driver's haiku probe was reconstructing by proxy - unit 3 retires it).
-    let workdir = config::load(".")
-        .map(|c| c.workflow.defaults.workdir)
+    // the JS driver's haiku probe was reconstructing by proxy - unit 3 retires it). The
+    // configured remediation bound is read from the SAME config so the current-blocker
+    // classifier's `#n/max` line matches the depth the run actually escalates at.
+    let (workdir, max_retries) = config::load(".")
+        .map(|c| (c.workflow.defaults.workdir, c.workflow.defaults.max_retries))
         .unwrap_or_default();
     let repo = git_repo();
     let mut liveness_ages: std::collections::HashMap<String, u64> =
@@ -3307,30 +3989,172 @@ fn cmd_status(args: &[String]) -> Res {
         return Ok(());
     }
 
+    // The current-blocker line per unfinished unit (spec 19a, unit 1), from the shared
+    // classifier the dashboard also renders - so `rigger status` and the dashboard show
+    // the SAME lines. Computed even when no agent is parked, so an escalated unit or a
+    // budget halt (which have no live spawn) is still surfaced.
+    let blocker_lines = status_blocker_lines(run_events, max_retries)?;
+
+    // The auto-started dash's URL for this run (spec 19b, unit 1 discoverability): shown
+    // whenever a driver recorded one, even for an otherwise-quiet run, so an operator can
+    // always find the live observability page. Printed before the run summary so it appears
+    // in the "no agents in flight" case too.
+    if let Some(url) = recorded_dash_url(&loc) {
+        println!("dashboard: {url}");
+    }
+
     // Readable table. The blackout is visible as `last store event` age >> activity age.
     let short = |s: &str| s.chars().take(12).collect::<String>();
-    if view.is_empty() {
+    if view.is_empty() && blocker_lines.is_empty() {
         println!("run {}: no agents in flight", short(&run_id));
         return Ok(());
     }
-    let age = |s: Option<u64>| s.map(|s| format!("{s}s ago")).unwrap_or_else(|| "-".into());
-    println!("run {}: {} agent(s) in flight", short(&run_id), view.len());
-    for a in &view {
-        println!("  {} [{}]", a.id, a.stage);
-        println!(
-            "      doing: {} ({}) | heartbeat {} | last store event: {} ({})",
-            a.latest_activity
-                .as_deref()
-                .unwrap_or("(none reported yet)"),
-            age(a.activity_age_s),
-            a.liveness_age_s
-                .map(|s| format!("{s}s ago"))
-                .unwrap_or_else(|| "-".into()),
-            a.last_milestone.as_deref().unwrap_or("-"),
-            age(a.milestone_age_s),
-        );
+    if view.is_empty() {
+        println!("run {}: no agents in flight", short(&run_id));
+    } else {
+        let age = |s: Option<u64>| s.map(|s| format!("{s}s ago")).unwrap_or_else(|| "-".into());
+        println!("run {}: {} agent(s) in flight", short(&run_id), view.len());
+        for a in &view {
+            println!("  {} [{}]", a.id, a.stage);
+            println!(
+                "      doing: {} ({}) | heartbeat {} | last store event: {} ({})",
+                a.latest_activity
+                    .as_deref()
+                    .unwrap_or("(none reported yet)"),
+                age(a.activity_age_s),
+                a.liveness_age_s
+                    .map(|s| format!("{s}s ago"))
+                    .unwrap_or_else(|| "-".into()),
+                a.last_milestone.as_deref().unwrap_or("-"),
+                age(a.milestone_age_s),
+            );
+        }
+    }
+    if !blocker_lines.is_empty() {
+        println!("current blockers:");
+        for line in &blocker_lines {
+            println!("  {line}");
+        }
     }
     Ok(())
+}
+
+/// The current-blocker lines `rigger status` prints (spec 19a, unit 1): one line per
+/// unfinished unit, plus the run-level budget halt, from the SHARED
+/// [`blocker`](rigger::blocker) classifier the dashboard also renders. Pure over the
+/// run's event slice and the configured remediation bound, so it renders identically to
+/// the dashboard (which calls the same [`blocker::from_events`]) and is unit-testable
+/// without a store.
+fn status_blocker_lines(
+    run_events: &[Event],
+    configured_max_retries: u32,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    Ok(blocker::lines(&blocker::from_events(
+        run_events,
+        configured_max_retries,
+    )?))
+}
+
+/// `rigger reset --runs` (spec 21, unit 2) - drop the decisions and findings of every
+/// SUPERSEDED / dead run from the context graph, PRESERVING every `LessonLearned` and the
+/// active run's decisions and findings. It is the supported way to shed dead-run noise
+/// without deleting the whole store: the event log is untouched, so `rigger stats`, replay,
+/// and cross-run history stay intact - only the graph the grounder reads is pruned (there is
+/// no way to shed the noise today short of wiping `graph.db` wholesale).
+///
+/// This is pure orchestration over two single authorities: the disposition comes from the
+/// run-attribution primitive ([`superseded_graph_nodes`] over `run::run_attribution` +
+/// `run::current_run_id`), and the deletion is the graph-mutation primitive
+/// ([`Projector::prune`]). ONE whole-stream forward read feeds the attribution AND the
+/// node-id lookup (the index-keying contract `run_attribution` documents - a filtered slice
+/// would misattribute); the derived node ids are then handed to the prune.
+fn cmd_reset(args: &[String]) -> Res {
+    // `--runs` is the only mode today; require it explicitly so a bare `rigger reset` never
+    // silently prunes and a future `reset` mode stays unambiguous.
+    match args {
+        [flag] if flag == "--runs" => {}
+        [] => return Err("reset: expected --runs: rigger reset --runs".into()),
+        _ => return Err(format!("reset: expected only --runs, got {}", args.join(" ")).into()),
+    }
+
+    let loc = require_store_dir()?;
+    let backend = Store::open(&loc.file("events.db"))?;
+    let store = Namespaced::new(&backend, &loc.identity());
+    // ONE whole-stream forward read: it feeds BOTH the attribution and the per-index node-id
+    // lookup inside `superseded_graph_nodes`, honoring run_attribution's whole-stream contract.
+    let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+    let drop = superseded_graph_nodes(&events);
+
+    let graph = Projector::open(&loc.file("graph.db"), &loc.identity())?;
+    let removed = graph.prune(&drop)?;
+    println!(
+        "reset --runs: pruned {removed} dead-run node(s) from the context graph \
+         (every lesson and the active run preserved; the event log is untouched)"
+    );
+    Ok(())
+}
+
+/// The decision and finding graph-node ids `rigger reset --runs` drops (spec 21, unit 2):
+/// every provenance node that is NEITHER the active run's NOR a lesson - a superseded run's
+/// decision/finding, or a pre-boundary one recorded before the first `RunStarted`. Pure over
+/// the whole run stream, reusing the SINGLE run-attribution authority
+/// (`run::run_attribution` + `run::current_run_id`) - never a second inline boundary scan.
+///
+/// `events` MUST be the whole [`conductor::STREAM`] in forward order, exactly as
+/// `run_attribution` and `current_run_id` require: the attribution keys by an event's INDEX
+/// in this slice, so each node id is read back from `events[i]`'s own body (the `id` field
+/// the projector folds the node under) - one whole-stream read feeds both the attribution and
+/// the id lookup, never two different slices.
+///
+/// The keep invariant is enforced by SUBTRACTION, not by skipping live indices: a decision or
+/// finding id can be recorded in BOTH a dead run AND the active run (id reuse across runs), so
+/// the same graph node has one index attributed dead and another attributed live. We collect
+/// the active run's node ids into a keep set and return `drop_candidates` MINUS that keep set,
+/// so a reused id is PRESERVED (closes the active-node-pruned-on-cross-run-id-reuse hazard) -
+/// dropping a candidate index alone would delete the shared node the active run still needs.
+/// Returns a sorted, de-duplicated list (determinism is a spec-21 constraint), leaving every
+/// `LessonLearned` (exempt) and every active-run node out of the drop set.
+fn superseded_graph_nodes(events: &[Event]) -> Vec<String> {
+    use std::collections::BTreeSet;
+    let attribution = runscope::run_attribution(events);
+    let active = runscope::current_run_id(events);
+    let mut drop_candidates: BTreeSet<String> = BTreeSet::new();
+    let mut keep: BTreeSet<String> = BTreeSet::new();
+    for (&i, run_of) in &attribution {
+        // A lesson is exempt (kept by its own rule, never "live" and never dropped).
+        if matches!(run_of, runscope::RunOf::Lesson) {
+            continue;
+        }
+        // Skip a malformed / empty-id body exactly as the projector's own fold skips it, so a
+        // corrupt event never contributes a bogus id to either set.
+        let Some(id) = graph_node_id(&events[i]) else {
+            continue;
+        };
+        // The active run's node ids are live and must be KEPT; everything else - a superseded
+        // run's node, or a pre-boundary one - is a drop CANDIDATE. A single id can land in both
+        // sets when it is reused across a dead run and the active run.
+        if run_of.is_live(active.as_deref()) {
+            keep.insert(id);
+        } else {
+            drop_candidates.insert(id);
+        }
+    }
+    // Subtract the active run's kept ids: a node id present in BOTH a dead run and the active
+    // run must be PRESERVED (dropping its dead-run index alone would delete the shared node the
+    // active run still needs). The difference of two `BTreeSet`s iterates sorted, so the result
+    // is deterministic (a spec-21 constraint).
+    drop_candidates.difference(&keep).cloned().collect()
+}
+
+/// The graph-node id the projector folds a `DecisionMade` / `ReviewFinding` event under: the
+/// `id` field of its JSON body (the exact key `contextgraph`'s fold reads, verbatim - the
+/// decision/finding id is never alias-resolved). `None` for a malformed body or a
+/// missing/empty id, so a corrupt event is skipped exactly as the projector's own fold skips
+/// it, never dropping an unrelated node.
+fn graph_node_id(e: &Event) -> Option<String> {
+    let body: serde_json::Value = serde_json::from_slice(&e.data).ok()?;
+    let id = body.get("id")?.as_str()?;
+    (!id.is_empty()).then(|| id.to_string())
 }
 
 /// `rigger peers [<file> ...]` - print the peer decisions, lessons, and review findings
@@ -3366,10 +4190,7 @@ fn cmd_peers(args: &[String]) -> Res {
     let lessons = result["lessons"].as_array().cloned().unwrap_or_default();
     let findings = result["findings"].as_array().cloned().unwrap_or_default();
     for d in &decisions {
-        let id = d["id"].as_str().unwrap_or_default();
-        let summary = d["summary"].as_str().unwrap_or_default();
-        let governs = json_str_array(&d["governs"]);
-        println!("decision {id} | {summary} | governs: {governs}");
+        println!("{}", peer_decision_line(d));
     }
     for l in &lessons {
         let id = l["id"].as_str().unwrap_or_default();
@@ -3385,6 +4206,24 @@ fn cmd_peers(args: &[String]) -> Res {
         println!("finding {id} | by {by} | {summary} | about: {about}");
     }
     Ok(())
+}
+
+/// Render one `rigger peers` decision line, labeling its provenance LIVE (from the
+/// active run) or HISTORICAL (a superseded run, or pre-boundary) from the `live` flag the
+/// side-car derived via the single c1 run attribution (spec 21, unit 3). The label makes
+/// a prior run's decision legible instead of alarming; grounding still surfaces cross-run
+/// decisions unchanged. A missing/false `live` flag renders HISTORICAL - the conservative
+/// default that matches the side-car's own default.
+fn peer_decision_line(d: &serde_json::Value) -> String {
+    let id = d["id"].as_str().unwrap_or_default();
+    let summary = d["summary"].as_str().unwrap_or_default();
+    let governs = json_str_array(&d["governs"]);
+    let provenance = if d["live"].as_bool().unwrap_or(false) {
+        "LIVE"
+    } else {
+        "HISTORICAL"
+    };
+    format!("decision {id} | {provenance} | {summary} | governs: {governs}")
 }
 
 /// Join a JSON array of strings into a comma-separated list for a `rigger peers`
@@ -3609,27 +4448,143 @@ fn cmd_result(args: &[String]) -> Res {
     } else {
         "result"
     };
-    if parsed.if_absent {
+    // The position an append actually landed at, or `None` when `--if-absent` was a no-op
+    // (a result already stood, so a prior `rigger result` already folded it - see the fold
+    // below). Only a real append is folded into the graph.
+    let recorded = if parsed.if_absent {
         // Conditional atomic record: write only if the spawn is still unanswered, never
         // overwriting an existing result. A no-op (a result already stood) is a success,
         // so the courier's `|| ...`-free single command always exits 0.
         match spawn::record_result_if_absent(&store, &res)? {
-            Some(pos) => println!("recorded {kind} for {} (position {pos})", res.id),
-            None => println!(
-                "{} already has a result; --if-absent left it untouched",
-                res.id
-            ),
+            Some(pos) => {
+                println!("recorded {kind} for {} (position {pos})", res.id);
+                Some(pos)
+            }
+            None => {
+                println!(
+                    "{} already has a result; --if-absent left it untouched",
+                    res.id
+                );
+                None
+            }
         }
     } else {
         let pos = spawn::record_result(&store, &res)?;
         println!("recorded {kind} for {} (position {pos})", res.id);
+        Some(pos)
+    };
+
+    // Disposition-expiry (spec 25, criterion 1): fold the just-recorded result into this run's
+    // context graph, EXACTLY as `rigger emit` folds an emitted event (see [`cmd_emit`] /
+    // [`mcpserver::emit_event`]). The adjudicator's recorded `SpawnResult` is the ONLY place a
+    // review's findings are disposed: the `TYPE_SPAWN_RESULT` fold arm reads its verdict line's
+    // `discarded` ids (through the single [`spawn::SpawnResult::adjudication`] authority) and
+    // invalidates those findings' graph edges, so grounding stops surfacing them. Without this
+    // fold the arm is inert in production - the courier appends the verdict to `events.db` but
+    // nothing ever folds a `SpawnResult` into the persistent `graph.db`, so a discarded finding
+    // is never pruned. Only an adjudicator result disposes anything (`adjudication` self-gates
+    // on the adjudicator role and returns `None` otherwise), so folding EVERY recorded result
+    // is safe: a plain worker/courier result folds to nothing.
+    //
+    // Best-effort, and AFTER the durable append (mirroring `emit_event`): the record already
+    // landed in the log, so a graph open/fold failure must NEVER fail a result the log holds -
+    // the graph is a rebuildable projection, the log is the source of truth. A `--if-absent`
+    // no-op appended nothing, so there is nothing new to fold (the prior record already did).
+    if let Some(pos) = recorded {
+        fold_recorded_result_into_graph(&loc, &res, pos);
     }
+
+    // Per-spawn scratch reclamation (spec 34, criterion 1): the moment this spawn's result is
+    // recorded - for ANY outcome (a success, a reject verdict, an `--error`, or a
+    // liveness/infra fault, all of which reach the store through THIS courier) - reclaim the
+    // dedicated scratch dir rigger assigned it under `.rigger/tmp`. `cmd_result` only ever
+    // runs for the spawn being reported, so a spawn with no recorded result is never touched
+    // (the "keeps its scratch" half of the criterion, by construction). Reclaimed even on a
+    // `--if-absent` no-op: a result already stood, so a prior `rigger result` already
+    // reclaimed it and reclaiming an already-gone path is a graceful no-op. Best-effort - the
+    // record already landed durably, so scratch reclamation may never fail a recorded result.
+    reclaim_spawn_scratch(&loc, &prior, &res.id);
     Ok(())
 }
 
-fn cmd_validate() -> Res {
+/// Reclaim the per-spawn scratch dir [`spawn_scratch_path`] assigned spawn `spawn_id`,
+/// resolving the scratch root and run id the SAME way the assignment (the replay driver's
+/// park) did so the reclaim targets the exact path the run created (spec 34, criterion 1).
+///
+/// Entirely best-effort and platform-tolerant: the result already landed durably in
+/// `events.db`, so neither resolving the root nor removing the dir may surface an error that
+/// fails a recorded result, and an already-gone path is a graceful no-op.
+/// [`reap_then_remove_dir`] reaps any process still rooted under the scratch (spec 23) before
+/// removing it, so a build a hung worker left running never outlives its now-deleted cwd.
+fn reclaim_spawn_scratch(loc: &StoreLocation, prior: &[Event], spawn_id: &str) {
+    let Some(repo) = loc.dir.parent().and_then(|p| p.to_str()) else {
+        return;
+    };
+    // The run's scratch root by the SAME precedence the run assigned the path with
+    // (`scratch_root_from_env`: RIGGER_TMPDIR > `defaults.workdir` > the `<repo>/.rigger/tmp`
+    // default). The courier inherits the run's `RIGGER_TMPDIR`; `workdir` loads best-effort,
+    // falling back to the repo default when the config is momentarily unreadable (the
+    // overwhelming common placement). The read-only `_path_` resolver never conjures a root.
+    let workdir = config::load(repo)
+        .map(|c| c.workflow.defaults.workdir)
+        .unwrap_or_default();
+    let scratch_root = rigger::worktree::scratch_root_path_from_env(repo, &workdir);
+    let run_id = runscope::current_run_id(prior).unwrap_or_default();
+    reap_then_remove_dir(&spawn_scratch_path(&scratch_root, &run_id, spawn_id));
+}
+
+/// Fold a just-recorded [`spawn::SpawnResult`] into the run's context graph at its recorded
+/// `position`, so an adjudicator verdict that disposes a review's findings invalidates their
+/// graph edges (the `contextgraph` `TYPE_SPAWN_RESULT` fold arm). This is the result-channel
+/// analogue of the emit-channel fold [`mcpserver::emit_event`] performs: rebuild the appended
+/// event, stamp it with the position the append returned, and `apply` it to the SAME `graph.db`
+/// the resolved store owns (`loc.file("graph.db")`, exactly as [`cmd_emit`] co-locates it).
+///
+/// Entirely best-effort: the record already landed durably in `events.db`, so neither opening
+/// the projector nor applying the fold may surface an error that fails a recorded result. A
+/// serialize failure (unreachable for a result that just serialized to append) or a graph I/O
+/// failure is swallowed - the log stays the source of truth and the graph re-derives on the
+/// next fold or rebuild.
+fn fold_recorded_result_into_graph(
+    loc: &StoreLocation,
+    res: &spawn::SpawnResult,
+    pos: rigger::eventstore::Position,
+) {
+    let Ok(mut event) = res.to_event() else {
+        return;
+    };
+    event.position = pos;
+    if let Ok(graph) = Projector::open(&loc.file("graph.db"), &loc.identity()) {
+        let _ = graph.apply(&event);
+    }
+}
+
+fn cmd_validate(args: &[String]) -> Res {
     let root = Path::new(".");
+    // Optional `<spec>` path (spec 18, Unit 4): emit heuristic spec-shape advisories that
+    // name the rule and recommend the fix. These are ADVISORY - they never change the exit
+    // status - so a badly-shaped criterion is surfaced, not refused. Run before config
+    // validation so a spec can be linted from a fresh checkout whose rigger config is not
+    // yet valid; an unreadable spec path is still an input error (the lint is heuristic,
+    // but "you named a spec that does not exist" is not).
+    if let Some(spec_path) = args.first() {
+        let text = std::fs::read_to_string(spec_path)
+            .map_err(|e| format!("read spec {spec_path}: {e}"))?;
+        for advisory in spec::spec_shape_advisories(&text) {
+            eprintln!("warning: spec {spec_path}: {advisory}");
+        }
+    }
     let cfg = config::load(".")?;
+    // Static verdict-line lint (spec 18, unit 1): a gating adjudicator whose persona only
+    // records its verdict via `rigger_emit` - never on its result output - is a guaranteed
+    // stall, because the integration gate reads the result channel, not emitted events. This
+    // is a HARD error (deterministic hang) that names the fix, so `rigger validate` refuses a
+    // config that would silently ferment into an escalation loop.
+    config::lint_gating_verdict_lines(&cfg)?;
+    // Surface the running binary's version + build provenance (spec 18) so an agent driving
+    // `rigger validate` can identify the exact binary - the same provenance the drift
+    // advisory below uses to name which side is stale.
+    println!("{}", version_line());
     println!(
         "config valid: {} agents, {} stages, {} gates",
         cfg.agents.len(),
@@ -3640,6 +4595,13 @@ fn cmd_validate() -> Res {
     // not discovered by accident. Each is a stderr warning that never changes the exit
     // status - `rigger validate` still succeeds so long as the config itself is valid.
     for advisory in validate_advisories(root) {
+        eprintln!("{advisory}");
+    }
+    // Unbounded wall-clock advisory (spec 19c, unit 3): warn when `defaults.max_wall_clock`
+    // is unbounded and a gating role carries no per-agent bound, so a hung gating agent that
+    // is never swept - a silent stall - is visible at author time. Non-fatal like the others;
+    // reuses the single `config::gating_agent_ids` authority the verdict-line lint uses.
+    if let Some(advisory) = config::unbounded_wall_clock_advisory(&cfg) {
         eprintln!("{advisory}");
     }
     // Residue surfacing (spec 06, unit 6 / Gap 14d): report leftover scratch worktrees,
@@ -3657,6 +4619,18 @@ fn cmd_validate() -> Res {
         if let Some(advisory) = model_drift_advisory(&drift) {
             eprintln!("{advisory}");
         }
+    }
+    // Docs-drift GATE (spec 20, unit 2): the committed `using-rigger` skill and handbook
+    // discipline chapter are generated by `rigger docs` from the same code facts this binary
+    // runs on. When a source fact or a template changes, a fresh render diverges from the
+    // committed copy - so re-render here and, UNLIKE the warning advisories above, FAIL
+    // LOUDLY (a non-zero exit, surfaced by `main`) when the committed docs no longer match,
+    // naming the drifted files and the `rigger docs` fix. This is what makes the discipline
+    // STAY accurate rather than merely start accurate. Runs last so the config summary and the
+    // soft advisories are still seen before the hard failure. Absent files are skipped, so an
+    // operator project that never carries rigger's own committed docs still passes validate.
+    if let Some(failure) = docs_drift_failure(root) {
+        return Err(failure.into());
     }
     Ok(())
 }
@@ -3679,13 +4653,15 @@ fn validate_advisories(root: &Path) -> Vec<String> {
              Run `rigger setup` (or `rigger init`) to mint a durable id, then commit it."
         ));
     }
-    if installed_workflow_drifted(root) {
-        advisories.push(format!(
-            "warning: the installed /rigger workflow ({}) has drifted from this rigger \
-             binary's embedded copy. Run `rigger setup` to refresh it so the workflow and \
-             the binary that drives it stay the same build.",
-            workflow_path(root).display()
-        ));
+    // Workflow-drift diagnostic (spec 18, criterion 9): when the installed workflow differs
+    // from this binary's embedded copy, name WHICH side is stale (the installed workflow vs
+    // the binary) using the embedded build provenance and give the directive fix, rather
+    // than an ambiguous "they differ". The binary's provenance and the git ancestry oracle
+    // are wired here at the edge; the decision itself is the pure [`drift_side`].
+    if let Some(advisory) =
+        workflow_drift_advisory(root, BUILD_PROVENANCE, |a, b| git_is_ancestor(root, a, b))
+    {
+        advisories.push(advisory);
     }
     if let Some(dirty) = uncommitted_rigger_advisory(root) {
         advisories.push(dirty);
@@ -3705,6 +4681,124 @@ fn installed_workflow_drifted(root: &Path) -> bool {
         Ok(bytes) => bytes != RIGGER_WORKFLOW.as_bytes(),
         Err(_) => false, // absent or unreadable: no installed workflow to surface drift for
     }
+}
+
+/// The sidecar that records WHICH build's `rigger setup` last wrote the installed
+/// workflow, stored beside it as `.claude/workflows/.rigger-workflow-provenance`. The
+/// drift diagnostic reads it (see [`workflow_drift_advisory`]) to name which side of a
+/// workflow drift is stale. Absent for a workflow written by a build that predates this
+/// recording - the diagnostic then falls back to the refresh directive.
+fn workflow_provenance_path(root: &Path) -> std::path::PathBuf {
+    workflow_path(root).with_file_name(".rigger-workflow-provenance")
+}
+
+/// The build provenance recorded for the installed workflow (the build whose `rigger
+/// setup` last wrote it), or `None` when no sidecar is present (an older install, or none).
+/// Trimmed so a trailing newline never defeats the comparison against [`BUILD_PROVENANCE`].
+fn installed_workflow_provenance(root: &Path) -> Option<String> {
+    let raw = std::fs::read_to_string(workflow_provenance_path(root)).ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+/// Whether commit `ancestor` is an ancestor of commit `descendant` in the git repository
+/// rooted at `root`: `Some(true)`/`Some(false)` when git can decide, `None` when it cannot
+/// (git unavailable, not a repo, or either id unresolvable - e.g. an operator project that
+/// does not carry rigger's history). Uses `git merge-base --is-ancestor`, whose exit status
+/// is 0 for an ancestor and 1 otherwise; any other status is treated as undecidable. This
+/// is the ordering oracle the [`drift_side`] decision injects, so the pure decision stays
+/// testable in both directions without a live repo.
+fn git_is_ancestor(root: &Path, ancestor: &str, descendant: &str) -> Option<bool> {
+    let status = Command::new("git")
+        .args(["merge-base", "--is-ancestor", ancestor, descendant])
+        .current_dir(root)
+        .status()
+        .ok()?;
+    match status.code() {
+        Some(0) => Some(true),
+        Some(1) => Some(false),
+        _ => None,
+    }
+}
+
+/// Which side of an installed-vs-embedded workflow drift is stale (spec 18, criterion 9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DriftSide {
+    /// The installed workflow is from a NEWER build than this binary: the binary is stale
+    /// (rebuild it).
+    BinaryStale,
+    /// The installed workflow is older than - or was hand-edited away from - this binary's
+    /// embedded copy: the workflow is stale (`rigger setup` to refresh it).
+    WorkflowStale,
+}
+
+/// Decide which side of a workflow drift is stale from the two builds' provenance, using an
+/// injected ancestry oracle so the decision is pure and testable in both directions. Names
+/// the BINARY as stale ONLY when the installed workflow's build is provably newer (this
+/// binary's build is a proper ancestor of it). Every other case (the installed build equals
+/// this binary from a local hand-edit, no recorded provenance, or an undecidable order)
+/// resolves to the actionable refresh directive, so the diagnostic is never the ambiguous
+/// "they differ".
+fn drift_side(
+    installed_provenance: Option<&str>,
+    binary_provenance: &str,
+    is_ancestor: impl Fn(&str, &str) -> Option<bool>,
+) -> DriftSide {
+    match installed_provenance {
+        Some(installed)
+            if installed != binary_provenance
+                && is_ancestor(binary_provenance, installed) == Some(true) =>
+        {
+            DriftSide::BinaryStale
+        }
+        _ => DriftSide::WorkflowStale,
+    }
+}
+
+/// The workflow-drift advisory (spec 18, criterion 9): when the installed `/rigger` workflow
+/// differs from this binary's embedded copy, name WHICH side is stale using the build
+/// provenance and give the directive fix (rebuild the binary vs `rigger setup`), never an
+/// ambiguous "they differ". `None` when there is no drift. `binary_provenance` and the
+/// ancestry oracle are injected so the message is testable for both drift directions without
+/// a live git repo; the composition root wires [`BUILD_PROVENANCE`] and [`git_is_ancestor`].
+fn workflow_drift_advisory(
+    root: &Path,
+    binary_provenance: &str,
+    is_ancestor: impl Fn(&str, &str) -> Option<bool>,
+) -> Option<String> {
+    if !installed_workflow_drifted(root) {
+        return None;
+    }
+    let path = workflow_path(root);
+    let installed_provenance = installed_workflow_provenance(root);
+    Some(
+        match drift_side(
+            installed_provenance.as_deref(),
+            binary_provenance,
+            is_ancestor,
+        ) {
+            DriftSide::BinaryStale => format!(
+                "warning: the installed /rigger workflow ({}) is from a newer build ({}) than \
+                 this rigger binary (build {}); the binary is stale. Rebuild rigger so the \
+                 workflow and the binary that drives it are the same build.",
+                path.display(),
+                installed_provenance.as_deref().unwrap_or("a newer build"),
+                binary_provenance,
+            ),
+            DriftSide::WorkflowStale => format!(
+                "warning: the installed /rigger workflow ({}) has drifted from this rigger \
+                 binary's embedded copy (build {}); the installed workflow is stale. Run \
+                 `rigger setup` to refresh it so the workflow and the binary that drives it \
+                 are the same build.",
+                path.display(),
+                binary_provenance,
+            ),
+        },
+    )
 }
 
 /// Advisory naming the tracked `.rigger/` files that carry uncommitted modifications, or
@@ -3826,7 +4920,42 @@ fn residue_advisories(root: &Path, cfg: &config::Config) -> Vec<String> {
         &local_branches,
         &run_units.live_branches,
     );
-    format_residue(&report)
+    let mut advisories = format_residue(&report);
+    // Leaked-process advisory (spec 23, unit 2): any process still rooted under the SAME
+    // resolved scratch root, warning-only like the residue block above. Reuses the `scratch`
+    // path already resolved here and the shared scan authority - no second resolver, no second
+    // scan - so a process left holding a now-deleted (or soon-to-be-removed) scratch dir is
+    // visible even when no teardown is running.
+    advisories.extend(leaked_process_advisories(&scratch));
+    advisories
+}
+
+/// The warning-only `rigger validate` advisories (spec 23, unit 2) naming every process still
+/// rooted under the scratch root: a leak the teardown reap missed, or a process left running
+/// while no teardown is active. ONE advisory per process, each naming its pid and command, so
+/// an operator can see and reclaim it - surfaced only, like the residue block, never a hard
+/// failure and never a kill (the teardown reap in `src/worktree.rs` / `cmd_step` is the only
+/// kill). Empty when nothing is rooted there; and because the shared scan authority
+/// ([`rigger::reap::processes_rooted_under`] - the SAME one the teardown reap consumes) returns
+/// empty where the dir or `/proc` is absent, this is a graceful no-op (empty, never an error)
+/// on a platform without `/proc` too.
+fn leaked_process_advisories(scratch_root: &Path) -> Vec<String> {
+    rigger::reap::processes_rooted_under(scratch_root)
+        .into_iter()
+        .map(|(pid, command)| {
+            let named = if command.is_empty() {
+                format!("pid {pid}")
+            } else {
+                format!("pid {pid} ({command})")
+            };
+            format!(
+                "warning: process rooted under the scratch root (surfaced only - validate \
+                 never reaps it): {named} - its cwd is under {}; it outlives a dir rigger owns \
+                 until the next teardown or step reaps it.",
+                scratch_root.display()
+            )
+        })
+        .collect()
 }
 
 /// The CURRENT run's unit liveness, read from the run store the SAME way the couriers do
@@ -3894,6 +5023,65 @@ fn live_slugs(
         .iter()
         .filter_map(|b| b.strip_prefix("rigger/u/").map(str::to_string))
         .collect()
+}
+
+/// Orphan-sweep backstop (spec 34, criterion 2): reclaim every scratch entry under `root`
+/// that NO live unit of the current run owns - the ownership backstop that makes the
+/// clean-up guarantee independent of agent goodwill. Two shapes are reclaimed: a
+/// `rigger-wt-<slug>` worktree and a `cargo-target-<slug>` per-unit build cache (Gap 19)
+/// whose `<slug>` names no live unit - a prior run's killed-process leftover, or an ad-hoc
+/// `cargo-target-<slug>` an agent wrote outside its assigned path (the unbounded per-agent
+/// build-cache leak spec 34 names). Both are removed only when they are NOT live-owned,
+/// decided by the SAME [`worktree_belongs_to_live`] predicate `rigger validate`'s residue
+/// report reads over the current run's [`RunUnits`] - one definition of "live-owned", not a
+/// parallel notion.
+///
+/// The never-delete-live-owned invariant (spec 34 Global Constraint) is what the liveness key
+/// buys: a LIVE unit's worktree/cache is spared, and so are the shared live-spawn areas this
+/// backstop deliberately never touches - `agent-scratch` (probe repos and verify builds an
+/// in-flight worker parks there), `agent-live` (per-spawn liveness markers), and the bare
+/// shared `cargo-target`/`target` a live spawn may still be building into (the driver's
+/// `CARGO_TARGET_DIR`). Those are run-level scratch reclaimed by the run's fixpoint/teardown
+/// once no spawn is live, never by this per-step backstop, so it can never delete a target a
+/// running build is writing. Best-effort per entry: a failed reclaim never aborts the sweep.
+/// Returns how many entries were reclaimed.
+fn reclaim_orphan_scratch(repo: &str, root: &str, run_units: &RunUnits) -> usize {
+    let live = live_slugs(&run_units.live_branches);
+    let mut removed = 0;
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return 0;
+    };
+    for entry in entries.flatten() {
+        let Ok(ft) = entry.file_type() else { continue };
+        if !ft.is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let path = entry.path();
+        if name.starts_with(rigger::worktree::UNIT_WORKTREE_PREFIX) {
+            // A leftover unit worktree no live unit owns. Reap any process still rooted in it
+            // (a leaked build) BEFORE removing it, and deregister it from git if a killed step
+            // left it registered.
+            if !worktree_belongs_to_live(&name, &live, &run_units.dead_slugs) {
+                reap_then_remove_worktree(repo, &path);
+                removed += 1;
+            }
+        } else if let Some(slug) = name.strip_prefix(rigger::worktree::UNIT_CACHE_PREFIX) {
+            // A per-unit / ad-hoc `cargo-target-<slug>` cache. Mirror the worktree liveness
+            // check on the reconstructed `rigger-wt-<slug>` name so a cache stays in lockstep
+            // with its unit's liveness (a live unit's cache is in use, not residue). A bare
+            // `cargo-target` (no `-<slug>` tail) never matches this prefix and is spared.
+            let wt = format!("{}{slug}", rigger::worktree::UNIT_WORKTREE_PREFIX);
+            if !worktree_belongs_to_live(&wt, &live, &run_units.dead_slugs) {
+                reap_then_remove_dir(&path);
+                removed += 1;
+            }
+        }
+        // Any other entry (agent-scratch, agent-live, a bare cargo-target/target, a review
+        // worktree) is either a live-shared area or not rigger's slug-keyed scratch: spared
+        // here and reclaimed, if ever, by the run-level fixpoint/teardown - never this backstop.
+    }
+    removed
 }
 
 /// The local `rigger/u/*` branches in the repo governing `cwd`, via `git for-each-ref`.
@@ -4279,6 +5467,27 @@ fn print_scaffold_pointer() {
     );
 }
 
+/// Print the end-of-setup orientation block: the three ways to drive a run, so an operator
+/// who just provisioned the project discovers them without grepping the docs (spec 19a unit
+/// 2). Names the blessed native `/rigger <spec>` path (chosen from the `/workflows` menu),
+/// the read-only dashboard (`rigger dash`, on `127.0.0.1:<dash::DEFAULT_PORT>` - the port is
+/// single-sourced from the constant so this line and the fixture that asserts it cannot
+/// drift), and `rigger workflow` / `rigger run` as the headless twins that drive the same
+/// loop without an editor. Output text only; the dashboard's runtime behavior is spec 19b's.
+fn print_orientation() {
+    println!("to drive a run, three ways:");
+    println!(
+        "  /rigger <spec>                 the blessed native path (choose it from /workflows)"
+    );
+    println!(
+        "  rigger dash                    a read-only live dashboard at http://127.0.0.1:{}",
+        dash::DEFAULT_PORT
+    );
+    println!(
+        "  rigger workflow / rigger run   the headless twins (the same loop without an editor)"
+    );
+}
+
 /// Write a .gitignore entry for the given pattern if it is not already ignored or
 /// tracked, returning whether it APPENDED an entry (`true`) or left `.gitignore`
 /// untouched (`false`). Idempotent: a rerun finds the entry already present and is a
@@ -4432,51 +5641,416 @@ fn shim_dir(root: &Path) -> std::path::PathBuf {
     root.join(RIGGER_DIR).join("shim")
 }
 
-/// What [`install_workflow`] did to `.claude/workflows/rigger.js`, so `rigger setup`
-/// can REPORT a refresh but stay a silent no-op when nothing drifted (spec 05,
-/// criterion 4: setup is re-runnable - it detects and refreshes a drifted installed
-/// workflow, reports the refresh, and changes nothing when the workflow is current).
+/// What an install step did to a file it manages under the project root (the `/rigger`
+/// workflow or the `using-rigger` skill), so `rigger setup` can REPORT a refresh but stay
+/// a silent no-op when nothing drifted (spec 05, criterion 4: setup is re-runnable - it
+/// detects and refreshes a drifted installed file, reports the refresh, and changes
+/// nothing when the file is already current).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum WorkflowInstall {
-    /// No workflow was installed before; the embedded copy was written fresh.
+enum InstallOutcome {
+    /// No file was installed before; the managed copy was written fresh.
     Installed,
-    /// An installed workflow had DRIFTED from the embedded copy (e.g. an older
-    /// `rigger` build wrote it) and was refreshed to match this binary.
+    /// An installed file had DRIFTED from the managed copy (e.g. an older `rigger` build
+    /// wrote it, or a hand-edit) and was refreshed to match this binary.
     Refreshed,
-    /// The installed workflow already matched the embedded copy byte-for-byte, so
-    /// nothing was written - a rerun changes nothing (not even the file's mtime,
-    /// which the grounder keys off).
+    /// The installed file already matched the managed copy byte-for-byte, so nothing was
+    /// written - a rerun changes nothing (not even the file's mtime, which the grounder
+    /// keys off).
     AlreadyCurrent,
 }
 
-/// Install (or refresh) the native `/rigger` Claude Code workflow at
-/// `<root>/.claude/workflows/rigger.js`, returning [what it did](WorkflowInstall).
-///
-/// It COMPARES the installed file against the embedded [`RIGGER_WORKFLOW`] and writes
-/// ONLY when the file is absent (a fresh install) or has drifted (a stale copy from an
-/// older `rigger` build): an up-to-date workflow is left untouched so a `rigger setup`
-/// rerun is a true no-op. A drifted file is overwritten so an upgrade refreshes the
-/// workflow to match the binary - the workflow and the conductor / CLI it drives stay
-/// the same build. Claude Code auto-discovers `.js` here, so the user can run `/rigger
-/// <spec>` immediately, with no registration. Rooted at `root` so it is testable
-/// against a temp dir. The installed path is [`workflow_path`]`(root)`.
-fn install_workflow(root: &Path) -> Result<WorkflowInstall, Box<dyn std::error::Error>> {
-    let path = workflow_path(root);
+/// Write `contents` to `path` ONLY when it is absent or differs, returning [what it
+/// did](InstallOutcome). A byte-identical file is left untouched so a `rigger setup` rerun
+/// is a true no-op: rewriting identical content would still bump the file's mtime, an
+/// observable side effect (the grounder's staleness gate keys off mtime). Parent
+/// directories are created so a fresh checkout installs cleanly. This is the SINGLE
+/// authority for the compare-then-write-if-changed install step, shared by
+/// [`install_workflow`] and [`install_skill`] so the two installs cannot drift in how they
+/// detect and report a no-op.
+fn install_file_if_changed(
+    path: &Path,
+    contents: &[u8],
+) -> Result<InstallOutcome, Box<dyn std::error::Error>> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    // Compare bytes so a byte-identical installed workflow is left in place - rewriting
-    // identical content would still bump the file's mtime, which is an observable side
-    // effect (the grounder's staleness gate keys off mtime), not a true no-op.
     let existed = path.exists();
-    if existed && std::fs::read(&path)? == RIGGER_WORKFLOW.as_bytes() {
-        return Ok(WorkflowInstall::AlreadyCurrent);
+    if existed && std::fs::read(path)? == contents {
+        return Ok(InstallOutcome::AlreadyCurrent);
     }
-    std::fs::write(&path, RIGGER_WORKFLOW)?;
+    std::fs::write(path, contents)?;
     Ok(if existed {
-        WorkflowInstall::Refreshed
+        InstallOutcome::Refreshed
     } else {
-        WorkflowInstall::Installed
+        InstallOutcome::Installed
+    })
+}
+
+/// Install (or refresh) the native `/rigger` Claude Code workflow at
+/// `<root>/.claude/workflows/rigger.js`, returning [what it did](InstallOutcome).
+///
+/// It COMPARES the installed file against the embedded [`RIGGER_WORKFLOW`] (via
+/// [`install_file_if_changed`]) and writes ONLY when the file is absent (a fresh install)
+/// or has drifted (a stale copy from an older `rigger` build): an up-to-date workflow is
+/// left untouched so a `rigger setup` rerun is a true no-op. A drifted file is overwritten
+/// so an upgrade refreshes the workflow to match the binary - the workflow and the
+/// conductor / CLI it drives stay the same build. Claude Code auto-discovers `.js` here,
+/// so the user can run `/rigger <spec>` immediately, with no registration. Rooted at
+/// `root` so it is testable against a temp dir. The installed path is
+/// [`workflow_path`]`(root)`.
+fn install_workflow(root: &Path) -> Result<InstallOutcome, Box<dyn std::error::Error>> {
+    let outcome = install_file_if_changed(&workflow_path(root), RIGGER_WORKFLOW.as_bytes())?;
+    // Record which build wrote this workflow so the drift diagnostic can later name WHICH
+    // side is stale (spec 18, criterion 9). Written beside the workflow and ONLY when the
+    // workflow itself was (re)written, so an `AlreadyCurrent` rerun stays a true no-op that
+    // does not even touch the file's mtime.
+    if outcome != InstallOutcome::AlreadyCurrent {
+        std::fs::write(workflow_provenance_path(root), BUILD_PROVENANCE)?;
+    }
+    Ok(outcome)
+}
+
+/// Where `rigger setup` installs the rendered `using-rigger` skill, relative to the
+/// project root: `<root>/.claude/skills/using-rigger/SKILL.md`. Claude Code auto-discovers
+/// skills under `.claude/skills/`, so the installed file is a loadable skill the moment it
+/// is written - a file DISTINCT from the `/rigger` workflow at [`workflow_path`] (the
+/// workflow RUNS the loop; the skill tells an agent WHEN and HOW to drive it) and from the
+/// committed, drift-checked source at [`USING_RIGGER_SKILL_REL`] (which `rigger docs`
+/// renders and `rigger validate` re-renders against). Rooted at `root` so it is testable
+/// against a temp dir.
+fn skill_install_path(root: &Path) -> std::path::PathBuf {
+    root.join(".claude")
+        .join("skills")
+        .join("using-rigger")
+        .join("SKILL.md")
+}
+
+/// Where a repo declares its `using-rigger` project overlay, relative to the project root:
+/// `<root>/.rigger/docs-overlay.yml`. Optional - an absent file means the installed skill
+/// carries only the shared defaults.
+fn docs_overlay_path(root: &Path) -> std::path::PathBuf {
+    root.join(RIGGER_DIR).join("docs-overlay.yml")
+}
+
+/// A per-repo overlay that adds THIS repository's specifics to the installed `using-rigger`
+/// skill WITHOUT editing the shared discipline source. The two drift-prone facts a
+/// downstream project may differ on - the base branch a run anchors on and where the repo
+/// keeps its specs - are read from [`docs_overlay_path`] and merged onto the code-derived
+/// [`docs_context`] before the skill is rendered and installed. Both fields are OPTIONAL:
+/// an absent overlay file, or an absent field, leaves the shared default in place, so the
+/// overlay only ever ADDS repo specifics and never restates the shared discipline. Unknown
+/// keys are rejected so a typo fails loudly rather than being silently ignored.
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DocsOverlay {
+    /// This repo's base branch, overriding [`DEFAULT_BASE_REF`] in the rendered skill.
+    #[serde(default)]
+    base_ref: Option<String>,
+    /// Where this repo keeps its specs, overriding [`DEFAULT_SPECS_LOCATION`].
+    #[serde(default)]
+    specs_location: Option<String>,
+}
+
+impl DocsOverlay {
+    /// Merge this overlay onto `ctx`, overriding ONLY the fields the overlay declares, so a
+    /// repo customizes just the facts it differs on and inherits the shared defaults for
+    /// the rest.
+    fn apply(&self, ctx: &mut rigger::docs::DocsContext) {
+        if let Some(base) = &self.base_ref {
+            ctx.base_ref = base.clone();
+        }
+        if let Some(specs) = &self.specs_location {
+            ctx.specs_location = specs.clone();
+        }
+    }
+}
+
+/// Read the project's [`DocsOverlay`] from [`docs_overlay_path`]. An ABSENT file is the
+/// common case and yields an empty overlay (no overrides), so a repo that wants only the
+/// shared discipline writes no overlay. A PRESENT but malformed overlay is a LOUD error
+/// naming the file, never a silent skip that would install a skill missing the repo
+/// specifics the author asked for.
+fn read_docs_overlay(root: &Path) -> Result<DocsOverlay, Box<dyn std::error::Error>> {
+    let path = docs_overlay_path(root);
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(DocsOverlay::default()),
+        Err(e) => return Err(format!("setup: reading {}: {e}", path.display()).into()),
+    };
+    serde_yaml::from_str(&raw)
+        .map_err(|e| format!("setup: {} is not a valid docs overlay: {e}", path.display()).into())
+}
+
+/// Build the `using-rigger` skill to INSTALL under `root`: the code-derived
+/// [`docs_context`] with this repo's [overlay](read_docs_overlay) merged on, rendered
+/// through the SAME pipeline the committed source uses. The overlay only overrides context
+/// fields, so the installed skill and the drift-checked source share one render path and
+/// the discipline is never forked.
+fn render_installed_skill(root: &Path) -> Result<String, Box<dyn std::error::Error>> {
+    let mut ctx = docs_context();
+    read_docs_overlay(root)?.apply(&mut ctx);
+    Ok(rigger::docs::render_using_rigger_skill(&ctx))
+}
+
+/// Install (or refresh) the rendered `using-rigger` skill at [`skill_install_path`],
+/// returning [what it did](InstallOutcome). The skill is rendered from the code-derived
+/// context with this repo's project overlay merged on ([`render_installed_skill`]), so a
+/// downstream repo's base branch and specs location appear in ITS installed skill without
+/// anyone editing the shared discipline source. Like [`install_workflow`], it writes ONLY
+/// when the file is absent or has drifted (via [`install_file_if_changed`]), so a `rigger
+/// setup` rerun on an up-to-date repo is a true no-op that does not even move the file's
+/// mtime.
+fn install_skill(root: &Path) -> Result<InstallOutcome, Box<dyn std::error::Error>> {
+    let rendered = render_installed_skill(root)?;
+    install_file_if_changed(&skill_install_path(root), rendered.as_bytes())
+}
+
+/// The comment line that OPENS rigger's managed block inside a `pre-commit` hook. It is a
+/// shell comment (inert) AND the sentinel [`compose_precommit`] uses to find its own block
+/// so a rerun refreshes exactly that block and never duplicates it - and so a chained
+/// hook's own lines, which live outside the sentinels, are never disturbed.
+const PRECOMMIT_BEGIN: &str = "# >>> BEGIN rigger docs pre-commit (managed - do not edit) >>>";
+/// The comment line that CLOSES rigger's managed block (see [`PRECOMMIT_BEGIN`]).
+const PRECOMMIT_END: &str = "# <<< END rigger docs pre-commit (managed) <<<";
+
+/// Render rigger's managed `pre-commit` block: the sentinel-bounded shell that regenerates
+/// the code-derived docs (`rigger docs`) and stages any change into the SAME commit, so a
+/// commit that changes a documented code fact carries its freshly rendered docs. Three hard
+/// safety invariants are baked into the SCRIPT (spec 24):
+///
+/// - STAGING SCOPE: it stages ONLY the two rendered outputs by explicit path (built from
+///   [`USING_RIGGER_SKILL_REL`] / [`HANDBOOK_DISCIPLINE_REL`] so the staging scope can never
+///   drift from what [`write_docs`] writes), never a blanket `git add`.
+/// - SELF-HOSTING SCOPE: it regenerates and stages ONLY when the repo ALREADY TRACKS these
+///   docs (`git ls-files --error-unmatch`), i.e. rigger's own self-hosting repo. These are
+///   rigger's OWN committed docs and an operator project never carries them (see
+///   [`docs_drift`]: their absence is not drift), so in an operator repo the block is INERT -
+///   it does not even run `rigger docs`, creates nothing, and stages nothing, so an ordinary
+///   operator commit is never forced to carry rigger's internal discipline docs. The same
+///   hook is installed everywhere (it cannot know at install time whether the repo tracks the
+///   docs); this commit-time tracked check is what keeps it correct in both a self-hosting and
+///   an operator repo.
+/// - GRACEFUL DEGRADE: it ALWAYS succeeds - a missing or failing `rigger` warns to stderr and
+///   lets the commit proceed, and the block ends with `true` so it can never block a commit
+///   (the spec-20 `rigger validate` / CI drift check is the hard backstop).
+///
+/// The trailing `true` (rather than `exit 0`) keeps the block cooperative: it contributes a
+/// zero exit when it is the last block, without hard-terminating any block a future tool might
+/// append after it. The hook invokes `rigger` BY NAME (relying on PATH), like the SessionStart
+/// hook runs `rigger prime`, so it stays portable across a team's clones (no absolute path to
+/// one developer's binary).
+fn precommit_block() -> String {
+    // A raw-string template so the shell indentation is exact and readable; the two doc
+    // paths and the sentinels are injected from their single-source consts.
+    const TEMPLATE: &str = r#"__BEGIN__
+# Regenerate rigger's code-derived docs and stage any change into THIS commit, so a commit
+# that changes a documented code fact carries its freshly rendered docs. SAFE to share: it
+# stages ONLY the two rendered outputs (never other working-tree files), acts ONLY where the
+# repo already tracks those docs (inert in an operator project that does not carry them), and
+# NEVER blocks a commit - a missing or failing `rigger` warns and lets the commit proceed,
+# with `rigger validate` / the CI drift check as the hard backstop.
+if command -v rigger >/dev/null 2>&1; then
+    # Only regenerate+stage in a repo that ALREADY TRACKS these rendered docs (rigger's own
+    # self-hosting repo). An operator project never carries them, so leave it untouched.
+    tracked=
+    untracked=
+    for doc in "__SKILL__" "__HANDBOOK__"; do
+        if git ls-files --error-unmatch -- "$doc" >/dev/null 2>&1; then
+            tracked="${tracked:+$tracked }$doc"
+        else
+            untracked=1
+        fi
+    done
+    # Regenerate ONLY when EVERY rendered output is already tracked (rigger's own self-hosting
+    # repo). If any is untracked - an operator project, or a partial-tracking state - stay inert
+    # so `rigger docs` never runs and never creates a stray untracked doc file the operator did
+    # not ask for.
+    if [ -z "$untracked" ] && [ -n "$tracked" ]; then
+        if rigger docs >/dev/null 2>&1; then
+            for doc in $tracked; do
+                [ -f "$doc" ] && git add -- "$doc" >/dev/null 2>&1
+            done
+        else
+            echo 'rigger: pre-commit: rigger docs failed; committing without regenerated docs (rigger validate is the backstop)' 1>&2
+        fi
+    fi
+else
+    echo 'rigger: pre-commit: rigger not on PATH; skipping docs regeneration (rigger validate is the backstop)' 1>&2
+fi
+# Best-effort by design (the drift check is the hard backstop): this managed block always
+# succeeds so it can never block a commit.
+true
+__END__
+"#;
+    TEMPLATE
+        .replace("__BEGIN__", PRECOMMIT_BEGIN)
+        .replace("__END__", PRECOMMIT_END)
+        .replace("__SKILL__", USING_RIGGER_SKILL_REL)
+        .replace("__HANDBOOK__", HANDBOOK_DISCIPLINE_REL)
+}
+
+/// Find the byte offset of the first occurrence of `needle` in `haystack`, or `None`. Lets the
+/// byte-level composer locate the ASCII sentinels (and the shebang's newline) inside a
+/// pre-commit hook that may not be valid UTF-8, so it can refresh/chain at the byte level
+/// without ever clobbering the existing hook.
+fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || needle.len() > haystack.len() {
+        return None;
+    }
+    haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+/// Byte-level core of the pre-commit composer (`compose_precommit` is a thin, test-only UTF-8
+/// wrapper over it). Composing on BYTES (not `str`) is what keeps the
+/// non-clobbering guarantee for a pre-existing pre-commit hook that is NOT valid UTF-8 (a
+/// compiled/binary hook, or one carrying non-UTF-8 bytes): its bytes are preserved verbatim and
+/// rigger's block is chained onto them, never replaced by a fresh script
+/// (d24-2-nonutf8-byte-compose-no-clobber). Given the CURRENT hook bytes (or `None` when absent):
+///
+/// - ABSENT -> a fresh `#!/bin/sh` script carrying rigger's managed block.
+/// - EXISTING WITH the sentinel-marked block -> the sentinel-bounded region is REPLACED in place
+///   with the current block, every byte outside the sentinels preserved. This makes composing
+///   IDEMPOTENT (re-composing an installed hook is a fixed point) and refreshes a stale block
+///   from an older build without duplicating it.
+/// - EXISTING WITHOUT the block -> rigger's block is inserted right AFTER the shebang line (or
+///   at the very top when there is no shebang), i.e. BEFORE the existing hook body, so it runs
+///   first. rigger's block ends in a bare `true` (never `exit`), so the existing hook still runs
+///   after it and BOTH run - even when the existing hook ends in a terminal `exit 0` (the modal
+///   hand-written/sample shape). Appending AFTER such a hook would silently shadow rigger's
+///   block and skip the docs regeneration (d24-11 / d24-2-prepend-fixes-terminal-shadow).
+fn compose_precommit_bytes(existing: Option<&[u8]>) -> Vec<u8> {
+    let block = precommit_block();
+    let block = block.as_bytes();
+    let Some(existing) = existing else {
+        let mut out = b"#!/bin/sh\n".to_vec();
+        out.extend_from_slice(block);
+        return out;
+    };
+    // Refresh the managed region in place when a well-formed (begin-before-end) block is
+    // already present, preserving every byte on both sides of the sentinels.
+    if let (Some(start), Some(end_start)) = (
+        find_bytes(existing, PRECOMMIT_BEGIN.as_bytes()),
+        find_bytes(existing, PRECOMMIT_END.as_bytes()),
+    ) {
+        if start < end_start {
+            let end = end_start + PRECOMMIT_END.len();
+            let before = &existing[..start];
+            // `block` already ends with a newline, so drop the newline that followed the old
+            // end sentinel to avoid a blank line creeping in on each refresh.
+            let after = existing[end..]
+                .strip_prefix(b"\n")
+                .unwrap_or(&existing[end..]);
+            let mut out = Vec::with_capacity(before.len() + block.len() + after.len());
+            out.extend_from_slice(before);
+            out.extend_from_slice(block);
+            out.extend_from_slice(after);
+            return out;
+        }
+    }
+    // No block yet: chain by inserting rigger's block right after the shebang line, so a
+    // terminal existing hook cannot shadow it.
+    let insert_at = if existing.starts_with(b"#!") {
+        match find_bytes(existing, b"\n") {
+            Some(nl) => nl + 1,
+            // A shebang with no trailing newline (degenerate single line): the whole file is the
+            // shebang, so append the block after a newline - there is no body to shadow it.
+            None => {
+                let mut out = existing.to_vec();
+                out.push(b'\n');
+                out.extend_from_slice(block);
+                return out;
+            }
+        }
+    } else {
+        // No shebang: prepend the block at the very top, preserving the existing content after.
+        0
+    };
+    let mut out = Vec::with_capacity(existing.len() + block.len());
+    out.extend_from_slice(&existing[..insert_at]);
+    out.extend_from_slice(block);
+    out.extend_from_slice(&existing[insert_at..]);
+    out
+}
+
+/// Compose the `pre-commit` hook to install, given the CURRENT hook content (or `None` when
+/// absent). PURE and filesystem-free (mirroring [`hooks::install_session_start`]) so the
+/// idempotency and non-clobbering-chaining behavior is unit-testable without a real `.git`. A
+/// thin UTF-8 wrapper over [`compose_precommit_bytes`], which holds the single composing
+/// authority (production, including the non-UTF-8 install path, goes straight through the
+/// byte core). Test-only: it exists so the idempotency / non-clobbering / prepend-chaining
+/// behavior reads cleanly as `str` in the unit tests.
+#[cfg(test)]
+fn compose_precommit(existing: Option<&str>) -> String {
+    let bytes = compose_precommit_bytes(existing.map(str::as_bytes));
+    // UTF-8 in (a `str` existing hook plus the `str` block) yields UTF-8 out: every split point
+    // is an ASCII sentinel/newline offset (a char boundary) or a slice endpoint, so this holds.
+    String::from_utf8(bytes).expect("composing UTF-8 hook parts yields UTF-8")
+}
+
+/// The git hooks directory for `root`, resolved robustly via `git rev-parse --git-path
+/// hooks` (which honors `core.hooksPath` and a worktree's `.git`-file indirection) and
+/// falling back to `<root>/.git/hooks` when git cannot be consulted. A relative path git
+/// prints is resolved against `root` so the caller gets an absolute-enough path to write to.
+fn git_hooks_dir(root: &Path) -> std::path::PathBuf {
+    let resolved = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["rev-parse", "--git-path", "hooks"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty());
+    match resolved {
+        Some(p) => {
+            let p = Path::new(&p);
+            if p.is_absolute() {
+                p.to_path_buf()
+            } else {
+                root.join(p)
+            }
+        }
+        None => root.join(".git").join("hooks"),
+    }
+}
+
+/// Install (or refresh) rigger's docs-regenerating `pre-commit` hook under `root`,
+/// returning [what it did](InstallOutcome). The FS-facing wrapper around the pure
+/// [`compose_precommit_bytes`]: it reads the current `pre-commit` (if any) AS BYTES, composes
+/// the merged hook, and writes it ONLY when the merge changes something - so a `rigger setup`
+/// rerun on an already-installed hook is a true no-op that does not even move the file's mtime
+/// (the no-op-when-unchanged discipline of [`install_file_if_changed`], applied to a composer
+/// that CHAINS rather than overwrites). The written hook is marked executable so git will
+/// run it. Non-destructive by construction: an existing pre-commit hook is preserved - rigger's
+/// block is chained in (inserted after the shebang, before the existing body), never clobbered -
+/// and reading BYTES rather than a UTF-8 string keeps that guarantee even for a non-UTF-8 hook.
+fn install_precommit_hook(root: &Path) -> Result<InstallOutcome, Box<dyn std::error::Error>> {
+    let hooks_dir = git_hooks_dir(root);
+    std::fs::create_dir_all(&hooks_dir)?;
+    let hook_path = hooks_dir.join("pre-commit");
+    let existed = hook_path.exists();
+    // Read the current hook as BYTES so a non-UTF-8 or otherwise unreadable existing hook is
+    // preserved and chained rather than clobbered by a fresh script (the compose is byte-level;
+    // d24-2-nonutf8-byte-compose-no-clobber).
+    let existing = std::fs::read(&hook_path).ok();
+    let merged = compose_precommit_bytes(existing.as_deref());
+    if existing.as_deref() == Some(merged.as_slice()) {
+        return Ok(InstallOutcome::AlreadyCurrent);
+    }
+    std::fs::write(&hook_path, &merged)?;
+    // Mark the hook executable so git runs it. A hook without the execute bit is silently
+    // ignored, which would defeat the whole feature.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&hook_path)?.permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&hook_path, perms)?;
+    }
+    Ok(if existed {
+        InstallOutcome::Refreshed
+    } else {
+        InstallOutcome::Installed
     })
 }
 
@@ -4591,6 +6165,17 @@ fn cmd_setup(args: &[String]) -> Res {
     // criterion 4).
     let scaffold = init_project(root)?;
     let workflow = install_workflow(root)?;
+    // Install the rendered `using-rigger` skill (spec 20, unit 3): a loadable front-door
+    // DISTINCT from the `/rigger` workflow, with this repo's project overlay (base branch,
+    // specs location) merged into the render. Drift-aware like the workflow, so a rerun on
+    // an up-to-date repo changes nothing.
+    let skill = install_skill(root)?;
+    // Install the docs-regenerating git pre-commit hook (spec 24): on `git commit` it runs
+    // `rigger docs` and stages any changed rendered outputs into the SAME commit, so a commit
+    // that changes a documented code fact carries its freshly rendered docs. Drift-aware and
+    // non-destructive like the installs above - a rerun on an already-installed hook changes
+    // nothing, and any pre-existing pre-commit hook is chained, never clobbered.
+    let hook = install_precommit_hook(root)?;
     let provisioned = provision_shim(root)?;
 
     // The --agents import (units 4 + 8 woven) is itself a REQUESTED change: it runs
@@ -4614,11 +6199,25 @@ fn cmd_setup(args: &[String]) -> Res {
         false
     };
 
-    let workflow_changed = workflow != WorkflowInstall::AlreadyCurrent;
-    if !scaffold.changed() && !workflow_changed && !provisioned && !imported {
+    let workflow_changed = workflow != InstallOutcome::AlreadyCurrent;
+    let skill_changed = skill != InstallOutcome::AlreadyCurrent;
+    let hook_changed = hook != InstallOutcome::AlreadyCurrent;
+    if !scaffold.changed()
+        && !workflow_changed
+        && !skill_changed
+        && !hook_changed
+        && !provisioned
+        && !imported
+    {
         // A silent no-op: nothing drifted, so there is nothing to report.
         return Ok(());
     }
+
+    // Surface the running binary's version + build provenance (spec 18) whenever setup
+    // actually reports a change, so an agent can see which binary just (re)provisioned the
+    // project. Printed AFTER the silent-no-op early return above, so a rerun that changed
+    // nothing stays silent.
+    println!("{}", version_line());
 
     // Narrate ONLY the scaffold artifacts this run actually (re)wrote - never a blanket
     // claim, so a gitignore-only repair reports the gitignore change alone.
@@ -4632,15 +6231,36 @@ fn cmd_setup(args: &[String]) -> Res {
         );
     }
     match workflow {
-        WorkflowInstall::Installed => println!(
+        InstallOutcome::Installed => println!(
             "installed the /rigger workflow (.claude/workflows/rigger.js) - run it with: /rigger \
              <spec-path>"
         ),
-        WorkflowInstall::Refreshed => println!(
+        InstallOutcome::Refreshed => println!(
             "refreshed the drifted /rigger workflow (.claude/workflows/rigger.js) to match this \
              rigger build"
         ),
-        WorkflowInstall::AlreadyCurrent => {}
+        InstallOutcome::AlreadyCurrent => {}
+    }
+    match skill {
+        InstallOutcome::Installed => println!(
+            "installed the using-rigger skill (.claude/skills/using-rigger/SKILL.md) - the \
+             front-door for when and how to drive a run"
+        ),
+        InstallOutcome::Refreshed => println!(
+            "refreshed the drifted using-rigger skill (.claude/skills/using-rigger/SKILL.md) to \
+             match this rigger build"
+        ),
+        InstallOutcome::AlreadyCurrent => {}
+    }
+    match hook {
+        InstallOutcome::Installed => println!(
+            "installed the docs pre-commit hook - each commit now regenerates the using-rigger \
+             docs and stages any change into that same commit"
+        ),
+        InstallOutcome::Refreshed => {
+            println!("refreshed the docs pre-commit hook to match this rigger build")
+        }
+        InstallOutcome::AlreadyCurrent => {}
     }
     // The starter-fleet pointer fires exactly when default agents were NEWLY
     // scaffolded (spec 05 line 57 clause 2): the per-artifact report's `new_agents`
@@ -4648,6 +6268,10 @@ fn cmd_setup(args: &[String]) -> Res {
     if !scaffold.new_agents.is_empty() {
         print_scaffold_pointer();
     }
+    // The orientation block closes the reported-change path: because it lives after the
+    // silent-no-op early return above, a fully up-to-date rerun that changed nothing stays
+    // quiet and never re-prints it (spec 05 crit 4: a rerun prints nothing surprising).
+    print_orientation();
     Ok(())
 }
 
@@ -4839,6 +6463,127 @@ fn top_level_key(line: &str) -> Option<&str> {
     }
     let (key, _rest) = line.split_once(':')?;
     Some(key.trim_end())
+}
+
+/// Build the [`rigger::docs::DocsContext`] from the code definitions the runtime uses,
+/// so no discipline fact is hand-copied into the rendered document: each field is read
+/// from the same const / enum / registry the binary runs on, and changing that source
+/// changes the render. This is the composition-root wiring for the render pipeline (spec
+/// 20, unit 1) - the pure render lives in `rigger::docs`, and this function is where the
+/// concrete facts are injected. A project overlay (unit 3) overrides fields on the
+/// returned context BEFORE rendering, so repo specifics and the shared discipline share
+/// this one pipeline.
+fn docs_context() -> rigger::docs::DocsContext {
+    use rigger::spec::ShapeRule;
+    rigger::docs::DocsContext {
+        base_ref: DEFAULT_BASE_REF.to_string(),
+        dash_port: dash::DEFAULT_PORT,
+        max_retries: rigger::safety::MAX_RETRIES,
+        verdict_approve: conductor::VERDICT_APPROVE.to_string(),
+        // Enumerate the lint rules explicitly so the render reads their real `name()` and
+        // a removed variant breaks THIS build, not the rendered document at runtime.
+        spec_shape_rules: [
+            ShapeRule::MultiBehavior,
+            ShapeRule::SubBulletAsUnit,
+            ShapeRule::OverLong,
+        ]
+        .iter()
+        .map(|r| r.name().to_string())
+        .collect(),
+        spec_shape_recommendation: spec::SHAPE_RECOMMENDATION.to_string(),
+        subcommands: SUBCOMMANDS.iter().map(|c| c.to_string()).collect(),
+        specs_location: DEFAULT_SPECS_LOCATION.to_string(),
+    }
+}
+
+/// Render both discipline outputs from [`docs_context`] and write them under `root`: the
+/// `using-rigger` skill at [`USING_RIGGER_SKILL_REL`] and the handbook discipline chapter
+/// at [`HANDBOOK_DISCIPLINE_REL`]. Returns the paths written, in a stable order. Rooted at
+/// `root` so it is testable against a temp dir without touching the process cwd; the
+/// parent directories are created so a fresh checkout renders both files.
+fn write_docs(root: &Path) -> Result<Vec<std::path::PathBuf>, Box<dyn std::error::Error>> {
+    let ctx = docs_context();
+    let skill = rigger::docs::render_using_rigger_skill(&ctx);
+    let handbook = rigger::docs::render_handbook_discipline(&ctx);
+    let skill_path = root.join(USING_RIGGER_SKILL_REL);
+    let handbook_path = root.join(HANDBOOK_DISCIPLINE_REL);
+    for (path, contents) in [(&skill_path, &skill), (&handbook_path, &handbook)] {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, contents)?;
+    }
+    Ok(vec![skill_path, handbook_path])
+}
+
+/// `rigger docs` renders the operating discipline from the code the binary runs on into
+/// two committed outputs - the `using-rigger` skill and the handbook discipline chapter -
+/// so the discipline stays in lock-step with behavior instead of drifting from it. Re-run
+/// it after changing a source fact or a template and commit the result; `rigger validate`
+/// (spec 20, unit 2) fails loudly if the committed copies drift from a fresh render.
+fn cmd_docs(_args: &[String]) -> Res {
+    for path in write_docs(Path::new("."))? {
+        println!("rendered {}", path.display());
+    }
+    Ok(())
+}
+
+/// The committed discipline outputs under `root` that have DRIFTED from a fresh render of
+/// the current code-derived context (spec 20, unit 2), in report order. A path is reported
+/// only when the committed file EXISTS and its BYTES differ from a fresh render; an ABSENT
+/// (or unreadable) file is skipped - these are rigger's OWN committed docs, and an operator
+/// project never carries them, so their absence is not drift (the same "nothing installed,
+/// nothing to drift" rule [`installed_workflow_drifted`] applies to the workflow). Reuses
+/// the SINGLE render authority ([`docs_context`] + `rigger::docs::render_*`) and the same
+/// [`USING_RIGGER_SKILL_REL`] / [`HANDBOOK_DISCIPLINE_REL`] path consts [`write_docs`]
+/// writes, so the drift check and the write can never disagree on what "the docs" are.
+/// Rooted at `root` so the seam is testable against a temp dir without touching the cwd.
+fn docs_drift(root: &Path) -> Vec<std::path::PathBuf> {
+    let ctx = docs_context();
+    let mut drifted = Vec::new();
+    for (rel, fresh) in [
+        (
+            USING_RIGGER_SKILL_REL,
+            rigger::docs::render_using_rigger_skill(&ctx),
+        ),
+        (
+            HANDBOOK_DISCIPLINE_REL,
+            rigger::docs::render_handbook_discipline(&ctx),
+        ),
+    ] {
+        let path = root.join(rel);
+        // Byte comparison (not `read_to_string`): a committed file corrupted to non-UTF-8 is
+        // genuinely drifted, and comparing bytes catches it rather than silently skipping it.
+        match std::fs::read(&path) {
+            Ok(bytes) if bytes != fresh.as_bytes() => drifted.push(path),
+            _ => {} // absent/unreadable (not our committed docs here), or byte-identical
+        }
+    }
+    drifted
+}
+
+/// The `rigger validate` docs-drift FAILURE (spec 20, unit 2): when a committed discipline
+/// output has drifted from a fresh render, a single loud message naming EVERY drifted file
+/// and the one-command fix, or `None` when the committed docs are in sync (or absent).
+/// Unlike the warning advisories, the caller surfaces this as a HARD, non-zero exit - a
+/// changed const/template/hand-edit is a definition drift that must be regenerated, not a
+/// soft nudge - so the discipline STAYS in lock-step with the code the binary runs on.
+fn docs_drift_failure(root: &Path) -> Option<String> {
+    let drifted = docs_drift(root);
+    if drifted.is_empty() {
+        return None;
+    }
+    let names = drifted
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(format!(
+        "the committed using-rigger discipline docs have drifted from a fresh render ({names}): \
+         a source fact or template changed but the committed copy was not regenerated, so the \
+         discipline no longer matches the code it describes. Run `rigger docs` and commit the \
+         result so they are in lock-step again."
+    ))
 }
 
 fn cmd_prime() -> Res {
@@ -5223,6 +6968,594 @@ blocks integration no matter what the static gates say.\n",
 mod tests {
     use super::*;
 
+    /// spec 24, crit 1: `compose_precommit` is the PURE, filesystem-free composer for the
+    /// docs pre-commit hook. A FRESH install (no existing hook) yields a runnable `/bin/sh`
+    /// script carrying rigger's sentinel-marked managed block: it regenerates the docs
+    /// (`rigger docs`), stages ONLY the two rendered outputs by path (never a blanket `git
+    /// add`), acts ONLY where those docs are already tracked (inert in an operator repo),
+    /// guards `rigger` presence for graceful degrade, and ends with `true` so the block can
+    /// never block a commit.
+    #[test]
+    fn compose_precommit_fresh_install_carries_the_managed_block() {
+        let hook = compose_precommit(None);
+        assert!(
+            hook.starts_with("#!/bin/sh\n"),
+            "a fresh hook is a runnable sh script; got:\n{hook}"
+        );
+        assert!(
+            hook.contains(PRECOMMIT_BEGIN) && hook.contains(PRECOMMIT_END),
+            "carries the sentinel-marked managed block; got:\n{hook}"
+        );
+        assert!(hook.contains("rigger docs"), "regenerates the docs");
+        assert!(
+            hook.contains("command -v rigger"),
+            "guards rigger presence (graceful degrade)"
+        );
+        assert!(
+            hook.contains(USING_RIGGER_SKILL_REL) && hook.contains(HANDBOOK_DISCIPLINE_REL),
+            "stages exactly the two rendered outputs by path; got:\n{hook}"
+        );
+        assert!(
+            !hook.contains("add -A") && !hook.contains("add ."),
+            "never a blanket git add - staging scope is the two outputs only"
+        );
+        assert!(
+            hook.contains("ls-files --error-unmatch"),
+            "regenerate+stage is gated on the docs already being TRACKED, so the hook stays \
+             inert in an operator repo that does not carry them; got:\n{hook}"
+        );
+        assert!(
+            hook.contains("\ntrue\n"),
+            "the managed block ends with `true` so it never blocks a commit"
+        );
+    }
+
+    /// spec 24, crit 1 (idempotency, pure): re-composing an already-installed hook is a
+    /// fixed point - the sentinel-marked block appears exactly once, so a `rigger setup`
+    /// rerun never duplicates it (the property `install_precommit_hook` reports as
+    /// `AlreadyCurrent`).
+    #[test]
+    fn compose_precommit_is_idempotent() {
+        let once = compose_precommit(None);
+        let twice = compose_precommit(Some(&once));
+        assert_eq!(
+            once, twice,
+            "re-composing an installed hook changes nothing"
+        );
+        assert_eq!(
+            once.matches(PRECOMMIT_BEGIN).count(),
+            1,
+            "the managed block is never duplicated"
+        );
+    }
+
+    /// spec 24, crit 2 (non-clobbering chaining, pure): composing onto a pre-existing hook
+    /// PRESERVES the existing commands and inserts rigger's block right after the shebang -
+    /// BEFORE the existing hook body, not after it. Prepending is what keeps rigger's block
+    /// reachable when the existing hook ends in a terminal `exit 0` (see
+    /// `compose_precommit_prepends_before_a_terminal_exit_existing_hook`): rigger's block ends
+    /// in a bare `true` (never `exit`), so the existing hook still runs after it and BOTH run.
+    /// Re-composing the chained form stays a fixed point (block appears once). Supersedes the
+    /// crit-1 append-after ordering (d24-11 / d24-2-prepend-fixes-terminal-shadow).
+    #[test]
+    fn compose_precommit_chains_without_clobbering_an_existing_hook() {
+        let existing = "#!/bin/sh\necho existing-hook-ran\nmake lint\n";
+        let chained = compose_precommit(Some(existing));
+        assert!(
+            chained.contains("echo existing-hook-ran") && chained.contains("make lint"),
+            "the existing hook's commands are preserved; got:\n{chained}"
+        );
+        assert!(chained.contains(PRECOMMIT_BEGIN), "rigger's block is added");
+        assert!(
+            chained.starts_with("#!/bin/sh\n"),
+            "the shebang stays on line 1 so git still runs the hook; got:\n{chained}"
+        );
+        let user_pos = chained.find("echo existing-hook-ran").unwrap();
+        let block_pos = chained.find(PRECOMMIT_BEGIN).unwrap();
+        assert!(
+            block_pos < user_pos,
+            "rigger's block is PREPENDED after the shebang, before the existing hook body, so a \
+             terminal existing hook cannot shadow it; got:\n{chained}"
+        );
+        let again = compose_precommit(Some(&chained));
+        assert_eq!(
+            chained, again,
+            "re-composing the chained hook is a fixed point"
+        );
+        assert_eq!(
+            again.matches(PRECOMMIT_BEGIN).count(),
+            1,
+            "no duplicate block on a chained rerun"
+        );
+    }
+
+    /// spec 24, crit 2 (non-clobbering chaining defeats a terminal existing hook, pure): the
+    /// modal hand-written / sample pre-commit hook ends in a terminal `exit 0`. If rigger's
+    /// block were APPENDED after such a hook it would never be reached and the docs would
+    /// silently not regenerate (adv-u24-1r-chained-terminal-hook-shadows-rigger-block-silently
+    /// / d24-11). Prepending after the shebang puts rigger's block BEFORE the terminal `exit 0`
+    /// so it always runs, and rigger's own block ends in a bare `true` so the existing hook
+    /// (including its `exit 0`) still runs after it - BOTH run.
+    #[test]
+    fn compose_precommit_prepends_before_a_terminal_exit_existing_hook() {
+        let terminal = "#!/bin/sh\necho user-hook-ran\nexit 0\n";
+        let chained = compose_precommit(Some(terminal));
+        let block_pos = chained.find(PRECOMMIT_BEGIN).unwrap();
+        let exit_pos = chained.find("exit 0").unwrap();
+        assert!(
+            block_pos < exit_pos,
+            "rigger's block must come BEFORE the existing hook's terminal `exit 0`, or it would \
+             be shadowed and never run; got:\n{chained}"
+        );
+        assert!(
+            chained.contains("echo user-hook-ran"),
+            "the existing terminal hook is preserved in full; got:\n{chained}"
+        );
+    }
+
+    /// spec 24, crit 2 (idempotency + non-clobbering, byte level): a pre-existing pre-commit
+    /// hook that is NOT valid UTF-8 (e.g. a compiled/binary hook, or one carrying non-UTF-8
+    /// bytes) must NEVER be clobbered by a fresh script (sdet-u24-1r-nonutf8-clobber-persists /
+    /// d24-2-nonutf8-byte-compose-no-clobber). `install_precommit_hook` reads the hook as BYTES
+    /// and composes at the byte level, so the original bytes are preserved and rigger's block
+    /// is chained, and a rerun is a fixed point (no duplicate block).
+    #[test]
+    fn install_precommit_hook_preserves_a_non_utf8_existing_hook() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        // git_hooks_dir falls back to <root>/.git/hooks when git cannot be consulted.
+        let hooks = root.join(".git").join("hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        let hook_path = hooks.join("pre-commit");
+        // A valid ASCII shebang line then deliberately non-UTF-8 bytes in the body.
+        let mut original: Vec<u8> = b"#!/bin/sh\n".to_vec();
+        original.extend_from_slice(&[0xff, 0xfe, b'\n']);
+        std::fs::write(&hook_path, &original).unwrap();
+
+        let outcome = install_precommit_hook(root).unwrap();
+        assert_eq!(
+            outcome,
+            InstallOutcome::Refreshed,
+            "an existing hook is refreshed, not freshly installed"
+        );
+        let written = std::fs::read(&hook_path).unwrap();
+        assert!(
+            written
+                .windows(original.len())
+                .any(|w| w == original.as_slice())
+                || written.windows(3).any(|w| w == [0xff, 0xfe, b'\n']),
+            "the original non-UTF-8 hook bytes must be preserved, never clobbered"
+        );
+        assert!(
+            written
+                .windows(PRECOMMIT_BEGIN.len())
+                .any(|w| w == PRECOMMIT_BEGIN.as_bytes()),
+            "rigger's managed block is chained onto the non-UTF-8 hook"
+        );
+
+        // Idempotent: re-installing over the chained non-UTF-8 hook changes nothing and never
+        // duplicates the block.
+        let again = install_precommit_hook(root).unwrap();
+        assert_eq!(
+            again,
+            InstallOutcome::AlreadyCurrent,
+            "a rerun over the chained non-UTF-8 hook is a true no-op"
+        );
+        let rewritten = std::fs::read(&hook_path).unwrap();
+        assert_eq!(
+            written, rewritten,
+            "the non-UTF-8 chained hook is a fixed point"
+        );
+        let begins = rewritten
+            .windows(PRECOMMIT_BEGIN.len())
+            .filter(|w| *w == PRECOMMIT_BEGIN.as_bytes())
+            .count();
+        assert_eq!(begins, 1, "the managed block is never duplicated");
+    }
+
+    /// spec 24, crit 1 (refresh-in-place, pure): a stale managed block (an older rigger
+    /// build wrote it, or a hand-edit) is REPLACED with the current block, bounded by its
+    /// sentinels, so refresh never leaks stale lines and never disturbs a chained hook's own
+    /// commands on either side of the block.
+    #[test]
+    fn compose_precommit_refreshes_a_stale_block_in_place() {
+        let stale = format!(
+            "#!/bin/sh\necho keep-me\n{PRECOMMIT_BEGIN}\nstale garbage a new build no longer \
+             emits\n{PRECOMMIT_END}\necho trailing-keep\n"
+        );
+        let refreshed = compose_precommit(Some(&stale));
+        assert!(
+            !refreshed.contains("stale garbage"),
+            "the stale block body is gone; got:\n{refreshed}"
+        );
+        assert!(
+            refreshed.contains("rigger docs"),
+            "the current block body is present"
+        );
+        assert!(
+            refreshed.contains("echo keep-me") && refreshed.contains("echo trailing-keep"),
+            "surrounding hook lines on both sides of the block are preserved; got:\n{refreshed}"
+        );
+        assert_eq!(
+            refreshed.matches(PRECOMMIT_BEGIN).count(),
+            1,
+            "still exactly one managed block"
+        );
+    }
+
+    /// spec 21, unit 3: the exact line `rigger peers` PRINTS for a decision must label its
+    /// provenance - LIVE for a decision from the active run, HISTORICAL for one from a
+    /// superseded run - from the `live` flag the shared `peers_json` core threads through.
+    /// Asserting on the rendered line (not just the JSON) closes the gap where the printed
+    /// label was untested (sdet-u21peers-cmdpeers-render-label-untested).
+    #[test]
+    fn cmd_peers_prints_live_or_historical_per_decision_provenance() {
+        let live = peer_decision_line(&serde_json::json!({
+            "id": "d_new", "summary": "chose X", "governs": ["a.rs"], "live": true,
+        }));
+        assert_eq!(live, "decision d_new | LIVE | chose X | governs: a.rs");
+
+        let historical = peer_decision_line(&serde_json::json!({
+            "id": "d_old", "summary": "chose Y", "governs": ["b.rs"], "live": false,
+        }));
+        assert_eq!(
+            historical,
+            "decision d_old | HISTORICAL | chose Y | governs: b.rs"
+        );
+
+        // A missing `live` flag renders HISTORICAL - the conservative default.
+        let defaulted = peer_decision_line(&serde_json::json!({
+            "id": "d_bare", "summary": "z", "governs": [],
+        }));
+        assert_eq!(defaulted, "decision d_bare | HISTORICAL | z | governs: -");
+    }
+
+    /// Spec 21, unit 2: the drop-set derivation `rigger reset --runs` hands to the prune. It
+    /// reuses the SINGLE run-attribution authority (`run_attribution` + `current_run_id`), so a
+    /// SUPERSEDED run's decision/finding AND a PRE-BOUNDARY one (recorded before the first
+    /// `RunStarted`) are both dropped, while every `LessonLearned` (even a pre-boundary one) and
+    /// the ACTIVE run's decisions/findings are preserved. Index-keyed off the whole forward
+    /// stream, mapping each dropped index back to its event body's id; sorted + de-duplicated.
+    ///
+    /// Two hazards are pinned here that the naive skip-live-index derivation gets wrong:
+    /// - KEEP INVARIANT under cross-run id reuse: `shared-d` is recorded in BOTH the dead run
+    ///   r1 AND the active run r2, so its dead-run index is a drop candidate while its
+    ///   active-run index is live. The one graph node must be PRESERVED - the drop set is the
+    ///   candidates MINUS the active run's node ids, not merely the non-live indices.
+    /// - SENTINEL arm: a dead-run decision with an EMPTY id and one with a MALFORMED (non-JSON)
+    ///   body must be SKIPPED (`graph_node_id` returns `None`), never panicking and never
+    ///   contributing a bogus id to the drop set.
+    #[test]
+    fn superseded_graph_nodes_drops_dead_runs_and_preboundary_keeping_lessons_active_and_reused_ids(
+    ) {
+        fn ev(type_: &str, data: &str) -> Event {
+            Event::new(type_, data.as_bytes().to_vec())
+        }
+        fn run_started(run: &str) -> Event {
+            ev(
+                runscope::TYPE_RUN_STARTED,
+                &format!(r#"{{"run":"{run}","criteria":["crit"]}}"#),
+            )
+        }
+        let events = vec![
+            // Pre-boundary (before any RunStarted): decision + finding DROP, lesson KEEPS.
+            ev(contextgraph::TYPE_DECISION_MADE, r#"{"id":"pre-d"}"#),
+            ev(contextgraph::TYPE_REVIEW_FINDING, r#"{"id":"pre-f"}"#),
+            ev(contextgraph::TYPE_LESSON_LEARNED, r#"{"id":"pre-lesson"}"#),
+            run_started("r1"),
+            // Superseded run r1: decision + finding DROP, lesson KEEPS.
+            ev(contextgraph::TYPE_DECISION_MADE, r#"{"id":"r1-d"}"#),
+            ev(contextgraph::TYPE_REVIEW_FINDING, r#"{"id":"r1-f"}"#),
+            ev(contextgraph::TYPE_LESSON_LEARNED, r#"{"id":"r1-lesson"}"#),
+            // A decision id reused across runs, recorded here in the DEAD run r1 first.
+            ev(contextgraph::TYPE_DECISION_MADE, r#"{"id":"shared-d"}"#),
+            // Sentinel arms in the dead run: an empty id and a malformed (non-JSON) body must
+            // be skipped, never dropped and never panicking.
+            ev(contextgraph::TYPE_DECISION_MADE, r#"{"id":""}"#),
+            ev(contextgraph::TYPE_REVIEW_FINDING, "not json at all"),
+            run_started("r2"),
+            // Active run r2: decision + finding KEEP, lesson KEEPS.
+            ev(contextgraph::TYPE_DECISION_MADE, r#"{"id":"r2-d"}"#),
+            ev(contextgraph::TYPE_REVIEW_FINDING, r#"{"id":"r2-f"}"#),
+            ev(contextgraph::TYPE_LESSON_LEARNED, r#"{"id":"r2-lesson"}"#),
+            // The SAME reused id recorded again in the ACTIVE run r2: the node must survive.
+            ev(contextgraph::TYPE_DECISION_MADE, r#"{"id":"shared-d"}"#),
+        ];
+
+        let drop = superseded_graph_nodes(&events);
+        assert_eq!(
+            drop,
+            vec!["pre-d", "pre-f", "r1-d", "r1-f"],
+            "exactly the dead-run + pre-boundary decisions/findings, sorted; lessons, the active \
+             run (r2), a cross-run-reused id, and malformed/empty-id events are all preserved"
+        );
+    }
+
+    /// The single-source version line must carry BOTH the crate version and the
+    /// (non-empty) embedded build provenance, so `rigger version` / `--version` can
+    /// identify the exact binary. Pins the format helper both invocation arms print.
+    #[test]
+    fn version_line_carries_the_crate_version_and_a_non_empty_build_provenance() {
+        assert!(
+            !BUILD_PROVENANCE.is_empty(),
+            "build.rs must embed a non-empty build-provenance id"
+        );
+        let line = version_line();
+        assert!(
+            line.contains(env!("CARGO_PKG_VERSION")),
+            "version line must report the crate version; got: {line}"
+        );
+        assert!(
+            line.contains(BUILD_PROVENANCE),
+            "version line must report the build-provenance id; got: {line}"
+        );
+    }
+
+    /// Spec 20, unit 1: the render pipeline's context is populated FROM the code the
+    /// runtime uses, so no discipline fact is hand-copied. Each field must equal the
+    /// SAME const / enum / registry the binary runs on - the wiring that makes changing
+    /// a source fact change the render.
+    #[test]
+    fn docs_context_reads_every_fact_from_code() {
+        let ctx = docs_context();
+        assert_eq!(ctx.base_ref, DEFAULT_BASE_REF);
+        assert_eq!(ctx.dash_port, dash::DEFAULT_PORT);
+        assert_eq!(ctx.max_retries, rigger::safety::MAX_RETRIES);
+        assert_eq!(ctx.verdict_approve, conductor::VERDICT_APPROVE);
+        assert_eq!(ctx.spec_shape_recommendation, spec::SHAPE_RECOMMENDATION);
+        assert_eq!(
+            ctx.spec_shape_rules,
+            vec![
+                spec::ShapeRule::MultiBehavior.name(),
+                spec::ShapeRule::SubBulletAsUnit.name(),
+                spec::ShapeRule::OverLong.name()
+            ]
+        );
+        assert_eq!(
+            ctx.subcommands,
+            SUBCOMMANDS
+                .iter()
+                .map(|c| c.to_string())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// Spec 20, unit 1 (the golden fact test): known code facts appear VERBATIM in BOTH
+    /// rendered outputs, read live from the consts. A render that hard-copied a different
+    /// literal instead of interpolating the context would diverge from the live const and
+    /// fail here - so this ties the rendered document to the code, not a hand-copy.
+    #[test]
+    fn docs_render_surfaces_known_code_facts_verbatim() {
+        let ctx = docs_context();
+        let skill = rigger::docs::render_using_rigger_skill(&ctx);
+        let handbook = rigger::docs::render_handbook_discipline(&ctx);
+        for out in [&skill, &handbook] {
+            assert!(
+                out.contains(DEFAULT_BASE_REF),
+                "base ref not verbatim in render"
+            );
+            assert!(
+                out.contains(&dash::DEFAULT_PORT.to_string()),
+                "dash port not verbatim in render"
+            );
+            assert!(
+                out.contains(&rigger::safety::MAX_RETRIES.to_string()),
+                "retry bound not verbatim in render"
+            );
+            assert!(
+                out.contains(conductor::VERDICT_APPROVE),
+                "verdict word not verbatim in render"
+            );
+            assert!(
+                out.contains(spec::ShapeRule::MultiBehavior.name()),
+                "spec-shape rule not verbatim in render"
+            );
+        }
+        // The two outputs render from the ONE context: the skill also carries its loadable
+        // frontmatter (distinguishing it from the handbook chapter).
+        assert!(skill.starts_with("---\nname: using-rigger\n"));
+        assert!(handbook.starts_with("# Using rigger: the operating discipline"));
+    }
+
+    /// Spec 20, unit 1: the `SUBCOMMANDS` registry is the single command surface the docs
+    /// read - it must be non-empty, unique, name the commands the docs pipeline references,
+    /// and stay in step with the dispatch (its own `docs` arm and the pre-existing ones).
+    #[test]
+    fn commands_registry_is_well_formed_and_covers_dispatch() {
+        assert!(!SUBCOMMANDS.is_empty());
+        let mut sorted = SUBCOMMANDS.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(
+            sorted.len(),
+            SUBCOMMANDS.len(),
+            "SUBCOMMANDS has a duplicate"
+        );
+        for cmd in SUBCOMMANDS {
+            assert!(!cmd.is_empty(), "a command name is empty");
+        }
+        for expected in ["run", "step", "validate", "setup", "docs", "version"] {
+            assert!(
+                SUBCOMMANDS.contains(&expected),
+                "SUBCOMMANDS must name the {expected:?} dispatch arm"
+            );
+        }
+    }
+
+    /// Spec 20, unit 1: `rigger docs` renders BOTH outputs and writes them to their
+    /// committed paths under the project root. Proven against a temp root so it needs no
+    /// process-cwd change: both files land at their single-source paths with the code
+    /// facts in them.
+    #[test]
+    fn write_docs_writes_both_outputs_under_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let written = write_docs(dir.path()).unwrap();
+        let skill_path = dir.path().join(USING_RIGGER_SKILL_REL);
+        let handbook_path = dir.path().join(HANDBOOK_DISCIPLINE_REL);
+        assert_eq!(written, vec![skill_path.clone(), handbook_path.clone()]);
+        let skill = std::fs::read_to_string(&skill_path).unwrap();
+        let handbook = std::fs::read_to_string(&handbook_path).unwrap();
+        assert!(skill.contains(DEFAULT_BASE_REF) && skill.contains("name: using-rigger"));
+        assert!(handbook.contains(DEFAULT_BASE_REF));
+        // Byte-stable: a second render writes identical bytes (the drift check needs this).
+        write_docs(dir.path()).unwrap();
+        assert_eq!(std::fs::read_to_string(&skill_path).unwrap(), skill);
+        assert_eq!(std::fs::read_to_string(&handbook_path).unwrap(), handbook);
+    }
+
+    /// Spec 20, unit 2 (the drift seam, at the unit level): `docs_drift` flags a committed
+    /// output whose bytes differ from a fresh render, is SILENT when the committed copies are
+    /// in sync, and SKIPS an absent file (an operator project that never carries rigger's own
+    /// committed docs must not be flagged). Proven against a temp root so it needs no cwd.
+    #[test]
+    fn docs_drift_flags_a_changed_file_and_skips_absent_or_in_sync_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let skill_path = root.join(USING_RIGGER_SKILL_REL);
+        let handbook_path = root.join(HANDBOOK_DISCIPLINE_REL);
+
+        // Absent (nothing rendered yet) -> no drift, no failure: these are rigger's OWN docs,
+        // which an operator project never carries, so their absence must not fail validate.
+        assert!(
+            docs_drift(root).is_empty(),
+            "absent committed docs are not drift"
+        );
+        assert!(docs_drift_failure(root).is_none());
+
+        // Rendered from code -> in sync -> still no drift.
+        write_docs(root).unwrap();
+        assert!(
+            docs_drift(root).is_empty(),
+            "freshly rendered docs must be in sync with a fresh render"
+        );
+        assert!(docs_drift_failure(root).is_none());
+
+        // Hand-edit the skill the render would never produce -> ONLY the skill drifts, and
+        // the failure names it plus the `rigger docs` fix.
+        std::fs::write(&skill_path, "hand-edited, not a render\n").unwrap();
+        assert_eq!(
+            docs_drift(root),
+            vec![skill_path.clone()],
+            "only the changed committed file is flagged"
+        );
+        let failure = docs_drift_failure(root).expect("a drifted skill must produce a failure");
+        assert!(
+            failure.contains(USING_RIGGER_SKILL_REL) && failure.contains("rigger docs"),
+            "the drift failure must name the drifted file and the `rigger docs` fix; got: {failure}"
+        );
+
+        // Drift BOTH -> both are reported, in the skill-then-handbook order write_docs uses.
+        std::fs::write(&handbook_path, "hand-edited handbook, not a render\n").unwrap();
+        assert_eq!(docs_drift(root), vec![skill_path, handbook_path]);
+    }
+
+    /// Spec 20, unit 2 (the CI-lane guard): the REAL committed `using-rigger` skill and the
+    /// handbook discipline chapter must be byte-identical to a fresh render of the current
+    /// code facts, so a changed const or template that was NOT followed by `rigger docs`
+    /// reddens `cargo test` in CI - not only `rigger validate` on a live checkout (the
+    /// validate fixture renders fresh in a temp project, so it is always in sync THERE and
+    /// cannot catch real repo drift). Reads the committed files from the crate manifest dir.
+    #[test]
+    fn committed_using_rigger_docs_are_in_sync_with_a_fresh_render() {
+        let ctx = docs_context();
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+        for (rel, fresh) in [
+            (
+                USING_RIGGER_SKILL_REL,
+                rigger::docs::render_using_rigger_skill(&ctx),
+            ),
+            (
+                HANDBOOK_DISCIPLINE_REL,
+                rigger::docs::render_handbook_discipline(&ctx),
+            ),
+        ] {
+            let path = manifest.join(rel);
+            let committed = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("read committed {}: {e}", path.display()));
+            assert_eq!(
+                committed, fresh,
+                "the committed {rel} has drifted from a fresh render; run `rigger docs` and \
+                 commit the result so the discipline matches the code"
+            );
+        }
+    }
+
+    /// Spec 19a, unit 1 (the shared current-blocker classifier): `rigger status` and the
+    /// dashboard render the SAME one-line current-blocker per unfinished unit, from ONE
+    /// classifier - covering building, reject-recurrence (#n/max), approved-not-integrated,
+    /// escalated, and the run-level budget halt. Proven over the PRODUCTION render of each
+    /// surface: the exact `Vec<String>` `cmd_status` prints (via `status_blocker_lines`)
+    /// versus the `line` field the dashboard serializes into its `/api/state` snapshot (via
+    /// `dash::build_state`). Byte-identical lines are the structural proof there is one
+    /// shared classifier, not two that can drift.
+    #[test]
+    fn status_and_dashboard_render_the_same_current_blocker_lines() {
+        use rigger::contextgraph::Graph;
+        use std::collections::HashMap;
+
+        // A run holding a unit in every classifier arm, plus a live budget halt. The
+        // BudgetExhausted is LAST (highest position) so it is the current run-level blocker,
+        // not a stale one a resume progressed past.
+        let mut events = vec![
+            Event::new(ledger::TYPE_UNIT_STARTED, br#"{"id":"u-build"}"#.to_vec()),
+            Event::new(ledger::TYPE_UNIT_STARTED, br#"{"id":"u-fail"}"#.to_vec()),
+            Event::new(
+                ledger::TYPE_UNIT_FAILED,
+                br#"{"id":"u-fail","attempts":2}"#.to_vec(),
+            ),
+            Event::new(ledger::TYPE_UNIT_STARTED, br#"{"id":"u-appr"}"#.to_vec()),
+            Event::new(
+                ledger::TYPE_UNIT_STATUS,
+                br#"{"id":"u-appr","status":"reviewed"}"#.to_vec(),
+            ),
+            Event::new(ledger::TYPE_UNIT_STARTED, br#"{"id":"u-esc"}"#.to_vec()),
+            Event::new(ledger::TYPE_UNIT_ESCALATED, br#"{"id":"u-esc"}"#.to_vec()),
+            Event::new(
+                conductor::TYPE_BUDGET_EXHAUSTED,
+                br#"{"budget":200,"spawns":200}"#.to_vec(),
+            ),
+        ];
+        for (i, e) in events.iter_mut().enumerate() {
+            e.position = (i + 1) as u64;
+        }
+        let max_retries = 6;
+
+        // The `rigger status` production render: the exact lines cmd_status prints.
+        let status_lines = status_blocker_lines(&events, max_retries).unwrap();
+
+        // The dashboard production render: the `line` fields in the /api/state snapshot.
+        let state = dash::build_state(
+            &events,
+            &Graph::default(),
+            false,
+            &[],
+            &HashMap::new(),
+            max_retries,
+        )
+        .unwrap();
+        let dash_lines: Vec<String> = state.blockers.iter().map(|b| b.line.clone()).collect();
+
+        // One shared classifier: byte-identical lines on both surfaces.
+        assert_eq!(
+            status_lines, dash_lines,
+            "rigger status and the dashboard must render identical current-blocker lines"
+        );
+
+        // Every required kind is covered, deterministically ordered (run-level budget first,
+        // then units lexically).
+        assert_eq!(
+            status_lines,
+            vec![
+                "run: budget spent 200/200 (raise defaults.budget and resume)".to_string(),
+                "u-appr: approved, not yet integrated (review passed; integration pending)"
+                    .to_string(),
+                "u-build: building (attempt 1)".to_string(),
+                "u-esc: escalated (awaiting a human)".to_string(),
+                "u-fail: reject-recurrence #2/6 (remediating)".to_string(),
+            ]
+        );
+    }
+
     // ---- `rigger validate` advisories (spec 05:55): pure seams + drift compare ----
 
     #[test]
@@ -5282,6 +7615,172 @@ mod tests {
         );
     }
 
+    // ---- spec 18, criterion 9: workflow-drift "which side is stale" diagnostic --------
+
+    #[test]
+    fn drift_side_names_the_binary_stale_only_when_the_installed_workflow_is_provably_newer() {
+        // This binary's build is a PROPER ANCESTOR of the build that wrote the installed
+        // workflow: the installed workflow is newer, so the BINARY is stale.
+        let binary_is_ancestor = |ancestor: &str, descendant: &str| -> Option<bool> {
+            Some(ancestor == "binary" && descendant == "installed")
+        };
+        assert_eq!(
+            drift_side(Some("installed"), "binary", binary_is_ancestor),
+            DriftSide::BinaryStale,
+            "a provably-newer installed workflow makes the binary stale"
+        );
+
+        // The installed workflow's build is OLDER (this binary is not its ancestor): the
+        // WORKFLOW is stale.
+        assert_eq!(
+            drift_side(Some("installed"), "binary", |_, _| Some(false)),
+            DriftSide::WorkflowStale,
+            "an older installed workflow makes the workflow stale"
+        );
+
+        // Undecidable order (git cannot resolve one of the ids, e.g. an operator project
+        // that lacks rigger's history): fall back to the actionable refresh directive.
+        assert_eq!(
+            drift_side(Some("installed"), "binary", |_, _| None),
+            DriftSide::WorkflowStale,
+            "an undecidable order falls back to refreshing the workflow"
+        );
+
+        // No recorded provenance (an older install with no sidecar): refresh directive, and
+        // the ancestry oracle is never consulted.
+        assert_eq!(
+            drift_side(None, "binary", |_, _| panic!(
+                "ancestry must not be consulted without a recorded provenance"
+            )),
+            DriftSide::WorkflowStale,
+            "a missing provenance falls back to refreshing the workflow"
+        );
+
+        // The installed build EQUALS this binary but the content drifted (a local
+        // hand-edit): refresh directive, ancestry never consulted.
+        assert_eq!(
+            drift_side(Some("binary"), "binary", |_, _| panic!(
+                "ancestry must not be consulted for a same-build hand-edit"
+            )),
+            DriftSide::WorkflowStale,
+            "a same-build content edit falls back to refreshing the workflow"
+        );
+    }
+
+    #[test]
+    fn workflow_drift_advisory_names_which_side_is_stale_and_never_says_they_differ() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let path = workflow_path(root);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+
+        // No drift (byte-identical to the embedded copy): no advisory at all.
+        std::fs::write(&path, RIGGER_WORKFLOW).unwrap();
+        assert!(
+            workflow_drift_advisory(root, "binary", |_, _| None).is_none(),
+            "no advisory when the installed workflow matches the embedded copy"
+        );
+
+        // Drift the installed workflow and record it as written by a NEWER build.
+        std::fs::write(&path, "// drifted installed workflow\n").unwrap();
+        std::fs::write(workflow_provenance_path(root), "installed-newer\n").unwrap();
+        let binary_stale = workflow_drift_advisory(root, "binary-old", |anc, desc| {
+            Some(anc == "binary-old" && desc == "installed-newer")
+        })
+        .expect("a drifted workflow yields an advisory");
+        assert!(
+            binary_stale.contains("the binary is stale")
+                && binary_stale.to_lowercase().contains("rebuild")
+                && binary_stale.contains("installed-newer")
+                && binary_stale.contains("binary-old"),
+            "the binary-stale advisory names the binary as stale, says rebuild, and cites \
+             both provenances; got: {binary_stale}"
+        );
+        assert!(
+            !binary_stale.contains("they differ"),
+            "the advisory must never be the ambiguous 'they differ'; got: {binary_stale}"
+        );
+
+        // Same drifted file, but recorded as an OLDER build: the WORKFLOW is stale.
+        std::fs::write(workflow_provenance_path(root), "installed-old\n").unwrap();
+        let workflow_stale = workflow_drift_advisory(root, "binary-new", |_, _| Some(false))
+            .expect("a drifted workflow yields an advisory");
+        assert!(
+            workflow_stale.contains("the installed workflow is stale")
+                && workflow_stale.contains("rigger setup")
+                && workflow_stale.contains(".claude/workflows/rigger.js"),
+            "the workflow-stale advisory names the workflow as stale, says `rigger setup`, \
+             and names the file; got: {workflow_stale}"
+        );
+        assert!(
+            !workflow_stale.contains("they differ"),
+            "the advisory must never be the ambiguous 'they differ'; got: {workflow_stale}"
+        );
+    }
+
+    #[test]
+    fn git_is_ancestor_decides_commit_order_in_a_real_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@e")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@e")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8(out.stdout).unwrap().trim().to_string()
+        };
+        git(&["init", "-q"]);
+        std::fs::write(root.join("a"), "1").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-q", "-m", "one"]);
+        let first = git(&["rev-parse", "HEAD"]);
+        std::fs::write(root.join("a"), "2").unwrap();
+        git(&["commit", "-q", "-am", "two"]);
+        let second = git(&["rev-parse", "HEAD"]);
+
+        assert_eq!(
+            git_is_ancestor(root, &first, &second),
+            Some(true),
+            "the parent commit is an ancestor of the child"
+        );
+        assert_eq!(
+            git_is_ancestor(root, &second, &first),
+            Some(false),
+            "the child commit is not an ancestor of the parent"
+        );
+        assert_eq!(
+            git_is_ancestor(root, &"0".repeat(40), &second),
+            None,
+            "an unresolvable id makes the order undecidable"
+        );
+    }
+
+    #[test]
+    fn install_workflow_records_the_build_provenance_beside_the_workflow() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        assert!(
+            installed_workflow_provenance(root).is_none(),
+            "no recorded provenance before any install"
+        );
+        install_workflow(root).expect("a fresh install must succeed");
+        assert_eq!(
+            installed_workflow_provenance(root).as_deref(),
+            Some(BUILD_PROVENANCE),
+            "a fresh install records THIS binary's build provenance beside the workflow"
+        );
+    }
+
     #[test]
     fn validate_advisories_warns_on_workflow_drift_naming_the_file() {
         let dir = tempfile::tempdir().unwrap();
@@ -5311,6 +7810,150 @@ mod tests {
     fn write_file(path: &Path, bytes: &[u8]) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, bytes).unwrap();
+    }
+
+    /// `git init` a repo at `root` and commit a single file `rel` with `contents`, so a
+    /// base ref like `HEAD` resolves and `rel` is present in its tree (for the
+    /// missing-files base-refusal tests, spec 18 criterion 7).
+    fn init_committed_repo(root: &Path, rel: &str, contents: &str) {
+        for args in [
+            &["init", "-q"][..],
+            &["config", "user.email", "t@example.com"],
+            &["config", "user.name", "t"],
+        ] {
+            assert!(
+                Command::new("git")
+                    .args(args)
+                    .current_dir(root)
+                    .status()
+                    .unwrap()
+                    .success(),
+                "git {args:?} must succeed"
+            );
+        }
+        write_file(&root.join(rel), contents.as_bytes());
+        for args in [&["add", rel][..], &["commit", "-q", "-m", "seed"]] {
+            assert!(
+                Command::new("git")
+                    .args(args)
+                    .current_dir(root)
+                    .status()
+                    .unwrap()
+                    .success(),
+                "git {args:?} must succeed"
+            );
+        }
+    }
+
+    #[test]
+    fn refuse_when_base_lacks_spec_paths_refuses_on_total_absence_and_names_a_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        init_committed_repo(root, "src/main.rs", "fn main() {}\n");
+        let repo = root.to_str().unwrap();
+        // The spec's only path token is absent from HEAD => refuse, naming it AND --base.
+        let criteria = vec!["the file crates/foo/src/bar.rs exports Zed".to_string()];
+        let err = refuse_when_base_lacks_spec_paths(
+            repo,
+            "rigger step",
+            "HEAD",
+            RunBranchSetup::CreatedFromBase,
+            &criteria,
+        )
+        .expect_err("a spec referencing only-absent paths must refuse");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("crates/foo/src/bar.rs"),
+            "the refusal must name the missing path; got: {msg}"
+        );
+        assert!(
+            msg.contains("--base"),
+            "the refusal must suggest --base; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn refuse_when_base_lacks_spec_paths_proceeds_when_the_base_contains_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        init_committed_repo(root, "src/main.rs", "fn main() {}\n");
+        let repo = root.to_str().unwrap();
+        let present = vec!["touches `src/main.rs`".to_string()];
+        assert!(
+            refuse_when_base_lacks_spec_paths(
+                repo,
+                "rigger step",
+                "HEAD",
+                RunBranchSetup::CreatedFromBase,
+                &present,
+            )
+            .is_ok(),
+            "a spec whose referenced path exists in the base must proceed"
+        );
+    }
+
+    #[test]
+    fn refuse_when_base_lacks_spec_paths_partial_match_warns_and_proceeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        init_committed_repo(root, "src/main.rs", "fn main() {}\n");
+        let repo = root.to_str().unwrap();
+        // One present, one absent => partial => warn + proceed, never a refusal.
+        let mixed = vec!["touches src/main.rs and adds crates/new/src/lib.rs".to_string()];
+        assert!(
+            refuse_when_base_lacks_spec_paths(
+                repo,
+                "rigger step",
+                "HEAD",
+                RunBranchSetup::CreatedFromBase,
+                &mixed,
+            )
+            .is_ok(),
+            "a partial match must proceed (some named paths may be to-be-created)"
+        );
+    }
+
+    #[test]
+    fn refuse_when_base_lacks_spec_paths_skips_without_tokens_or_off_a_fresh_from_base_anchor() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        init_committed_repo(root, "src/main.rs", "fn main() {}\n");
+        let repo = root.to_str().unwrap();
+        // No path-like tokens => nothing to check, even on a fresh-from-base anchor.
+        let no_paths = vec!["the store passes its contract suite".to_string()];
+        assert!(refuse_when_base_lacks_spec_paths(
+            repo,
+            "rigger step",
+            "HEAD",
+            RunBranchSetup::CreatedFromBase,
+            &no_paths,
+        )
+        .is_ok());
+        // Only-absent paths, but a REUSED or HEAD-fallback anchor skips the check: the run
+        // already began (or has no resolvable base), so it must never refuse mid-run.
+        let absent = vec!["the file crates/foo/src/bar.rs".to_string()];
+        assert!(
+            refuse_when_base_lacks_spec_paths(
+                repo,
+                "rigger step",
+                "HEAD",
+                RunBranchSetup::Reused,
+                &absent,
+            )
+            .is_ok(),
+            "a reused run branch must not re-refuse"
+        );
+        assert!(
+            refuse_when_base_lacks_spec_paths(
+                repo,
+                "rigger step",
+                "HEAD",
+                RunBranchSetup::CreatedFromHead,
+                &absent,
+            )
+            .is_ok(),
+            "a HEAD fallback (no resolvable base) must not refuse"
+        );
     }
 
     #[test]
@@ -5605,6 +8248,189 @@ mod tests {
         assert!(block.contains("branch with no live unit: rigger/u/unit-99-ghost"));
     }
 
+    // ---- spec 34 (criterion 2): the orphan-sweep backstop reclaim seam --------------
+
+    #[test]
+    fn reclaim_orphan_scratch_removes_non_live_owned_scratch_and_spares_live_and_shared_areas() {
+        // spec 34 (criterion 2): the ORPHAN-SWEEP reclaims every scratch entry no LIVE unit of
+        // the current run owns - a prior run's stranded worktree/cache, or a `cargo-target-<slug>`
+        // an agent wrote outside its assigned path - keyed on the SAME liveness-ownership
+        // predicate the residue report reads. The never-delete-live-owned rail (spec 34 Global
+        // Constraint): a LIVE unit's worktree/cache is spared, proving the sweep can never remove
+        // scratch a live spawn/run owns; the shared live-spawn areas (`agent-scratch`,
+        // `agent-live`, the bare `cargo-target` a live spawn builds into) are spared too.
+        let dir = tempfile::tempdir().unwrap();
+        let scratch = dir.path();
+
+        // A LIVE unit (`rigger/u/live-unit`, non-terminal) owns a worktree + per-unit cache.
+        write_file(
+            &scratch.join("rigger-wt-live-unit").join("keep.txt"),
+            &[0u8; 8],
+        );
+        write_file(
+            &scratch.join("cargo-target-live-unit").join("live.rlib"),
+            &[0u8; 8],
+        );
+        // A DEAD (terminal) unit's stranded worktree + per-unit cache - residue.
+        write_file(
+            &scratch.join("rigger-wt-dead-unit").join("stale.txt"),
+            &[0u8; 8],
+        );
+        write_file(
+            &scratch.join("cargo-target-dead-unit").join("dead.rlib"),
+            &[0u8; 8],
+        );
+        // An ad-hoc `cargo-target-<slug>` an agent wrote outside its assigned path (no live
+        // owner) - the unbounded per-agent build-cache leak spec 34 names.
+        write_file(
+            &scratch.join("cargo-target-adhoc-x1").join("junk.rlib"),
+            &[0u8; 8],
+        );
+        // A prior run's killed-process leftover worktree (no live unit) - residue.
+        write_file(
+            &scratch
+                .join("rigger-wt-old-run-deadbeef")
+                .join("leftover.txt"),
+            &[0u8; 8],
+        );
+        // The shared live-spawn areas a running spawn is still using - MUST be spared.
+        write_file(
+            &scratch
+                .join("agent-scratch")
+                .join("probe")
+                .join("Cargo.toml"),
+            b"[package]",
+        );
+        write_file(&scratch.join("agent-live").join("run").join("marker"), b"");
+        write_file(&scratch.join("cargo-target").join("shared.rlib"), &[0u8; 8]);
+
+        let run_units = RunUnits {
+            live_branches: slugs(["rigger/u/live-unit"]),
+            dead_slugs: slugs(["dead-unit"]),
+        };
+        // Empty repo -> the git-aware worktree deregister is skipped and a plain removal runs,
+        // which is all the synthetic (non-registered) worktree dirs here need.
+        let removed = reclaim_orphan_scratch("", scratch.to_str().unwrap(), &run_units);
+        assert_eq!(
+            removed, 4,
+            "exactly the four non-live-owned entries are reclaimed"
+        );
+
+        // Live-owned scratch: spared.
+        assert!(
+            scratch.join("rigger-wt-live-unit").exists(),
+            "the LIVE unit's worktree is spared (keyed on liveness)"
+        );
+        assert!(
+            scratch.join("cargo-target-live-unit").exists(),
+            "the LIVE unit's per-unit build cache is in use, not residue"
+        );
+        // Shared live-spawn areas: spared (reclaimed by the run teardown, never this backstop).
+        assert!(
+            scratch.join("agent-scratch").exists(),
+            "agent-scratch (in-flight worker probe/build area) is spared"
+        );
+        assert!(
+            scratch.join("agent-live").exists(),
+            "agent-live (per-spawn liveness markers) is spared"
+        );
+        assert!(
+            scratch.join("cargo-target").exists(),
+            "the bare shared cargo-target a live spawn may still build into is spared"
+        );
+        // Non-live-owned scratch: reclaimed.
+        assert!(
+            !scratch.join("rigger-wt-dead-unit").exists(),
+            "the DEAD unit's worktree is reclaimed"
+        );
+        assert!(
+            !scratch.join("cargo-target-dead-unit").exists(),
+            "the DEAD unit's per-unit cache is reclaimed"
+        );
+        assert!(
+            !scratch.join("cargo-target-adhoc-x1").exists(),
+            "an ad-hoc cargo-target outside a spawn's assigned path is reclaimed"
+        );
+        assert!(
+            !scratch.join("rigger-wt-old-run-deadbeef").exists(),
+            "a prior run's leftover worktree is reclaimed"
+        );
+
+        // Idempotent: a re-run over the now-clean root reclaims nothing and errors on nothing.
+        assert_eq!(
+            reclaim_orphan_scratch("", scratch.to_str().unwrap(), &run_units),
+            0,
+            "the sweep is idempotent - a clean root reclaims nothing"
+        );
+    }
+
+    // ---- `rigger validate` leaked-process advisory (spec 23, unit 2) ----------------
+
+    #[test]
+    fn leaked_process_advisories_name_a_process_rooted_under_the_scratch_root() {
+        // spec 23 unit 2: a process whose cwd is under the scratch root is surfaced as a
+        // warning-only advisory naming its pid, so a leaked build/tool is visible even when no
+        // teardown is running. Consumes the SAME scan authority the teardown reap uses.
+        let dir = tempfile::tempdir().unwrap();
+        let scratch = dir.path().join("tmp");
+        let inside = scratch.join("probe");
+        std::fs::create_dir_all(&inside).unwrap();
+
+        let mut child = Command::new("sleep")
+            .arg("300")
+            .current_dir(&inside)
+            .spawn()
+            .expect("spawn probe child");
+
+        // Wait until the kernel reports the child rooted under the scratch root, then capture.
+        let mut advisories = Vec::new();
+        for _ in 0..200 {
+            let a = leaked_process_advisories(&scratch);
+            if a.iter()
+                .any(|line| line.contains(&format!("pid {}", child.id())))
+            {
+                advisories = a;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+
+        // Reap the fixture before asserting so a failed assert never leaks the sleeper.
+        let _ = child.kill();
+        let _ = child.wait();
+
+        assert!(
+            advisories.iter().any(|line| line.starts_with("warning:")
+                && line.contains("scratch root")
+                && line.contains(&format!("pid {}", child.id()))),
+            "a process rooted under the scratch root yields a warning-only advisory naming its \
+             pid; got: {advisories:?}"
+        );
+    }
+
+    #[test]
+    fn leaked_process_advisories_is_empty_when_no_process_is_rooted_under_the_scratch_root() {
+        // None rooted under the scratch root: the advisory list is empty, so validate stays
+        // silent about leaked processes.
+        let dir = tempfile::tempdir().unwrap();
+        let scratch = dir.path().join("tmp");
+        std::fs::create_dir_all(&scratch).unwrap();
+        assert!(
+            leaked_process_advisories(&scratch).is_empty(),
+            "an empty scratch root yields no leaked-process advisory"
+        );
+    }
+
+    #[test]
+    fn leaked_process_advisories_is_a_graceful_no_op_when_the_scratch_root_is_absent() {
+        // Platform tolerance: an absent scratch root - the stand-in for an absent `/proc`,
+        // since the shared scanner short-circuits to empty in both cases - yields an empty
+        // list and NEVER an error, so validate keeps working on any platform.
+        let dir = tempfile::tempdir().unwrap();
+        let absent = dir.path().join("never-created");
+        assert!(leaked_process_advisories(&absent).is_empty());
+    }
+
     // ---- `rigger result`: argument parsing and outcome shaping (the stepwise CLI) ----
 
     #[test]
@@ -5697,6 +8523,129 @@ mod tests {
             None,
             "without a git scope the walk is unsanctioned"
         );
+    }
+
+    #[test]
+    fn reap_then_remove_dir_reaps_processes_rooted_inside_then_removes_the_dir() {
+        // spec 23: the fixpoint scratch-area sweep (cmd_step) reaps every process rooted in a
+        // scratch dir BEFORE removing it, so a build or tool a worker left running under
+        // agent-scratch does not outlive the deleted dir. A process rooted OUTSIDE the swept dir
+        // is untouched (the safety boundary). The inside child IGNORES SIGTERM, so only the
+        // SIGKILL escalation can reap it - exercising the full SIGTERM-then-SIGKILL mechanism at
+        // this second teardown point (the first is Worktree::remove).
+        let root = tempfile::tempdir().unwrap();
+        let swept = root.path().join("agent-scratch");
+        std::fs::create_dir_all(&swept).unwrap();
+
+        let mut inside = Command::new("sh")
+            .arg("-c")
+            .arg("trap '' TERM; while :; do sleep 1; done")
+            .current_dir(&swept)
+            .spawn()
+            .expect("spawn inside child");
+        let mut outside = Command::new("sleep")
+            .arg("300")
+            .current_dir(root.path())
+            .spawn()
+            .expect("spawn outside child");
+
+        let detected = (0..200).any(|_| {
+            if rigger::reap::processes_rooted_under(&swept)
+                .iter()
+                .any(|(pid, _)| *pid == inside.id())
+            {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            false
+        });
+        assert!(
+            detected,
+            "precondition: the inside child is rooted in the swept dir"
+        );
+
+        reap_then_remove_dir(&swept);
+
+        let inside_died = (0..200).any(|_| {
+            if matches!(inside.try_wait(), Ok(Some(_))) {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            false
+        });
+        let outside_alive = matches!(outside.try_wait(), Ok(None));
+
+        let _ = outside.kill();
+        let _ = outside.wait();
+        if !inside_died {
+            let _ = inside.kill();
+            let _ = inside.wait();
+        }
+
+        assert!(
+            inside_died,
+            "a process rooted in the swept scratch dir must be reaped before its removal"
+        );
+        assert!(
+            outside_alive,
+            "a process rooted OUTSIDE the swept dir must survive the sweep (safety boundary)"
+        );
+        assert!(
+            !swept.exists(),
+            "the swept scratch dir is removed after its rooted processes are reaped"
+        );
+    }
+
+    #[test]
+    fn reclaim_run_scratch_removes_the_run_level_areas_and_spares_per_unit_scratch() {
+        // spec 34, criterion 3: the terminal-state run teardown reclaims EXACTLY the run-level
+        // shared areas - `agent-scratch`, `agent-live`, and the SHARED build cache
+        // (`cargo-target` + `target` directly under the root, the driver's `CARGO_TARGET_DIR`) -
+        // and NOTHING else. Per-unit worktrees (`rigger-wt-<slug>`) and per-unit build caches
+        // (`cargo-target-<slug>`) are owned by their unit's own terminal reclamation (Worktree::
+        // remove / sweep_terminal / the orphan-sweep), never this run-level teardown, so they are
+        // SPARED here even though `cargo-target-<slug>` shares the build-cache prefix.
+        let root = tempfile::tempdir().unwrap();
+        let base = root.path();
+
+        // The four run-level areas the teardown OWNS.
+        for area in ["agent-scratch", "agent-live", "cargo-target", "target"] {
+            let dir = base.join(area);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("residue.bin"), [0u8; 32]).unwrap();
+        }
+
+        // Scratch the teardown must SPARE: a per-unit worktree, its per-unit build cache (whose
+        // `cargo-target-` prefix must NOT be mistaken for the bare shared `cargo-target`), and an
+        // unrelated file.
+        let unit_wt = base.join("rigger-wt-some-unit");
+        std::fs::create_dir_all(&unit_wt).unwrap();
+        let unit_cache = base.join("cargo-target-some-unit");
+        std::fs::create_dir_all(&unit_cache).unwrap();
+        let unrelated = base.join("keep.txt");
+        std::fs::write(&unrelated, b"durable").unwrap();
+
+        reclaim_run_scratch(base.to_str().unwrap());
+
+        for area in ["agent-scratch", "agent-live", "cargo-target", "target"] {
+            assert!(
+                !base.join(area).exists(),
+                "the run teardown must reclaim the run-level {area}"
+            );
+        }
+        assert!(
+            unit_wt.exists(),
+            "a per-unit worktree is owned by its unit's terminal reclamation, not the run teardown"
+        );
+        assert!(
+            unit_cache.exists(),
+            "a per-unit cargo-target-<slug> cache must be spared (prefix must not match the bare shared cache)"
+        );
+        assert!(unrelated.exists(), "an unrelated file must be spared");
+
+        // Idempotent + platform-tolerant: a second call over the now-empty root is a graceful
+        // no-op (the areas are already gone), never a panic or error.
+        reclaim_run_scratch(base.to_str().unwrap());
     }
 
     #[test]
@@ -6280,6 +9229,113 @@ mod tests {
         assert!(parse_run_args(&["a".into(), "b".into()]).is_err());
     }
 
+    /// `rigger run`/`rigger serve` accept `--base <ref>` (spec 18, criterion 6): it is no
+    /// longer an "unknown flag". The raw argv base is captured (None when absent, so the
+    /// default resolves to `origin/main`), it composes with a positional spec in any order,
+    /// and a valueless `--base` is a clear error.
+    #[test]
+    fn parse_run_args_accepts_base_alongside_a_spec() {
+        let r = |a: &[&str]| parse_run_args(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+
+        // No --base: the raw base is None (it resolves to the default downstream).
+        assert_eq!(r(&[]).unwrap().base, None);
+
+        // `rigger run <spec> --base <ref>` accepts BOTH the spec and the flag, no
+        // "unknown flag" / "unexpected second positional".
+        let a = r(&["spec.md", "--base", "my-feature"]).unwrap();
+        assert_eq!(a.spec.as_deref(), Some("spec.md"));
+        assert_eq!(a.base.as_deref(), Some("my-feature"));
+
+        // Order-free: the flag may precede the positional.
+        let a = r(&["--base", "origin/next", "spec.md"]).unwrap();
+        assert_eq!(a.spec.as_deref(), Some("spec.md"));
+        assert_eq!(a.base.as_deref(), Some("origin/next"));
+
+        // A valueless --base is a hard error naming the fix, never a silent default.
+        let err = match r(&["--base"]) {
+            Ok(_) => panic!("--base without a value must error"),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            err.contains("--base expects a ref"),
+            "the error must explain --base needs a ref; got: {err:?}"
+        );
+    }
+
+    /// [`resolve_run_base`] fixes the run-branch base precedence for a run entry:
+    /// an explicit `--base` flag wins, then the `RIGGER_BASE` environment override (how
+    /// `rigger workflow` threads its `--base` down through the shim to the served
+    /// `rigger serve`), then the load-bearing [`DEFAULT_BASE_REF`]. The bool reports
+    /// whether the base was chosen explicitly (flag or env) vs. defaulted.
+    #[test]
+    fn resolve_run_base_precedence_flag_then_env_then_default() {
+        // The explicit flag wins even when the env is also set.
+        assert_eq!(
+            resolve_run_base(Some("flag-ref"), Some("env-ref")),
+            ("flag-ref".to_string(), true)
+        );
+        // No flag: the RIGGER_BASE env is honored (the `rigger workflow` -> shim thread).
+        assert_eq!(
+            resolve_run_base(None, Some("env-ref")),
+            ("env-ref".to_string(), true)
+        );
+        // Neither: the default, NOT flagged explicit.
+        assert_eq!(
+            resolve_run_base(None, None),
+            (DEFAULT_BASE_REF.to_string(), false)
+        );
+        assert_eq!(resolve_run_base(None, None).0, "origin/main");
+        // An empty env value is treated as unset (never anchors on "").
+        assert_eq!(
+            resolve_run_base(None, Some("")),
+            (DEFAULT_BASE_REF.to_string(), false)
+        );
+    }
+
+    /// `rigger workflow` accepts an optional spec AND `--base <ref>` (spec 18, criterion 6):
+    /// `--base` is no longer rejected as "expected at most one spec path". Spec and flag
+    /// compose in any order; a second positional and a valueless `--base` are hard errors.
+    #[test]
+    fn parse_workflow_args_reads_spec_and_base() {
+        let w =
+            |a: &[&str]| parse_workflow_args(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+
+        // Bare: no spec, no base.
+        let (spec, base) = w(&[]).unwrap();
+        assert!(spec.is_none());
+        assert!(base.is_none());
+
+        // Just a spec (the pre-existing behavior).
+        let (spec, base) = w(&["spec.md"]).unwrap();
+        assert_eq!(spec.as_deref(), Some("spec.md"));
+        assert!(base.is_none());
+
+        // `rigger workflow <spec> --base <ref>` and the order-flipped form both parse.
+        let (spec, base) = w(&["spec.md", "--base", "my-feature"]).unwrap();
+        assert_eq!(spec.as_deref(), Some("spec.md"));
+        assert_eq!(base.as_deref(), Some("my-feature"));
+        let (spec, base) = w(&["--base", "my-feature", "spec.md"]).unwrap();
+        assert_eq!(spec.as_deref(), Some("spec.md"));
+        assert_eq!(base.as_deref(), Some("my-feature"));
+
+        // `--base` with no spec is fine (the default spec-less workflow, re-anchored).
+        let (spec, base) = w(&["--base", "my-feature"]).unwrap();
+        assert!(spec.is_none());
+        assert_eq!(base.as_deref(), Some("my-feature"));
+
+        // A second spec path is still the same clear error; a valueless --base names the fix.
+        let err = w(&["a.md", "b.md"]).unwrap_err().to_string();
+        assert!(
+            err.contains("expected at most one spec path"),
+            "a second positional must be rejected; got: {err:?}"
+        );
+        let err = w(&["--base"]).unwrap_err().to_string();
+        assert!(
+            err.contains("--base expects a ref"),
+            "the error must explain --base needs a ref; got: {err:?}"
+        );
+    }
+
     /// `rigger step` accepts `--spec` and `--base`: `--base` defaults to `origin/main`,
     /// both flags require a value, and an unknown flag or bare positional is rejected.
     #[test]
@@ -6640,6 +9696,255 @@ mod tests {
         );
     }
 
+    #[test]
+    fn migrate_project_identity_rekeys_graph_rows_so_pre_mint_history_is_not_orphaned() {
+        use rigger::eventstore::ExpectedRevision;
+        // Spec 28 GC5 (backward-compat): a single-project deployment behaves EXACTLY as before,
+        // even across the spec-09 identity mint. The identity migration renames event STREAMS
+        // (`rename_stream_prefix`), but the graph folds incrementally, so the renamed streams are
+        // NEVER re-folded - its pre-mint rows keep the legacy scope. Once the read filter
+        // (criterion 2) scopes reads to the minted identity, that pre-mint history would be
+        // SILENTLY ORPHANED. `migrate_project_identity` must therefore re-key the graph rows the
+        // same way it renames the streams, so the minted read still returns the pre-mint history.
+        let dir = tempfile::tempdir().unwrap();
+        let store_path = dir.path().join("events.db");
+        let graph_path = dir.path().join("graph.db");
+        let store_path = store_path.to_str().unwrap();
+        let graph_path = graph_path.to_str().unwrap();
+
+        // The deployment runs under its basename identity "oldname": it appends a stream under
+        // the legacy namespace and folds a decision into the graph tagged "oldname".
+        let backend = Store::open(store_path).unwrap();
+        backend
+            .append(
+                "proj-oldname-run",
+                ExpectedRevision::Any,
+                &[Event::new("UnitStarted", b"{}".to_vec())],
+            )
+            .unwrap();
+        {
+            let legacy_graph = Projector::open(graph_path, "oldname").unwrap();
+            let payload = serde_json::json!({
+                "id": "pre-d", "summary": "s", "governs": ["pre.rs"], "supersedes": "",
+            });
+            let mut e = Event::new(
+                contextgraph::TYPE_DECISION_MADE,
+                serde_json::to_vec(&payload).unwrap(),
+            );
+            e.position = 1;
+            legacy_graph.apply(&e).unwrap();
+        }
+
+        // It then mints `.rigger/project.id`: the migration opens the graph under the MINTED
+        // identity and migrates. Before the re-key fix the graph rows kept the legacy scope, so
+        // the minted read returned nothing - the pre-mint history was orphaned.
+        let graph = Projector::open(graph_path, "mint123").unwrap();
+        let moved = migrate_project_identity(&backend, "mint123", "oldname", Some(&graph)).unwrap();
+        assert_eq!(
+            moved,
+            Some(1),
+            "the one legacy stream is renamed to the minted namespace"
+        );
+
+        // Backward-compat: the minted projector still returns the pre-mint decision and its
+        // governed file - the single-project deployment behaves EXACTLY as before the mint.
+        let g = graph.subgraph(&["pre.rs".to_string()], 2).unwrap();
+        assert!(
+            g.nodes.iter().any(|n| n.id == "pre-d"),
+            "the pre-mint decision is re-keyed to the minted scope and stays reachable, got {g:?}"
+        );
+        assert!(
+            g.nodes.iter().any(|n| n.id == "pre.rs"),
+            "the pre-mint governed file is re-keyed too, got {g:?}"
+        );
+        assert_eq!(
+            graph.resolve("pre-d").unwrap().as_deref(),
+            Some("pre-d"),
+            "the pre-mint node resolves under the minted identity after migration"
+        );
+    }
+
+    #[test]
+    fn migrate_project_identity_rekeys_the_graph_before_the_irreversible_stream_rename() {
+        use rigger::eventstore::ExpectedRevision;
+        // Spec 28 GC5 (backward-compat), crash-safety ORDERING. The identity migration mutates
+        // TWO databases with no shared transaction: it re-keys the graph (graph.db) and renames
+        // the event streams (events.db). `decide_migration` returns `Rename` ONLY while the legacy
+        // namespace still holds streams, and `rename_stream_prefix` is the SOLE step that clears
+        // it - so the rename is the irreversible commit point and MUST run LAST. Were the rename
+        // to run first, a graph re-key that then failed (a composite `(id, project)` key collision,
+        // or a locked shared backend) would leave the streams renamed but the graph rows
+        // un-re-keyed, and because the legacy namespace is now empty a re-open would NoOp forever,
+        // permanently orphaning the pre-mint graph history under the minted read filter. Pin the
+        // ordering: a FAILED re-key must leave the stream rename UNCOMMITTED, so the whole
+        // migration stays retryable on recovery.
+        let dir = tempfile::tempdir().unwrap();
+        let store_path = dir.path().join("events.db");
+        let graph_path = dir.path().join("graph.db");
+        let store_path = store_path.to_str().unwrap();
+        let graph_path = graph_path.to_str().unwrap();
+
+        // Pre-mint history under the legacy basename identity "oldname": a stream plus a folded
+        // decision (its node "pre-d" and its governed-file node).
+        let backend = Store::open(store_path).unwrap();
+        backend
+            .append(
+                "proj-oldname-run",
+                ExpectedRevision::Any,
+                &[Event::new("UnitStarted", b"{}".to_vec())],
+            )
+            .unwrap();
+        let apply_pre_d = |g: &Projector, pos: u64, governs: &str| {
+            let payload = serde_json::json!({
+                "id": "pre-d", "summary": "s", "governs": [governs], "supersedes": "",
+            });
+            let mut e = Event::new(
+                contextgraph::TYPE_DECISION_MADE,
+                serde_json::to_vec(&payload).unwrap(),
+            );
+            e.position = pos;
+            g.apply(&e).unwrap();
+        };
+        {
+            let legacy_graph = Projector::open(graph_path, "oldname").unwrap();
+            apply_pre_d(&legacy_graph, 1, "pre.rs");
+        }
+
+        // Force the graph re-key to FAIL: seed the MINTED scope with a node whose id ("pre-d")
+        // collides with a legacy node, so `migrate_project`'s `UPDATE nodes SET project=minted`
+        // hits the composite `(id, project)` primary key and errors (the whole re-key transaction
+        // rolls back atomically). This is one of the two `migrate_project` Err paths the design
+        // itself flags.
+        let graph = Projector::open(graph_path, "mint123").unwrap();
+        apply_pre_d(&graph, 2, "other.rs");
+
+        // The migration must ERROR (the re-key cannot complete)...
+        let err =
+            migrate_project_identity(&backend, "mint123", "oldname", Some(&graph)).unwrap_err();
+        assert!(
+            !err.to_string().is_empty(),
+            "the failed graph re-key surfaces an error"
+        );
+
+        // ...and because the re-key runs BEFORE the rename, the irreversible stream rename never
+        // committed: the legacy namespace is STILL populated and the minted namespace is STILL
+        // empty, so a re-open decides `Rename` again and the migration is retryable. (Under the
+        // rejected ordering the rename committed first, emptying the legacy namespace and stranding
+        // the graph forever.)
+        assert!(
+            !backend
+                .read_stream("proj-oldname-run", 0, Direction::Forward)
+                .unwrap()
+                .is_empty(),
+            "the stream rename did NOT commit when the graph re-key failed (rename must run last)"
+        );
+        assert!(
+            backend
+                .read_stream("proj-mint123-run", 0, Direction::Forward)
+                .unwrap()
+                .is_empty(),
+            "the aborted migration moved no history into the minted namespace"
+        );
+    }
+
+    #[test]
+    fn migrate_project_identity_recovers_from_a_crash_between_the_rekey_and_the_rename() {
+        use rigger::eventstore::ExpectedRevision;
+        // Spec 28 GC5 (backward-compat), crash-safety RECOVERY. Because the graph re-key runs
+        // BEFORE the irreversible stream rename, a crash in the window (graph re-key committed, the
+        // rename not yet) leaves the legacy namespace still populated. Recovery therefore decides
+        // `Rename` again, REPLAYS the idempotent re-key (which now moves 0 rows, never a duplicate
+        // or a collision), and completes the rename - so the pre-mint history stays visible under
+        // the minted read filter, exactly as before the mint.
+        let dir = tempfile::tempdir().unwrap();
+        let store_path = dir.path().join("events.db");
+        let graph_path = dir.path().join("graph.db");
+        let store_path = store_path.to_str().unwrap();
+        let graph_path = graph_path.to_str().unwrap();
+
+        let backend = Store::open(store_path).unwrap();
+        backend
+            .append(
+                "proj-oldname-run",
+                ExpectedRevision::Any,
+                &[Event::new("UnitStarted", b"{}".to_vec())],
+            )
+            .unwrap();
+        {
+            let legacy_graph = Projector::open(graph_path, "oldname").unwrap();
+            let payload = serde_json::json!({
+                "id": "pre-d", "summary": "s", "governs": ["pre.rs"], "supersedes": "",
+            });
+            let mut e = Event::new(
+                contextgraph::TYPE_DECISION_MADE,
+                serde_json::to_vec(&payload).unwrap(),
+            );
+            e.position = 1;
+            legacy_graph.apply(&e).unwrap();
+        }
+
+        // Reproduce the crash-window STATE the correct ordering leaves behind: the graph re-key
+        // committed (both pre-mint nodes are already at minted) but the stream rename did not.
+        let graph = Projector::open(graph_path, "mint123").unwrap();
+        assert_eq!(
+            graph.migrate_project("oldname", "mint123").unwrap(),
+            2,
+            "the crash lands AFTER the graph re-key: the two pre-mint nodes are already at minted"
+        );
+        assert!(
+            !backend
+                .read_stream("proj-oldname-run", 0, Direction::Forward)
+                .unwrap()
+                .is_empty(),
+            "the crash lands BEFORE the rename: the legacy namespace is still populated"
+        );
+
+        // Recovery: re-run the migration. It decides `Rename` again (legacy still populated),
+        // replays the idempotent re-key, and completes the rename that the crash interrupted.
+        let moved = migrate_project_identity(&backend, "mint123", "oldname", Some(&graph)).unwrap();
+        assert_eq!(
+            moved,
+            Some(1),
+            "recovery completes the stream rename the crash interrupted"
+        );
+        // The re-key was a clean 0-row no-op on the recovery replay: a further replay still moves
+        // nothing (idempotent), so recovery never duplicated or re-moved a row.
+        assert_eq!(
+            graph.migrate_project("oldname", "mint123").unwrap(),
+            0,
+            "the graph re-key is idempotent: once re-keyed, replays move 0 rows"
+        );
+
+        // Backward-compat holds after recovery: the minted read still returns the pre-mint history
+        // (exactly one un-duplicated decision node), and the rename completed.
+        let g = graph.subgraph(&["pre.rs".to_string()], 2).unwrap();
+        assert_eq!(
+            g.nodes.iter().filter(|n| n.id == "pre-d").count(),
+            1,
+            "exactly one pre-mint decision node is reachable under minted (no duplicate), got {g:?}"
+        );
+        assert_eq!(
+            graph.resolve("pre-d").unwrap().as_deref(),
+            Some("pre-d"),
+            "the pre-mint node resolves under the minted identity after recovery"
+        );
+        assert!(
+            backend
+                .read_stream("proj-oldname-run", 0, Direction::Forward)
+                .unwrap()
+                .is_empty(),
+            "the legacy namespace is empty after the recovered rename"
+        );
+        assert!(
+            backend
+                .read_stream("proj-mint123-run", 0, Direction::Forward)
+                .unwrap()
+                .iter()
+                .any(|e| e.type_ == "UnitStarted"),
+            "the pre-mint history now lives under the minted namespace"
+        );
+    }
+
     /// `rigger setup` must provision the per-project JS driver: write the three
     /// embedded runtime files into `.rigger/shim/` with the embedded content. (The
     /// npm-install step is asserted separately so this test does not depend on npm.)
@@ -6700,7 +10005,7 @@ mod tests {
         // 1. Absent -> a fresh install, written byte-identical to the embedded copy.
         assert_eq!(
             install_workflow(dir.path()).expect("installing writes the workflow file"),
-            WorkflowInstall::Installed,
+            InstallOutcome::Installed,
             "the first install reports a fresh install"
         );
         assert_eq!(
@@ -6723,7 +10028,7 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(20));
         assert_eq!(
             install_workflow(dir.path()).expect("a no-op rerun must succeed"),
-            WorkflowInstall::AlreadyCurrent,
+            InstallOutcome::AlreadyCurrent,
             "an up-to-date workflow must be detected as current"
         );
         assert_eq!(
@@ -6736,13 +10041,177 @@ mod tests {
         std::fs::write(&path, "// stale - from an older rigger build\n").unwrap();
         assert_eq!(
             install_workflow(dir.path()).expect("re-install must succeed"),
-            WorkflowInstall::Refreshed,
+            InstallOutcome::Refreshed,
             "a drifted workflow must be refreshed"
         );
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             RIGGER_WORKFLOW,
             "refreshing must overwrite the drifted workflow with the embedded content"
+        );
+    }
+
+    /// Spec 20, unit 3: `rigger setup` installs the rendered `using-rigger` skill as a
+    /// file DISTINCT from the `/rigger` workflow. It lands at
+    /// `.claude/skills/using-rigger/SKILL.md` (a loadable skill Claude Code
+    /// auto-discovers), which is not the workflow path, and it carries the rendered skill
+    /// (loadable frontmatter). Install is re-runnable exactly like the workflow: absent ->
+    /// Installed, unchanged -> a silent no-op that does not even move the mtime, drifted ->
+    /// Refreshed.
+    #[test]
+    fn setup_installs_the_using_rigger_skill_distinct_from_the_workflow() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let path = skill_install_path(root);
+        assert_eq!(
+            path,
+            root.join(".claude")
+                .join("skills")
+                .join("using-rigger")
+                .join("SKILL.md"),
+            "the skill installs at .claude/skills/using-rigger/SKILL.md"
+        );
+        assert_ne!(
+            path,
+            workflow_path(root),
+            "the installed skill must be a file DISTINCT from the /rigger workflow"
+        );
+
+        // 1. Absent -> a fresh install carrying the rendered skill (loadable frontmatter),
+        //    byte-identical to a fresh default render (no overlay in this repo).
+        assert_eq!(
+            install_skill(root).expect("installing writes the skill file"),
+            InstallOutcome::Installed,
+            "the first install reports a fresh install"
+        );
+        let installed = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            installed.starts_with("---\nname: using-rigger\n"),
+            "the installed skill must open with its loadable frontmatter; got: {}",
+            &installed[..installed.len().min(60)]
+        );
+        assert_eq!(
+            installed,
+            rigger::docs::render_using_rigger_skill(&docs_context()),
+            "with no overlay the installed skill is the default code-derived render"
+        );
+
+        // 2. Already current -> a silent no-op that does not move the mtime.
+        let before = std::fs::metadata(&path).unwrap().modified().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert_eq!(
+            install_skill(root).expect("a no-op rerun must succeed"),
+            InstallOutcome::AlreadyCurrent,
+            "an up-to-date skill must be detected as current"
+        );
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().modified().unwrap(),
+            before,
+            "an up-to-date skill must NOT be rewritten (its mtime must not move)"
+        );
+
+        // 3. Drifted -> refreshed to the rendered skill.
+        std::fs::write(&path, "stale hand-edit\n").unwrap();
+        assert_eq!(
+            install_skill(root).expect("re-install must succeed"),
+            InstallOutcome::Refreshed,
+            "a drifted skill must be refreshed"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            rigger::docs::render_using_rigger_skill(&docs_context()),
+            "refreshing must overwrite the drift with the rendered skill"
+        );
+    }
+
+    /// Spec 20, unit 3: a project overlay adds this repo's specifics - the base branch and
+    /// where specs live - into the INSTALLED skill WITHOUT editing the shared discipline
+    /// source. `.rigger/docs-overlay.yml` declares the two repo facts; they override the
+    /// code-derived context BEFORE the render, so the installed skill carries them while
+    /// the shared render still defaults for a repo with no overlay.
+    #[test]
+    fn setup_skill_install_applies_the_project_overlay() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(RIGGER_DIR)).unwrap();
+        std::fs::write(
+            docs_overlay_path(root),
+            "base_ref: work/trunk\nspecs_location: requirements/\n",
+        )
+        .unwrap();
+
+        install_skill(root).expect("installing with an overlay must succeed");
+        let installed = std::fs::read_to_string(skill_install_path(root)).unwrap();
+
+        // The repo specifics appear in the installed skill...
+        assert!(
+            installed.contains("work/trunk"),
+            "the overlay base branch must flow into the installed skill"
+        );
+        assert!(
+            installed.contains("requirements/"),
+            "the overlay specs location must flow into the installed skill"
+        );
+        // ...and they REPLACE the shared defaults (the override is real, not additive).
+        assert!(
+            !installed.contains(DEFAULT_BASE_REF),
+            "the overlay base branch must REPLACE the default base ref"
+        );
+
+        // The shared discipline source is untouched: docs_context() still yields the
+        // defaults, and a repo with no overlay renders those defaults.
+        assert_eq!(docs_context().base_ref, DEFAULT_BASE_REF);
+        assert_eq!(docs_context().specs_location, DEFAULT_SPECS_LOCATION);
+        assert!(
+            rigger::docs::render_using_rigger_skill(&docs_context()).contains(DEFAULT_BASE_REF),
+            "the shared render is unchanged; the overlay only overrode the install"
+        );
+    }
+
+    /// The overlay overrides ONLY the fields it declares: a partial overlay (base_ref
+    /// only) leaves specs_location at the shared default, so a repo customizes just the
+    /// facts it differs on.
+    #[test]
+    fn docs_overlay_overrides_only_declared_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(RIGGER_DIR)).unwrap();
+        std::fs::write(docs_overlay_path(root), "base_ref: only-base\n").unwrap();
+
+        let mut ctx = docs_context();
+        read_docs_overlay(root)
+            .expect("a valid partial overlay reads")
+            .apply(&mut ctx);
+        assert_eq!(ctx.base_ref, "only-base", "declared field is overridden");
+        assert_eq!(
+            ctx.specs_location, DEFAULT_SPECS_LOCATION,
+            "an undeclared field keeps the shared default"
+        );
+
+        // An absent overlay file yields no overrides (the common case, not an error).
+        let empty = tempfile::tempdir().unwrap();
+        let none = read_docs_overlay(empty.path()).expect("an absent overlay is not an error");
+        let mut ctx2 = docs_context();
+        none.apply(&mut ctx2);
+        assert_eq!(
+            ctx2,
+            docs_context(),
+            "no overlay leaves the context unchanged"
+        );
+    }
+
+    /// A PRESENT but malformed overlay is a LOUD error naming the file, never a silent
+    /// skip that would install a skill missing the repo specifics the author asked for.
+    #[test]
+    fn docs_overlay_malformed_is_a_loud_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(RIGGER_DIR)).unwrap();
+        std::fs::write(docs_overlay_path(root), "base_ref: [not, a, string]\n").unwrap();
+        let err = read_docs_overlay(root).expect_err("a malformed overlay must fail loudly");
+        assert!(
+            err.to_string().contains("docs-overlay.yml"),
+            "the error must name the overlay file; got: {err}"
         );
     }
 
@@ -7383,6 +10852,29 @@ mod tests {
         panic!("meta object literal is not brace-balanced");
     }
 
+    /// Extract the STRING VALUE of `meta.description` from the workflow source: the
+    /// single-quoted literal that follows the `description:` key inside the meta object.
+    /// `meta.description` is the tagline the skills list and the `/workflows` header show,
+    /// so a test can assert it reads as user-facing prose free of the driver's internal
+    /// plumbing terms. The description literal is single-quoted and contains no apostrophe,
+    /// so the first `'...'` pair after the key delimits it exactly (a test-only heuristic,
+    /// not a JS parser).
+    fn meta_description(src: &str) -> &str {
+        let meta = meta_object_body(src);
+        let key = meta
+            .find("description:")
+            .expect("meta must declare a description");
+        let after = &meta[key + "description:".len()..];
+        let open = after
+            .find('\'')
+            .expect("meta.description must be a single-quoted string literal");
+        let rest = &after[open + 1..];
+        let close = rest
+            .find('\'')
+            .expect("meta.description string literal must be closed");
+        &rest[..close]
+    }
+
     /// Strip `//` line comments from JS source so assertions about the executable code
     /// (e.g. "the global `phase('Build')` marker is gone") are not tripped by prose that
     /// documents the removed construct. Only whole-line comments and end-of-line comments
@@ -7554,6 +11046,39 @@ mod tests {
              additionalProperties is false, so an undeclared `halted` would be rejected)"
         );
 
+        // 6e. A WEDGED terminus (spec 19c, unit 1) is a LOUD stop, never a clean completion:
+        //     `rigger step` carries the set of escalated units, and the driver's `done` branch
+        //     routes a fixpoint reached with any of them through the throwing `stop()` (so a
+        //     unit that can never pass review does not masquerade as success). The STEP schema
+        //     must also ADMIT the `escalated` array - the top level rejects unknown properties,
+        //     so an undeclared `escalated` would fail validation and the wedge would be lost.
+        assert!(
+            code.contains("step.escalated"),
+            "the driver must inspect `step.escalated` and stop loudly on a fixpoint reached \
+             with an escalated unit (a wedged terminus is never a clean completion)"
+        );
+        assert!(
+            code.contains("escalated: { type: 'array', items: { type: 'string' } }"),
+            "the STEP schema must declare the `escalated` array (top-level \
+             additionalProperties is false, so an undeclared `escalated` would be rejected)"
+        );
+        // The loud-stop guarantee IS the ordering: the wedge `stop()` must run BEFORE the
+        // `done` fixpoint breaks the loop, or an escalated terminus would break as a clean
+        // completion (the exact regression a reorder would silently reintroduce). Pin it: the
+        // wedge stop's reason precedes the "run complete" break in source. Presence alone
+        // (checked above) does not guarantee the position that makes the stop reachable.
+        let wedge_stop = code
+            .find("escalated after exhausting remediation")
+            .expect("the driver must stop loudly on an escalated fixpoint, naming the units");
+        let run_complete = code
+            .find("run complete: the conductor reached a fixpoint")
+            .expect("the driver must log a clean completion at a non-wedged fixpoint");
+        assert!(
+            wedge_stop < run_complete,
+            "the escalated-fixpoint `stop()` must precede the `done` completion break, or a \
+             wedged terminus would resolve as a clean `run complete` before the wedge is checked"
+        );
+
         // 7. The workflow still parses: run `node --check` when node is on PATH (never a
         //    silent skip - assert the clear reason when it is not available).
         let node = std::env::var("RIGGER_NODE").unwrap_or_else(|_| "node".to_string());
@@ -7570,6 +11095,76 @@ mod tests {
                 "node --check failed for a reason other than node being absent: {e}"
             ),
         }
+    }
+
+    /// Spec 19a Unit 3 (done-when item 3): the static `meta.description` is the tagline
+    /// the skills list and the `/workflows` header both show, so it must read as a
+    /// jargon-free, user-useful line - what the workflow does and when to reach for it -
+    /// NOT the driver's internal plumbing. The architecture explanation lives in the
+    /// file's header comment; the tagline must leak NONE of the plumbing terms the old
+    /// description carried ("driven THINLY", "courier", "SpawnResult"). Asserted over the
+    /// EMBEDDED `RIGGER_WORKFLOW` (the `include_str!` byte-source the drift check and the
+    /// thin-driver contract test also read), because the cargo gate set runs no JS. This
+    /// unit owns ONLY the `meta.description` scrub; the `SpawnRequest.title` live-render
+    /// is a separate unit's concern, so this test asserts nothing about it.
+    #[test]
+    fn workflow_meta_description_is_a_user_facing_tagline_free_of_plumbing_terms() {
+        let desc = meta_description(RIGGER_WORKFLOW);
+
+        // 1. None of the internal plumbing terms leak into the user-facing tagline. Each
+        //    names the driver's mechanism (the thin courier over the conductor, the
+        //    SpawnResult wire) rather than the user's outcome; that prose belongs in the
+        //    file's header comment, not the skills-list / `/workflows` tagline.
+        for term in ["driven THINLY", "courier", "SpawnResult"] {
+            assert!(
+                !desc.contains(term),
+                "meta.description is the user-facing tagline; it must not leak the internal \
+                 plumbing term {term:?} (that prose belongs in the file's header comment): \
+                 {desc:?}"
+            );
+        }
+
+        // 2. meta stays a PURE static literal (the Workflow runtime extracts it before the
+        //    body runs), so the tagline carries no interpolation / computed values.
+        assert!(
+            !desc.contains("${"),
+            "meta.description must be a pure static literal - no `${{...}}` interpolation: \
+             {desc:?}"
+        );
+
+        // 3. It reads as a CONCISE tagline, not the multi-clause plumbing paragraph the old
+        //    description was (~900+ chars). A one-line tagline fits a sane length bound.
+        assert!(
+            desc.len() < 350,
+            "meta.description must read as a concise one-line tagline, not a plumbing \
+             paragraph ({} chars): {desc:?}",
+            desc.len()
+        );
+
+        // 4. It is USER-USEFUL: it names what the workflow acts on (a spec, so a user knows
+        //    when to reach for it) AND what it DOES for them (build / implement / deliver /
+        //    turn a spec into code), not only how the driver is wired internally.
+        let lc = desc.to_lowercase();
+        assert!(
+            lc.contains("spec"),
+            "the tagline must name what the workflow acts on (a spec) so a user knows when \
+             to reach for it: {desc:?}"
+        );
+        assert!(
+            [
+                "build",
+                "implement",
+                "deliver",
+                "turn",
+                "ship",
+                "write",
+                "make"
+            ]
+            .iter()
+            .any(|verb| lc.contains(verb)),
+            "the tagline must say what the workflow DOES for the user (build / implement / \
+             deliver / turn a spec into working code), not only how it is wired: {desc:?}"
+        );
     }
 
     /// `rigger setup` runs npm install against the provisioned shim so `node_modules`
