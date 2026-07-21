@@ -273,6 +273,7 @@ mod tests {
             refs: vec![SymRef {
                 name: "helper".to_string(),
                 line: 5,
+                enclosing: None,
             }],
         };
         let events = extract_events("src/a.rs", &fs);
@@ -317,10 +318,12 @@ mod tests {
                 SymRef {
                     name: "clamp".to_string(),
                     line: 2,
+                    enclosing: None,
                 },
                 SymRef {
                     name: "apply".to_string(),
                     line: 4,
+                    enclosing: None,
                 },
             ],
         };

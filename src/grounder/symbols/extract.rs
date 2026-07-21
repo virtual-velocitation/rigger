@@ -45,6 +45,12 @@ pub fn extract(
         .map_err(|e| format!("symbols: generate tags: {e}"))?;
     let mut defs = Vec::new();
     let mut refs = Vec::new();
+    // Each definition's byte range (the whole construct, body included - the tag's node range,
+    // see `enclosing_def`) paired with its name, and each reference's byte position. Collected in
+    // this single tag pass; the enclosing definition is resolved below so the reference order the
+    // emit pass depends on stays untouched.
+    let mut def_ranges: Vec<(std::ops::Range<usize>, String)> = Vec::new();
+    let mut ref_positions: Vec<usize> = Vec::new();
     for tag in tags {
         let tag = tag.map_err(|e| format!("symbols: tag: {e}"))?;
         let Some(name) = source.get(tag.name_range.start..tag.name_range.end) else {
@@ -55,16 +61,48 @@ pub fn extract(
         let line = tag.span.start.row as u32 + 1;
         if tag.is_definition {
             let syntax = config.syntax_type_name(tag.syntax_type_id);
+            def_ranges.push((tag.range.clone(), name.clone()));
             defs.push(Def {
                 kind: kind_of(syntax),
                 name,
                 line,
             });
         } else {
-            refs.push(SymRef { name, line });
+            ref_positions.push(tag.range.start);
+            refs.push(SymRef {
+                name,
+                line,
+                enclosing: None,
+            });
         }
     }
+    // Attribute each reference to the innermost enclosing definition (the caller, spec 37). The
+    // reference order is unchanged - `enclosing` is a derived per-reference attribute, never a new
+    // sort key, so identical source still yields byte-identical downstream events.
+    for (r, &pos) in refs.iter_mut().zip(ref_positions.iter()) {
+        r.enclosing = enclosing_def(&def_ranges, pos);
+    }
     Ok(FileSymbols { lang, defs, refs })
+}
+
+/// The name of the INNERMOST definition whose byte range contains `pos`, or `None` when `pos`
+/// lies outside every definition (a top-level reference such as an import or an `impl`-header
+/// bound). Each definition tag carries the byte range of the WHOLE tagged construct - the function
+/// body included, not just its name span - so a reference inside a body falls within its
+/// definition's range. "Innermost" is the smallest containing range, so a reference in a nested
+/// definition attributes to the nested one, not its outer scope. Deterministic for identical
+/// input: ties on span break on the range start, then the definition name.
+fn enclosing_def(def_ranges: &[(std::ops::Range<usize>, String)], pos: usize) -> Option<String> {
+    def_ranges
+        .iter()
+        .filter(|(range, _)| range.contains(&pos))
+        .min_by(|(a, a_name), (b, b_name)| {
+            (a.end - a.start)
+                .cmp(&(b.end - b.start))
+                .then_with(|| a.start.cmp(&b.start))
+                .then_with(|| a_name.cmp(b_name))
+        })
+        .map(|(_, name)| name.clone())
 }
 
 #[cfg(test)]
@@ -131,6 +169,86 @@ fn free() {}
         // bound named in the `impl` header.
         assert_eq!(fs.defs.len(), 7);
         assert!(fs.refs.iter().any(|r| r.name == "Drawable"));
+    }
+
+    #[test]
+    fn a_reference_is_attributed_to_its_enclosing_definition() {
+        // Spec 37 criterion 1: the extractor attributes each reference to the INNERMOST definition
+        // whose body encloses it (the caller), and a reference outside every definition carries
+        // none. `fn f() { G(); }` yields a `SymRef` for `G` whose `enclosing` is `f`; a top-level
+        // reference belonging to no function body carries `None`. (The Rust tags query captures an
+        // `impl`-header trait bound as a reference but not a plain `use` import, so the top-level
+        // no-caller case here is the `impl Draw for Widget` header's `Draw` bound - a faithful
+        // realization of the spec's "a reference not inside any definition carries none".)
+        let src = "\
+trait Draw {}
+struct Widget;
+impl Draw for Widget {}
+fn f() {
+    G();
+}
+fn h() {
+    G();
+    G();
+}
+fn outer() {
+    fn inner() {
+        G();
+    }
+}
+";
+        let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
+        let fs = extract(src, Lang::Rust, &language, tree_sitter_rust::TAGS_QUERY).unwrap();
+
+        // The `Draw` bound in the `impl` header (line 3) belongs to no function body: no caller.
+        let draw = fs
+            .refs
+            .iter()
+            .find(|r| r.name == "Draw")
+            .expect("the impl-header Draw reference is extracted");
+        assert_eq!(
+            draw.enclosing, None,
+            "a top-level reference outside every definition has no enclosing caller"
+        );
+
+        // The call `G()` inside `fn f` (line 5) attributes to `f`.
+        let g_in_f = fs
+            .refs
+            .iter()
+            .find(|r| r.name == "G" && r.line == 5)
+            .expect("G() inside f is extracted");
+        assert_eq!(
+            g_in_f.enclosing.as_deref(),
+            Some("f"),
+            "a call inside fn f is attributed to its enclosing definition f"
+        );
+
+        // Both calls inside `fn h` (lines 8, 9) attribute to `h`.
+        for line in [8, 9] {
+            let g = fs
+                .refs
+                .iter()
+                .find(|r| r.name == "G" && r.line == line)
+                .unwrap_or_else(|| panic!("G() on line {line} inside h is extracted"));
+            assert_eq!(
+                g.enclosing.as_deref(),
+                Some("h"),
+                "a call inside fn h is attributed to h"
+            );
+        }
+
+        // The call inside the NESTED `fn inner` (line 13) attributes to the INNERMOST definition
+        // `inner`, not the outer `outer` - proving innermost containment, not merely any encloser.
+        let g_nested = fs
+            .refs
+            .iter()
+            .find(|r| r.name == "G" && r.line == 13)
+            .expect("G() inside the nested inner fn is extracted");
+        assert_eq!(
+            g_nested.enclosing.as_deref(),
+            Some("inner"),
+            "a call in a nested definition attributes to the innermost enclosing definition"
+        );
     }
 
     #[test]
