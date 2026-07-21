@@ -5,11 +5,20 @@
 //! ports. It generalizes a proven internal multi-agent dev-loop harness into a
 //! standalone, config-driven product.
 
+pub mod blocker;
 pub mod canary;
 pub mod conductor;
 pub mod config;
 pub mod contextgraph;
 pub mod dash;
+/// The sleep-phase consolidation distiller (spec 27): a rebuildable projection that folds
+/// OLDER-THAN-CURRENT-RUN findings/decisions into per-file digest nodes so cross-run graph
+/// growth stays bounded automatically. Modeled on [`playbooks`]; reads existing events only.
+pub mod distiller;
+/// The self-documenting discipline pipeline (spec 20, unit 1): a typed, code-derived
+/// context rendered into the `using-rigger` skill and the handbook discipline chapter,
+/// so the operating discipline stays in lock-step with the code the binary runs on.
+pub mod docs;
 pub mod driver;
 pub mod eventstore;
 pub mod failure;
@@ -29,6 +38,7 @@ pub mod ort_runtime;
 pub mod ort_teardown;
 pub mod playbooks;
 pub mod progress;
+pub mod reap;
 pub mod run;
 pub mod safety;
 pub mod sidecar;

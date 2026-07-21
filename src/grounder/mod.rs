@@ -13,6 +13,14 @@ pub mod turbovec;
 // tree-sitter-touching submodules inside `symbols` carry `#[cfg(feature = "symbols")]`.
 pub mod symbols;
 
+// The design-intent grounding axis (spec 29b): a doc-extraction pass that lowers the reference
+// architecture, addenda, load-bearing decisions, handbook rules, and inline rationale into
+// DocConceptExtracted events. Gated behind `symbols` exactly like the code extractor - it is the
+// EMIT half; the always-compiled fold (contextgraph::sqlite) folds a design-intent log with this
+// pass absent, so the light lane never links the doc extractor.
+#[cfg(feature = "symbols")]
+pub mod design;
+
 use std::collections::HashSet;
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};

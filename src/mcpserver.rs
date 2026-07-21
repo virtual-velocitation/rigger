@@ -5,6 +5,7 @@
 //! newline-delimited stdio loop - no async runtime needed.
 
 use std::io::{BufRead, Write};
+use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
@@ -17,6 +18,7 @@ use crate::sidecar::Sidecar;
 /// A tool's failure, carrying the JSON-RPC error code to report it with. Most
 /// failures are internal (`-32603`); a bad argument (e.g. an unknown spawn id)
 /// is invalid-params (`-32602`).
+#[derive(Debug)]
 struct ToolError {
     code: i64,
     message: String,
@@ -76,6 +78,16 @@ pub struct Server<'a> {
     /// stats each in-flight spawn's marker IN RUST and PRESENTS the age (retiring the JS
     /// driver's `stat` probe). Empty when unknown - the view then omits liveness ages.
     scratch_root: String,
+    /// The deterministic id of the spawn currently being SERVED - set when `rigger_next`
+    /// hands a spawn to the shim, cleared when `rigger_result` reports it. The shim serves
+    /// agents SERIALLY (one `rigger_next` -> run the agent -> `rigger_result` at a time, its
+    /// single `runWorkflow` loop), so between those two calls EVERY `rigger_emit` is that
+    /// spawn's. `rigger_emit` therefore stamps the emit with this id
+    /// ([`META_SPAWN`](crate::conductor::META_SPAWN)), giving the workflow driver the same
+    /// per-spawn correlation the verdict-channel-mismatch backstop (spec 18, unit 3) keys on.
+    /// Without it a concurrent sibling adjudicator's approve, sharing the reviewer role token
+    /// on the ONE stream, would be misattributed by a bare position window.
+    current_spawn: Mutex<Option<String>>,
 }
 
 impl<'a> Server<'a> {
@@ -93,6 +105,7 @@ impl<'a> Server<'a> {
             graph: None,
             progress: None,
             scratch_root: String::new(),
+            current_spawn: Mutex::new(None),
         }
     }
 
@@ -224,7 +237,14 @@ impl<'a> Server<'a> {
 
     fn tool_next(&self) -> Result<Value, ToolError> {
         match self.driver.next() {
-            Some(req) => serde_json::to_value(req).map_err(|e| ToolError::internal(e.to_string())),
+            Some(req) => {
+                // Track the spawn now being served so its live `rigger_emit` calls are
+                // stamped with its id (serial serving: this spawn owns every emit until its
+                // `rigger_result`). Set BEFORE returning the request, since the shim runs the
+                // agent - and the agent emits - only after receiving it.
+                *self.current_spawn.lock().unwrap() = Some(req.id.clone());
+                serde_json::to_value(req).map_err(|e| ToolError::internal(e.to_string()))
+            }
             // An empty id means "no spawn right now". `done` disambiguates the two
             // cases the shim cannot otherwise tell apart: `done:true` means the
             // conductor has finished and the shim should exit; `done:false` means the
@@ -253,6 +273,13 @@ impl<'a> Server<'a> {
         // would leave the real spawn blocked forever (the shim thinks it
         // delivered a result it never did).
         if self.driver.result(id, output, error) {
+            // The served spawn is done; no later emit belongs to it (the next `rigger_next`
+            // names the next spawn). Clear only when THIS spawn is the one being served, so a
+            // stale/unknown-id result never unstamps the live spawn's emits.
+            let mut current = self.current_spawn.lock().unwrap();
+            if current.as_deref() == Some(id) {
+                *current = None;
+            }
             Ok(json!({}))
         } else {
             Err(ToolError::invalid_params(format!(
@@ -262,9 +289,40 @@ impl<'a> Server<'a> {
     }
 
     fn tool_emit(&self, args: &Value) -> Result<Value, ToolError> {
-        emit_event(self.store, &self.stream, self.graph, args)
+        // Stamp the emit with the id of the spawn currently being served, so a GATING
+        // adjudicator's approve-shaped verdict recorded via `rigger_emit` is attributable to
+        // THAT spawn EXACTLY (the per-spawn correlation the verdict-channel-mismatch backstop
+        // keys on). Authoritative: the server sets META_SPAWN, never the agent's args.
+        let args = self.stamp_current_spawn(args);
+        emit_event(self.store, &self.stream, self.graph, &args)
             .map(|_| json!({}))
             .map_err(ToolError::internal)
+    }
+
+    /// Return `args` with its `meta.spawn` set to the id of the spawn currently being served
+    /// ([`current_spawn`](Server::current_spawn)), so an emit landing between a spawn's
+    /// `rigger_next` and its `rigger_result` carries that spawn's
+    /// [`META_SPAWN`](crate::conductor::META_SPAWN) stamp. When no spawn is being served the
+    /// args are returned untouched (a stray emit stays unstamped). The server writes the
+    /// stamp authoritatively, overriding any `meta.spawn` the agent supplied.
+    fn stamp_current_spawn(&self, args: &Value) -> Value {
+        let spawn = match self.current_spawn.lock().unwrap().clone() {
+            Some(s) => s,
+            None => return args.clone(),
+        };
+        let mut args = args.clone();
+        let obj = match args.as_object_mut() {
+            Some(o) => o,
+            None => return args,
+        };
+        let meta = obj.entry("meta").or_insert_with(|| json!({}));
+        if let Some(meta) = meta.as_object_mut() {
+            meta.insert(
+                crate::conductor::META_SPAWN.to_string(),
+                Value::String(spawn),
+            );
+        }
+        args
     }
 
     /// List peers' decisions, lessons, AND review findings, optionally scoped to a
@@ -354,6 +412,20 @@ impl<'a> Server<'a> {
 /// "valid_from": <int|rfc3339-string>?}`. The CLI builds the same shape from its
 /// positional `<type>` + `<json-object>`.
 ///
+/// The event types an agent may emit through the shared surface (`rigger emit` / the
+/// `rigger_emit` MCP tool): the context-graph events an agent records (`DecisionMade`,
+/// `ReviewFinding`, `LessonLearned`) PLUS the planner's `UnitProposed` refinement - all
+/// four flow through [`emit_event`]. The type strings are referenced from their defining
+/// constants (never hand-copied) so the allowlist stays in sync with the producers. Any
+/// other type - a run-lifecycle boundary or orchestration event - is minted only by the
+/// conductor and is refused here (see [`emit_event`]).
+const EMITTABLE_TYPES: [&str; 4] = [
+    crate::contextgraph::TYPE_DECISION_MADE,
+    crate::contextgraph::TYPE_REVIEW_FINDING,
+    crate::contextgraph::TYPE_LESSON_LEARNED,
+    crate::conductor::TYPE_UNIT_PROPOSED,
+];
+
 /// Returns the appended event's [`Position`], so a caller can report it.
 pub fn emit_event(
     store: &dyn EventStore,
@@ -365,6 +437,22 @@ pub fn emit_event(
         .get("type")
         .and_then(Value::as_str)
         .ok_or("rigger_emit: missing type")?;
+    // Allowlist the emit surface (spec 22): an agent may emit ONLY the context events it
+    // legitimately produces. Refuse everything else - especially a run-lifecycle /
+    // orchestration boundary - so a stray `rigger emit RunStarted` from a scratch cwd can
+    // never inject a run boundary into the live stream and hijack the conductor's run. The
+    // guard runs BEFORE the append, so a refused emit lands NOTHING. An allowlist (not a
+    // denylist) is deliberate: a future conductor-owned type is refused by default, never
+    // silently injectable.
+    if !EMITTABLE_TYPES.contains(&typ) {
+        return Err(format!(
+            "rigger_emit: refusing to emit {typ:?}: only agent context events \
+             ({}) may be emitted this way. Run-lifecycle and orchestration boundaries \
+             (RunStarted and its peers) are minted by the conductor, not `rigger emit` - \
+             start a new run with `rigger run --fresh`.",
+            EMITTABLE_TYPES.join(", ")
+        ));
+    }
     let data = args.get("data").cloned().unwrap_or_else(|| json!({}));
     let bytes = serde_json::to_vec(&data).map_err(|e| e.to_string())?;
 
@@ -411,7 +499,7 @@ pub fn peers_json(peers: &Sidecar, files: &[String]) -> Value {
     let decisions: Vec<Value> = peers
         .decisions_for(files)
         .iter()
-        .map(|d| json!({"id": d.id, "summary": d.summary, "governs": d.governs}))
+        .map(|d| json!({"id": d.id, "summary": d.summary, "governs": d.governs, "live": d.live}))
         .collect();
     let lessons: Vec<Value> = peers
         .lessons_for(files)
@@ -578,6 +666,122 @@ mod tests {
     }
 
     #[test]
+    fn emit_is_stamped_with_the_serially_served_spawn_id() {
+        // Reject-fix (spec 18, unit 3): the workflow live path correlates a gating adjudicator's
+        // approve to THAT spawn by stamping its live `rigger_emit` with the served spawn's id
+        // ([`META_SPAWN`]), the per-spawn signal the verdict-channel-mismatch backstop keys on.
+        // The shim serves agents SERIALLY - `rigger_next` hands out one spawn, its agent runs
+        // and emits, then `rigger_result` reports it - so every emit between those two calls is
+        // that spawn's. This drives the server's own tools in that exact order and proves:
+        //  - an emit while a spawn is being served carries META_SPAWN = the served spawn id;
+        //  - after `rigger_result`, no spawn is being served, so a stray emit is UNSTAMPED
+        //    (never misattributed to the just-finished spawn);
+        //  - the NEXT served spawn stamps its own emits with its own id.
+        use crate::conductor::{AgentDriver, SpawnOpts, META_SPAWN};
+        use crate::config::AgentDef;
+        use std::time::{Duration, Instant};
+
+        let store = Store::open(":memory:").unwrap();
+        let driver = Driver::new();
+        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
+        let server = Server::new(&driver, &store, "run", &peers);
+
+        let adj_id = "u/adjudicator#0";
+        let sibling_id = "v/adjudicator#0";
+        // Read the LAST DecisionMade whose data `id` matches, and return its META_SPAWN stamp.
+        let stamp_of = |data_id: &str| -> Option<String> {
+            let events = store.read_stream("run", 0, Direction::Forward).unwrap();
+            events
+                .iter()
+                .rev()
+                .find(|e| {
+                    e.type_ == "DecisionMade"
+                        && serde_json::from_slice::<Value>(&e.data)
+                            .ok()
+                            .and_then(|v| v["id"].as_str().map(str::to_string))
+                            .as_deref()
+                            == Some(data_id)
+                })
+                .and_then(|e| e.meta.get(META_SPAWN).cloned())
+        };
+
+        // The conductor side parks a gating spawn under its DETERMINISTIC opts.id and blocks
+        // on its result - exactly as `run_reviewer` calls `driver.spawn`.
+        fn serve(driver: &Driver, id: &str) {
+            let emit = |_: &str, _: Value| Ok(());
+            let _ = driver.spawn(
+                &AgentDef {
+                    id: "judge".into(),
+                    ..Default::default()
+                },
+                "adjudicate",
+                &SpawnOpts {
+                    id: id.to_string(),
+                    ..Default::default()
+                },
+                &emit,
+            );
+        }
+
+        std::thread::scope(|s| {
+            s.spawn(|| serve(&driver, adj_id));
+
+            // The shim pulls the spawn via rigger_next (retry until the background thread has
+            // queued it), which marks it the spawn now being served.
+            let pull = |want: &str| {
+                let deadline = Instant::now() + Duration::from_secs(2);
+                loop {
+                    let next = server.tool_next().unwrap();
+                    if next["id"] == want {
+                        return;
+                    }
+                    assert!(Instant::now() < deadline, "spawn {want:?} was never queued");
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            };
+            pull(adj_id);
+
+            // An approve emitted WHILE `adj_id` is being served carries its stamp.
+            server
+                .tool_emit(&json!({"type":"DecisionMade","data":{"id":"a1","verdict":"approve"}}))
+                .unwrap();
+            assert_eq!(
+                stamp_of("a1").as_deref(),
+                Some(adj_id),
+                "an emit while a spawn is served is stamped with THAT spawn's id"
+            );
+
+            // Report the result: the served spawn is done, so no emit belongs to it now.
+            server
+                .tool_result(&json!({"id": adj_id, "output": "done"}))
+                .unwrap();
+            server
+                .tool_emit(&json!({"type":"DecisionMade","data":{"id":"stray"}}))
+                .unwrap();
+            assert_eq!(
+                stamp_of("stray"),
+                None,
+                "an emit with no spawn being served is left UNSTAMPED, never misattributed"
+            );
+
+            // The NEXT served spawn stamps its own emits with its own id.
+            s.spawn(|| serve(&driver, sibling_id));
+            pull(sibling_id);
+            server
+                .tool_emit(&json!({"type":"DecisionMade","data":{"id":"a2","verdict":"approve"}}))
+                .unwrap();
+            assert_eq!(
+                stamp_of("a2").as_deref(),
+                Some(sibling_id),
+                "the next served spawn stamps its emits with ITS id, not the previous spawn's"
+            );
+            server
+                .tool_result(&json!({"id": sibling_id, "output": "done"}))
+                .unwrap();
+        });
+    }
+
+    #[test]
     fn activity_tool_presents_the_live_per_agent_view() {
         // spec 14, criterion 3 (MCP half): `rigger_activity` returns the consolidated view
         // over MCP, so the shim gets each in-flight agent's activity + milestone with no
@@ -655,6 +859,48 @@ mod tests {
         assert_eq!(cli[0].type_, mcp[0].type_, "same event type");
         assert_eq!(cli[0].stream, mcp[0].stream, "same stream");
         assert_eq!(cli[0].data, mcp[0].data, "same payload bytes");
+    }
+
+    /// spec 22, criterion 1: the shared `emit_event` core REFUSES a run-lifecycle
+    /// boundary event (`RunStarted`) and other conductor-owned orchestration types, and
+    /// appends NOTHING. A stray `rigger emit RunStarted` from a scratch cwd must not be
+    /// able to inject a run boundary into the live stream and hijack the conductor's run;
+    /// run boundaries are minted ONLY by the conductor. Because the guard lives in the one
+    /// shared core, BOTH `rigger emit` (CLI) and `rigger_emit` (MCP) inherit it.
+    ///
+    /// Driven DIRECTLY over an in-memory `Store` (never a CLI `rigger emit` from a
+    /// walk-up-able cwd), so the test can never touch or walk up to a real store - the
+    /// exact store-corruption this spec closes is unreproducible here by construction.
+    #[test]
+    fn emit_event_refuses_run_lifecycle_types_and_appends_nothing() {
+        // A run-lifecycle boundary and a peer orchestration event: both conductor-owned,
+        // neither agent-emittable.
+        for typ in ["RunStarted", "SpawnResult"] {
+            let store = Store::open(":memory:").unwrap();
+            let args = json!({ "type": typ, "data": {"id": "x"} });
+
+            let err = emit_event(&store, "run", None, &args)
+                .expect_err("a conductor-owned type must be refused, never appended");
+
+            // The error names the offending type and points at the right tool.
+            assert!(
+                err.contains(typ),
+                "the error must name the refused type {typ:?}; got: {err}"
+            );
+            assert!(
+                err.contains("rigger run --fresh"),
+                "the error must direct the caller to `rigger run --fresh`; got: {err}"
+            );
+
+            // Nothing landed: the guard refuses BEFORE the append, so the store is empty.
+            let events = store
+                .read_all(0, Direction::Forward, &Filter::default())
+                .unwrap();
+            assert!(
+                events.is_empty(),
+                "a refused emit must append NOTHING; found: {events:?}"
+            );
+        }
     }
 
     /// The shared `peers_json` core (which the CLI `rigger peers` renders from) must
@@ -739,7 +985,7 @@ mod tests {
         let store = Store::open(":memory:").unwrap();
         let driver = Driver::new();
         let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
-        let graph = Projector::open(":memory:").unwrap();
+        let graph = Projector::open(":memory:", "test").unwrap();
         let server = Server::new(&driver, &store, "run", &peers).with_graph(&graph);
 
         let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_emit","arguments":{"type":"ReviewFinding","data":{"id":"f1","summary":"skips the buffer authority","about":["combat.rs"]},"meta":{"actor":"tech-lens"}}}}"#;
