@@ -14,6 +14,23 @@
 > **This is Rigger's canonical architecture doc.** The proposed records in §12
 > (ADR-0001 + glossary) stay PROPOSALS until ratified at roadmap Phase 0; they are
 > not yet written into `docs/adr/`.
+>
+> **Addenda:**
+> - [Pit of Success](architecture-addendum-pit-of-success.md) — makes rigger's existing
+>   guarantees reachable, visible, validated, and self-documenting; records the
+>   load-bearing decisions (base default, cross-run graph, gate authority) that must not
+>   be naively "fixed".
+> - [Context Management](architecture-addendum-context-management.md) — keeps the context
+>   graph correct and bounded as it grows: disposition-expiry, safe dedup, sleep-phase
+>   consolidation, and one unified event-sourced knowledge graph (code + design intent +
+>   decisions) surfaced in the dash; records the invariants (event-log-is-truth, project-
+>   and run-scoping, safe-superset recall) that must not be naively "fixed".
+> - [Loop Execution at Scale](architecture-addendum-loop-execution-at-scale.md) — runs a
+>   campaign as a dependency-scheduled, self-healing fleet of worktree-isolated runs (fractal
+>   isolation: the run is to the campaign what the unit is to the run), keeps the driving
+>   binary current with the source it integrates, and right-sizes parallelism to the host
+>   (drain under pressure / infra-fault, fill under headroom; outcome deterministic, timing
+>   adaptive).
 
 ---
 

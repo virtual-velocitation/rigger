@@ -464,6 +464,9 @@ fn canary_opts(item: &CanaryItem, role: &str, agent: &AgentDef) -> SpawnOpts {
         parallel: false,
         blast_radius: Vec::new(),
         run_id: String::new(),
+        // A canary is a synthetic self-test, not a unit doing spec work, so it carries no
+        // live work-line (spec 19a, c4): an empty title stays byte-identical on the wire.
+        title: String::new(),
     }
 }
 

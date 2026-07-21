@@ -14,6 +14,9 @@
   body {
     margin: 0; background: var(--bg); color: var(--ink);
     font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    /* Full-height dashboard: fit exactly one viewport, no page scroll - the KG holds the top half
+       and the columns scroll INTERNALLY, so nothing overflows the page. */
+    height: 100vh; display: flex; flex-direction: column; overflow: hidden;
   }
   header {
     padding: 14px 20px; border-bottom: 1px solid var(--line);
@@ -23,19 +26,60 @@
   header .meta { color: var(--muted); font-size: 12px; }
   header .live { color: var(--accent); }
   header .stale { color: var(--warn); }
-  main { padding: 16px 20px; display: grid; gap: 18px; max-width: 1200px; }
-  section.view { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+  /* The content shell: a width-reflowing grid with NO fixed max-width cap, so it fills the
+     whole viewport (as many columns as fit) and collapses to one column when narrow - no dead
+     space at wide widths, no page-level horizontal scroll. auto-fit packs the view sections into
+     as many equal tracks as fit; each track's min is clamped with min(100%, 480px) so a track
+     can never exceed the viewport (below ~480px it resolves to 100% = one column) - the shell
+     collapses instead of overflowing. The sections stay shrinkable via their own min-width:0. */
+  main { flex: 1 1 0; min-height: 0; padding: 14px 20px; display: flex; flex-direction: column; gap: 16px; box-sizing: border-box; overflow: hidden; }
+  /* KG is the top, full-width feature holding ~half the viewport for graph exploration; the columns
+     hold the remaining half and scroll INTERNALLY, so the whole dashboard fits one screen with no
+     page overflow. */
+  #kg { flex: 0 0 48%; min-height: 0; display: flex; flex-direction: column; }
+  #kg > .kg { flex: 1 1 auto; min-height: 0; overflow: auto; }
+  .columns { flex: 1 1 0; min-height: 0; display: flex; gap: 16px; }
+  .columns > .col { flex: 1 1 46%; min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 16px; overflow-y: auto; }
+  /* Narrow screens: drop the fixed one-screen layout and allow normal page scroll. */
+  @media (max-width: 1000px) {
+    body { height: auto; overflow: auto; }
+    main { overflow: visible; }
+    #kg { flex-basis: auto; min-height: 46vh; }
+    .columns { flex-direction: column; }
+  }
+  /* min-width:0 lets the section honor the shrinkable track instead of refusing to go below
+     its content's min-content width (the grid-item default is min-width:auto). */
+  section.view { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); min-width: 0; }
   section.view > h2 {
     margin: 0; padding: 10px 14px; font-size: 13px; letter-spacing: 0.08em;
     text-transform: uppercase; color: var(--muted); border-bottom: 1px solid var(--line);
   }
-  .grid { display: grid; gap: 14px; padding: 14px; }
-  @media (min-width: 780px) { .grid.cols2 { grid-template-columns: 1fr 1fr; } }
-  .card { border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; }
+  /* Narrow default: one shrinkable column. cols2 becomes two only past 780px, and even then
+     each track is minmax(0, 1fr) so neither half can blow the grid (and the body) wide. */
+  .grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; padding: 14px; }
+  @media (min-width: 780px) { .grid.cols2 { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
+  /* min-width:0 lets a card shrink into its track so a wide table inside scrolls in its own
+     .scroll container rather than stretching the card, the grid, and the body. */
+  .card { border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; min-width: 0; }
   .card h3 { margin: 0 0 8px; font-size: 12px; color: var(--muted); letter-spacing: 0.06em; }
   .scroll { overflow-x: auto; }
+  /* A wrapping table (decision history): long decision/finding text breaks onto new lines -
+     even an otherwise-unbreakable token (overflow-wrap: anywhere) - so it wraps in place
+     instead of scrolling far right and dragging the body horizontally. Overrides the default
+     nowrap cells below. overflow-wrap:anywhere (not break-word) also shrinks the cell's
+     min-content to ~1 char, so auto table layout can size the table down to its container
+     while keeping a narrow id column and a wide, wrapping summary column. */
+  .wrap td, .wrap th { white-space: normal; overflow-wrap: anywhere; }
   table { border-collapse: collapse; width: 100%; font-size: 13px; }
-  th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  /* Cells fit or wrap. The default cell wraps (white-space:normal, not nowrap) so a long id
+     like `u30-c2/implementer#0` breaks at its hyphen/slash opportunities and sizes to its
+     content instead of holding one long line that widens the table. overflow-wrap:break-word
+     is the fallback for a token with NO break opportunity - it breaks inside the cell rather
+     than rendering one char per line - while still preferring the hyphen/slash breaks for
+     real ids, so nothing goes char-by-char. The genuinely-wide cells (event JSON, the agent
+     doing-line) render inside an in-cell overflow-x:auto container (the .scroll / .feed cells),
+     so residual width scrolls within the cell and never forces a page-level horizontal bar. */
+  th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--line); overflow-wrap: break-word; }
   th { color: var(--muted); font-weight: 600; }
   .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px; border: 1px solid var(--dim); }
   .st-integrated { color: var(--ok); border-color: var(--ok); }
@@ -45,6 +89,9 @@
   .st-pending, .st-grounding { color: var(--muted); }
   .st-red { color: var(--bad); border-color: var(--bad); }
   .st-green, .st-verified, .st-reviewed { color: var(--accent); border-color: var(--accent); }
+  /* Current-blocker rows, coloured by kind so attention-worthy states stand out. */
+  .blk-escalated, .blk-budget { color: var(--bad); }
+  .blk-reject-recurrence { color: var(--warn); }
   .swim { display: flex; gap: 3px; }
   .swim .cell {
     width: 12px; height: 14px; border-radius: 2px; background: var(--dim);
@@ -56,6 +103,15 @@
   .num { font-size: 22px; }
   .muted { color: var(--muted); }
   .struck { text-decoration: line-through; color: var(--muted); }
+  /* Decisions: progressive disclosure (spec 30 c4). Each decision is a native <details> whose
+     <summary> previews `id + a one-line summary` and whose body reveals the FULL reasoning on
+     click, so a multi-KB decision collapses to one line but expands whole - no framework, no
+     inline multi-KB dump. overflow-wrap keeps both the preview line and the body wrapping in
+     place instead of dragging the body horizontally. A superseded decision reuses .struck. */
+  details.decision { border-bottom: 1px solid var(--line); padding: 5px 0; }
+  details.decision > summary { cursor: pointer; overflow-wrap: anywhere; font-size: 13px; }
+  details.decision > summary > .did { color: var(--muted); margin-right: 4px; }
+  details.decision .reasoning { margin: 6px 0 2px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; color: var(--muted); }
   .empty { color: var(--dim); padding: 10px 12px; font-style: italic; }
   .feed { max-height: 240px; overflow: auto; }
   .feed .row { border-bottom: 1px solid var(--line); padding: 3px 0; display: flex; gap: 10px; }
@@ -65,6 +121,82 @@
   .heat td { text-align: center; }
   .bar { height: 6px; background: var(--dim); border-radius: 3px; overflow: hidden; }
   .bar > span { display: block; height: 100%; background: var(--ok); }
+  /* The run-tree SPINE (spec 30 c3): the run projected as spec -> unit -> stage -> role ->
+     agent, rendered as native <details> so it needs no framework. The server marks the path
+     to running work `auto_expand` (rendered as an open node) and single-child levels
+     `auto_collapse`; labels wrap in place (overflow-wrap) so a long id never scrolls the body. */
+  .tree { padding: 10px 12px; }
+  .tnode { margin: 0; }
+  .tnode > summary {
+    cursor: pointer; padding: 2px 4px; border-radius: 4px; list-style: none;
+    display: flex; align-items: center; gap: 8px; overflow-wrap: anywhere;
+  }
+  .tnode > summary::-webkit-details-marker { display: none; }
+  .tnode > summary::before { content: "\25B8"; color: var(--muted); font-size: 10px; width: 10px; }
+  .tnode[open] > summary::before { content: "\25BE"; }
+  .tkids { margin-left: 13px; border-left: 1px solid var(--line); padding-left: 8px; }
+  .tleaf { padding: 2px 4px 2px 22px; display: flex; align-items: center; gap: 8px; overflow-wrap: anywhere; }
+  .tlabel { color: var(--ink); }
+  /* The folded live courier doing-line on a running agent: muted, and it wraps in place so a
+     long line never scrolls the body (spec 30 body-never-h-scrolls constraint). */
+  .tdoing { color: var(--muted); font-style: italic; min-width: 0; overflow-wrap: anywhere; }
+  .k-driver > summary .tlabel, .tleaf.k-driver .tlabel { color: var(--muted); font-style: italic; }
+  /* Tree status pills, coloured by the node's rolled-up live status. */
+  .tst-running { color: var(--accent); border-color: var(--accent); }
+  .tst-done, .tst-passed, .tst-integrated { color: var(--ok); border-color: var(--ok); }
+  .tst-failed, .tst-reject-recurrence { color: var(--warn); border-color: var(--warn); }
+  .tst-escalated { color: var(--bad); border-color: var(--bad); }
+  .tst-building, .tst-reviewing, .tst-pending { color: var(--muted); }
+  /* The tree label is the select-to-seed handle (spec 30 c5): clicking a node drives the KG panel
+     to that node's neighborhood. The pointer cursor signals it; the native <details> toggle on a
+     branch node still works (both fire on one click - navigate AND seed). */
+  .tnode > summary, .tleaf { cursor: pointer; }
+  /* The unified-KG detail panel (spec 30 c5): the seeded neighborhood of the selected tree/graph
+     node, fetched from the read-only GET /api/graph route. Nodes are themselves clickable to
+     RE-SEED (select-to-seed from a graph node); edges carry their confidence tier as a badge.
+     Everything wraps in place (overflow-wrap) so a long id never scrolls the body. */
+  .kg { padding: 10px 12px; }
+  .kg .kgseed { color: var(--muted); font-size: 12px; margin-bottom: 10px; overflow-wrap: anywhere; }
+  .kg .kgseed b { color: var(--ink); }
+  .kgcols { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
+  @media (min-width: 780px) { .kgcols { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
+  .kgcols h3 { margin: 0 0 6px; font-size: 12px; color: var(--muted); letter-spacing: 0.06em; }
+  .kgnode {
+    display: flex; align-items: baseline; gap: 8px; padding: 3px 5px; border-radius: 4px;
+    cursor: pointer; overflow-wrap: anywhere;
+  }
+  .kgnode:hover { background: var(--line); }
+  .kgnode.seed { outline: 1px solid var(--accent); }
+  .kgnode.onpath { background: rgba(110, 168, 254, 0.2); }
+  .kgnode .kgkind { color: var(--muted); font-size: 11px; }
+  /* GOD-NODE badge (spec 30 c6): a high-degree hub the server flagged (degree above the threshold),
+     with its in-neighborhood degree, so the operator spots the hubs in the neighborhood at a glance. */
+  .kggod {
+    display: inline-block; padding: 0 6px; border-radius: 999px; font-size: 10px;
+    border: 1px solid var(--accent); color: var(--accent); margin-left: auto; white-space: nowrap;
+  }
+  .kgedge { padding: 3px 5px; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; font-size: 13px; }
+  .kgedge.onpath { background: rgba(110, 168, 254, 0.2); border-radius: 4px; }
+  .kgedge .kgrel { color: var(--accent); }
+  /* Confidence-tier badge on each edge (spec 29a tiers): extracted (precise) / inferred / ambiguous. */
+  .tier {
+    display: inline-block; padding: 0 6px; border-radius: 999px; font-size: 10px;
+    border: 1px solid var(--dim); color: var(--muted); margin-left: 6px;
+  }
+  .tier-extracted { color: var(--ok); border-color: var(--ok); }
+  .tier-inferred { color: var(--warn); border-color: var(--warn); }
+  .tier-ambiguous { color: var(--bad); border-color: var(--bad); }
+  /* Confidence-TIER FILTER (spec 30 c7): a client-side visibility toggle over the c5 tier tags -
+     one checkbox per tier hides/shows that tier's edges in the drawn neighborhood (no re-fetch). */
+  .kgtiers { display: flex; flex-wrap: wrap; gap: 14px; margin: 0 0 12px; font-size: 12px; color: var(--muted); }
+  .kgtiers label { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; overflow-wrap: anywhere; }
+  /* EXPLAIN provenance (spec 30 c7): the events/decisions that produced the selected node - the
+     currently-valid edges incident to it, each stamped with the source event position that folded it. */
+  .kgprov { margin-top: 16px; }
+  .kgprov h3 { margin: 0 0 6px; font-size: 12px; color: var(--muted); letter-spacing: 0.06em; }
+  .kgfact { padding: 3px 5px; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; font-size: 13px; }
+  .kgfact .kgrel { color: var(--accent); }
+  .kgsrc { color: var(--muted); font-size: 11px; margin-left: 6px; white-space: nowrap; }
 </style>
 </head>
 <body>
@@ -74,75 +206,85 @@
   <span class="meta" id="clock"></span>
 </header>
 <main>
-  <section class="view" id="present">
-    <h2>Present - the live wave</h2>
-    <div class="grid cols2">
-      <div class="card">
-        <h3>Pending frontier (ready wave)</h3>
-        <div class="scroll" id="wave"></div>
-      </div>
-      <div class="card">
-        <h3>Action needed</h3>
-        <div class="inbox" id="inbox"></div>
-      </div>
-      <div class="card" style="grid-column: 1 / -1;">
-        <h3>In-flight units</h3>
-        <div class="scroll" id="inflight"></div>
-      </div>
-      <div class="card" style="grid-column: 1 / -1;">
-        <h3>Live agent activity</h3>
-        <div class="scroll" id="activity"></div>
-      </div>
-      <div class="card" style="grid-column: 1 / -1;">
-        <h3>Event feed</h3>
-        <div class="feed" id="feed"></div>
-      </div>
+  <section class="view" id="kg">
+    <h2>Knowledge graph - the unified graph (code, design, decisions)</h2>
+    <div class="kg" id="kgpanel">
+      <div class="empty">the unified knowledge graph renders here for exploration; hover or click a node to highlight it, shift-click a second to trace the path between them</div>
     </div>
   </section>
 
-  <section class="view" id="past">
-    <h2>Past - what the run has done</h2>
-    <div class="grid cols2">
-      <div class="card">
-        <h3>Unit lifecycle swimlanes</h3>
-        <div class="scroll" id="swimlanes"></div>
-      </div>
-      <div class="card">
-        <h3>Review outcomes (via metrics classification)</h3>
-        <div class="kv" id="review"></div>
-      </div>
-      <div class="card">
-        <h3>Gate remediation heatmap</h3>
-        <div class="scroll" id="gates"></div>
-      </div>
-      <div class="card">
-        <h3>Decision history</h3>
-        <div class="scroll" id="decisions"></div>
-      </div>
-    </div>
-  </section>
+  <div class="columns">
+  <div class="col">
+    <section class="view" id="spine">
+      <h2>Run tree - the spine</h2>
+      <div class="tree" id="tree"></div>
+    </section>
 
-  <section class="view" id="future">
-    <h2>Future - structural only (no ETAs, no likelihoods)</h2>
-    <div class="grid cols2">
-      <div class="card">
-        <h3>Ready frontier</h3>
-        <div class="scroll" id="ready"></div>
+    <section class="view" id="present">
+      <h2>Present - the live wave</h2>
+      <div class="grid cols2">
+        <div class="card">
+          <h3>Pending frontier (ready wave)</h3>
+          <div class="scroll" id="wave"></div>
+        </div>
+        <div class="card">
+          <h3>Action needed</h3>
+          <div class="inbox" id="inbox"></div>
+        </div>
+        <div class="card" style="grid-column: 1 / -1;">
+          <h3>Current blockers</h3>
+          <div class="inbox" id="blockers"></div>
+        </div>
+        <div class="card" style="grid-column: 1 / -1;">
+          <h3>Event feed</h3>
+          <div class="feed" id="feed"></div>
+        </div>
       </div>
-      <div class="card">
-        <h3>Budget runway</h3>
-        <div id="runway"></div>
+    </section>
+
+    <section class="view" id="future">
+      <h2>Future - structural only (no ETAs, no likelihoods)</h2>
+      <div class="grid cols2">
+        <div class="card">
+          <h3>Ready frontier</h3>
+          <div class="scroll" id="ready"></div>
+        </div>
+        <div class="card">
+          <h3>Budget runway</h3>
+          <div id="runway"></div>
+        </div>
+        <div class="card" style="grid-column: 1 / -1;">
+          <h3>Declared DAG (unit dependencies)</h3>
+          <div class="scroll" id="dag"></div>
+        </div>
+        <div class="card" style="grid-column: 1 / -1;">
+          <h3>Uncovered criteria</h3>
+          <div id="uncovered"></div>
+        </div>
       </div>
-      <div class="card" style="grid-column: 1 / -1;">
-        <h3>Declared DAG (unit dependencies)</h3>
-        <div class="scroll" id="dag"></div>
+    </section>
+  </div>
+
+  <div class="col">
+    <section class="view" id="past">
+      <h2>Past - what the run has done</h2>
+      <div class="grid cols2">
+        <div class="card">
+          <h3>Review outcomes (via metrics classification)</h3>
+          <div class="kv" id="review"></div>
+        </div>
+        <div class="card">
+          <h3>Gate remediation heatmap</h3>
+          <div class="scroll" id="gates"></div>
+        </div>
+        <div class="card" style="grid-column: 1 / -1;">
+          <h3>Decision history</h3>
+          <div class="wrap" id="decisions"></div>
+        </div>
       </div>
-      <div class="card" style="grid-column: 1 / -1;">
-        <h3>Uncovered criteria</h3>
-        <div id="uncovered"></div>
-      </div>
-    </div>
-  </section>
+    </section>
+  </div>
+  </div>
 </main>
 
 <script>
@@ -154,6 +296,13 @@
 const EMBEDDED_STATE = __RIGGER_STATE__;
 const POLL_MS = 1500;
 const LIVE = EMBEDDED_STATE === null;
+// The set of decision ids the operator has expanded, kept ACROSS the live poll. render() re-runs
+// every POLL_MS and wholesale-replaces the decisions region's innerHTML, which destroys and
+// recreates the <details> subtree - so without re-applying `open` a reasoning body the operator
+// opened would snap shut under them within 1.5s. This set outlives the DOM the poll destroys and
+// is keyed by the stable decision id (mirrored onto each <details> as data-did), so every render
+// re-opens what the operator opened. The poll is untouched; the decisions render participates in it.
+const expandedDecisions = new Set();
 
 function esc(s) {
   return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({
@@ -161,6 +310,13 @@ function esc(s) {
   }[c]));
 }
 function el(id) { return document.getElementById(id); }
+// Collapse a (possibly multi-KB, multi-line) decision summary to a ONE-LINE preview: whitespace
+// runs collapse to single spaces and anything past a sane cap is truncated with an ellipsis, so
+// the always-visible <summary> line never dumps the full reasoning inline (that lives in the body).
+function preview(s) {
+  const one = String(s == null ? "" : s).replace(/\s+/g, " ").trim();
+  return one.length > 120 ? one.slice(0, 120) + "..." : one;
+}
 function pct(x) { return (Number(x || 0) * 100).toFixed(1) + "%"; }
 function stClass(s) { return "st-" + String(s || "pending"); }
 
@@ -171,10 +327,6 @@ function table(cols, rows) {
   return h + '</tbody></table>';
 }
 
-const TERMINAL = { integrated: 1, escalated: 1 };
-// The status order a unit walks; drives the swimlane cells.
-const STAGES = ["pending", "grounding", "red", "green", "verified", "reviewed", "integrated"];
-
 function render(state) {
   const run = state.run || { units: [] };
   const units = run.units || [];
@@ -182,24 +334,14 @@ function render(state) {
   const step = state.step || { wave: [] };
   const graph = state.graph || { decisions: [], findings: [] };
 
+  // SPINE: the run tree (spec 30 c3) - the projected spec -> unit -> stage -> role -> agent
+  // tree the server ships in `state.tree`, rendered client-side (the render boundary).
+  renderTree(state.tree || []);
+
   // PRESENT: pending frontier (the ready wave the driver runs now).
   const wave = step.wave || [];
   el("wave").innerHTML = table(["spawn", "unit", "stage"],
     wave.map(w => [esc(w.id), esc(w.unit), esc(w.stage)]));
-
-  // PRESENT: live per-agent activity (spec 14) - what each in-flight agent is doing NOW, and
-  // how long since its last store event (the blackout) versus its last activity / heartbeat.
-  const activity = state.activity || [];
-  el("activity").innerHTML = activity.length
-    ? table(["agent", "stage", "doing", "activity age", "heartbeat", "last store event"],
-        activity.map(a => [
-          esc(a.id), esc(a.stage),
-          esc(a.latest_activity || "(none reported yet)"),
-          a.activity_age_s != null ? a.activity_age_s + "s" : "-",
-          a.liveness_age_s != null ? a.liveness_age_s + "s" : "-",
-          esc(a.last_milestone || "-") + (a.milestone_age_s != null ? " (" + a.milestone_age_s + "s)" : ""),
-        ]))
-    : '<div class="muted">no agents in flight</div>';
 
   // PRESENT: action-needed inbox - escalations and units awaiting a human first,
   // then mid-remediation units.
@@ -212,25 +354,20 @@ function render(state) {
     ? inbox.map(t => '<div class="row">' + esc(t) + '</div>').join("")
     : '<div class="empty">nothing needs a human</div>';
 
-  // PRESENT: in-flight units (started but not terminal).
-  const inflight = units.filter(u => !TERMINAL[u.status]);
-  el("inflight").innerHTML = table(["unit", "status", "attempts", "criterion"],
-    inflight.map(u => [esc(u.id),
-      '<span class="pill ' + stClass(u.status) + '">' + esc(u.status) + '</span>',
-      esc(u.attempts || 0), esc(u.spec_criterion)]));
+  // PRESENT: current blocker per unfinished unit + the run-level budget halt (spec 19a,
+  // unit 1). One line each, from the SAME shared classifier `rigger status` prints - the
+  // server sends `subject`/`kind`/`detail` pre-split (and `line`, the exact status string,
+  // so the two surfaces cannot drift). We render subject + detail so the line reads the
+  // same as `line`, keyed by `kind` for styling.
+  const blockers = state.blockers || [];
+  el("blockers").innerHTML = blockers.length
+    ? blockers.map(b => '<div class="row blk-' + esc(b.kind) + '"><b>' + esc(b.subject)
+        + '</b>: ' + esc(b.detail) + '</div>').join("")
+    : '<div class="empty">nothing blocked</div>';
 
-  // PAST: swimlanes - one row per unit, a cell per stage; a retried unit is dashed.
-  el("swimlanes").innerHTML = units.length ? '<table><tbody>' + units.map(u => {
-    const reached = STAGES.indexOf(u.status);
-    const cells = STAGES.map((s, i) => {
-      let cls = "cell";
-      if (u.status === "integrated" || i <= reached) cls += " on";
-      if ((u.attempts || 0) > 1 && i > 0 && i <= reached) cls += " retry";
-      return '<span class="' + cls + '" title="' + esc(s) + '"></span>';
-    }).join("");
-    return '<tr><td>' + esc(u.id) + '</td><td><div class="swim">' + cells + '</div></td>'
-      + '<td><span class="pill ' + stClass(u.status) + '">' + esc(u.status) + '</span></td></tr>';
-  }).join("") + '</tbody></table>' : '<div class="empty">no units yet</div>';
+  // NOTE: the in-flight-units, live-agent-activity, and swimlane panels are SUBSUMED by the
+  // run-tree spine (spec 30 c3, rendered above): the tree shows each unit's live status, the
+  // auto-expanded path to what is RUNNING, and each running agent's folded doing-line.
 
   // PAST: review outcomes - reuse metrics.rs's classification (no verdict event type).
   el("review").innerHTML =
@@ -253,12 +390,30 @@ function render(state) {
         + '</td><td><div class="bar"><span style="width:' + w + '%"></span></div></td></tr>';
     }).join("") + '</tbody></table>' : '<div class="empty">no gate runs recorded</div>';
 
-  // PAST: decision history, superseded entries struck through.
+  // PAST: decision history as PROGRESSIVE DISCLOSURE. Each decision is a native <details>: the
+  // <summary> line previews `id + a one-line summary` and the body reveals the FULL reasoning on
+  // click, so a multi-KB decision collapses to one line but expands whole - no framework, no
+  // inline multi-KB dumps. Superseded entries stay struck through in the collapsed line.
   const decisions = graph.decisions || [];
-  el("decisions").innerHTML = decisions.length ? '<table><tbody>' + decisions.map(d =>
-    '<tr><td class="' + (d.superseded ? "struck" : "") + '">' + esc(d.id) + '</td>'
-    + '<td class="' + (d.superseded ? "struck" : "") + '">' + esc(d.summary) + '</td></tr>'
-  ).join("") + '</tbody></table>' : '<div class="empty">no decisions recorded</div>';
+  el("decisions").innerHTML = decisions.length ? decisions.map(d =>
+    '<details class="decision' + (d.superseded ? " struck" : "") + '"'
+    // Re-apply the operator's expansion: a tracked id renders open, so the body they opened
+    // stays open across this poll's re-render instead of collapsing. data-did carries the id
+    // back to the toggle listener below (the summary's <code> is display-only).
+    + (expandedDecisions.has(d.id) ? " open" : "") + ' data-did="' + esc(d.id) + '">'
+    + '<summary><code class="did">' + esc(d.id) + '</code> ' + esc(preview(d.summary)) + '</summary>'
+    + '<div class="reasoning">' + esc(d.summary) + '</div>'
+    + '</details>'
+  ).join("") : '<div class="empty">no decisions recorded</div>';
+  // Re-arm the toggle listeners after the innerHTML swap (the prior subtree, and its listeners,
+  // were just destroyed): expanding or collapsing a decision updates the tracked set so the
+  // choice SURVIVES the next poll's re-render. Without this the poll would wipe every expansion.
+  el("decisions").querySelectorAll("details.decision").forEach(d => {
+    d.addEventListener("toggle", () => {
+      if (d.open) expandedDecisions.add(d.dataset.did);
+      else expandedDecisions.delete(d.dataset.did);
+    });
+  });
 
   // FUTURE: ready frontier (structural - the same wave, no ETA).
   el("ready").innerHTML = table(["spawn", "unit", "stage"],
@@ -289,12 +444,207 @@ function render(state) {
     + " (pos " + (state.position || 0) + ")";
 }
 
+// The run-tree spine (spec 30 c3): render the server's spec -> unit -> stage -> role -> agent
+// projection as nested native <details>. The server owns the shape and the collapse/expand
+// hints (auto_collapse / auto_expand) + each node's live status; the client only draws it.
+function treeNode(n) {
+  // A running agent folds in its live "doing" line (subsumes the old activity panel).
+  const label = '<span class="tlabel">' + esc(n.label) + '</span>'
+    + '<span class="pill tst-' + esc(n.status) + '">' + esc(n.status) + '</span>'
+    + (n.doing ? '<span class="tdoing">' + esc(n.doing) + '</span>' : '');
+  // Select-to-seed (spec 30 c5): the node's label IS its knowledge-graph seed (a unit node's label
+  // is its unit id, a graph node id; selecting it drives the KG panel to that node's neighborhood -
+  // the design's "drill from what is running straight into what knowledge governs it"). The
+  // delegated listener on the tree container reads this data-seed on click. Client-side only: the
+  // server's TreeNode shape (criterion 3) is untouched.
+  const seed = ' data-seed="' + esc(n.label) + '"';
+  if (!n.children || !n.children.length) {
+    return '<div class="tleaf k-' + esc(n.kind) + '"' + seed + '>' + label + '</div>';
+  }
+  // auto_expand marks the path to running work -> the node renders open. auto_collapse marks a
+  // single-child level -> a class the styling can flatten (still a real <details>, no data lost).
+  const open = n.auto_expand ? " open" : "";
+  const collapse = n.auto_collapse ? " collapse" : "";
+  return '<details class="tnode k-' + esc(n.kind) + collapse + '"' + open + '>'
+    + '<summary' + seed + '>' + label + '</summary>'
+    + '<div class="tkids">' + n.children.map(treeNode).join("") + '</div></details>';
+}
+
+function renderTree(tree) {
+  el("tree").innerHTML = (tree && tree.length)
+    ? tree.map(treeNode).join("")
+    : '<div class="empty">no run tree yet</div>';
+}
+
 function renderFeed(events) {
   el("feed").innerHTML = events.length ? events.slice(-200).map(e =>
     '<div class="row"><span class="pos">' + esc(e.position) + '</span>'
     + '<span class="ty">' + esc(e.type) + '</span>'
     + '<span class="muted">' + esc(e.summary || "") + '</span></div>'
   ).join("") : '<div class="empty">no events</div>';
+}
+
+// The unified-KG detail panel (spec 30 c5): the seeded neighborhood of the SELECTED node. Selecting
+// a tree node (or a graph node) SETS the seed and the panel shows that node's neighborhood - there
+// is NO hand-seeding. The panel is driven by user selection, NOT by render(), so an operator's
+// selection SURVIVES the 1.5s live poll (the same poll-survival discipline the decisions region
+// uses): render() never touches el("kgpanel").
+let kgSeed = null;
+
+// The three confidence tiers (spec 29a) the c7 filter toggles, in precise->ambiguous order.
+const KG_TIERS = ["extracted", "inferred", "ambiguous"];
+// c7 tier filter: the set of currently-VISIBLE tiers (all shown by default) and the last-rendered
+// neighborhood body. Client-side state, so toggling a tier re-filters the DRAWN edges WITHOUT a
+// re-fetch and the toggle survives the 1.5s live poll (render() never touches kgpanel).
+const kgTiers = new Set(KG_TIERS);
+let kgLast = null;
+
+function tierClass(t) { return "tier tier-" + String(t || "extracted"); }
+
+// Draw a seeded neighborhood (the /api/graph body): the reachable nodes (each clickable to re-seed)
+// and the tier-tagged edges among them. A GOD-NODE (spec 30 c6: a high-degree hub the server flagged)
+// carries a badge with its in-neighborhood degree; and when the body carries a QUERY-PATH (from a
+// two-node selection), the nodes and edges ON that path are highlighted. The c7 TIER FILTER hides the
+// edges of any toggled-off confidence tier (client-side visibility over the server's tier tags), and
+// the c7 EXPLAIN section shows the seed node's provenance (the events/decisions that produced it).
+// An empty neighborhood degrades to a message, never an error.
+function renderGraph(g) {
+  // Cache the last-rendered neighborhood so a tier toggle re-filters the DRAWN edges without a
+  // re-fetch (spec 30 c7) - the body is unchanged, only the client's visible-tier set moved.
+  kgLast = g;
+  const nodes = g.nodes || [];
+  const edges = g.edges || [];
+  // The query-path (spec 30 c6): the shortest chain of node ids between the two selected nodes, and
+  // the set of consecutive id-pairs so an edge on the path can be highlighted regardless of its
+  // stored direction. Empty/absent for a plain seed selection.
+  const path = g.path || [];
+  const onPathNode = new Set(path);
+  const onPathEdge = new Set();
+  for (let i = 0; i + 1 < path.length; i++) {
+    onPathEdge.add(path[i] + " " + path[i + 1]);
+    onPathEdge.add(path[i + 1] + " " + path[i]);
+  }
+  const edgeOnPath = e => onPathEdge.has(e.from + " " + e.to);
+  const head = '<div class="kgseed">neighborhood of <b>' + esc(g.seed || "")
+    + '</b> (depth ' + esc(g.depth || 0) + ')'
+    + (path.length ? ' &middot; path <b>' + esc(path[0]) + '</b> &rarr; <b>' + esc(path[path.length - 1])
+        + '</b> (' + esc(path.length - 1) + ' hop' + (path.length - 1 === 1 ? '' : 's') + ')' : '')
+    + '</div>';
+  if (!nodes.length && !edges.length) {
+    el("kgpanel").innerHTML = head
+      + '<div class="empty">no knowledge-graph neighborhood for this node</div>';
+    return;
+  }
+  // c7 TIER FILTER: one checkbox per confidence tier, checked when that tier is currently VISIBLE.
+  // Toggling one (a delegated change listener on the panel) hides/shows that tier's edges below.
+  const tierToggles = '<div class="kgtiers">'
+    + KG_TIERS.map(t =>
+        '<label><input type="checkbox" data-tier="' + t + '"' + (kgTiers.has(t) ? ' checked' : '') + '>'
+        + '<span class="' + tierClass(t) + '">' + esc(t) + '</span></label>'
+      ).join("")
+    + '</div>';
+  const nodeList = nodes.map(n =>
+    '<div class="kgnode' + (n.id === g.seed ? " seed" : "") + (onPathNode.has(n.id) ? " onpath" : "")
+    + '" data-seed="' + esc(n.id) + '">'
+    + '<span class="tlabel">' + esc(n.label || n.id) + '</span>'
+    + '<span class="kgkind">' + esc(n.kind) + '</span>'
+    + (n.god ? '<span class="kggod" title="high-degree hub">god-node &middot; deg ' + esc(n.degree || 0) + '</span>' : '')
+    + '</div>'
+  ).join("") || '<div class="empty">none</div>';
+  // c7 TIER FILTER: draw only the edges whose tier is currently VISIBLE (kgTiers). The god-node
+  // degree/badge (c6) is unchanged - it stays the honest in-view degree over ALL tiers, so a hub
+  // still reads as a hub while a tier is hidden; the filter toggles edge VISIBILITY only.
+  const edgeList = edges.filter(e => kgTiers.has(String(e.tier || "extracted"))).map(e =>
+    '<div class="kgedge' + (edgeOnPath(e) ? " onpath" : "") + '">' + esc(e.from)
+    + ' <span class="kgrel">' + esc(e.rel) + '</span> '
+    + esc(e.to) + '<span class="' + tierClass(e.tier) + '">' + esc(e.tier) + '</span></div>'
+  ).join("") || '<div class="empty">none (all tiers hidden or no edges)</div>';
+  // c7 EXPLAIN: the seed node's provenance the server attached - the currently-valid edges that
+  // produced it, each stamped with the source event position that folded it. Absent when the seed
+  // is not a graph node (the route omits it), so the section shows only when there is one to explain.
+  const explain = g.explain;
+  const provSection = explain
+    ? '<div class="kgprov"><h3>Provenance of ' + esc(explain.node) + ' (explain)</h3>'
+      + ((explain.sources || []).map(p =>
+          '<div class="kgfact">' + esc(p.from) + ' <span class="kgrel">' + esc(p.rel) + '</span> '
+          + esc(p.to) + '<span class="' + tierClass(p.tier) + '">' + esc(p.tier) + '</span>'
+          + '<span class="kgsrc">event #' + esc(p.source) + '</span></div>'
+        ).join("") || '<div class="empty">no recorded provenance</div>')
+      + '</div>'
+    : "";
+  el("kgpanel").innerHTML = head + tierToggles
+    + '<div class="kgcols">'
+    + '<div><h3>Nodes</h3>' + nodeList + '</div>'
+    + '<div><h3>Edges (tier-tagged)</h3>' + edgeList + '</div>'
+    + '</div>'
+    + provSection;
+}
+
+// Set the KG seed to `seed` and fetch its neighborhood from the read-only GET /api/graph route. The
+// seed is encodeURIComponent'd because a graph node id carries `#` / `::` / `/` (the route
+// percent-decodes it back). A failed/absent fetch degrades to a message, never an error.
+async function seedGraph(seed) {
+  kgSeed = seed;
+  if (!LIVE) {
+    // The exported static snapshot has no server to query; the KG neighborhood is a live-only view.
+    el("kgpanel").innerHTML = '<div class="kgseed">selected <b>' + esc(seed) + '</b></div>'
+      + '<div class="empty">the knowledge-graph neighborhood is available in the live dash (this is a static export)</div>';
+    return;
+  }
+  try {
+    const g = await (await fetch("/api/graph?seed=" + encodeURIComponent(seed) + "&depth=2",
+      { cache: "no-store" })).json();
+    renderGraph(g);
+  } catch (e) {
+    el("kgpanel").innerHTML = '<div class="empty">the knowledge-graph neighborhood is unavailable</div>';
+  }
+}
+
+// Highlight the QUERY-PATH (spec 30 c6) from the current seed to a SECOND selected node `target`: the
+// server computes the shortest path over the same GET /api/graph route (from=seed, to=target), and
+// renderGraph highlights the nodes/edges on it. With no seed yet, a path selection just seeds the
+// target instead. Both ids are encodeURIComponent'd (a node id carries `#` / `::` / `/`). A
+// failed/absent fetch degrades to a message, never an error.
+async function pathTo(target) {
+  if (!kgSeed || kgSeed === target) { seedGraph(target); return; }
+  if (!LIVE) { seedGraph(target); return; }
+  try {
+    const g = await (await fetch("/api/graph?seed=" + encodeURIComponent(kgSeed) + "&depth=2"
+      + "&from=" + encodeURIComponent(kgSeed) + "&to=" + encodeURIComponent(target),
+      { cache: "no-store" })).json();
+    renderGraph(g);
+  } catch (e) {
+    el("kgpanel").innerHTML = '<div class="empty">the knowledge-graph neighborhood is unavailable</div>';
+  }
+}
+
+// Wire select-to-seed ONCE (not per render): one delegated click listener on each stable container
+// (the tree and the KG panel itself), so it SURVIVES the render()/renderTree() innerHTML swaps that
+// destroy the individual nodes. A plain click on a node carrying data-seed sets the seed and drives
+// the panel; a SHIFT-click selects that node as the SECOND endpoint and highlights the query-path
+// from the current seed to it (spec 30 c6). Selecting a TREE node or a GRAPH node both re-seed, so
+// the panel always shows the neighborhood of what is selected.
+function wireSelectToSeed() {
+  ["tree", "kgpanel"].forEach(id => {
+    el(id).addEventListener("click", ev => {
+      const hit = ev.target.closest("[data-seed]");
+      if (hit && hit.dataset.seed) {
+        if (ev.shiftKey) pathTo(hit.dataset.seed);
+        else seedGraph(hit.dataset.seed);
+      }
+    });
+  });
+  // c7 TIER FILTER: one delegated CHANGE listener on the stable KG panel container, so a tier-checkbox
+  // toggle re-filters the DRAWN edges over the LAST neighborhood body (no re-fetch) and it SURVIVES the
+  // renderGraph innerHTML swaps - the same delegation discipline the select-to-seed click uses.
+  el("kgpanel").addEventListener("change", ev => {
+    const box = ev.target.closest("[data-tier]");
+    if (box && box.dataset.tier) {
+      if (box.checked) kgTiers.add(box.dataset.tier);
+      else kgTiers.delete(box.dataset.tier);
+      if (kgLast) renderGraph(kgLast);
+    }
+  });
 }
 
 async function poll() {
@@ -313,6 +663,10 @@ async function poll() {
     if (LIVE) setTimeout(poll, POLL_MS);
   }
 }
+
+// Attach the select-to-seed listeners once, on the stable containers, before the first render/poll
+// so a selection works from the first painted tree.
+wireSelectToSeed();
 
 if (LIVE) {
   el("mode").textContent = "connecting...";

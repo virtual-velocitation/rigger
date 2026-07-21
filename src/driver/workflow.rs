@@ -3,7 +3,10 @@
 //! them - the workflow shim calls rigger_next to pick up a request, runs the
 //! agent via the Workflow tool's `agent()`, and calls rigger_result when done.
 //! Agents emit decisions live via the MCP rigger_emit tool (handled by the
-//! server, not here), so the emit callback is unused.
+//! server, not here), so the emit callback is unused. The spawn's wire id IS its
+//! deterministic `opts.id`, so the server can stamp those live emits with the id of
+//! the spawn it is serving (the per-spawn correlation the verdict-channel-mismatch
+//! backstop keys on; the serial shim makes "the spawn being served" unambiguous).
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -149,8 +152,19 @@ impl AgentDriver for Driver {
         let (tx, rx) = channel();
         let id = {
             let mut inner = self.inner.lock().unwrap();
-            inner.next_id += 1;
-            let id = inner.next_id.to_string();
+            // Use the conductor's DETERMINISTIC spawn id (`opts.id`) as the wire id, so the
+            // MCP server can stamp this spawn's live `rigger_emit` calls with it - the
+            // per-spawn [`META_SPAWN`](crate::conductor::META_SPAWN) correlation the
+            // verdict-channel-mismatch backstop keys on (spec 18, unit 3). The shim serves
+            // agents serially and echoes this id back on `rigger_result`, so it doubles as
+            // the pending-map key. Fall back to a monotonic counter only when a caller left
+            // `opts.id` empty (test-only), preserving the map's unique-key invariant.
+            let id = if opts.id.is_empty() {
+                inner.next_id += 1;
+                inner.next_id.to_string()
+            } else {
+                opts.id.clone()
+            };
             let req = SpawnRequest {
                 id: id.clone(),
                 prompt: prompt.to_string(),

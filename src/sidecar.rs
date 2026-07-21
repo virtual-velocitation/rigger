@@ -13,6 +13,7 @@ use serde::Deserialize;
 
 use crate::contextgraph;
 use crate::eventstore::{self, Event, EventStore, Filter, Position};
+use crate::run;
 
 /// A peer's decision, as the side-car surfaces it to an agent.
 #[derive(Clone, Debug, Deserialize)]
@@ -22,6 +23,15 @@ pub struct PeerDecision {
     pub summary: String,
     #[serde(default)]
     pub governs: Vec<String>,
+    /// LIVE when this decision belongs to the ACTIVE run, HISTORICAL (a superseded run,
+    /// or pre-boundary) otherwise (spec 21, unit 3). A DERIVED VIEW, not part of the
+    /// event body: the side-car sets it from the single c1 run attribution
+    /// ([`run::run_attribution`] + [`run::current_run_id`] over the whole event stream)
+    /// so provenance is legible without scoping grounding to the active run. `#[serde(skip)]`
+    /// keeps it out of (de)serialization and defaults it to `false` - the conservative
+    /// HISTORICAL default - when a decision is decoded from an event body.
+    #[serde(skip)]
+    pub live: bool,
 }
 
 /// A peer reviewer's finding, as the side-car surfaces it to a concurrent reviewer.
@@ -92,11 +102,29 @@ impl Sidecar {
 
     /// The DecisionMade events seen so far - the concurrent decisions an agent
     /// should be aware of before it acts.
+    ///
+    /// Each decision carries a LIVE/HISTORICAL provenance label (spec 21, unit 3),
+    /// derived from the SINGLE c1 run attribution - [`run::run_attribution`] keyed by
+    /// event index plus [`run::current_run_id`] - over the WHOLE `seen` stream. The same
+    /// slice feeds both the attribution and the active-run id, and `.enumerate()` maps a
+    /// decision's index back onto that same slice, so the index contract holds (a
+    /// filtered/partial slice would misalign the keys). Grounding is NOT scoped here: the
+    /// label only makes provenance legible; `graph_context` still surfaces cross-run
+    /// decisions unchanged.
     pub fn decisions(&self) -> Vec<PeerDecision> {
         let seen = self.seen.lock().unwrap();
+        let attribution = run::run_attribution(&seen);
+        let active = run::current_run_id(&seen);
         seen.iter()
-            .filter(|e| e.type_ == contextgraph::TYPE_DECISION_MADE)
-            .filter_map(|e| serde_json::from_slice(&e.data).ok())
+            .enumerate()
+            .filter(|(_, e)| e.type_ == contextgraph::TYPE_DECISION_MADE)
+            .filter_map(|(i, e)| {
+                let mut d: PeerDecision = serde_json::from_slice(&e.data).ok()?;
+                d.live = attribution
+                    .get(&i)
+                    .is_some_and(|run_of| run_of.is_live(active.as_deref()));
+                Some(d)
+            })
             .collect()
     }
 
@@ -382,5 +410,70 @@ mod tests {
         // An empty blast-radius returns every lesson.
         let all = sidecar.lessons_for(&[]);
         assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn decisions_are_labeled_live_from_the_active_run_and_historical_from_a_superseded_run() {
+        // spec 21, unit 3: `rigger peers` must tell a live decision from dead-run noise.
+        // Reusing the SINGLE c1 run attribution, a decision inside the ACTIVE run's
+        // [RunStarted, next RunStarted) window is LIVE; one from a superseded (earlier)
+        // run is HISTORICAL. The side-car derives the label over the WHOLE event stream,
+        // so the RunStarted boundaries must be present - they are, because Filter::default
+        // applies no type filter, exactly as production `cmd_peers` replays from position 0.
+        let store = Store::open(":memory:").unwrap();
+        let sidecar = Sidecar::start(&store, 0, Filter::default()).unwrap();
+
+        let run_started = |run: &str| {
+            Event::new(
+                run::TYPE_RUN_STARTED,
+                serde_json::to_vec(&serde_json::json!({ "run": run })).unwrap(),
+            )
+        };
+        let decision = |id: &str| {
+            Event::new(
+                contextgraph::TYPE_DECISION_MADE,
+                serde_json::to_vec(&serde_json::json!({ "id": id, "summary": "x" })).unwrap(),
+            )
+        };
+        // The stream: run r1 opens and records a decision, then run r2 (the ACTIVE run)
+        // opens and records its own decision.
+        for e in [
+            run_started("r1"),
+            decision("d_old"),
+            run_started("r2"),
+            decision("d_new"),
+        ] {
+            store.append("run", ExpectedRevision::Any, &[e]).unwrap();
+        }
+
+        // Wait until both decisions have surfaced through the subscription. Delivery is in
+        // append order, so once d_new is seen its preceding r2 boundary is seen too.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if sidecar.decisions().len() >= 2 {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the side-car never surfaced both decisions"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        let decisions = sidecar.decisions();
+        let by_id = |id: &str| {
+            decisions
+                .iter()
+                .find(|d| d.id == id)
+                .unwrap_or_else(|| panic!("decision {id} must surface"))
+        };
+        assert!(
+            by_id("d_new").live,
+            "a decision from the active run (r2) must be LIVE"
+        );
+        assert!(
+            !by_id("d_old").live,
+            "a decision from a superseded run (r1) must be HISTORICAL"
+        );
     }
 }

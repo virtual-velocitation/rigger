@@ -8,7 +8,7 @@ pub mod sqlite;
 
 use std::collections::BTreeMap;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::eventstore::{Event, Position};
 
@@ -25,6 +25,37 @@ pub const KIND_LESSON: &str = "lesson";
 /// later tiers (and concurrent lenses) RETRIEVE it via grounding, never via the
 /// conductor hand-threading one agent's stdout into another's prompt.
 pub const KIND_FINDING: &str = "finding";
+/// A definition site extracted from source (a function, type, module, and so on): the code
+/// half of the one graph (spec 29a). Folded from a `CodeEntityExtracted` event, so code
+/// structure is a rebuildable projection over the log, not a mutable side index. Its id is
+/// `<file>::<name>`; its attrs carry the name, the rigger `Kind` string, the 1-based line, and
+/// the language it was parsed as.
+pub const KIND_CODE_ENTITY: &str = "code-entity";
+/// A source file container node (spec 29a): the `<rel-path>` node that a file's extracted
+/// code entities hang off. Folded alongside the entities, so a query can reach a file's
+/// structure the same way it reaches the decisions that govern the file.
+pub const KIND_FILE: &str = "file";
+/// A design-intent doc / doc-section node (spec 29b): a reference-architecture doc,
+/// `architecture.md`, or an addendum (and its `##` sections) ingested as first-class design
+/// knowledge. Folded from a `DocConceptExtracted` event, so the reference architecture becomes a
+/// set of queryable nodes in the very graph it specifies. Its id is the doc's relative path (a
+/// whole-doc node) or `<doc>#<section-slug>` (a section node); its attrs carry the title and the
+/// source doc. This is the design half of the one graph (the RA / addenda / `architecture.md`).
+pub const KIND_DESIGN_DOC: &str = "design-doc";
+/// A load-bearing architecture-decision node (spec 29b): an ADR, a `design-intent-gaps` entry, or
+/// any recorded decision that CONSTRAINS the code. Folded from a `DocConceptExtracted` event, so
+/// an agent editing a subsystem reaches the load-bearing decision that binds it. Distinct from the
+/// dev-loop `decision` kind (a `DecisionMade` from the run's own event stream): an `arch-decision`
+/// is design knowledge ingested from a doc, keyed by its source path.
+pub const KIND_ARCH_DECISION: &str = "arch-decision";
+/// A handbook-rule node (spec 29b): a spec-shape or loop-discipline rule that GOVERNS authoring.
+/// Folded from a `DocConceptExtracted` event, so a reviewer reaches the rule that governs a file.
+pub const KIND_HANDBOOK_RULE: &str = "handbook-rule";
+/// A rationale node (spec 29b): a `# WHY:` / `# NOTE:` inline comment attached to a code entity,
+/// capturing the LOCAL design intent behind that code. Folded from a `DocConceptExtracted` event;
+/// its id is `<file>#L<line>` (the comment's source site), so a later criterion can link it to the
+/// entity it explains.
+pub const KIND_RATIONALE: &str = "rationale";
 
 // Edge relationships.
 pub const REL_DECIDED: &str = "DECIDED";
@@ -38,6 +69,57 @@ pub const REL_ASSIGNED_TO: &str = "ASSIGNED_TO";
 /// The acting reviewer raised this finding (a DECIDED-style provenance link from
 /// the `by` agent to the finding node).
 pub const REL_RAISED: &str = "RAISED";
+/// A file container node CONTAINS a code entity extracted from it (spec 29a): the structural
+/// edge from a `file` node to each `code-entity` node folded from that file's definitions.
+pub const REL_CONTAINS: &str = "CONTAINS";
+/// A file REFERENCES a code symbol (spec 29a): the structural edge folded from an
+/// `EdgeInferred` event, from the referencing `file` node to the referenced symbol's
+/// file-scoped `code-entity` id. A confidence tier is layered onto this edge by a later
+/// criterion; this criterion only makes the structural edge exist.
+pub const REL_REFERENCES: &str = "REFERENCES";
+/// A `design-doc` SPECIFIES (designs) a code node (spec 29b): the design-intent edge from a
+/// reference-architecture / `architecture.md` / addendum node to the subsystem it designs, so a
+/// `subgraph` traversal from a touched file reaches the RA section that designed it. Folded from a
+/// `DocLinkExtracted` event at [`TIER_EXTRACTED`] (an explicit design fact recorded on the log).
+pub const REL_SPECIFIES: &str = "SPECIFIES";
+/// An `arch-decision` CONSTRAINS a code node (spec 29b): the design-intent edge from a
+/// load-bearing decision / ADR / `design-intent-gaps` entry to the code it binds, so an agent
+/// editing a subsystem reaches the decision that constrains it. Folded from a `DocLinkExtracted`
+/// event at [`TIER_EXTRACTED`]. A `handbook-rule` reuses [`REL_GOVERNS`] for its rule-governs-code
+/// edge (no second governs relation is minted).
+pub const REL_CONSTRAINS: &str = "CONSTRAINS";
+/// A `rationale` EXPLAINS a code node (spec 29b): the design-intent edge from a `# WHY:` / `# NOTE:`
+/// comment site to the code it explains (its file), so a traversal reaches the local intent behind
+/// an entity. Folded from a `DocLinkExtracted` event at [`TIER_EXTRACTED`]. Lower-case by spec, to
+/// read as a design-intent relation distinct from the upper-case dev-loop / code rels.
+pub const REL_EXPLAINS: &str = "explains";
+/// A `design-doc` REFERENCES another doc / code node (spec 29b): the design-intent edge folded from
+/// a markdown link / ADR citation (doc->doc or doc->code), so a cited addendum or subsystem is
+/// reachable from the doc that cites it. Folded from a `DocLinkExtracted` event at
+/// [`TIER_EXTRACTED`]. Lower-case `references` (a doc citation) is deliberately distinct from the
+/// upper-case [`REL_REFERENCES`] code-symbol structural edge (spec 29a) - two relations, two id
+/// spaces, never conflated.
+pub const REL_DOC_REFERENCES: &str = "references";
+
+// Edge confidence tiers (spec 29a, addendum 6.2). Every folded edge carries one, the
+// `precise`/`safe` split of the two-view blast radius made a first-class edge attribute. The
+// three tiers partition the reference set so their UNION stays a superset of the grep union
+// (addendum 2.4): a later traversal reads the EXTRACTED sub-graph as the precise prompt seed and
+// EXTRACTED u INFERRED u AMBIGUOUS as the safe superset the safety consumers need.
+/// An explicit-in-source structural fact: a definition's containment, or a reference resolved to a
+/// definition in the SAME file (a call / import / inherit of a known local symbol). The highest
+/// confidence tier - the precise seed. Every non-code dev-loop edge (DECIDED / GOVERNS / ABOUT /
+/// SUPERSEDES / ...) also folds EXTRACTED: they are explicit facts recorded on the log.
+pub const TIER_EXTRACTED: &str = "extracted";
+/// A derived / transitive link: a reference whose name is NOT defined in the referencing file but
+/// IS defined in ANOTHER file the graph knows. The reference is inferred to reach that definition
+/// across files - real, but one confidence step below an explicit same-file reference.
+pub const TIER_INFERRED: &str = "inferred";
+/// A grep-visible-only occurrence: a reference whose name is defined NOWHERE the graph knows - a
+/// macro body, a reflection string, a dynamic name, an external symbol. It is kept (never dropped)
+/// so the safe superset stays a grep-superset, but tiered lowest: the structural pass cannot
+/// confirm it resolves to any definition.
+pub const TIER_AMBIGUOUS: &str = "ambiguous";
 
 /// The metadata key carrying the acting agent on an event (the DECIDED source).
 pub const META_ACTOR: &str = "actor";
@@ -60,6 +142,10 @@ pub struct Edge {
     pub valid_from: i64,
     pub valid_to: Option<i64>,
     pub source: Position,
+    /// The confidence tier this edge was folded at: one of [`TIER_EXTRACTED`], [`TIER_INFERRED`],
+    /// [`TIER_AMBIGUOUS`] (spec 29a, addendum 6.2). The `precise`/`safe` blast-radius split made a
+    /// first-class edge attribute; a later traversal filters on it.
+    pub tier: String,
 }
 
 /// A set of nodes and the edges among them (e.g. a Subgraph result).
@@ -81,6 +167,29 @@ pub const TYPE_ALIAS_UNRESOLVED: &str = "AliasUnresolved";
 /// A review finding a lens / adversary raised about a unit's files. Folded into a
 /// KIND_FINDING node ABOUT each file, plus a RAISED edge from the acting reviewer.
 pub const TYPE_REVIEW_FINDING: &str = "ReviewFinding";
+/// One definition extracted from a source file (spec 29a): the extraction pass emits one per
+/// definition, and the always-compiled fold turns it into a `code-entity` node plus a
+/// `CONTAINS` edge from the file container node. Always compiled, so the light lane folds it
+/// with the extraction pass absent.
+pub const TYPE_CODE_ENTITY_EXTRACTED: &str = "CodeEntityExtracted";
+/// One reference extracted from a source file (spec 29a): the extraction pass emits one per
+/// reference, and the always-compiled fold turns it into a `REFERENCES` structural edge from
+/// the file container node to the referenced symbol's code-entity id.
+pub const TYPE_EDGE_INFERRED: &str = "EdgeInferred";
+/// One design-intent concept extracted from a doc (spec 29b): the design-intent extraction pass
+/// emits one per concept, and the always-compiled fold turns it into a `design-doc` /
+/// `arch-decision` / `handbook-rule` / `rationale` node. Always compiled, so the light lane folds
+/// a design-intent log with the extraction pass absent - the fold arm and the node kinds live
+/// outside the feature that gates the extraction, mirroring the 29a `CodeEntityExtracted` split.
+pub const TYPE_DOC_CONCEPT_EXTRACTED: &str = "DocConceptExtracted";
+/// One design-intent link extracted from a doc (spec 29b): the design-intent extraction pass emits
+/// one per link, and the always-compiled fold turns it into a typed design-intent edge -
+/// `design-doc --SPECIFIES--> code`, `arch-decision --CONSTRAINS--> code`,
+/// `handbook-rule --GOVERNS--> code` (reusing `REL_GOVERNS`), `rationale --explains--> code`, and
+/// `design-doc --references--> doc`. Always compiled, so the light lane folds a design-intent log
+/// with the extraction pass absent - the fold arm and the edge relations live outside the feature
+/// that gates the extraction, mirroring the 29a `EdgeInferred` split.
+pub const TYPE_DOC_LINK_EXTRACTED: &str = "DocLinkExtracted";
 
 #[derive(Deserialize)]
 struct DecisionMade {
@@ -118,6 +227,11 @@ struct UnitStarted {
 }
 #[derive(Deserialize)]
 struct UnitIntegrated {
+    // The conductor emits UNIT_INTEGRATED with an `id` key (`{"id": <unit>, "commit": ...}`),
+    // unlike UNIT_STARTED which redundantly carries both `id` and `unit`. Accept `id` as an
+    // alias so this fold parses what production actually records; without it the fold fails to
+    // deserialize every real event and its disposition-expiry effect is dead in production.
+    #[serde(alias = "id")]
     unit: String,
     #[serde(default)]
     commit: String,
@@ -150,6 +264,108 @@ struct ReviewFinding {
     summary: String,
     #[serde(default)]
     about: Vec<String>,
+}
+/// The `CodeEntityExtracted` payload (spec 29a): one definition the extraction pass emits. It
+/// is the ONE serialization contract shared by both sides of the log - the feature-gated emit
+/// pass (`grounder::symbols`) constructs and serializes it, and the always-compiled fold
+/// deserializes it - so the field names can never drift between emitter and folder.
+#[derive(Serialize, Deserialize)]
+pub(crate) struct CodeEntityExtracted {
+    /// The definition's file, as a normalized relative path (the file container node id).
+    pub file: String,
+    /// The defined symbol's name.
+    pub name: String,
+    /// The rigger `Kind` of the definition, lowercased (e.g. `function`, `type`, `module`).
+    pub kind: String,
+    /// The 1-based line of the definition site.
+    pub line: u32,
+    /// The language the file was parsed as, lowercased (e.g. `rust`).
+    #[serde(default)]
+    pub lang: String,
+    /// Set `true` on the FIRST event of a file's extraction batch (spec 29a criterion 3). It marks
+    /// the batch boundary: the fold SUPERSEDES (sets `valid_to` on, never deletes) the file's prior
+    /// live structural edges before folding this batch, so re-extracting a changed file REPLACES
+    /// its structural edges rather than accreting duplicates. On the initial extraction it
+    /// supersedes nothing (the file has no prior edges); on a later re-extraction it retires the
+    /// previous pass. Rides the existing event - the batch boundary is a property of the extraction
+    /// pass, not a fact meriting its own event type - and defaults `false`, so a historical event
+    /// recorded before the field existed folds as a non-boundary event.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub fresh: bool,
+}
+/// The `EdgeInferred` payload (spec 29a): one reference the extraction pass emits. Shares the
+/// same one-contract discipline as [`CodeEntityExtracted`]: emitted by the feature-gated pass,
+/// folded by the always-compiled arm.
+#[derive(Serialize, Deserialize)]
+pub(crate) struct EdgeInferred {
+    /// The referencing file, as a normalized relative path (the edge's `from` node id).
+    pub file: String,
+    /// The referenced symbol's name.
+    pub name: String,
+    /// The language the file was parsed as, lowercased (e.g. `rust`).
+    #[serde(default)]
+    pub lang: String,
+    /// The extraction-batch boundary marker; see [`CodeEntityExtracted::fresh`]. A refs-only file
+    /// (no definitions) carries it on its first reference instead, so every re-extracted file
+    /// supersedes its prior edges regardless of whether it defines anything.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub fresh: bool,
+}
+
+/// Serde `skip_serializing_if` predicate: keep the `fresh` boundary marker off the wire for the
+/// common non-boundary event, so only the FIRST event of each extraction batch serializes it and
+/// every other code event's payload is byte-identical to a pre-criterion-3 log.
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+/// The `DocConceptExtracted` payload (spec 29b): one design-intent concept the extraction pass
+/// emits. Like the 29a code payloads it is the ONE serialization contract shared by both sides of
+/// the log - the feature-gated design-intent emit pass constructs and serializes it, and the
+/// always-compiled fold deserializes it - so the field names can never drift between emitter and
+/// folder. The fold ingests it into a node whose kind is `kind` (one of the four design-intent
+/// `KIND_*` above); a payload carrying any other kind string folds nothing.
+#[derive(Serialize, Deserialize)]
+pub(crate) struct DocConceptExtracted {
+    /// The node kind, one of [`KIND_DESIGN_DOC`], [`KIND_ARCH_DECISION`], [`KIND_HANDBOOK_RULE`],
+    /// [`KIND_RATIONALE`]. The emit only ever produces these four.
+    pub kind: String,
+    /// The stable node id: a doc's relative path (a `design-doc` whole-doc node), `<doc>#<slug>`
+    /// (a section node), the source path of an ingested decision / rule doc, or `<file>#L<line>`
+    /// (a `rationale` comment site).
+    pub id: String,
+    /// The concept's human-readable title / summary (the doc heading, the decision title, the rule
+    /// text, or the rationale comment). Folded onto the node's `title` attr.
+    #[serde(default)]
+    pub title: String,
+    /// The source doc / file this concept was extracted from. Folded onto the node's `doc` attr,
+    /// so a later criterion (the design-intent EDGES) can key its links off the concept's origin.
+    #[serde(default)]
+    pub doc: String,
+}
+
+/// The `DocLinkExtracted` payload (spec 29b): one design-intent link the extraction pass emits.
+/// Like the 29a code payloads and [`DocConceptExtracted`] it is the ONE serialization contract
+/// shared by both sides of the log - the feature-gated design-intent emit pass constructs and
+/// serializes it, and the always-compiled fold deserializes it - so the field names can never
+/// drift between emitter and folder. The fold folds it into a typed edge whose relation is `rel`
+/// (one of the five design-intent relations: [`REL_SPECIFIES`], [`REL_CONSTRAINS`],
+/// [`REL_GOVERNS`], [`REL_EXPLAINS`], [`REL_DOC_REFERENCES`]); a payload carrying any other
+/// relation folds nothing (defensive - the emit only ever produces these five).
+#[derive(Serialize, Deserialize)]
+pub(crate) struct DocLinkExtracted {
+    /// The link's source node id (the design-intent node the edge emanates from): a doc's relative
+    /// path (a `design-doc` / `arch-decision` / `handbook-rule` whole-doc node) or a `<file>#L<line>`
+    /// rationale comment site.
+    pub from: String,
+    /// The link's target node id (the code / doc node the edge points at): a code file / entity
+    /// path (a `SPECIFIES` / `CONSTRAINS` / `GOVERNS` / `explains` target) or a cited doc / code
+    /// path (a `references` target).
+    pub to: String,
+    /// The design-intent relation, one of the five [`REL_SPECIFIES`] / [`REL_CONSTRAINS`] /
+    /// [`REL_GOVERNS`] / [`REL_EXPLAINS`] / [`REL_DOC_REFERENCES`]. The emit only ever produces
+    /// these five; a payload carrying any other relation folds nothing.
+    pub rel: String,
 }
 
 #[derive(Debug, thiserror::Error)]

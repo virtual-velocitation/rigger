@@ -21,7 +21,7 @@ use crate::ledger::{self, RunState};
 use crate::safety;
 use crate::spawn::{
     self, lens_role, spawn_id, spawn_retry_id, speculation_group_id, ROLE_ADJUDICATOR,
-    ROLE_ADVERSARY, ROLE_IMPLEMENTER,
+    ROLE_ADVERSARY, ROLE_IMPLEMENTER, ROLE_SDET_AUTHOR,
 };
 use crate::worktree::{self, Worktree};
 
@@ -119,6 +119,27 @@ pub const META_MODEL_ALIAS: &str = "model_alias";
 /// for the implementer, reviewed for the adjudicator). Empty (and so omitted) when the
 /// worker reported none.
 pub const META_MODEL_RESOLVED: &str = "model_resolved";
+
+/// The metadata key carrying the SPAWN ID that emitted an event (spec 18, unit 3) - the
+/// deterministic `{unit}/{role}#{attempt}` (see [`spawn_retry_id`](crate::spawn::spawn_retry_id)),
+/// distinct from the shared ROLE token [`contextgraph::META_ACTOR`] stamps (two concurrent
+/// sibling adjudicators carry the SAME actor, so the actor cannot tell their emits apart).
+/// The per-spawn `emit` callback in [`run_reviewer`](RunCtx::run_reviewer) stamps it, so an
+/// approve-shaped verdict a GATING spawn records via `rigger_emit` on the in-process (cli)
+/// path is attributable to THAT spawn EXACTLY - the correlation the store-sourced
+/// verdict-channel-mismatch backstop needs to exclude a CONCURRENT sibling's approve under
+/// the `run_batch` fan-out. Audit metadata on events that already exist, never a new event
+/// type (spec 18's Global constraints); folds and projections ignore it, exactly like
+/// [`META_MODEL_ALIAS`] and [`contextgraph::META_ACTOR`]. An out-of-process emit is stamped
+/// too, so EVERY driver names its emitting spawn at RECORD time and the same one identity
+/// check attributes the emit on all three: the cli callback stamps it in-process (above);
+/// the workflow MCP server stamps it (`stamp_current_spawn`) with the id of the spawn it is
+/// currently serving; and a native courier records it via `rigger emit --spawn <id>` (the
+/// workflow threads the worker's own spawn id into that invocation). Attribution is by this
+/// identity stamp alone - an UNSTAMPED emit is never attributed, so the backstop FAILS SAFE
+/// to the ordinary reject - and the ambiguous position-window logic is retired entirely (see
+/// [`gating_spawn_emitted_approve`](RunCtx::gating_spawn_emitted_approve)).
+pub const META_SPAWN: &str = "spawn";
 
 /// The metadata key carrying the WORKTREE HEAD sha the review tiers judged (spec 11,
 /// unit 1). Stamped on the review-boundary events - the `verified` status, the
@@ -479,6 +500,18 @@ pub fn unit_of_gate_key(key: &str) -> Option<&str> {
     key.split_once("/gate:").map(|(unit, _)| unit)
 }
 
+/// The ATTEMPT ordinal a gate-run key ran under, recovered from the `{unit}/gate:{gate}#{attempt}`
+/// grammar [`gate_verdict_key`] mints. Distinct attempts are distinct gate runs (a
+/// re-implementation re-gates), so the gate-outcome read ([`recorded_gate_outcome`]) uses this to
+/// aggregate only the LATEST attempt's per-gate verdicts. Parsing the ordinal off the suffix AFTER
+/// `/gate:` (never the whole key) keeps a `#` anywhere in the unit portion from being mis-read as
+/// the attempt. A key with no `/gate:` infix (a skip / post-merge / artifact key) yields `None`.
+fn gate_key_attempt(key: &str) -> Option<u32> {
+    let (_, suffix) = key.split_once("/gate:")?;
+    let (_, attempt) = suffix.rsplit_once('#')?;
+    attempt.parse::<u32>().ok()
+}
+
 /// The content address of a gate run (spec 12, unit 1): a stable digest over the gate
 /// `command` and the git `tree_sha` of its inputs (the whole committed tree by default -
 /// [`worktree::tree_sha_of`]). The verbatim tree-SHA is kept in the digest so two DIFFERENT
@@ -515,6 +548,65 @@ struct GateVerdictData {
     pass: bool,
     #[serde(default)]
     evidence: String,
+}
+
+/// The CURRENT gate outcome for `unit` as RECORDED in the event stream: `Some(true)` if the
+/// unit's latest gate run PASSED, `Some(false)` if it FAILED, and `None` if the unit has no
+/// recorded gate verdict yet (its gates have not run). This is the single authority for a
+/// unit's gate outcome - the recorded [`GateVerdict`](contextgraph::TYPE_GATE_VERDICT) keyed to
+/// its gate RUN (`{unit}/gate:{gate}#{attempt}`, recovered via [`unit_of_gate_key`]) - so a
+/// read-model (the dash run-tree spine, spec 30 c3) reads the REAL gate outcome instead of
+/// INFERRING it from `ledger::Status`. Status conflates a genuine gate failure (`Red`) with a
+/// review REJECT (`Failed` = reject-recurrence, whose gates PASSED) and a pre-gate lifecycle
+/// position (`Grounding`, gates not yet run), so inferring the gate outcome from it fabricates
+/// gate failures that never happened.
+///
+/// Only gate-RUN verdicts contribute: the integrate-time GATED_BY artifact verdicts carry no
+/// replay key, a blast-radius SKIP is keyed under `gate-skip:`, a post-merge re-gate under
+/// `postmerge-gate:`, and a deferred phase gate under `deferred/gate:` - none of which
+/// [`unit_of_gate_key`] resolves to `unit` - so none is mistaken for the unit's own gate run.
+///
+/// The unit's outcome is the AND across its LATEST attempt's per-gate verdicts, NOT the last
+/// verdict by log position. `run_gates` runs the implement battery [fmt, clippy, build, test,
+/// style] in order with NO break on failure, emitting a verdict PER gate at the same
+/// `(unit, attempt)` coordinate, so a real `test` failure is followed by `style` passing LAST.
+/// A last-write-wins-by-unit fold would return that trailing `style=true` and MASK the failure
+/// (rendering `passed` for a unit whose gates failed); aggregating as any-gate-failed (a single
+/// `false` at the latest attempt => `Some(false)`) mirrors the `GateOutcome` AND `run_gates`
+/// itself computes. Restricting to the LATEST attempt (distinct attempts are distinct gate runs,
+/// keyed by `#{attempt}` via `gate_key_attempt`) keeps a unit that re-gated GREEN after an
+/// earlier red reading `passed`: the prior attempt's red does not carry over. Within one gate key
+/// the latest verdict by log position wins (the same last-write-wins the replay cache reads).
+pub fn recorded_gate_outcome(events: &[Event], unit: &str) -> Option<bool> {
+    // Fold this unit's gate-run verdicts into a per-attempt, per-gate-key map in ONE pass over
+    // events. Keying the inner map by the full gate-run key keeps distinct gates distinct while
+    // letting a re-emit of the SAME key overwrite (last-write-wins by log position); the outer
+    // `BTreeMap` keeps attempts ordered so the latest attempt is `next_back`.
+    let mut by_attempt: std::collections::BTreeMap<u32, std::collections::BTreeMap<&str, bool>> =
+        std::collections::BTreeMap::new();
+    for e in events {
+        if e.type_ != contextgraph::TYPE_GATE_VERDICT {
+            continue;
+        }
+        let Some(key) = e.meta.get(META_REPLAY_KEY) else {
+            continue;
+        };
+        if unit_of_gate_key(key) != Some(unit) {
+            continue;
+        }
+        let Some(attempt) = gate_key_attempt(key) else {
+            continue;
+        };
+        if let Ok(v) = serde_json::from_slice::<GateVerdictData>(&e.data) {
+            by_attempt
+                .entry(attempt)
+                .or_default()
+                .insert(key.as_str(), v.pass);
+        }
+    }
+    // The latest attempt's outcome is the AND across its gates: any failing gate => `Some(false)`.
+    let (_, latest) = by_attempt.iter().next_back()?;
+    Some(latest.values().all(|&pass| pass))
 }
 
 /// The replay key for a DEFERRED gate's phase-boundary verdict. A deferred gate runs
@@ -946,6 +1038,13 @@ pub struct SpawnOpts {
     /// event's [`crate::run::META_RUN_ID`] metadata so the parked spawn is attributable
     /// to its run; the blocking drivers ignore it. Empty for a caller outside a run.
     pub run_id: String,
+    /// The spawn's LIVE WORK-LINE (spec 19a, c4): the unit's criterion (its
+    /// [`Stage::coverage`](crate::config::Stage), trimmed), which a parking driver copies
+    /// onto the [`SpawnRequest::title`](crate::spawn::SpawnRequest::title) so the thin
+    /// driver narrates the actual WORK, not just the `{unit}:{stage}` progress-group label.
+    /// Empty for a stage with no criterion (a plan/canary spawn), which then serializes
+    /// exactly as before - a purely additive field the blocking drivers ignore.
+    pub title: String,
 }
 
 /// AgentDriver spawns an agent to completion. The agent records events it emits
@@ -1093,6 +1192,49 @@ fn is_degenerate_reviewer(e: &Error) -> bool {
     e.0.contains(DEGENERATE_MARKER)
 }
 
+/// The sentinel a runtime verdict-channel-mismatch HALT (spec 18, unit 3) embeds in its
+/// error so [`run_wave`](RunCtx::run_wave) and the plan-critique gate recognize it through
+/// their own error wrapping and route it through a DEDICATED arm - like
+/// [`DEGENERATE_MARKER`] it uses control characters no real error text carries. The
+/// dedicated arm propagates the loud halt but emits NO per-unit lesson: the fault is the
+/// OPERATOR's gating persona (it records its verdict only as an event), not the unit under
+/// review, so a lesson there would misattribute it. The marker is STRIPPED before the
+/// message surfaces, so the operator's fix stays clean.
+const MISMATCH_MARKER: &str = "\u{1}rigger:verdict-channel-mismatch\u{1}";
+
+/// Construct the LOUD-HALT error a GATING spawn returns when its result carries NO
+/// verdict line yet it emitted an approve-shaped verdict via `rigger_emit` during the
+/// spawn (spec 18, unit 3). This BACKSTOPS a persona that passed the static lint (spec
+/// 18, unit 1) but still returned no result-channel verdict: the integration gate reads
+/// ONLY the result channel ([`verdict_approves`]), so folding this empty verdict as a
+/// reject would remediate a unit the reviewer actually APPROVED, until it escalated -
+/// the silent stall this unit exists to make loud. Instead the run HARD-ERRORS with the
+/// SPEC-pinned result-channel fix, naming the dead gate (`tier`/`agent`/`stage`).
+///
+/// The diagnostic use of events (the emitted approve EXPLAINS the empty verdict) while
+/// the result channel still DECIDES: the message is raised only when both hold. It
+/// carries [`MISMATCH_MARKER`] so the wave/gate route it through the no-lesson arm, and
+/// like the degenerate halt it charges the unit NO remediation attempt (no `UnitFailed`,
+/// no `UnitEscalated`) - the fault is the persona, not the unit under review.
+fn verdict_channel_mismatch(stage: &str, tier: &str, agent: &str) -> Error {
+    Error(format!(
+        "{MISMATCH_MARKER}stage {stage:?} {tier} {agent:?} returned NO verdict line on its result \
+         output, yet emitted an approve-shaped verdict via rigger_emit during the spawn: the gate \
+         reads the result channel, not emitted events; end your output with the verdict line (e.g. \
+         {{\"verdict\":\"approve\"}}). The run halts and the unit is NOT charged a remediation \
+         attempt - a gating persona that records its verdict only as an emitted event is a \
+         configuration fault, not a reject. Fix the {agent:?} persona to end its output with the \
+         verdict line, then re-run."
+    ))
+}
+
+/// Whether `e` is a runtime verdict-channel-mismatch HALT signal (see
+/// [`verdict_channel_mismatch`]) rather than a real stage failure. Robust to the review
+/// sites' own error wrapping, since the [`MISMATCH_MARKER`] survives as a substring.
+fn is_verdict_channel_mismatch(e: &Error) -> bool {
+    e.0.contains(MISMATCH_MARKER)
+}
+
 /// The conductor's injected ports.
 pub struct Deps<'a> {
     pub store: &'a dyn EventStore,
@@ -1124,6 +1266,18 @@ struct UnitProposed {
     coverage: String,
     #[serde(default)]
     gates: Vec<String>,
+    /// The STABLE id of the baseline criterion this proposal serves (spec 18 §3.3),
+    /// echoed from the id PLAN_PROTOCOL shows next to each criterion. The criteria are
+    /// displayed as `- [<id>] <text>`, so the surrounding display brackets are stripped
+    /// ([`normalize_criterion_id`]) before matching - a compliant echo resolves whether
+    /// or not it kept the brackets. When it matches a baseline's
+    /// [`Stage::criterion_id`](crate::config::Stage::criterion_id), `harvest_proposed`
+    /// resolves the proposal to that criterion and supersedes its baseline even when
+    /// `coverage` was PARAPHRASED. Empty for a hand-authored proposal or a genuinely-new
+    /// sub-unit that maps to no criterion (which then still runs, but records a visible
+    /// `unmatched-proposal` signal).
+    #[serde(default)]
+    criterion_id: String,
 }
 
 /// The replayable TRAJECTORY of a completed run (spec 13, unit 2 - trajectory replay/eval):
@@ -1328,6 +1482,8 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         parked: std::sync::atomic::AtomicBool::new(false),
         manual_review: std::sync::atomic::AtomicBool::new(false),
         budget_halted: std::sync::atomic::AtomicBool::new(false),
+        #[cfg(feature = "symbols")]
+        ingested: std::sync::atomic::AtomicBool::new(false),
         prior_status,
         prior_attempts,
         replayed_keys: Mutex::new(replayed_keys),
@@ -1463,6 +1619,14 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
                     // stripped.
                     Err(e) if is_degenerate_reviewer(&e) => {
                         return Err(Error(e.0.replace(DEGENERATE_MARKER, "")))
+                    }
+                    // A runtime verdict-channel mismatch (spec 18, unit 3) at the
+                    // plan-critique gate adjudicator propagates loudly, marker stripped:
+                    // the gate adjudicator emitted its verdict but put none on the result
+                    // channel, so the empty verdict would otherwise hold the fan-out as a
+                    // reject and loop the planner over a persona fault.
+                    Err(e) if is_verdict_channel_mismatch(&e) => {
+                        return Err(Error(e.0.replace(MISMATCH_MARKER, "")))
                     }
                     Err(e) => return Err(e),
                 }
@@ -1648,6 +1812,17 @@ struct RunCtx<'a> {
     /// the phase boundary holds the DEFERRED gate rather than record it against the
     /// partial tree the halt left behind (same finding pair as `manual_review`).
     budget_halted: std::sync::atomic::AtomicBool,
+    /// Set the first time this process ingests the live project into the unified graph
+    /// (spec 29c criterion 5): the grounding path walks and extracts the tree at most ONCE
+    /// per process, so a run whose step builds many prompts pays the walk once, not per
+    /// prompt. Durable per-file idempotence (a re-ingest on a later step re-emits only
+    /// changed files) rests on the keyed emit authority, not this flag - this only bounds
+    /// the walk to once per process. Process-local by design: it gates redundant work, never
+    /// correctness, so it need not survive a process (the log + graph already do). Exists only in
+    /// the `symbols` lane - the light lane compiles no extraction pass to ingest, so its no-op
+    /// `ingest_project_into_graph` reads no guard.
+    #[cfg(feature = "symbols")]
+    ingested: std::sync::atomic::AtomicBool,
     /// Each unit's LAST recorded status from the folded prior log (resume-continuity):
     /// a non-integrated, non-terminal unit that ran in a prior window has a status
     /// here (green/verified/reviewed/...), which `run_single_stage` uses to CONTINUE
@@ -1778,6 +1953,8 @@ impl<'a> RunCtx<'a> {
             parked: std::sync::atomic::AtomicBool::new(false),
             manual_review: std::sync::atomic::AtomicBool::new(false),
             budget_halted: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(feature = "symbols")]
+            ingested: std::sync::atomic::AtomicBool::new(false),
             prior_status: HashMap::new(),
             prior_attempts: HashMap::new(),
             replayed_keys: Mutex::new(HashSet::new()),
@@ -2554,6 +2731,19 @@ impl RunCtx<'_> {
                             first_err = Some(Error(e.0.replace(DEGENERATE_MARKER, "")));
                         }
                     }
+                    // A runtime verdict-channel mismatch (spec 18, unit 3) is an OPERATOR
+                    // persona-config fault, not the unit's fault: the gating reviewer
+                    // emitted its approve-shaped verdict as an event but put nothing on the
+                    // result channel the gate reads. Route it through its OWN arm like the
+                    // degenerate-reviewer halt - propagate the loud hard error (marker
+                    // stripped) but emit NO per-unit lesson (a lesson would misattribute the
+                    // operator's broken persona to the unit under review) and charge no
+                    // attempt (no UnitFailed/UnitEscalated is written on this path).
+                    Err(e) if is_verdict_channel_mismatch(&e) => {
+                        if first_err.is_none() {
+                            first_err = Some(Error(e.0.replace(MISMATCH_MARKER, "")));
+                        }
+                    }
                     Err(e) => {
                         // EVERY erroring stage leaves a record, not just the first
                         // (item 8): the wave collapses to a single returned error, so
@@ -2928,6 +3118,9 @@ impl RunCtx<'_> {
             id: id.to_string(),
             unit: st.name.clone(),
             stage: st.name.clone(),
+            // The live work-line: the unit's criterion, so a reviewer spawn narrates the
+            // WORK it is judging, not just `{unit}:{stage}` (spec 19a, c4).
+            title: st.coverage.trim().to_string(),
             // A reviewer keeps a FIXED tier - judgment is not laddered (spec 10 unit 4
             // exclusion) - so a scaffold reviewer declares no `model_ladder` and resolves
             // its single `model` regardless. The attempt is threaded through anyway so the
@@ -3076,6 +3269,97 @@ impl RunCtx<'_> {
             let mut outcome = ReviewOutcome::rejected(reason);
             outcome.compensate = compensate;
             Ok(outcome)
+        }
+    }
+
+    /// The SDET-author build seam (spec 33): spawn the operator-provided `sdet-author`
+    /// agent into the unit's OWN worktree `dir` at the build seam - AFTER the implementer
+    /// has produced its diff and BEFORE the pre-gate commit - so on EVERY unit the SDET
+    /// authors its periphery tests into the SAME committed tree the gates and reviewers
+    /// judge. This is the ONE authority for that seam, shared by BOTH code-building
+    /// lifecycles: the single-lane [`run_single_stage`](RunCtx::run_single_stage) calls it
+    /// before its pre-gate commit, and first-green-wins [`run_speculation`](RunCtx::run_speculation)
+    /// calls it per candidate before that candidate's commit - so a speculation-built unit
+    /// (K > 1) is NOT a silent hole in the guarantee: whichever candidate wins ships with
+    /// its periphery tests in the tree its gates judged. Implementing it once over the shared
+    /// abstraction (not a second parallel construction in each lifecycle) keeps the cwd-safety
+    /// guard, the budget authority, and the parked-spawn discipline identical on both paths.
+    ///
+    /// The fixed `sdet-author` id is a convention resolved through the SAME
+    /// `AgentDef` / `build_system_prompt` agent-loading path as every other role (no
+    /// `workflow.yml` change, which would drift the pinned definition). The deterministic
+    /// spawn id (`spawn_id(stage, ROLE_SDET_AUTHOR, attempt)` - `attempt` is the single-lane
+    /// remediation attempt or the speculation lane) lets a stepwise/replay driver answer or
+    /// park it exactly like the implementer. The spawn is gated on a real worktree (an empty
+    /// `dir` is a repo-less or `isolation: none` unit with no tree to author into, and an
+    /// Edit/Write agent must never run in the live main checkout) and on the agent being
+    /// configured (absent-agent tolerance: a clean no-op when the operator has not installed
+    /// the persona). The opts funnel through [`reviewer_spawn_opts`](RunCtx::reviewer_spawn_opts)
+    /// (the single in-worktree, write-capable opts authority), so the sdet INHERITS its
+    /// `assert_isolated_cwd` guard by construction and runs `isolation: false` in the
+    /// implementer's EXISTING worktree (its files swept in by the caller's commit, not a fresh
+    /// worktree of its own).
+    ///
+    /// Returns `Ok(())` when the caller may proceed to its commit: a normal result (files
+    /// authored), a crash (the non-parked spawn/opts error whose disposition is the next
+    /// unit's - never propagated past this unit), an absent agent, or a budget refusal. Returns
+    /// the PARK signal `Err(parked)` when the spawn parked (an unrecorded stepwise/replay
+    /// frontier); the caller unwinds per its own discipline - the single lane propagates it
+    /// (holding the unit, no commit), a speculation lane collects it into `any_parked` and does
+    /// NOT commit that candidate, so a later step replays the sdet and its periphery tests land.
+    fn spawn_sdet_author(&self, st: &Stage, dir: &str, attempt: u32) -> Result<(), Error> {
+        // Worktree gate: an empty `dir` is a repo-less / `isolation: none` unit with no
+        // committed tree for periphery tests to land in, and a write-capable agent must never
+        // run in the live main checkout. Skip BEFORE reserving so no budget slot is spent on a
+        // spawn that cannot happen.
+        if dir.is_empty() {
+            return Ok(());
+        }
+        // Absent-agent tolerance: no `sdet-author` configured is a clean no-op (the build
+        // proceeds exactly as today), so an operator who has not installed the persona is
+        // never blocked.
+        let Some(sdet_def) = self.cfg.agents.get(ROLE_SDET_AUTHOR) else {
+            return Ok(());
+        };
+        let sdet_id = spawn_id(&st.name, ROLE_SDET_AUTHOR, attempt);
+        // Budget breaker at spawn granularity: reserve the sdet spawn against the run budget
+        // FIRST, exactly like the implementer and every reviewer tier, so it funnels through the
+        // single spawn-budget mutation authority - it respects/trips the breaker instead of
+        // spawning past it, and the cross-step budget symmetry d-budget-folds-from-log
+        // guarantees (cumulative = base_spawns + admitted-this-process) holds. Keyed on the
+        // deterministic id so a REPLAY of an already-recorded sdet spawn is admitted free
+        // (spawn_is_recorded). Refused at a spent budget => do not spawn (proceed author-less).
+        if !self.reserve_spawn(&sdet_id) {
+            return Ok(());
+        }
+        let sdet_prompt = self.build_prompt_with_failure(st, &PriorFailure::default());
+        let sdet_emit = |t: &str, v: Value| self.emit_with_actor(ROLE_SDET_AUTHOR, t, v);
+        match self
+            .reviewer_spawn_opts(
+                &sdet_id,
+                ROLE_SDET_AUTHOR,
+                ROLE_SDET_AUTHOR,
+                dir,
+                attempt,
+                false,
+                st,
+            )
+            .and_then(|opts| {
+                self.deps
+                    .driver
+                    .spawn(sdet_def, &sdet_prompt, &opts, &sdet_emit)
+            }) {
+            // A normal result: its authored files are already in the worktree, so the caller
+            // falls through to the commit that sweeps them in.
+            Ok(_) => Ok(()),
+            // A PARKED spawn (the stepwise/replay driver reached an unrecorded frontier):
+            // surface the park so the caller unwinds cleanly - no UnitFailed, no remediation -
+            // and a later step replays the result.
+            Err(e) if is_parked(&e) => Err(e),
+            // The crash disposition (a non-parked spawn/opts-guard error) is the next unit's to
+            // decide; this unit places the spawn and its parked arm, so a crash proceeds to the
+            // commit rather than propagating past the unit.
+            Err(_) => Ok(()),
         }
     }
 
@@ -3282,6 +3566,9 @@ impl RunCtx<'_> {
                             id: implementer_id.clone(),
                             unit: st.name.clone(),
                             stage: st.name.clone(),
+                            // The live work-line: the unit's criterion, so the thin driver
+                            // narrates the actual WORK, not just `{unit}:{stage}` (spec 19a, c4).
+                            title: st.coverage.trim().to_string(),
                             // The cascade rung the driver resolves for this attempt (spec 10
                             // unit 4) - the same `attempts` the alias stamp above uses.
                             attempt: attempts,
@@ -3356,6 +3643,18 @@ impl RunCtx<'_> {
                     )?;
                     return Ok(true);
                 }
+                // The SDET-author spawn (spec 33): author periphery tests into the
+                // implementer's OWN worktree (`dir`) at the build seam - AFTER the
+                // implementer's green status and BEFORE the pre-gate commit below - so on
+                // every unit the SDET authors its periphery tests into the same tree the
+                // existing commit sweeps in and the unscoped gates and the reviewers judge.
+                // ONE shared seam authority (`spawn_sdet_author`), so the single-lane path
+                // and the speculation path place the spawn identically. This unit OWNS the
+                // spawn placement and its role token; result-advancement, absent-agent, and
+                // crash disposition are the next unit's - so only the replay-safe parked arm
+                // acts here: `?` propagates it, holding the unit with no commit until a later
+                // step replays the sdet and its periphery tests land in the committed tree.
+                self.spawn_sdet_author(st, dir, attempts)?;
                 // Commit the implementer's worktree BEFORE running the gates (§3.2),
                 // so the gate measures EXACTLY the committed artifact that the
                 // subsequent integrate merges - never a dirty worktree. A unit could
@@ -3698,6 +3997,9 @@ impl RunCtx<'_> {
                         id: impl_id.clone(),
                         unit: st.name.clone(),
                         stage: st.name.clone(),
+                        // The live work-line: the unit's criterion, so each speculation
+                        // candidate narrates the WORK, not just `{unit}:{stage}` (spec 19a, c4).
+                        title: st.coverage.trim().to_string(),
                         attempt: lane,
                         run_id: self.run_id.clone(),
                     },
@@ -3705,6 +4007,28 @@ impl RunCtx<'_> {
                 )
             }) {
                 Ok(result) => {
+                    // The SDET-author spawn (spec 33): author periphery tests into THIS
+                    // candidate's worktree at the same build seam the single-lane path uses -
+                    // AFTER the implementer produced its diff and BEFORE this candidate's
+                    // commit below - through the ONE shared seam authority. So the committed
+                    // tree PHASE B's gates judge (and the winner integrates) carries the
+                    // periphery tests for WHICHEVER candidate wins - a speculation-built unit
+                    // is not a silent hole in the "no boundary surface lands untested"
+                    // guarantee. Each lane reserves its OWN sdet id (keyed on the `lane`
+                    // attempt), so the budget breaker counts every candidate's sdet exactly as
+                    // it counts every candidate's implementer.
+                    //
+                    // A PARKED sdet (an unrecorded stepwise/replay frontier) is COLLECTED into
+                    // `any_parked` - like the implementer park above - and this candidate is
+                    // NOT committed: control skips to the next lane, so all K park together
+                    // this step and a later step replays the sdet and commits the candidate
+                    // WITH its periphery. The lane dir persists across the park (dropping `wt`
+                    // does not remove it - `Worktree` has no `Drop`), so the worker finds it.
+                    if let Err(e) = self.spawn_sdet_author(st, &dir, lane) {
+                        debug_assert!(is_parked(&e), "spawn_sdet_author only errors on a park");
+                        any_parked = true;
+                        continue;
+                    }
                     // The candidate produced a diff: commit its worktree so the gates measure
                     // exactly the committed artifact. Its `green` status is DEFERRED until it is
                     // chosen the winner below - emitting a routing status (Green/Verified) per
@@ -4387,8 +4711,14 @@ impl RunCtx<'_> {
                 // carries on the out-of-process courier path (see `review_protocol`): a
                 // finding is attributed the ONE same way (`lens:<id>` / adversary) on both
                 // driver paths, which is what lets the review-quality folds key an upheld
-                // finding to its tier regardless of which driver recorded it.
-                self.emit_with_actor(role, t, v)
+                // finding to its tier regardless of which driver recorded it. ALSO stamp
+                // this spawn's deterministic id ([`META_SPAWN`]) so an approve-shaped verdict
+                // a GATING adjudicator records via `rigger_emit` on the in-process (cli) path
+                // is attributable to THAT spawn EXACTLY - not just its shared role token,
+                // which a concurrent sibling adjudicator (`run_batch` fan-out) carries too -
+                // the per-spawn correlation the mismatch backstop (`gating_spawn_emitted_approve`)
+                // keys on to exclude a sibling's approve.
+                self.emit_meta(t, v, &[(contextgraph::META_ACTOR, role), (META_SPAWN, &id)])
             };
             let result = self
                 .deps
@@ -4403,10 +4733,88 @@ impl RunCtx<'_> {
                 &result,
                 findings.get(),
             )? {
+                // Runtime verdict-channel mismatch backstop (spec 18, unit 3): a GATING
+                // spawn (`stdout_is_verdict`) that returned a non-degenerate result with NO
+                // parseable verdict line, yet emitted an approve-shaped verdict via
+                // rigger_emit during the spawn, mistook the event channel for the gate. The
+                // gate reads ONLY the result channel, so folding this empty verdict as a
+                // reject would remediate a unit the reviewer approved, until it escalated.
+                // HARD-ERROR with the SPEC-pinned fix instead - the diagnostic use of
+                // events (they explain the failure) while the result channel still decides.
+                // The emitted approve is read from the STORE and CORRELATED to THIS spawn's
+                // own emit (`gating_spawn_emitted_approve`) by its [`META_SPAWN`] stamp: the
+                // cli emit callback stamps it in-process, the workflow MCP server stamps it for
+                // the spawn it is serving, and a NATIVE courier's `rigger emit --spawn <id>`
+                // stamps it at record time - so on EVERY driver the approve names its emitting
+                // spawn and a CONCURRENT sibling adjudicator's approve (which carries the
+                // SIBLING's id) is excluded by identity, not by a shared-stream position window
+                // a sibling could fall inside (addendum 2.2). So the backstop fires on
+                // ReplayDriver (rigger step) and workflow::Driver (rigger serve) too, not only
+                // the cli stdout bridge. The result-channel check is FIRST, so the store read
+                // is taken only for a genuinely empty verdict.
+                if stdout_is_verdict
+                    && !has_verdict_line(&result.output)
+                    && self.gating_spawn_emitted_approve(&id)?
+                {
+                    return Err(verdict_channel_mismatch(&st.name, tier, agent_id));
+                }
                 return Ok(result);
             }
         }
         Err(degenerate_reviewer(&st.name, tier, agent_id, role, attempt))
+    }
+
+    /// Whether the GATING spawn `id` emitted an approve-shaped verdict via `rigger_emit`
+    /// DURING its run (spec 18, unit 3), read from the STORE so the backstop fires on
+    /// EVERY driver - the in-process cli callback, the out-of-process workflow MCP server,
+    /// AND the replay driver (rigger step) - not only the cli stdout bridge. The emitted
+    /// approve is the DIAGNOSTIC signal of a persona that recorded its verdict as an event
+    /// instead of on the result channel the gate reads; the result channel still DECIDES
+    /// (the caller pairs this with `!has_verdict_line`), honoring addendum 2.2.
+    ///
+    /// CORRELATED to THIS spawn's OWN emit by its [`META_SPAWN`] STAMP - matched EXACTLY by
+    /// spawn id, NEVER a shared-stream position window a CONCURRENT sibling adjudicator (up to
+    /// `MAX_CONCURRENCY` units run in parallel in [`run_batch`](RunCtx::run_batch), all emitting
+    /// to the ONE store) could fall inside. Every driver stamps the emit with the emitting
+    /// spawn's id at RECORD time, so the same one identity check works on all three:
+    /// - the cli emit callback stamps it in-process;
+    /// - the workflow MCP server stamps it with the id of the spawn it is currently serving
+    ///   (the shim serves agents serially, so every `rigger_emit` between a spawn's
+    ///   `rigger_next` and its `rigger_result` is that spawn's);
+    /// - a NATIVE courier's `rigger emit` (the replay/step path) stamps it too - the workflow
+    ///   threads the worker's own spawn id into the `rigger emit --spawn <id>` invocation, and
+    ///   the `rigger emit` cli records the stamp - so the recording the ReplayDriver later
+    ///   folds already carries the emitting spawn's id.
+    ///
+    /// A sibling's stamped emit carries the SIBLING's id and a superseded attempt's a different
+    /// `#N`, so neither counts (the sequential-attempt AND concurrent-sibling pollution
+    /// addendum 2.2 forbids); a sibling's park/result window OVERLAPPING this spawn's own
+    /// approve is irrelevant, because attribution is by identity, not position. An UNSTAMPED
+    /// emit (a legacy or stray recording) is NOT attributed at all: a bare stream position is
+    /// never enough to name its emitter, so the backstop FAILS SAFE to the ordinary reject
+    /// rather than a run-halting false positive that could blame an innocent unit. This retires
+    /// the ambiguous position-window logic entirely (adv-u18-3r4: no bracket rule can say WHICH
+    /// overlapping spawn emitted; toggling it only swaps which direction fails).
+    ///
+    /// All scoping is within the CURRENT run ([`current_run`](crate::run::current_run)), so a
+    /// prior run's approve never counts.
+    fn gating_spawn_emitted_approve(&self, id: &str) -> Result<bool, Error> {
+        let all = self
+            .deps
+            .store
+            .read_stream(STREAM, 0, Direction::Forward)
+            .map_err(|e| Error(e.to_string()))?;
+        let events = crate::run::current_run(&all);
+        Ok(events.iter().any(|e| {
+            e.type_ == contextgraph::TYPE_DECISION_MADE
+                // Attributed EXACTLY by the emitting spawn's [`META_SPAWN`] stamp: it counts
+                // only if it is THIS spawn's own emit. An unstamped emit names no emitter, so
+                // it is never attributed (the backstop fails safe to the ordinary reject).
+                && e.meta.get(META_SPAWN).map(String::as_str) == Some(id)
+                && serde_json::from_slice::<Value>(&e.data)
+                    .ok()
+                    .is_some_and(|v| emitted_verdict_approves(&v))
+        }))
     }
 
     /// Whether a reviewer spawn's `result` is DEGENERATE (Gap 18) - an infrastructure
@@ -4703,7 +5111,12 @@ impl RunCtx<'_> {
         }
         let prompt = format!(
             "The plan-critique gate REJECTED your previous decomposition:\n{}\n\nRevise \
-             the unit DAG to resolve it, then re-emit your UnitProposed refinements.\n\n{}",
+             the unit DAG to resolve it, then re-emit your UnitProposed refinements. To \
+             REFINE an existing unit, re-emit it under its EXACT existing unit-id - the \
+             refinement UPDATES that unit in place (its needs edges are replaced); use a \
+             NEW unit-id ONLY for a genuinely new or split unit. Re-emitting a refinement \
+             under a NEW id does NOT refine - it adds a second unit for that criterion, \
+             the duplicate-ownership defect this gate rejects.\n\n{}",
             feedback.trim(),
             self.build_prompt(plan_st)
         );
@@ -4726,6 +5139,9 @@ impl RunCtx<'_> {
                     id: id.clone(),
                     unit: plan_name.to_string(),
                     stage: plan_name.to_string(),
+                    // The live work-line: the plan stage's criterion, so a re-plan spawn
+                    // narrates what it is decomposing, not just `{unit}:{stage}` (spec 19a, c4).
+                    title: plan_st.coverage.trim().to_string(),
                     run_id: self.run_id.clone(),
                     // The re-plan is remediation of the DECOMPOSITION: the critique
                     // attempt drives the planner's ladder rung exactly as a unit's
@@ -5641,10 +6057,14 @@ impl RunCtx<'_> {
         let criteria = if self.deps.criteria.is_empty() {
             "(no enumerated acceptance criteria)".to_string()
         } else {
+            // Prefix each criterion with the SAME stable id its baseline carries
+            // (spec 18 §3.3): 1-based position, matching `baseline_units`, so the id
+            // the planner echoes equals the id `harvest_proposed` matches against.
             self.deps
                 .criteria
                 .iter()
-                .map(|c| format!("- {c}"))
+                .enumerate()
+                .map(|(i, c)| format!("- [{}] {c}", criterion_stable_id(i + 1, c)))
                 .collect::<Vec<_>>()
                 .join("\n")
         };
@@ -5675,10 +6095,46 @@ impl RunCtx<'_> {
     /// path the default [`Grounder::blast_radius`] returns `ground(query, k)` as BOTH views and
     /// never serializes, so `.safe == .precise ==` the pre-unit-3 seed - every consumer that keys
     /// on `.safe` behaves exactly as it did before, and the shipped default is unaffected.
+    ///
+    /// Spec 29c criterion 2: when a unified graph is injected, the two views are re-derived as TWO
+    /// confidence-tier filters over the ONE seeded subgraph ([`confidence_tier_radius`]) instead of
+    /// the grounder's structural/grep split - `.precise` becomes the EXTRACTED sub-graph and `.safe`
+    /// is UNIONED with the grounder's grep superset so it only ever WIDENS (the addendum 2.4
+    /// grep-superset invariant is preserved unconditionally). The `.serialize` hub verdict is carried
+    /// from the grounder. With no graph the grounder radius is returned verbatim (the fallback above).
     fn grounded_blast_radius(&self, st: &Stage) -> BlastRadius {
-        match self.deps.grounder {
+        let base = match self.deps.grounder {
             Some(g) => g.blast_radius(&self.ground_query(st), GROUNDED_SEED_K),
             None => BlastRadius::default(),
+        };
+        // Spec 29c criterion 2: when the unified graph is present, the two-view radius is TWO
+        // confidence-tier filters over the ONE seeded subgraph (addendum 6.2) -
+        // [`confidence_tier_radius`] - replacing the grounder's structural/grep two-view split.
+        // `precise` becomes the EXTRACTED sub-graph (it has no production reader - the audit records
+        // `grounded_seed` - so this never perturbs a safety consumer); `safe` is UNIONED with the
+        // graph's all-tier view so it can only WIDEN, never narrow below the grep union - the
+        // addendum 2.4 correctness invariant holds unconditionally, even on an under-populated graph.
+        // The grounder's `serialize` hub fail-safe is carried, never silently dropped. With no graph
+        // (or a graph read error) this returns the grounder radius byte-for-byte, so every
+        // graph-absent consumer and test is unchanged.
+        let graph = match self.deps.graph {
+            Some(g) => g,
+            None => return base,
+        };
+        let seed = self.grounded_seed(st);
+        // Depth 2, the same neighborhood the prompt traversal reads (criterion 1 owns the traversal;
+        // criterion 2 CONSUMES it and tier-filters).
+        let sub = match graph.subgraph(&seed, 2) {
+            Ok(sub) => sub,
+            Err(_) => return base,
+        };
+        let tiers = confidence_tier_radius(&sub, &seed);
+        let mut safe: BTreeSet<String> = base.safe.into_iter().collect();
+        safe.extend(tiers.safe);
+        BlastRadius {
+            precise: tiers.precise,
+            safe: safe.into_iter().collect(),
+            serialize: base.serialize,
         }
     }
 
@@ -5790,23 +6246,25 @@ impl RunCtx<'_> {
     fn build_prompt_with_failure(&self, st: &Stage, prior: &PriorFailure) -> String {
         let mut b = String::new();
         b.push_str(&prior.block());
-        let mut seed: Vec<String> = Vec::new();
-        if let Some(gr) = self.deps.grounder {
-            // Ground on the criterion (a unit) or the spec criteria (a planner), never
-            // on the `coverage: required` label - see `ground_query`.
-            let query = self.ground_query(st);
-            let refs = gr.ground(&query, 8);
-            if !refs.is_empty() {
-                b.push_str("Relevant locations to read first:\n");
-                for r in &refs {
-                    b.push_str(&format!("- {}:{}  {}\n", r.file, r.line, r.text));
-                    if !seed.contains(&r.file) {
-                        seed.push(r.file.clone());
-                    }
-                }
-                b.push('\n');
-            }
-        }
+        // Spec 29c criterion 5: ensure the unified graph reflects the LIVE project before the
+        // traversal below reads it. Exercising this grounding path is what makes the run itself
+        // extract the project's real source (29a) and design docs (29b) into the graph - the
+        // production caller 29a/29b deliberately left out (their extraction had no live caller, so
+        // the prod graph stayed empty while tests passed). So the traversal returns REAL nodes the
+        // run ingested, not ones a test fixture folded. A no-op in the light lane (no extraction
+        // pass compiled) and when there is no project tree to read or no graph to fold into.
+        self.ingest_project_into_graph();
+        // Spec 29c criterion 1: structural grounding is ONE seeded traversal over the UNIFIED
+        // graph, not a separate structural-grounder call stitched together with a graph read. The
+        // grounder still ANSWERS the grounding query and its result SEEDS the traversal (the NL
+        // seeding the spec retains - turbovec resolves a symbol-free query to the files to start
+        // from), but those refs are no longer rendered as a parallel "Relevant locations" block:
+        // the code neighborhood now comes from the ONE `graph_context` traversal below, alongside
+        // the decisions/findings and design-intent nodes about the SAME files. `grounded_seed`
+        // derives the seed from the SAME `ground(query, GROUNDED_SEED_K)` pass the spawn's blast
+        // radius and audit already use, so the seed is unchanged - only the render collapses from
+        // two stitched sources onto the single unified traversal.
+        let seed = self.grounded_seed(st);
         b.push_str(&self.graph_context(&seed));
         b.push_str(EMIT_PROTOCOL);
         // A planner stage carries the refine protocol + the spec's acceptance criteria,
@@ -5826,6 +6284,23 @@ impl RunCtx<'_> {
             Err(_) => return String::new(),
         };
         let mut b = String::new();
+        // Spec 29c criterion 1: the CODE NEIGHBORHOOD the run's 29a extraction folded around the
+        // touched files, rendered from the SAME `subgraph` result the decisions/lessons/findings
+        // sections read below - so this ONE seeded traversal returns the code neighborhood, the
+        // decisions/findings about the files, and their design-intent nodes together. This replaces
+        // the separate structural-grounder "Relevant locations" block `build_prompt_with_failure`
+        // used to stitch in front of the graph read.
+        write_code_neighborhood(&mut b, &g, seed);
+        // Spec 29c criterion 3: the DESIGN INTENT that governs the touched files - the handbook
+        // rule that GOVERNS a file, the RA/architecture section that SPECIFIES it, the load-bearing
+        // decision that CONSTRAINS it, and the local rationale that explains it (spec 29b) - rendered
+        // from the SAME `subgraph` result as the code neighborhood and the decisions/findings below.
+        // Criterion 1 proved the one traversal RETURNS these design-intent nodes; this render is the
+        // deterministic design-intent grounding criterion 3 owns (d29c-c1-designintent-render-is-c3),
+        // reaching the agent BY GRAPH TRAVERSAL - the grounder only seeds it. Placed with the code
+        // neighborhood (both "of these files", read-first orienting context) ahead of the dev-loop
+        // decisions/lessons/findings sections.
+        write_design_intent(&mut b, &g, seed);
         // Every prompt slice is budgeted (Gap 15's principle, extended to all sections by
         // Gap 17): the decisions, lessons, and findings sections each render through ONE
         // shared budgeted-section writer (recent-N verbatim under a hard per-section byte
@@ -5844,6 +6319,77 @@ impl RunCtx<'_> {
         write_capped_findings(&mut b, &g, seed);
         b
     }
+
+    /// Spec 29c criterion 5: populate the unified graph from the LIVE project, guarded so the
+    /// tree is walked at most ONCE per process. The first prompt a process builds triggers the
+    /// walk; later prompts in the same process skip it (the graph already reflects the tree). The
+    /// per-file idempotence a re-ingest on a LATER step relies on lives in the keyed emit
+    /// authority, not this flag - this only bounds the walk to once per process so a step that
+    /// builds many prompts does not re-walk per prompt.
+    #[cfg(feature = "symbols")]
+    fn ingest_project_into_graph(&self) {
+        if self
+            .ingested
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            return;
+        }
+        self.ingest_project_batches();
+    }
+
+    /// The walk-and-emit half of [`ingest_project_into_graph`](RunCtx::ingest_project_into_graph)
+    /// WITHOUT the once-per-process guard, so a re-ingest of a changed file can be driven directly.
+    /// Emits every file's code (29a) and design-intent (29b) extraction batch through the ONE keyed
+    /// emit authority. Ingestion is OFF when there is no project tree to read (`repo` empty) or no
+    /// graph to fold into - the shipped non-repo / graph-less paths stay byte-for-byte unchanged.
+    #[cfg(feature = "symbols")]
+    fn ingest_project_batches(&self) {
+        if self.deps.graph.is_none() || self.deps.repo.is_empty() {
+            return;
+        }
+        let root = self.deps.repo.clone();
+        // The code half (29a): the project's real definitions and references. Reuses the `symbols`
+        // grounder's persisted index when present (no re-parse), so in a live run this is a cheap
+        // read of what the grounder already built - not a second whole-tree parse.
+        for (file, batch) in crate::grounder::symbols::events::project_batches(&root) {
+            self.emit_ingest_batch("gc", &file, &batch);
+        }
+        // The design half (29b): the project's design docs and inline source rationale.
+        for (file, batch) in crate::grounder::design::events::project_batches(&root) {
+            self.emit_ingest_batch("gd", &file, &batch);
+        }
+    }
+
+    /// Emit one file's extraction batch through the keyed emit authority (spec 29c criterion 5),
+    /// keyed `<prefix>/<file>@<hash>#<i>` where `<hash>` fingerprints the WHOLE batch's bytes. Every
+    /// event of a file shares one `<hash>`, so a re-ingest of an UNCHANGED file finds every key
+    /// already recorded and appends nothing (it is not re-ingested), while a CHANGED file's batch
+    /// hashes differently - so every key differs and the whole batch re-emits, its `fresh` head
+    /// superseding the file's prior structural edges by 29a's mechanism. The replay-key metadata is
+    /// audit-only; the fold ignores it exactly as it ignores every other replay key.
+    #[cfg(feature = "symbols")]
+    fn emit_ingest_batch(&self, prefix: &str, file: &str, batch: &[Event]) {
+        // A stable content fingerprint of the batch: the SAME line-ending-normalized FNV content
+        // primitive the symbols reindex freshening gate keys on, reused (not a fresh hash copy) so
+        // the change-detection key is one content-identity authority. The batch bytes are JSON the
+        // emit pass just serialized, so they are valid UTF-8.
+        let concat: String = batch
+            .iter()
+            .filter_map(|e| std::str::from_utf8(&e.data).ok())
+            .collect();
+        let hash = crate::grounder::symbols::store::content_hash(&concat);
+        for (i, ev) in batch.iter().enumerate() {
+            let key = format!("{prefix}/{file}@{hash}#{i}");
+            if let Ok(payload) = serde_json::from_slice::<Value>(&ev.data) {
+                let _ = self.emit_keyed(&key, &ev.type_, payload);
+            }
+        }
+    }
+
+    /// Light lane: no extraction pass is compiled, so there is nothing to ingest - the always-
+    /// compiled fold still folds a design/code log if one exists, but PRODUCING it is extraction.
+    #[cfg(not(feature = "symbols"))]
+    fn ingest_project_into_graph(&self) {}
 
     fn emit_lesson(&self, wt: Option<&Worktree>, unit_name: &str, summary: &str) {
         // The lesson is ABOUT the files the unit touched. The conductor commits the
@@ -6011,17 +6557,64 @@ impl RunCtx<'_> {
             if e.type_ != TYPE_UNIT_PROPOSED {
                 continue;
             }
-            let u: UnitProposed = match serde_json::from_slice(&e.data) {
+            let mut u: UnitProposed = match serde_json::from_slice(&e.data) {
                 Ok(u) => u,
                 Err(_) => continue,
             };
-            if u.id.is_empty() || proposed.contains(&u.id) {
+            if u.id.is_empty() {
+                continue;
+            }
+            // Update-in-place on a same-id re-emit (spec 31 crit 1). A `UnitProposed`
+            // whose id already names a stage is a REFINEMENT, never a second unit: FOLD
+            // its re-emitted `needs` (with the plan-critique gate-hold re-applied) into
+            // that ONE stage instead of skipping. Before this, the re-emit hit the
+            // `proposed.contains` short-circuit and was dropped, so a same-id refine never
+            // "took" and the planner had to mint a NEW id, ADDING a second unit per
+            // criterion - the rule-7 duplicate-ownership the loop could not clear.
+            //
+            // We fold ONLY when the id names an actual PROPOSED unit (already in
+            // `proposed`) that has not started/integrated/reached a terminal state. Two
+            // guards, both load-bearing:
+            //   - `proposed.contains(&u.id)`: a same-id proposal can only REFINE a unit
+            //     that came from a prior `UnitProposed` this run. A collision with a
+            //     RESERVED/infrastructure stage - the `plan`/`plan-critique` gate or a
+            //     synthesized baseline, NONE of which are in `proposed` - must be skipped
+            //     exactly as the pre-spec-31 `stages.contains_key -> continue` did: folding
+            //     into the gate would clobber its fan-out hold (`with_gate_hold` adds
+            //     nothing when the id IS the gate), and the add path below must never
+            //     `stages.insert` over a reserved stage.
+            //   - `!integrated && !terminal`: a started/integrated/terminal stage is NEVER
+            //     mutated, so a late refinement can never disturb work already in flight.
+            //
+            // NEEDS only: on the contemplated refine path (same criterion, refined needs)
+            // coverage is unchanged, so re-resolving it is a no-op; on a RETARGET (coverage
+            // moved to a DIFFERENT criterion) re-resolving `existing.coverage` WITHOUT also
+            // re-running the add path's baseline re-supersession would orphan the vacated
+            // criterion (its baseline was already removed) and double-own the new one -
+            // breaking the one-unit-per-criterion invariant THIS criterion owns. So the
+            // fold leaves coverage on the unit's originally-resolved criterion.
+            //
+            // Re-folding on a later harvest is idempotent: it REPLACES `needs` with the
+            // same gate-held value (never appends), so an identical event sequence rebuilds
+            // an identical DAG.
+            if stages.contains_key(&u.id) {
+                if proposed.contains(&u.id)
+                    && !integrated.contains(&u.id)
+                    && !terminal.contains(&u.id)
+                {
+                    let refined_needs = with_gate_hold(u.needs, &u.id, gate.as_ref());
+                    if let Some(existing) = stages.get_mut(&u.id) {
+                        existing.needs = refined_needs;
+                    }
+                }
+                continue;
+            }
+            // Seen once already but not in the DAG (a prior scope-creep refusal, which
+            // records its signal and adds no stage): keep skipping, never re-emit it.
+            if proposed.contains(&u.id) {
                 continue;
             }
             proposed.insert(u.id.clone());
-            if stages.contains_key(&u.id) {
-                continue;
-            }
             // Anti-fragmentation (§8): in a spec-driven run, a proposed unit with no
             // spec criterion is scope creep - refuse it and record the event, never
             // silently add it to the DAG.
@@ -6036,32 +6629,82 @@ impl RunCtx<'_> {
             // told to REFINE, re-proposes one unit per criterion - exactly the baselines
             // the conductor already synthesized. Without this, a criterion would get TWO
             // units doing the same work (the baseline AND the planner's unit), colliding
-            // at integrate and doubling the work. So a planner unit that cites a
+            // at integrate and doubling the work. So a planner unit that serves a
             // criterion SUPERSEDES that criterion's baseline: we remove the baseline so
-            // the planner's unit replaces it (one unit per criterion). The match is on
-            // the criterion text the planner is given verbatim (PLAN_PROTOCOL), compared
-            // with whitespace normalized on both sides. A baseline survives ONLY if NO
-            // planner unit cites its criterion (the reliable fallback). Multiple planner
-            // units for one criterion (a real split) all survive and the one baseline is
-            // removed once - the next match finds no baseline left and simply adds.
+            // the planner's unit replaces it (one unit per criterion).
             //
-            // Ordering safety: a baseline that still needs the `plan` stage has not run
-            // when planner units are harvested, so removing it before it runs is correct.
-            // We GUARD on the baseline not having started or reached a terminal state
-            // (not in `integrated`/`terminal`) so a baseline already underway or merged
-            // in a prior wave/window is never yanked out from under its own work.
+            // The match is on the STABLE ID the planner echoes (spec 18 §3.3), not on
+            // re-normalized prose: a planner that PARAPHRASES or TRUNCATES a long
+            // criterion it was told to copy verbatim used to produce a proposal that no
+            // longer prose-matched its baseline, so both ran (the highest-risk failure).
+            // With the id echoed, a paraphrase still resolves to its criterion. The
+            // whitespace-normalized prose comparison is kept as a FALLBACK so a
+            // hand-authored proposal (or an older planner) that copies the criterion
+            // VERBATIM with no id still supersedes. We resolve the served criterion
+            // against the run's CRITERIA (not the surviving baselines), so a real split
+            // whose sibling already removed the shared baseline still resolves and is
+            // never mis-flagged as genuinely-new.
             if !u.coverage.trim().is_empty() {
-                if let Some(baseline_id) = stages
-                    .iter()
-                    .find(|(name, st)| {
-                        st.baseline
-                            && !integrated.contains(*name)
-                            && !terminal.contains(*name)
-                            && normalize_ws(&st.coverage) == normalize_ws(&u.coverage)
-                    })
-                    .map(|(name, _)| name.clone())
-                {
-                    stages.remove(&baseline_id);
+                // Resolve the served criterion through `resolve_served_criterion`: the
+                // echoed stable id FIRST, then a whitespace-normalized prose fallback
+                // (spec 18 §3.3). This is the ADD path: it both resolves coverage AND
+                // supersedes the served criterion's baseline as one coupled step - the two
+                // are inseparable, which is exactly why the same-id fold path above folds
+                // NEEDS ONLY and never re-resolves coverage on its own.
+                let served = self.resolve_served_criterion(&u.coverage, &u.criterion_id);
+                if let Some((criterion_id, criterion)) = served {
+                    // Enforce ONE LIVE UNIT PER CRITERION (the dual-chain fix): remove
+                    // EVERY not-yet-started, non-terminal stage already serving this
+                    // criterion - the conductor-synthesized baseline AND any prior planner
+                    // unit for it - so this unit REPLACES whatever currently owns the
+                    // criterion. Removing only the baseline (the earlier fix) let a SECOND
+                    // planner unit, re-emitted with a new id after the baseline was already
+                    // consumed by the first, be ADDED as a duplicate: an unwinnable
+                    // dual-chain (two units per criterion) the plan-critique rejects on
+                    // rule 7 and no later emission can undo. The planner is told never to
+                    // split a criterion (one unit each; a legitimate split is only across
+                    // DISTINCT criteria), so a stage already serving THIS criterion is
+                    // always a stale owner to replace, never a real sibling. We GUARD on
+                    // not-started/non-terminal so a unit already underway or merged in a
+                    // prior wave/window is never yanked out from under its own work; matched
+                    // by the stored criterion id. Removing ALL prior owners (not just one)
+                    // collapses even a pre-existing dual-chain to a single owner in one
+                    // harvest.
+                    let prior_owners: Vec<String> = stages
+                        .iter()
+                        .filter(|(name, st)| {
+                            !integrated.contains(*name)
+                                && !terminal.contains(*name)
+                                && st.criterion_id == criterion_id
+                        })
+                        .map(|(name, _)| name.clone())
+                        .collect();
+                    for owner in prior_owners {
+                        stages.remove(&owner);
+                    }
+                    // The superseding unit carries the EXACT criterion text as its
+                    // coverage, so it grounds on and records the real criterion and the
+                    // coverage gate stays exact even when the planner paraphrased.
+                    u.coverage = criterion;
+                } else if !self.deps.criteria.is_empty() {
+                    // A proposal that maps to NO acceptance criterion is a genuinely-new
+                    // sub-unit (a real split the planner intends). It STILL runs - the
+                    // existing behavior for real splits - but is made LEGIBLE, not silent,
+                    // by a visible `unmatched-proposal` signal recorded on the EXISTING
+                    // decision surface (no new event type, per the global constraint), so
+                    // the extra unit shows up in the current-blocker line (§4) instead of
+                    // appearing unexplained.
+                    self.emit(
+                        contextgraph::TYPE_DECISION_MADE,
+                        json!({
+                            "id": format!("unmatched-proposal:{}", u.id),
+                            "summary": format!(
+                                "unmatched-proposal: proposed unit {} maps to no baseline criterion id; running it as a genuinely-new sub-unit",
+                                u.id
+                            ),
+                            "governs": [],
+                        }),
+                    )?;
                 }
             }
             // Hold the fan-out behind the plan-critique gate (the resume-safety fix, spec
@@ -6075,13 +6718,10 @@ impl RunCtx<'_> {
             // gate as a dependency so `ready_stages` holds it - in the pre-gate wave AND
             // the main loop - until the gate INTEGRATES (an adjudicator approve); a
             // terminal-but-unintegrated (escalated) or still-parked (mid-review) gate never
-            // surfaces it. The single hold the baselines already carry, now uniform.
-            let mut needs = u.needs;
-            if let Some(g) = &gate {
-                if u.id != *g && !needs.iter().any(|n| n == g) {
-                    needs.push(g.clone());
-                }
-            }
+            // surfaces it. The single hold the baselines already carry, now uniform - and
+            // the SAME `with_gate_hold` authority the same-id fold path re-applies, so a
+            // refined re-emit stays held behind the gate exactly as its first proposal was.
+            let needs = with_gate_hold(u.needs, &u.id, gate.as_ref());
             stages.insert(
                 u.id.clone(),
                 Stage {
@@ -6096,6 +6736,67 @@ impl RunCtx<'_> {
         }
         Ok(())
     }
+
+    /// Resolve the acceptance criterion a proposal SERVES: match the planner-echoed
+    /// stable id FIRST (spec 18 §3.3), then fall back to whitespace-normalized prose, so
+    /// the id strictly takes precedence and a proposal that echoes a valid id never
+    /// resolves to a different criterion whose text it happened to paste. Returns the
+    /// served criterion's stable id and its EXACT text, or `None` when the proposal maps
+    /// to no criterion (an empty coverage, or a genuinely-new split the planner intends).
+    ///
+    /// The criteria are DISPLAYED to the planner as `- [<id>] <text>` (`plan_protocol`),
+    /// so a planner that echoes "the id shown next to that criterion" naturally copies
+    /// the surrounding display brackets and emits `[c<pos>-<hex>]` while the baseline
+    /// stores the UN-bracketed id; [`normalize_criterion_id`] strips the brackets so a
+    /// compliant echo (either form) resolves. The prose fallback keeps a hand-authored
+    /// proposal (or an older planner) that copies a criterion VERBATIM with no id working.
+    ///
+    /// This is the ONE resolution authority for `harvest_proposed`'s ADD path, which
+    /// resolves a proposal's coverage AND supersedes the served criterion's baseline as
+    /// one coupled step. The same-id fold path (spec 31) does NOT re-resolve coverage: a
+    /// standalone coverage re-resolve without that paired re-supersession would orphan the
+    /// vacated criterion and double-own the retarget target, so a refinement folds its
+    /// NEEDS only and leaves coverage on the criterion the add path first resolved.
+    fn resolve_served_criterion(
+        &self,
+        coverage: &str,
+        criterion_id: &str,
+    ) -> Option<(String, String)> {
+        if coverage.trim().is_empty() {
+            return None;
+        }
+        let echoed_id = normalize_criterion_id(criterion_id);
+        self.deps
+            .criteria
+            .iter()
+            .enumerate()
+            .find(|(i, c)| !echoed_id.is_empty() && echoed_id == criterion_stable_id(i + 1, c))
+            .or_else(|| {
+                self.deps
+                    .criteria
+                    .iter()
+                    .enumerate()
+                    .find(|(_, c)| normalize_ws(c) == normalize_ws(coverage))
+            })
+            .map(|(i, c)| (criterion_stable_id(i + 1, c), c.clone()))
+    }
+}
+
+/// Re-apply the plan-critique gate-hold to a proposed unit's `needs` (spec 10 done-when
+/// 1): a PLANNER-proposed unit's `needs` name only sibling unit ids, never the gate, so
+/// without this hold it would be scheduled the moment `plan` integrates - fanning out a
+/// decomposition three reviews may reject. Append the gate (idempotently - never twice,
+/// and never to the gate itself) so `ready_stages` holds the unit until the gate
+/// INTEGRATES. The ONE gate-hold authority shared by `harvest_proposed`'s add path and
+/// its same-id fold path (spec 31), so a refined re-emit stays held exactly as its first
+/// proposal was.
+fn with_gate_hold(mut needs: Vec<String>, id: &str, gate: Option<&String>) -> Vec<String> {
+    if let Some(g) = gate {
+        if id != g && !needs.iter().any(|n| n == g) {
+            needs.push(g.clone());
+        }
+    }
+    needs
 }
 
 /// Normalize a criterion string for the supersede match (the duplication fix): trim,
@@ -6107,6 +6808,59 @@ impl RunCtx<'_> {
 /// as a genuinely new sub-unit added on top of the surviving baseline).
 fn normalize_ws(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Normalize a planner-echoed `criterion_id` for the supersede match. The acceptance
+/// criteria are DISPLAYED to the planner as `- [<id>] <text>` (`plan_protocol`), so a
+/// planner that echoes "the id shown next to that criterion" naturally copies the
+/// surrounding display brackets and emits `[c<pos>-<hex>]`, while the baseline stores
+/// (and [`criterion_stable_id`] derives) the UN-bracketed `c<pos>-<hex>`. Strip the
+/// surrounding brackets and incidental whitespace so the matcher tolerates the exact
+/// form the display invites: a compliant echo then supersedes its one baseline instead
+/// of re-opening the paraphrase duplicate this unit exists to kill (spec 18 §3.3). A
+/// stable id never contains `[`/`]`, so trimming them from both ends is loss-free, and
+/// PLAN_PROTOCOL tells the planner the brackets are display delimiters, so the prompt
+/// and the matcher agree that either form (with or without brackets) resolves.
+fn normalize_criterion_id(id: &str) -> &str {
+    id.trim().trim_matches(|c| c == '[' || c == ']').trim()
+}
+
+/// A baseline criterion's STABLE id (spec 18 §3.3, addendum "Planner ↔ baseline
+/// robustness"): its 1-based `position` plus a content hash of the criterion, so the
+/// planner can echo the id and `harvest_proposed` can match a proposal to its baseline
+/// by ID rather than by re-normalized prose. That closes the highest-risk failure: a
+/// planner that PARAPHRASES or TRUNCATES a long criterion it was told to copy verbatim
+/// produces a proposal that no longer prose-matches its baseline, so both run - two
+/// units claim the same files and plan-critique rejects in a loop. With the id echoed,
+/// the paraphrase still resolves to its criterion and supersedes the one baseline.
+///
+/// The hash is over [`normalize_ws`] of the criterion - the SAME single normalization
+/// authority the prose fallback uses, which already collapses every run of whitespace
+/// (including CR/LF) to one space, so the id is inherently line-ending-normalized and
+/// robust to incidental reflow without loosening into fuzzy matching. The `position`
+/// disambiguates two criteria that normalize equal (each still gets a distinct id).
+/// Deterministic by construction: the same criterion at the same position yields the
+/// same id on every run, so the id the planner is shown equals the id the baseline
+/// carries equals the id `harvest_proposed` matches.
+fn criterion_stable_id(position: usize, criterion: &str) -> String {
+    format!(
+        "c{position}-{:016x}",
+        fnv1a_64(normalize_ws(criterion).as_bytes())
+    )
+}
+
+/// FNV-1a 64-bit hash of `bytes`: a tiny, dependency-free, stable-across-releases hash
+/// used only to derive the [`criterion_stable_id`] content digest (never for security).
+/// Chosen over `std`'s `DefaultHasher`, whose output is explicitly not guaranteed
+/// stable across toolchain versions - the criterion id must reproduce identically so
+/// the planner's echoed id keeps matching its baseline.
+fn fnv1a_64(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in bytes {
+        hash ^= u64::from(b);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
 }
 
 /// The evidence map folded into a unit's `verified` status (item 4): the gates that
@@ -6149,14 +6903,50 @@ fn review_evidence(reason: &str) -> BTreeMap<String, String> {
 /// through the SAME single fail-closed authority the live review path uses - the canary
 /// measures the real gate, not a second parallel verdict parser that could disagree.
 pub(crate) fn verdict_approves(output: &str) -> bool {
+    last_verdict(output).is_some_and(|v| v.eq_ignore_ascii_case(VERDICT_APPROVE))
+}
+
+/// The verdict value (case-insensitive) that APPROVES a unit on the result channel: the
+/// single literal [`verdict_approves`] recognizes. Exposed as a `pub const` so any facing
+/// surface that must name the verdict line - the generated `using-rigger` discipline (spec
+/// 20) - reads the SAME definition the gate reads, instead of hand-copying the word and
+/// letting it silently drift from the gate.
+pub const VERDICT_APPROVE: &str = "approve";
+
+/// The verdict value on the LAST JSON line of `output` that carries a top-level
+/// `verdict` string field, or `None` when `output` has NO parseable verdict line (no
+/// JSON, or JSON without a `verdict` string). This is the SINGLE place a verdict line is
+/// recognized on the result channel: [`verdict_approves`] reads its VALUE for the
+/// fail-closed approval, and the runtime verdict-channel-mismatch backstop (spec 18,
+/// unit 3, [`has_verdict_line`]) reads its PRESENCE to tell a gating spawn that DECIDED a
+/// verdict on the result channel (approve or reject) from one that returned none at all.
+fn last_verdict(output: &str) -> Option<String> {
     for line in output.lines().rev() {
         if let Ok(v) = serde_json::from_str::<Value>(line.trim()) {
             if let Some(verdict) = v.get("verdict").and_then(|x| x.as_str()) {
-                return verdict.eq_ignore_ascii_case("approve");
+                return Some(verdict.to_string());
             }
         }
     }
-    false
+    None
+}
+
+/// Whether `output` carries ANY parseable verdict line - a JSON line with a top-level
+/// `verdict` string field - regardless of its value (spec 18, unit 3). A gating spawn
+/// with one DECIDED (approve or reject) on the result channel the integration gate reads;
+/// a gating spawn with none returned NO verdict at all, the trigger the runtime
+/// verdict-channel-mismatch backstop pairs with an emit-only approve.
+fn has_verdict_line(output: &str) -> bool {
+    last_verdict(output).is_some()
+}
+
+/// Whether an event VALUE emitted via `rigger_emit` carries an approve-shaped verdict
+/// (spec 18, unit 3). Serializes the value to its one-line JSON and runs it through
+/// [`verdict_approves`], so the SINGLE approve-recognition authority judges an emitted
+/// verdict exactly as it judges a result-channel one - the runtime backstop cannot drift
+/// from the gate it protects.
+fn emitted_verdict_approves(v: &Value) -> bool {
+    verdict_approves(&serde_json::to_string(v).unwrap_or_default())
 }
 
 /// The ALREADY-INTEGRATED unit an adjudicator's verdict names as the COMPENSATION target
@@ -6191,7 +6981,7 @@ const EMIT_PROTOCOL: &str = "Record each decision you make by calling the rigger
 /// unit that maps to NO criterion is scope creep and is refused. The `{criteria}`
 /// placeholder is filled with the run's actual acceptance criteria, and
 /// `{implementer}` with the implementer agent id the conductor assigned the baseline.
-const PLAN_PROTOCOL: &str = "You are the planner. The conductor has ALREADY created one baseline implement unit per acceptance criterion below - the spec is decomposed by construction. Your job is to REFINE that baseline, not to re-decompose it:\n- If a criterion is too large for one unit, split it into several units (each still citing that same criterion).\n- If you discover a NECESSARY sub-unit or an ordering dependency the baseline missed, propose it.\nWhen your unit serves a criterion, your unit SUPERSEDES (replaces) that criterion's baseline - it does NOT run alongside it - so cite the criterion you serve EXACTLY. Copy the criterion text VERBATIM from the list below into the `criterion` field, character for character - do not paraphrase, summarize, or reword it. The conductor matches your unit to the baseline by that exact text; a paraphrase will NOT match and your unit will run as an EXTRA unit on top of the baseline (duplicated work). Several units citing the SAME verbatim criterion (a real split) all run and replace the one baseline.\nPropose each refinement the moment you decide it by calling the rigger_emit tool with type \"UnitProposed\" and data:\n{\"id\":\"<short-id>\",\"agent\":\"{implementer}\",\"criterion\":\"<the spec criterion it serves, copied verbatim>\",\"needs\":[\"<unit ids it depends on>\"]}\nNEVER propose a unit that maps to no acceptance criterion - that is scope creep and will be refused. Do not write code.\n\nThe acceptance criteria to refine against (copy one of these VERBATIM into each unit's `criterion`):\n{criteria}";
+const PLAN_PROTOCOL: &str = "You are the planner. The conductor has ALREADY created one baseline implement unit per acceptance criterion below - the spec is decomposed by construction. Your job is to REFINE that baseline, not to re-decompose it:\n- If a criterion is too large for one unit, split it into several units (each still citing that same criterion).\n- If you discover a NECESSARY sub-unit or an ordering dependency the baseline missed, propose it.\nEach criterion below is shown with a STABLE id in [brackets]. When your unit serves a criterion, your unit SUPERSEDES (replaces) that criterion's baseline - it does NOT run alongside it - so identify the criterion you serve by ECHOING its id: copy the id shown in brackets next to that criterion into the `criterion_id` field (the brackets are display delimiters - the conductor accepts the id with or without them). The conductor matches your unit to its baseline by that id, so even if you reword or truncate the criterion text in `criterion`, the correct id still supersedes the one baseline (no duplicate). A wrong or missing `criterion_id` is what makes your unit run as an EXTRA unit on top of the baseline (duplicated work). Still copy the criterion text into `criterion` (verbatim is safest). Several units echoing the SAME id (a real split) all run and replace the one baseline.\nPropose each refinement the moment you decide it by calling the rigger_emit tool with type \"UnitProposed\" and data:\n{\"id\":\"<short-id>\",\"agent\":\"{implementer}\",\"criterion\":\"<the spec criterion it serves>\",\"criterion_id\":\"<the id shown in [brackets] next to that criterion>\",\"needs\":[\"<unit ids it depends on>\"]}\nNEVER propose a unit that maps to no acceptance criterion - that is scope creep. A unit whose `criterion_id` matches none of the ids below still runs, but as a genuinely-new sub-unit that the conductor flags as unmatched - so only omit the id when you truly intend a new sub-unit. Do not write code.\n\nThe acceptance criteria to refine against (echo the [id] shown next to each criterion into that unit's `criterion_id`, and copy the text into `criterion`):\n{criteria}";
 
 /// Rigger's communication discipline, appended to EVERY spawned agent's SYSTEM
 /// prompt (after its persona) by [`RunCtx::build_system_prompt`], so every agent on
@@ -6306,6 +7096,135 @@ const FINDINGS_BUDGET_BYTES: usize = 48 * 1024;
 const DECISIONS_HEADER: &str =
     "Decisions that govern these files (do not contradict them; supersede explicitly if you must):";
 
+/// Spec 29c criterion 1 prompt budget: how many code-entity DEFINITIONS the code-neighborhood
+/// section keeps verbatim - the code half of the unified graph the ONE seeded traversal surfaces
+/// around the touched files, ordered by (file, line, id) so the earliest-in-file definitions
+/// render first. Sized like the findings count so a broad neighborhood still lists the definitions
+/// an agent reads first, with the remainder collapsed into a visible note.
+const CODE_NEIGHBORHOOD_VERBATIM_N: usize = 24;
+
+/// Spec 29c criterion 1 prompt budget: a hard byte cap on the verbatim body of the
+/// code-neighborhood section, so a large file's extracted definitions can never blow the prompt.
+/// The store keeps the full graph; only this prompt slice narrows.
+const CODE_NEIGHBORHOOD_BUDGET_BYTES: usize = 24 * 1024;
+
+/// The header for the code-neighborhood injection - single-sourced so the renderer and any test
+/// that asserts its presence agree byte-for-byte.
+const CODE_NEIGHBORHOOD_HEADER: &str =
+    "Code neighborhood of these files (definitions the run extracted into the unified graph - read first):";
+
+/// The design-intent node kinds (spec 29b) the design-intent grounding section surfaces (spec 29c
+/// criterion 3): the RA / architecture doc / addendum that SPECIFIES a file, the load-bearing
+/// decision / ADR that CONSTRAINS it, the handbook rule that GOVERNS it, and the local rationale
+/// that explains it. A candidate is a node of one of these kinds that BINDS a touched file through
+/// a code-binding design-intent edge - so the design half of the one graph reaches the agent
+/// exactly when it is about to touch the ground the design intent covers.
+const DESIGN_INTENT_KINDS: [&str; 4] = [
+    contextgraph::KIND_DESIGN_DOC,
+    contextgraph::KIND_ARCH_DECISION,
+    contextgraph::KIND_HANDBOOK_RULE,
+    contextgraph::KIND_RATIONALE,
+];
+
+/// The code-binding design-intent relations (spec 29b) that make a design-intent node "govern
+/// these files": a doc SPECIFIES code, a decision CONSTRAINS code, a handbook rule GOVERNS code
+/// (reusing [`contextgraph::REL_GOVERNS`]), a rationale explains code. A doc-to-doc / doc-to-code
+/// CITATION ([`contextgraph::REL_DOC_REFERENCES`]) is deliberately EXCLUDED: a mere citation is not
+/// design intent that governs or specifies the file, so the section stays honest to its header.
+/// `REL_GOVERNS` is shared with the dev-loop `DECISION -> file` edge, but this section only ever
+/// treats a node of a [`DESIGN_INTENT_KINDS`] kind as a candidate, so a `decision` node (rendered
+/// by the decisions section) can never leak in through the shared relation.
+const DESIGN_INTENT_RELS: [&str; 4] = [
+    contextgraph::REL_SPECIFIES,
+    contextgraph::REL_CONSTRAINS,
+    contextgraph::REL_GOVERNS,
+    contextgraph::REL_EXPLAINS,
+];
+
+/// Spec 29c criterion 3 prompt budget: how many design-intent nodes the section keeps verbatim,
+/// ordered by each node's most-recently-RECORDED binding edge first - the highest event-log
+/// position among its binding edges, id breaking the tie. That is a deterministic total order over
+/// the log, NOT an authored-priority ranking: a file's design-intent edges are folded together by
+/// the ingestion pass, so this orders by WHEN the binding was recorded, not by which intent matters
+/// most; the section carries the whole verbatim slice for the agent to honor, it does not rank them.
+/// Sized like the code-neighborhood / findings counts so a file with a broad design-intent footprint
+/// still keeps a bounded, deterministic verbatim slice, with the remainder collapsed into a visible
+/// recover-the-rest note.
+const DESIGN_INTENT_VERBATIM_N: usize = 24;
+
+/// Spec 29c criterion 3 prompt budget: a hard byte cap on the verbatim body of the design-intent
+/// section, so a file with a large governing footprint can never blow the prompt. The store keeps
+/// the full graph; only this prompt slice narrows.
+const DESIGN_INTENT_BUDGET_BYTES: usize = 24 * 1024;
+
+/// The header for the design-intent injection (spec 29c criterion 3) - single-sourced so the
+/// renderer and any test that asserts its presence agree byte-for-byte.
+const DESIGN_INTENT_HEADER: &str =
+    "Design intent that governs these files (the handbook rule that governs them, the RA/architecture section that specifies them, the load-bearing decision that constrains them, and the local rationale - reached by the one graph traversal, honor them):";
+
+/// The SINGLE recent-N + byte-budget + elision-note core behind EVERY budgeted prompt section -
+/// the three node sections (through [`write_capped_section`]) AND the code-neighborhood section
+/// ([`write_code_neighborhood`]). Given the already-ranked, already-deduped `candidates` and a
+/// `line` renderer, it writes `header`, renders the leading slice that stays under BOTH the count
+/// cap (`verbatim_n`) and the byte cap (`budget_bytes`, whichever binds first), lets the caller
+/// STRUCTURALLY restore any dependency of that slice (`restore` returns the extra entries - in the
+/// caller's one ranked order - whose absence would dangle a rendered reference; the code section
+/// restores nothing), renders and accounts for them HERE so restore never grows a second render
+/// path, then collapses every candidate that is neither rendered nor restored into ONE visible
+/// elision note built by `note`. Factoring it here means no section grows a divergent second
+/// capping mechanism (the bespoke code-neighborhood cap loop is gone, resolving
+/// arch-u29c-1-code-neighborhood-parallel-cap-writer) and the byte arm is the SAME code every
+/// section's tests exercise.
+#[allow(clippy::too_many_arguments)]
+fn render_capped_section<'a>(
+    b: &mut String,
+    header: &str,
+    candidates: &[&'a contextgraph::Node],
+    verbatim_n: usize,
+    budget_bytes: usize,
+    line: &dyn Fn(&contextgraph::Node) -> String,
+    restore: impl FnOnce(&BTreeSet<&'a str>) -> Vec<&'a contextgraph::Node>,
+    note: impl Fn(usize) -> String,
+) {
+    if candidates.is_empty() {
+        return;
+    }
+    b.push_str(header);
+    b.push('\n');
+
+    // The verbatim slice under the count / byte caps, tracking the ids actually rendered so
+    // dependency-restore can seed from them and the elision note can exclude anything restored.
+    let mut used = 0usize;
+    let mut rendered_ids: BTreeSet<&'a str> = BTreeSet::new();
+    for &n in candidates {
+        let entry = line(n);
+        if rendered_ids.len() >= verbatim_n || used + entry.len() > budget_bytes {
+            break;
+        }
+        used += entry.len();
+        b.push_str(&entry);
+        rendered_ids.insert(n.id.as_str());
+    }
+
+    // Structural dependency-restore appends the entries the caller computed to keep the slice
+    // fact-complete; rendering + accounting stay HERE so recall stays a SAFE SUPERSET and every
+    // restored item leaves the elided count.
+    for n in restore(&rendered_ids) {
+        rendered_ids.insert(n.id.as_str());
+        b.push_str(&line(n));
+    }
+
+    // Only candidates neither rendered under the cap nor restored count as elided-under-budget.
+    let elided = candidates
+        .iter()
+        .filter(|n| !rendered_ids.contains(n.id.as_str()))
+        .count();
+    if elided > 0 {
+        b.push_str(&note(elided));
+    }
+    b.push('\n');
+}
+
 /// Render ONE kind-filtered graph section (decisions, lessons, or findings) under the
 /// shared Gap-17 prompt budget: the most-recent `verbatim_n` nodes render verbatim AND
 /// stay under `budget_bytes` (whichever binds first), and the older remainder collapses
@@ -6337,9 +7256,9 @@ const DECISIONS_HEADER: &str =
 /// which collapses the order back to (recency, id) BYTE-IDENTICALLY to before (spec exclusion:
 /// only the lessons slice gains relevance ranking).
 #[allow(clippy::too_many_arguments)]
-fn write_capped_section(
+fn write_capped_section<'g>(
     b: &mut String,
-    g: &Graph,
+    g: &'g Graph,
     seed: &[String],
     kind: &str,
     recency_rel: &str,
@@ -6388,37 +7307,99 @@ fn write_capped_section(
             .then_with(|| rc.cmp(&ra))
             .then_with(|| a.id.cmp(&c.id))
     });
-    if nodes.is_empty() {
-        return;
-    }
 
-    b.push_str(header);
-    b.push('\n');
+    // The full ranked candidate pool BEFORE dedup narrows it: the dependency-restore
+    // pass below recovers referenced items from here, so an item dedup drops is still
+    // restorable (criterion 2 restores what "dedup OR the byte cap would have dropped").
+    // A `Vec<&Node>` clone copies pointers only.
+    let ranked = nodes.clone();
 
-    let mut used = 0usize;
-    let mut kept = 0usize;
-    for n in &nodes {
-        let entry = line(n);
-        if kept >= verbatim_n || used + entry.len() > budget_bytes {
-            break;
-        }
-        used += entry.len();
-        b.push_str(&entry);
-        kept += 1;
-    }
+    // Normalize-and-dedup (spec 26, section 1): collapse entries whose CONTENT is
+    // identical after whitespace normalization so a near-identical duplicate does not
+    // consume the byte budget a second time. This runs BEFORE the recent-N / byte-budget
+    // truncation below, on the assembled slice only - it never emits an event nor mutates
+    // the graph/store (recall stays a safe superset applied at render). Key on the node's
+    // normalized `summary` (the substantive text), NOT on the rendered line, whose id /
+    // `by` provenance differs between the same entry recorded on two runs - keying on the
+    // content is what collapses that cross-run duplication. `normalize_ws` is the SAME
+    // single whitespace-folding authority the grounding / supersede path uses, so
+    // "identical after normalization" means the same fold everywhere. Deterministic by
+    // construction: `nodes` is already sorted, and `retain` keeps the FIRST occurrence per
+    // key (its provenance is retained) while a `BTreeSet` of seen keys drops the
+    // byte-identical remainder, so the kept entry is stable across identical runs.
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    nodes.retain(|n| {
+        let summary = n.attrs.get("summary").map(String::as_str).unwrap_or("");
+        seen.insert(normalize_ws(summary))
+    });
 
-    let elided = nodes.len() - kept;
-    if elided > 0 {
-        let files = if seed.is_empty() {
-            String::new()
-        } else {
-            format!(" {}", seed.join(" "))
-        };
-        b.push_str(&format!(
-            "- (+{elided} older {noun}(s) elided to keep this prompt under budget - recover the full set with `rigger peers{files}`)\n",
-        ));
-    }
-    b.push('\n');
+    // Delegate the count / byte cap and the elision note to the SINGLE budgeted-section core,
+    // supplying the restore closure that keeps THIS section's slice fact-complete and the note in
+    // this section's exact `rigger peers <file>` wording - the honest recovery for a decision /
+    // lesson / finding, all of which `rigger peers` prints.
+    let files = if seed.is_empty() {
+        String::new()
+    } else {
+        format!(" {}", seed.join(" "))
+    };
+    render_capped_section(
+        b,
+        header,
+        &nodes,
+        verbatim_n,
+        budget_bytes,
+        &line,
+        // Dependency-restore (spec 26, section 2): keep every rendered entry fact-complete. If a
+        // rendered entry references another item of THIS kind through a graph edge in the SAME
+        // `subgraph` result - a decision that SUPERSEDES another, say - and that referenced item
+        // was dropped by the dedup pass or by the byte/count cap, restore it so the kept entry
+        // carries no dangling reference. Restore is STRUCTURAL: it follows the edges the projection
+        // recorded (never a text heuristic), and it only ever ADDS, so recall stays a SAFE SUPERSET
+        // (section 2.4) - it never drops an item the un-restored slice contained.
+        //
+        // `by_id` maps every candidate of this kind (the PRE-dedup `ranked` pool, so an item dedup
+        // dropped is still restorable) to its node; `refs` holds the same-kind reference edges among
+        // those candidates. The worklist closes the rendered set under those edges - a restored
+        // item's own references are followed too - so the whole slice is fact-complete; `seen`
+        // doubles as the visited set (seeded with the already-rendered ids), so each item is
+        // restored at most once, which bounds and determinizes the walk. The restored items return
+        // in the ONE ranked order computed above, so identical input yields an identical slice.
+        |rendered_ids: &BTreeSet<&'g str>| -> Vec<&'g contextgraph::Node> {
+            let by_id: BTreeMap<&str, &contextgraph::Node> =
+                ranked.iter().map(|n| (n.id.as_str(), *n)).collect();
+            let mut refs: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+            for e in &g.edges {
+                if by_id.contains_key(e.from.as_str()) && by_id.contains_key(e.to.as_str()) {
+                    refs.entry(e.from.as_str())
+                        .or_default()
+                        .insert(e.to.as_str());
+                }
+            }
+            let mut seen: BTreeSet<&str> = rendered_ids.iter().copied().collect();
+            let mut restored_ids: BTreeSet<&str> = BTreeSet::new();
+            let mut work: Vec<&str> = rendered_ids.iter().copied().collect();
+            while let Some(from) = work.pop() {
+                if let Some(targets) = refs.get(from) {
+                    for &to in targets {
+                        if seen.insert(to) {
+                            restored_ids.insert(to);
+                            work.push(to);
+                        }
+                    }
+                }
+            }
+            ranked
+                .iter()
+                .copied()
+                .filter(|n| restored_ids.contains(n.id.as_str()))
+                .collect()
+        },
+        |elided: usize| {
+            format!(
+                "- (+{elided} older {noun}(s) elided to keep this prompt under budget - recover the full set with `rigger peers{files}`)\n",
+            )
+        },
+    );
 }
 
 /// Render one node's `- {id}: {summary}` line - the plain body shared by the decisions
@@ -6426,6 +7407,302 @@ fn write_capped_section(
 fn plain_node_line(n: &contextgraph::Node) -> String {
     let summary = n.attrs.get("summary").map(String::as_str).unwrap_or("");
     format!("- {}: {}\n", n.id, summary)
+}
+
+/// Render the "Code neighborhood" section (spec 29c criterion 1): the code-entity DEFINITIONS the
+/// unified `subgraph` traversal surfaces around the touched files - the code half of the one graph
+/// (spec 29a) the run extracted. It is rendered from the SAME `Graph` the decisions / lessons /
+/// findings sections read, so a single seeded traversal returns the code neighborhood, the
+/// decisions/findings about the files, and the design-intent nodes together - replacing the
+/// separate structural-grounder "Relevant locations" call `build_prompt_with_failure` used to
+/// stitch in. Only DEFINITION entities render (a `code-entity` node carrying a `name` attr): a bare
+/// reference node folded from an `EdgeInferred` event has no line/kind, so it is not a "read-first"
+/// location.
+///
+/// The file each definition lives in comes STRUCTURALLY from the `CONTAINS` edge the extraction
+/// folded (`file --CONTAINS--> entity`, spec 29a), NEVER by string-parsing the `<file>::<name>`
+/// node id: that id format is the sqlite adapter's private convention ([`code_entity_id`]), so
+/// reading it here would duplicate that convention into the render layer and break silently on any
+/// id-format change. Reading the recorded edge is the same STRUCTURAL discipline
+/// [`write_capped_section`]'s dependency-restore follows. A definition whose containing file is
+/// outside this seeded subgraph is not a neighborhood "of these files", so it does not render.
+///
+/// Deterministic by construction: entities sort by (file, line, id) - a total order - and render
+/// through the SHARED [`render_capped_section`] core under the count / byte cap, with the remainder
+/// collapsed into ONE visible elision note. The note names `rigger graph --around <file>` - the
+/// command that actually returns a code neighborhood (its subgraph nodes include code entities) -
+/// per seed file, since `--around` takes a single id; NOT `rigger peers`, which prints only
+/// decisions / lessons / findings and could never recover an elided definition.
+/// The honest recovery command for an elided graph-sourced section (the code neighborhood AND the
+/// design intent): `rigger graph --around <file>`, whose subgraph nodes INCLUDE the elided entries,
+/// named per seed file since `--around` takes a single id. This is the ONE authority both `--around`
+/// sections render their recovery text through, so the two elision notes can never drift apart
+/// (resolving arch-u29c-3-around-recovery-duplicated-not-single-authority) - NEVER `rigger peers`,
+/// which prints only decisions / lessons / findings and could recover neither an elided code
+/// definition nor an elided design-intent node.
+fn graph_around_recovery(seed: &[String]) -> String {
+    match seed {
+        [] => "`rigger graph --around <file>`".to_string(),
+        [one] => format!("`rigger graph --around {one}`"),
+        _ => format!(
+            "`rigger graph --around <file>` on each of: {}",
+            seed.join(" ")
+        ),
+    }
+}
+
+fn write_code_neighborhood(b: &mut String, g: &Graph, seed: &[String]) {
+    // Recover each definition's file from the recorded CONTAINS edge (file -> entity), keyed by the
+    // contained entity id. An extracted definition always folds this edge, so a definition reachable
+    // in this subgraph together with its containing file has its CONTAINS edge here too.
+    let file_of: BTreeMap<&str, &str> = g
+        .edges
+        .iter()
+        .filter(|e| e.rel == contextgraph::REL_CONTAINS)
+        .map(|e| (e.to.as_str(), e.from.as_str()))
+        .collect();
+    let line_of = |n: &contextgraph::Node| -> u32 {
+        n.attrs
+            .get("line")
+            .and_then(|l| l.parse::<u32>().ok())
+            .unwrap_or(0)
+    };
+    let mut defs: Vec<&contextgraph::Node> = g
+        .nodes
+        .iter()
+        .filter(|n| n.kind == contextgraph::KIND_CODE_ENTITY)
+        .filter(|n| n.attrs.get("name").is_some_and(|s| !s.is_empty()))
+        .filter(|n| file_of.contains_key(n.id.as_str()))
+        .collect();
+    defs.sort_by(|a, c| {
+        let file_a = file_of.get(a.id.as_str()).copied().unwrap_or_default();
+        let file_c = file_of.get(c.id.as_str()).copied().unwrap_or_default();
+        file_a
+            .cmp(file_c)
+            .then_with(|| line_of(a).cmp(&line_of(c)))
+            .then_with(|| a.id.cmp(&c.id))
+    });
+
+    let line = |n: &contextgraph::Node| -> String {
+        let name = n.attrs.get("name").map(String::as_str).unwrap_or("");
+        let kind = n.attrs.get("kind").map(String::as_str).unwrap_or("");
+        let file = file_of.get(n.id.as_str()).copied().unwrap_or_default();
+        format!("- {}:{}  {kind} {name}\n", file, line_of(n))
+    };
+
+    render_capped_section(
+        b,
+        CODE_NEIGHBORHOOD_HEADER,
+        &defs,
+        CODE_NEIGHBORHOOD_VERBATIM_N,
+        CODE_NEIGHBORHOOD_BUDGET_BYTES,
+        &line,
+        // A code definition carries no same-section reference edge to another definition, so the
+        // code neighborhood restores nothing (its slice is already fact-complete).
+        |_rendered_ids| Vec::new(),
+        |elided: usize| {
+            let recover = graph_around_recovery(seed);
+            format!(
+                "- (+{elided} more definition(s) elided to keep this prompt under budget - recover the full set with {recover})\n",
+            )
+        },
+    );
+}
+
+/// The CONFIDENCE-TIER blast radius (spec 29c criterion 2, addendum 6.2): TWO filters over the ONE
+/// tiered edge set a seeded [`Projection::subgraph`](crate::contextgraph::Projection::subgraph)
+/// traversal returns, replacing the hand-rolled `BlastRadius{precise,safe}` two-view split.
+///
+/// - `precise` is the EXTRACTED sub-graph: the files reachable from the seed crossing ONLY
+///   [`TIER_EXTRACTED`](crate::contextgraph::TIER_EXTRACTED) edges - the confident, resolved
+///   neighborhood that seeds a prompt.
+/// - `safe` is `EXTRACTED u INFERRED u AMBIGUOUS`: the files reachable crossing edges of ANY
+///   confidence tier - the over-inclusive superset the safety consumers need (addendum 2.4).
+///   Because [`TIER_AMBIGUOUS`](crate::contextgraph::TIER_AMBIGUOUS) is exactly the
+///   grep-visible-only occurrences (a reference resolving to no known definition), the wide tier
+///   carries the grep-recovered tail, so `safe` stays a superset of the grep union - the 2.4
+///   correctness invariant (dropping a reference a safety consumer needs is a regression, not a
+///   saving).
+///
+/// It is a REACHABILITY filter, not a flat edge scan: a file is EXTRACTED-tier only when the seed
+/// reaches it across EXTRACTED edges the whole way. A file whose own definitions fold EXTRACTED
+/// `CONTAINS` edges but which the seed reaches ONLY across an INFERRED reference is INFERRED-tier -
+/// its EXTRACTED self-edges never promote it into `precise`. Files map STRUCTURALLY: a
+/// [`KIND_FILE`](crate::contextgraph::KIND_FILE) node is its own path, a
+/// [`KIND_CODE_ENTITY`](crate::contextgraph::KIND_CODE_ENTITY) maps to its
+/// [`REL_CONTAINS`](crate::contextgraph::REL_CONTAINS) parent file (the same structural recovery
+/// [`write_code_neighborhood`] uses), never by parsing the `<file>::<name>` id. The seed files are
+/// always in both tiers (a touched file is in its own radius). Deterministic by construction: the
+/// views are `BTreeSet`-collected, so the returned lists are sorted regardless of traversal order.
+///
+/// `serialize` (the hub fail-safe) is NOT set here - it is a property of the traversal degree the
+/// caller layers on from the grounder verdict (never silently dropped); this filter owns only the
+/// precise/safe tier split.
+fn confidence_tier_radius(g: &Graph, seed: &[String]) -> BlastRadius {
+    let precise = files_reachable(g, seed, &[contextgraph::TIER_EXTRACTED]);
+    let safe = files_reachable(
+        g,
+        seed,
+        &[
+            contextgraph::TIER_EXTRACTED,
+            contextgraph::TIER_INFERRED,
+            contextgraph::TIER_AMBIGUOUS,
+        ],
+    );
+    BlastRadius {
+        precise: precise.into_iter().collect(),
+        safe: safe.into_iter().collect(),
+        serialize: false,
+    }
+}
+
+/// The files reachable from `seed` within `g` crossing ONLY edges whose confidence tier is in
+/// `allowed` - the one edge set, filtered (spec 29c criterion 2). A breadth-first reachability over
+/// the (undirected) edge set: an allowed edge extends the reached set from either endpoint. Every
+/// reached node is then mapped to its file - a [`KIND_FILE`](crate::contextgraph::KIND_FILE) node is
+/// its own path, a [`KIND_CODE_ENTITY`](crate::contextgraph::KIND_CODE_ENTITY) is recovered from the
+/// [`REL_CONTAINS`](crate::contextgraph::REL_CONTAINS) edge that folded it, and any other node kind
+/// (a decision / finding / doc) maps to no file and is skipped. The seed files themselves are always
+/// included (a touched file is in its own blast radius even when the graph holds no node for it).
+fn files_reachable(g: &Graph, seed: &[String], allowed: &[&str]) -> BTreeSet<String> {
+    // file of a CONTAINED entity: `file --CONTAINS--> entity`, keyed by the contained entity id
+    // (the same structural recovery `write_code_neighborhood` uses; never an id string-parse).
+    let contains_parent: BTreeMap<&str, &str> = g
+        .edges
+        .iter()
+        .filter(|e| e.rel == contextgraph::REL_CONTAINS)
+        .map(|e| (e.to.as_str(), e.from.as_str()))
+        .collect();
+    let kind_of: BTreeMap<&str, &str> = g
+        .nodes
+        .iter()
+        .map(|n| (n.id.as_str(), n.kind.as_str()))
+        .collect();
+    let file_of = |id: &str| -> Option<String> {
+        match kind_of.get(id).copied() {
+            Some(k) if k == contextgraph::KIND_FILE => Some(id.to_string()),
+            Some(k) if k == contextgraph::KIND_CODE_ENTITY => {
+                contains_parent.get(id).map(|f| f.to_string())
+            }
+            _ => None,
+        }
+    };
+    let allowed: BTreeSet<&str> = allowed.iter().copied().collect();
+    let mut reached: BTreeSet<String> = seed.iter().cloned().collect();
+    let mut frontier: Vec<String> = seed.to_vec();
+    while let Some(cur) = frontier.pop() {
+        for e in &g.edges {
+            if !allowed.contains(e.tier.as_str()) {
+                continue;
+            }
+            let next = if e.from == cur {
+                Some(&e.to)
+            } else if e.to == cur {
+                Some(&e.from)
+            } else {
+                None
+            };
+            if let Some(n) = next {
+                if reached.insert(n.clone()) {
+                    frontier.push(n.clone());
+                }
+            }
+        }
+    }
+    // The seed files are always in the radius; every reached node contributes its file, if it has
+    // one (entities and file nodes do; decisions / docs / findings do not).
+    let mut files: BTreeSet<String> = seed.iter().cloned().collect();
+    for id in &reached {
+        if let Some(f) = file_of(id) {
+            files.insert(f);
+        }
+    }
+    files
+}
+
+fn write_design_intent(b: &mut String, g: &Graph, seed: &[String]) {
+    let seed_set: BTreeSet<&str> = seed.iter().map(String::as_str).collect();
+    let kind_of: BTreeMap<&str, &str> = g
+        .nodes
+        .iter()
+        .map(|n| (n.id.as_str(), n.kind.as_str()))
+        .collect();
+
+    // Per design-intent node, the code-binding (relation, seed-file) pairs it holds, plus the max
+    // event-log position of those binding edges - the log-order signal the section orders by (the
+    // most-recently-recorded binding first; NOT authored priority - see DESIGN_INTENT_VERBATIM_N).
+    // A node is bound to the touched files only through a DESIGN_INTENT_RELS edge whose target is a
+    // seed file AND whose source is itself a design-intent node - so a `decision -> file` GOVERNS
+    // edge (shared relation, non-design-intent source) and a `references` citation are both excluded
+    // structurally.
+    let mut binds: BTreeMap<&str, BTreeSet<(&str, &str)>> = BTreeMap::new();
+    let mut recency: BTreeMap<&str, u64> = BTreeMap::new();
+    for e in &g.edges {
+        if !DESIGN_INTENT_RELS.contains(&e.rel.as_str()) || !seed_set.contains(e.to.as_str()) {
+            continue;
+        }
+        if !kind_of
+            .get(e.from.as_str())
+            .is_some_and(|k| DESIGN_INTENT_KINDS.contains(k))
+        {
+            continue;
+        }
+        binds
+            .entry(e.from.as_str())
+            .or_default()
+            .insert((e.rel.as_str(), e.to.as_str()));
+        let slot = recency.entry(e.from.as_str()).or_insert(0);
+        *slot = (*slot).max(e.source);
+    }
+
+    let mut nodes: Vec<&contextgraph::Node> = g
+        .nodes
+        .iter()
+        .filter(|n| binds.contains_key(n.id.as_str()))
+        .collect();
+    nodes.sort_by(|a, c| {
+        let ra = recency.get(a.id.as_str()).copied().unwrap_or(0);
+        let rc = recency.get(c.id.as_str()).copied().unwrap_or(0);
+        rc.cmp(&ra).then_with(|| a.id.cmp(&c.id))
+    });
+
+    let line = |n: &contextgraph::Node| -> String {
+        let title = n.attrs.get("title").map(String::as_str).unwrap_or("");
+        // The distinct relations and seed files this node binds, each set iterated in the
+        // BTreeSet's sorted order so the rendered line is deterministic for a given node.
+        let pairs = binds.get(n.id.as_str());
+        let mut rels: BTreeSet<&str> = BTreeSet::new();
+        let mut files: BTreeSet<&str> = BTreeSet::new();
+        if let Some(p) = pairs {
+            for (rel, file) in p {
+                rels.insert(rel);
+                files.insert(file);
+            }
+        }
+        let rels_s = rels.into_iter().collect::<Vec<_>>().join("/");
+        let files_s = files.into_iter().collect::<Vec<_>>().join(" ");
+        format!("- {rels_s} {files_s}  {}: {title}\n", n.id)
+    };
+
+    render_capped_section(
+        b,
+        DESIGN_INTENT_HEADER,
+        &nodes,
+        DESIGN_INTENT_VERBATIM_N,
+        DESIGN_INTENT_BUDGET_BYTES,
+        &line,
+        // A design-intent node carries no same-section reference edge that would dangle if a peer
+        // design-intent node were dropped, so the section restores nothing (its slice is already
+        // fact-complete). The one edge kind among design-intent nodes is a doc `references`
+        // citation, which this section deliberately does not render.
+        |_rendered_ids| Vec::new(),
+        |elided: usize| {
+            let recover = graph_around_recovery(seed);
+            format!(
+                "- (+{elided} more design-intent node(s) elided to keep this prompt under budget - recover the full set with {recover})\n",
+            )
+        },
+    );
 }
 
 /// Render the "Decisions that govern these files" section (Gap 15, spec 06 unit 5) via
@@ -6907,6 +8184,10 @@ fn baseline_units(
                 // planner-proposed unit citing the same criterion supersedes it in
                 // `harvest_proposed` rather than duplicating the work.
                 baseline: true,
+                // The stable id the planner echoes and `harvest_proposed` matches on
+                // (spec 18 §3.3) - position + normalized-content hash, so a paraphrase
+                // still resolves to this baseline instead of spawning a duplicate.
+                criterion_id: criterion_stable_id(i + 1, criterion),
                 ..Default::default()
             },
         ));
@@ -7081,6 +8362,96 @@ mod tests {
     }
 
     #[test]
+    fn recorded_gate_outcome_reads_the_latest_gate_run_verdict_per_unit() {
+        // A `GateVerdict` keyed to a unit's gate RUN - the exact shape `emit_gate_verdict`
+        // records (`{unit}/gate:{gate}#{attempt}` via `gate_verdict_key`).
+        fn verdict(unit: &str, gate: &str, attempt: u32, pass: bool) -> Event {
+            Event::new(
+                contextgraph::TYPE_GATE_VERDICT,
+                serde_json::to_vec(&json!({
+                    "gate": gate, "pass": pass, "flaky": false, "evidence": ""
+                }))
+                .unwrap(),
+            )
+            .with_meta(META_REPLAY_KEY, gate_verdict_key(unit, attempt, gate))
+        }
+
+        // No recorded gate run yet -> None (the unit's gates have not run).
+        assert_eq!(recorded_gate_outcome(&[], "u1"), None);
+
+        // A single passing run -> Some(true).
+        let pass = vec![verdict("u1", "test", 0, true)];
+        assert_eq!(recorded_gate_outcome(&pass, "u1"), Some(true));
+
+        // The LATEST verdict by log position wins: a red at attempt 0 then a green re-gate at
+        // attempt 1 reads `passed`; and the per-unit filter keeps u2's red out of u1's outcome.
+        let mixed = vec![
+            verdict("u1", "test", 0, false),
+            verdict("u2", "test", 0, false),
+            verdict("u1", "test", 1, true),
+        ];
+        assert_eq!(recorded_gate_outcome(&mixed, "u1"), Some(true));
+        assert_eq!(recorded_gate_outcome(&mixed, "u2"), Some(false));
+
+        // The MULTI-GATE battery the real implement stage runs: `run_gates` iterates
+        // [fmt, clippy, build, test, style] with NO break on failure, emitting a verdict per
+        // gate at the SAME attempt, so a `test` FAILURE is followed by `style` passing LAST. The
+        // outcome is the AND across the attempt's distinct gate keys (any failing gate => the
+        // unit's gates FAILED), never the last verdict by log position - which would return the
+        // trailing style=true and MASK the test failure.
+        let battery = vec![
+            verdict("u1", "fmt", 2, true),
+            verdict("u1", "clippy", 2, true),
+            verdict("u1", "build", 2, true),
+            verdict("u1", "test", 2, false),
+            verdict("u1", "style", 2, true),
+        ];
+        assert_eq!(
+            recorded_gate_outcome(&battery, "u1"),
+            Some(false),
+            "a failing test gate masked by a trailing passing style gate must read failed (AND, not last-write-wins)"
+        );
+
+        // Restricting the AND to the LATEST attempt keeps a unit that RE-GATED green reading
+        // passed: attempt 2's whole battery failed on test, attempt 3's whole battery passed, so
+        // the recovered unit reads Some(true) - the earlier attempt's red does not carry over.
+        let mut recovered = battery.clone();
+        recovered.extend([
+            verdict("u1", "fmt", 3, true),
+            verdict("u1", "clippy", 3, true),
+            verdict("u1", "build", 3, true),
+            verdict("u1", "test", 3, true),
+            verdict("u1", "style", 3, true),
+        ]);
+        assert_eq!(
+            recorded_gate_outcome(&recovered, "u1"),
+            Some(true),
+            "a re-gated-green latest attempt reads passed even though an earlier attempt failed"
+        );
+
+        // A blast-radius SKIP (keyed under `gate-skip:`) and an integrate-time GATED_BY artifact
+        // verdict (no replay key) are NOT the unit's own gate run, so neither contributes.
+        let skip = Event::new(
+            contextgraph::TYPE_GATE_VERDICT,
+            serde_json::to_vec(&json!({
+                "gate": "test", "pass": true, "skipped": true, "evidence": "skipped"
+            }))
+            .unwrap(),
+        )
+        .with_meta(META_REPLAY_KEY, gate_skip_key("u3", 0, "test"));
+        let artifact = Event::new(
+            contextgraph::TYPE_GATE_VERDICT,
+            serde_json::to_vec(&json!({ "gate": "build", "pass": true, "artifact": "src/a.rs" }))
+                .unwrap(),
+        );
+        assert_eq!(
+            recorded_gate_outcome(&[skip, artifact], "u3"),
+            None,
+            "a skip and an artifact verdict are not the unit's own gate run"
+        );
+    }
+
+    #[test]
     fn review_worktree_dir_and_branch_derive_from_stage_and_attempt() {
         // Spec 06:48: review worktrees derive from stage + attempt (not a per-process
         // uuid), so a resumed review step recomputes the same path/branch and can
@@ -7112,6 +8483,14 @@ mod tests {
 
     struct Stub {
         write_file: Option<String>,
+        /// Per-AGENT file write, in addition to (and independent of) the shared
+        /// `write_file`: the named agent writes THIS file into its worktree dir. Lets a
+        /// test give the sdet-author a DISTINCTIVE periphery-test file no other spawn
+        /// writes, so a test can assert it was ADDED in the SAME pre-gate commit as the
+        /// implementer's own file - a NON-VACUOUS proof the sdet-author ran in the
+        /// worktree BEFORE the pre-gate commit (asserting mere presence in the merged tree
+        /// would NOT distinguish placement, since integrate sweeps any dirty file in).
+        write_file_by_agent: HashMap<String, String>,
         emits: Vec<(String, Value)>,
         /// Per-agent emits, in addition to the shared `emits`: lets one test give a
         /// single lens a ReviewFinding to emit so the test can assert the finding
@@ -7142,6 +8521,14 @@ mod tests {
         /// normally. Lets a speculation test crash ONE lane (`u/implementer#0`) and prove a
         /// surviving sibling lane still wins - which the whole-driver `fail_spawn` cannot.
         fail_spawn_ids: std::collections::HashSet<String>,
+        /// Per-SPAWN-ID PARK: the spawn whose deterministic id ([`SpawnOpts::id`]) is in this
+        /// set returns [`parked_spawn`] (the driver PARK signal `is_parked` recognizes),
+        /// while its siblings run normally. Distinct from `fail_spawn_ids` (a crash), this
+        /// simulates the stepwise/replay driver reaching an UNRECORDED frontier for exactly
+        /// one spawn - letting a test drive the implementer to a normal `Ok` (so control
+        /// reaches the sdet seam) and PARK only the sdet-author spawn, exercising the parked
+        /// arm at the sdet seam that `fail_spawn_ids` (a non-parked crash) cannot.
+        park_spawn_ids: std::collections::HashSet<String>,
         last_prompt: Mutex<String>,
         /// Per-agent (isolation, parallel) the conductor passed at each spawn.
         opts_by_agent: Mutex<HashMap<String, (bool, bool)>>,
@@ -7153,6 +8540,10 @@ mod tests {
         /// agent at spawn time - used to assert every driver path receives the agent's
         /// role, not just the cli path's own arg-building.
         system_prompt_by_agent: Mutex<HashMap<String, String>>,
+        /// The live work-line title (the unit criterion, spec 19a c4) the conductor
+        /// threaded into SpawnOpts for each agent - used to prove a spawn carries its
+        /// criterion so the thin driver narrates the WORK, not just `<unit>:<stage>`.
+        titles_by_agent: Mutex<HashMap<String, String>>,
         /// Every prompt each agent was spawned with, in order, keyed by agent id.
         /// Used to assert the cross-tier findings block (item 1) and the prior-failure
         /// block on a retry (items 3 + 5) reached the right agent's prompt.
@@ -7165,12 +8556,14 @@ mod tests {
         fn new() -> Self {
             Stub {
                 write_file: None,
+                write_file_by_agent: HashMap::new(),
                 emits: Vec::new(),
                 emits_by_agent: HashMap::new(),
                 output: String::new(),
                 output_by_agent: HashMap::new(),
                 output_by_spawn_id: HashMap::new(),
                 fail_spawn_ids: std::collections::HashSet::new(),
+                park_spawn_ids: std::collections::HashSet::new(),
                 spawn_ids: Mutex::new(Vec::new()),
                 resolved_model_by_agent: HashMap::new(),
                 fail_spawn: false,
@@ -7178,6 +8571,7 @@ mod tests {
                 opts_by_agent: Mutex::new(HashMap::new()),
                 dirs_by_agent: Mutex::new(HashMap::new()),
                 system_prompt_by_agent: Mutex::new(HashMap::new()),
+                titles_by_agent: Mutex::new(HashMap::new()),
                 prompts_by_agent: Mutex::new(HashMap::new()),
                 call_order: Mutex::new(Vec::new()),
             }
@@ -7211,6 +8605,12 @@ mod tests {
                 .unwrap()
                 .get(agent_id)
                 .cloned()
+        }
+
+        /// The live work-line title (unit criterion) the conductor threaded to the driver
+        /// for the named agent, or None if it was never spawned.
+        fn title_for(&self, agent_id: &str) -> Option<String> {
+            self.titles_by_agent.lock().unwrap().get(agent_id).cloned()
         }
 
         /// Every spawn's deterministic id, in spawn order (Gap-18 tests assert the exact
@@ -7263,6 +8663,10 @@ mod tests {
                 .lock()
                 .unwrap()
                 .insert(a.id.clone(), opts.system_prompt.clone());
+            self.titles_by_agent
+                .lock()
+                .unwrap()
+                .insert(a.id.clone(), opts.title.clone());
             self.prompts_by_agent
                 .lock()
                 .unwrap()
@@ -7274,6 +8678,13 @@ mod tests {
             if self.fail_spawn || self.fail_spawn_ids.contains(&opts.id) {
                 return Err(Error("simulated mid-spawn crash".into()));
             }
+            // A PARKED spawn (the stepwise/replay driver reached an unrecorded frontier for
+            // this exact spawn id): return the PARK signal `is_parked` recognizes, so the
+            // conductor's parked arm - not the crash arm - handles it. Placed AFTER the crash
+            // checks so the two dispositions never collide on one spawn.
+            if self.park_spawn_ids.contains(&opts.id) {
+                return Err(parked_spawn(&opts.id));
+            }
             // Only an ISOLATED spawn (a real worktree dir) writes its file: a review
             // agent spawns with an empty `dir`, and writing there would land the file
             // in the process cwd (the actual rigger repo) - a test leak. An implementer
@@ -7281,6 +8692,14 @@ mod tests {
             if let Some(f) = &self.write_file {
                 if !opts.dir.is_empty() {
                     let _ = std::fs::write(Path::new(&opts.dir).join(f), "work\n");
+                }
+            }
+            // A file only THIS agent authors (e.g. the sdet-author's periphery test),
+            // into its worktree dir. Same isolation guard as the shared write: an empty
+            // dir would leak into the process cwd.
+            if let Some(f) = self.write_file_by_agent.get(&a.id) {
+                if !opts.dir.is_empty() {
+                    let _ = std::fs::write(Path::new(&opts.dir).join(f), "periphery\n");
                 }
             }
             for (t, v) in &self.emits {
@@ -7655,6 +9074,29 @@ mod tests {
         let grep = crate::grounder::Grep {
             root: dir.path().to_string_lossy().into_owned(),
         };
+        // Spec 29c criterion 1: grounding is now ONE seeded traversal over the unified graph, so the
+        // planner OBSERVES its grounding through the graph, not a separate grep "Relevant locations"
+        // block. grep still SEEDS the traversal from the spec criteria (matching metrics.rs, NOT the
+        // "required" label -> LICENSE_DECOY), and the graph holds a code node for BOTH files - so the
+        // ONE traversal renders whichever file the seed reaches. If grounding were on the buggy
+        // "required" label, grep would seed LICENSE_DECOY.txt and the traversal WOULD render it,
+        // reddening the negative assertion below - the discrimination stays sharp.
+        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+        let mut pos = 0u64;
+        let mut apply = |type_: &str, payload: serde_json::Value| {
+            pos += 1;
+            let mut e = Event::new(type_, serde_json::to_vec(&payload).unwrap());
+            e.position = pos;
+            graph.apply(&e).unwrap();
+        };
+        apply(
+            contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+            json!({ "file": "metrics.rs", "name": "project", "kind": "function", "line": 2, "lang": "rust", "fresh": true }),
+        );
+        apply(
+            contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+            json!({ "file": "LICENSE_DECOY.txt", "name": "license_clause", "kind": "function", "line": 1, "lang": "text", "fresh": true }),
+        );
         let criterion = "the metrics module projects first-pass yield";
         let deps = Deps {
             store: &st,
@@ -7662,7 +9104,7 @@ mod tests {
             gates: &ExecRunner,
             repo: String::new(),
             grounder: Some(&grep),
-            graph: None,
+            graph: Some(&graph),
             criteria: vec![criterion.to_string()],
         };
         run(&cfg, &deps).unwrap();
@@ -7685,15 +9127,16 @@ mod tests {
             prompt.contains("\"agent\":\"worker\""),
             "the PLAN_PROTOCOL must tell the planner the implementer agent id; got:\n{prompt}"
         );
-        // Grounding is on the SPEC, not the label: the criterion-matching file is
-        // surfaced, the "required" decoy is not.
+        // Grounding is on the SPEC, not the label: the unified traversal seeds on the
+        // criterion-matching file (metrics.rs) and surfaces its code neighborhood, while the
+        // "required" decoy is never seeded so its node is never traversed.
         assert!(
             prompt.contains("metrics.rs"),
-            "the planner must ground on the spec criteria (surfacing metrics.rs); got:\n{prompt}"
+            "the planner must ground on the spec criteria (the unified traversal surfaces metrics.rs); got:\n{prompt}"
         );
         assert!(
             !prompt.contains("LICENSE_DECOY"),
-            "the planner must NOT ground on the `coverage: required` label (no LICENSE decoy); got:\n{prompt}"
+            "the planner must NOT ground on the `coverage: required` label (no LICENSE decoy seeded); got:\n{prompt}"
         );
     }
 
@@ -7985,6 +9428,996 @@ mod tests {
             serving.len(),
             2,
             "the criterion is served by the two split units only; got: {serving:?}"
+        );
+    }
+
+    #[test]
+    fn a_same_id_re_emit_updates_the_proposed_unit_in_place() {
+        // spec 31 crit 1 (update-in-place). A same-id `UnitProposed` re-emit is a
+        // REFINEMENT, not a new unit: `harvest_proposed` FOLDS the re-emitted `needs`
+        // into the ONE existing PROPOSED stage (with the plan-critique gate-hold
+        // re-applied), leaving exactly one stage for that id carrying the refined
+        // `needs` - never a skip (the old `proposed.contains` short-circuit that dropped
+        // a refinement, forcing the planner to mint a NEW id) and never a duplicate.
+        // Re-emitting every criterion's unit this way keeps ONE unit per criterion, so
+        // the plan-critique sees no rule-7 duplicate ownership. Driven through the REAL
+        // `harvest_proposed` over the store's event stream, so it is RED before the fold
+        // exists (the re-emit is skipped, the refined needs never land on the stage).
+        let crit_a = "criterion A: the alpha module is implemented";
+        let crit_b = "criterion B: the beta module is implemented";
+        let cfg = supersede_cfg();
+        let st = Store::open(":memory:").unwrap();
+
+        // The planner proposes one unit per criterion (u-a for A, u-b for B), then
+        // RE-EMITS u-a under its EXACT id with an added `needs` edge on u-b - the
+        // plan-critique refinement this spec makes effective.
+        let proposals: [(&str, &str, String, Vec<&str>); 3] = [
+            ("u-a", crit_a, criterion_stable_id(1, crit_a), Vec::new()),
+            ("u-b", crit_b, criterion_stable_id(2, crit_b), Vec::new()),
+            ("u-a", crit_a, criterion_stable_id(1, crit_a), vec!["u-b"]),
+        ];
+        for (id, crit, cid, needs) in &proposals {
+            st.append(
+                STREAM,
+                ExpectedRevision::Any,
+                &[Event::new(
+                    TYPE_UNIT_PROPOSED,
+                    serde_json::to_vec(&json!({
+                        "id": id,
+                        "agent": "worker",
+                        "criterion": crit,
+                        "criterion_id": cid,
+                        "gates": ["ok"],
+                        "needs": needs,
+                    }))
+                    .unwrap(),
+                )],
+            )
+            .unwrap();
+        }
+
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: vec![crit_a.to_string(), crit_b.to_string()],
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+
+        // Seed the DAG exactly as `run` does before the first harvest: the producer
+        // (`plan`), the plan-critique gate (empty agent + adjudicator + needs plan), and
+        // one deterministic baseline per criterion (so a proposal supersedes its
+        // baseline - one unit per criterion).
+        let mut stages: BTreeMap<String, Stage> = BTreeMap::new();
+        stages.insert(
+            "plan".into(),
+            Stage {
+                name: "plan".into(),
+                agent: "planner".into(),
+                produces: "dag".into(),
+                ..Default::default()
+            },
+        );
+        stages.insert(
+            "plan-critique".into(),
+            Stage {
+                name: "plan-critique".into(),
+                adjudicator: "judge".into(),
+                needs: vec!["plan".into()],
+                ..Default::default()
+            },
+        );
+        let template = Stage {
+            name: "implement".into(),
+            agent: "worker".into(),
+            gates: vec!["ok".into()],
+            ..Default::default()
+        };
+        for (name, unit) in baseline_units(&template, &deps.criteria, Some("plan")) {
+            stages.insert(name, unit);
+        }
+
+        let mut proposed: HashSet<String> = HashSet::new();
+        let integrated: HashSet<String> = HashSet::new();
+        let terminal: HashSet<String> = HashSet::new();
+        ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)
+            .unwrap();
+
+        // (a) EXACTLY ONE stage for u-a carrying the REFINED needs (the u-b edge): the
+        // re-emit updated it in place, neither skipped nor duplicated.
+        assert!(
+            stages.contains_key("u-a"),
+            "the proposed unit u-a must be in the DAG"
+        );
+        assert!(
+            stages["u-a"].needs.iter().any(|n| n == "u-b"),
+            "the same-id re-emit must FOLD its refined needs (u-b) into u-a in place; got {:?}",
+            stages["u-a"].needs
+        );
+        // The plan-critique gate-hold is re-applied on the folded needs, so a refined
+        // fan-out unit stays held behind the gate.
+        assert!(
+            stages["u-a"].needs.iter().any(|n| n == "plan-critique"),
+            "the plan-critique gate-hold must be re-applied on the folded needs; got {:?}",
+            stages["u-a"].needs
+        );
+
+        // (b) ONE unit per criterion, no rule-7 duplication: each planner unit
+        // superseded its baseline, and the re-emit folded rather than adding a second
+        // unit. Both baselines are gone; exactly u-a and u-b serve the two criteria.
+        for (ord, crit) in [(1, crit_a), (2, crit_b)] {
+            assert!(
+                !stages.contains_key(&baseline_id(ord, crit)),
+                "criterion {crit:?} baseline must be superseded by its planner unit"
+            );
+        }
+        let serving: Vec<&str> = stages
+            .values()
+            .filter(|s| s.coverage == crit_a || s.coverage == crit_b)
+            .map(|s| s.name.as_str())
+            .collect();
+        assert_eq!(
+            serving.len(),
+            2,
+            "exactly one unit per criterion (no duplication); got {serving:?}"
+        );
+    }
+
+    /// Seed the DAG exactly as `run` does before the first harvest: the producer
+    /// (`plan`), the plan-critique gate (empty agent + adjudicator + needs plan, so
+    /// [`critique_gate_name`] finds it), and one deterministic baseline per criterion (so
+    /// a proposal supersedes its baseline - one unit per criterion). The shared scaffold
+    /// of the spec-31 fold fixtures below.
+    fn seed_refine_dag(criteria: &[String]) -> BTreeMap<String, Stage> {
+        let mut stages: BTreeMap<String, Stage> = BTreeMap::new();
+        stages.insert(
+            "plan".into(),
+            Stage {
+                name: "plan".into(),
+                agent: "planner".into(),
+                produces: "dag".into(),
+                ..Default::default()
+            },
+        );
+        stages.insert(
+            "plan-critique".into(),
+            Stage {
+                name: "plan-critique".into(),
+                adjudicator: "judge".into(),
+                needs: vec!["plan".into()],
+                ..Default::default()
+            },
+        );
+        let template = Stage {
+            name: "implement".into(),
+            agent: "worker".into(),
+            gates: vec!["ok".into()],
+            ..Default::default()
+        };
+        for (name, unit) in baseline_units(&template, criteria, Some("plan")) {
+            stages.insert(name, unit);
+        }
+        stages
+    }
+
+    /// Append one `UnitProposed` per `(id, criterion, criterion_id, needs)` tuple to the
+    /// run stream, the shape the planner emits. Shared by the spec-31 fold fixtures.
+    fn append_proposals(st: &Store, proposals: &[(&str, &str, String, Vec<&str>)]) {
+        for (id, crit, cid, needs) in proposals {
+            st.append(
+                STREAM,
+                ExpectedRevision::Any,
+                &[Event::new(
+                    TYPE_UNIT_PROPOSED,
+                    serde_json::to_vec(&json!({
+                        "id": id,
+                        "agent": "worker",
+                        "criterion": crit,
+                        "criterion_id": cid,
+                        "gates": ["ok"],
+                        "needs": needs,
+                    }))
+                    .unwrap(),
+                )],
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn a_coverage_retarget_re_emit_preserves_one_unit_per_criterion() {
+        // spec 31 crit 1 (one-unit-per-criterion under a coverage RETARGET). A same-id
+        // re-emit folds its refined NEEDS only; it must NOT re-target the unit's coverage
+        // to a DIFFERENT criterion. Re-targeting `existing.coverage` WITHOUT also re-running
+        // the add path's baseline re-supersession would ORPHAN the vacated criterion (its
+        // baseline was already removed when the unit first served it) and DOUBLE-OWN the
+        // retarget target (its own unit PLUS the retargeted one) - the exact rule-7
+        // duplicate ownership this criterion exists to eliminate. So a re-emit of u-a
+        // (serving criterion A) that now cites criterion B leaves u-a on A, folds only its
+        // needs, and both criteria keep exactly one owner. RED against a fold that writes
+        // `existing.coverage` (u-a moves to B: A orphaned, B double-owned).
+        let crit_a = "criterion A: the alpha module is implemented";
+        let crit_b = "criterion B: the beta module is implemented";
+        let cfg = supersede_cfg();
+        let st = Store::open(":memory:").unwrap();
+
+        // u-a serves A, u-b serves B, then u-a is RE-EMITTED citing criterion B (a
+        // coverage retarget) with an added `needs` edge on u-b.
+        append_proposals(
+            &st,
+            &[
+                ("u-a", crit_a, criterion_stable_id(1, crit_a), Vec::new()),
+                ("u-b", crit_b, criterion_stable_id(2, crit_b), Vec::new()),
+                ("u-a", crit_b, criterion_stable_id(2, crit_b), vec!["u-b"]),
+            ],
+        );
+
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: vec![crit_a.to_string(), crit_b.to_string()],
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+
+        let mut stages = seed_refine_dag(&deps.criteria);
+        let mut proposed: HashSet<String> = HashSet::new();
+        let integrated: HashSet<String> = HashSet::new();
+        let terminal: HashSet<String> = HashSet::new();
+        ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)
+            .unwrap();
+
+        // The retarget did NOT move u-a's coverage: it still serves criterion A.
+        assert_eq!(
+            stages["u-a"].coverage, crit_a,
+            "a coverage-retarget re-emit must fold NEEDS only and leave u-a on criterion A; got {:?}",
+            stages["u-a"].coverage
+        );
+        // The refined needs still folded in (NEEDS is the refinable field).
+        assert!(
+            stages["u-a"].needs.iter().any(|n| n == "u-b"),
+            "the re-emit's refined needs (u-b) must still fold in; got {:?}",
+            stages["u-a"].needs
+        );
+
+        // One-unit-per-criterion holds: A owned by exactly u-a, B by exactly u-b - no
+        // orphan (A with 0 owners) and no double-ownership (B with 2).
+        for (crit, owner) in [(crit_a, "u-a"), (crit_b, "u-b")] {
+            let owners: Vec<&str> = stages
+                .values()
+                .filter(|s| s.coverage == crit)
+                .map(|s| s.name.as_str())
+                .collect();
+            assert_eq!(
+                owners,
+                vec![owner],
+                "criterion {crit:?} must be served by exactly one unit ({owner}); got {owners:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_re_emit_naming_a_reserved_stage_never_mutates_it() {
+        // spec 31 crit 1 (fold target guard). The fold only updates an actual PROPOSED
+        // unit. A `UnitProposed` whose id COLLIDES with a reserved/infrastructure stage -
+        // the plan-critique gate here - is NOT a refinement: it must be skipped exactly as
+        // the pre-spec-31 `stages.contains_key -> continue` did, never folded and never
+        // overwritten. Folding into the gate would REPLACE its `needs = [plan]` with `[]`
+        // (`with_gate_hold` adds nothing when the id IS the gate), clobbering the fan-out
+        // hold before the gate runs. RED against a fold guarded only by !integrated/
+        // !terminal (the gate is in neither set, so the old fold writes it).
+        let crit_a = "criterion A: the alpha module is implemented";
+        let cfg = supersede_cfg();
+        let st = Store::open(":memory:").unwrap();
+
+        // A proposal whose id IS the gate stage, with empty needs (the clobber shape).
+        append_proposals(
+            &st,
+            &[(
+                "plan-critique",
+                crit_a,
+                criterion_stable_id(1, crit_a),
+                Vec::new(),
+            )],
+        );
+
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: vec![crit_a.to_string()],
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+
+        let mut stages = seed_refine_dag(&deps.criteria);
+        let mut proposed: HashSet<String> = HashSet::new();
+        let integrated: HashSet<String> = HashSet::new();
+        let terminal: HashSet<String> = HashSet::new();
+        ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)
+            .unwrap();
+
+        // The gate stage is UNTOUCHED: its fan-out hold `needs = [plan]` survives, its
+        // adjudicator identity is intact, and it never inherited the proposal's coverage.
+        assert_eq!(
+            stages["plan-critique"].needs,
+            vec!["plan".to_string()],
+            "the gate's fan-out hold [plan] must survive a colliding proposal; got {:?}",
+            stages["plan-critique"].needs
+        );
+        assert_eq!(
+            stages["plan-critique"].adjudicator, "judge",
+            "the gate stage must not be overwritten by the colliding proposal"
+        );
+        assert!(
+            stages["plan-critique"].coverage.is_empty(),
+            "the gate must not inherit the colliding proposal's coverage; got {:?}",
+            stages["plan-critique"].coverage
+        );
+    }
+
+    #[test]
+    fn re_folding_a_same_id_re_emit_is_idempotent() {
+        // spec 31 global determinism (lines 49-54): `harvest_proposed` runs EVERY wave,
+        // re-reading the full event stream and re-folding the same re-emit. A SECOND
+        // harvest over the identical events must rebuild an IDENTICAL DAG - the fold
+        // REPLACES `needs` (never appends), so re-folding neither doubles the gate-hold nor
+        // the refined edge. Pins replacement semantics against a future
+        // append-instead-of-replace regression a single harvest would not catch (`Stage`
+        // has no `PartialEq`, so compare the DAG's observable shape: id -> (needs,
+        // coverage)).
+        let crit_a = "criterion A: the alpha module is implemented";
+        let crit_b = "criterion B: the beta module is implemented";
+        let cfg = supersede_cfg();
+        let st = Store::open(":memory:").unwrap();
+
+        append_proposals(
+            &st,
+            &[
+                ("u-a", crit_a, criterion_stable_id(1, crit_a), Vec::new()),
+                ("u-b", crit_b, criterion_stable_id(2, crit_b), Vec::new()),
+                ("u-a", crit_a, criterion_stable_id(1, crit_a), vec!["u-b"]),
+            ],
+        );
+
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: vec![crit_a.to_string(), crit_b.to_string()],
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+
+        let shape = |m: &BTreeMap<String, Stage>| -> Vec<(String, Vec<String>, String)> {
+            m.iter()
+                .map(|(k, s)| (k.clone(), s.needs.clone(), s.coverage.clone()))
+                .collect()
+        };
+
+        let mut stages = seed_refine_dag(&deps.criteria);
+        let mut proposed: HashSet<String> = HashSet::new();
+        let integrated: HashSet<String> = HashSet::new();
+        let terminal: HashSet<String> = HashSet::new();
+        ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)
+            .unwrap();
+        let after_first = shape(&stages);
+
+        // A second harvest over the identical event stream, as every later wave runs.
+        ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)
+            .unwrap();
+        let after_second = shape(&stages);
+
+        assert_eq!(
+            after_second, after_first,
+            "re-folding the same re-emit must rebuild an identical DAG (replacement, not append)"
+        );
+        // Specifically, u-a's folded needs did not GROW on the second fold.
+        assert_eq!(
+            stages["u-a"].needs.iter().filter(|n| *n == "u-b").count(),
+            1,
+            "the refined needs edge must not double on a second harvest; got {:?}",
+            stages["u-a"].needs
+        );
+    }
+
+    #[test]
+    fn a_real_split_two_distinct_ids_both_survive_the_fold() {
+        // spec 31 crit 2 (split-preservation). The update-in-place fold (crit 1) keys on
+        // the EXACT unit id - `harvest_proposed` folds a re-emit only when
+        // `stages.contains_key(&u.id)` - and NEVER on the shared criterion. So two DISTINCT
+        // new ids the planner intentionally SPLITS across one criterion (each citing it
+        // verbatim, the PLAN_PROTOCOL shape) BOTH survive harvest: the first supersedes the
+        // criterion's baseline, and the sibling - a genuinely-new id - finds the baseline
+        // already removed and is simply ADDED. Neither is folded into the other, and the
+        // split is never collapsed to a single owner. Were the fold to key on shared
+        // coverage instead of id, the sibling would be absorbed into the first and one unit
+        // would own the criterion - the exact regression this pins.
+        //
+        // NEEDS crit 1: this guard is non-vacuous ONLY against the fold. On pre-spec-31
+        // code the split survives trivially - no fold exists, so every distinct id takes the
+        // add path unconditionally - and the test proves nothing about the update-in-place
+        // path. Once the same-id fold is in place, the guard has teeth: it proves the fold
+        // discriminates on the exact id, not the criterion. Driven through the REAL
+        // `harvest_proposed` over the store's event stream (the c1 fold scaffold:
+        // `seed_refine_dag` + `append_proposals` over `supersede_cfg`), the direct-harvest
+        // complement to the run-path `planner_refinement_split_is_still_harvested`, so it
+        // observes the two distinct-id stages on the DAG itself.
+        let criterion = "criterion A: the feature is implemented";
+        let cfg = supersede_cfg();
+        let st = Store::open(":memory:").unwrap();
+
+        // The planner SPLITS the one criterion into TWO sub-units with DISTINCT ids, each
+        // citing that SAME criterion verbatim and echoing its stable id - the real-split
+        // shape crit 2 protects (contrast the same-id RE-EMIT crit 1 folds).
+        let cid = criterion_stable_id(1, criterion);
+        append_proposals(
+            &st,
+            &[
+                ("split-part-1", criterion, cid.clone(), Vec::new()),
+                ("split-part-2", criterion, cid.clone(), Vec::new()),
+            ],
+        );
+
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: vec![criterion.to_string()],
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+
+        let mut stages = seed_refine_dag(&deps.criteria);
+        let mut proposed: HashSet<String> = HashSet::new();
+        let integrated: HashSet<String> = HashSet::new();
+        let terminal: HashSet<String> = HashSet::new();
+        ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)
+            .unwrap();
+
+        // BOTH distinct-id split units survive as their OWN stages - the fold keyed on id,
+        // so the sibling was ADDED, not folded into the first (which would collapse it).
+        for id in ["split-part-1", "split-part-2"] {
+            assert!(
+                stages.contains_key(id),
+                "the distinct-id split unit {id:?} must survive harvest as its own stage; stages: {:?}",
+                stages.keys().collect::<Vec<_>>()
+            );
+            assert_eq!(
+                stages[id].coverage, criterion,
+                "the split unit {id:?} must carry the shared criterion; got {:?}",
+                stages[id].coverage
+            );
+        }
+
+        // Neither split unit ABSORBED its sibling: a fold keyed on shared criterion would
+        // have written the sibling's id into the survivor's `needs`. The distinct-id add
+        // path never does - each unit's needs carry only the plan-critique gate-hold.
+        for (id, sibling) in [
+            ("split-part-1", "split-part-2"),
+            ("split-part-2", "split-part-1"),
+        ] {
+            assert!(
+                !stages[id].needs.iter().any(|n| n == sibling),
+                "{id:?} must not absorb its sibling {sibling:?} (a criterion-keyed fold would); needs: {:?}",
+                stages[id].needs
+            );
+        }
+
+        // The criterion's ONE baseline was superseded exactly once (by the first split
+        // unit); the sibling found none present and simply added - no second baseline, no
+        // duplicate. (`resolve_served_criterion` resolves against the run's CRITERIA, not
+        // the surviving baselines, so the sibling still resolves after the baseline is gone
+        // and is never mis-flagged as unmatched-and-new by coverage.)
+        assert!(
+            !stages.contains_key(&baseline_id(1, criterion)),
+            "the criterion's baseline must be superseded by the split, not left alongside it"
+        );
+
+        // The criterion is served by EXACTLY the two distinct split units - the split is
+        // preserved, never collapsed to one owner (which a criterion-keyed fold would do).
+        let serving: Vec<&str> = stages
+            .values()
+            .filter(|s| s.coverage == criterion)
+            .map(|s| s.name.as_str())
+            .collect();
+        assert_eq!(
+            serving.len(),
+            2,
+            "the criterion must be served by exactly the two split units; got {serving:?}"
+        );
+    }
+
+    #[test]
+    fn a_late_re_emit_never_mutates_a_started_or_terminal_unit() {
+        // spec 31 crit 3 (started-unit immutability). crit 1 loosens the blanket
+        // proposed-not-started skip so a PROPOSED, not-yet-started unit FOLDS a same-id
+        // re-emit. This unit PINS the OTHER half of that guard: a same-id re-emit arriving
+        // AFTER the unit has started/integrated/reached a terminal state is IGNORED - the
+        // stage's `needs` stay UNCHANGED - so a late refinement can never disturb work
+        // already in flight. The fold guard is `!integrated && !terminal`
+        // (conductor.rs:6260-6261); a STARTED unit is covered because `harvest_proposed`
+        // runs only AFTER a wave completes, and the wave `terminal.insert`s every stage it
+        // ran, so a started unit is always in `terminal` by the next harvest.
+        //
+        // The u-a re-emit here (an added `needs` edge on u-b) would fold onto a NOT-settled
+        // unit - the primary fold test proves exactly that. What makes this test load-
+        // bearing is that u-a is FIRST established as a genuine PROPOSED unit (so
+        // `proposed.contains(&u.id)` is TRUE) and THEN settled, so the ONLY thing that can
+        // block the fold is the integrated/terminal clause. It is driven through the REAL
+        // `harvest_proposed` and is RED against a fold that drops that clause (the late edge
+        // would fold onto the settled unit). The two rows pin BOTH clauses, so a mutant that
+        // drops only `!integrated` or only `!terminal` is still caught.
+        let crit_a = "criterion A: the alpha module is implemented";
+        let crit_b = "criterion B: the beta module is implemented";
+
+        for (label, settle_integrated, settle_terminal) in
+            [("integrated", true, false), ("terminal", false, true)]
+        {
+            let cfg = supersede_cfg();
+            let st = Store::open(":memory:").unwrap();
+
+            // Wave 1's proposals: u-a serves A, u-b serves B (both with no `needs` yet).
+            append_proposals(
+                &st,
+                &[
+                    ("u-a", crit_a, criterion_stable_id(1, crit_a), Vec::new()),
+                    ("u-b", crit_b, criterion_stable_id(2, crit_b), Vec::new()),
+                ],
+            );
+
+            let driver = Stub::new();
+            let deps = Deps {
+                store: &st,
+                driver: &driver,
+                gates: &ExecRunner,
+                repo: String::new(),
+                grounder: None,
+                graph: None,
+                criteria: vec![crit_a.to_string(), crit_b.to_string()],
+            };
+            let ctx = RunCtx::for_test(&cfg, &deps);
+
+            let mut stages = seed_refine_dag(&deps.criteria);
+            let mut proposed: HashSet<String> = HashSet::new();
+            let mut integrated: HashSet<String> = HashSet::new();
+            let mut terminal: HashSet<String> = HashSet::new();
+
+            // Wave 1: harvest the initial proposals. u-a enters the DAG as a GENUINE
+            // proposed unit (it went through the add path), carrying its gate-held needs.
+            ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)
+                .unwrap();
+            assert!(
+                proposed.contains("u-a"),
+                "u-a must be a genuine proposed unit so the guard's `proposed.contains` \
+                 clause is TRUE and only the integrated/terminal clause can block the fold"
+            );
+            // The settled unit's needs, captured BEFORE the late re-emit, must survive it.
+            let settled_needs = stages["u-a"].needs.clone();
+
+            // u-a now RUNS and SETTLES: the wave `terminal.insert`s every stage it ran, and
+            // an approved unit also lands in `integrated`. Mark u-a settled in the set under
+            // test (mirroring what the real run loop records between waves).
+            if settle_integrated {
+                integrated.insert("u-a".into());
+            }
+            if settle_terminal {
+                terminal.insert("u-a".into());
+            }
+
+            // The LATE refinement arrives: same id, an added `needs` edge on u-b - the exact
+            // fold the primary test proves lands on a NOT-settled unit.
+            append_proposals(
+                &st,
+                &[("u-a", crit_a, criterion_stable_id(1, crit_a), vec!["u-b"])],
+            );
+
+            // Wave 2: harvest again over the full stream (as every later wave does). The
+            // late re-emit names a SETTLED unit, so the fold guard skips it.
+            ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)
+                .unwrap();
+
+            // The settled unit's needs are UNCHANGED: the late refinement did not fold in.
+            assert_eq!(
+                stages["u-a"].needs, settled_needs,
+                "a re-emit naming a {label} unit must be IGNORED; its needs must be unchanged"
+            );
+            assert!(
+                !stages["u-a"].needs.iter().any(|n| n == "u-b"),
+                "the late refinement's edge (u-b) must NOT fold onto a {label} unit; got {:?}",
+                stages["u-a"].needs
+            );
+        }
+    }
+
+    /// Whether the run stream carries an `unmatched-proposal` signal for `unit` -
+    /// recorded on the EXISTING `DecisionMade` surface (spec 18 §3.3, no new event
+    /// type). Lets the fixtures assert the signal fires for a genuinely-new proposal
+    /// and STAYS SILENT for one that matched a criterion.
+    fn has_unmatched_signal(st: &Store, unit: &str) -> bool {
+        st.read_stream(STREAM, 0, Direction::Forward)
+            .unwrap()
+            .iter()
+            .filter(|e| e.type_ == contextgraph::TYPE_DECISION_MADE)
+            .any(|e| {
+                let body = String::from_utf8_lossy(&e.data);
+                body.contains("unmatched-proposal") && body.contains(unit)
+            })
+    }
+
+    #[test]
+    fn a_verbatim_copy_still_supersedes_its_baseline() {
+        // Spec 18 §3.3 fixture (a): a VERBATIM copy still supersedes its baseline, even
+        // with NO echoed id - the whitespace-normalized prose fallback keeps a
+        // hand-authored proposal (or an older planner) working. One unit per criterion,
+        // and NO unmatched-proposal signal (it matched a criterion, so it is not new).
+        let crit_a = "criterion A: the metrics module is implemented";
+        let crit_b = "criterion B: the stats endpoint is implemented";
+        let cfg = supersede_cfg();
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            emits: vec![(
+                TYPE_UNIT_PROPOSED.to_string(),
+                json!({
+                    "id": "verbatim-a",
+                    "agent": "worker",
+                    "criterion": crit_a, // copied verbatim, criterion_id omitted
+                    "gates": ["ok"],
+                }),
+            )],
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: vec![crit_a.to_string(), crit_b.to_string()],
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        assert_eq!(
+            rs.units["verbatim-a"].status,
+            ledger::Status::Integrated,
+            "the verbatim planner unit must run and integrate"
+        );
+        assert_eq!(rs.units["verbatim-a"].spec_criterion, crit_a);
+        assert!(
+            !rs.units.contains_key(&baseline_id(1, crit_a)),
+            "criterion A's baseline must be superseded by the verbatim copy"
+        );
+        assert_eq!(
+            rs.units[&baseline_id(2, crit_b)].status,
+            ledger::Status::Integrated,
+            "criterion B's baseline survives (no unit covers B)"
+        );
+        // Exactly one unit per criterion - no duplication.
+        for c in [crit_a, crit_b] {
+            let n = rs.units.values().filter(|u| u.spec_criterion == c).count();
+            assert_eq!(n, 1, "criterion {c:?} must be served by exactly one unit");
+        }
+        assert!(
+            !has_unmatched_signal(&st, "verbatim-a"),
+            "a verbatim copy matches its criterion, so it must NOT be flagged unmatched"
+        );
+    }
+
+    #[test]
+    fn a_paraphrased_proposal_matches_its_baseline_by_id_not_prose() {
+        // Spec 18 §3.3 fixture (b): the highest-risk case. A planner that PARAPHRASES a
+        // criterion it was told to copy verbatim, but ECHOES the stable id, now matches
+        // its baseline by id instead of duplicating. The paraphrase is deliberately
+        // prose-DISJOINT from every criterion, so the ONLY thing that can match it is
+        // the echoed id - proving the match is on the id, not re-normalized prose.
+        let crit_a = "criterion A: the metrics module is implemented";
+        let crit_b = "criterion B: the stats endpoint is implemented";
+        let paraphrase = "wire up end-to-end coverage of the reporting subsystem";
+        // Sanity: the paraphrase does NOT prose-match either criterion, so a duplicate
+        // is impossible EXCEPT via the id path this fixture exercises.
+        assert_ne!(normalize_ws(paraphrase), normalize_ws(crit_a));
+        assert_ne!(normalize_ws(paraphrase), normalize_ws(crit_b));
+
+        let cfg = supersede_cfg();
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            emits: vec![(
+                TYPE_UNIT_PROPOSED.to_string(),
+                json!({
+                    "id": "paraphrase-a",
+                    "agent": "worker",
+                    "criterion": paraphrase,
+                    // The stable id the conductor shows the planner for criterion A.
+                    "criterion_id": criterion_stable_id(1, crit_a),
+                    "gates": ["ok"],
+                }),
+            )],
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: vec![crit_a.to_string(), crit_b.to_string()],
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        // The paraphrased unit ran and superseded criterion A's baseline (no duplicate).
+        assert_eq!(
+            rs.units["paraphrase-a"].status,
+            ledger::Status::Integrated,
+            "the paraphrased planner unit must run and integrate"
+        );
+        assert!(
+            !rs.units.contains_key(&baseline_id(1, crit_a)),
+            "criterion A's baseline must be superseded by id, not run as a duplicate"
+        );
+        // The superseding unit carries the EXACT criterion text, not the paraphrase, so
+        // it grounds on and records the real criterion and the coverage gate stays exact.
+        assert_eq!(
+            rs.units["paraphrase-a"].spec_criterion, crit_a,
+            "a matched proposal inherits the exact criterion text as its coverage"
+        );
+        // Criterion B's baseline is untouched.
+        assert_eq!(
+            rs.units[&baseline_id(2, crit_b)].status,
+            ledger::Status::Integrated
+        );
+        // Exactly one unit per criterion - the whole point: no duplication.
+        for c in [crit_a, crit_b] {
+            let n = rs.units.values().filter(|u| u.spec_criterion == c).count();
+            assert_eq!(
+                n, 1,
+                "criterion {c:?} must be served by exactly one unit, got {n}"
+            );
+        }
+        assert!(
+            !has_unmatched_signal(&st, "paraphrase-a"),
+            "an id-matched paraphrase serves a real criterion, so it is NOT unmatched"
+        );
+    }
+
+    #[test]
+    fn a_bracketed_id_echo_with_a_paraphrase_still_supersedes_exactly_once() {
+        // Regression for the bracketed-id-echo defect (spec 18 §3.3, adjudicator
+        // remedy): the criteria are DISPLAYED to the planner as `- [<id>] <text>`
+        // (`plan_protocol`/PLAN_PROTOCOL), so a planner that echoes the id AS SHOWN
+        // copies the display brackets and emits `criterion_id = "[c1-<hex>]"`, while the
+        // baseline stores the UN-bracketed `c1-<hex>`. The matcher MUST tolerate that
+        // bracketed form (strip surrounding brackets before comparing) or a compliant
+        // echo paired with a PARAPHRASE re-opens the exact duplicate this unit exists to
+        // kill: the id-match fails on the brackets AND the prose-disjoint paraphrase
+        // fails the whitespace-normalized fallback, so the baseline and the planner unit
+        // BOTH run. This fixture drives that exact input - bracketed id + prose-disjoint
+        // paraphrase - and asserts the baseline is superseded EXACTLY once, the matched
+        // unit inherits the real criterion text, and NO unmatched-proposal signal fires.
+        let crit_a = "criterion A: the metrics module is implemented";
+        let crit_b = "criterion B: the stats endpoint is implemented";
+        let paraphrase = "wire up end-to-end coverage of the reporting subsystem";
+        // The paraphrase is prose-disjoint from every criterion, so the ONLY path to a
+        // supersede is the bracketed id resolving AFTER the strip - never the prose
+        // fallback. Without the strip this proposal is treated genuinely-new (duplicate).
+        assert_ne!(normalize_ws(paraphrase), normalize_ws(crit_a));
+        assert_ne!(normalize_ws(paraphrase), normalize_ws(crit_b));
+        // The id EXACTLY as the planner reads it in the prompt line `- [<id>] <text>`:
+        // the display brackets included. This is what "copy the bracketed id" produces.
+        let bracketed_id = format!("[{}]", criterion_stable_id(1, crit_a));
+
+        let cfg = supersede_cfg();
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            emits: vec![(
+                TYPE_UNIT_PROPOSED.to_string(),
+                json!({
+                    "id": "bracketed-a",
+                    "agent": "worker",
+                    "criterion": paraphrase,
+                    "criterion_id": bracketed_id,
+                    "gates": ["ok"],
+                }),
+            )],
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: vec![crit_a.to_string(), crit_b.to_string()],
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        assert_eq!(
+            rs.units["bracketed-a"].status,
+            ledger::Status::Integrated,
+            "the bracketed-id planner unit must run and integrate"
+        );
+        // Superseded by id AFTER the bracket strip - not run as a duplicate.
+        assert!(
+            !rs.units.contains_key(&baseline_id(1, crit_a)),
+            "criterion A's baseline must be superseded once by the bracketed id, not run as a duplicate"
+        );
+        // The matched unit inherits the EXACT criterion text (not the paraphrase).
+        assert_eq!(
+            rs.units["bracketed-a"].spec_criterion, crit_a,
+            "a bracketed-id match inherits the exact criterion text as its coverage"
+        );
+        // Criterion B's baseline is untouched.
+        assert_eq!(
+            rs.units[&baseline_id(2, crit_b)].status,
+            ledger::Status::Integrated
+        );
+        // Exactly one unit per criterion - the duplicate this unit exists to kill is gone.
+        for c in [crit_a, crit_b] {
+            let n = rs.units.values().filter(|u| u.spec_criterion == c).count();
+            assert_eq!(
+                n, 1,
+                "criterion {c:?} must be served by exactly one unit, got {n}"
+            );
+        }
+        // It matched a real criterion, so NO unmatched-proposal signal may fire.
+        assert!(
+            !has_unmatched_signal(&st, "bracketed-a"),
+            "a bracketed-id echo that matches a criterion must NOT be flagged unmatched"
+        );
+    }
+
+    #[test]
+    fn a_stale_non_matching_id_falls_back_to_the_verbatim_prose_match() {
+        // Regression for the stale-id-prose-rescue branch (spec 18 §3.3, closes
+        // sdet-u18-5-stale-id-prose-rescue-untested): a proposal that echoes a NON-EMPTY
+        // but non-matching `criterion_id` (a stale id from an older run, or garbage that
+        // is not even bracket-recoverable) yet copies its criterion VERBATIM must still
+        // supersede its baseline via the whitespace-normalized prose FALLBACK - the id
+        // resolver's graceful degradation. This exercises the `.or_else` prose branch
+        // that the verbatim fixture (empty id, short-circuits before it) and the
+        // paraphrase/bracketed fixtures (matching id) never reach: a regression that
+        // dropped the fallback, or forced a non-matching id to genuinely-new, would spawn
+        // a duplicate baseline and no other fixture would notice.
+        let crit_a = "criterion A: the metrics module is implemented";
+        let crit_b = "criterion B: the stats endpoint is implemented";
+        // A stale/garbage id that matches NO criterion even after a bracket strip, so the
+        // ONLY thing that can supersede is the verbatim prose fallback.
+        let stale_id = "c9-bogusdeadbeef";
+        assert_ne!(stale_id, criterion_stable_id(1, crit_a));
+        assert_ne!(stale_id, criterion_stable_id(2, crit_b));
+
+        let cfg = supersede_cfg();
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            emits: vec![(
+                TYPE_UNIT_PROPOSED.to_string(),
+                json!({
+                    "id": "stale-id-a",
+                    "agent": "worker",
+                    "criterion": crit_a, // copied VERBATIM
+                    "criterion_id": stale_id,
+                    "gates": ["ok"],
+                }),
+            )],
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: vec![crit_a.to_string(), crit_b.to_string()],
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        assert_eq!(
+            rs.units["stale-id-a"].status,
+            ledger::Status::Integrated,
+            "the stale-id verbatim planner unit must run and integrate"
+        );
+        // Superseded via the prose fallback despite the non-matching id.
+        assert!(
+            !rs.units.contains_key(&baseline_id(1, crit_a)),
+            "criterion A's baseline must be superseded via the verbatim prose fallback, not duplicated"
+        );
+        assert_eq!(rs.units["stale-id-a"].spec_criterion, crit_a);
+        assert_eq!(
+            rs.units[&baseline_id(2, crit_b)].status,
+            ledger::Status::Integrated
+        );
+        for c in [crit_a, crit_b] {
+            let n = rs.units.values().filter(|u| u.spec_criterion == c).count();
+            assert_eq!(
+                n, 1,
+                "criterion {c:?} must be served by exactly one unit, got {n}"
+            );
+        }
+        // A prose-rescued proposal serves a real criterion, so it is NOT unmatched.
+        assert!(
+            !has_unmatched_signal(&st, "stale-id-a"),
+            "a verbatim proposal that prose-matches a criterion must NOT be flagged unmatched"
+        );
+    }
+
+    #[test]
+    fn a_genuinely_new_proposal_runs_and_records_an_unmatched_signal() {
+        // Spec 18 §3.3 fixture (c): a proposal that maps to NO baseline id (a real,
+        // intentional new sub-unit) STILL runs - the existing behavior for real splits -
+        // but is made LEGIBLE by a visible `unmatched-proposal` signal on the EXISTING
+        // decision surface, so the extra unit is not silent. The criterion's own
+        // baseline still covers the criterion, so the run is coverage-complete.
+        let crit_a = "criterion A: the metrics module is implemented";
+        let cfg = supersede_cfg();
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            emits: vec![(
+                TYPE_UNIT_PROPOSED.to_string(),
+                json!({
+                    "id": "new-subunit",
+                    "agent": "worker",
+                    // Non-empty coverage (so it is NOT scope-creep), but it maps to no
+                    // acceptance criterion and echoes no id.
+                    "criterion": "an entirely separate concern the spec never lists",
+                    "gates": ["ok"],
+                }),
+            )],
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: vec![crit_a.to_string()],
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        // The genuinely-new unit ran and integrated (it is not refused).
+        assert_eq!(
+            rs.units["new-subunit"].status,
+            ledger::Status::Integrated,
+            "a genuinely-new sub-unit still runs"
+        );
+        // Criterion A's own baseline still ran and covered the criterion.
+        assert_eq!(
+            rs.units[&baseline_id(1, crit_a)].status,
+            ledger::Status::Integrated,
+            "the criterion's baseline still covers it"
+        );
+        // The visible unmatched-proposal signal was recorded on the decision surface.
+        assert!(
+            has_unmatched_signal(&st, "new-subunit"),
+            "a proposal mapping to no baseline must record a visible unmatched-proposal signal"
+        );
+        // And it was NOT recorded as scope creep (scope creep is a REFUSAL; this runs).
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(
+            !events.iter().any(|e| e.type_ == TYPE_SCOPE_CREEP
+                && String::from_utf8_lossy(&e.data).contains("new-subunit")),
+            "a genuinely-new sub-unit with real coverage must not be refused as scope creep"
         );
     }
 
@@ -8360,7 +10793,7 @@ mod tests {
     fn feeds_graph_decisions_into_the_prompt() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("modifier.rs"), "fn modifier() {}\n").unwrap();
-        let graph = crate::contextgraph::sqlite::Projector::open(":memory:").unwrap();
+        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
         let mut e = Event::new(
             contextgraph::TYPE_DECISION_MADE,
             serde_json::to_vec(&json!({
@@ -8414,7 +10847,7 @@ mod tests {
         // keeps the full history - only the prompt slice narrows.
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("modifier.rs"), "fn modifier() {}\n").unwrap();
-        let graph = crate::contextgraph::sqlite::Projector::open(":memory:").unwrap();
+        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
 
         // K governing decisions, oldest (d0) first, each a chunky verdict; the event
         // position increases with i, so recency = i (newest = d{K-1}).
@@ -8503,7 +10936,7 @@ mod tests {
     // applied in order so each event's position increases (older first), then return
     // the rendered capped-decisions section for `seed`.
     fn render_capped_decisions(decisions: &[(&str, String, &str)], seed: &[String]) -> String {
-        let graph = crate::contextgraph::sqlite::Projector::open(":memory:").unwrap();
+        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
         for (i, (id, summary, supersedes)) in decisions.iter().enumerate() {
             let mut payload = json!({
                 "id": id,
@@ -8556,6 +10989,62 @@ mod tests {
             ia > ib,
             "the superseded decision (d_a) must rank below the current d_b, not inherit its \
              superseder's recency; output was:\n{out}"
+        );
+    }
+
+    #[test]
+    fn grounding_still_surfaces_a_prior_run_decision_that_peers_labels_historical() {
+        // spec 21, unit 3 (d21-peers-label-preserves-grounding): `rigger peers` labels a
+        // superseded run's decision HISTORICAL, but grounding MUST still surface it - the
+        // cross-run grounding default is PRESERVED (the load-bearing decision is never
+        // scoped away; provenance and the label are what change, not what grounds). This
+        // regression pins BOTH halves over ONE decision: (a) `graph_context`'s decisions
+        // section still renders the prior-run decision, and (b) the SAME c1 run attribution
+        // labels it historical because it is not the active run.
+        let seed = vec!["modifier.rs".to_string()];
+
+        let decision = Event::new(
+            contextgraph::TYPE_DECISION_MADE,
+            serde_json::to_vec(&json!({
+                "id": "d_prior",
+                "summary": "a verdict from the first run",
+                "governs": seed,
+            }))
+            .unwrap(),
+        );
+        let run_started = |run: &str| {
+            Event::new(
+                crate::run::TYPE_RUN_STARTED,
+                serde_json::to_vec(&json!({ "run": run })).unwrap(),
+            )
+        };
+
+        // (a) Grounding: the context graph spans runs by design (it has no run column), so
+        // `graph_context`'s decisions section surfaces the first run's decision. The graph
+        // folds only provenance nodes - the run boundaries live in the event stream, not
+        // the graph - so this path is UNCHANGED by the peers labels.
+        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+        let mut node = decision.clone();
+        node.position = 1;
+        graph.apply(&node).unwrap();
+        let g = graph.subgraph(&seed, 2).unwrap();
+        let mut rendered = String::new();
+        write_capped_decisions(&mut rendered, &g, &seed);
+        assert!(
+            rendered.contains("d_prior"),
+            "grounding must STILL surface the prior-run decision (the cross-run default is \
+             preserved); rendered was:\n{rendered}"
+        );
+
+        // (b) The SAME decision is HISTORICAL under the one c1 attribution: it falls in run
+        // r1's [RunStarted, next) window while r2 is the active run.
+        let events = vec![run_started("r1"), decision, run_started("r2")];
+        let attribution = crate::run::run_attribution(&events);
+        let active = crate::run::current_run_id(&events);
+        assert_eq!(active.as_deref(), Some("r2"), "r2 is the active run");
+        assert!(
+            !attribution[&1].is_live(active.as_deref()),
+            "the prior-run decision (index 1, run r1) must be HISTORICAL, not live"
         );
     }
 
@@ -8624,12 +11113,82 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_kept_decision_restores_the_dropped_dependency_it_supersedes() {
+        // spec 26 criterion 2 (dependency-restore): when a KEPT entry references another
+        // item of its kind through a graph edge in the SAME `subgraph` result - here a
+        // decision that SUPERSEDES an older one - and the byte/count cap would have dropped
+        // that referenced item, it is RESTORED into the slice so the kept entry carries no
+        // dangling reference (recall stays a SAFE SUPERSET: restore only ADDS). We build
+        // exactly N current filler decisions plus one NEWEST decision that supersedes an
+        // OLD baseline. The supersession invalidates the baseline's GOVERNS edge, so it
+        // dates to position 0 and ranks LAST - below even the oldest filler - and the
+        // verbatim-N cap drops it. The superseder is newest, so it is kept, and its
+        // SUPERSEDES edge must pull the baseline back in. This test OWNS the restore pass;
+        // it does NOT own the dedup pass (criterion 1) - the summaries here are all
+        // distinct so dedup never fires.
+        let seed = vec!["modifier.rs".to_string()];
+        let mut decisions: Vec<(String, String, &str)> = vec![(
+            "d_dep".to_string(),
+            "the depended-on baseline decision".to_string(),
+            "",
+        )];
+        // N current fillers with DISTINCT summaries (no dedup collapse), created AFTER the
+        // baseline so each outranks it on recency; the newest superseder is created LAST.
+        for i in 0..DECISIONS_VERBATIM_N {
+            decisions.push((
+                format!("f{i:03}"),
+                format!("current filler verdict {i}"),
+                "",
+            ));
+        }
+        decisions.push((
+            "d_super".to_string(),
+            "the newest verdict, supersedes d_dep".to_string(),
+            "d_dep",
+        ));
+        let borrowed: Vec<(&str, String, &str)> = decisions
+            .iter()
+            .map(|(id, s, sup)| (id.as_str(), s.clone(), *sup))
+            .collect();
+        let out = render_capped_decisions(&borrowed, &seed);
+
+        // The superseder is kept (it is the newest decision).
+        assert!(
+            out.contains("- d_super:"),
+            "the newest (superseding) decision must be kept; output was:\n{out}"
+        );
+        // The oldest filler is the (N+1)-th ranked current decision, so the verbatim-N cap
+        // DROPS it - proving the cap bound and that there was no room, on rank alone, for
+        // the even-lower-ranked baseline.
+        assert!(
+            !out.contains("- f000:"),
+            "the oldest filler must be elided by the N cap (proving the cap bound); \
+             output was:\n{out}"
+        );
+        // ...yet the baseline d_dep, which ranks BELOW that elided filler, IS present -
+        // only structural dependency-restore explains it: the kept d_super references it,
+        // so it is restored to keep the kept entry fact-complete (no dangling reference).
+        assert!(
+            out.contains("- d_dep:"),
+            "the dependency the kept superseder references must be RESTORED even though the \
+             cap dropped it (no dangling reference); output was:\n{out}"
+        );
+        // Restore only ADDS and is deterministic: an identical input yields a byte-identical
+        // slice across runs.
+        let out2 = render_capped_decisions(&borrowed, &seed);
+        assert_eq!(
+            out, out2,
+            "the restored slice must be byte-identical across runs (restore is deterministic)"
+        );
+    }
+
     // Build a findings subgraph from a list of (id, by, summary) tuples, applied in
     // order so each event's position increases (older first), then return the rendered
     // capped-findings section for `seed`. Mirrors `render_capped_decisions` for the
     // findings half of Gap 17.
     fn render_capped_findings(findings: &[(&str, &str, String)], seed: &[String]) -> String {
-        let graph = crate::contextgraph::sqlite::Projector::open(":memory:").unwrap();
+        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
         for (i, (id, by, summary)) in findings.iter().enumerate() {
             let mut e = Event::new(
                 contextgraph::TYPE_REVIEW_FINDING,
@@ -8758,12 +11317,118 @@ mod tests {
         );
     }
 
+    #[test]
+    fn grounding_omits_a_resolved_finding_and_keeps_the_open_one() {
+        // Spec 25, criterion 4 (the grounding-slice observable effect): for a unit whose
+        // blast-radius seed carries BOTH an open and a resolved finding, the grounding
+        // prompt's findings section - rendered end to end through the SAME production path
+        // `graph_context` uses (`subgraph(seed, 2)` filtered on `valid_to IS NULL`, then
+        // `write_capped_findings`) - contains the OPEN finding and OMITS the resolved one.
+        // The disposition here is a DISCARD, criterion 1's simplest resolved case: the
+        // adjudicator's recorded `SpawnResult` names the finding in its `discarded` array,
+        // and folding that result sets `valid_to` on the finding's RAISED/ABOUT edges so the
+        // live subgraph filter stops returning it. This criterion OWNS the observable render
+        // effect (not the fold - criterion 1 - nor run-scoping - criterion 3), and it needs
+        // NO production change: grounding observes the invalidation for free.
+        const OPEN_MARKER: &str = "OPEN_FINDING_MARKER_slice";
+        const RESOLVED_MARKER: &str = "RESOLVED_FINDING_MARKER_slice";
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("slice.rs"), "fn slice() {}\n").unwrap();
+
+        // The unit's blast-radius file both findings are ABOUT; the grounder seeds it from
+        // the stage's `coverage` query, exactly as a real unit grounds its own files.
+        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+        let seed = vec!["slice.rs".to_string()];
+
+        // Two findings ABOUT slice.rs in the production ReviewFinding shape (id/by/summary/
+        // about). High, increasing positions keep them above the run's own store events and
+        // preserve fold order: both findings exist as live edges before the disposition folds.
+        for (pos, id, by, marker) in [
+            (997u64, "f-open", "lens:sdet", OPEN_MARKER),
+            (998u64, "f-resolved", "lens:tech", RESOLVED_MARKER),
+        ] {
+            let mut e = Event::new(
+                contextgraph::TYPE_REVIEW_FINDING,
+                serde_json::to_vec(&json!({
+                    "id": id, "by": by, "summary": marker, "about": seed,
+                }))
+                .unwrap(),
+            );
+            e.position = pos;
+            graph.apply(&e).unwrap();
+        }
+
+        // Non-vacuity guard: BEFORE the disposition, the SAME render path returns BOTH
+        // findings - so the resolved one is a genuinely renderable finding whose later
+        // absence is the disposition's doing, not a mis-seeded ABOUT edge that never rendered.
+        let before_g = graph.subgraph(&seed, 2).unwrap();
+        let mut before = String::new();
+        write_capped_findings(&mut before, &before_g, &seed);
+        assert!(
+            before.contains(OPEN_MARKER) && before.contains(RESOLVED_MARKER),
+            "both findings must render before the disposition; section was:\n{before}"
+        );
+
+        // Resolve f-resolved: the adjudicator's recorded result DISCARDS it (criterion 1's
+        // fold), which sets `valid_to` on its edges. f-open is named in neither list, so it
+        // stays open.
+        let verdict = r#"{"verdict":"reject","upheld":[],"discarded":["f-resolved"]}"#;
+        let mut disposition = crate::spawn::SpawnResult::ok("u1/adjudicator#0", verdict)
+            .to_event()
+            .unwrap();
+        disposition.position = 999;
+        graph.apply(&disposition).unwrap();
+
+        // Drive the FULL conductor grounding: a one-stage run whose agent prompt is built by
+        // the very `graph_context` production uses. The Stub captures that prompt verbatim.
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent("a"));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "a".into(),
+                coverage: "slice".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let grep = crate::grounder::Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: Some(&graph),
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+        let prompt = driver.last_prompt.lock().unwrap().clone();
+
+        // End to end: the open finding is grounded into the prompt; the resolved (discarded)
+        // one is omitted - the live-findings-only grounding spec 25 delivers.
+        assert!(
+            prompt.contains(OPEN_MARKER),
+            "the OPEN finding must be grounded into the prompt; prompt was:\n{prompt}"
+        );
+        assert!(
+            !prompt.contains(RESOLVED_MARKER),
+            "the RESOLVED (discarded) finding must be OMITTED from the grounded prompt; \
+             prompt was:\n{prompt}"
+        );
+    }
+
     // Build a lessons subgraph from a list of (id, summary) tuples, applied in order so
     // each event's position increases (older first), then return the rendered
     // capped-lessons section for `seed`. Mirrors `render_capped_findings` for the lessons
     // half of Gap 17 (lessons carry no `by`, so their line is the plain `- id: summary`).
     fn render_capped_lessons(lessons: &[(&str, String)], seed: &[String]) -> String {
-        let graph = crate::contextgraph::sqlite::Projector::open(":memory:").unwrap();
+        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
         for (i, (id, summary)) in lessons.iter().enumerate() {
             let mut e = Event::new(
                 contextgraph::TYPE_LESSON_LEARNED,
@@ -8781,6 +11446,1083 @@ mod tests {
         let mut b = String::new();
         write_capped_lessons(&mut b, &g, seed);
         b
+    }
+
+    #[test]
+    fn the_injected_slice_is_deduplicated_by_normalized_text() {
+        // spec 26 criterion 1: at prompt assembly the injected context slice is
+        // normalize-and-deduped so two entries whose text differs ONLY by whitespace do
+        // not EACH consume the byte budget. Two lessons with DISTINCT ids (as the same
+        // lesson recorded on two runs would have - the ~21% cross-run duplication this
+        // spec targets) whose summaries collapse to the same string under `normalize_ws`
+        // must render as a SINGLE entry, and WHICH one is kept must be deterministic
+        // across runs. The store keeps both; only the rendered slice narrows.
+        let seed = vec!["conductor.rs".to_string()];
+        // Same content, whitespace-only difference: newlines, indentation, and runs of
+        // spaces that `normalize_ws` folds to single spaces.
+        let build = || {
+            vec![
+                (
+                    "l_older",
+                    "the loop must never clobber a peer reindex".to_string(),
+                ),
+                (
+                    "l_newer",
+                    "the   loop must never\n   clobber a peer   reindex".to_string(),
+                ),
+            ]
+        };
+        let borrowed = build();
+        let out = render_capped_lessons(&borrowed, &seed);
+
+        // Exactly ONE of the two whitespace-variant lessons survives; the duplicate
+        // collapsed rather than each consuming a slot.
+        let rendered_older = out.contains("- l_older:");
+        let rendered_newer = out.contains("- l_newer:");
+        assert!(
+            rendered_older ^ rendered_newer,
+            "exactly one of the two whitespace-variant lessons must render (dedup collapses \
+             the duplicate); output was:\n{out}"
+        );
+        // The kept entry is the deterministic FIRST in the ranked slice: lessons rank
+        // newest-first (equal blast-radius relevance here), so l_newer is encountered
+        // first and its provenance is retained; l_older is dropped as the byte-identical
+        // remainder.
+        assert!(
+            rendered_newer && !rendered_older,
+            "dedup must keep the first occurrence in the deterministic ranked order \
+             (l_newer, the newer of the pair); output was:\n{out}"
+        );
+        // The dropped entry is removed AS A DUPLICATE, not trimmed under the byte/N cap,
+        // so it is NOT counted in the elision note (with one surviving entry no cap binds).
+        assert!(
+            !out.contains("lesson(s) elided"),
+            "a deduped duplicate must not be reported as elided-under-budget; output was:\n{out}"
+        );
+        // Deterministic across runs: an identical input yields a byte-identical slice.
+        let borrowed2 = build();
+        let out2 = render_capped_lessons(&borrowed2, &seed);
+        assert_eq!(
+            out, out2,
+            "the deduped slice must be byte-identical across runs (the kept entry is stable)"
+        );
+    }
+
+    #[test]
+    fn dedup_and_restore_are_render_only_no_event_no_projection_mutation() {
+        // spec 26 criterion 3 (RENDER-ONLY): exercising the dedup pass (criterion 1) and the
+        // dependency-restore pass (criterion 2) CHANGES the assembled prompt string but emits
+        // NO event and leaves the graph/store projection byte-identical. The projection is the
+        // source of truth (section 2.4: recall is a SAFE SUPERSET applied at RENDER); dedup and
+        // restore narrow / widen the rendered SLICE only, never the store or the graph. This
+        // criterion OWNS the no-mutation guarantee; it does NOT own the dedup or restore
+        // behavior (criteria 1-2 pin those with their own dedicated tests) - here they are
+        // merely EXERCISED so "projection unchanged" is a live fact, not a vacuous one over an
+        // untouched slice.
+        //
+        // We drive the REAL production prompt-assembly seam `graph_context`, not a helper, for
+        // maximum fidelity: it holds BOTH the live `Projector` (`deps.graph`, mutable through
+        // interior mutability - `apply(&self)`) AND the run's event `Store` (`deps.store`,
+        // appendable through `&self`). So a wrong implementation that PERSISTED the dedup /
+        // restore decision back into the store (an emitted "consolidation" event) or folded a
+        // synthetic edge into the projection would have a seam to do it through - and the two
+        // no-mutation assertions below would redden. The current render-only code cannot: it
+        // reads `&Graph` and appends to a local `String`.
+        let seed = vec!["conductor.rs".to_string()];
+        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+
+        // Apply one folded event at the next global position. `apply` and the later
+        // `subgraph` calls each take `&self` (shared), so they coexist without conflict.
+        let mut pos = 0u64;
+        let mut apply = |type_: &str, payload: serde_json::Value| {
+            pos += 1;
+            let mut e = Event::new(type_, serde_json::to_vec(&payload).unwrap());
+            e.position = pos;
+            graph.apply(&e).unwrap();
+        };
+
+        // RESTORE scenario (decisions section): a baseline `d_dep` the N-cap drops on rank,
+        // pulled back only because the newest kept decision `d_super` SUPERSEDES it (mirrors
+        // criterion 2's construction). The supersession invalidates d_dep's GOVERNS edge, so it
+        // dates to position 0 and ranks LAST - below the oldest current filler the N-cap already
+        // trims - hence only structural restore explains its presence.
+        apply(
+            contextgraph::TYPE_DECISION_MADE,
+            json!({ "id": "d_dep", "summary": "the depended-on baseline decision", "governs": seed }),
+        );
+        for i in 0..DECISIONS_VERBATIM_N {
+            apply(
+                contextgraph::TYPE_DECISION_MADE,
+                json!({ "id": format!("f{i:03}"), "summary": format!("current filler verdict {i}"), "governs": seed }),
+            );
+        }
+        apply(
+            contextgraph::TYPE_DECISION_MADE,
+            json!({ "id": "d_super", "summary": "the newest verdict, supersedes d_dep", "governs": seed, "supersedes": "d_dep" }),
+        );
+
+        // DEDUP scenario (lessons section): two lessons with DISTINCT ids whose summaries are
+        // identical after whitespace normalization (the ~21% cross-run duplication this spec
+        // targets). The newer `l_newer` is encountered first in the ranked slice and kept; the
+        // byte-identical `l_older` collapses (mirrors criterion 1's construction).
+        apply(
+            contextgraph::TYPE_LESSON_LEARNED,
+            json!({ "id": "l_older", "summary": "the loop must never clobber a peer reindex", "about": seed }),
+        );
+        apply(
+            contextgraph::TYPE_LESSON_LEARNED,
+            json!({ "id": "l_newer", "summary": "the   loop must never\n   clobber a peer   reindex", "about": seed }),
+        );
+
+        // The source-of-truth projection, BEFORE prompt assembly: a canonical Debug snapshot of
+        // the whole seed subgraph (every node/edge this render reads). Any event folded, node
+        // dropped, or edge (in)validated during render would change this string.
+        let before = format!("{:#?}", graph.subgraph(&seed, 2).unwrap());
+
+        // The event store the assembly path could append to - empty now; it must STAY empty
+        // (render emits no event). `RunCtx::for_test` seeds its breaker from this same store.
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: Some(&graph),
+            criteria: Vec::new(),
+        };
+        let cfg = Config::default();
+        let ctx = RunCtx::for_test(&cfg, &deps);
+
+        // Assemble the prompt context exactly as production does (decisions + lessons +
+        // findings through the one shared budgeted writer), exercising BOTH passes in one call.
+        let out = ctx.graph_context(&seed);
+
+        // The prompt string reflects DEDUP: exactly one of the whitespace-variant lessons
+        // renders (the duplicate collapsed rather than each consuming a slot).
+        let rendered_newer = out.contains("- l_newer:");
+        let rendered_older = out.contains("- l_older:");
+        assert!(
+            rendered_newer ^ rendered_older,
+            "dedup must collapse the whitespace-variant lesson pair to a single rendered entry; \
+             assembled context was:\n{out}"
+        );
+        assert!(
+            rendered_newer && !rendered_older,
+            "dedup keeps the first occurrence in the ranked order (l_newer); context was:\n{out}"
+        );
+        // The prompt string reflects RESTORE: the kept superseder d_super is present, the oldest
+        // filler the N-cap trimmed (f000) is not, yet the even-lower-ranked baseline d_dep that
+        // d_super references IS restored - so the assembled string genuinely CHANGED under both
+        // passes, not merely a naive one-line-per-node dump.
+        assert!(
+            out.contains("- d_super:"),
+            "the newest (superseding) decision must be kept; context was:\n{out}"
+        );
+        assert!(
+            !out.contains("- f000:"),
+            "the oldest filler must be elided by the N cap (proving the cap bound); \
+             context was:\n{out}"
+        );
+        assert!(
+            out.contains("- d_dep:"),
+            "dependency-restore must pull back the baseline the cap dropped (no dangling \
+             reference); context was:\n{out}"
+        );
+
+        // RENDER-ONLY, clause 1 - emits NO event: assembling the prompt appended nothing to the
+        // run's event stream.
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(
+            events.is_empty(),
+            "prompt assembly (dedup + restore) must emit NO event; store held {} event(s)",
+            events.len()
+        );
+        // RENDER-ONLY, clause 2 - the projection is byte-identical: re-deriving the seed
+        // subgraph after assembly yields the exact same nodes/edges. The store keeps the full
+        // history and the graph is untouched; only the rendered slice narrowed (dedup) and
+        // widened (restore).
+        let after = format!("{:#?}", graph.subgraph(&seed, 2).unwrap());
+        assert_eq!(
+            before, after,
+            "dedup + restore are render-only: the graph/store projection must be byte-identical \
+             before and after prompt assembly"
+        );
+    }
+
+    /// Spec 29c criterion 1 (the ROOT: unified traversal replacing the two-store stitch).
+    /// Structural grounding is ONE seeded `subgraph` traversal over the UNIFIED graph: for a
+    /// touched file, a single traversal returns its CODE NEIGHBORHOOD (the 29a code entities the
+    /// run extracted), the DECISIONS/FINDINGS about it, AND its DESIGN-INTENT nodes (the 29b
+    /// handbook rule that governs it and the RA section that specifies it) TOGETHER - with NO
+    /// separate structural-grounder call stitched into `build_prompt_with_failure`.
+    ///
+    /// Two claims are pinned:
+    ///  (1) ONE `subgraph(seed, 2)` traversal RETURNS all four categories together (asserted on the
+    ///      returned `Graph`, so the "one traversal reaches everything" invariant holds independent
+    ///      of how any one category is later rendered - the design-intent RENDER is criterion 3's).
+    ///  (2) `build_prompt_with_failure` surfaces the code neighborhood FROM THAT TRAVERSAL and no
+    ///      longer stitches the old `gr.ground()` "Relevant locations" structural block: the seeding
+    ///      grounder returns a ref whose TEXT is empty, so the code entity name can ONLY have come
+    ///      from the graph traversal, and the old structural header is gone.
+    #[test]
+    fn structural_grounding_is_one_seeded_traversal_over_the_unified_graph() {
+        let seed = vec!["core.rs".to_string()];
+        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+        let mut pos = 0u64;
+        let mut apply = |type_: &str, payload: serde_json::Value| {
+            pos += 1;
+            let mut e = Event::new(type_, serde_json::to_vec(&payload).unwrap());
+            e.position = pos;
+            graph.apply(&e).unwrap();
+        };
+
+        // CODE NEIGHBORHOOD (29a): a definition the run extracted from the touched file, plus a
+        // reference the file makes. Folds a `file` node, a `code-entity` (core.rs::run_unit) under a
+        // CONTAINS edge, and a REFERENCES edge to a referenced symbol - the file's code neighborhood.
+        apply(
+            contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+            json!({ "file": "core.rs", "name": "run_unit", "kind": "function", "line": 42, "lang": "rust", "fresh": true }),
+        );
+        apply(
+            contextgraph::TYPE_EDGE_INFERRED,
+            json!({ "file": "core.rs", "name": "spawn_agent", "lang": "rust" }),
+        );
+        // DECISION about the file (dev-loop DecisionMade -> GOVERNS edge).
+        apply(
+            contextgraph::TYPE_DECISION_MADE,
+            json!({ "id": "d_core", "summary": "the decision governing core", "governs": seed }),
+        );
+        // FINDING about the file (ReviewFinding -> ABOUT edge, RAISED by a reviewer).
+        apply(
+            contextgraph::TYPE_REVIEW_FINDING,
+            json!({ "id": "f_core", "by": "arch", "unit": "u1", "summary": "a finding about core", "about": seed }),
+        );
+        // DESIGN-INTENT (29b): the handbook rule that GOVERNS the file and the RA section that
+        // SPECIFIES it. Each is a design-intent node (concept) plus a typed design-intent edge to
+        // the SAME `core.rs` node the code / decisions / findings hang off (addendum 6.1 one id
+        // space), so the ONE traversal reaches them too.
+        apply(
+            contextgraph::TYPE_DOC_CONCEPT_EXTRACTED,
+            json!({ "kind": contextgraph::KIND_HANDBOOK_RULE, "id": "docs/handbook/loops.md", "title": "the loop discipline rule", "doc": "docs/handbook/loops.md" }),
+        );
+        apply(
+            contextgraph::TYPE_DOC_LINK_EXTRACTED,
+            json!({ "from": "docs/handbook/loops.md", "to": "core.rs", "rel": contextgraph::REL_GOVERNS }),
+        );
+        apply(
+            contextgraph::TYPE_DOC_CONCEPT_EXTRACTED,
+            json!({ "kind": contextgraph::KIND_DESIGN_DOC, "id": "specs/29c.md", "title": "the RA section that specifies core", "doc": "specs/29c.md" }),
+        );
+        apply(
+            contextgraph::TYPE_DOC_LINK_EXTRACTED,
+            json!({ "from": "specs/29c.md", "to": "core.rs", "rel": contextgraph::REL_SPECIFIES }),
+        );
+
+        // CLAIM 1: ONE seeded traversal returns all four categories TOGETHER. A single
+        // `subgraph(seed, 2)` reaches the code entity, the decision, the finding, AND both
+        // design-intent nodes - the "one traversal, one graph" invariant this criterion owns.
+        let g = graph.subgraph(&seed, 2).unwrap();
+        let has_kind = |k: &str| g.nodes.iter().any(|n| n.kind == k);
+        assert!(
+            g.nodes
+                .iter()
+                .any(|n| n.kind == contextgraph::KIND_CODE_ENTITY
+                    && n.attrs.get("name").map(String::as_str) == Some("run_unit")),
+            "the ONE traversal must reach the file's code neighborhood (core.rs::run_unit); \
+             graph was:\n{g:#?}"
+        );
+        assert!(
+            g.nodes
+                .iter()
+                .any(|n| n.kind == contextgraph::KIND_DECISION && n.id == "d_core"),
+            "the ONE traversal must reach the decision about the file; graph was:\n{g:#?}"
+        );
+        assert!(
+            has_kind(contextgraph::KIND_FINDING),
+            "the ONE traversal must reach the finding about the file; graph was:\n{g:#?}"
+        );
+        assert!(
+            has_kind(contextgraph::KIND_HANDBOOK_RULE) && has_kind(contextgraph::KIND_DESIGN_DOC),
+            "the ONE traversal must reach the design-intent nodes (handbook rule + RA section) \
+             TOGETHER with the code neighborhood and decisions/findings; graph was:\n{g:#?}"
+        );
+
+        // CLAIM 2: `build_prompt_with_failure` surfaces the code neighborhood FROM the unified
+        // traversal, with no separate structural-grounder stitch. The grounder SEEDS the traversal
+        // (the retained NL/turbovec seeding) by grounding the query to `core.rs`, but its ref TEXT
+        // is empty - so if `run_unit` appears in the prompt it can ONLY have come from the graph.
+        let st_store = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let mut by_query = HashMap::new();
+        by_query.insert("ground core".to_string(), vec!["core.rs".to_string()]);
+        let grounder = StubGrounder { by_query };
+        let deps = Deps {
+            store: &st_store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grounder),
+            graph: Some(&graph),
+            criteria: Vec::new(),
+        };
+        let cfg = Config::default();
+        let ctx = RunCtx::for_test(&cfg, &deps);
+        let stage = Stage {
+            name: "u_core".into(),
+            agent: "impl".into(),
+            coverage: "ground core".into(),
+            ..Default::default()
+        };
+        let prompt = ctx.build_prompt_with_failure(&stage, &PriorFailure::default());
+
+        assert!(
+            prompt.contains("run_unit"),
+            "the unified traversal must surface the file's code neighborhood (run_unit) in the \
+             prompt - it comes from the graph, since the grounder ref carried no text; prompt \
+             was:\n{prompt}"
+        );
+        assert!(
+            !prompt.contains("Relevant locations to read first"),
+            "the separate structural-grounder 'Relevant locations' stitch must be GONE - the code \
+             neighborhood now comes from the ONE unified traversal; prompt was:\n{prompt}"
+        );
+        // The same single traversal still surfaces the decisions and findings it already did.
+        assert!(
+            prompt.contains("d_core"),
+            "the unified traversal must still surface the decision about the file; prompt \
+             was:\n{prompt}"
+        );
+        assert!(
+            prompt.contains("f_core"),
+            "the unified traversal must still surface the finding about the file; prompt \
+             was:\n{prompt}"
+        );
+    }
+
+    /// Spec 29c criterion 5 (production ingestion - the extraction pass RUNS in a live run and
+    /// populates the graph). Exercising the actual grounding path (`build_prompt_with_failure`)
+    /// causes the run to extract the project's REAL source (29a) and design docs (29b) into
+    /// `CodeEntityExtracted` / `EdgeInferred` / `DocConcept` / `DocLink` events that fold into the
+    /// unified graph, so a seeded traversal returns REAL nodes the run itself ingested - closing the
+    /// "green tests, empty prod graph" gap 29a/29b left (their extraction had no live caller).
+    ///
+    /// The project tree is ACTUAL rigger source: a genuine source file and a genuine spec/design doc
+    /// embedded verbatim at compile time (`include_str!`) and written into a temp root under their
+    /// real relative paths. NOTHING is folded into the graph by hand - the graph is populated ONLY
+    /// by the run below - and the code neighborhood is asserted against the file's ACTUAL symbols
+    /// (matched to the real extraction's ground truth, and the stable `current_run` in particular),
+    /// never a test-injected row.
+    #[cfg(feature = "symbols")]
+    #[test]
+    fn the_grounding_path_populates_the_unified_graph_from_the_live_project() {
+        let real_src = include_str!("run.rs");
+        let real_doc = include_str!("../specs/29c-unified-traversal-tiers.md");
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(root.join("specs")).unwrap();
+        std::fs::write(root.join("src/run.rs"), real_src).unwrap();
+        std::fs::write(root.join("specs/29c-unified-traversal-tiers.md"), real_doc).unwrap();
+        let root_str = root.to_str().unwrap().to_string();
+
+        // Ground truth: the REAL definitions the extraction pass finds in the real source file. The
+        // run's ingested code-entity nodes must be exactly these (proving they are real project
+        // symbols, not injected), and `current_run` - a stable public symbol - is among them.
+        let expected_defs: std::collections::BTreeSet<String> =
+            crate::grounder::symbols::build_index(&root_str, None)
+                .files()
+                .get("src/run.rs")
+                .expect("the real source file is indexed by the extraction pass")
+                .defs
+                .iter()
+                .map(|d| d.name.clone())
+                .collect();
+        assert!(
+            expected_defs.contains("current_run"),
+            "sanity: the real source file defines the stable `current_run` symbol; got {expected_defs:?}"
+        );
+
+        // The grounder SEEDS the traversal on the touched file (the retained NL seeding); its ref
+        // carries no text, so a code entity in the prompt can ONLY have come from the graph the run
+        // populated below.
+        let st_store = Store::open(":memory:").unwrap();
+        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+        let driver = Stub::new();
+        let mut by_query = HashMap::new();
+        by_query.insert("touch run".to_string(), vec!["src/run.rs".to_string()]);
+        let grounder = StubGrounder { by_query };
+        let deps = Deps {
+            store: &st_store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: root_str.clone(),
+            grounder: Some(&grounder),
+            graph: Some(&graph),
+            criteria: Vec::new(),
+        };
+        let cfg = Config::default();
+        let ctx = RunCtx::for_test(&cfg, &deps);
+        let stage = Stage {
+            name: "u_run".into(),
+            agent: "impl".into(),
+            coverage: "touch run".into(),
+            ..Default::default()
+        };
+        let prompt = ctx.build_prompt_with_failure(&stage, &PriorFailure::default());
+
+        // (1) The RUN emitted all four extraction event types into the store - it ingested the
+        // project itself, closing the empty-prod-graph gap.
+        let emitted = st_store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let count = |t: &str| emitted.iter().filter(|e| e.type_ == t).count();
+        assert!(
+            count(contextgraph::TYPE_CODE_ENTITY_EXTRACTED) > 0,
+            "the run must extract the real source's definitions into CodeEntityExtracted events"
+        );
+        assert!(
+            count(contextgraph::TYPE_EDGE_INFERRED) > 0,
+            "the run must infer the real source's references into EdgeInferred events"
+        );
+        assert!(
+            count(contextgraph::TYPE_DOC_CONCEPT_EXTRACTED) > 0,
+            "the run must ingest the real design doc into DocConcept events"
+        );
+        assert!(
+            count(contextgraph::TYPE_DOC_LINK_EXTRACTED) > 0,
+            "the run must ingest the real design doc's links into DocLink events"
+        );
+
+        // (2) A seeded traversal returns REAL code-entity nodes the run ingested: every reached
+        // entity name is an ACTUAL definition of the real file, and the stable `current_run` is
+        // among them - never a test-injected row.
+        let seed = vec!["src/run.rs".to_string()];
+        let g = graph.subgraph(&seed, 2).unwrap();
+        let entity_names: std::collections::BTreeSet<String> = g
+            .nodes
+            .iter()
+            .filter(|n| n.kind == contextgraph::KIND_CODE_ENTITY)
+            .filter_map(|n| n.attrs.get("name").cloned())
+            .collect();
+        assert!(
+            !entity_names.is_empty(),
+            "the seeded traversal must reach the file's code neighborhood the run ingested"
+        );
+        assert!(
+            entity_names.iter().all(|n| expected_defs.contains(n)),
+            "every code entity the traversal reaches must be a REAL definition of the real file; \
+             reached {entity_names:?}, real defs {expected_defs:?}"
+        );
+        assert!(
+            entity_names.contains("current_run"),
+            "the run's ingested graph must carry the file's ACTUAL `current_run` symbol; \
+             reached {entity_names:?}"
+        );
+
+        // (3) The prompt surfaces the real code neighborhood the run populated.
+        assert!(
+            prompt.contains("current_run") && prompt.contains("src/run.rs"),
+            "the prompt must surface the file's real code neighborhood (src/run.rs current_run) \
+             from the graph the run populated; prompt was:\n{prompt}"
+        );
+    }
+
+    /// Spec 29c criterion 5 (re-extraction / freshness): a re-ingest on a later grounding pass
+    /// re-extracts ONLY a CHANGED file (its `fresh` batch head superseding its prior edges by 29a's
+    /// mechanism) and leaves an UNCHANGED file alone (it is not re-ingested). The wiring keys each
+    /// file's batch on its content, so an unchanged file's keys are already recorded (append
+    /// nothing) while a changed file's differ (the whole batch, fresh head included, re-emits).
+    #[cfg(feature = "symbols")]
+    #[test]
+    fn re_ingesting_re_extracts_a_changed_file_and_skips_unchanged_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/stable.rs"), "pub fn stable_symbol() {}\n").unwrap();
+        std::fs::write(root.join("src/churn.rs"), "pub fn original_symbol() {}\n").unwrap();
+        let root_str = root.to_str().unwrap().to_string();
+
+        let st_store = Store::open(":memory:").unwrap();
+        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+        let driver = Stub::new();
+        let grounder = StubGrounder {
+            by_query: HashMap::new(),
+        };
+        let deps = Deps {
+            store: &st_store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: root_str.clone(),
+            grounder: Some(&grounder),
+            graph: Some(&graph),
+            criteria: Vec::new(),
+        };
+        let cfg = Config::default();
+        let ctx = RunCtx::for_test(&cfg, &deps);
+
+        // The definitions the store recorded for a file, in the order they were emitted.
+        let code_names_for = |file: &str| -> Vec<String> {
+            st_store
+                .read_stream(STREAM, 0, Direction::Forward)
+                .unwrap()
+                .iter()
+                .filter(|e| e.type_ == contextgraph::TYPE_CODE_ENTITY_EXTRACTED)
+                .filter_map(|e| serde_json::from_slice::<Value>(&e.data).ok())
+                .filter(|v| v.get("file").and_then(Value::as_str) == Some(file))
+                .filter_map(|v| v.get("name").and_then(Value::as_str).map(String::from))
+                .collect()
+        };
+
+        // First ingest: both files extract into the graph and the store.
+        ctx.ingest_project_batches();
+        assert_eq!(
+            code_names_for("src/stable.rs"),
+            vec!["stable_symbol".to_string()],
+            "the first ingest records the unchanged file's symbol once"
+        );
+        assert_eq!(
+            code_names_for("src/churn.rs"),
+            vec!["original_symbol".to_string()],
+            "the first ingest records the churn file's original symbol"
+        );
+
+        // Change ONLY churn.rs; leave stable.rs byte-identical.
+        std::fs::write(
+            root.join("src/churn.rs"),
+            "pub fn replacement_symbol() {}\n",
+        )
+        .unwrap();
+
+        // Re-ingest on the SAME ctx: its replay-key set carries the first pass's keys (exactly as a
+        // later step's log-seeded set would), so the unchanged file is skipped and the changed file
+        // re-emits.
+        ctx.ingest_project_batches();
+
+        // Unchanged file: NOT re-ingested - its recorded symbol is still emitted exactly once.
+        assert_eq!(
+            code_names_for("src/stable.rs"),
+            vec!["stable_symbol".to_string()],
+            "an unchanged file must not be re-ingested on a second grounding pass"
+        );
+        // Changed file: re-extracted - the new symbol is emitted (its fresh head supersedes the
+        // prior edges by 29a's mechanism).
+        assert!(
+            code_names_for("src/churn.rs").contains(&"replacement_symbol".to_string()),
+            "a changed file must re-extract its new symbol; churn events were {:?}",
+            code_names_for("src/churn.rs")
+        );
+        // The supersede lands in the graph: a seeded traversal reaches the NEW symbol the re-ingest
+        // folded (not only the store log).
+        let g = graph.subgraph(&["src/churn.rs".to_string()], 2).unwrap();
+        assert!(
+            g.nodes.iter().any(|n| n.kind == contextgraph::KIND_CODE_ENTITY
+                && n.attrs.get("name").map(String::as_str) == Some("replacement_symbol")),
+            "the re-ingest must fold the changed file's new symbol into the graph; graph was:\n{g:#?}"
+        );
+    }
+
+    /// Spec 29c criterion 3 (design-intent grounding BY TRAVERSAL - the highest-value new
+    /// capability c3 OWNS). An agent whose blast radius touches file `F` retrieves, IN ITS PROMPT
+    /// and BY GRAPH TRAVERSAL (never by vector similarity), the handbook rule that GOVERNS `F` and
+    /// the RA section that SPECIFIES it - c1 proved the ONE traversal RETURNS those design-intent
+    /// nodes (a Graph-level assertion); this criterion proves `build_prompt_with_failure` RENDERS
+    /// them into a design-intent section (d29c-c1-designintent-render-is-c3 assigns that surface
+    /// here, keeping the criteria non-overlapping).
+    ///
+    /// Three properties are pinned:
+    ///  (1) RENDERED: the prompt surfaces the handbook rule that GOVERNS the touched file and the
+    ///      RA section that SPECIFIES it (plus the arch-decision that CONSTRAINS it and the
+    ///      rationale that explains it - the full design-intent set c3 owns), each naming its
+    ///      relation and the touched file.
+    ///  (2) BY TRAVERSAL, NOT VECTOR: the seeding grounder resolves the query to `core.rs` but its
+    ///      ref carries EMPTY text, so a design-intent title in the prompt can ONLY have come from
+    ///      the graph traversal - not from the vector index that merely seeds it.
+    ///  (3) TIGHT-SCOPED to the touched files ("of these files"): a design-intent node reachable in
+    ///      the subgraph but whose binding edge targets a NON-seed file, and a design-doc that only
+    ///      CITES the file (a doc `references` edge, not a code-binding SPECIFIES/GOVERNS), are NOT
+    ///      surfaced - mirroring c1's CONTAINS-to-seed scoping of the code neighborhood.
+    #[test]
+    fn design_intent_grounding_renders_the_governing_rule_and_specifying_ra_by_traversal() {
+        let seed = vec!["core.rs".to_string()];
+        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+        let mut pos = 0u64;
+        let mut apply = |type_: &str, payload: serde_json::Value| {
+            pos += 1;
+            let mut e = Event::new(type_, serde_json::to_vec(&payload).unwrap());
+            e.position = pos;
+            graph.apply(&e).unwrap();
+        };
+
+        // DESIGN INTENT that BINDS the touched file (29b): the handbook rule that GOVERNS it, the RA
+        // section that SPECIFIES it, the load-bearing decision that CONSTRAINS it, and the local
+        // rationale that explains it. Each is a design-intent node plus a typed design-intent edge
+        // to the SEED file `core.rs`, so the ONE seeded traversal reaches it and the design-intent
+        // section renders it.
+        apply(
+            contextgraph::TYPE_DOC_CONCEPT_EXTRACTED,
+            json!({ "kind": contextgraph::KIND_HANDBOOK_RULE, "id": "docs/handbook/loops.md", "title": "the loop discipline rule governing core", "doc": "docs/handbook/loops.md" }),
+        );
+        apply(
+            contextgraph::TYPE_DOC_LINK_EXTRACTED,
+            json!({ "from": "docs/handbook/loops.md", "to": "core.rs", "rel": contextgraph::REL_GOVERNS }),
+        );
+        apply(
+            contextgraph::TYPE_DOC_CONCEPT_EXTRACTED,
+            json!({ "kind": contextgraph::KIND_DESIGN_DOC, "id": "specs/29c.md#unified-traversal", "title": "the RA section specifying the unified traversal", "doc": "specs/29c.md" }),
+        );
+        apply(
+            contextgraph::TYPE_DOC_LINK_EXTRACTED,
+            json!({ "from": "specs/29c.md#unified-traversal", "to": "core.rs", "rel": contextgraph::REL_SPECIFIES }),
+        );
+        apply(
+            contextgraph::TYPE_DOC_CONCEPT_EXTRACTED,
+            json!({ "kind": contextgraph::KIND_ARCH_DECISION, "id": "docs/adr/0007.md", "title": "the load-bearing decision constraining core", "doc": "docs/adr/0007.md" }),
+        );
+        apply(
+            contextgraph::TYPE_DOC_LINK_EXTRACTED,
+            json!({ "from": "docs/adr/0007.md", "to": "core.rs", "rel": contextgraph::REL_CONSTRAINS }),
+        );
+        apply(
+            contextgraph::TYPE_DOC_CONCEPT_EXTRACTED,
+            json!({ "kind": contextgraph::KIND_RATIONALE, "id": "core.rs#L42", "title": "the local rationale explaining run_unit", "doc": "core.rs" }),
+        );
+        apply(
+            contextgraph::TYPE_DOC_LINK_EXTRACTED,
+            json!({ "from": "core.rs#L42", "to": "core.rs", "rel": contextgraph::REL_EXPLAINS }),
+        );
+
+        // DECOY A (file-scope): a design-doc that SPECIFIES a DIFFERENT file (`other.rs`, not in the
+        // seed) yet is REACHABLE in the subgraph because it CITES `core.rs` (a doc `references`
+        // edge). Its binding edge targets a non-seed file, so the "of these files" section must NOT
+        // surface it - proving the render scopes to design intent that binds the TOUCHED files.
+        apply(
+            contextgraph::TYPE_DOC_CONCEPT_EXTRACTED,
+            json!({ "kind": contextgraph::KIND_DESIGN_DOC, "id": "specs/other.md#other", "title": "the RA section specifying OTHER not core", "doc": "specs/other.md" }),
+        );
+        apply(
+            contextgraph::TYPE_DOC_LINK_EXTRACTED,
+            json!({ "from": "specs/other.md#other", "to": "other.rs", "rel": contextgraph::REL_SPECIFIES }),
+        );
+        apply(
+            contextgraph::TYPE_DOC_LINK_EXTRACTED,
+            json!({ "from": "specs/other.md#other", "to": "core.rs", "rel": contextgraph::REL_DOC_REFERENCES }),
+        );
+        // DECOY B (relation-scope): a design-doc that only CITES `core.rs` (a doc `references`
+        // edge), with NO code-binding SPECIFIES/GOVERNS/CONSTRAINS/explains edge. A mere citation is
+        // not design intent that GOVERNS or SPECIFIES the file, so it must NOT surface.
+        apply(
+            contextgraph::TYPE_DOC_CONCEPT_EXTRACTED,
+            json!({ "kind": contextgraph::KIND_DESIGN_DOC, "id": "docs/misc.md", "title": "a mere doc citation of core", "doc": "docs/misc.md" }),
+        );
+        apply(
+            contextgraph::TYPE_DOC_LINK_EXTRACTED,
+            json!({ "from": "docs/misc.md", "to": "core.rs", "rel": contextgraph::REL_DOC_REFERENCES }),
+        );
+
+        // Drive the PUBLIC grounding path. The grounder resolves the query to `core.rs` but its ref
+        // TEXT is empty (`StubGrounder`), so any design-intent title that appears in the prompt can
+        // ONLY have come from the graph traversal - the by-traversal-not-vector proof.
+        let st_store = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let mut by_query = HashMap::new();
+        by_query.insert("ground core".to_string(), seed.clone());
+        let grounder = StubGrounder { by_query };
+        let deps = Deps {
+            store: &st_store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grounder),
+            graph: Some(&graph),
+            criteria: Vec::new(),
+        };
+        let cfg = Config::default();
+        let ctx = RunCtx::for_test(&cfg, &deps);
+        let stage = Stage {
+            name: "u_core".into(),
+            agent: "impl".into(),
+            coverage: "ground core".into(),
+            ..Default::default()
+        };
+        let prompt = ctx.build_prompt_with_failure(&stage, &PriorFailure::default());
+
+        // (1) RENDERED: the handbook rule that GOVERNS the file and the RA section that SPECIFIES it
+        // are both surfaced, each naming its relation and the touched file.
+        assert!(
+            prompt.contains("the loop discipline rule governing core"),
+            "the design-intent section must surface the handbook rule that GOVERNS the touched \
+             file; prompt was:\n{prompt}"
+        );
+        assert!(
+            prompt.contains("the RA section specifying the unified traversal"),
+            "the design-intent section must surface the RA section that SPECIFIES the touched \
+             file; prompt was:\n{prompt}"
+        );
+        assert!(
+            prompt.contains(&format!("{} core.rs", contextgraph::REL_GOVERNS)),
+            "the design-intent line must name the GOVERNS relation and the touched file; prompt \
+             was:\n{prompt}"
+        );
+        assert!(
+            prompt.contains(&format!("{} core.rs", contextgraph::REL_SPECIFIES)),
+            "the design-intent line must name the SPECIFIES relation and the touched file; prompt \
+             was:\n{prompt}"
+        );
+        // The full design-intent set c3 owns: the arch-decision that CONSTRAINS the file and the
+        // rationale that explains it are surfaced too.
+        assert!(
+            prompt.contains("the load-bearing decision constraining core"),
+            "the design-intent section must surface the arch-decision that CONSTRAINS the file; \
+             prompt was:\n{prompt}"
+        );
+        assert!(
+            prompt.contains("the local rationale explaining run_unit"),
+            "the design-intent section must surface the rationale that explains the file; prompt \
+             was:\n{prompt}"
+        );
+
+        // (3) TIGHT-SCOPED: neither decoy surfaces. Decoy A binds a non-seed file; decoy B only
+        // cites the file. Both are reachable in the subgraph, so their absence proves the render
+        // scopes to design intent that BINDS the touched files, not everything the traversal reaches.
+        assert!(
+            !prompt.contains("the RA section specifying OTHER not core"),
+            "a design-intent node whose binding edge targets a NON-seed file must NOT surface \
+             (of-these-files scoping); prompt was:\n{prompt}"
+        );
+        assert!(
+            !prompt.contains("a mere doc citation of core"),
+            "a doc that only CITES the file (a `references` edge, not a code-binding \
+             SPECIFIES/GOVERNS) is not design intent that governs it and must NOT surface; prompt \
+             was:\n{prompt}"
+        );
+    }
+
+    #[test]
+    fn a_governing_decision_never_leaks_into_the_design_intent_section() {
+        // sdet-u29c-3-kindguard-leak-untested + adv-u29c-3-kindguard-leak-is-common-path (the
+        // gating reject): the kind guard in write_design_intent (the DESIGN_INTENT_KINDS.contains
+        // check) is the SOLE defence against a `decision` node leaking into the design-intent
+        // section through the SHARED REL_GOVERNS relation - a decision is dated by a GOVERNS->file
+        // edge exactly like a handbook rule is. This is a COMMON-PATH guard (with rigger
+        // self-hosting, decisions govern the touched files on essentially every real spawn), yet no
+        // test reddened when it was defeated: replacing the kind check with `true` kept the whole
+        // suite green. This pins it inside-out - a governing DECISION reachable in the subgraph
+        // through GOVERNS must NOT render as a design-intent line (which would carry an EMPTY title,
+        // since a decision holds `summary`, not `title`), while a genuine handbook rule bound by the
+        // SAME GOVERNS relation DOES render. Non-vacuous by construction (the decision IS in the
+        // subgraph) and mutation-proven: with the kind check `true`, the decision leaks and the
+        // negative assertion reddens.
+        let seed = vec!["core.rs".to_string()];
+        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+        let mut pos = 0u64;
+        let mut apply = |type_: &str, payload: serde_json::Value| {
+            pos += 1;
+            let mut e = Event::new(type_, serde_json::to_vec(&payload).unwrap());
+            e.position = pos;
+            graph.apply(&e).unwrap();
+        };
+
+        // A genuine handbook rule that GOVERNS the file - a design-intent node bound by the shared
+        // GOVERNS relation, so the section renders and the discriminator is KIND, not relation.
+        apply(
+            contextgraph::TYPE_DOC_CONCEPT_EXTRACTED,
+            json!({ "kind": contextgraph::KIND_HANDBOOK_RULE, "id": "docs/handbook/loops.md", "title": "the loop rule that governs core", "doc": "docs/handbook/loops.md" }),
+        );
+        apply(
+            contextgraph::TYPE_DOC_LINK_EXTRACTED,
+            json!({ "from": "docs/handbook/loops.md", "to": "core.rs", "rel": contextgraph::REL_GOVERNS }),
+        );
+        // A DECISION that GOVERNS the SAME file through the SHARED GOVERNS relation - the exact leak
+        // vector. It carries a `summary`, never a `title`, so a leaked line would render an empty
+        // title after its id.
+        apply(
+            contextgraph::TYPE_DECISION_MADE,
+            json!({ "id": "d_leak_decision", "summary": "a governing decision that is not design intent", "governs": ["core.rs"] }),
+        );
+
+        let g = graph.subgraph(&seed, 2).unwrap();
+        // Non-vacuity: the decision IS reachable in the subgraph, so the kind guard - not
+        // reachability - is what must keep it out of the design-intent section.
+        assert!(
+            g.nodes.iter().any(|n| n.id == "d_leak_decision"),
+            "the fixture must place the governing decision in the subgraph so the kind guard, not \
+             reachability, is what excludes it"
+        );
+        let mut b = String::new();
+        write_design_intent(&mut b, &g, &seed);
+
+        // The genuine handbook rule (design-intent kind, GOVERNS relation) renders.
+        assert!(
+            b.contains("the loop rule that governs core"),
+            "the handbook rule bound by GOVERNS must render in the design-intent section; got:\n{b}"
+        );
+        assert!(
+            b.contains(&format!("{} core.rs", contextgraph::REL_GOVERNS)),
+            "the design-intent line must name the GOVERNS relation and the touched file; got:\n{b}"
+        );
+        // The governing DECISION is excluded by the kind guard: its id never appears in the
+        // design-intent section. (When the kind check is replaced with `true`, it leaks as
+        // `- GOVERNS core.rs  d_leak_decision: ` with an empty title, reddening this assertion.)
+        assert!(
+            !b.contains("d_leak_decision"),
+            "a governing DECISION must be excluded from the design-intent section by the kind guard \
+             (it belongs in the decisions section, not here); got:\n{b}"
+        );
+    }
+
+    #[test]
+    fn the_design_intent_section_renders_the_newest_binding_and_elides_the_oldest() {
+        // sdet-u29c-3-recency-ordering-unverified + adv-u29c-3-recency-untested-and-ingestion-artifact
+        // (the gating reject): the design-intent budget cap only asserted the elision note appeared,
+        // never WHICH nodes survived the verbatim slice - so the most-recently-recorded-binding-first
+        // sort in write_design_intent was unpinned. Mutation-proven: reversing the comparator
+        // (rc.cmp(&ra) -> ra.cmp(&rc)) shipped the OLDEST binding verbatim and elided the NEWEST with
+        // every design-intent test green. This pins the pair the sibling c1 cap test set the standard
+        // for: the newest-recorded binding renders and the oldest is elided past the cap. Ordering is
+        // by event-log position (the most-recently-RECORDED binding), a deterministic total order -
+        // NOT authored priority; the doc no longer overclaims a "honor first" ranking.
+        let seed = vec!["core.rs".to_string()];
+        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+        let mut pos = 0u64;
+        let mut apply = |type_: &str, payload: serde_json::Value| {
+            pos += 1;
+            let mut e = Event::new(type_, serde_json::to_vec(&payload).unwrap());
+            e.position = pos;
+            graph.apply(&e).unwrap();
+        };
+
+        // Fold MORE handbook rules bound to the one file than the verbatim cap keeps, in ascending
+        // order, so rule_040's binding edge has the HIGHEST log position (newest recorded) and
+        // rule_001's the lowest (oldest). Each GOVERNS `core.rs`, so all are reachable at depth 1.
+        let count = 40u32;
+        for i in 1..=count {
+            let id = format!("docs/handbook/rule_{i:03}.md");
+            apply(
+                contextgraph::TYPE_DOC_CONCEPT_EXTRACTED,
+                json!({ "kind": contextgraph::KIND_HANDBOOK_RULE, "id": id, "title": format!("the governing rule {i:03}"), "doc": id }),
+            );
+            apply(
+                contextgraph::TYPE_DOC_LINK_EXTRACTED,
+                json!({ "from": id, "to": "core.rs", "rel": contextgraph::REL_GOVERNS }),
+            );
+        }
+
+        let g = graph.subgraph(&seed, 2).unwrap();
+        let mut b = String::new();
+        write_design_intent(&mut b, &g, &seed);
+
+        // The newest-recorded binding renders verbatim.
+        assert!(
+            b.contains("the governing rule 040"),
+            "the newest-recorded design-intent binding must render verbatim; got:\n{b}"
+        );
+        // The oldest-recorded binding is past the verbatim cap, so it is elided, not rendered.
+        assert!(
+            !b.contains("the governing rule 001"),
+            "the oldest-recorded design-intent binding must be elided past the cap, not rendered; \
+             got:\n{b}"
+        );
+        // The over-budget remainder collapses into ONE visible elision note.
+        assert!(
+            b.contains("more design-intent node(s) elided"),
+            "the over-budget remainder must collapse into a visible elision note; got:\n{b}"
+        );
+    }
+
+    #[test]
+    fn a_subgraph_with_no_design_intent_renders_no_design_intent_header() {
+        // adv-u29c-3-empty-section-untested: a file whose subgraph carries a code neighborhood but
+        // NO design-intent node must render NOTHING for this section - never a bare
+        // DESIGN_INTENT_HEADER over an empty body. Fold only a code definition of the file; the
+        // design-intent section stays silent while the traversal has demonstrably reached the file.
+        // Non-vacuous: removing the empty-candidate early return renders a bare header, flipping both
+        // assertions.
+        let seed = vec!["core.rs".to_string()];
+        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+        let mut e = Event::new(
+            contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+            serde_json::to_vec(&json!({
+                "file": "core.rs",
+                "name": "run_unit",
+                "kind": "function",
+                "line": 42,
+                "lang": "rust",
+                "fresh": true,
+            }))
+            .unwrap(),
+        );
+        e.position = 1;
+        graph.apply(&e).unwrap();
+        let g = graph.subgraph(&seed, 2).unwrap();
+        // The traversal reached the file: its code entity is in the subgraph.
+        assert!(
+            g.nodes.iter().any(|n| n.id == "core.rs::run_unit"),
+            "the fixture must place the file's code entity in the subgraph so the empty design-intent \
+             section is a real suppression, not an empty traversal"
+        );
+        let mut b = String::new();
+        write_design_intent(&mut b, &g, &seed);
+        assert!(
+            b.is_empty(),
+            "a subgraph with no design intent must render an empty section; got:\n{b}"
+        );
+        assert!(
+            !b.contains(DESIGN_INTENT_HEADER),
+            "no design intent must render no design-intent header; got:\n{b}"
+        );
+    }
+
+    /// Fold a list of `(file, name, kind, line)` code definitions into a fresh graph through the
+    /// PUBLIC `CODE_ENTITY_EXTRACTED` event API (the FIRST definition of each file carries the
+    /// `fresh` batch-head flag, exactly as a real 29a extraction pass emits it - so each file's
+    /// `CONTAINS` edges fold once), take the seeded `subgraph(seed, 2)`, and return the rendered
+    /// code-neighborhood section. This is the code-section analogue of `render_capped_decisions`.
+    fn render_code_neighborhood(defs: &[(&str, &str, &str, u32)], seed: &[String]) -> String {
+        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+        let mut pos = 0u64;
+        let mut seen_files: BTreeSet<&str> = BTreeSet::new();
+        for (file, name, kind, line) in defs {
+            pos += 1;
+            let fresh = seen_files.insert(file);
+            let mut e = Event::new(
+                contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+                serde_json::to_vec(&json!({
+                    "file": file,
+                    "name": name,
+                    "kind": kind,
+                    "line": line,
+                    "lang": "rust",
+                    "fresh": fresh,
+                }))
+                .unwrap(),
+            );
+            e.position = pos;
+            graph.apply(&e).unwrap();
+        }
+        let g = graph.subgraph(seed, 2).unwrap();
+        let mut b = String::new();
+        write_code_neighborhood(&mut b, &g, seed);
+        b
+    }
+
+    #[test]
+    fn the_code_neighborhood_elision_note_names_graph_around_recovery_not_peers() {
+        // adv-u29c-1-code-neighborhood-elision-names-wrong-recovery-cmd (the gating reject): the
+        // code neighborhood's over-budget remainder is recoverable ONLY by `rigger graph --around
+        // <file>` (cmd_graph prints the subgraph's nodes, code entities included), NEVER by `rigger
+        // peers` (which prints ONLY decisions/lessons/findings, never a code-entity node). The
+        // elision note MUST name the command that can actually fulfil its promise, per seed file
+        // since `--around` takes a single id.
+        let seed = vec!["core.rs".to_string()];
+        // More definitions than the verbatim COUNT cap keeps, all in the touched file, so the
+        // seeded traversal reaches every one and the remainder must elide behind the note.
+        let names: Vec<String> = (1..=CODE_NEIGHBORHOOD_VERBATIM_N + 16)
+            .map(|i| format!("definition_{i:03}"))
+            .collect();
+        let defs: Vec<(&str, &str, &str, u32)> = names
+            .iter()
+            .enumerate()
+            .map(|(i, n)| ("core.rs", n.as_str(), "function", (i as u32) + 1))
+            .collect();
+        let out = render_code_neighborhood(&defs, &seed);
+
+        assert!(
+            out.contains("more definition(s) elided"),
+            "the over-budget remainder must collapse into a visible elision note; got:\n{out}"
+        );
+        // The honest recovery command, naming the touched file `--around` operates on.
+        assert!(
+            out.contains("rigger graph --around core.rs"),
+            "the elision note must name the `rigger graph --around <file>` recovery command that \
+             actually returns the code neighborhood; got:\n{out}"
+        );
+        // The dishonest command the reject caught: `rigger peers` never prints a code entity.
+        assert!(
+            !out.contains("rigger peers"),
+            "the elision note must NOT name `rigger peers`, which cannot recover code definitions; \
+             got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn the_code_neighborhood_byte_cap_elides_before_the_count_cap_is_reached() {
+        // sdet-u29c-1-code-neighborhood-byte-cap-untested: the section has TWO independent budget
+        // arms - the recent-N COUNT cap AND the hard BYTE cap. Fold FEWER definitions than the
+        // count cap keeps, but each long enough that their cumulative bytes cross
+        // CODE_NEIGHBORHOOD_BUDGET_BYTES, so the BYTE arm - not the count arm - stops the render.
+        // Sharing the ONE budgeted-section writer means this arm IS the same code the
+        // decisions/lessons/findings byte tests already exercise; this pins it for the code section
+        // too. Non-vacuous: dropping the byte clause renders every definition (the count cap never
+        // fires), flipping the "later definition elided" assertion.
+        let seed = vec!["core.rs".to_string()];
+        let n_defs = CODE_NEIGHBORHOOD_VERBATIM_N - 4;
+        assert!(
+            n_defs < CODE_NEIGHBORHOOD_VERBATIM_N,
+            "the fixture must fold fewer definitions than the count cap so ONLY the byte arm can \
+             stop the render"
+        );
+        // Each name ~2KB, so ~2KB per rendered entry: n_defs entries total ~40KB, well over the
+        // 24KB byte budget, so the byte cap binds after ~12 entries.
+        let big = "n".repeat(2000);
+        let names: Vec<String> = (1..=n_defs).map(|i| format!("def_{i:03}_{big}")).collect();
+        let defs: Vec<(&str, &str, &str, u32)> = names
+            .iter()
+            .enumerate()
+            .map(|(i, n)| ("core.rs", n.as_str(), "function", (i as u32) + 1))
+            .collect();
+        let out = render_code_neighborhood(&defs, &seed);
+
+        assert!(
+            out.contains("def_001_"),
+            "the earliest definition must render verbatim; got a section of len {}",
+            out.len()
+        );
+        assert!(
+            !out.contains(&format!("def_{n_defs:03}_")),
+            "a definition past the BYTE budget must be elided even though fewer than the COUNT cap \
+             were folded (proving the byte arm, not the count arm, stopped the render); got a \
+             section of len {}",
+            out.len()
+        );
+        assert!(
+            out.contains("more definition(s) elided"),
+            "the byte-elided remainder must collapse into a visible elision note; got a section of \
+             len {}",
+            out.len()
+        );
+    }
+
+    #[test]
+    fn a_subgraph_with_no_code_definitions_renders_no_code_neighborhood_header() {
+        // sdet-u29c-1-empty-defs-header-absence-unasserted: a file with NO extracted definitions (a
+        // design-only doc, or the empty pre-c5 production graph) must render NOTHING - never a bare
+        // header with an empty body. Fold only a decision about the file; the code section stays
+        // silent. Non-vacuous: removing the empty guard renders a bare header, flipping both
+        // assertions.
+        let seed = vec!["core.rs".to_string()];
+        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+        let mut e = Event::new(
+            contextgraph::TYPE_DECISION_MADE,
+            serde_json::to_vec(&json!({
+                "id": "d_core",
+                "summary": "a decision about the file, but no code was extracted",
+                "governs": seed,
+            }))
+            .unwrap(),
+        );
+        e.position = 1;
+        graph.apply(&e).unwrap();
+        let g = graph.subgraph(&seed, 2).unwrap();
+        let mut b = String::new();
+        write_code_neighborhood(&mut b, &g, &seed);
+        assert!(
+            b.is_empty(),
+            "a subgraph with no code definitions must render an empty section; got:\n{b}"
+        );
+        assert!(
+            !b.contains(CODE_NEIGHBORHOOD_HEADER),
+            "no code definitions must render no code-neighborhood header; got:\n{b}"
+        );
     }
 
     #[test]
@@ -8900,7 +12642,7 @@ mod tests {
         lessons: &[(&str, &str, Vec<&str>)],
         seed: &[String],
     ) -> String {
-        let graph = crate::contextgraph::sqlite::Projector::open(":memory:").unwrap();
+        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
         for (i, (id, summary, about)) in lessons.iter().enumerate() {
             let mut e = Event::new(
                 contextgraph::TYPE_LESSON_LEARNED,
@@ -9555,6 +13297,299 @@ mod tests {
         );
         // The implementer ran exactly once - no remediation re-implement.
         assert_eq!(driver.spawn_count("worker"), 1);
+    }
+
+    #[test]
+    fn a_gating_spawn_that_emits_an_approve_verdict_but_returns_no_verdict_line_hard_errors_with_the_result_channel_fix(
+    ) {
+        // Spec 18, unit 3: the runtime verdict-channel mismatch backstop. A gating
+        // adjudicator whose RESULT carries NO parseable verdict line, yet emitted an
+        // approve-shaped verdict via rigger_emit DURING its spawn, mistook the event
+        // channel for the gate. The gate reads ONLY the result channel, so folding the
+        // empty verdict as a reject would remediate a unit the reviewer actually
+        // approved. The conductor HARD-ERRORS with the result-channel fix message
+        // instead of the silent reject-and-remediate loop (the diagnostic use of events:
+        // events explain the failure, the result channel still decides).
+        let store = Store::open(":memory:").unwrap();
+        let cfg = degenerate_reviewer_cfg();
+        let driver = Stub {
+            output_by_agent: HashMap::from([
+                // A substantive lens review, so only the ADJUDICATOR exercises the path.
+                ("sdet".to_string(), "lens: no blocker".to_string()),
+                // The adjudicator returns a NON-degenerate result (so it is NOT the Gap-18
+                // empty-result path) that carries NO `{"verdict":...}` line - just prose.
+                (
+                    "judge".to_string(),
+                    "I have reviewed the unit and it looks good to me.".to_string(),
+                ),
+            ]),
+            // ...but the adjudicator recorded its approve-shaped verdict ONLY as an
+            // emitted event (rigger_emit), never on its result output.
+            emits_by_agent: HashMap::from([(
+                "judge".to_string(),
+                vec![(
+                    contextgraph::TYPE_DECISION_MADE.to_string(),
+                    json!({"id": "verdict", "verdict": "approve"}),
+                )],
+            )]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let err = match run(&cfg, &deps) {
+            Ok(_) => panic!(
+                "a gating spawn that emits approve but returns no verdict line must HARD-ERROR"
+            ),
+            Err(e) => e,
+        };
+        // The hard error names the SPEC-pinned result-channel fix.
+        assert!(
+            err.0
+                .contains("the gate reads the result channel, not emitted events")
+                && err.0.contains("end your output with the verdict line"),
+            "the hard error carries the result-channel fix message: {err:?}"
+        );
+        // The internal recognition sentinel is stripped before it surfaces.
+        assert!(
+            !err.0.contains('\u{1}'),
+            "the internal mismatch marker is stripped from the surfaced message: {err:?}"
+        );
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        // NOT folded as a reject and remediated: no attempt charged, no escalation, and
+        // nothing approved (`reviewed` is emitted ONLY on a result-channel approve).
+        assert!(
+            !events.iter().any(|e| e.type_ == ledger::TYPE_UNIT_FAILED),
+            "a verdict-channel mismatch must not charge the unit a remediation attempt"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.type_ == ledger::TYPE_UNIT_ESCALATED),
+            "a verdict-channel mismatch must not escalate the unit"
+        );
+        assert!(
+            !has_status(&events, "reviewed"),
+            "nothing was approved on the result channel, so no `reviewed` status is folded"
+        );
+        // The implementer ran exactly once - the mismatch halts rather than looping the
+        // unit back through re-implement remediation.
+        assert_eq!(
+            driver.spawn_count("worker"),
+            1,
+            "the mismatch halts the run; the unit is not re-implemented"
+        );
+        // The adjudicator is NOT respawned: this is a substantive (non-degenerate) result,
+        // distinct from the Gap-18 empty-result respawn path.
+        assert_eq!(
+            driver.spawn_count("judge"),
+            1,
+            "a non-degenerate result carrying an emit-only verdict is not respawned"
+        );
+    }
+
+    #[test]
+    fn a_gating_spawn_that_returns_a_reject_verdict_line_is_a_normal_reject_even_if_it_emitted_approve(
+    ) {
+        // The mismatch backstop fires ONLY when the result channel carries NO verdict at
+        // all. A gating spawn that DID put a `{"verdict":"reject"}` line on its result
+        // DECIDED on the result channel; an approve-shaped event emitted alongside it is
+        // ignored (the result channel still decides), so this is an ordinary reject that
+        // remediates, never the hard-error halt. This pins that `has_verdict_line` gates
+        // the backstop, so a legitimate reject is never misread as a mismatch.
+        let store = Store::open(":memory:").unwrap();
+        let mut cfg = degenerate_reviewer_cfg();
+        // One remediation attempt then escalate, so the reject loop terminates cheaply.
+        cfg.workflow.defaults.max_retries = 1;
+        let driver = Stub {
+            output_by_agent: HashMap::from([
+                ("sdet".to_string(), "lens: no blocker".to_string()),
+                ("judge".to_string(), r#"{"verdict":"reject"}"#.to_string()),
+            ]),
+            emits_by_agent: HashMap::from([(
+                "judge".to_string(),
+                vec![(
+                    contextgraph::TYPE_DECISION_MADE.to_string(),
+                    json!({"id": "verdict", "verdict": "approve"}),
+                )],
+            )]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        // A reject that exhausts remediation escalates; `run` still returns Ok (the run
+        // completed, the unit escalated), never the mismatch hard error.
+        run(&cfg, &deps).expect("a result-channel reject is a normal reject, not a mismatch halt");
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(
+            events
+                .iter()
+                .any(|e| e.type_ == ledger::TYPE_UNIT_ESCALATED),
+            "a result-channel reject remediates and escalates - it is not the mismatch halt"
+        );
+    }
+
+    #[test]
+    fn a_gating_spawn_with_no_verdict_line_and_no_emitted_approve_is_an_ordinary_reject() {
+        // The backstop fires on the CONJUNCTION (no verdict line AND an emitted approve).
+        // This pins the emitted_approve leg in ISOLATION (carry-forward
+        // sdet-u18-3-emitted-approve-conjunct-untested): a non-degenerate result carrying
+        // NO verdict line AND emitting NO approve is an ordinary empty verdict - the gate
+        // reads no approval, so it folds as a reject and remediates, NEVER the hard-error
+        // halt. Guards the store-sourced backstop from widening to fire on ANY missing
+        // verdict line (which would misread a genuine empty-verdict reject as a mismatch).
+        let store = Store::open(":memory:").unwrap();
+        let mut cfg = degenerate_reviewer_cfg();
+        // One remediation attempt then escalate, so the reject loop terminates cheaply.
+        cfg.workflow.defaults.max_retries = 1;
+        let driver = Stub {
+            output_by_agent: HashMap::from([
+                ("sdet".to_string(), "lens: no blocker".to_string()),
+                // A non-degenerate result with NO parseable verdict line...
+                (
+                    "judge".to_string(),
+                    "I have reviewed the unit and it looks good to me.".to_string(),
+                ),
+            ]),
+            // ...and the adjudicator emitted NOTHING - no approve-shaped event - so the
+            // mismatch conjunction is false: this is a plain empty-verdict reject.
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        // No hard error: an empty verdict with no emitted approve remediates and escalates.
+        run(&cfg, &deps)
+            .expect("an empty verdict with no emitted approve is a normal reject, not a halt");
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(
+            events
+                .iter()
+                .any(|e| e.type_ == ledger::TYPE_UNIT_ESCALATED),
+            "no emitted approve means an ordinary reject that remediates and escalates, not a halt"
+        );
+    }
+
+    #[test]
+    fn the_workflow_live_path_correlates_the_approve_by_stamp_not_a_bare_stream_position() {
+        // Reject-fix guard (spec 18, unit 3; arch-u18-3r3-workflow-live-degrades-to-shared-
+        // position-window + sdet-u18-3r2-workflow-path-still-races). The workflow live driver
+        // (rigger serve) does NOT park its spawns, so a workflow gating spawn records NO
+        // park/result window; its emits are correlated by the MCP server's per-spawn
+        // [`META_SPAWN`] STAMP instead. This pins `gating_spawn_emitted_approve` directly on a
+        // WORKFLOW-SHAPED store (a RunStarted, an approve, and NO SpawnRequested/SpawnResult):
+        //  - an UNSTAMPED approve (a concurrent sibling adjudicator's, or a stale one) is NOT
+        //    attributed to a windowless spawn - the bare shared-stream position that the reject
+        //    forbade never fires the backstop, so an innocent unit's empty-verdict reject is
+        //    never falsely hard-errored (the concurrent-sibling false POSITIVE, closed);
+        //  - an approve STAMPED with THIS spawn's id IS attributed - the correlation the MCP
+        //    server writes for the spawn it is serving, which is what makes the backstop fire on
+        //    the parkless live driver (the emit-only-approve persona still caught);
+        //  - a DIFFERENT spawn's stamp is never THIS spawn's, even sharing the reviewer role
+        //    token a concurrent sibling carries.
+        let store = Store::open(":memory:").unwrap();
+        crate::run::ensure_started(&store, &[]).unwrap();
+
+        let me = spawn_id("u", ROLE_ADJUDICATOR, 0);
+        let sibling = spawn_id("v", ROLE_ADJUDICATOR, 0);
+        let seed_approve = |meta: &[(&str, &str)]| {
+            let mut e = crate::eventstore::Event::new(
+                contextgraph::TYPE_DECISION_MADE,
+                serde_json::to_vec(&json!({"id": "verdict", "verdict": "approve"})).unwrap(),
+            );
+            for (k, v) in meta {
+                e = e.with_meta(*k, *v);
+            }
+            store
+                .append(
+                    STREAM,
+                    crate::eventstore::ExpectedRevision::Any,
+                    std::slice::from_ref(&e),
+                )
+                .unwrap();
+        };
+
+        let cfg = Config::default();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let ctx = RunCtx {
+            cfg: &cfg,
+            deps: &deps,
+            run_id: String::new(),
+            gate_tracker: Mutex::new(HashMap::new()),
+            integrate_mu: Mutex::new(()),
+            spawns: AtomicU32::new(0),
+            base_spawns: 0,
+            recorded_spawn_ids: HashSet::new(),
+            budget_broke: std::sync::atomic::AtomicBool::new(false),
+            parked: std::sync::atomic::AtomicBool::new(false),
+            manual_review: std::sync::atomic::AtomicBool::new(false),
+            budget_halted: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(feature = "symbols")]
+            ingested: std::sync::atomic::AtomicBool::new(false),
+            prior_status: HashMap::new(),
+            prior_attempts: HashMap::new(),
+            replayed_keys: Mutex::new(HashSet::new()),
+            gate_verdicts: Mutex::new(HashMap::new()),
+            green_digests: Mutex::new(HashMap::new()),
+            stale_units: Mutex::new(HashSet::new()),
+            compensations: Mutex::new(Vec::new()),
+            compensation_feedback: Mutex::new(HashMap::new()),
+            compensation_attempts: Mutex::new(HashMap::new()),
+            compensated_commits: Mutex::new(HashSet::new()),
+            taxonomy: failure::Taxonomy::default(),
+        };
+
+        // An UNSTAMPED approve with no spawn-lifecycle events: not attributed to a windowless
+        // spawn (the false-positive the reject turned on, closed).
+        seed_approve(&[]);
+        assert!(
+            !ctx.gating_spawn_emitted_approve(&me).unwrap(),
+            "an unstamped approve with no recorded window must NOT be attributed on the workflow \
+             live path - a bare stream position is never enough"
+        );
+
+        // An approve STAMPED with THIS spawn's id IS attributed - the MCP-server correlation.
+        seed_approve(&[(META_SPAWN, &me)]);
+        assert!(
+            ctx.gating_spawn_emitted_approve(&me).unwrap(),
+            "an approve stamped with THIS spawn's id is attributed on the workflow live path"
+        );
+
+        // A concurrent SIBLING adjudicator (a different spawn id, no window of its own) is
+        // never falsely attributed the unstamped approve NOR another spawn's stamped one.
+        assert!(
+            !ctx.gating_spawn_emitted_approve(&sibling).unwrap(),
+            "a sibling spawn is not attributed another spawn's stamped approve or a bare position"
+        );
     }
 
     #[test]
@@ -10244,7 +14279,7 @@ mod tests {
 
     #[test]
     fn agent_decision_creates_a_decided_edge() {
-        let graph = crate::contextgraph::sqlite::Projector::open(":memory:").unwrap();
+        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
         let mut cfg = Config::default();
         cfg.agents.insert("a".into(), agent("a"));
         cfg.workflow.gates.insert("ok".into(), gate_def("true"));
@@ -14324,6 +18359,48 @@ mod tests {
     }
 
     #[test]
+    fn a_spawned_implementers_title_is_the_unit_criterion() {
+        // The live work-line (spec 19a, c4): the conductor threads the unit's `coverage`
+        // (its criterion) onto SpawnOpts as the `title`, so a parked SpawnRequest carries
+        // the actual WORK and the thin driver narrates it - not just `<unit>:<stage>`. The
+        // title is trimmed of surrounding whitespace so a stray newline never bleeds into
+        // the one-line narration.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent("a"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "a".into(),
+                gates: vec!["ok".into()],
+                coverage: "  the blocker line is surfaced on both status and the dashboard  "
+                    .into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path,
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+        assert_eq!(
+            driver.title_for("a").as_deref(),
+            Some("the blocker line is surfaced on both status and the dashboard"),
+            "the implementer's SpawnOpts.title is its unit criterion (coverage), trimmed"
+        );
+    }
+
+    #[test]
     fn stage_autonomy_override_seeds_the_gate() {
         // A stage with `autonomy: silent` seeds its gate's ratchet at Silent, so the
         // gate runs unattended; the default (manual) would pause. We assert via the
@@ -14367,6 +18444,8 @@ mod tests {
             parked: std::sync::atomic::AtomicBool::new(false),
             manual_review: std::sync::atomic::AtomicBool::new(false),
             budget_halted: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(feature = "symbols")]
+            ingested: std::sync::atomic::AtomicBool::new(false),
             prior_status: HashMap::new(),
             prior_attempts: HashMap::new(),
             replayed_keys: Mutex::new(HashSet::new()),
@@ -14701,7 +18780,7 @@ mod tests {
         // the artifact, which the projector folds (§7, Phase 2 carryover).
         let repo = init_repo();
         let repo_path = repo.path().to_str().unwrap().to_string();
-        let graph = crate::contextgraph::sqlite::Projector::open(":memory:").unwrap();
+        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
         let mut cfg = Config::default();
         cfg.agents.insert("a".into(), agent("a"));
         cfg.workflow.gates.insert("ok".into(), gate_def("true"));
@@ -14992,7 +19071,7 @@ mod tests {
         let grep = crate::grounder::Grep {
             root: dir.path().to_string_lossy().into_owned(),
         };
-        let graph = crate::contextgraph::sqlite::Projector::open(":memory:").unwrap();
+        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
 
         let mut cfg = Config::default();
         cfg.agents.insert("lens".into(), agent("lens"));
@@ -16681,6 +20760,246 @@ mod tests {
                 .parallelism_retention
                 .is_none(),
             "with no audit events the runtime retention metric is absent, never a spurious value"
+        );
+    }
+
+    /// The addendum 6.2 confidence-tiered subgraph of a touched file `combat.rs`, as ONE edge set
+    /// carrying all three tiers - the fixture the tier-filter tests split. `combat.rs` DEFINES
+    /// `apply_damage`
+    /// (its own EXTRACTED neighborhood) and REFERENCES three symbols at descending confidence:
+    /// `apply_damage` resolves in-file (EXTRACTED), `physics.rs::resolve` resolves cross-file
+    /// (INFERRED), `legacy.rs::old_hook` resolves nowhere known (AMBIGUOUS - a grep-visible-only
+    /// occurrence). Crucially `physics.rs` and `legacy.rs` BOTH carry their OWN EXTRACTED `CONTAINS`
+    /// edge, so a flat "files touched by an EXTRACTED edge" scan would wrongly pull them into
+    /// `precise`; only a REACHABILITY filter (the seed must reach them across EXTRACTED edges the
+    /// whole way) keeps them out - which is what makes the fixture discriminate.
+    fn confidence_tier_fixture() -> Graph {
+        let node = |id: &str, kind: &str| contextgraph::Node {
+            id: id.into(),
+            kind: kind.into(),
+            attrs: BTreeMap::new(),
+        };
+        let edge = |from: &str, to: &str, rel: &str, tier: &str| contextgraph::Edge {
+            from: from.into(),
+            to: to.into(),
+            rel: rel.into(),
+            valid_from: 0,
+            valid_to: None,
+            source: 0,
+            tier: tier.into(),
+        };
+        Graph {
+            nodes: vec![
+                node("combat.rs", contextgraph::KIND_FILE),
+                node("physics.rs", contextgraph::KIND_FILE),
+                node("legacy.rs", contextgraph::KIND_FILE),
+                node("combat.rs::apply_damage", contextgraph::KIND_CODE_ENTITY),
+                node("physics.rs::resolve", contextgraph::KIND_CODE_ENTITY),
+                node("legacy.rs::old_hook", contextgraph::KIND_CODE_ENTITY),
+            ],
+            edges: vec![
+                // Each file CONTAINS its own definition - always EXTRACTED (spec 29a).
+                edge(
+                    "combat.rs",
+                    "combat.rs::apply_damage",
+                    contextgraph::REL_CONTAINS,
+                    contextgraph::TIER_EXTRACTED,
+                ),
+                edge(
+                    "physics.rs",
+                    "physics.rs::resolve",
+                    contextgraph::REL_CONTAINS,
+                    contextgraph::TIER_EXTRACTED,
+                ),
+                edge(
+                    "legacy.rs",
+                    "legacy.rs::old_hook",
+                    contextgraph::REL_CONTAINS,
+                    contextgraph::TIER_EXTRACTED,
+                ),
+                // combat.rs's references, one per confidence tier.
+                edge(
+                    "combat.rs",
+                    "combat.rs::apply_damage",
+                    contextgraph::REL_REFERENCES,
+                    contextgraph::TIER_EXTRACTED,
+                ),
+                edge(
+                    "combat.rs",
+                    "physics.rs::resolve",
+                    contextgraph::REL_REFERENCES,
+                    contextgraph::TIER_INFERRED,
+                ),
+                edge(
+                    "combat.rs",
+                    "legacy.rs::old_hook",
+                    contextgraph::REL_REFERENCES,
+                    contextgraph::TIER_AMBIGUOUS,
+                ),
+            ],
+        }
+    }
+
+    /// spec 29c criterion 2 (`u29c-2`): the CONFIDENCE-TIER blast radius is TWO filters over the ONE
+    /// tiered edge set, replacing `BlastRadius{precise,safe,serialize}`. `precise` is the EXTRACTED
+    /// sub-graph; `safe` is `EXTRACTED u INFERRED u AMBIGUOUS`; `safe` stays a superset of the grep
+    /// union (the AMBIGUOUS = grep-visible-only tail rides in `safe`). Proven over the addendum 6.2
+    /// fixture: from seed `combat.rs`, only `combat.rs` is EXTRACTED-reachable, while the INFERRED
+    /// (`physics.rs`) and AMBIGUOUS (`legacy.rs`) references widen `safe` - even though both those
+    /// files carry their OWN EXTRACTED `CONTAINS` edge, so this pins the REACHABILITY semantics, not
+    /// a flat edge scan.
+    #[test]
+    fn confidence_tier_radius_splits_the_one_edge_set_into_extracted_precise_and_all_tier_safe() {
+        let g = confidence_tier_fixture();
+        let seed = vec!["combat.rs".to_string()];
+        let r = confidence_tier_radius(&g, &seed);
+
+        // precise = the EXTRACTED sub-graph: ONLY combat.rs (its in-file resolved neighborhood).
+        // physics.rs / legacy.rs are NOT reachable across EXTRACTED-only edges, so their own
+        // EXTRACTED CONTAINS edges never promote them here (reachability, not a flat scan).
+        assert_eq!(
+            r.precise,
+            vec!["combat.rs".to_string()],
+            "precise is the EXTRACTED sub-graph reachable from the seed; got {:?}",
+            r.precise
+        );
+
+        // safe = EXTRACTED u INFERRED u AMBIGUOUS: combat.rs plus the cross-file INFERRED target
+        // (physics.rs) plus the grep-visible-only AMBIGUOUS target (legacy.rs), sorted.
+        assert_eq!(
+            r.safe,
+            vec![
+                "combat.rs".to_string(),
+                "legacy.rs".to_string(),
+                "physics.rs".to_string(),
+            ],
+            "safe is the all-tier reachable file set; got {:?}",
+            r.safe
+        );
+
+        // The tier SPLIT is real: the INFERRED and AMBIGUOUS files are in safe but NOT precise.
+        assert!(
+            r.safe.contains(&"physics.rs".to_string())
+                && !r.precise.contains(&"physics.rs".to_string()),
+            "an INFERRED-only file rides safe, never precise"
+        );
+        // The AMBIGUOUS tier IS the grep-visible-only occurrences, so keeping it in safe is exactly
+        // what makes safe a SUPERSET OF THE GREP UNION (addendum 2.4 correctness invariant).
+        assert!(
+            r.safe.contains(&"legacy.rs".to_string())
+                && !r.precise.contains(&"legacy.rs".to_string()),
+            "the AMBIGUOUS (grep-visible-only) tail rides safe - safe stays a grep-superset"
+        );
+        // precise is always a subset of safe (EXTRACTED reachability is a subset of all-tier).
+        assert!(
+            r.precise.iter().all(|f| r.safe.contains(f)),
+            "precise must be a subset of safe"
+        );
+        // This filter owns only the tier split; the hub verdict is layered on by the caller.
+        assert!(
+            !r.serialize,
+            "the tier filter itself never sets the hub verdict"
+        );
+    }
+
+    /// spec 29c criterion 2 wiring: `grounded_blast_radius` COMPUTES the two-view radius by
+    /// tier-filtering the ONE seeded subgraph when a graph is present (the tier filter is live, not
+    /// dead code), and it PRESERVES the safety floor - `safe` is unioned with the grounder's grep
+    /// superset so it can only widen, never narrow below the grep union (addendum 2.4), and the
+    /// grounder's `serialize` hub verdict is carried, never silently dropped. The `graph: None` arm
+    /// falls back to the grounder radius byte-for-byte, so the two arms observably differ: the graph
+    /// arm surfaces the INFERRED/AMBIGUOUS files the grep radius alone never would.
+    #[test]
+    fn grounded_blast_radius_tier_filters_the_subgraph_and_keeps_the_grep_superset() {
+        // A `Projection` double returning the addendum 6.2 tiered subgraph for combat.rs, so the
+        // wiring is exercised over a discriminating multi-tier edge set (a real 29a fold scopes a
+        // reference to its own file, so it cannot produce a cross-file INFERRED target to split on).
+        struct FixedGraph(Graph);
+        impl Projection for FixedGraph {
+            fn apply(&self, _e: &crate::eventstore::Event) -> Result<(), contextgraph::Error> {
+                Ok(())
+            }
+            fn subgraph(
+                &self,
+                _seed: &[String],
+                _depth: i64,
+            ) -> Result<Graph, contextgraph::Error> {
+                Ok(self.0.clone())
+            }
+            fn resolve(&self, _m: &str) -> Result<Option<String>, contextgraph::Error> {
+                Ok(None)
+            }
+        }
+
+        // A grep grounder over a temp tree whose only match seeds the traversal on combat.rs.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("combat.rs"), "fn combat_step() {}\n").unwrap();
+        let grep = crate::grounder::Grep {
+            root: dir.path().to_str().unwrap().to_string(),
+        };
+        let st = Stage {
+            name: "u".into(),
+            coverage: "combat_step".into(),
+            ..Default::default()
+        };
+        let cfg = Config::default();
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let graph = FixedGraph(confidence_tier_fixture());
+
+        // The grep radius alone (graph: None) is the fallback floor: just the seed file.
+        let base_deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let base = RunCtx::for_test(&cfg, &base_deps).grounded_blast_radius(&st);
+        assert_eq!(
+            base.safe,
+            vec!["combat.rs".to_string()],
+            "precondition: the grep radius alone is just the seed file; got {:?}",
+            base.safe
+        );
+
+        // WITH the graph, the tier filter is live: safe widens to the all-tier reachable set while
+        // still containing the grep floor, precise is the EXTRACTED sub-graph, serialize is carried.
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: Some(&graph),
+            criteria: Vec::new(),
+        };
+        let r = RunCtx::for_test(&cfg, &deps).grounded_blast_radius(&st);
+
+        assert!(
+            base.safe.iter().all(|f| r.safe.contains(f)),
+            "safe must stay a superset of the grep union (addendum 2.4); grep {:?} vs safe {:?}",
+            base.safe,
+            r.safe
+        );
+        assert!(
+            r.safe.contains(&"physics.rs".to_string())
+                && r.safe.contains(&"legacy.rs".to_string()),
+            "the graph tier filter is live: safe carries the INFERRED and AMBIGUOUS files the grep \
+             radius never had; got {:?}",
+            r.safe
+        );
+        assert_eq!(
+            r.precise,
+            vec!["combat.rs".to_string()],
+            "precise is the EXTRACTED sub-graph; got {:?}",
+            r.precise
+        );
+        assert_eq!(
+            r.serialize, base.serialize,
+            "the grounder's hub (serialize) verdict is carried through, never dropped"
         );
     }
 
@@ -19923,6 +24242,771 @@ mod tests {
     }
 
     #[test]
+    fn conductor_spawns_the_sdet_author_at_the_build_seam_so_its_tests_land_in_the_committed_tree()
+    {
+        // spec 33 done-when (this criterion OWNS the spawn placement + role token): the
+        // conductor SPAWNS the `sdet-author` agent at the build seam - AFTER the
+        // implementer emits green and BEFORE the pre-gate commit, in the implementer's
+        // OWN worktree - resolved through the existing agent-loading path by the fixed
+        // `sdet-author` id, so the periphery tests it authors are committed with the unit
+        // and judged by the gates. The load-bearing, NON-VACUOUS proof of the
+        // BEFORE-the-pre-gate-commit placement is assertion #5: the sdet-author writes a
+        // DISTINCTIVE file no other spawn writes, and it must be ADDED in the SAME commit
+        // as the implementer's diff - the pre-gate commit `git add -A` that runs before
+        // the gates - so the tree the GATES judge already contains it and a FAILING
+        // periphery test would redden them. Merely landing in the merged base tree proves
+        // NOTHING about placement (integrate's own `git add -A` sweeps ANY dirty file in
+        // regardless); being in the pre-gate commit does. Move the spawn BELOW that commit
+        // and the file is added only at integrate - a LATER, different commit - so
+        // assertion #5 fails.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents
+            .insert(ROLE_SDET_AUTHOR.into(), agent(ROLE_SDET_AUTHOR));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        // The implementer writes the unit's feature (a non-empty diff to gate); the
+        // sdet-author authors a DISTINCTIVE periphery test that only it writes.
+        let driver = Stub {
+            write_file: Some("feature.rs".into()),
+            write_file_by_agent: HashMap::from([(
+                ROLE_SDET_AUTHOR.to_string(),
+                "sdet_periphery_test.rs".to_string(),
+            )]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "the unit integrates with the sdet-author's periphery tests swept into the committed tree"
+        );
+
+        // (1) The sdet-author was spawned via the existing fixed-id agent-loading path.
+        assert!(
+            driver.spawned(ROLE_SDET_AUTHOR),
+            "the conductor must spawn the sdet-author at the build seam"
+        );
+        // (2) It ran in the implementer's OWN worktree (same cwd), never the main
+        // checkout - so its writes are exactly the ones the pre-gate commit sweeps in.
+        let impl_dir = driver.dirs_for("worker");
+        let sdet_dir = driver.dirs_for(ROLE_SDET_AUTHOR);
+        assert_eq!(
+            sdet_dir.first(),
+            impl_dir.first(),
+            "the sdet-author must run in the implementer's worktree, not its own or the main repo"
+        );
+        // (3) It was spawned AFTER the implementer emits green (the green-then-author
+        // seam), not before or in place of it.
+        let order = driver.call_order.lock().unwrap().clone();
+        let impl_pos = order.iter().position(|id| id == "worker");
+        let sdet_pos = order.iter().position(|id| id == ROLE_SDET_AUTHOR);
+        assert!(
+            impl_pos < sdet_pos,
+            "the sdet-author must be spawned AFTER the implementer, got order {order:?}"
+        );
+        // (4) Its deterministic spawn id derives from the role token (spec 33: the id is
+        // `spawn_id(stage, ROLE_SDET_AUTHOR, attempt)`), so a stepwise/replay driver
+        // answers or parks it exactly like the implementer.
+        assert!(
+            driver
+                .spawn_ids()
+                .iter()
+                .any(|id| *id == spawn_id("s", ROLE_SDET_AUTHOR, 0)),
+            "the sdet-author spawn must carry its deterministic role-token id"
+        );
+        // (5) NON-VACUOUS placement proof (the load-bearing half of the criterion): the
+        // sdet-author's periphery test must be committed BY THE PRE-GATE COMMIT - the
+        // `git add -A` the conductor runs BEFORE the gates - so the tree the gates judge
+        // (and the adjudicator later inspects) already contains it and a FAILING periphery
+        // test reddens them. Asserting only that the file reached the merged base tree is
+        // VACUOUS: `integrate()` runs its OWN `git add -A` (worktree.rs) and sweeps any
+        // residual dirty file into the merge regardless of placement, so a spawn moved
+        // BELOW the pre-gate commit still lands the file. We instead assert the file was
+        // ADDED in the SAME commit as the implementer's diff - they were committed together
+        // by the one pre-gate commit. Move the spawn below the pre-gate commit and the
+        // sdet file is added only at integrate (a LATER, DIFFERENT commit), failing this.
+        let added_in = |path: &str| -> String {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(repo.path())
+                .args(["log", "--diff-filter=A", "--format=%H", "--", path])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        let feature_add = added_in("feature.rs");
+        let sdet_add = added_in("sdet_periphery_test.rs");
+        assert!(
+            !sdet_add.is_empty(),
+            "the sdet-author's authored periphery test must be committed with the unit and merged"
+        );
+        assert_eq!(
+            sdet_add, feature_add,
+            "the sdet-author's periphery test must be ADDED in the SAME pre-gate commit as the \
+             implementer's diff (proving the spawn ran BEFORE the pre-gate commit); move the spawn \
+             below that commit and it lands only at integrate - a later, different commit - failing this"
+        );
+    }
+
+    #[test]
+    fn the_sdet_author_spawn_respects_the_budget_breaker_at_its_own_spawn_site() {
+        // The regression guard for the reserve_spawn mitigation at the sdet-author spawn
+        // seam (this criterion's budget clause): the sdet spawn funnels through the single
+        // spawn-budget mutation authority (`reserve_spawn`) exactly like the implementer
+        // and every reviewer tier, so a SPENT budget REFUSES it instead of letting it spawn
+        // past the breaker - keeping the cross-step budget symmetry
+        // (cumulative = base_spawns + admitted-this-process) intact.
+        //
+        // At `defaults.budget = 1` the implementer is admitted (it reserves and spends the
+        // one slot), so control reaches the sdet seam that follows; the sdet reserve is then
+        // REFUSED, so the sdet-author never spawns. The load-bearing assertion is
+        // `!driver.spawned(ROLE_SDET_AUTHOR)`: delete the `if self.reserve_spawn(&sdet_id)`
+        // guard and the sdet spawns UNRESERVED - past the spent budget - turning it RED and
+        // reopening the exact rejected unreserved-spawn defect. The flagship test above runs
+        // at the default budget = 0 (unlimited), where `reserve_spawn` always admits, so it
+        // cannot exercise this refusal - only a bounded budget can.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents
+            .insert(ROLE_SDET_AUTHOR.into(), agent(ROLE_SDET_AUTHOR));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        // One spawn slot for the whole run: the implementer admits and spends it, so the
+        // sdet reserve that immediately follows in the same wave must be refused.
+        cfg.workflow.defaults.budget = 1;
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        // Same distinctive per-agent write as the flagship: were the sdet admitted it would
+        // author `sdet_periphery_test.rs`. Here it must never run, so that file is never
+        // written - the refusal is what this test pins.
+        let driver = Stub {
+            write_file: Some("feature.rs".into()),
+            write_file_by_agent: HashMap::from([(
+                ROLE_SDET_AUTHOR.to_string(),
+                "sdet_periphery_test.rs".to_string(),
+            )]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        // The run completes (Ok): a spent budget halts the run with a BudgetExhausted
+        // record, never a raw error.
+        run(&cfg, &deps).unwrap();
+
+        // The implementer WAS admitted - it reserved the one budget slot and ran - so
+        // control reached the sdet spawn seam that follows it. Without this the sdet refusal
+        // below would be vacuous (the seam never reached), so it anchors the regression:
+        // the seam IS exercised, and the sdet is refused AT it.
+        assert!(
+            driver.spawned("worker"),
+            "the implementer must be admitted (spending the one budget slot) so the sdet seam is reached"
+        );
+        // LOAD-BEARING (the regression guard the adjudicator required): with the budget spent
+        // by the implementer, the sdet reserve is REFUSED, so the sdet-author must NOT spawn -
+        // it respects the breaker at its own spawn site instead of spawning past it. Delete
+        // the `if self.reserve_spawn(&sdet_id)` guard at the seam and the sdet spawns
+        // unreserved, past the spent budget, turning this assertion RED.
+        assert!(
+            !driver.spawned(ROLE_SDET_AUTHOR),
+            "a spent budget must REFUSE the sdet-author reserve so it does not spawn past the breaker"
+        );
+        // The refusal is a genuine budget trip - the breaker binds at THIS spawn site too,
+        // recorded as BudgetExhausted (never a raw error) - so a run exceeding its budget at
+        // the sdet seam halts exactly like one exceeding it at the implementer or a reviewer,
+        // and the single-authority budget accounting (which this reserve now funnels through)
+        // stays the source of truth.
+        let events = st
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        assert!(
+            events.iter().any(|e| e.type_ == TYPE_BUDGET_EXHAUSTED),
+            "a budget spent at the sdet spawn site must trip the breaker with a BudgetExhausted record"
+        );
+    }
+
+    #[test]
+    fn a_parked_sdet_author_spawn_holds_the_unit_instead_of_integrating_without_its_periphery_tests(
+    ) {
+        // The regression guard for the sdet-author PARKED arm at the build seam (this
+        // criterion OWNS only the parked arm; Ok-advancement / absent-agent / crash are the
+        // next unit's). Under the REAL stepwise/replay driver the sdet-author spawn PARKS on
+        // first encounter - the NORMAL first-pass path, exactly like the implementer - and the
+        // conductor must UNWIND the unit cleanly (`Err(is_parked) => return Err(e)`) so a
+        // later step replays its result and the periphery tests it authors DO land in the
+        // committed tree the gates judge. The flagship and budget tests both use a Stub that
+        // never parks, so this primary path was untested.
+        //
+        // Here the implementer returns a normal `Ok` (writing the unit's feature), so control
+        // reaches the sdet seam; the sdet-author spawn then PARKS. The LOAD-BEARING assertion
+        // is that the unit does NOT integrate: the parked arm returns BEFORE the pre-gate
+        // commit, so the unit is held (`status != Integrated`) rather than swept to Integrated.
+        // Swallow the arm (`Err(is_parked) => {}`) and the parked sdet is ignored - control
+        // falls through to the pre-gate commit + gates + (trivially-approved empty review) +
+        // integrate, and the unit reaches `Integrated` WITHOUT the sdet ever authoring its
+        // periphery tests, silently defeating spec 33's core guarantee - turning this RED.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents
+            .insert(ROLE_SDET_AUTHOR.into(), agent(ROLE_SDET_AUTHOR));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        // The implementer writes the unit's feature and returns a normal Ok, so control flows
+        // PAST the implementer's green status DOWN to the sdet seam. The sdet-author's
+        // deterministic spawn id PARKS - the stepwise/replay driver signalling an unrecorded
+        // frontier - so the seam's parked arm is the code under test. Were the sdet admitted it
+        // would author `sdet_periphery_test.rs`; parked, it never even reaches its write.
+        let driver = Stub {
+            write_file: Some("feature.rs".into()),
+            write_file_by_agent: HashMap::from([(
+                ROLE_SDET_AUTHOR.to_string(),
+                "sdet_periphery_test.rs".to_string(),
+            )]),
+            park_spawn_ids: std::collections::HashSet::from([spawn_id("s", ROLE_SDET_AUTHOR, 0)]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        // A parked wave unwinds cleanly (no UnitFailed, no error propagated out of `run`): the
+        // step ends and a later step replays the recorded result.
+        let rs = run(&cfg, &deps).unwrap();
+
+        // ANCHOR (the seam IS reached): the implementer was admitted and ran, so control
+        // reached the sdet seam that follows its green status. Without this the park assertion
+        // below would be vacuous (the sdet seam never reached).
+        assert!(
+            driver.spawned("worker"),
+            "the implementer must run so control reaches the sdet seam that follows it"
+        );
+        // ANCHOR (the parked arm IS the code exercised): the sdet-author spawn WAS attempted at
+        // the seam - the driver recorded the call before parking it - so it is the PARKED
+        // disposition, not an absent-agent skip, that this test drives.
+        assert!(
+            driver.spawned(ROLE_SDET_AUTHOR),
+            "the sdet-author spawn must be attempted at the seam (it then parks)"
+        );
+        // LOAD-BEARING (the parked arm the adjudicator required covered): a parked sdet-author
+        // returns BEFORE the pre-gate commit, so the unit is HELD - it does NOT integrate.
+        // Swallow the parked arm (`Err(is_parked) => {}`) and the unit falls through to the
+        // pre-gate commit + gates + trivially-approved empty review + integrate, reaching
+        // `Integrated` WITHOUT its periphery tests - turning this assertion RED.
+        assert_ne!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "a parked sdet-author must HOLD the unit (not integrate it) so a later step replays \
+             the sdet and its periphery tests land in the committed tree the gates judge"
+        );
+        // REINFORCING: because the unit was held (never committed/merged), NO UnitIntegrated
+        // event was recorded - the durable ledger agrees with the in-memory status, and a later
+        // step is free to replay the sdet without a stale integrate on the record. This config
+        // has the single stage "s", so ANY UnitIntegrated event would be its own.
+        let events = st
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.type_ == ledger::TYPE_UNIT_INTEGRATED),
+            "a held (parked-sdet) unit must record no UnitIntegrated event"
+        );
+    }
+
+    #[test]
+    fn speculation_sdet_author_periphery_lands_in_the_committed_tree_the_gates_judge() {
+        // spec 33 done-when (this criterion OWNS the spawn placement in BOTH code-building
+        // lifecycles): the build seam is wired into the SPECULATION lifecycle too, not only the
+        // single lane - otherwise every speculation-built unit (speculation_width > 1) would ship
+        // its boundary surface UNTESTED, a silent hole in the "no boundary surface lands untested"
+        // guarantee. With width 2 the conductor spawns the sdet-author PER CANDIDATE, and the
+        // WINNER integrates with the sdet's periphery test ADDED in the SAME committed tree its
+        // gates judged. The load-bearing, NON-VACUOUS proof is assertion #5 (same-commit), exactly
+        // as in the single-lane flagship: merely reaching the merged base tree proves nothing about
+        // placement (integrate's own `git add -A` sweeps any dirty file in), but being ADDED in the
+        // candidate's pre-gate commit - the tree PHASE B's gates then judge - does. Drop the
+        // speculation wiring and both the spawn assertion and the same-commit placement go RED.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = spec_cfg(2);
+        // The operator-provided sdet-author persona, resolved by the fixed id like every role.
+        cfg.agents
+            .insert(ROLE_SDET_AUTHOR.into(), agent(ROLE_SDET_AUTHOR));
+        let store = Store::open(":memory:").unwrap();
+        // Every isolated implementer candidate writes the unit's feature; the sdet-author writes a
+        // DISTINCTIVE periphery test that only it writes, so the same-commit proof is non-vacuous.
+        // The adjudicator approves so candidate 0 wins and integrates.
+        let driver = Stub {
+            write_file: Some("feature.rs".into()),
+            write_file_by_agent: HashMap::from([(
+                ROLE_SDET_AUTHOR.to_string(),
+                "sdet_periphery_test.rs".to_string(),
+            )]),
+            output: r#"{"verdict":"approve"}"#.into(),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "the winning speculation candidate integrates with the sdet-author's periphery tests"
+        );
+
+        // (1) The sdet-author was spawned - the speculation lifecycle wires the seam too, not
+        // only the single lane.
+        assert!(
+            driver.spawned(ROLE_SDET_AUTHOR),
+            "the conductor must spawn the sdet-author in the speculation lifecycle, not only the single lane"
+        );
+        // (2) It was spawned PER CANDIDATE (once per lane), so WHICHEVER candidate wins ships with
+        // periphery tests its gates judged - not only lane 0. Two candidates => two sdet spawns.
+        assert_eq!(
+            driver.spawn_count(ROLE_SDET_AUTHOR),
+            2,
+            "the sdet-author spawns once per candidate (K=2), so any winner ships tested"
+        );
+        // (3) Each candidate's sdet-author carries its OWN deterministic lane-keyed id (the budget
+        // breaker counts every one), exactly like the candidate implementers.
+        let ids = driver.spawn_ids();
+        assert!(
+            ids.contains(&spawn_id("s", ROLE_SDET_AUTHOR, 0))
+                && ids.contains(&spawn_id("s", ROLE_SDET_AUTHOR, 1)),
+            "each candidate's sdet-author carries its deterministic lane-keyed id"
+        );
+        // (4) The sdet-author ran AFTER the implementer at the seam (green-then-author), each in
+        // its candidate's OWN worktree - so its writes are exactly the ones the candidate commit
+        // sweeps in, never the main checkout.
+        let order = driver.call_order.lock().unwrap().clone();
+        let first_impl = order.iter().position(|id| id == "worker");
+        let first_sdet = order.iter().position(|id| id == ROLE_SDET_AUTHOR);
+        assert!(
+            first_impl < first_sdet,
+            "the sdet-author must be spawned AFTER the implementer at the seam, got {order:?}"
+        );
+        let sdet_dirs = driver.dirs_for(ROLE_SDET_AUTHOR);
+        let impl_dirs = driver.dirs_for("worker");
+        assert!(
+            !sdet_dirs.is_empty() && sdet_dirs.iter().all(|d| impl_dirs.contains(d)),
+            "each sdet-author must run in its candidate's worktree, never its own or the main repo"
+        );
+        // (5) NON-VACUOUS placement proof (the load-bearing half): the winner's periphery test
+        // must be ADDED in the SAME commit as the winner's feature diff - the candidate's pre-gate
+        // commit that PHASE B's gates then judge - so a FAILING periphery test would redden those
+        // gates. Asserting only that it reached the merged base tree is VACUOUS (integrate's own
+        // `git add -A` sweeps any dirty file in regardless); being ADDED in the candidate commit
+        // the gates judged is the proof. Drop the speculation wiring and the sdet file is never
+        // authored, so `sdet_add` is empty - RED.
+        let added_in = |path: &str| -> String {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(repo.path())
+                .args(["log", "--diff-filter=A", "--format=%H", "--", path])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        let feature_add = added_in("feature.rs");
+        let sdet_add = added_in("sdet_periphery_test.rs");
+        assert!(
+            !sdet_add.is_empty(),
+            "the winning candidate's periphery test must be committed with it and merged"
+        );
+        assert_eq!(
+            sdet_add, feature_add,
+            "the sdet-author's periphery test must be ADDED in the SAME candidate commit as the \
+             winner's diff (proving it landed in the committed tree the candidate's gates judged); \
+             drop the speculation wiring and it is never authored, failing this"
+        );
+    }
+
+    #[test]
+    fn a_parked_sdet_author_in_a_speculation_candidate_holds_the_unit() {
+        // The speculation counterpart of the single-lane parked-arm guard. Under the REAL stepwise
+        // driver the candidate implementers park together first; on the next step they replay `Ok`
+        // and control reaches the per-candidate sdet seam, where the sdet-author spawn PARKS on its
+        // first encounter. The conductor must COLLECT that park (like the implementer park) and NOT
+        // commit the candidate, so all candidates park together this step and a LATER step replays
+        // the sdet and commits the candidate WITH its periphery. Here the implementers return a
+        // normal `Ok` (reaching each sdet seam) and BOTH candidates' sdet spawns PARK, so the whole
+        // group is held. The LOAD-BEARING assertion is that NO candidate integrates: swallow the
+        // park (commit the candidate anyway) and a candidate integrates WITHOUT its periphery -
+        // defeating the guarantee - turning this RED.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = spec_cfg(2);
+        cfg.agents
+            .insert(ROLE_SDET_AUTHOR.into(), agent(ROLE_SDET_AUTHOR));
+        let store = Store::open(":memory:").unwrap();
+        // Implementers return normal Ok (so control reaches the sdet seam per candidate); BOTH
+        // candidates' sdet spawns PARK, so the group parks together and nothing integrates. Were a
+        // sdet admitted it would author `sdet_periphery_test.rs`; parked, it never reaches its write.
+        let driver = Stub {
+            write_file: Some("feature.rs".into()),
+            write_file_by_agent: HashMap::from([(
+                ROLE_SDET_AUTHOR.to_string(),
+                "sdet_periphery_test.rs".to_string(),
+            )]),
+            output: r#"{"verdict":"approve"}"#.into(),
+            park_spawn_ids: std::collections::HashSet::from([
+                spawn_id("s", ROLE_SDET_AUTHOR, 0),
+                spawn_id("s", ROLE_SDET_AUTHOR, 1),
+            ]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        // A parked wave unwinds cleanly (no error propagated out of `run`): the step ends and a
+        // later step replays the recorded result.
+        let rs = run(&cfg, &deps).unwrap();
+
+        // ANCHOR (the seam IS reached): the implementer candidates ran, so control reached the sdet
+        // seam that follows each candidate's diff. Without this the park assertion is vacuous.
+        assert!(
+            driver.spawned("worker"),
+            "the implementer candidates must run so control reaches each candidate's sdet seam"
+        );
+        // ANCHOR (the parked arm IS the code exercised): the sdet-author spawn WAS attempted in a
+        // candidate - the driver recorded the call before parking it - so it is the PARKED
+        // disposition this test drives.
+        assert!(
+            driver.spawned(ROLE_SDET_AUTHOR),
+            "the sdet-author spawn must be attempted in a candidate (it then parks)"
+        );
+        // LOAD-BEARING: a parked sdet-author in a candidate HOLDS the group - the candidate is not
+        // committed, so NO candidate integrates. Swallow the park (commit the candidate anyway) and
+        // a candidate integrates WITHOUT its periphery, reaching Integrated - turning this RED.
+        assert_ne!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "a parked sdet-author in a candidate must HOLD the unit so a later step replays the sdet \
+             and its periphery tests land in the committed tree the gates judge"
+        );
+        // REINFORCING: because the group was held (no candidate committed/merged), NO UnitIntegrated
+        // event was recorded - the durable ledger agrees with the in-memory status. This config has
+        // the single stage "s", so ANY UnitIntegrated event would be its own.
+        let events = store
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.type_ == ledger::TYPE_UNIT_INTEGRATED),
+            "a held (parked-sdet) speculation unit must record no UnitIntegrated event"
+        );
+        // LOAD-BEARING (the HOLD-not-ESCALATE half of the park-collect arm): a parked group must be
+        // HELD for a LATER step to replay - not driven TERMINAL. `status != Integrated` and "no
+        // UnitIntegrated" (above) are EQUALLY satisfied by an escalation, so they cannot tell "held
+        // for replay" (correct) from "escalated terminal" (wrong): an escalated unit also never
+        // integrates, yet it gets NO later step, so its periphery NEVER lands - defeating the same
+        // guarantee as a swallowed park, by a different failure mode. Drop just `any_parked = true`
+        // at the park-collect arm (keeping `continue`) and the all-parked group leaves `candidates`
+        // empty, PHASE B runs zero, and the escalation tail fires a UnitEscalated the shipped code
+        // never records. Assert NO UnitEscalated so this test RED-lights that mutation and pins the
+        // unit as parked-for-replay, matching this test's own claim.
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.type_ == ledger::TYPE_UNIT_ESCALATED),
+            "a held (parked-sdet) speculation unit must be HELD for a later replay step, not \
+             escalated terminal - so it must record no UnitEscalated event"
+        );
+    }
+
+    #[test]
+    fn an_empty_accounting_sdet_author_result_advances_the_build_to_commit_gates_and_integrate() {
+        // spec 33 done-when (this criterion OWNS the result handling; it does NOT own the
+        // spawn placement - that is the criterion above). After the sdet-author self-reports,
+        // the conductor AWAITS its result and CONTINUES the lifecycle: it proceeds to the
+        // pre-gate commit, the gates, the review, and integrates. The spec names two results
+        // that must advance - a NORMAL result (the sdet authored periphery tests) and an
+        // EMPTY-ACCOUNTING no-op (a purely-internal unit for which the sdet recorded a
+        // provably-empty accounting, authoring NO periphery file). Both traverse the ONE Ok
+        // arm of the seam (`Ok(_) => Ok(())`), which does NOT branch on whether the sdet
+        // authored anything, so pinning that arm via the STRICTER empty-accounting flavor (the
+        // sdet writes nothing) also covers the normal-result flavor the placement flagship
+        // already integrates. This is c2's INDEPENDENT guard for the advance arm: it does NOT
+        // assert same-commit placement (c1's assertion #5) - only that the lifecycle CONTINUES
+        // past the sdet's result to a merged unit.
+        //
+        // NON-VACUOUS: GREEN on shipped code; RED when the Ok arm is made to NOT advance -
+        // change `Ok(_) => Ok(())` to `Ok(_) => Err(parked_spawn(&sdet_id))` (treat a normal
+        // result as a park) and the seam holds the unit, so it never integrates and the
+        // load-bearing `status == Integrated` assertion fails.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents
+            .insert(ROLE_SDET_AUTHOR.into(), agent(ROLE_SDET_AUTHOR));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        // Only the IMPLEMENTER authors a file (the unit's feature, so there is a real diff to
+        // commit and gate); the sdet-author authors NOTHING - the empty-accounting no-op of a
+        // purely-internal unit. `write_file_by_agent` is keyed on the agent id, so leaving the
+        // sdet out of it (and `write_file: None`) means its spawn returns a normal result
+        // having written no periphery file at all.
+        let driver = Stub {
+            write_file_by_agent: HashMap::from([("worker".to_string(), "feature.rs".to_string())]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        // ANCHOR (the result-handling arm IS the code exercised, not the absent/park paths):
+        // the sdet-author WAS spawned at the seam and returned a normal result. Without this the
+        // advance assertion could pass via the absent-agent no-op instead of the Ok arm.
+        assert!(
+            driver.spawned(ROLE_SDET_AUTHOR),
+            "the sdet-author must be spawned and self-report so the Ok result-handling arm is exercised"
+        );
+        // LOAD-BEARING: the conductor CONTINUED the lifecycle on the sdet's result - proceeding
+        // to the pre-gate commit, the gates, the (trivially-approved) review, and integrate -
+        // EVEN THOUGH the sdet authored nothing. An empty accounting is not a blocker: the build
+        // advances exactly as it would on a normal authored result. Make the Ok arm park instead
+        // of advance (`Ok(_) => Err(parked_spawn(&sdet_id))`) and the unit is held, never
+        // integrating - turning this RED.
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "a normal / empty-accounting sdet-author result must ADVANCE the lifecycle to a merged unit"
+        );
+    }
+
+    #[test]
+    fn an_absent_sdet_author_is_a_clean_no_op_and_the_build_still_integrates() {
+        // spec 33 done-when (this criterion OWNS absent-agent tolerance): if no `sdet-author`
+        // agent is configured, the build seam is a CLEAN NO-OP - the build proceeds exactly as
+        // it did before spec 33, so an operator who has not installed the persona is NEVER
+        // blocked. Here the config has the implementer but NO sdet-author agent; the unit must
+        // still integrate, and the sdet must never be spawned.
+        //
+        // The seam is reached (a real worktree, so `dir` is non-empty - the worktree gate does
+        // NOT short-circuit first), and the absent-agent arm
+        // (`let Some(sdet_def) = self.cfg.agents.get(ROLE_SDET_AUTHOR) else { return Ok(()) }`)
+        // is the code under test. NON-VACUOUS: GREEN on shipped code; RED when that arm is made
+        // NON-tolerant - change its `return Ok(())` to `return Err(Error("no sdet-author".into()))`
+        // and the absent agent propagates an error out of the seam (`spawn_sdet_author(..)?`),
+        // so the unit never integrates and `status == Integrated` fails.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        // Deliberately NO sdet-author agent - the operator has not installed the persona.
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        // The implementer writes the unit's feature into a REAL worktree, so `dir` is non-empty
+        // and control reaches the absent-agent check (not the empty-dir short-circuit before it).
+        let driver = Stub {
+            write_file_by_agent: HashMap::from([("worker".to_string(), "feature.rs".to_string())]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        // ANCHOR (the absent path IS the one exercised): with no sdet-author configured the
+        // conductor never spawns it - distinguishing the clean no-op from a path that spawned
+        // and skipped.
+        assert!(
+            !driver.spawned(ROLE_SDET_AUTHOR),
+            "no sdet-author is configured, so the conductor must not spawn one"
+        );
+        // LOAD-BEARING: the absent sdet-author is a CLEAN no-op - the build proceeds and the
+        // unit integrates exactly as it did before spec 33. Make the absent arm non-tolerant
+        // (`else { return Err(..) }`) and the error propagates out of the seam, holding the unit
+        // - turning this RED.
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "an operator without the sdet-author persona must never be blocked: the unit still integrates"
+        );
+    }
+
+    #[test]
+    fn a_crashed_sdet_author_spawn_does_not_block_the_build_the_lifecycle_proceeds() {
+        // spec 33 result handling, crash disposition (routed to this criterion by c1:
+        // d33-c1 defers the crash arm to c2, and adv-u33c1r2-crash-arm-budget-accounting-c2 +
+        // adv-u33c1-crash-arm-commits-partial-writes ask c2 to STATE and pin it). A sdet-author
+        // spawn that CRASHES (a non-parked spawn/opts error - a usage-limit / non-zero exit,
+        // distinct from a replay PARK) must NOT block the build: the periphery tests are
+        // best-effort, so a crashed sdet is tolerated exactly like an absent one - the conductor
+        // proceeds to the pre-gate commit, gates, review, and integrates the implementer's unit.
+        // The alternative (propagate the crash) would let one operator's flaky sdet agent wedge
+        // every unit; the tolerant proceed keeps the build resilient. Under the real
+        // stepwise/replay driver the sdet spawn only PARKS or replays and never returns a
+        // crash-Err, so this arm is a defensive disposition, unreachable in-loop - which is why
+        // proceeding (not a bespoke remediation path) is the minimal correct choice. The
+        // crash-without-park budget count divergence flagged for c2 is SHARED with the
+        // implementer reserve (conductor.rs), not sdet-specific, so no separate accounting is
+        // owed here.
+        //
+        // NON-VACUOUS: GREEN on shipped code (crash swallowed, `Err(_) => Ok(())`, unit
+        // integrates); RED when the crash is propagated instead - change `Err(_) => Ok(())` to
+        // `Err(e) => Err(e)` and a crashed sdet errors out of the seam (`spawn_sdet_author(..)?`),
+        // so the unit never integrates and `status == Integrated` fails.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents
+            .insert(ROLE_SDET_AUTHOR.into(), agent(ROLE_SDET_AUTHOR));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        // The implementer returns a normal Ok (writing the unit's feature), so control reaches
+        // the sdet seam; the sdet-author's deterministic spawn id CRASHES (a non-parked Err),
+        // exercising the crash arm. `fail_spawn_ids` crashes ONLY the sdet spawn, leaving the
+        // implementer's spawn untouched.
+        let driver = Stub {
+            write_file_by_agent: HashMap::from([("worker".to_string(), "feature.rs".to_string())]),
+            fail_spawn_ids: std::collections::HashSet::from([spawn_id("s", ROLE_SDET_AUTHOR, 0)]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        // ANCHOR (the crash arm IS the code exercised): the sdet-author spawn WAS attempted at
+        // the seam - the driver recorded the call before crashing it - so it is the CRASH
+        // disposition, not an absent-agent skip, that this test drives.
+        assert!(
+            driver.spawned(ROLE_SDET_AUTHOR),
+            "the sdet-author spawn must be attempted at the seam (it then crashes)"
+        );
+        // LOAD-BEARING: a crashed sdet-author does NOT block the build - the conductor swallows
+        // the non-parked error and proceeds to commit + gates + review + integrate, so the unit
+        // reaches Integrated (the implementer's work is not held hostage to a flaky sdet). Make
+        // the crash propagate (`Err(e) => Err(e)`) and the unit never integrates - turning this RED.
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "a crashed sdet-author must not block the build: the lifecycle proceeds and the unit integrates"
+        );
+    }
+
+    #[test]
     fn an_escalated_unit_does_not_integrate_its_code() {
         // The SAFETY invariant: a unit whose three-tier review REJECTED it (here the
         // adjudicator always rejects, so it fails 3 times and ESCALATES) must NOT have
@@ -20092,6 +25176,11 @@ mod tests {
         reject_always: bool,
         calls: Mutex<Vec<String>>,
         adj_prompts: Mutex<Vec<String>>,
+        /// Every prompt the PLANNER was spawned with, in spawn order: the first is the
+        /// initial decomposition prompt, each later one is a critique-driven re-plan
+        /// (re-emit) prompt. Lets a test assert the refine directive the conductor gives
+        /// the planner on a re-emit (spec 31, the id-reuse instruction).
+        planner_prompts: Mutex<Vec<String>>,
     }
     impl CritiqueDriver {
         fn new(plan_emits: Vec<(String, Value)>) -> Self {
@@ -20103,6 +25192,7 @@ mod tests {
                 reject_always: false,
                 calls: Mutex::new(Vec::new()),
                 adj_prompts: Mutex::new(Vec::new()),
+                planner_prompts: Mutex::new(Vec::new()),
             }
         }
         /// A driver whose adjudicator REJECTS the DAG (models a rule 7/8 ownership or
@@ -20140,6 +25230,10 @@ mod tests {
         ) -> Result<AgentResult, Error> {
             self.calls.lock().unwrap().push(a.id.clone());
             if a.id == self.planner {
+                self.planner_prompts
+                    .lock()
+                    .unwrap()
+                    .push(prompt.to_string());
                 for (t, v) in &self.plan_emits {
                     emit(t, v.clone())?;
                 }
@@ -20718,6 +25812,76 @@ mod tests {
             2,
             "an approve releases the PROPOSED fan-out units; workers ran: {:?}",
             driver.calls.lock().unwrap()
+        );
+    }
+
+    #[test]
+    fn the_re_plan_directive_instructs_reusing_the_existing_unit_id() {
+        // Spec 31, done-when 4 (c4): the plan-critique / re-emit prompt the conductor
+        // generates must tell the planner to re-emit a REFINEMENT under the EXACT
+        // existing unit-id (which now updates that unit in place, spec 31 change 1) and
+        // to mint a NEW id only for a genuinely new/split unit. This closes the id-change
+        // that made a refine re-emit deterministically fatal (a same-id skip or a
+        // duplicate-per-criterion escalation the loop could not clear).
+        //
+        // We drive the REAL re_plan path (not a hand-copied literal): a rejecting
+        // adjudicator forces a plan-critique reject, so the conductor re-plans - spawning
+        // the planner a SECOND time with the generated re-emit prompt - then approves the
+        // revision. The captured re-plan prompt must carry the id-reuse directive.
+        let dir = tempfile::tempdir().unwrap();
+        let criterion = "the widget renderer is implemented";
+        std::fs::write(dir.path().join("feature.rs"), format!("// {criterion}\n")).unwrap();
+        let cfg = critique_cfg();
+        let st = Store::open(":memory:").unwrap();
+        let grep = crate::grounder::Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+        // The planner re-emits the SAME id on the re-plan (a refinement, the spec-31
+        // path): change 1 folds it in place, so the revised DAG has one unit per
+        // criterion and the second critique approves.
+        let driver = CritiqueDriver::rejecting(vec![(
+            TYPE_UNIT_PROPOSED.to_string(),
+            json!({"id":"u-a","agent":"worker","criterion":criterion,"needs":[]}),
+        )]);
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: None,
+            criteria: vec![criterion.to_string()],
+        };
+        let _ = run(&cfg, &deps).unwrap();
+
+        // The reject drove a re-plan: the planner ran twice (initial + re-emit).
+        assert_eq!(
+            driver.count("planner"),
+            2,
+            "a plan-critique reject must re-plan; the planner runs its initial + re-emit prompt"
+        );
+        let planner_prompts = driver.planner_prompts.lock().unwrap();
+        let re_plan_prompt = planner_prompts
+            .get(1)
+            .expect("the conductor must generate a re-plan (re-emit) prompt on a reject");
+        // Sanity: this is the re-emit directive, not the initial plan prompt.
+        assert!(
+            re_plan_prompt.contains("REJECTED your previous decomposition"),
+            "the second planner prompt is the plan-critique re-emit directive; got:\n{re_plan_prompt}"
+        );
+        // The refine directive: re-emit under the EXACT existing id updates in place.
+        assert!(
+            re_plan_prompt.contains("re-emit it under its EXACT existing unit-id"),
+            "the re-emit directive must tell the planner to refine under the existing unit-id; got:\n{re_plan_prompt}"
+        );
+        assert!(
+            re_plan_prompt.contains("in place"),
+            "the re-emit directive must state a same-id re-emit UPDATES the unit in place; got:\n{re_plan_prompt}"
+        );
+        // ...and a NEW id is only for a genuinely new/split unit.
+        assert!(
+            re_plan_prompt.contains("use a NEW unit-id ONLY for a genuinely"),
+            "the re-emit directive must reserve a NEW id for a genuinely new/split unit; got:\n{re_plan_prompt}"
         );
     }
 

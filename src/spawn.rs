@@ -44,6 +44,14 @@ pub const ROLE_IMPLEMENTER: &str = "implementer";
 pub const ROLE_ADVERSARY: &str = "adversary";
 /// The role token for a unit review's tier-3 adjudicator (the gating verdict).
 pub const ROLE_ADJUDICATOR: &str = "adjudicator";
+/// The role token for the SDET periphery-test AUTHOR (spec 32): the write-capable role
+/// that authors the periphery test layer (contract / API / integration) at the build
+/// seam - after the implementer emits green and before the pre-gate commit - so no
+/// boundary surface a unit exposes lands untested. A FIRST-CLASS role like the
+/// implementer and the reviewers (its agent id `sdet-author` doubles as the token, as
+/// with the adversary/adjudicator), and DISTINCT from the read-only `sdet` review LENS
+/// (`lens:sdet`), which reviews the implementer's code and cannot write.
+pub const ROLE_SDET_AUTHOR: &str = "sdet-author";
 
 /// The role token for a tier-1 review lens. A stage runs several lenses in parallel,
 /// so the lens's own agent id disambiguates them within one attempt: two lenses on
@@ -135,6 +143,83 @@ pub fn speculation_group_id(unit: &str) -> String {
     format!("{unit}/spec-group")
 }
 
+/// The ROLE token of a spawn id `{unit}/{role}#{attempt}` (a `~retry{n}` respawn suffix
+/// and the `#{attempt}` ordinal both trimmed), or the whole id when it carries no `/`.
+/// The inverse of the `{unit}/{role}` half [`spawn_id`] renders, and the single authority
+/// the review-tier and disposition folds share for recovering a spawn's role.
+///
+/// ```
+/// # use rigger::spawn::{spawn_role, ROLE_ADJUDICATOR};
+/// assert_eq!(spawn_role("u1/adjudicator#0"), ROLE_ADJUDICATOR);
+/// assert_eq!(spawn_role("u1/adjudicator#0~retry2"), ROLE_ADJUDICATOR);
+/// assert_eq!(spawn_role("u1/lens:sdet#1"), "lens:sdet");
+/// ```
+pub fn spawn_role(id: &str) -> &str {
+    let role = id.rsplit_once('/').map(|(_, r)| r).unwrap_or(id);
+    role.split(['#', '~']).next().unwrap_or(role)
+}
+
+/// The remediation ATTEMPT ordinal of a spawn id `{unit}/{role}#{attempt}` (a `~retry{n}`
+/// respawn suffix trimmed first), or `0` when the id carries no `#{attempt}`. The inverse of
+/// the `#{attempt}` ordinal [`spawn_id`] mints - kept here beside [`spawn_role`] so the id
+/// grammar has ONE owner: a reader never re-parses `#`/`~retry` in a view adapter, which would
+/// silently diverge if the separators ever moved with the struct.
+///
+/// ```
+/// # use rigger::spawn::attempt_of;
+/// assert_eq!(attempt_of("u1/implementer#0"), 0);
+/// assert_eq!(attempt_of("u1/implementer#2"), 2);
+/// assert_eq!(attempt_of("u1/adjudicator#1~retry3"), 1);
+/// assert_eq!(attempt_of("no-ordinal"), 0);
+/// ```
+pub fn attempt_of(id: &str) -> u32 {
+    id.rsplit('#')
+        .next()
+        .and_then(|s| s.split('~').next())
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0)
+}
+
+/// The Gap-18 RESPAWN ordinal of a reviewer id `{unit}/{role}#{attempt}~retry{n}` (spec 07):
+/// the `n` after `~retry`, or `0` for an ORIGINAL spawn carrying no `~retry` suffix. Kept
+/// DISTINCT from [`attempt_of`] (which a respawn SHARES with its original) so a caller can tell
+/// a respawn from its original without conflating the two ordinals; the inverse of the `~retry`
+/// suffix [`spawn_retry_id`] mints, owned here alongside the rest of the id grammar.
+///
+/// ```
+/// # use rigger::spawn::retry_of;
+/// assert_eq!(retry_of("u1/adjudicator#1"), 0);
+/// assert_eq!(retry_of("u1/adjudicator#1~retry2"), 2);
+/// ```
+pub fn retry_of(id: &str) -> u32 {
+    id.rsplit_once("~retry")
+        .and_then(|(_, n)| n.parse().ok())
+        .unwrap_or(0)
+}
+
+/// An adjudicator's DISPOSITION, parsed from its recorded verdict line (spec 11): the
+/// finding ids it UPHELD and the rejection `cause`. The single source both the
+/// review-quality metric ([`crate::metrics`] finding-survival) and the context-graph
+/// finding-expiry ([`crate::contextgraph`], spec 25) read, so the two never diverge on
+/// what a review resolved.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Adjudication {
+    /// The finding ids the adjudicator upheld (its `upheld` array) - the review-quality
+    /// metric's finding-survival numerator. NOT the inverse of [`discarded`](Self::discarded):
+    /// a verdict may uphold nothing yet discard nothing (an approve carrying neither), and a
+    /// finding named in neither is still-open, not discarded.
+    pub upheld: Vec<String>,
+    /// The finding ids the adjudicator DISCARDED (its `discarded` array): the review raised
+    /// them but the verdict resolved them as not-to-carry. The EXPLICIT disposition the
+    /// context-graph finding-expiry keys on - never the complement of [`upheld`](Self::upheld),
+    /// so a verdict that omits `upheld` never sweeps a review's still-open findings and a
+    /// reject's own motivating findings stay live unless it named them here.
+    pub discarded: Vec<String>,
+    /// The rejection `cause`, present only on a reject verdict (`None` on approve or when
+    /// the adjudicator declared none).
+    pub cause: Option<String>,
+}
+
 /// A single spawn request: one agent to run, plus the deterministic id that names it
 /// and the display labels the thin driver groups its progress under.
 ///
@@ -186,6 +271,15 @@ pub struct SpawnRequest {
     /// is omitted from the wire.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_wall_clock: Option<u64>,
+    /// The spawn's LIVE WORK-LINE (spec 19a, c4): the unit's criterion (its
+    /// [`Stage::coverage`](crate::config::Stage), trimmed), threaded from the conductor so
+    /// the thin driver can narrate the actual WORK a worker is doing - not just its
+    /// `{unit}:{stage}` progress-group label. Carried onto [`WaveItem`] so the printed wave
+    /// `rigger step` emits surfaces it for `workflows/rigger.js` to render. Omitted from the
+    /// wire when empty (a spawn with no criterion - e.g. a plan/canary stage - serializes
+    /// exactly as before), so it is a purely additive, back-compatible field.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub title: String,
 }
 
 impl SpawnRequest {
@@ -205,6 +299,7 @@ impl SpawnRequest {
             dir: String::new(),
             blast_radius: Vec::new(),
             max_wall_clock: None,
+            title: String::new(),
         }
     }
 
@@ -235,6 +330,12 @@ impl SpawnRequest {
     /// Builder: set the blast-radius (grounded seed files).
     pub fn with_blast_radius(mut self, blast_radius: Vec<String>) -> Self {
         self.blast_radius = blast_radius;
+        self
+    }
+
+    /// Builder: set the live work-line title (the unit's criterion, see [`SpawnRequest::title`]).
+    pub fn with_title(mut self, title: impl Into<String>) -> Self {
+        self.title = title.into();
         self
     }
 
@@ -446,6 +547,60 @@ impl SpawnResult {
             .to_string()
     }
 
+    /// Whether this is an ADJUDICATOR result: the role token of its spawn id (see
+    /// [`spawn_role`]) is [`ROLE_ADJUDICATOR`]. Only an adjudicator result carries a
+    /// gating verdict, so only it disposes a review's findings.
+    pub fn is_adjudicator(&self) -> bool {
+        spawn_role(&self.id) == ROLE_ADJUDICATOR
+    }
+
+    /// Parse this ADJUDICATOR result's grown verdict line (spec 11) into its
+    /// [`Adjudication`]: the LAST JSON object line of the output carrying a `verdict`,
+    /// `upheld`, or `discarded` field yields the upheld and discarded finding ids and the
+    /// rejection cause. Returns `None` when this is not an adjudicator result, or the output
+    /// carries no verdict line (an old-contract adjudicator, or unparseable output) - the
+    /// caller then disposes / attributes nothing. The single disposition-parse authority
+    /// both the review-quality metric and the context-graph finding-expiry read.
+    pub fn adjudication(&self) -> Option<Adjudication> {
+        if !self.is_adjudicator() {
+            return None;
+        }
+        for line in self.output.lines().rev() {
+            let Ok(v) = serde_json::from_str::<Value>(line.trim()) else {
+                continue;
+            };
+            if v.get("verdict").is_none()
+                && v.get("upheld").is_none()
+                && v.get("discarded").is_none()
+            {
+                continue;
+            }
+            // One string-array reader for both id lists, so `upheld` and `discarded` can
+            // never drift on how a verdict array is decoded.
+            let str_array = |key: &str| -> Vec<String> {
+                v.get(key)
+                    .and_then(Value::as_array)
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|x| x.as_str().map(str::to_owned))
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            };
+            let cause = v
+                .get("cause")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .filter(|s| !s.is_empty());
+            return Some(Adjudication {
+                upheld: str_array("upheld"),
+                discarded: str_array("discarded"),
+                cause,
+            });
+        }
+        None
+    }
+
     /// Serialize this result as its [`TYPE_SPAWN_RESULT`] event, ready to append.
     pub fn to_event(&self) -> Result<Event, serde_json::Error> {
         Ok(Event::new(TYPE_SPAWN_RESULT, serde_json::to_vec(self)?))
@@ -577,6 +732,14 @@ pub struct WaveItem {
     /// and run id are not known to a pure fold - `rigger step` fills it in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub marker_path: Option<String>,
+    /// The spawn's LIVE WORK-LINE (spec 19a, c4): the unit's criterion, copied from the
+    /// [`SpawnRequest::title`] so it rides the SLIM manifest the thin driver actually reads.
+    /// The wave `rigger step` prints is a `Vec<WaveItem>`, NOT the request, so a title that
+    /// lived only on the request would render NOTHING - `workflows/rigger.js` narrates from
+    /// this field. Omitted from the wire when empty (an untitled spawn stays byte-identical
+    /// to the historical slim manifest).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub title: String,
 }
 
 impl From<&SpawnRequest> for WaveItem {
@@ -593,6 +756,10 @@ impl From<&SpawnRequest> for WaveItem {
             // Stamped by `rigger step` (cmd_step) from the resolved scratch root + run id;
             // a pure fold has neither, so leave it absent here.
             marker_path: None,
+            // The live work-line rides the slim manifest: the wave the thin driver reads is
+            // a `Vec<WaveItem>`, so the title MUST be copied here or `rigger.js` narrates
+            // nothing (the false-green class this copy closes).
+            title: req.title.clone(),
         }
     }
 }
@@ -630,6 +797,19 @@ pub struct Step {
     /// it, yet the earlier halt's `BudgetExhausted` event stays in the log.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub halted: Option<String>,
+    /// The units that ESCALATED - each exhausted remediation and went terminal WITHOUT
+    /// integrating (§4.6, spec 19c unit 1). Empty on a clean run, and OMITTED from the wire
+    /// then, so a converged run still prints `{"wave":[],"done":true}` unchanged and a wedged
+    /// terminus adds `"escalated":["<unit>",...]`. The thin driver treats a `done` fixpoint
+    /// reached with a NON-EMPTY escalated set as a LOUD stop (a workflow failure naming the
+    /// units), never a clean completion - so a unit that can never pass review no longer
+    /// masquerades as success (a wedged terminus is otherwise indistinguishable from a clean
+    /// one). Like [`halted`](Step::halted) this is stamped by `rigger step` (`cmd_step`) from
+    /// the conductor's projected [`ledger::RunState::escalated_units`], not by the pure
+    /// [`step_result`] log seam (which reasons only about spawn requests/results, not the
+    /// unit lifecycle). Lexically ordered for a deterministic wire.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub escalated: Vec<String>,
 }
 
 /// Compute the [`Step`] a step process prints, from the run stream `events`.
@@ -672,6 +852,10 @@ pub fn step_result(events: &[Event]) -> Result<Step, serde_json::Error> {
         wave,
         done,
         halted: None,
+        // The escalated set is a fact of the projected UNIT lifecycle, not of the spawn
+        // request/result stream this pure seam folds; `rigger step` stamps it from the
+        // conductor's `RunState::escalated_units`, so this leaves it empty (like `halted`).
+        escalated: Vec::new(),
     })
 }
 
@@ -695,6 +879,80 @@ mod tests {
     use super::*;
     use crate::eventstore::sqlite::Store;
     use crate::eventstore::{Direction, Filter, Revision, Subscription};
+
+    #[test]
+    fn adjudication_parses_the_verdict_line_only_for_an_adjudicator_result() {
+        // The single disposition-parse authority (spec 25) both the review-quality metric
+        // and the context-graph finding-expiry read: it self-gates on the adjudicator role,
+        // and reads the LAST verdict line for the upheld ids and the reject cause.
+        let verdict = "some prose the adjudicator wrote\n\
+                       {\"verdict\":\"reject\",\"upheld\":[\"f1\",\"f3\"],\"discarded\":[\"f2\"],\"cause\":\"genuine-defect\"}";
+
+        // An adjudicator result parses.
+        let adj = SpawnResult::ok(spawn_id("u1", ROLE_ADJUDICATOR, 0), verdict)
+            .adjudication()
+            .expect("an adjudicator result with a verdict line parses");
+        assert_eq!(adj.upheld, vec!["f1".to_string(), "f3".to_string()]);
+        // The EXPLICIT discarded array - the disposition the finding-expiry keys on, read
+        // independently of `upheld` (never its complement).
+        assert_eq!(adj.discarded, vec!["f2".to_string()]);
+        assert_eq!(adj.cause.as_deref(), Some("genuine-defect"));
+
+        // The SAME output on a NON-adjudicator (lens) result yields None - only an
+        // adjudicator disposes findings, even if a lens echoed a verdict-shaped line.
+        assert!(
+            SpawnResult::ok(spawn_id("u1", &lens_role("sdet"), 0), verdict)
+                .adjudication()
+                .is_none(),
+            "a non-adjudicator result never disposes findings"
+        );
+
+        // An adjudicator result with no verdict line (old-contract / prose only) is None.
+        assert!(
+            SpawnResult::ok(spawn_id("u1", ROLE_ADJUDICATOR, 0), "just prose, no json")
+                .adjudication()
+                .is_none(),
+            "an adjudicator result with no verdict line disposes nothing"
+        );
+
+        // An approve verdict carries upheld ids but no cause.
+        let approve = SpawnResult::ok(
+            spawn_id("u1", ROLE_ADJUDICATOR, 0),
+            r#"{"verdict":"approve","upheld":["a1"]}"#,
+        )
+        .adjudication()
+        .expect("an approve verdict parses");
+        assert_eq!(approve.upheld, vec!["a1".to_string()]);
+        // No `discarded` array on this verdict -> an empty discard set, NOT the complement
+        // of `upheld`; an approve that upholds one finding discards nothing.
+        assert_eq!(approve.discarded, Vec::<String>::new());
+        assert_eq!(approve.cause, None);
+    }
+
+    #[test]
+    fn the_sdet_author_role_token_is_a_distinct_first_class_role() {
+        // Spec 32 c1: the SDET periphery-test AUTHOR is its OWN role, spawned at the build
+        // seam, separate from the implementer and every reviewer role. Its token names a
+        // distinct spawn so the conductor (the spawn-seam unit) can park it independently.
+        assert_eq!(ROLE_SDET_AUTHOR, "sdet-author");
+        for other in [ROLE_IMPLEMENTER, ROLE_ADVERSARY, ROLE_ADJUDICATOR] {
+            assert_ne!(
+                ROLE_SDET_AUTHOR, other,
+                "the sdet-author is a distinct role, not the implementer or a reviewer"
+            );
+        }
+        // It rounds through the spawn-id vocabulary like any other role: a spawn id built
+        // with it recovers it via `spawn_role`.
+        let id = spawn_id("u1", ROLE_SDET_AUTHOR, 0);
+        assert_eq!(id, "u1/sdet-author#0");
+        assert_eq!(spawn_role(&id), ROLE_SDET_AUTHOR);
+        // ...and it is NOT the read-only `sdet` review LENS role (which authors nothing).
+        assert_ne!(
+            ROLE_SDET_AUTHOR,
+            lens_role("sdet"),
+            "the write-capable author role is distinct from the read-only sdet review lens"
+        );
+    }
 
     #[test]
     fn spawn_id_is_a_pure_deterministic_function_of_the_triple() {
@@ -1416,6 +1674,126 @@ mod tests {
     }
 
     #[test]
+    fn spawn_request_carries_a_title_via_builder_and_omits_it_when_empty() {
+        // The live work-line (spec 19a, c4): a spawn carries its unit's criterion as a
+        // `title` so the thin driver can narrate the actual WORK, not just `<unit>:<stage>`.
+        // The builder sets it; an empty title (the back-compatible default) is omitted from
+        // the wire so a spawn that carries no criterion serializes exactly as before.
+        let titled = SpawnRequest::new("u", "u", ROLE_IMPLEMENTER, 0, "task")
+            .with_title("a test over the production render asserts the blocker line");
+        assert_eq!(
+            titled.title, "a test over the production render asserts the blocker line",
+            "with_title sets the criterion the driver narrates"
+        );
+        let json = serde_json::to_value(&titled).unwrap();
+        assert_eq!(
+            json.get("title").and_then(|v| v.as_str()),
+            Some("a test over the production render asserts the blocker line"),
+            "a set title rides the wire so a wave read off the log carries the work-line"
+        );
+
+        // The default (no builder call) leaves the title empty and omits it from the wire:
+        // an untitled spawn's SpawnRequested event is byte-for-byte the historical shape.
+        let untitled = SpawnRequest::new("u", "u", ROLE_IMPLEMENTER, 0, "task");
+        assert!(untitled.title.is_empty(), "the default title is empty");
+        let json = serde_json::to_value(&untitled).unwrap();
+        assert!(
+            !json.as_object().unwrap().contains_key("title"),
+            "an empty title is omitted from the wire (back-compatible)"
+        );
+    }
+
+    #[test]
+    fn wave_item_copies_the_request_title_so_the_thin_driver_renders_the_work() {
+        // The false-green seam (finding adv-u4-fix-is-necessary-and-sufficient): the wave the
+        // thin driver actually reads is a `Vec<WaveItem>`, NOT the SpawnRequest, so a title on
+        // the request alone renders NOTHING. `WaveItem::from` MUST copy the title, and it must
+        // ride the printed wire, or `rigger.js` has nothing to narrate.
+        let req =
+            SpawnRequest::new("u", "u", ROLE_IMPLEMENTER, 0, "task").with_title("do the work");
+        let item = WaveItem::from(&req);
+        assert_eq!(
+            item.title, "do the work",
+            "WaveItem::from must copy the request's title - the seam rigger.js reads"
+        );
+        let json = serde_json::to_value(&item).unwrap();
+        assert_eq!(
+            json.get("title").and_then(|v| v.as_str()),
+            Some("do the work"),
+            "the title rides the WaveItem wire so the printed wave carries the work-line"
+        );
+
+        // An untitled request yields an untitled item, omitted from the slim manifest.
+        let bare = WaveItem::from(&SpawnRequest::new("u", "u", ROLE_IMPLEMENTER, 0, "task"));
+        assert!(
+            bare.title.is_empty(),
+            "an untitled request yields an untitled item"
+        );
+        let json = serde_json::to_value(&bare).unwrap();
+        assert!(
+            !json.as_object().unwrap().contains_key("title"),
+            "an empty title is omitted from the slim manifest"
+        );
+    }
+
+    #[test]
+    fn step_wave_carries_the_unit_title_end_to_end() {
+        // The regression the false-green demands: assert on the PRINTED Step wave. A parked
+        // request carrying a title, folded through `step_result` into the JSON `rigger step`
+        // prints, must surface the title on the wave item - the exact wire `rigger.js` reads
+        // to narrate the work. This fails if `WaveItem::from` drops the title (the class of
+        // bug that shipped a title on the request but rendered nothing).
+        let store = Store::open(":memory:").unwrap();
+        let req = SpawnRequest::new("u", "u", ROLE_IMPLEMENTER, 0, "task")
+            .with_title("the live work-line shows the actual criterion");
+        park(&store, &req).unwrap();
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let step = step_result(&events).unwrap();
+        let json = serde_json::to_value(&step).unwrap();
+        assert_eq!(
+            json["wave"][0]["title"].as_str(),
+            Some("the live work-line shows the actual criterion"),
+            "the printed Step wave must carry each spawn's title end to end"
+        );
+    }
+
+    #[test]
+    fn the_thin_driver_renders_the_work_line_at_both_sites() {
+        // The RENDER contract (spec 19a, c4): the thin driver narrates the unit's criterion at
+        // BOTH surfaces `runWorker` controls - the per-worker progress-group LABEL and a log()
+        // NARRATOR line - so the live view shows the actual WORK, not just the `{unit}:{stage}`
+        // group. Paired with `step_wave_carries_the_unit_title_end_to_end` (which proves the
+        // title reaches the PRINTED wave), these pins are NOT the dead source-proxy a WaveItem
+        // drop would survive: that wire test catches the drop, and each assertion below pins a
+        // DISTINCT render site so neither can be silently deleted without a red test.
+        let js = include_str!("../workflows/rigger.js");
+
+        // The work-line is the wave item's title (`req.title`), collapsed to one narration line.
+        assert!(
+            js.contains("work = (req.title"),
+            "the work-line must be sourced from the wave item's title"
+        );
+        // Site 1 - the progress-group LABEL is the work-line, never bare `req.id`, so the item
+        // shown live in the /workflows group names the criterion.
+        assert!(
+            js.contains("label: workLabel") && js.contains("workLabel = work"),
+            "the worker's agent() label must be the work-line label, not bare req.id"
+        );
+        // Site 2 - a log() NARRATOR announces the work-line (distinct code from the label), so a
+        // long silent stretch is a visible stream (spec 14) that names the work.
+        assert!(
+            js.contains("starting ${req.id}"),
+            "a log() narrator line must announce the worker's title (the work-line)"
+        );
+        // Additive: the progress-GROUP label (phaseOf) is UNCHANGED - the work-line enriches the
+        // item and narrator, it never fragments a unit's shared `{unit}:{stage}` group.
+        assert!(
+            js.contains("`${req.unit}:${req.stage}`"),
+            "phaseOf stays the unit+stage group label; the work-line render is additive"
+        );
+    }
+
+    #[test]
     fn step_rerun_reprints_unanswered_spawns_so_a_killed_step_orphans_nothing() {
         // Disposable step processes (spec 04): a step killed after parking but before
         // printing must not orphan its spawns. A later step's wave re-prints every
@@ -1515,6 +1893,7 @@ mod tests {
             wave: Vec::new(),
             done: true,
             halted: Some("budget exhausted: 2/2 spawns".into()),
+            escalated: Vec::new(),
         };
         let obj = serde_json::to_value(&halted).unwrap();
         assert_eq!(obj["done"], serde_json::json!(true));
@@ -1527,11 +1906,41 @@ mod tests {
             wave: Vec::new(),
             done: true,
             halted: None,
+            escalated: Vec::new(),
         };
         let wire = serde_json::to_string(&converged).unwrap();
         assert_eq!(
             wire, r#"{"wave":[],"done":true}"#,
-            "a converged step omits `halted`, preserving the historical wire shape"
+            "a converged step omits `halted` AND `escalated`, preserving the historical wire shape"
+        );
+    }
+
+    #[test]
+    fn an_escalated_step_serializes_the_set_and_a_clean_one_omits_it() {
+        // Spec 19c unit 1: the `done`/escalated split, mirroring the `halted` one. A fixpoint
+        // reached with an escalated unit carries the set on the wire so the thin driver stops
+        // loudly on a wedged terminus; a clean fixpoint omits the field entirely, leaving the
+        // historical `{"wave":[],"done":true}` shape byte-for-byte unchanged.
+        let wedged = Step {
+            wave: Vec::new(),
+            done: true,
+            halted: None,
+            escalated: vec!["u-a".into(), "u-b".into()],
+        };
+        let obj = serde_json::to_value(&wedged).unwrap();
+        assert_eq!(obj["done"], serde_json::json!(true));
+        assert_eq!(obj["escalated"], serde_json::json!(["u-a", "u-b"]));
+
+        let clean = Step {
+            wave: Vec::new(),
+            done: true,
+            halted: None,
+            escalated: Vec::new(),
+        };
+        let wire = serde_json::to_string(&clean).unwrap();
+        assert_eq!(
+            wire, r#"{"wave":[],"done":true}"#,
+            "a clean fixpoint omits `escalated`, preserving the historical wire shape"
         );
     }
 

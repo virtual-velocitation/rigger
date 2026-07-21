@@ -46,7 +46,7 @@
 export const meta = {
   name: 'rigger',
   description:
-    'The rigger dev-loop as a native workflow, driven THINLY: a courier agent advances the Rust conductor one frontier via `rigger step`, the script spawns the returned wave of agents natively in parallel (each grounded, personified, and worktree-isolated by the conductor), every worker self-reports via `rigger result`, a worker that dies without reporting has its failure recorded on its behalf, and the loop repeats until done. All decomposition, per-unit implement -> cargo gates -> three-tier adversarial review -> integrate, and bounded remediation live in the conductor; the /workflows progress groups are labelled per unit (`<unit>:<stage>`) at runtime via opts.phase, and meta.phases names only the fixed stages because it must be a static literal.',
+    'Turn a spec into working, reviewed code: it splits the spec into small units, implements and tests each one, reviews every change before merging it, and stops loudly if it gets stuck. Use it when you want a spec built out automatically instead of by hand.',
   phases: [
     { title: 'Plan', detail: 'the conductor sets up the run branch and decomposes the spec into a unit DAG on the first `rigger step` (one global pass)' },
     { title: 'Build', detail: 'per-unit implement + cargo gates; the conductor parks the implementer, the driver spawns it under opts.phase "<unit>:<stage>"' },
@@ -81,6 +81,22 @@ const BASEFLAG = A.base ? ` --base ${A.base}` : ''
 // every step after it adopts the boundary it began. The prior run stays in the log.
 const FRESH = !!A.fresh
 
+// OUTER_WALL_CLOCK_SEC is the driver's OUTER per-agent wall-clock (spec 19c, unit 2): the
+// TOTAL-RUNTIME ceiling past which even an UNBOUNDED-config spawn is abandoned-and-surfaced,
+// so a hung agent surfaces within a bounded time rather than being awaited forever. It applies
+// ONLY to a spawn that carries NO per-spawn `max_wall_clock` (an unbounded config: defaults.
+// max_wall_clock is 0 and the agent set none). Such a spawn is told NO liveness heartbeat and
+// `rigger step`'s sweep - which times out only a POSITIVE bound - never reaches it, so this
+// coarse total-runtime cap is the only backstop that keeps it from stalling the run silently.
+// A BOUNDED spawn is left to the precise, marker-staleness watchdog (raceMarkerStaleness) that
+// deliberately leaves a slow-but-ALIVE, marker-fresh worker in-flight; the outer cap does not
+// touch it. The coarse default is intentionally generous (a legitimately long unbounded spawn
+// should finish well inside it); an operator who wants a tighter, precise bound sets
+// `defaults.max_wall_clock` - exactly what `rigger validate`'s unbounded-wall-clock advisory
+// nudges. An optional `outer_wall_clock` arg field overrides the default (positive seconds),
+// for tuning or a shorter cap in a test harness.
+const OUTER_WALL_CLOCK_SEC = Number(A.outer_wall_clock) > 0 ? Number(A.outer_wall_clock) : 4 * 60 * 60
+
 // The JSON shape `rigger step` prints (see spawn::Step / spawn::SpawnRequest): the wave it
 // newly parked and a `done` fixpoint flag. The wave items carry everything the driver needs
 // to spawn each agent. Optional SpawnRequest fields are omitted from the wire when empty, so
@@ -112,6 +128,10 @@ const STEP = {
           id: { type: 'string' },
           unit: { type: 'string' },
           stage: { type: 'string' },
+          // The live work-line (spec 19a, c4): the unit's criterion, carried on the wave item
+          // so the driver narrates the actual WORK, not just `${unit}:${stage}`. Omitted from
+          // the wire for an untitled spawn; wave items stay open (additionalProperties: true).
+          title: { type: 'string' },
           model: { type: 'string' },
           dir: { type: 'string' },
           tools: { type: 'array', items: { type: 'string' } },
@@ -126,6 +146,14 @@ const STEP = {
     // top level rejects unknown properties, so this MUST be declared or a halted step's
     // JSON would fail validation and the halt would be lost.
     halted: { type: 'string' },
+    // The WEDGED-terminus set (spec 19c, unit 1): `rigger step` lists the units that
+    // ESCALATED - each exhausted remediation and went terminal WITHOUT integrating - so a
+    // `done` fixpoint reached with any of them is NOT a clean completion. Omitted on a clean
+    // run (preserving the historical `{wave,done}` shape); when present the driver stops
+    // LOUDLY on it, exactly as it does for `halted`. Like `halted` this MUST be declared or
+    // the top level (additionalProperties:false) would reject a wedged step's JSON and the
+    // wedge would be lost.
+    escalated: { type: 'array', items: { type: 'string' } },
     error: { type: 'string' },
   },
 }
@@ -231,8 +259,70 @@ async function raceMarkerStaleness(ran, boundSec, ph, id) {
   }
 }
 
+// raceOuterWallClock is the OUTER, TOTAL-RUNTIME wall-clock (spec 19c, unit 2): it races an
+// UNBOUNDED-config spawn's outcome against a single boundSec-long deadline and returns whichever
+// resolves first - the worker's {kind:'done'|'error'} if it finishes, or {kind:'outer'} once
+// boundSec of WALL TIME has elapsed with the worker still running. Unlike raceMarkerStaleness
+// (which polls marker IDLE time and so leaves a marker-fresh worker in-flight forever), this is a
+// hard total-runtime CEILING: it is the backstop for a spawn that carries no per-spawn bound and
+// heartbeats nothing, so no liveness signal exists to poll and only elapsed wall time can bound
+// it. Its caller abandons-and-SURFACES the {kind:'outer'} spawn (records a liveness fault on its
+// behalf, below), so a hung agent under an unbounded config surfaces within a bounded time
+// instead of being awaited forever.
+async function raceOuterWallClock(ran, boundSec) {
+  let timer = null
+  const deadline = new Promise((resolve) => {
+    timer = setTimeout(() => resolve({ kind: 'outer' }), boundSec * 1000)
+  })
+  const outcome = await Promise.race([ran, deadline])
+  if (timer) clearTimeout(timer) // never leave the ceiling timer dangling once the race is decided
+  return outcome
+}
+
+// recordFaultCourier records a fault on a spawn's behalf, atomically and conditionally, via a
+// short courier - the SINGLE authority BOTH fault paths share, never a second parallel courier:
+// a dead worker whose agent() rejected, and an UNBOUNDED worker that blew the outer wall-clock.
+// It runs `rigger result <id> --if-absent --error "<why>"` (plus an optional `--meta`), so the
+// fault lands ONLY when the spawn has no result yet and a worker that self-reported at the last
+// moment is never clobbered (`rigger result` is otherwise last-write-wins). If the courier ITSELF
+// dies we can no longer guarantee the fault was recorded (the conductor's replay could hang on
+// resume), so - exactly as the worker path must - we neither swallow it nor re-throw mid-wave
+// (which would reject parallel() and abort sibling workers): we push it into the shared `fatal`
+// sink so the loop stops LOUDLY once the wave has drained. `why` MUST be shell-safe (the caller
+// neutralizes any untrusted text before passing it); `meta`, when given, is a single-quote-safe
+// JSON string appended as `--meta '<meta>'` (e.g. the `liveness_class` an infra fault carries).
+async function recordFaultCourier(req, ph, why, meta, label, fatal) {
+  const metaFlag = meta ? ` --meta '${meta}'` : ''
+  try {
+    await agent(
+      `You are a rigger COURIER. Record a fault for spawn ${req.id} ON ITS BEHALF, but ONLY if it did not already self-report - a result the worker already recorded must NEVER be overwritten. Run EXACTLY this, from ${REPO}, using Bash (ONE command):\n` +
+        `  cd ${REPO} && rigger result ${req.id} --if-absent --error "${why}"${metaFlag}\n` +
+        `\`--if-absent\` records the fault ATOMICALLY only when the spawn has no result yet; if the worker already reported, it writes nothing and still exits 0, so an existing result is never overwritten (the message is non-empty by construction). Confirm the command exited 0; report nothing else.`,
+      { phase: ph, model: 'haiku', label },
+    )
+  } catch (ce) {
+    // The courier itself died (max turns / crash). Do NOT swallow it and do NOT re-throw (that
+    // would reject parallel() and abort sibling workers mid-wave); record it in the shared `fatal`
+    // sink so the loop stops LOUDLY once the wave has drained.
+    const cmsg = (ce && ce.message ? ce.message : String(ce)).replace(/\s+/g, ' ').trim().slice(0, 200)
+    log(`FATAL: the fault courier for ${req.id} itself failed: ${cmsg} - the fault may be unrecorded`)
+    fatal.push(`${req.id}: ${cmsg}`)
+  }
+}
+
 async function runWorker(req, fatal) {
   const ph = phaseOf(req)
+  // The live work-line (spec 19a, c4): the unit's criterion the conductor threaded onto the
+  // wave item. It rides the RENDER surfaces here - the log() narrator and the per-worker
+  // progress-group label - so an observer sees the actual WORK a spawn is doing, not just its
+  // `${req.unit}:${req.stage}` group. Collapsed to a single line so a multi-line criterion
+  // never breaks the one-line narration; empty for an untitled (plan/canary) spawn, which then
+  // renders exactly as before. The group label (phaseOf) is UNCHANGED - the title is additive.
+  const work = (req.title || '').replace(/\s+/g, ' ').trim()
+  const workLabel = work ? `${req.id} · ${work}` : req.id
+  // Narrate the start of this worker's run so a long silent stretch is a visible line, not a
+  // gap; the title is what turns `${req.unit}:${req.stage}` into the actual criterion.
+  log(`starting ${req.id}${work ? `: ${work}` : ''}`)
   const workdir = req.dir
     ? `Do all your file edits, cargo, and any git commit inside your isolated worktree ${req.dir} (the conductor assigned it and owns its lifecycle; run \`rigger ...\` commands from ${REPO}).`
     : `Work in ${REPO}.`
@@ -267,7 +357,7 @@ async function runWorker(req, fatal) {
     `SCRATCH POLICY (hard rule): any scratch YOU create - probe repos, verification worktrees, test builds, setup rehearsals - lives under ${REPO}/.rigger/tmp/agent-scratch/, NEVER under /tmp or your own session scratchpad (those are on the operator's small OS partition, and a single cargo target or \`rigger setup\` shim install there fills the disk). For any cargo you run outside your assigned worktree, export CARGO_TARGET_DIR=${REPO}/.rigger/tmp/cargo-target first. agent-scratch is swept when the run completes - do not store anything durable there.\n` +
     heartbeat +
     progressNote +
-    `The rigger context tools your task refers to (rigger_emit, rigger_peers) are available here as the CLI commands \`rigger emit <Type> '<json>'\` and \`rigger peers <file>...\`, run from ${REPO}.\n` +
+    `The rigger context tools your task refers to (rigger_emit, rigger_peers) are available here as the CLI commands \`rigger emit --spawn '${req.id}' <Type> '<json>'\` and \`rigger peers <file>...\`, run from ${REPO}. The \`--spawn '${req.id}'\` stamps the emit with YOUR spawn id so the conductor attributes it to you exactly (spec 18) - always include it on every \`rigger emit\`.\n` +
     `When you finish, SELF-REPORT your result by running, from ${REPO}:\n` +
     `  rigger result ${req.id} "<your result: a one-line summary, or your full verdict/findings>"\n` +
     `(pipe multi-line output via stdin instead, e.g. \`rigger result ${req.id}\` reading a heredoc). ` +
@@ -276,22 +366,59 @@ async function runWorker(req, fatal) {
     `--error means YOU were unable to perform your task (blocked, crashed, missing tools) - NEVER a negative conclusion: a reviewer whose verdict is REJECT, or a gate that found failures, COMPLETED its task and reports that verdict/finding as its NORMAL result (an --error replays as a dead worker and aborts the run, not as your verdict). ` +
     `Reporting your result is mandatory - the run cannot advance past this spawn until you do.`
 
-  // Run the worker, but do not await it FOREVER when it carries a wall-clock bound: a HUNG
-  // agent must not stall the whole wave (spec 10, unit 3). Map agent() to a never-rejecting
-  // outcome so abandoning it can never surface as an unhandled rejection after we stop
-  // awaiting it, then race it against the per-worker MARKER-STALENESS watchdog.
-  const ran = agent(prompt, { phase: ph, model: req.model || undefined, label: req.id }).then(
+  // Run the worker, but do not await it FOREVER: a HUNG agent must not stall the whole wave
+  // (spec 10, unit 3; spec 19c, unit 2). Map agent() to a never-rejecting outcome so abandoning
+  // it can never surface as an unhandled rejection after we stop awaiting it, then race it
+  // against the appropriate wall-clock below (marker-staleness for a bounded spawn, the outer
+  // total-runtime ceiling for an unbounded one).
+  const ran = agent(prompt, { phase: ph, model: req.model || undefined, label: workLabel }).then(
     () => ({ kind: 'done' }),
     (e) => ({ kind: 'error', e }),
   )
-  // The watchdog decides on MARKER STALENESS (idle-since-last-touch), NOT total runtime, so a
-  // slow-but-alive worker that keeps its marker fresh is left in-flight and only a genuinely
-  // stale marker is abandoned (see raceMarkerStaleness). Opt-in: only a bounded spawn whose
-  // step-resolved marker path is on the wire, and only where setTimeout exists.
-  const outcome =
-    req.max_wall_clock && marker && typeof setTimeout === 'function'
-      ? await raceMarkerStaleness(ran, req.max_wall_clock, ph, req.id)
-      : await ran
+  // TWO wall-clocks bound this await so a hung agent never stalls the whole wave forever:
+  //  - a BOUNDED spawn (its own per-spawn max_wall_clock AND a step-resolved marker) rides the
+  //    precise MARKER-STALENESS watchdog: it abandons only a genuinely stale (idle-since-last-
+  //    touch) marker and deliberately leaves a slow-but-ALIVE, marker-fresh worker in-flight
+  //    (spec 10, unit 3) - NOT a total-runtime cap.
+  //  - an UNBOUNDED-config spawn (no per-spawn bound, so it is told no heartbeat and carries no
+  //    marker the sweep could ever time out) rides the OUTER total-runtime wall-clock (spec 19c,
+  //    unit 2): a coarse ceiling that abandons-and-surfaces it after OUTER_WALL_CLOCK_SEC so it
+  //    is never awaited forever, the only backstop available when no liveness signal exists.
+  // Both are opt-in on setTimeout existing; without it we await plainly (unchanged).
+  let outcome
+  if (typeof setTimeout !== 'function') {
+    outcome = await ran
+  } else if (req.max_wall_clock && marker) {
+    outcome = await raceMarkerStaleness(ran, req.max_wall_clock, ph, req.id)
+  } else {
+    outcome = await raceOuterWallClock(ran, OUTER_WALL_CLOCK_SEC)
+  }
+
+  if (outcome.kind === 'outer') {
+    // An UNBOUNDED-config spawn blew the OUTER total-runtime ceiling (spec 19c, unit 2). The
+    // `rigger step` liveness sweep can NEVER surface this one - it times out only a POSITIVE
+    // per-spawn bound and this spawn has none - so unlike the marker-staleness `hung` path we
+    // cannot lean on the next sweep. Surface it OURSELVES as an INFRASTRUCTURE fault through the
+    // shared recordFaultCourier authority, stamping the `liveness_class:infra` meta the sweep
+    // itself uses; the next `rigger step` then reads that fault through `hung_spawns` and halts
+    // the wave LOUDLY. Because a liveness fault charges NO remediation attempt, the unit's code is
+    // never blamed for its agent hanging. We then return so parallel() resolves; the abandoned
+    // agent() promise (`ran`) is inert. `no per-spawn max_wall_clock` is what distinguishes this
+    // from the marker-staleness `hung` path below - the sweep can time out a bounded spawn but not
+    // this one, so the driver is its only backstop.
+    log(
+      `worker ${req.id}: no per-spawn max_wall_clock and running past the ${OUTER_WALL_CLOCK_SEC}s OUTER wall-clock - presuming HUNG and abandoning it; recording an infra liveness fault so the next \`rigger step\` halts loudly (no attempt charged). Set defaults.max_wall_clock for a precise per-spawn bound.`,
+    )
+    await recordFaultCourier(
+      req,
+      ph,
+      `worker ${req.id} hung: ran past the ${OUTER_WALL_CLOCK_SEC}s outer wall-clock with no per-spawn max_wall_clock`,
+      '{"liveness_class":"infra"}',
+      `report-hung:${req.id}`,
+      fatal,
+    )
+    return
+  }
 
   if (outcome.kind === 'hung') {
     // The worker's marker went STALE beyond its bound (idle-since-last-touch): presume it HUNG
@@ -334,23 +461,17 @@ async function runWorker(req, fatal) {
       .slice(0, 400)
     const msg = why || 'the worker agent exited without producing a result'
     log(`worker ${req.id} agent rejected: ${msg.slice(0, 80)} - recording its failure on its behalf IF it has not already reported`)
-    try {
-      await agent(
-        `You are a rigger COURIER. The worker for spawn ${req.id} died. Record its failure ON ITS BEHALF, but ONLY if it did not already self-report - a result the worker already recorded must NEVER be overwritten. Run EXACTLY this, from ${REPO}, using Bash (ONE command):\n` +
-          `  cd ${REPO} && rigger result ${req.id} --if-absent --error "worker ${req.id} died without reporting: ${msg}"\n` +
-          `\`--if-absent\` records the failure ATOMICALLY only when the spawn has no result yet; if the worker already reported, it writes nothing and still exits 0, so an existing result is never overwritten (the message is non-empty by construction). Confirm the command exited 0; report nothing else.`,
-        { phase: ph, model: 'haiku', label: `report-death:${req.id}` },
-      )
-    } catch (ce) {
-      // The death-report COURIER itself died (max turns / crash). We can no longer guarantee a
-      // result was recorded for ${req.id}, so the conductor's replay could hang on resume. Do
-      // NOT swallow it and do NOT re-throw (that would reject parallel() and abort sibling
-      // workers mid-wave); record it in the shared `fatal` sink so the loop stops LOUDLY once
-      // the wave has drained.
-      const cmsg = (ce && ce.message ? ce.message : String(ce)).replace(/\s+/g, ' ').trim().slice(0, 200)
-      log(`FATAL: the death-report courier for ${req.id} itself failed: ${cmsg} - the spawn may have no result`)
-      fatal.push(`${req.id}: ${cmsg}`)
-    }
+    // Record the death through the SAME single fault-courier authority the outer-wall-clock path
+    // uses (no `--meta`: a dead worker is a plain failure, not a liveness fault). One concern -
+    // atomic no-clobber fault record + fatal-on-courier-death - implemented once, never twice.
+    await recordFaultCourier(
+      req,
+      ph,
+      `worker ${req.id} died without reporting: ${msg}`,
+      undefined,
+      `report-death:${req.id}`,
+      fatal,
+    )
   }
 }
 
@@ -395,7 +516,7 @@ for (;;) {
   let step
   try {
     step = await agent(
-      `You are a rigger COURIER. Advance the run one frontier and return the wave, verbatim. Run EXACTLY this, from ${REPO}, using Bash with the timeout parameter set to 600000 (a step runs cargo gates inline and can take many minutes; the default timeout kills it mid-work):\n` +
+      `You are a rigger COURIER. Advance the run one frontier and return the wave, verbatim. Run EXACTLY this, from ${REPO}, using Bash with the timeout parameter set to 1800000 (a step integrates ready units by running cargo gates on BOTH feature lanes inline and can take 20+ minutes when several units are ready at once; too short a timeout kills it mid-gate and the courier exhausts its re-run attempts before the gates ever finish):\n` +
         `  cd ${REPO} && CARGO_TARGET_DIR=${REPO}/.rigger/tmp/cargo-target rigger step --spec ${SPEC}${BASEFLAG}${FRESHFLAG}\n` +
         `(the CARGO_TARGET_DIR prefix makes every gate share one build cache instead of cold-building per worktree - keep it exactly as written). ` +
         `It prints ONE line of JSON on stdout: {"wave":[...],"done":<bool>} (a halted run also carries a "halted":"<reason>" field). Return that JSON object EXACTLY as printed, INLINE and IN FULL, in your structured output - no matter how large it is. NEVER write it to a file, return a path, a reference, a summary, or a truncation: the driver can only read your returned JSON, so anything but the verbatim object (all wave items, all their fields) LOSES the wave and stalls the run. Do not drop fields or run anything else. ` +
@@ -452,6 +573,16 @@ for (;;) {
   //    parked). A non-empty wave always implies done === false, so we drain it first (above),
   //    then re-check on the next iteration.
   if (step.done) {
+    // A fixpoint reached with an ESCALATED unit is NOT a clean completion (spec 19c, unit 1):
+    // the unit exhausted remediation and went terminal WITHOUT integrating, yet the run
+    // converged AROUND it, so a bare `done` would report a wedged terminus as success. Surface
+    // it LOUDLY, naming the units - exactly as a budget halt is surfaced - so a unit that can
+    // never pass review is never mistaken for a landed one. Escalation-and-continue mid-run is
+    // untouched: this gates only the FINAL terminus (`done`), never a mid-run wave.
+    const escalated = step.escalated || []
+    if (escalated.length > 0) {
+      stop(`the run reached a fixpoint but ${escalated.length} unit(s) never integrated (escalated after exhausting remediation): ${escalated.join(', ')}`)
+    }
     log(`run complete: the conductor reached a fixpoint after ${waves} wave(s)`)
     break
   }
