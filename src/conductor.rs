@@ -1518,6 +1518,20 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         .map(|u| u.id.clone())
         .collect();
 
+    // Branch-GC on resume (spec 38, criterion 1): reclaim the per-unit branch AND any
+    // lingering worktree of every unit the PRIOR log already marks Integrated. A unit
+    // integrated in an earlier window is seeded into `integrated` above and never
+    // re-enters `run_stage`, so the in-window post-integrate teardown never fires for it
+    // and its `rigger/u/<unit>` branch (and a worktree a killed step left checked out on
+    // it) would otherwise accumulate forever. This is the REPLAY half of the one
+    // branch-GC rule (integrated => no branch, no worktree); the FRESH half is
+    // `run_stage`'s remove-then-delete when a unit integrates in THIS window. Both drive
+    // the same ordered teardown (worktree first, then the idempotent branch delete), so
+    // re-reaching this on a further resume, with both already gone, re-reaches the same
+    // end state. An escalated (or otherwise un-integrated) unit is NOT in this set, so
+    // its branch is retained as evidence.
+    ctx.gc_integrated_branches(&prior);
+
     // Deterministic decomposition baseline (§3.2): when the run is spec-driven
     // (`deps.criteria` non-empty), the conductor itself creates ONE implement unit per
     // acceptance criterion from the fan-out implement TEMPLATE, BEFORE any agent runs.
@@ -5618,6 +5632,56 @@ impl RunCtx<'_> {
         // demote-vs-hold authority as the early-return above and the deferred gate.
         let ratchet = GateRatchet::for_persistent_failure(class);
         (false, false, ratchet, first_evidence)
+    }
+
+    /// Branch-GC as a projection over the log (spec 38, criterion 1): reclaim the
+    /// per-unit `rigger/u/<unit>` branch of every unit `rs` marks `Integrated`, so a
+    /// completed run leaves no per-unit debris and a resume-by-replay re-reaches the
+    /// same end state.
+    ///
+    /// It keys off the projected `Status::Integrated` (the durable, event-sourced
+    /// signal) rather than the transient `run_stage` return, so it is the REPLAY half
+    /// of the one branch-GC rule: run start hands it the PRIOR state so a unit
+    /// integrated in an earlier window - never re-entering `run_stage` on resume - is
+    /// still reclaimed, closing the accumulation vector the in-window post-integrate
+    /// delete cannot reach.
+    ///
+    /// The teardown is TWO ordered steps, mirroring the FRESH half (`run_stage`'s
+    /// `w.remove()` THEN `Worktree::delete_branch` on a live integrate): for each unit,
+    /// FIRST remove any worktree still checked out on its branch, THEN delete the branch.
+    /// The order is load-bearing - git REFUSES to `branch -D` a branch checked out in a
+    /// worktree. A unit whose worktree LINGERS (a step process killed between its
+    /// `UnitIntegrated` emit and `Worktree::remove`) is the resume case the reaper
+    /// (`worktree::sweep_terminal`, on the `rigger step` path only) does NOT cover on the
+    /// `rigger run` resume path, so this reclaims it "if the reaper has not": a
+    /// branch-only reclaim would fail the delete on the lingering worktree and leave BOTH
+    /// the branch and the worktree as debris. Both steps drive the SHARED single-authority
+    /// primitives (`worktree::reclaim_worktree_on_branch` composed from the same
+    /// `sweep_terminal`/`Worktree::remove` machinery; `Worktree::delete_branch`), not a
+    /// parallel reconciled implementation.
+    ///
+    /// An ESCALATED or otherwise un-integrated unit is NOT in this set, so its branch and
+    /// worktree are RETAINED as the human's evidence. Both steps are idempotent (a no-op
+    /// when the worktree is already gone / the branch already deleted), so re-reaching
+    /// this on a further resume re-reaches the SAME end state, never an error.
+    fn gc_integrated_branches(&self, rs: &ledger::RunState) {
+        for u in rs.units.values() {
+            if u.status != ledger::Status::Integrated {
+                continue;
+            }
+            // Prefer the branch recorded on the unit's `UnitStarted`; fall back to the
+            // canonical derivation for any unit whose event carried none.
+            let branch = if u.branch.is_empty() {
+                unit_branch(&u.id)
+            } else {
+                u.branch.clone()
+            };
+            // Ordered teardown, mirroring the fresh half: remove the lingering worktree
+            // FIRST (or `git branch -D` refuses the checked-out branch and BOTH survive),
+            // THEN delete the branch. Best-effort exactly like the fresh half's `let _`.
+            let _ = worktree::reclaim_worktree_on_branch(&self.deps.repo, &branch);
+            let _ = Worktree::delete_branch(&self.deps.repo, &branch);
+        }
     }
 
     /// Run the workflow's DEFERRED gates ONCE at the run's phase boundary (§4.3).
@@ -13057,6 +13121,510 @@ mod tests {
         assert!(
             repo.path().join("feature.rs").exists(),
             "the prior window's committed file must land in the base on resume-integrate"
+        );
+    }
+
+    #[test]
+    fn branch_gc_reclaims_integrated_units_and_retains_escalated_ones_on_resume() {
+        // Spec 38, criterion 1: branch-GC is a PROJECTION over the log, so a resume
+        // re-reaches the same end state. A unit that reached `integrated` in a PRIOR
+        // window is seeded into `integrated` at run start and never re-enters
+        // `run_stage` (its worktree is gone, its work merged) - so the inline
+        // post-integrate delete never fires for it. Without the resume-time reclaim its
+        // `rigger/u/<unit>` branch survives forever (the "15 accumulated" debris the
+        // spec corrects). An ESCALATED unit is NOT integrated: the human needs its
+        // branch as evidence, so it is RETAINED. Re-folding the same integration on a
+        // second resume, with the branch already gone, is a no-op (idempotent).
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+
+        // Two prior-window units, each with a durable branch carrying committed work:
+        // `landed` reached integrated; `stuck` escalated at the retry bound.
+        commit_on_unit_branch(&repo_path, "landed", "landed.rs", "fn landed() {}\n");
+        commit_on_unit_branch(&repo_path, "stuck", "stuck.rs", "fn stuck() {}\n");
+        assert!(
+            branch_present(&repo_path, &unit_branch("landed")),
+            "precondition: the integrated unit's branch exists before the run"
+        );
+        assert!(
+            branch_present(&repo_path, &unit_branch("stuck")),
+            "precondition: the escalated unit's branch exists before the run"
+        );
+
+        let st = Store::open(":memory:").unwrap();
+        seed_events_in_run(
+            &st,
+            &[],
+            &[
+                Event::new(
+                    ledger::TYPE_UNIT_STARTED,
+                    serde_json::to_vec(
+                        &json!({"id": "landed", "agent": "worker", "branch": unit_branch("landed")}),
+                    )
+                    .unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_INTEGRATED,
+                    serde_json::to_vec(&json!({"id": "landed", "commit": "abc123"})).unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_STARTED,
+                    serde_json::to_vec(
+                        &json!({"id": "stuck", "agent": "worker", "branch": unit_branch("stuck")}),
+                    )
+                    .unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_ESCALATED,
+                    serde_json::to_vec(&json!({"id": "stuck"})).unwrap(),
+                ),
+            ],
+        );
+
+        let cfg = Config::default();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        // The projection agrees on the terminal states the sweep keys off.
+        assert_eq!(rs.units["landed"].status, ledger::Status::Integrated);
+        assert_eq!(rs.units["stuck"].status, ledger::Status::Escalated);
+
+        assert!(
+            !branch_present(&repo_path, &unit_branch("landed")),
+            "the integrated unit's per-unit branch must be reclaimed on resume"
+        );
+        assert!(
+            branch_present(&repo_path, &unit_branch("stuck")),
+            "the escalated unit's branch must be RETAINED as the human's evidence"
+        );
+
+        // Idempotent on a further resume-by-replay: re-folding the same integration
+        // whose branch is already gone is a no-op, never an error.
+        let rs2 = run(&cfg, &deps).unwrap();
+        assert_eq!(rs2.units["landed"].status, ledger::Status::Integrated);
+        assert!(
+            !branch_present(&repo_path, &unit_branch("landed")),
+            "the reclaimed branch stays gone (idempotent)"
+        );
+        assert!(
+            branch_present(&repo_path, &unit_branch("stuck")),
+            "the escalated unit's branch is still retained on the second resume"
+        );
+    }
+
+    /// Commit throwaway work on an ARBITRARY branch name (periphery seed helper). The
+    /// sibling `commit_on_unit_branch` only ever commits on the CANONICAL
+    /// `unit_branch(id)`, so it cannot stage a unit whose RECORDED branch differs from
+    /// that derivation; this stages exactly that case for the recorded-branch-preference
+    /// boundary below. Mirrors `commit_on_unit_branch`: a one-file worktree, committed and
+    /// immediately removed, leaving the branch carrying real work.
+    fn commit_on_named_branch(repo: &str, branch: &str, file: &str, content: &str) {
+        let dir = std::env::temp_dir().join(format!(
+            "rigger-seed-{}-{}",
+            sanitize_for_path(branch),
+            &uuid::Uuid::new_v4().to_string()[..8]
+        ));
+        let wt = crate::worktree::Worktree::create(repo, dir.to_str().unwrap(), branch).unwrap();
+        std::fs::write(Path::new(&wt.dir).join(file), content).unwrap();
+        let committed = wt.commit("rigger: prior window work").unwrap();
+        assert!(!committed.is_empty(), "the prior window must commit work");
+        wt.remove().unwrap();
+        assert!(
+            crate::worktree::Worktree::branch_has_work(repo, branch),
+            "the seeded branch must carry committed work"
+        );
+    }
+
+    // Periphery layer (SDET), spec 38 criterion 1: the inside-out test
+    // `branch_gc_reclaims_integrated_units_and_retains_escalated_ones_on_resume` proves
+    // the happy path of the ONE cross-module seam this unit adds - `run` at resume folds
+    // the prior log and calls `gc_integrated_branches`, which projects
+    // `ledger::RunState` and drives `Worktree::delete_branch` per Integrated unit. That
+    // seam's branch-name resolution has two arms:
+    //   let branch = if u.branch.is_empty() { unit_branch(&u.id) } else { u.branch.clone() };
+    // The unit test only ever seeds `branch == unit_branch(id)` (non-empty AND equal to
+    // the derivation), so it exercises neither the `is_empty()` FALLBACK arm nor the
+    // RECORDED-vs-derived distinction. The two tests below drive the same public `run`
+    // seam and pin those two boundary edges the inside-out layer is structurally blind to.
+
+    #[test]
+    fn branch_gc_falls_back_to_the_derived_branch_when_unitstarted_recorded_no_branch() {
+        // Edge: an integrated unit whose `UnitStarted` carried NO `branch` field. The
+        // fold defaults `u.branch` to empty (serde default on `UnitStarted::branch`), so
+        // the sweep's `u.branch.is_empty()` arm must reclaim it by the DERIVED name.
+        // Without that arm such a unit's `rigger/u/<unit>` branch accumulates forever -
+        // the very debris spec 38 corrects - and the unit test never reaches it.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+
+        // The prior window committed `orphan` on its canonical branch; the seeded
+        // `UnitStarted` omits `branch`, so only the DERIVED name can reclaim it.
+        commit_on_unit_branch(&repo_path, "orphan", "orphan.rs", "fn orphan() {}\n");
+        assert!(
+            branch_present(&repo_path, &unit_branch("orphan")),
+            "precondition: the integrated unit's derived branch exists before the run"
+        );
+
+        let st = Store::open(":memory:").unwrap();
+        seed_events_in_run(
+            &st,
+            &[],
+            &[
+                // No `branch` field -> the fold leaves `u.branch` empty (serde default).
+                Event::new(
+                    ledger::TYPE_UNIT_STARTED,
+                    serde_json::to_vec(&json!({"id": "orphan", "agent": "worker"})).unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_INTEGRATED,
+                    serde_json::to_vec(&json!({"id": "orphan", "commit": "def456"})).unwrap(),
+                ),
+            ],
+        );
+
+        let cfg = Config::default();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        assert_eq!(rs.units["orphan"].status, ledger::Status::Integrated);
+        assert!(
+            rs.units["orphan"].branch.is_empty(),
+            "fold precondition: no recorded branch, so only the derivation can reclaim it"
+        );
+        assert!(
+            !branch_present(&repo_path, &unit_branch("orphan")),
+            "an integrated unit whose UnitStarted recorded no branch is reclaimed via the DERIVED name"
+        );
+    }
+
+    #[test]
+    fn branch_gc_reclaims_the_recorded_branch_not_the_derived_name_when_they_differ() {
+        // Edge: an integrated unit whose RECORDED branch differs from today's
+        // `unit_branch(id)` derivation. The sweep PREFERS the recorded value
+        // (`else { u.branch.clone() }`); a "simplification" to always derive
+        // `unit_branch(&u.id)` would pass the unit test (there recorded == derived) yet
+        // strand every unit recorded under an older naming scheme - the back-compat
+        // vector. A canonical-name decoy proves the sweep reclaims the RECORDED ref and
+        // leaves the derivation untouched.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+
+        let recorded = "rigger/u/relic-legacy-scheme";
+        assert_ne!(
+            recorded,
+            unit_branch("relic"),
+            "the recorded branch must DIFFER from the derivation for this test to discriminate"
+        );
+
+        commit_on_named_branch(&repo_path, recorded, "relic.rs", "fn relic() {}\n");
+        commit_on_unit_branch(&repo_path, "relic", "decoy.rs", "fn decoy() {}\n");
+        assert!(branch_present(&repo_path, recorded));
+        assert!(branch_present(&repo_path, &unit_branch("relic")));
+
+        let st = Store::open(":memory:").unwrap();
+        seed_events_in_run(
+            &st,
+            &[],
+            &[
+                Event::new(
+                    ledger::TYPE_UNIT_STARTED,
+                    serde_json::to_vec(
+                        &json!({"id": "relic", "agent": "worker", "branch": recorded}),
+                    )
+                    .unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_INTEGRATED,
+                    serde_json::to_vec(&json!({"id": "relic", "commit": "aaa111"})).unwrap(),
+                ),
+            ],
+        );
+
+        let cfg = Config::default();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        assert_eq!(rs.units["relic"].status, ledger::Status::Integrated);
+        assert_eq!(rs.units["relic"].branch, recorded);
+        assert!(
+            !branch_present(&repo_path, recorded),
+            "the sweep must reclaim the unit's RECORDED branch"
+        );
+        assert!(
+            branch_present(&repo_path, &unit_branch("relic")),
+            "the canonical-derived branch is a different ref and must be left untouched"
+        );
+    }
+
+    /// Seed an integrated unit's DURABLE branch WITH a worktree STILL checked out on it -
+    /// the crash residue branch-GC must reclaim on resume. A step process killed between
+    /// its `UnitIntegrated` emit and `Worktree::remove` leaves exactly this: the branch
+    /// carries committed work AND a worktree lingers on it, so `git branch -D` REFUSES to
+    /// delete the branch until the worktree is torn down. Unlike `commit_on_unit_branch`
+    /// (which `wt.remove()`s the seed worktree, leaving only the branch, the
+    /// worktree-already-gone happy path), this LEAVES the worktree registered. Returns the
+    /// lingering worktree dir and its owning `TempDir`, kept alive by the caller so the dir
+    /// survives into `run()` and is cleaned only when the test ends.
+    fn seed_lingering_worktree_on_unit_branch(
+        repo: &str,
+        unit_id: &str,
+        file: &str,
+        content: &str,
+    ) -> (String, tempfile::TempDir) {
+        let parent = tempfile::tempdir().unwrap();
+        // A UNIT_WORKTREE_PREFIX-named dir so the residue is realistic (it also owns a
+        // `cargo-target-*` sibling the reclaim path is responsible for).
+        let dir = parent.path().join("rigger-wt-lingering");
+        let branch = unit_branch(unit_id);
+        let wt = crate::worktree::Worktree::create(repo, dir.to_str().unwrap(), &branch).unwrap();
+        std::fs::write(Path::new(&wt.dir).join(file), content).unwrap();
+        let committed = wt
+            .commit("rigger: prior window work (worktree left lingering)")
+            .unwrap();
+        assert!(
+            !committed.is_empty(),
+            "the prior window must commit work on the branch"
+        );
+        // Deliberately DO NOT call `wt.remove()`: the worktree lingers on the branch,
+        // exactly as a killed step process leaves it.
+        (wt.dir.clone(), parent)
+    }
+
+    /// Whether any git worktree is still registered on `branch` (parsed from
+    /// `git worktree list --porcelain`). A stale registration keeps git treating the
+    /// branch as checked-out, so `git branch -D` refuses it - the proof a reclaim that
+    /// only deletes the dir off disk, without deregistering, would fail.
+    fn worktree_registered_on(repo: &str, branch: &str) -> bool {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(["worktree", "list", "--porcelain"])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .any(|l| l.trim() == format!("branch refs/heads/{branch}"))
+    }
+
+    #[test]
+    fn branch_gc_removes_a_lingering_worktree_before_reclaiming_the_branch_on_resume() {
+        // Resume-safety (spec 38 criterion 1 + its DESIGN clause "delete its
+        // rigger/u/<unit> branch AND remove its worktree if the reaper has not"): a unit
+        // integrated in a PRIOR window can leave BOTH a durable branch AND a worktree still
+        // checked out on it - a step process killed between its UnitIntegrated emit and
+        // Worktree::remove. The reaper (sweep_terminal) runs only on the `rigger step`
+        // path, NOT on the `rigger run` resume path this exercises, so branch-GC itself
+        // must reclaim the residue. git REFUSES to `branch -D` a branch checked out in a
+        // worktree, so a branch-only reclaim (delete_branch alone, its Err swallowed)
+        // leaves BOTH the branch and the worktree - the exact per-unit debris this
+        // criterion eliminates. The GC must mirror run_stage's ORDERED teardown: remove the
+        // lingering worktree FIRST, THEN delete the branch, so a resume-by-replay
+        // re-reaches {branch gone, worktree gone}.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+
+        let (wt_dir, _parent) = seed_lingering_worktree_on_unit_branch(
+            &repo_path,
+            "landed",
+            "landed.rs",
+            "fn landed() {}\n",
+        );
+        assert!(
+            branch_present(&repo_path, &unit_branch("landed")),
+            "precondition: the integrated unit's branch exists before the run"
+        );
+        assert!(
+            Path::new(&wt_dir).is_dir(),
+            "precondition: a worktree lingers checked out on the branch before the run"
+        );
+        assert!(
+            worktree_registered_on(&repo_path, &unit_branch("landed")),
+            "precondition: the lingering worktree is registered on the branch"
+        );
+        // The lingering worktree makes a bare `branch -D` FAIL, so a branch-only reclaim
+        // cannot succeed - the worktree MUST be torn down first. This is exactly the arm
+        // whose swallowed Err the branch-only implementation dropped.
+        assert!(
+            crate::worktree::Worktree::delete_branch(&repo_path, &unit_branch("landed")).is_err(),
+            "precondition: git refuses to delete a branch still checked out in a worktree"
+        );
+
+        let st = Store::open(":memory:").unwrap();
+        seed_events_in_run(
+            &st,
+            &[],
+            &[
+                Event::new(
+                    ledger::TYPE_UNIT_STARTED,
+                    serde_json::to_vec(
+                        &json!({"id": "landed", "agent": "worker", "branch": unit_branch("landed")}),
+                    )
+                    .unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_INTEGRATED,
+                    serde_json::to_vec(&json!({"id": "landed", "commit": "abc123"})).unwrap(),
+                ),
+            ],
+        );
+
+        let cfg = Config::default();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        assert_eq!(rs.units["landed"].status, ledger::Status::Integrated);
+        // BOTH must be reclaimed. The branch being gone PROVES the worktree was removed
+        // FIRST: git would refuse `branch -D` otherwise (the precondition above), so a
+        // reclaimed branch is only reachable through the ordered teardown.
+        assert!(
+            !branch_present(&repo_path, &unit_branch("landed")),
+            "the integrated unit's branch must be reclaimed - which requires removing the lingering worktree first"
+        );
+        assert!(
+            !Path::new(&wt_dir).exists(),
+            "the lingering worktree dir must be torn down on resume, not left as debris"
+        );
+        assert!(
+            !worktree_registered_on(&repo_path, &unit_branch("landed")),
+            "no worktree registration for the branch may survive the reclaim"
+        );
+
+        // Idempotent on a further resume-by-replay: the branch and worktree are already
+        // gone, so re-reaching the reclaim is a no-op, never an error.
+        let rs2 = run(&cfg, &deps).unwrap();
+        assert_eq!(rs2.units["landed"].status, ledger::Status::Integrated);
+        assert!(!branch_present(&repo_path, &unit_branch("landed")));
+        assert!(!Path::new(&wt_dir).exists());
+    }
+
+    #[test]
+    fn branch_gc_reclaims_every_integrated_unit_in_one_resume_not_just_the_first() {
+        // Periphery layer (SDET), spec 38 criterion 1: `gc_integrated_branches` is a LOOP
+        // over `rs.units` (`for u in rs.units.values()`), yet every other branch-GC test
+        // seeds exactly ONE integrated unit, so a regression that reclaimed only the first
+        // integrated unit found (a `find`/`break` where a `for` is required) would pass them
+        // all while leaking the debris the criterion eliminates. This drives the public
+        // `run()` resume seam with TWO integrated units plus one escalated, and pins that
+        // BOTH integrated branches are reclaimed in a single pass while the escalated one is
+        // retained as the human's evidence.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+
+        commit_on_unit_branch(&repo_path, "alpha", "alpha.rs", "fn alpha() {}\n");
+        commit_on_unit_branch(&repo_path, "beta", "beta.rs", "fn beta() {}\n");
+        commit_on_unit_branch(&repo_path, "stuck", "stuck.rs", "fn stuck() {}\n");
+        for u in ["alpha", "beta", "stuck"] {
+            assert!(
+                branch_present(&repo_path, &unit_branch(u)),
+                "precondition: {u}'s branch exists before the run"
+            );
+        }
+
+        let st = Store::open(":memory:").unwrap();
+        seed_events_in_run(
+            &st,
+            &[],
+            &[
+                Event::new(
+                    ledger::TYPE_UNIT_STARTED,
+                    serde_json::to_vec(
+                        &json!({"id": "alpha", "agent": "worker", "branch": unit_branch("alpha")}),
+                    )
+                    .unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_INTEGRATED,
+                    serde_json::to_vec(&json!({"id": "alpha", "commit": "a11"})).unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_STARTED,
+                    serde_json::to_vec(
+                        &json!({"id": "beta", "agent": "worker", "branch": unit_branch("beta")}),
+                    )
+                    .unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_INTEGRATED,
+                    serde_json::to_vec(&json!({"id": "beta", "commit": "b22"})).unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_STARTED,
+                    serde_json::to_vec(
+                        &json!({"id": "stuck", "agent": "worker", "branch": unit_branch("stuck")}),
+                    )
+                    .unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_ESCALATED,
+                    serde_json::to_vec(&json!({"id": "stuck"})).unwrap(),
+                ),
+            ],
+        );
+
+        let cfg = Config::default();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        assert_eq!(rs.units["alpha"].status, ledger::Status::Integrated);
+        assert_eq!(rs.units["beta"].status, ledger::Status::Integrated);
+        assert_eq!(rs.units["stuck"].status, ledger::Status::Escalated);
+
+        assert!(
+            !branch_present(&repo_path, &unit_branch("alpha")),
+            "the first integrated unit's branch must be reclaimed"
+        );
+        assert!(
+            !branch_present(&repo_path, &unit_branch("beta")),
+            "the SECOND integrated unit's branch must ALSO be reclaimed in the same resume"
+        );
+        assert!(
+            branch_present(&repo_path, &unit_branch("stuck")),
+            "the escalated unit's branch must be retained as the human's evidence"
         );
     }
 

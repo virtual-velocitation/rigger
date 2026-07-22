@@ -55,7 +55,7 @@ fn try_fetch_served_root_page() -> Option<String> {
     // A detached server thread: `serve` loops until the process ends; we drive one request. If its
     // internal bind lost the race (EADDRINUSE), the thread returns at once and nobody answers here.
     std::thread::spawn(move || {
-        let _ = dash::serve(addr, provider, 3);
+        let _ = dash::serve(addr, provider, 3, "rigger-run", "origin/main");
     });
 
     // Connect within a SHORT budget: `serve` binds within a few ms when it wins the port, so a

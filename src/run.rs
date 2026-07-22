@@ -43,6 +43,17 @@ pub const META_DEFINITION: &str = "definition";
 /// record (spec 13, unit 1), so the supersession `old -> new` is legible in the log itself.
 pub const META_DEFINITION_PRIOR: &str = "definition_prior";
 
+/// The metadata key carrying the resolved run-branch base a run anchored on (spec 38,
+/// criterion 3), stamped on the run's [`TYPE_RUN_STARTED`] event at mint. Persisting the base
+/// here - stamped ONCE, when the run starts, from the same resolution `rigger run/step/workflow`
+/// anchors the run branch with - is what lets a later `rigger status`/`rigger dash` name the
+/// run's ACTUAL base in its ready-to-release handoff. Those surfaces run without the run's
+/// `--base` flag on their argv and so cannot re-resolve it; reading this one persisted value
+/// ([`current_run_base`]) keeps status, the dash, and the end-of-run summary on ONE base. It is
+/// metadata, not a new event type, and empty on a run started before base persistence existed
+/// (a legacy start), where the reader falls back to the live env/default resolution.
+pub const META_BASE: &str = "base";
+
 /// The body of a [`TYPE_RUN_STARTED`] event: the run id, the criteria fingerprint, and the
 /// pinned definition hash.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -64,6 +75,13 @@ pub struct RunStarted {
     /// the current hash.
     #[serde(default)]
     pub definition: String,
+    /// The resolved run-branch base this run anchored on (spec 38, criterion 3): stamped as
+    /// [`META_BASE`] metadata on the emitted event, NOT serialized into the body (so it never
+    /// enters the criteria/definition fingerprint a resume compares). Read back only via the
+    /// event's metadata ([`current_run_base`]), so this field is write-only - it carries the
+    /// base into [`Self::to_event`] at mint and is left empty (`#[serde(skip)]`) on decode.
+    #[serde(skip)]
+    pub base: String,
 }
 
 impl RunStarted {
@@ -74,10 +92,16 @@ impl RunStarted {
     }
 
     /// Build the appendable event for this run start, with the run id stamped in
-    /// [`META_RUN_ID`] so the RunStarted itself belongs to its own run's slice.
+    /// [`META_RUN_ID`] so the RunStarted itself belongs to its own run's slice, and the
+    /// resolved run-branch base stamped in [`META_BASE`] (only when non-empty) so status/dash
+    /// can name the run's actual base (spec 38, criterion 3).
     fn to_event(&self) -> Result<Event, serde_json::Error> {
-        Ok(Event::new(TYPE_RUN_STARTED, serde_json::to_vec(self)?)
-            .with_meta(META_RUN_ID, &self.run))
+        let mut ev = Event::new(TYPE_RUN_STARTED, serde_json::to_vec(self)?)
+            .with_meta(META_RUN_ID, &self.run);
+        if !self.base.is_empty() {
+            ev = ev.with_meta(META_BASE, &self.base);
+        }
+        Ok(ev)
     }
 }
 
@@ -110,6 +134,26 @@ pub fn current_run(events: &[Event]) -> &[Event] {
 /// The id of the current (latest) run, or `None` when no run has started.
 pub fn current_run_id(events: &[Event]) -> Option<String> {
     latest(events).map(|r| r.run)
+}
+
+/// The resolved run-branch base the current (latest) run anchored on, read from its
+/// [`TYPE_RUN_STARTED`] event's [`META_BASE`] metadata (spec 38, criterion 3). `None` when no
+/// run has started, or when the latest run was started before base persistence existed (a
+/// legacy start carries no `META_BASE`) or without a real repo (an empty base is not stamped).
+///
+/// This is the SINGLE persisted-base authority: `rigger status`, `rigger dash`, and the
+/// end-of-run summary all read the run's actual base from here, so they name ONE base even
+/// though status/dash run without the run's `--base` flag on their argv. A caller falls back
+/// to the live env/default resolution ([`crate::resolve_run_base`] in `main`) only when this
+/// returns `None`, preserving legacy behavior for a run that never persisted its base.
+pub fn current_run_base(events: &[Event]) -> Option<String> {
+    events
+        .iter()
+        .rev()
+        .find(|e| e.type_ == TYPE_RUN_STARTED)
+        .and_then(|e| e.meta.get(META_BASE))
+        .filter(|b| !b.is_empty())
+        .cloned()
 }
 
 /// How a provenance-bearing event is attributed to a run (spec 21, unit 1).
@@ -294,8 +338,12 @@ pub fn ensure_started(store: &dyn EventStore, criteria: &[String]) -> Result<Str
     // The UNPINNED run start: an empty definition never drifts, so this only ever adopts or
     // mints - the historical behavior. The conductor calls this (definition pinning is
     // enforced once at the CLI boundary via [`ensure_started_pinned`]), so the two never
-    // fight over the boundary: the CLI ensures the pinned run, the conductor adopts it.
-    Ok(ensure_started_pinned(store, criteria, "", false)?
+    // fight over the boundary: the CLI ensures the pinned run, the conductor adopts it. The
+    // conductor does not resolve the run-branch base (that is the CLI's concern), so it passes
+    // an empty base here: in every real run entry the CLI has already minted the RunStarted
+    // WITH its resolved base via [`ensure_started_pinned`], and this call then ADOPTS it, so a
+    // mint here (empty base) only happens on a path that has no base to persist.
+    Ok(ensure_started_pinned(store, criteria, "", false, "")?
         .run()
         .to_string())
 }
@@ -318,11 +366,17 @@ pub fn ensure_started(store: &dyn EventStore, criteria: &[String]) -> Result<Str
 /// - No matching run (a NEW campaign / empty store): a FRESH run is minted pinning
 ///   `definition` and returned as [`RunStart::Ready`]. New runs are always free - only a LIVE
 ///   run pins (R1's edit-to-reconfigure holds for run boundaries).
+///
+/// `base` is the resolved run-branch base to persist on a freshly-minted RunStarted (spec 38,
+/// criterion 3): it flows through to [`start_fresh`] and is stamped as [`META_BASE`] so
+/// status/dash later name the run's actual base. It is used ONLY on the mint path - an ADOPTED
+/// run keeps the base its original start stamped, so a resume never re-stamps or overwrites it.
 pub fn ensure_started_pinned(
     store: &dyn EventStore,
     criteria: &[String],
     definition: &str,
     rebase: bool,
+    base: &str,
 ) -> Result<RunStart, Error> {
     let events = store.read_stream(STREAM, 0, Direction::Forward)?;
     if let Some(run) = latest(&events) {
@@ -349,8 +403,11 @@ pub fn ensure_started_pinned(
             });
         }
     }
-    // A new campaign / empty store: a fresh run is always free - it pins the current definition.
-    Ok(RunStart::Ready(start_fresh(store, criteria, definition)?))
+    // A new campaign / empty store: a fresh run is always free - it pins the current definition
+    // and persists the resolved run-branch base.
+    Ok(RunStart::Ready(start_fresh(
+        store, criteria, definition, base,
+    )?))
 }
 
 /// Begin a FRESH run for `criteria`, UNCONDITIONALLY: mint a new uuid `RunStarted` and
@@ -375,15 +432,23 @@ pub fn ensure_started_pinned(
 /// `definition` is the on-disk definition hash the new run PINS (spec 13, unit 1): a fresh
 /// boundary is always free (it never drifts against a prior pin), and pinning the current
 /// definition here is what lets a later live-run step detect a mid-campaign edit.
+///
+/// `base` is the resolved run-branch base to persist as [`META_BASE`] metadata on the new
+/// RunStarted (spec 38, criterion 3), so status/dash/the end-of-run summary all read one base.
+/// Pass `""` from a path with no run-branch base (an offline replay, the conductor's unpinned
+/// adopt-or-mint); an empty base is simply not stamped and the reader falls back to live
+/// resolution.
 pub fn start_fresh(
     store: &dyn EventStore,
     criteria: &[String],
     definition: &str,
+    base: &str,
 ) -> Result<String, Error> {
     let started = RunStarted {
         run: uuid::Uuid::new_v4().to_string(),
         criteria: criteria.to_vec(),
         definition: definition.to_string(),
+        base: base.to_string(),
     };
     let ev = started
         .to_event()
@@ -549,6 +614,60 @@ mod tests {
     }
 
     #[test]
+    fn the_resolved_base_is_persisted_on_the_run_start_and_survives_adopt() {
+        // Spec 38, criterion 3: the run-branch base a run anchors on is stamped as `META_BASE`
+        // on its RunStarted at mint, so `rigger status`/`rigger dash` - which cannot see the
+        // run's `--base` flag - read the run's ACTUAL base from the log. It is stamped ONCE (on
+        // the mint) and an adopting resume keeps it, so the base never drifts across steps.
+        let store = Store::open(":memory:").unwrap();
+
+        // A fresh mint with an explicit base persists it, round-tripping through the store.
+        let minted = start_fresh(&store, &["crit".to_string()], "def", "origin/develop").unwrap();
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert_eq!(
+            current_run_base(&events).as_deref(),
+            Some("origin/develop"),
+            "start_fresh stamps the resolved base as RunStarted metadata"
+        );
+
+        // A same-criteria resume ADOPTS the run (no new boundary), passing a DIFFERENT base -
+        // the adopt path must NOT re-stamp or overwrite the base the original start persisted.
+        let out =
+            ensure_started_pinned(&store, &["crit".to_string()], "def", false, "origin/other")
+                .unwrap();
+        assert_eq!(
+            out.run(),
+            minted,
+            "the same-criteria resume adopts the minted run rather than re-minting"
+        );
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| e.type_ == TYPE_RUN_STARTED)
+                .count(),
+            1,
+            "adopt appends no second RunStarted"
+        );
+        assert_eq!(
+            current_run_base(&events).as_deref(),
+            Some("origin/develop"),
+            "adopt keeps the base the original mint stamped; it never re-stamps"
+        );
+
+        // A mint with an EMPTY base (a repo-less path, an offline replay) stamps nothing, so a
+        // reader falls back to live resolution rather than reading an empty string.
+        let bare = Store::open(":memory:").unwrap();
+        start_fresh(&bare, &["crit".to_string()], "def", "").unwrap();
+        let bare_events = bare.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert_eq!(
+            current_run_base(&bare_events),
+            None,
+            "an empty base is not stamped; the reader reports no persisted base"
+        );
+    }
+
+    #[test]
     fn ensure_started_mints_a_fresh_run_on_an_empty_store() {
         let store = Store::open(":memory:").unwrap();
         let run = ensure_started(&store, &["crit".to_string()]).unwrap();
@@ -612,7 +731,7 @@ mod tests {
             )
             .unwrap();
 
-        let fresh = start_fresh(&store, &["crit".to_string()], "").unwrap();
+        let fresh = start_fresh(&store, &["crit".to_string()], "", "").unwrap();
         assert_ne!(
             first, fresh,
             "start_fresh mints a distinct run even though the criteria are identical"
@@ -709,7 +828,8 @@ mod tests {
         // later live-run step re-checks. This is the "a run pins its definition hash at
         // start" done-when, and the fresh-run-is-free path (no prior pin, no halt).
         let store = Store::open(":memory:").unwrap();
-        let out = ensure_started_pinned(&store, &["crit".to_string()], "hash-A", false).unwrap();
+        let out =
+            ensure_started_pinned(&store, &["crit".to_string()], "hash-A", false, "").unwrap();
         assert!(
             matches!(out, RunStart::Ready(_)),
             "a fresh run is always free"
@@ -729,8 +849,9 @@ mod tests {
         // A plain step over an unchanged definition adopts the run and appends nothing - the
         // steady-state resume, unaffected by pinning.
         let store = Store::open(":memory:").unwrap();
-        ensure_started_pinned(&store, &["crit".to_string()], "hash-A", false).unwrap();
-        let out = ensure_started_pinned(&store, &["crit".to_string()], "hash-A", false).unwrap();
+        ensure_started_pinned(&store, &["crit".to_string()], "hash-A", false, "").unwrap();
+        let out =
+            ensure_started_pinned(&store, &["crit".to_string()], "hash-A", false, "").unwrap();
         assert!(
             matches!(out, RunStart::Ready(_)),
             "an unchanged definition adopts, does not drift"
@@ -754,13 +875,14 @@ mod tests {
         // then HALTS loudly), and - crucially - drift is a pure READ: nothing is appended, so
         // re-running the drifted step re-surfaces the same halt every time until it is resolved.
         let store = Store::open(":memory:").unwrap();
-        ensure_started_pinned(&store, &["crit".to_string()], "hash-A", false).unwrap();
+        ensure_started_pinned(&store, &["crit".to_string()], "hash-A", false, "").unwrap();
         let before = store
             .read_stream(STREAM, 0, Direction::Forward)
             .unwrap()
             .len();
 
-        let out = ensure_started_pinned(&store, &["crit".to_string()], "hash-B", false).unwrap();
+        let out =
+            ensure_started_pinned(&store, &["crit".to_string()], "hash-B", false, "").unwrap();
         match out {
             RunStart::Drifted {
                 pinned, current, ..
@@ -786,9 +908,9 @@ mod tests {
         // step AFTER the rebase sees the effective pin advanced to the new hash and no longer
         // halts. This is the "records the supersession and continues" done-when.
         let store = Store::open(":memory:").unwrap();
-        ensure_started_pinned(&store, &["crit".to_string()], "hash-A", false).unwrap();
+        ensure_started_pinned(&store, &["crit".to_string()], "hash-A", false, "").unwrap();
 
-        let out = ensure_started_pinned(&store, &["crit".to_string()], "hash-B", true).unwrap();
+        let out = ensure_started_pinned(&store, &["crit".to_string()], "hash-B", true, "").unwrap();
         match out {
             RunStart::Rebased {
                 pinned, current, ..
@@ -828,7 +950,8 @@ mod tests {
         );
 
         // A plain step on the (now new) definition is free - the rebase is not re-litigated.
-        let after = ensure_started_pinned(&store, &["crit".to_string()], "hash-B", false).unwrap();
+        let after =
+            ensure_started_pinned(&store, &["crit".to_string()], "hash-B", false, "").unwrap();
         assert!(
             matches!(after, RunStart::Ready(_)),
             "after a rebase, a plain step on the new definition no longer drifts"
@@ -842,17 +965,17 @@ mod tests {
         // definition (pinning disabled), both take the free path unconditionally.
         let store = Store::open(":memory:").unwrap();
         // A legacy/unpinned run start.
-        ensure_started_pinned(&store, &["crit".to_string()], "", false).unwrap();
+        ensure_started_pinned(&store, &["crit".to_string()], "", false, "").unwrap();
         // A pinned caller against an unpinned run: free (the run pinned nothing to drift from).
         assert!(matches!(
-            ensure_started_pinned(&store, &["crit".to_string()], "hash-Z", false).unwrap(),
+            ensure_started_pinned(&store, &["crit".to_string()], "hash-Z", false, "").unwrap(),
             RunStart::Ready(_)
         ));
         // A pin exists but the caller passes no definition (pinning disabled): free.
         let store2 = Store::open(":memory:").unwrap();
-        ensure_started_pinned(&store2, &["crit".to_string()], "hash-A", false).unwrap();
+        ensure_started_pinned(&store2, &["crit".to_string()], "hash-A", false, "").unwrap();
         assert!(matches!(
-            ensure_started_pinned(&store2, &["crit".to_string()], "", false).unwrap(),
+            ensure_started_pinned(&store2, &["crit".to_string()], "", false, "").unwrap(),
             RunStart::Ready(_)
         ));
     }
@@ -873,7 +996,7 @@ mod tests {
         // The fold rule: the current pin is the RunStarted's definition advanced by the LAST
         // rebase record in the slice - so a run rebased A->B->C is effectively pinned at C.
         let store = Store::open(":memory:").unwrap();
-        let run = start_fresh(&store, &["crit".to_string()], "hash-A").unwrap();
+        let run = start_fresh(&store, &["crit".to_string()], "hash-A", "").unwrap();
         record_rebase(&store, &run, "hash-A", "hash-B").unwrap();
         record_rebase(&store, &run, "hash-B", "hash-C").unwrap();
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
@@ -887,9 +1010,10 @@ mod tests {
         // check reads only the CURRENT run's pin - a prior run's pin never leaks across.
         let store = Store::open(":memory:").unwrap();
         // Run 1 pins hash-A.
-        ensure_started_pinned(&store, &["crit".to_string()], "hash-A", false).unwrap();
+        ensure_started_pinned(&store, &["crit".to_string()], "hash-A", false, "").unwrap();
         // A NEW campaign (different criteria) begins its own fresh run pinning the current def.
-        let out = ensure_started_pinned(&store, &["other".to_string()], "hash-B", false).unwrap();
+        let out =
+            ensure_started_pinned(&store, &["other".to_string()], "hash-B", false, "").unwrap();
         assert!(
             matches!(out, RunStart::Ready(_)),
             "a fresh boundary for a new campaign is free even against a different definition"

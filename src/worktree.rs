@@ -746,6 +746,36 @@ fn clear_worktree_dir(repo: &str, dir: &str) -> Result<(), Error> {
     Ok(())
 }
 
+/// Tear down any scratch worktree still CHECKED OUT on `branch`, then reclaim its sibling
+/// per-unit build cache - the branch-keyed half of the ordered teardown that both
+/// [`Worktree::remove`] (the graceful `run_stage` path) and [`sweep_terminal`] (crash
+/// recovery) already perform. git REFUSES to delete a branch that is still checked out in
+/// a worktree, so branch-GC on resume must remove the lingering worktree FIRST or the
+/// `git branch -D` fails and BOTH the branch and the worktree survive as per-unit debris.
+///
+/// The residue this reclaims: a step process killed between its `UnitIntegrated` emit and
+/// [`Worktree::remove`] leaves a worktree still registered on the unit's now-integrated
+/// branch. The reaper ([`sweep_terminal`]) runs only on the `rigger step` path, so on the
+/// `rigger run` resume path the branch-GC must reclaim it here - the spec's "and remove
+/// its worktree if the reaper has not".
+///
+/// This composes the EXISTING single-authorities, minting no parallel teardown:
+/// [`registered_worktree_for`] finds the dir, [`clear_worktree_dir`] deregisters it
+/// (tolerating both a still-tracked worktree and a bare leftover dir, and pruning a stale
+/// registration whose dir was deleted out from under git - so even a residue that no
+/// longer occupies disk stops holding the branch), and [`reclaim_cache_sibling`] reclaims
+/// the multi-gigabyte `cargo-target-<slug>` cache, exactly as the two teardowns above do.
+/// A branch with no lingering worktree is a graceful no-op. The owning process is already
+/// dead on this path, so no process reap is needed (that is [`Worktree::remove`]'s concern
+/// on the live in-window teardown).
+pub fn reclaim_worktree_on_branch(repo: &str, branch: &str) -> Result<(), Error> {
+    if let Some(dir) = registered_worktree_for(repo, branch) {
+        clear_worktree_dir(repo, &dir)?;
+        reclaim_cache_sibling(&dir);
+    }
+    Ok(())
+}
+
 /// The current HEAD sha of the git checkout at `dir`, or `""` when `dir` is empty
 /// (a repo-less run, which has no worktree to stamp) or git cannot resolve it.
 ///
@@ -1411,6 +1441,209 @@ mod tests {
         );
     }
 
+    // Periphery layer (SDET), spec 38 criterion 1: direct API/contract tests for the ONE
+    // new public function this unit adds, `reclaim_worktree_on_branch` (the branch-keyed
+    // half of the resume-path teardown `gc_integrated_branches` drives). The run()-level
+    // integration test `branch_gc_removes_a_lingering_worktree_before_reclaiming_the_branch_on_resume`
+    // drives it only TRANSITIVELY and seeds NO cargo-target sibling, so it cannot pin the
+    // cache-sibling reclaim nor the no-op / stale-registration boundaries the API promises.
+    // These three tests exercise the function AT ITS OWN EDGES.
+
+    #[test]
+    fn reclaim_worktree_on_branch_deregisters_the_lingering_worktree_reclaims_its_cache_and_frees_the_branch(
+    ) {
+        // Happy path: a step process killed between its UnitIntegrated emit and
+        // Worktree::remove leaves a worktree STILL registered on the integrated unit's
+        // branch WITH its multi-gigabyte `cargo-target-<slug>` sibling on disk. The reclaim
+        // must (a) deregister the worktree, (b) tear the dir down, (c) reclaim the sibling
+        // cache, and (d) leave the branch DELETABLE - git refuses `branch -D` while a
+        // worktree holds the branch, so a reclaim that skipped the teardown would strand it.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let branch = "rigger/u/lingered";
+
+        let parent = tempfile::tempdir().unwrap();
+        let wt_dir = parent
+            .path()
+            .join("rigger-wt-lingered")
+            .to_str()
+            .unwrap()
+            .to_string();
+        let wt = Worktree::create(&repo_path, &wt_dir, branch).unwrap();
+        std::fs::write(
+            std::path::Path::new(&wt_dir).join("work.rs"),
+            "fn work() {}\n",
+        )
+        .unwrap();
+        wt.commit("rigger: prior window work").unwrap();
+        let cache = unit_cache_sibling(&wt_dir).expect("a unit worktree owns a cache sibling");
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(std::path::Path::new(&cache).join("built.rlib"), "x").unwrap();
+
+        // Preconditions: the worktree is registered on the branch and holds it, so a bare
+        // `branch -D` refuses - the exact arm the reclaim must clear first.
+        assert_eq!(
+            registered_worktree_for(&repo_path, branch).as_deref(),
+            Some(wt_dir.as_str()),
+            "precondition: the worktree is registered on the branch"
+        );
+        assert!(
+            Worktree::delete_branch(&repo_path, branch).is_err(),
+            "precondition: git refuses to delete a branch checked out in a worktree"
+        );
+
+        reclaim_worktree_on_branch(&repo_path, branch).unwrap();
+
+        assert_eq!(
+            registered_worktree_for(&repo_path, branch),
+            None,
+            "the lingering worktree is deregistered"
+        );
+        assert!(
+            !std::path::Path::new(&wt_dir).exists(),
+            "the lingering worktree dir is torn down off disk"
+        );
+        assert!(
+            !std::path::Path::new(&cache).exists(),
+            "the sibling per-unit build cache is reclaimed alongside the worktree, leaked at {cache}"
+        );
+        assert!(
+            Worktree::delete_branch(&repo_path, branch).is_ok(),
+            "with the worktree gone the branch is finally deletable - the point of the ordered teardown"
+        );
+    }
+
+    #[test]
+    fn reclaim_worktree_on_branch_is_a_no_op_that_spares_an_unrelated_in_flight_worktree() {
+        // The graceful no-op path AND branch-keyed matching: the reclaim is called once per
+        // integrated unit, so it must (a) do NOTHING but succeed when the target branch has
+        // no lingering worktree (the dominant path, where Worktree::remove already ran), and
+        // (b) NEVER tear down an UNRELATED in-flight unit's still-registered worktree or its
+        // cache. A reclaim keyed on anything but the branch would strand a live unit.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+
+        // The target: an integrated unit's branch carrying committed work whose worktree was
+        // already removed gracefully - only the branch remains, no worktree lingers.
+        let done_branch = "rigger/u/done";
+        {
+            let seed = tempfile::tempdir().unwrap();
+            let d = seed
+                .path()
+                .join("rigger-wt-done")
+                .to_str()
+                .unwrap()
+                .to_string();
+            let wt = Worktree::create(&repo_path, &d, done_branch).unwrap();
+            std::fs::write(std::path::Path::new(&d).join("done.rs"), "fn done() {}\n").unwrap();
+            wt.commit("rigger: prior window work").unwrap();
+            wt.remove().unwrap();
+        }
+        assert!(
+            branch_exists(&repo_path, done_branch),
+            "precondition: the target branch exists with no worktree on it"
+        );
+        assert_eq!(
+            registered_worktree_for(&repo_path, done_branch),
+            None,
+            "precondition: no worktree lingers on the target branch"
+        );
+
+        // An UNRELATED in-flight unit: its worktree is still registered on ITS OWN branch,
+        // with a populated per-unit cache, exactly as a live concurrent unit leaves it.
+        let inflight = tempfile::tempdir().unwrap();
+        let other_dir = inflight
+            .path()
+            .join("rigger-wt-inflight")
+            .to_str()
+            .unwrap()
+            .to_string();
+        let other = Worktree::create(&repo_path, &other_dir, "rigger/u/inflight").unwrap();
+        std::fs::write(
+            std::path::Path::new(&other_dir).join("wip.rs"),
+            "fn wip() {}\n",
+        )
+        .unwrap();
+        other.commit("rigger: in-flight").unwrap();
+        let other_cache = unit_cache_sibling(&other_dir).unwrap();
+        std::fs::create_dir_all(&other_cache).unwrap();
+
+        // Reclaiming the target (no worktree on it) is a graceful no-op, not an error.
+        reclaim_worktree_on_branch(&repo_path, done_branch).unwrap();
+
+        assert!(
+            branch_exists(&repo_path, done_branch),
+            "the no-op reclaim leaves the worktree-less target branch untouched"
+        );
+        // The unrelated in-flight unit's worktree, registration, and cache are all intact.
+        assert!(
+            std::path::Path::new(&other_dir).exists(),
+            "an unrelated in-flight worktree dir must not be torn down"
+        );
+        assert_eq!(
+            registered_worktree_for(&repo_path, "rigger/u/inflight").as_deref(),
+            Some(other_dir.as_str()),
+            "an unrelated unit's worktree registration must be left in place"
+        );
+        assert!(
+            std::path::Path::new(&other_cache).exists(),
+            "an unrelated in-flight unit's per-unit cache must be left intact"
+        );
+    }
+
+    #[test]
+    fn reclaim_worktree_on_branch_prunes_a_stale_registration_whose_dir_was_deleted_and_frees_the_branch(
+    ) {
+        // The residue-that-no-longer-occupies-disk edge the doc-comment calls out: a temp
+        // cleaner (or a crash) deletes the worktree DIR but git's registration for it
+        // lingers, so git STILL treats the branch as checked out and refuses `branch -D`.
+        // The reclaim must prune that dangling registration (clear_worktree_dir's
+        // `git worktree prune`) so the branch stops being held - a reclaim that only removed
+        // the dir off disk, without pruning, would leave the branch permanently un-deletable.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let branch = "rigger/u/vanished";
+
+        let parent = tempfile::tempdir().unwrap();
+        let wt_dir = parent
+            .path()
+            .join("rigger-wt-vanished")
+            .to_str()
+            .unwrap()
+            .to_string();
+        let wt = Worktree::create(&repo_path, &wt_dir, branch).unwrap();
+        std::fs::write(
+            std::path::Path::new(&wt_dir).join("work.rs"),
+            "fn work() {}\n",
+        )
+        .unwrap();
+        wt.commit("rigger: prior window work").unwrap();
+
+        // The dir vanishes WITHOUT deregistration; the registration dangles on.
+        std::fs::remove_dir_all(&wt_dir).unwrap();
+        assert_eq!(
+            registered_worktree_for(&repo_path, branch).as_deref(),
+            Some(wt_dir.as_str()),
+            "precondition: the registration lingers even though the dir is gone"
+        );
+        assert!(
+            Worktree::delete_branch(&repo_path, branch).is_err(),
+            "precondition: git still refuses the branch while the dangling registration holds it"
+        );
+
+        reclaim_worktree_on_branch(&repo_path, branch).unwrap();
+
+        assert_eq!(
+            registered_worktree_for(&repo_path, branch),
+            None,
+            "the dangling registration is pruned so it no longer holds the branch"
+        );
+        assert!(
+            Worktree::delete_branch(&repo_path, branch).is_ok(),
+            "with the dangling registration pruned the branch is finally deletable"
+        );
+    }
+
     #[test]
     fn unit_cache_sibling_maps_a_unit_worktree_to_its_cache_and_ignores_the_rest() {
         // The single derivation authority (Gap 19): a `rigger-wt-<slug>` unit worktree maps to
@@ -1752,12 +1985,16 @@ mod tests {
 
     #[test]
     fn ensure_run_branch_creates_off_head_when_base_unresolvable() {
-        // BLOCKER regression: a repo whose base ref (e.g. the default origin/main) does
-        // NOT resolve - no remote, master-default, or pre-fetch. ensure_run_branch must
-        // NOT no-op (which would leave HEAD on the operator's branch and let the conductor
-        // branch/merge units directly onto it). It must create the run branch off the
-        // current HEAD, check it out, and report CreatedFromHead so isolation is always
-        // established on the native path.
+        // The pure git-adapter classification for a repo whose base ref (e.g. the default
+        // origin/main) does NOT resolve - no remote, master-default, or pre-fetch - but whose
+        // HEAD IS a real commit: it must NOT no-op (which would leave HEAD on the operator's
+        // branch) but create the run branch off the current HEAD, check it out, and report
+        // CreatedFromHead. Because HEAD is a real commit, the run branch descends from a
+        // reachable base (the operator's own branch) a PR still applies to, so the run-entry
+        // POLICY (the spec 38 loop-readiness gate `refuse_when_base_unreachable` in main.rs)
+        // lets this proceed and only advises the divergence. That gate refuses ONLY the
+        // genuinely baseless case (this same fallback but with an UNBORN HEAD - nothing to
+        // branch from), which is a separate test on the CLI path.
         let repo = init_repo();
         let p = repo.path().to_str().unwrap().to_string();
         let head_before = run_git(&p, &["rev-parse", "HEAD"])
@@ -1781,6 +2018,70 @@ mod tests {
             run_git(&p, &["rev-parse", "rigger-run"]).unwrap().trim(),
             head_before,
             "the fallback run branch is anchored on the HEAD it was created from"
+        );
+    }
+
+    #[test]
+    fn run_branch_based_on_release_target_contains_exactly_the_runs_work() {
+        // Spec 38, criterion 2 (run-branch basing): a run branch created off the release
+        // target (base) yields a clean, APPLICABLE PR diff - base..run-branch is EXACTLY the
+        // run's integrated commits and base is an ANCESTOR of the run branch, never the
+        // history disjoint from the base that a PR refuses to apply.
+        let repo = init_repo();
+        let p = repo.path().to_str().unwrap().to_string();
+        let base = current_branch(&p).expect("init_repo leaves a named branch checked out");
+        let base_tip = run_git(&p, &["rev-parse", &base])
+            .unwrap()
+            .trim()
+            .to_string();
+
+        // Anchor the run branch on the release target.
+        let setup = Worktree::ensure_run_branch(&p, "rigger-run", &base).unwrap();
+        assert_eq!(setup, RunBranchSetup::CreatedFromBase);
+
+        // Two units integrate onto the run branch (empty commits stand in for merged work).
+        run_git(
+            &p,
+            &["commit", "--allow-empty", "-q", "-m", "integrate unit A"],
+        )
+        .unwrap();
+        let a = run_git(&p, &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
+        run_git(
+            &p,
+            &["commit", "--allow-empty", "-q", "-m", "integrate unit B"],
+        )
+        .unwrap();
+        let b = run_git(&p, &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
+
+        // base..run-branch is EXACTLY the two integrated commits (newest first) - none of the
+        // base's own history leaks into the run's PR range.
+        let range = run_git(&p, &["rev-list", &format!("{base}..rigger-run")]).unwrap();
+        let commits: Vec<&str> = range
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .collect();
+        assert_eq!(
+            commits,
+            vec![b.as_str(), a.as_str()],
+            "base..run-branch must be exactly the run's integrated commits"
+        );
+
+        // The release target is an ANCESTOR of the run branch, so a PR from the run branch to
+        // the base applies cleanly (the disjoint-history failure this criterion prevents).
+        assert!(
+            run_git(
+                &p,
+                &["merge-base", "--is-ancestor", &base_tip, "rigger-run"]
+            )
+            .is_ok(),
+            "the release target must be an ancestor of the run branch (an applicable PR diff)"
         );
     }
 
