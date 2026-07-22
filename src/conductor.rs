@@ -3332,7 +3332,11 @@ impl RunCtx<'_> {
         if !self.reserve_spawn(&sdet_id) {
             return Ok(());
         }
-        let sdet_prompt = self.build_prompt_with_failure(st, &PriorFailure::default());
+        // The SDET-author spawn is part of the IMPLEMENT lifecycle stage (the build seam), reached
+        // only for a non-producer unit (after the producer early-return in `run_single_stage`), so it
+        // gets the trimmed implement slice like the implementer it authors periphery tests alongside.
+        let sdet_prompt =
+            self.build_prompt_with_failure(st, &PriorFailure::default(), GroundingSlice::Implement);
         let sdet_emit = |t: &str, v: Value| self.emit_with_actor(ROLE_SDET_AUTHOR, t, v);
         match self
             .reviewer_spawn_opts(
@@ -3536,7 +3540,12 @@ impl RunCtx<'_> {
                 if !self.reserve_spawn(&implementer_id) {
                     return Ok(false);
                 }
-                let prompt = self.build_prompt_with_failure(st, &prior);
+                // This spawn block is SHARED by the implementer AND the producer/planner (a producer
+                // is handled after the spawn, at the `is_producer` early-return below). Spec 36 trims
+                // ONLY the implement stage, so the slice is keyed on the implement stage specifically
+                // via `implement_slice`: a true implement stage gets the trimmed slice, a producer
+                // keeps the FULL context (adv-u36c1-planner-first-spawn-trimmed).
+                let prompt = self.build_prompt_with_failure(st, &prior, implement_slice(st));
                 let emit = |t: &str, v: Value| self.emit_with_actor(&st.agent, t, v);
                 // cwd-isolation invariant (the worktree-isolation fix): an implementer
                 // that is SUPPOSED to be isolated must never run in the live main
@@ -3981,7 +3990,14 @@ impl RunCtx<'_> {
             }
             let wt = self.speculation_lane_worktree(st, lane)?;
             let dir = wt.dir.clone();
-            let prompt = self.build_prompt_with_failure(st, &PriorFailure::default());
+            // Speculation lanes are implementer candidates by construction (`speculates` excludes
+            // producers), so each candidate gets the trimmed implement slice - byte-identical to the
+            // single-lane implementer's, since the lanes differ only in SCHEDULING, not assembly.
+            let prompt = self.build_prompt_with_failure(
+                st,
+                &PriorFailure::default(),
+                GroundingSlice::Implement,
+            );
             let emit = |t: &str, v: Value| self.emit_with_actor(&st.agent, t, v);
             let isolation_check = self.assert_isolated_cwd("implementer", &st.agent, &dir);
             match isolation_check.and_then(|()| {
@@ -6221,7 +6237,11 @@ impl RunCtx<'_> {
     }
 
     fn build_prompt(&self, st: &Stage) -> String {
-        self.build_prompt_with_failure(st, &PriorFailure::default())
+        // Every caller of `build_prompt` assembles a NON-implement prompt: the three review tiers
+        // (via `build_review_prompt`) and the planner re-spawn (`re_plan`). Spec 36 trims ONLY the
+        // implement stage, so `build_prompt` renders the FULL grounding slice - the review tiers and
+        // the producer/planner keep the decisions/lessons/findings bulk the implement slice drops.
+        self.build_prompt_with_failure(st, &PriorFailure::default(), GroundingSlice::Full)
     }
 
     /// Build a REVIEW agent's prompt: the grounded base prompt (which already
@@ -6243,7 +6263,12 @@ impl RunCtx<'_> {
     /// block names exactly the gates that failed (with their compact evidence) and
     /// the adjudicator's rejection reasoning, so the next attempt addresses the
     /// specific failure instead of a blind re-grounded restart.
-    fn build_prompt_with_failure(&self, st: &Stage, prior: &PriorFailure) -> String {
+    fn build_prompt_with_failure(
+        &self,
+        st: &Stage,
+        prior: &PriorFailure,
+        slice: GroundingSlice,
+    ) -> String {
         let mut b = String::new();
         b.push_str(&prior.block());
         // Spec 29c criterion 5: ensure the unified graph reflects the LIVE project before the
@@ -6265,7 +6290,7 @@ impl RunCtx<'_> {
         // radius and audit already use, so the seed is unchanged - only the render collapses from
         // two stitched sources onto the single unified traversal.
         let seed = self.grounded_seed(st);
-        b.push_str(&self.graph_context(&seed));
+        b.push_str(&self.graph_context(&seed, slice));
         b.push_str(EMIT_PROTOCOL);
         // A planner stage carries the refine protocol + the spec's acceptance criteria,
         // so it knows the baseline already exists and proposes only criterion-mapped
@@ -6274,7 +6299,7 @@ impl RunCtx<'_> {
         b
     }
 
-    fn graph_context(&self, seed: &[String]) -> String {
+    fn graph_context(&self, seed: &[String], slice: GroundingSlice) -> String {
         let graph = match self.deps.graph {
             Some(g) if !seed.is_empty() => g,
             _ => return String::new(),
@@ -6301,22 +6326,37 @@ impl RunCtx<'_> {
         // neighborhood (both "of these files", read-first orienting context) ahead of the dev-loop
         // decisions/lessons/findings sections.
         write_design_intent(&mut b, &g, seed);
-        // Every prompt slice is budgeted (Gap 15's principle, extended to all sections by
-        // Gap 17): the decisions, lessons, and findings sections each render through ONE
-        // shared budgeted-section writer (recent-N verbatim under a hard per-section byte
-        // budget, the older remainder collapsed into a visible elision note that names the
-        // count and the `rigger peers <file>` recovery). So no single section - not even
-        // findings, the LARGER contributor on a hot file (measured ~95KiB ABOUT
-        // conductor.rs, ~187KiB ABOUT main.rs, 4-8x the 24KiB decisions cap) - can blow the
-        // prompt; the store keeps the full history, only the prompt slice narrows. The
-        // findings subgraph is seeded on the unit's files and a ReviewFinding folds ABOUT
-        // those files, so the same traversal that returns the GOVERNING decisions returns
-        // the findings too: this is the graph path by which the adversary and adjudicator
-        // (grounding AFTER the lenses) retrieve the lenses' findings, replacing the
-        // conductor hand-threading one agent's stdout into another's prompt.
-        write_capped_decisions(&mut b, &g, seed);
-        write_capped_lessons(&mut b, &g, seed);
-        write_capped_findings(&mut b, &g, seed);
+        // Spec 36 (Workstream A of the grounding-as-tool addendum): split grounding by stage HERE,
+        // at the single assembly seam, AFTER the code neighborhood and design intent (which BOTH
+        // slices keep - the deterministic intent layer an agent must be guaranteed to see without
+        // knowing to ask). The capped decisions/lessons/findings bulk is the large, ~85%
+        // recency-truncated pool; the IMPLEMENT slice replaces its push with a one-line pointer to
+        // the pull tools (retrieve precisely on demand), while every OTHER spawn - the REVIEW tiers
+        // and the producer/planner - keeps the FULL bulk unchanged.
+        match slice {
+            // The trimmed doer slice: OMIT the capped bulk, point at the pull tools instead. The
+            // reference history stays retrievable UNCAPPED through `rigger_peers`, and code
+            // navigation through `rigger graph --around`; the store keeps everything, the implement
+            // prompt just stops pushing the truncated blob.
+            GroundingSlice::Implement => write_peers_pointer(&mut b),
+            // The full slice: every prompt slice is budgeted (Gap 15's principle, extended to all
+            // sections by Gap 17): the decisions, lessons, and findings sections each render through
+            // ONE shared budgeted-section writer (recent-N verbatim under a hard per-section byte
+            // budget, the older remainder collapsed into a visible elision note that names the count
+            // and the `rigger peers <file>` recovery). So no single section - not even findings, the
+            // LARGER contributor on a hot file (measured ~95KiB ABOUT conductor.rs, ~187KiB ABOUT
+            // main.rs, 4-8x the 24KiB decisions cap) - can blow the prompt; the store keeps the full
+            // history, only the prompt slice narrows. The findings subgraph is seeded on the unit's
+            // files and a ReviewFinding folds ABOUT those files, so the same traversal that returns
+            // the GOVERNING decisions returns the findings too: this is the graph path by which the
+            // adversary and adjudicator (grounding AFTER the lenses) retrieve the lenses' findings,
+            // replacing the conductor hand-threading one agent's stdout into another's prompt.
+            GroundingSlice::Full => {
+                write_capped_decisions(&mut b, &g, seed);
+                write_capped_lessons(&mut b, &g, seed);
+                write_capped_findings(&mut b, &g, seed);
+            }
+        }
         b
     }
 
@@ -7781,6 +7821,24 @@ fn write_capped_findings(b: &mut String, g: &Graph, seed: &[String]) {
     );
 }
 
+/// The one-line pointer the TRIMMED implement slice renders IN PLACE OF the capped
+/// decisions/lessons/findings sections (spec 36). The implement prompt stops PUSHING the large,
+/// ~85%-truncated reference blob and instead names the two pull tools that answer it PRECISELY and
+/// on demand: `rigger_peers`, which returns the prior decisions / lessons / findings scoped to the
+/// blast-radius files UNCAPPED (the store keeps the full history the prompt no longer inlines), and
+/// `rigger graph --around`, which since spec 37 answers code navigation (who-calls-X and the
+/// caller/callee neighborhood). A fixed string with no seed/graph data, so it is deterministic by
+/// construction. Hyphens only (a gate rejects U+2014), and it names only first-party tools.
+fn write_peers_pointer(b: &mut String) {
+    b.push_str(
+        "\nPrior decisions, lessons, and findings about these files are not inlined here to keep \
+         this prompt precise - pull the ones your sub-problem needs, uncapped and scoped to your \
+         blast-radius files, with the `rigger_peers` tool (the full history is retained in the \
+         store, not truncated into this prompt). For code navigation - who-calls-X and the \
+         caller/callee neighborhood of a file or entity - use `rigger graph --around <file|entity>`.\n",
+    );
+}
+
 /// The DETERMINISTIC branch a unit's worktree uses across runs (resume-continuity):
 /// `rigger/u/<unit-id>`. Derived purely from the unit id, so the SAME unit reuses the
 /// SAME branch on every run - the git ref persists the unit's committed work across
@@ -8012,6 +8070,38 @@ fn fan_out_template_name(stages: &BTreeMap<String, Stage>) -> Option<String> {
 /// Whether a stage `produces` a DAG at runtime (the planner that decomposes the spec).
 fn is_producer(st: &Stage) -> bool {
     !st.produces.is_empty()
+}
+
+/// Which grounding slice a spawn's prompt renders (spec 36). It is an INJECTED discriminator chosen
+/// by the call site, NOT derivable from the `Stage` alone: the SAME `Stage` assembles both an
+/// IMPLEMENT-stage doer prompt (trimmed) and, when that unit is reviewed, a REVIEW prompt (full), so
+/// the seam that renders the context must be told which one it is building.
+#[derive(Clone, Copy)]
+enum GroundingSlice {
+    /// The trimmed doer slice for an IMPLEMENT-stage spawn (the implementer role and the SDET-author
+    /// build seam): code neighborhood + design intent + a one-line pointer to the pull tools, with
+    /// the capped decisions/lessons/findings bulk OMITTED (spec 36 Workstream A).
+    Implement,
+    /// The full slice - code neighborhood + design intent + the capped decisions/lessons/findings
+    /// sections, byte-unchanged from before spec 36. Every non-implement spawn renders it: the REVIEW
+    /// tiers (lens/adversary/adjudicator) AND the producer/planner.
+    Full,
+}
+
+/// The grounding slice for a DOER spawn built from the shared implement block in `run_single_stage`.
+/// Spec 36 trims ONLY the implement stage to the deterministic intent layer, so the trim is keyed on
+/// the IMPLEMENT stage SPECIFICALLY, never on "not review": a PRODUCER (the planner) SHARES the
+/// implementer spawn block, so a naive not-review predicate would trim the planner's first-wave
+/// prompt and blind it to the prior-decomposition decisions it must not re-litigate - and that would
+/// be internally inconsistent, since the planner's own re-spawn after a plan-critique reject grounds
+/// through `build_prompt` -> [`GroundingSlice::Full`]. So a producer keeps the FULL context here too,
+/// and only a true implement stage is trimmed (resolving adv-u36c1-planner-first-spawn-trimmed).
+fn implement_slice(st: &Stage) -> GroundingSlice {
+    if is_producer(st) {
+        GroundingSlice::Full
+    } else {
+        GroundingSlice::Implement
+    }
 }
 
 /// Seed the STALE-units set from the prior log (spec 12, unit 2): every unit named in a
@@ -10829,11 +10919,16 @@ mod tests {
             graph: Some(&graph),
             criteria: Vec::new(),
         };
-        run(&cfg, &deps).unwrap();
-        let prompt = driver.last_prompt.lock().unwrap().clone();
+        // The decisions section lives on the FULL grounding slice (spec 36 trims it from the
+        // implement prompt and points the implementer at `rigger_peers` instead), so a REVIEW/planner
+        // spawn is what receives the governing decision. Assemble that full slice directly for the
+        // seed the grounder resolves this stage to (`modifier.rs`).
+        let ctx = RunCtx::for_test(&cfg, &deps);
+        let prompt = ctx.graph_context(&["modifier.rs".to_string()], GroundingSlice::Full);
         assert!(
             prompt.contains("generic engine pipeline"),
-            "the agent should be fed the decision governing modifier.rs; prompt was:\n{prompt}"
+            "the full-slice spawn should be fed the decision governing modifier.rs; prompt \
+             was:\n{prompt}"
         );
     }
 
@@ -10892,8 +10987,11 @@ mod tests {
             graph: Some(&graph),
             criteria: Vec::new(),
         };
-        run(&cfg, &deps).unwrap();
-        let prompt = driver.last_prompt.lock().unwrap().clone();
+        // The decisions section lives on the FULL grounding slice (spec 36 trims it from the
+        // implement prompt), so this cap behavior is exercised through `GroundingSlice::Full` for the
+        // seed the stage grounds to (`modifier.rs`).
+        let ctx = RunCtx::for_test(&cfg, &deps);
+        let prompt = ctx.graph_context(&["modifier.rs".to_string()], GroundingSlice::Full);
 
         // Uncapped, the decisions section alone would be ~500KB; the cap holds the
         // whole prompt well under budget (plus slack for the small fixed sections).
@@ -11380,8 +11478,10 @@ mod tests {
         disposition.position = 999;
         graph.apply(&disposition).unwrap();
 
-        // Drive the FULL conductor grounding: a one-stage run whose agent prompt is built by
-        // the very `graph_context` production uses. The Stub captures that prompt verbatim.
+        // Assemble the FULL grounding slice `graph_context` renders for a review/planner spawn - the
+        // findings section lives there (spec 36 trims it from the implement prompt), and the
+        // live-findings-only filter is the SAME `subgraph(seed, 2)` + `write_capped_findings` path
+        // regardless of slice, so this pins the disposition's observable effect where findings render.
         let mut cfg = Config::default();
         cfg.agents.insert("a".into(), agent("a"));
         cfg.workflow.stages.insert(
@@ -11407,8 +11507,8 @@ mod tests {
             graph: Some(&graph),
             criteria: Vec::new(),
         };
-        run(&cfg, &deps).unwrap();
-        let prompt = driver.last_prompt.lock().unwrap().clone();
+        let ctx = RunCtx::for_test(&cfg, &deps);
+        let prompt = ctx.graph_context(&seed, GroundingSlice::Full);
 
         // End to end: the open finding is grounded into the prompt; the resolved (discarded)
         // one is omitted - the live-findings-only grounding spec 25 delivers.
@@ -11595,9 +11695,11 @@ mod tests {
         let cfg = Config::default();
         let ctx = RunCtx::for_test(&cfg, &deps);
 
-        // Assemble the prompt context exactly as production does (decisions + lessons +
-        // findings through the one shared budgeted writer), exercising BOTH passes in one call.
-        let out = ctx.graph_context(&seed);
+        // Assemble the prompt context exactly as the review/full path does (decisions + lessons +
+        // findings through the one shared budgeted writer), exercising BOTH passes in one call. This
+        // dedup + restore behavior lives on the FULL slice (spec 36 trims these sections from the
+        // implement slice), so it is exercised through `GroundingSlice::Full`.
+        let out = ctx.graph_context(&seed, GroundingSlice::Full);
 
         // The prompt string reflects DEDUP: exactly one of the whitespace-variant lessons
         // renders (the duplicate collapsed rather than each consuming a slot).
@@ -11775,7 +11877,11 @@ mod tests {
             coverage: "ground core".into(),
             ..Default::default()
         };
-        let prompt = ctx.build_prompt_with_failure(&stage, &PriorFailure::default());
+        // The decisions/findings this claim asserts render on the FULL slice (spec 36 trims them from
+        // the implement slice); the code-neighborhood-from-traversal claim holds on both, so this
+        // exercises the full slice to keep both halves of the claim in one assembly.
+        let prompt =
+            ctx.build_prompt_with_failure(&stage, &PriorFailure::default(), GroundingSlice::Full);
 
         assert!(
             prompt.contains("run_unit"),
@@ -11870,7 +11976,13 @@ mod tests {
             coverage: "touch run".into(),
             ..Default::default()
         };
-        let prompt = ctx.build_prompt_with_failure(&stage, &PriorFailure::default());
+        // This asserts only the code neighborhood, which BOTH slices keep; drive the implement slice
+        // (this is a plain implement stage) so it exercises the production doer path.
+        let prompt = ctx.build_prompt_with_failure(
+            &stage,
+            &PriorFailure::default(),
+            GroundingSlice::Implement,
+        );
 
         // (1) The RUN emitted all four extraction event types into the store - it ingested the
         // project itself, closing the empty-prod-graph gap.
@@ -12144,7 +12256,13 @@ mod tests {
             coverage: "ground core".into(),
             ..Default::default()
         };
-        let prompt = ctx.build_prompt_with_failure(&stage, &PriorFailure::default());
+        // Design intent is on BOTH slices (spec 36 keeps the intent layer on the trimmed implement
+        // prompt); drive the implement slice so this exercises the production doer path.
+        let prompt = ctx.build_prompt_with_failure(
+            &stage,
+            &PriorFailure::default(),
+            GroundingSlice::Implement,
+        );
 
         // (1) RENDERED: the handbook rule that GOVERNS the file and the RA section that SPECIFIES it
         // are both surfaced, each naming its relation and the touched file.
