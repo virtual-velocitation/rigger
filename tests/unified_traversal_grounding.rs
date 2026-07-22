@@ -1491,3 +1491,160 @@ fn the_design_intent_section_renders_every_touched_file_a_node_binds_with_a_mult
          touched file (--around takes a single id); prompt was:\n{prompt}"
     );
 }
+
+/// Criterion 2 (this unit OWNS it): the DESIGN-INTENT delivery guarantee SURVIVES the spec-36 trim.
+/// Spec 36 trims the IMPLEMENT prompt to the deterministic intent layer - it drops the capped
+/// decisions / lessons / findings bulk (retrievable on demand) but MUST keep the intent layer the
+/// agent is guaranteed to see without knowing to ask: the design intent bound to the touched files.
+/// This pins that guarantee for EVERY code-binding relation the spec names - a handbook rule that
+/// GOVERNS a seed file, a design-doc that SPECIFIES it, a load-bearing decision that CONSTRAINS it,
+/// and a local rationale that explains it - at the PUBLIC prompt boundary an agent receives through
+/// the `AgentDriver` port during a real `run`.
+///
+/// SURVIVES *THE TRIM*, not merely renders: the SAME seed also carries the capped dev-loop bulk (a
+/// decision, a lesson, and a finding about the touched file) that the trim DROPS, so the traversal
+/// reaches a genuinely bulk-carrying neighborhood and the intent layer surviving is proven exactly
+/// where the trim is active - the hot-file case spec 36 targets - not on a graph with nothing to
+/// trim. This unit does NOT own the trim (criterion 1 does), so it deliberately asserts ONLY the
+/// intent-delivery half: it never asserts the bulk's OMISSION
+/// (`the_implement_prompt_is_trimmed_to_the_intent_layer_with_a_rigger_peers_pointer` owns that), it
+/// only proves the intent bindings the trim must preserve are still there.
+///
+/// DETERMINISTICALLY: the intent layer is delivered BY CONSTRUCTION (the ordered graph traversal),
+/// not by retrieval luck like the trimmed-away bulk was - so a SECOND independent assembly over the
+/// SAME seed delivers the IDENTICAL ordered set of intent bindings. That stability is the difference
+/// between a guaranteed intent layer and the recency-truncated pool the trim replaced.
+///
+/// BY TRAVERSAL, NOT VECTOR: the seeding grounder resolves the query to `core.rs` with EMPTY ref
+/// text, so any design-intent title in the prompt can ONLY have come from the graph traversal.
+///
+/// Non-vacuous against a regressed trim (the RED this guardrail exists to catch): the intent layer
+/// (`write_design_intent`) renders on the implement slice ONLY because it sits BEFORE the slice
+/// match in `graph_context`. Moving it into the `GroundingSlice::Full` arm - the natural shape of a
+/// trim that went one section too far - drops ALL FOUR bindings from the implement prompt and reddens
+/// every presence assertion here, while the sibling trim test's bulk-OMIT assertions stay green
+/// (proving this catches an intent-delivery regression the trim test cannot).
+#[test]
+fn the_trimmed_implement_prompt_still_delivers_every_design_intent_binding_deterministically() {
+    // The four code-binding design-intent relations spec 36 must preserve on the trimmed implement
+    // prompt, each paired with its design-intent node kind and a distinct title the grounder never
+    // returns (so its presence proves graph-traversal delivery, not seeding).
+    let bindings = [
+        (
+            KIND_HANDBOOK_RULE,
+            "docs/handbook/loops.md",
+            "the handbook rule governing the trimmed doer",
+            REL_GOVERNS,
+        ),
+        (
+            KIND_DESIGN_DOC,
+            "specs/36-grounding-trim.md#intent-layer",
+            "the RA section specifying the trimmed doer",
+            REL_SPECIFIES,
+        ),
+        (
+            KIND_ARCH_DECISION,
+            "docs/adr/0036.md",
+            "the load-bearing decision constraining the trimmed doer",
+            REL_CONSTRAINS,
+        ),
+        (
+            KIND_RATIONALE,
+            "core.rs#L42",
+            "the local rationale explaining the trimmed doer",
+            REL_EXPLAINS,
+        ),
+    ];
+
+    // Build the seeded graph and assemble the IMPLEMENT-stage prompt through the public `run` path
+    // (which drives the trimmed slice for a non-producer stage). Reconstructed from scratch on each
+    // call, so two calls prove the delivery is deterministic for a given SEED, across independent
+    // assembly - not merely stable within one graph handle.
+    let build = || {
+        let graph = Projector::open(":memory:", "test").unwrap();
+        let mut pos = 0u64;
+        // CODE NEIGHBORHOOD (the other half of the kept intent layer): a definition of the touched
+        // file, so the traversal reaches a realistic neighborhood.
+        fold(
+            &graph,
+            &mut pos,
+            TYPE_CODE_ENTITY_EXTRACTED,
+            json!({ "file": "core.rs", "name": "run_unit", "kind": "function", "line": 42, "lang": "rust", "fresh": true }),
+        );
+        // The four design-intent bindings the trim must PRESERVE, one per code-binding relation.
+        for (kind, id, title, rel) in &bindings {
+            fold_design_intent(&graph, &mut pos, kind, id, title, rel, "core.rs");
+        }
+        // The capped dev-loop bulk the trim DROPS - a decision, a lesson, and a finding about the SAME
+        // touched file - seeded so the traversal reaches a genuinely bulk-carrying neighborhood and the
+        // intent layer surviving is proven where the trim is ACTIVE. This unit does NOT assert their
+        // omission (criterion 1 owns the trim); they establish the trimmed context, nothing more.
+        fold(
+            &graph,
+            &mut pos,
+            TYPE_DECISION_MADE,
+            json!({ "id": "d_core", "summary": "a decision the trim drops from the implement prompt", "governs": ["core.rs"] }),
+        );
+        fold(
+            &graph,
+            &mut pos,
+            TYPE_LESSON_LEARNED,
+            json!({ "id": "l_core", "summary": "a lesson the trim drops from the implement prompt", "about": ["core.rs"] }),
+        );
+        fold(
+            &graph,
+            &mut pos,
+            TYPE_REVIEW_FINDING,
+            json!({ "id": "f_core", "by": "arch", "unit": "u1", "summary": "a finding the trim drops from the implement prompt", "about": ["core.rs"] }),
+        );
+
+        let prompts = run_and_capture_prompts(&graph);
+        assert!(
+            !prompts.is_empty(),
+            "the implement-stage agent must have been spawned with a prompt"
+        );
+        prompts.into_iter().next().unwrap()
+    };
+
+    let prompt = build();
+
+    // SURVIVES: every one of the four design-intent bindings is STILL delivered on the trimmed
+    // implement prompt - both its title (proving the intent node reached the prompt by traversal) and
+    // a line naming its binding relation and the touched file it governs (proving the BINDING, not
+    // just the node, survived).
+    for (_kind, _id, title, rel) in &bindings {
+        assert!(
+            prompt.contains(title),
+            "the trimmed implement prompt must STILL deliver the design-intent binding {title:?}; \
+             prompt was:\n{prompt}"
+        );
+        assert!(
+            prompt.contains(&format!("{rel} core.rs")),
+            "the trimmed implement prompt must STILL name the {rel} binding to the touched file; \
+             prompt was:\n{prompt}"
+        );
+    }
+
+    // DETERMINISTICALLY: a second independent assembly over the SAME seed delivers the four intent
+    // bindings in the IDENTICAL order (each title's position, sorted, yields the same sequence). The
+    // intent layer is delivered by the ordered traversal, not by the recency luck the trimmed-away
+    // bulk depended on, so its delivery is stable for a given seed. (This asserts the delivery is
+    // STABLE, not any particular permutation - the recency ORDER itself is owned by
+    // `the_spawn_prompt_design_intent_section_renders_the_newest_binding_and_elides_the_oldest`.)
+    let prompt2 = build();
+    let delivered_order = |p: &str| -> Vec<&'static str> {
+        let mut titles: Vec<&'static str> = bindings.iter().map(|(_, _, t, _)| *t).collect();
+        titles.sort_by_key(|t| {
+            p.find(t)
+                .expect("each design-intent binding must be delivered on the trimmed prompt")
+        });
+        titles
+    };
+    assert_eq!(
+        delivered_order(&prompt),
+        delivered_order(&prompt2),
+        "the design-intent bindings must be delivered DETERMINISTICALLY for a given seed - two \
+         independent assemblies must yield the identical ordered binding set;\nfirst prompt:\n{prompt}\
+         \nsecond prompt:\n{prompt2}"
+    );
+}
