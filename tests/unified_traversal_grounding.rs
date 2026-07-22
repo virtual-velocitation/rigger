@@ -31,7 +31,7 @@ use rigger::contextgraph::{
     Projection, KIND_ARCH_DECISION, KIND_DESIGN_DOC, KIND_HANDBOOK_RULE, KIND_RATIONALE,
     REL_CONSTRAINS, REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_SPECIFIES,
     TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED,
-    TYPE_DOC_LINK_EXTRACTED, TYPE_REVIEW_FINDING,
+    TYPE_DOC_LINK_EXTRACTED, TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING,
 };
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::Event;
@@ -147,10 +147,58 @@ fn run_and_capture_prompts(graph: &Projector) -> Vec<String> {
     run_and_capture_prompts_grounded(graph, &grounder, "core")
 }
 
-/// The load-bearing periphery contract of criterion 1: an agent's prompt, composed through the
-/// public `run` path, carries the code neighborhood the ONE unified-graph traversal surfaces for the
-/// touched file - together with the decisions and findings about it - and NO LONGER carries the
-/// separate structural-grounder "Relevant locations" stitch the spec retires.
+/// Drive `conductor::run` over a single PRODUCER (planner) stage - grounding seeded on `core.rs` via
+/// the stub `SeedGrounder` - and return every prompt the driver was asked to spawn. A producer SHARES
+/// the implementer spawn block but is NOT an implement stage, so spec 36 keeps its FULL grounding
+/// context (the trim is implement-only): this is the observation channel for the producer-not-trimmed
+/// guarantee, the exact regression a naive "trim everything that is not review" predicate would break.
+fn run_and_capture_producer_prompts(graph: &Projector) -> Vec<String> {
+    let grounder = SeedGrounder {
+        file: "core.rs".into(),
+    };
+    let mut cfg = Config::default();
+    cfg.agents.insert(
+        "plan".into(),
+        AgentDef {
+            id: "plan".into(),
+            ..Default::default()
+        },
+    );
+    cfg.workflow.stages.insert(
+        "p".into(),
+        Stage {
+            name: "p".into(),
+            agent: "plan".into(),
+            // A non-empty `produces` marks this a PRODUCER (planner) stage: it emits a DAG, not code.
+            produces: "unit".into(),
+            ..Default::default()
+        },
+    );
+
+    let store = Store::open(":memory:").unwrap();
+    let driver = CapturingDriver::default();
+    let deps = Deps {
+        store: &store,
+        driver: &driver,
+        gates: &ExecRunner,
+        repo: String::new(),
+        grounder: Some(&grounder),
+        graph: Some(graph),
+        criteria: Vec::new(),
+    };
+    let _ = run(&cfg, &deps);
+    let prompts = driver.prompts.lock().unwrap().clone();
+    prompts
+}
+
+/// The load-bearing periphery contract of criterion 1 (spec 29c): an agent's prompt, composed
+/// through the public `run` path, carries the code neighborhood the ONE unified-graph traversal
+/// surfaces for the touched file, and NO LONGER carries the separate structural-grounder "Relevant
+/// locations" stitch the spec retires. (Spec 36 trims the capped decisions/lessons/findings bulk from
+/// this implement prompt - that is covered by
+/// `the_implement_prompt_is_trimmed_to_the_intent_layer_with_a_rigger_peers_pointer`, and the FULL
+/// slice still carrying them by `the_producer_prompt_keeps_the_full_grounding_context_...`; this test
+/// pins only the code-neighborhood-from-traversal half, which BOTH slices keep.)
 ///
 /// This is non-vacuous against the pre-collapse behavior: before criterion 1, the prompt rendered a
 /// "Relevant locations to read first" block (the negative assertion would fail) and rendered NO code
@@ -169,20 +217,6 @@ fn a_spawn_prompt_carries_the_unified_traversal_code_neighborhood_not_the_old_st
         &mut pos,
         TYPE_CODE_ENTITY_EXTRACTED,
         json!({ "file": "core.rs", "name": "run_unit", "kind": "function", "line": 42, "lang": "rust", "fresh": true }),
-    );
-    // A DECISION and a FINDING about the SAME file: the one traversal must still return these
-    // alongside the code neighborhood, so the collapse onto a single traversal drops nothing.
-    fold(
-        &graph,
-        &mut pos,
-        TYPE_DECISION_MADE,
-        json!({ "id": "d_core", "summary": "the decision that governs the core file", "governs": ["core.rs"] }),
-    );
-    fold(
-        &graph,
-        &mut pos,
-        TYPE_REVIEW_FINDING,
-        json!({ "id": "f_core", "by": "arch", "unit": "u1", "summary": "the finding about the core file", "about": ["core.rs"] }),
     );
 
     let prompts = run_and_capture_prompts(&graph);
@@ -206,14 +240,174 @@ fn a_spawn_prompt_carries_the_unified_traversal_code_neighborhood_not_the_old_st
         "the separate structural-grounder 'Relevant locations' stitch must be collapsed away; \
          prompt was:\n{prompt}"
     );
-    // The same single traversal still returns the decisions and findings about the file.
+}
+
+/// Criterion 1 (this unit OWNS it): the IMPLEMENT prompt is TRIMMED to the deterministic intent
+/// layer. For an implement-stage spawn whose seed carries decisions / lessons / findings in its
+/// depth-2 neighborhood, the assembled prompt KEEPS the design-intent and code-neighborhood
+/// sections and ADDS a one-line pointer naming the pull tools (`rigger_peers` for prior
+/// decisions / findings, `rigger graph --around` for code navigation), and DROPS the capped
+/// decisions / lessons / findings sections - the push-then-truncate bulk spec 36 replaces with
+/// precise on-demand pulls. The intent layer (design intent + code neighborhood) is delivered
+/// by traversal, not by retrieval luck, so the deterministic-delivery guarantee is preserved.
+///
+/// Non-vacuous against the pre-trim tree: before the trim the implement prompt rendered the
+/// decisions / lessons / findings sections and NO pointer, so every "must OMIT" assertion and the
+/// pointer assertions fail on the base; they flip green only because the implement slice now
+/// renders the intent layer plus the pointer and omits the capped bulk. Mutation-isolating: the
+/// same seed drives a FULL spawn (the producer / review path) unchanged, pinned by
+/// `the_producer_prompt_keeps_the_full_grounding_context_not_the_implement_trim`.
+#[test]
+fn the_implement_prompt_is_trimmed_to_the_intent_layer_with_a_rigger_peers_pointer() {
+    let graph = Projector::open(":memory:", "test").unwrap();
+    let mut pos = 0u64;
+
+    // CODE NEIGHBORHOOD (stays): a definition the run extracted from the touched file.
+    fold(
+        &graph,
+        &mut pos,
+        TYPE_CODE_ENTITY_EXTRACTED,
+        json!({ "file": "core.rs", "name": "run_unit", "kind": "function", "line": 42, "lang": "rust", "fresh": true }),
+    );
+    // DESIGN INTENT (stays): a handbook rule that GOVERNS the touched file.
+    fold_design_intent(
+        &graph,
+        &mut pos,
+        KIND_HANDBOOK_RULE,
+        "docs/handbook/loops.md",
+        "the loop discipline rule governing core",
+        REL_GOVERNS,
+        "core.rs",
+    );
+    // The capped dev-loop bulk the trim DROPS from the implement prompt: a decision, a lesson, and a
+    // finding, all about the SAME seed file, so the one traversal reaches every one of them and their
+    // absence is the trim's doing, not a mis-seeded edge.
+    fold(
+        &graph,
+        &mut pos,
+        TYPE_DECISION_MADE,
+        json!({ "id": "d_core", "summary": "TRIMMED_DECISION_MARKER the decision governing core", "governs": ["core.rs"] }),
+    );
+    fold(
+        &graph,
+        &mut pos,
+        TYPE_LESSON_LEARNED,
+        json!({ "id": "l_core", "summary": "TRIMMED_LESSON_MARKER the lesson about core", "about": ["core.rs"] }),
+    );
+    fold(
+        &graph,
+        &mut pos,
+        TYPE_REVIEW_FINDING,
+        json!({ "id": "f_core", "by": "arch", "unit": "u1", "summary": "TRIMMED_FINDING_MARKER the finding about core", "about": ["core.rs"] }),
+    );
+
+    let prompts = run_and_capture_prompts(&graph);
     assert!(
-        prompt.contains("the decision that governs the core file"),
-        "the one traversal must still surface the decision about the file; prompt was:\n{prompt}"
+        !prompts.is_empty(),
+        "the stage's agent must have been spawned"
+    );
+    let prompt = &prompts[0];
+
+    // KEPT: the code neighborhood the one traversal surfaces (delivered by traversal, not retrieval).
+    assert!(
+        prompt.contains("run_unit") && prompt.contains("core.rs:42"),
+        "the trimmed implement prompt must KEEP the code-neighborhood section; prompt was:\n{prompt}"
+    );
+    // KEPT: the design intent bound to the touched file.
+    assert!(
+        prompt.contains("the loop discipline rule governing core"),
+        "the trimmed implement prompt must KEEP the design-intent section; prompt was:\n{prompt}"
+    );
+    // ADDED: a one-line pointer naming BOTH pull tools the reference bulk is now retrievable through.
+    assert!(
+        prompt.contains("rigger_peers"),
+        "the trimmed implement prompt must point at `rigger_peers` for prior decisions / lessons / \
+         findings; prompt was:\n{prompt}"
     );
     assert!(
-        prompt.contains("the finding about the core file"),
-        "the one traversal must still surface the finding about the file; prompt was:\n{prompt}"
+        prompt.contains("rigger graph --around"),
+        "the trimmed implement prompt must point at `rigger graph --around` for code navigation; \
+         prompt was:\n{prompt}"
+    );
+    // DROPPED: the capped decisions / lessons / findings sections - proven by section header AND by
+    // the unique per-section marker, so neither the header nor the bulk body can slip through.
+    assert!(
+        !prompt.contains("Decisions that govern these files"),
+        "the trimmed implement prompt must OMIT the decisions section header; prompt was:\n{prompt}"
+    );
+    assert!(
+        !prompt.contains("TRIMMED_DECISION_MARKER"),
+        "the trimmed implement prompt must OMIT the capped decisions bulk; prompt was:\n{prompt}"
+    );
+    assert!(
+        !prompt.contains("Lessons already learned about these files"),
+        "the trimmed implement prompt must OMIT the lessons section header; prompt was:\n{prompt}"
+    );
+    assert!(
+        !prompt.contains("TRIMMED_LESSON_MARKER"),
+        "the trimmed implement prompt must OMIT the capped lessons bulk; prompt was:\n{prompt}"
+    );
+    assert!(
+        !prompt.contains("Findings other reviewers have already raised"),
+        "the trimmed implement prompt must OMIT the findings section header; prompt was:\n{prompt}"
+    );
+    assert!(
+        !prompt.contains("TRIMMED_FINDING_MARKER"),
+        "the trimmed implement prompt must OMIT the capped findings bulk; prompt was:\n{prompt}"
+    );
+}
+
+/// Criterion 1 (this unit OWNS the implement-stage trim): the trim is keyed on the IMPLEMENT stage
+/// SPECIFICALLY, never on "not review". A PRODUCER (the planner) SHARES the implementer spawn block
+/// but is not an implement stage, so its first-wave prompt must keep the FULL grounding context - the
+/// decisions/lessons/findings bulk the implement slice drops - so the planner is not blinded to the
+/// prior-decomposition decisions it must not re-litigate (and is consistent with its own re-spawn,
+/// which grounds through the full slice). This pins that at the PUBLIC boundary through a producer run.
+///
+/// Non-vacuous / mutation-isolating: the SAME seed carries a decision and a finding that the sibling
+/// `the_implement_prompt_is_trimmed_...` proves are DROPPED from the implement prompt; here they must
+/// be PRESENT. Regressing the shared spawn block to hand the producer the implement slice (a naive
+/// not-review trim) drops both and reddens this test while leaving the implement-trim test green.
+#[test]
+fn the_producer_prompt_keeps_the_full_grounding_context_not_the_implement_trim() {
+    let graph = Projector::open(":memory:", "test").unwrap();
+    let mut pos = 0u64;
+
+    // A decision and a finding about the seed file the producer grounds to: on the FULL slice both
+    // render; on the (wrong) implement slice both would be dropped for a pointer.
+    fold(
+        &graph,
+        &mut pos,
+        TYPE_DECISION_MADE,
+        json!({ "id": "d_core", "summary": "PRODUCER_DECISION_MARKER the decomposition decision governing core", "governs": ["core.rs"] }),
+    );
+    fold(
+        &graph,
+        &mut pos,
+        TYPE_REVIEW_FINDING,
+        json!({ "id": "f_core", "by": "arch", "unit": "u1", "summary": "PRODUCER_FINDING_MARKER the finding about core", "about": ["core.rs"] }),
+    );
+
+    let prompts = run_and_capture_producer_prompts(&graph);
+    assert!(
+        !prompts.is_empty(),
+        "the producer stage's agent must have been spawned with a prompt"
+    );
+    let prompt = &prompts[0];
+
+    // FULL: the decisions and findings bulk reaches the planner, so it is not blinded to the prior
+    // decomposition decisions it must not re-litigate.
+    assert!(
+        prompt.contains("Decisions that govern these files")
+            && prompt.contains("PRODUCER_DECISION_MARKER"),
+        "the producer prompt must keep the FULL decisions section (the trim is implement-only); \
+         prompt was:\n{prompt}"
+    );
+    assert!(
+        prompt.contains("Findings other reviewers have already raised")
+            && prompt.contains("PRODUCER_FINDING_MARKER"),
+        "the producer prompt must keep the FULL findings section (the trim is implement-only); \
+         prompt was:\n{prompt}"
     );
 }
 
@@ -333,29 +527,36 @@ fn the_spawn_prompt_code_neighborhood_elision_note_names_the_honest_graph_around
 }
 
 /// The code-neighborhood section renders ONLY when the traversal actually surfaces code definitions
-/// for the touched files. A run whose graph carries decisions / findings about the file but no
-/// extracted definition for it must not emit a bare, dangling "Code neighborhood" header with
-/// nothing under it - empty scaffolding is noise in an agent's prompt. This guards the empty-section
-/// suppression at the same public boundary: the inside-out unit test asserts the private renderer
-/// writes no header; this asserts the composed prompt an agent receives carries none either, while
-/// still surfacing the decision - so the one traversal ran and reached the file, it simply had no
-/// code neighborhood to render.
+/// for the touched files. A run whose graph carries design intent about the file but no extracted
+/// definition for it must not emit a bare, dangling "Code neighborhood" header with nothing under it,
+/// since empty scaffolding is noise in an agent's prompt. This guards the empty-section suppression at
+/// the same public boundary: the inside-out unit test asserts the private renderer writes no header;
+/// this
+/// asserts the composed prompt an agent receives carries none either, while still surfacing the design
+/// intent - so the one traversal ran and reached the file, it simply had no code neighborhood to
+/// render.
 ///
-/// Non-vacuous: the decision about `core.rs` proves the traversal reached the file, so a renderer
-/// that emitted the header unconditionally (before the empty-candidate early return) would flip the
-/// header-absence assertion while the decision assertion still held.
+/// Proof of reach is the DESIGN INTENT bound to the file, not a decision: spec 36 keeps the design
+/// intent on the implement prompt but trims the decisions bulk, so the design-intent binding is the
+/// implement-slice signal that the traversal reached `core.rs`. Non-vacuous: that binding renders, so
+/// a renderer that emitted the code-neighborhood header unconditionally (before the empty-candidate
+/// early return) would flip the header-absence assertion while the design-intent assertion still held.
 #[test]
 fn a_spawn_prompt_with_no_extracted_definitions_renders_no_code_neighborhood_header() {
     let graph = Projector::open(":memory:", "test").unwrap();
     let mut pos = 0u64;
 
-    // A DECISION about the touched file but NO code entity for it: the seeded traversal reaches the
-    // file (the decision governs it) yet has zero definitions to render as a code neighborhood.
-    fold(
+    // A DESIGN-INTENT node bound to the touched file but NO code entity for it: the seeded traversal
+    // reaches the file (a handbook rule GOVERNS it) yet has zero definitions to render as a code
+    // neighborhood. Design intent stays on the trimmed implement prompt, so it is the reach signal.
+    fold_design_intent(
         &graph,
         &mut pos,
-        TYPE_DECISION_MADE,
-        json!({ "id": "d_core", "summary": "the decision that governs the core file", "governs": ["core.rs"] }),
+        KIND_HANDBOOK_RULE,
+        "docs/handbook/loops.md",
+        "the loop rule that governs core",
+        REL_GOVERNS,
+        "core.rs",
     );
 
     let prompts = run_and_capture_prompts(&graph);
@@ -365,10 +566,11 @@ fn a_spawn_prompt_with_no_extracted_definitions_renders_no_code_neighborhood_hea
     );
     let prompt = &prompts[0];
 
-    // The one traversal ran and reached the file: its decision is surfaced.
+    // The one traversal ran and reached the file: its design intent is surfaced.
     assert!(
-        prompt.contains("the decision that governs the core file"),
-        "the one traversal must still surface the decision about the file; prompt was:\n{prompt}"
+        prompt.contains("the loop rule that governs core"),
+        "the one traversal must still surface the design intent bound to the file; prompt \
+         was:\n{prompt}"
     );
     // With no extracted definition, the code-neighborhood section is suppressed entirely - no bare
     // header renders over an empty body.
@@ -449,16 +651,21 @@ fn turbovec_nl_retrieval_is_retained_and_seeds_the_unified_traversal() {
          above the rendering code; got {refs:?}"
     );
 
-    // The unified graph the run populates: a DECISION folded ABOUT `combat.rs` - the file turbovec
-    // resolves the query to. Its summary is a marker that appears NOWHERE in the query or the repo
-    // source, so surfacing it in the prompt can ONLY be the seeded traversal reaching `combat.rs`.
+    // The unified graph the run populates: a DESIGN-INTENT node bound ABOUT `combat.rs` - the file
+    // turbovec resolves the query to. Its title is a marker that appears NOWHERE in the query or the
+    // repo source, so surfacing it in the prompt can ONLY be the seeded traversal reaching
+    // `combat.rs`. Design intent (not a decision) is the marker because spec 36 keeps the design
+    // intent on the trimmed implement prompt this run assembles, while it trims the decisions bulk.
     let graph = Projector::open(":memory:", "test").unwrap();
     let mut pos = 0u64;
-    fold(
+    fold_design_intent(
         &graph,
         &mut pos,
-        TYPE_DECISION_MADE,
-        json!({ "id": "d_combat", "summary": "the design note that governs the combat file", "governs": ["combat.rs"] }),
+        KIND_HANDBOOK_RULE,
+        "docs/handbook/combat.md",
+        "the design note that governs the combat file",
+        REL_GOVERNS,
+        "combat.rs",
     );
 
     // (2) COMPLEMENTARY, seeds the unified traversal: drive the SAME real turbovec through the public
@@ -474,7 +681,7 @@ fn turbovec_nl_retrieval_is_retained_and_seeds_the_unified_traversal() {
     assert!(
         prompt.contains("the design note that governs the combat file"),
         "turbovec's NL result must SEED the unified traversal: the prompt must surface the graph \
-         neighborhood (the decision about combat.rs) the one seeded traversal reaches via the \
+         neighborhood (the design intent about combat.rs) the one seeded traversal reaches via the \
          turbovec-resolved file; prompt was:\n{prompt}"
     );
 }
@@ -740,10 +947,13 @@ fn the_design_intent_section_is_budget_capped_and_its_elision_note_names_the_hon
 /// an EMPTY title (a decision carries `summary`, not `title`) in every prompt.
 ///
 /// The inside-out unit test reaches `write_design_intent` directly; this pins the same guard at the
-/// PUBLIC prompt boundary. Non-vacuous: the decision reaches the prompt through the DECISIONS section
-/// (its summary is asserted present), proving the traversal reached it, while it is ABSENT from the
-/// design-intent section. Mutation-proven: replacing the kind check with `true` leaks the decision
-/// as `- GOVERNS core.rs  d_leak_decision: ` (empty title), flipping the negative assertion.
+/// PUBLIC prompt boundary of the trimmed implement prompt (design intent stays on the implement slice;
+/// spec 36 trims the decisions section from it, so the guard is that a decision governing the file
+/// never LEAKS into the design-intent section that DOES render). Non-vacuous: the decision GOVERNS the
+/// SAME file at the SAME depth as the handbook rule that DOES render, so the kind guard - not
+/// reachability - is what keeps it out. Mutation-proven: replacing the kind check with `true` leaks
+/// the decision as `- GOVERNS core.rs  d_leak_decision: ` (empty title) into the rendered
+/// design-intent section, flipping the negative assertion.
 #[test]
 fn a_governing_decision_never_leaks_into_the_spawn_prompt_design_intent_section() {
     let graph = Projector::open(":memory:", "test").unwrap();
@@ -788,22 +998,19 @@ fn a_governing_decision_never_leaks_into_the_spawn_prompt_design_intent_section(
         "the design-intent line must name the GOVERNS relation and the touched file; prompt \
          was:\n{prompt}"
     );
-    // NON-VACUITY: the decision DID reach the prompt - through the decisions section - so it was in
-    // the traversal; the kind guard, not reachability, is what keeps it out of the design-intent
-    // section.
-    assert!(
-        prompt.contains("a governing decision that is not design intent"),
-        "the governing decision must still surface in the decisions section (proving the traversal \
-         reached it); prompt was:\n{prompt}"
-    );
-    // THE GUARD: the governing decision must NOT render as a design-intent line. Its design-intent
-    // form would be `- GOVERNS core.rs  d_leak_decision: ` (rel, file, then the id with an empty
-    // title); the decisions section renders it as `- d_leak_decision: <summary>` instead, so this
-    // exact substring can only appear if the decision leaked through the shared relation.
+    // NON-VACUITY: the decision GOVERNS the SAME file at the SAME depth-1 as the handbook rule that
+    // DID render above, so it is unquestionably in the seeded subgraph; the kind guard, not
+    // reachability, is what keeps it out of the design-intent section. (The trimmed implement prompt
+    // no longer renders a decisions section at all - `the_implement_prompt_is_trimmed_...` owns that -
+    // so the guard here is purely that the decision does not LEAK into the design-intent section.)
+    // THE GUARD: the governing decision must NOT render as a design-intent line. Its leaked
+    // design-intent form would be `- GOVERNS core.rs  d_leak_decision: ` (rel, file, then the id with
+    // an empty title, since a decision carries `summary`, not `title`), so this exact substring can
+    // only appear if the decision leaked through the shared GOVERNS relation past the kind guard.
     assert!(
         !prompt.contains(&format!("{REL_GOVERNS} core.rs  d_leak_decision")),
         "a governing DECISION must be excluded from the design-intent section by the kind guard - it \
-         belongs in the decisions section, not here; prompt was:\n{prompt}"
+         is retrievable via `rigger_peers`, not rendered here; prompt was:\n{prompt}"
     );
 }
 
