@@ -498,6 +498,157 @@ fn the_public_calls_edge_folds_only_for_a_caller_carrying_reference_event() {
     );
 }
 
+// ---- spec 37 criterion 4: the graph answers "who calls G" by function (the ACID query) ----
+
+#[test]
+fn the_graph_answers_who_calls_g_by_function_through_the_fold_traversal() {
+    use rigger::contextgraph::REL_CALLS;
+
+    // The ACID query the whole spec exists to restore: an agent debugging `apply_damage` runs the
+    // equivalent of `rigger graph --around <file>::apply_damage` and must learn WHO CALLS it, BY
+    // FUNCTION. This drives the ALWAYS-compiled fold + traversal in BOTH feature lanes over raw
+    // on-log JSON (no extractor), seeding the `subgraph` on the CALLEE node and reading the INCOMING
+    // CALLS edges - the direction c3's periphery test never exercises (it seeds on the file and reads
+    // a caller's OUTGOING edges). `melee` and `ranged` call `apply_damage`; `heal` calls `restore`
+    // instead - a real caller of SOMETHING, just not of `apply_damage` - so its exclusion from the
+    // who-calls answer is a non-vacuous negative, not an artifact of `heal` never being ingested. A
+    // regression that keyed CALLS off the bare file, dropped the caller, or made the traversal miss
+    // an incoming edge reds this while the file-seeded c3 tests could stay green.
+    let p = Projector::open(":memory:", "test").unwrap();
+    let file = "src/combat.rs";
+
+    // Five same-file definitions: the callee everyone asks about, its two callers, a non-caller, and
+    // the unrelated symbol that non-caller actually calls.
+    apply_def_json(&p, 1, file, "apply_damage");
+    apply_def_json(&p, 2, file, "melee");
+    apply_def_json(&p, 3, file, "ranged");
+    apply_def_json(&p, 4, file, "heal");
+    apply_def_json(&p, 5, file, "restore");
+
+    // Caller-carrying reference events - the exact wire the emit pass writes: a call to `apply_damage`
+    // inside `melee` and inside `ranged`, and a call to `restore` inside `heal`.
+    let call = |pos: u64, caller: &str, callee: &str| {
+        apply_json(
+            &p,
+            pos,
+            TYPE_EDGE_INFERRED,
+            serde_json::json!({ "file": file, "name": callee, "caller": caller }),
+        );
+    };
+    call(6, "melee", "apply_damage");
+    call(7, "ranged", "apply_damage");
+    call(8, "heal", "restore");
+
+    // The query: subgraph seeded on the CALLEE. depth 2 pulls the whole file neighborhood in, so the
+    // `heal` negative below is over a node genuinely present in the answer, not one the traversal
+    // simply never reached.
+    let g = p
+        .subgraph(&["src/combat.rs::apply_damage".to_string()], 2)
+        .unwrap();
+
+    // "Who calls apply_damage" = the from-endpoints of the CALLS edges landing on it, by function.
+    let mut callers: Vec<&str> = g
+        .edges
+        .iter()
+        .filter(|e| e.rel == REL_CALLS && e.to == "src/combat.rs::apply_damage")
+        .map(|e| e.from.as_str())
+        .collect();
+    callers.sort_unstable();
+    assert_eq!(
+        callers,
+        vec!["src/combat.rs::melee", "src/combat.rs::ranged"],
+        "the graph answers who-calls-apply_damage by FUNCTION: exactly melee and ranged, keyed by \
+         the enclosing definition, never the bare file; got {:?}",
+        g.edges
+    );
+
+    // The negative is non-vacuous: `heal` IS in the answer's neighborhood and DOES call something
+    // (restore), it simply does not call apply_damage - so no CALLS edge runs from heal to it.
+    assert!(
+        g.edges.iter().any(|e| e.rel == REL_CALLS
+            && e.from == "src/combat.rs::heal"
+            && e.to == "src/combat.rs::restore"),
+        "heal was ingested and its own call folded (heal --CALLS--> restore), so its absence from \
+         apply_damage's callers is a real negative; got {:?}",
+        g.edges
+    );
+    assert!(
+        !g.edges.iter().any(|e| e.rel == REL_CALLS
+            && e.from == "src/combat.rs::heal"
+            && e.to == "src/combat.rs::apply_damage"),
+        "heal does not call apply_damage, so no CALLS edge runs from it to apply_damage; got {:?}",
+        g.edges
+    );
+}
+
+#[cfg(feature = "symbols")]
+#[test]
+fn ingesting_a_real_file_answers_who_calls_g_by_function_end_to_end() {
+    use rigger::contextgraph::REL_CALLS;
+    use rigger::grounder::symbols::build_index;
+    use rigger::grounder::symbols::events::index_events;
+
+    // The full ACID chain the spec's Done-when names: INGEST a real source file (tree-sitter
+    // attribution -> emit -> fold), then answer "who calls apply_damage" by function from ONE
+    // subgraph around the callee. `melee` and `ranged` call `apply_damage` from inside their bodies;
+    // `heal` calls `restore` instead. This closes the whole pipeline the c3 unit/periphery tests each
+    // cover a slice of, on the who-calls query an agent actually runs. A regression anywhere in the
+    // chain - the extractor dropping the enclosing caller, the emit omitting it, the fold mis-keying
+    // the CALLS edge, or the traversal not surfacing an incoming edge - reds here.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("combat.rs"),
+        "fn apply_damage() {}\n\
+         fn melee() { apply_damage(); }\n\
+         fn ranged() { apply_damage(); }\n\
+         fn restore() {}\n\
+         fn heal() { restore(); }\n",
+    )
+    .unwrap();
+
+    let idx = build_index(dir.path().to_str().unwrap(), None);
+    let p = Projector::open(":memory:", "test").unwrap();
+    for (i, mut e) in index_events(&idx).into_iter().enumerate() {
+        e.position = (i + 1) as u64;
+        p.apply(&e).unwrap();
+    }
+
+    // The query the design routes to an agent: `subgraph` around the CALLEE, read incoming callers.
+    let g = p
+        .subgraph(&["combat.rs::apply_damage".to_string()], 2)
+        .unwrap();
+
+    let mut callers: Vec<&str> = g
+        .edges
+        .iter()
+        .filter(|e| e.rel == REL_CALLS && e.to == "combat.rs::apply_damage")
+        .map(|e| e.from.as_str())
+        .collect();
+    callers.sort_unstable();
+    assert_eq!(
+        callers,
+        vec!["combat.rs::melee", "combat.rs::ranged"],
+        "one subgraph around the real-ingested callee answers who-calls-apply_damage by FUNCTION: \
+         melee and ranged, the two enclosing definitions the extractor attributed; got {:?}",
+        g.edges
+    );
+    assert!(
+        g.edges.iter().any(|e| e.rel == REL_CALLS
+            && e.from == "combat.rs::heal"
+            && e.to == "combat.rs::restore"),
+        "heal was ingested and its real call folded (heal --CALLS--> restore), so its absence from \
+         apply_damage's callers is a real negative; got {:?}",
+        g.edges
+    );
+    assert!(
+        !g.edges.iter().any(|e| e.rel == REL_CALLS
+            && e.from == "combat.rs::heal"
+            && e.to == "combat.rs::apply_damage"),
+        "heal does not call apply_damage - no CALLS edge runs from it to apply_damage; got {:?}",
+        g.edges
+    );
+}
+
 #[cfg(feature = "symbols")]
 #[test]
 fn the_emit_api_is_deterministic_and_emits_definitions_before_references() {
