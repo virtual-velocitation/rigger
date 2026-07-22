@@ -7,9 +7,11 @@ orientation - and append a short pointer that the rest is retrievable on demand.
 ~80 KiB the implement prompt spends rendering a pool that is then ~85% truncated by recency (measured
 on a hot file: the decisions+lessons+findings sections total ~550 KiB against the ~84 KiB cap), and
 makes retrieval precise - the agent pulls what its sub-problem needs - instead of a fixed, truncated
-blob. The reference bulk is already available uncapped through the existing `rigger_peers` tool. This
-is Workstream A of the grounding-as-tool addendum (section 3): push the deterministic minimum, tool
-the rest. The trim is IMPLEMENT-ONLY: the adversary and adjudicator retrieve the lenses' findings
+blob. The reference bulk is already pullable uncapped through the existing `rigger_peers` tool, and
+since spec 37 the code graph ANSWERS navigation - `rigger graph --around <file|entity>` returns
+who-calls-X and the caller/callee neighborhood - so pointing the implementer at both replaces the
+truncated push with precise, on-demand pulls. This is Workstream A of the grounding-as-tool addendum
+(section 3): push the deterministic minimum, tool the rest. The trim is IMPLEMENT-ONLY: the adversary and adjudicator retrieve the lenses' findings
 THROUGH `graph_context`, so review-stage grounding is deliberately left intact here (the
 review-determinism guarantee is a later workstream).
 
@@ -26,10 +28,11 @@ and must stay.
 Split grounding by stage at the assembly seam:
 
 - an **IMPLEMENT** spawn (the implementer role) gets a TRIMMED slice: `write_code_neighborhood` +
-  `write_design_intent` + a one-line pointer that prior decisions, lessons, findings, and peers are
-  retrievable via the `rigger_peers` tool (already exposed over MCP + CLI, `src/mcpserver.rs` /
-  `cmd_peers` in `src/main.rs`; it returns those items scoped to the blast-radius files, uncapped).
-  It OMITS `write_capped_decisions` / `write_capped_lessons` / `write_capped_findings`.
+  `write_design_intent` + a one-line pointer to the pull tools - `rigger_peers` for prior
+  decisions/lessons/findings scoped to the blast-radius files, uncapped (MCP + CLI, `src/mcpserver.rs`
+  / `cmd_peers` in `src/main.rs`), and `rigger graph --around <file|entity>` for code navigation,
+  which since spec 37 answers who-calls-X and the caller/callee neighborhood (`cmd_graph` in
+  `src/main.rs`). It OMITS `write_capped_decisions` / `write_capped_lessons` / `write_capped_findings`.
 - a **REVIEW** spawn (lens / adversary / adjudicator) keeps the FULL `graph_context` UNCHANGED. The
   adversary grounds after the lenses and the adjudicator after both, and they retrieve the lenses'
   findings through `graph_context`'s findings section (`src/conductor.rs`: the adversary/adjudicator
@@ -64,9 +67,10 @@ event type, no projection change, no store write.
 
 - [ ] a test proves the IMPLEMENT prompt is TRIMMED: for an implement-stage spawn whose seed has
   decisions/lessons/findings in its depth-2 neighborhood, the assembled prompt contains the
-  design-intent and code-neighborhood sections and a pointer naming `rigger_peers`, and does NOT
-  contain the capped decisions / lessons / findings sections. This criterion OWNS the implement-stage
-  trim and the tool pointer.
+  design-intent and code-neighborhood sections and a pointer naming the pull tools (`rigger_peers`
+  for decisions/findings and `rigger graph --around` for code navigation), and does NOT contain the
+  capped decisions / lessons / findings sections. This criterion OWNS the implement-stage trim and
+  the tool pointer.
 - [ ] a test proves the DESIGN-INTENT guarantee survives the trim: for an implement-stage spawn
   touching a file bound by a design-intent node (a handbook-rule `GOVERNS` / design-doc `SPECIFIES` /
   decision `CONSTRAINS` / rationale `explains` edge to a seed file), the assembled prompt STILL
