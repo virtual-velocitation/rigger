@@ -3617,6 +3617,101 @@ fn step_refuses_when_there_is_no_reachable_base() {
     );
 }
 
+/// Loop-readiness gate (spec 38, criterion 2), periphery wiring for `rigger run`: the same
+/// no-reachable-base refusal `rigger step` enforces is wired into the default `cli` driver's
+/// entry (`run_cli`), labelled `rigger run`. On a repo with an UNBORN HEAD (no commit to fall
+/// back to) AND an unresolvable base, `rigger run` must FAIL LOUDLY instead of minting a run
+/// branch that branches from nowhere. The gate is one shared function, but each entry point
+/// calls it at its OWN site: a missing call here is an independent boundary bug the shared
+/// unit test cannot catch, so this drives the built binary through `rigger run` and pins the
+/// `rigger run` label to prove that this call-site - not another - fired.
+#[test]
+fn run_refuses_when_there_is_no_reachable_base() {
+    // `temp_project()` is a `git init` with NO commit: an unborn HEAD, nothing to branch from.
+    let dir = temp_project();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+    let head_branch_before = git_out(root, &["symbolic-ref", "--short", "-q", "HEAD"]);
+
+    // An unresolvable base + the unborn HEAD => no reachable base at all.
+    let (out, err, ok) = run_rigger(root, &["run", "--base", "origin/does-not-exist"]);
+    assert!(
+        !ok,
+        "`rigger run` with no reachable base must fail loudly; stdout: {out:?} stderr: {err:?}"
+    );
+    assert!(
+        err.contains("rigger run") && err.contains("no reachable base") && err.contains("--base"),
+        "the refusal must carry the `rigger run` label, name the missing base, and point at \
+         --base; got: {err:?}"
+    );
+
+    // Side-effect-free: no run branch was minted, so HEAD is untouched (still the unborn
+    // default branch, never rigger-run) and the corrected retry can anchor the run fresh.
+    assert_ne!(
+        git_out(root, &["symbolic-ref", "--short", "-q", "HEAD"]).as_deref(),
+        Some("rigger-run"),
+        "a refused `rigger run` must NOT have created or checked out the run branch"
+    );
+    assert_eq!(
+        git_out(root, &["symbolic-ref", "--short", "-q", "HEAD"]),
+        head_branch_before,
+        "the refused `rigger run` leaves HEAD exactly where it was"
+    );
+}
+
+/// Loop-readiness gate (spec 38, criterion 2), periphery wiring for the workflow driver: the
+/// `run_workflow` entry (reached by `rigger run --driver workflow`, the served-conductor path
+/// `rigger workflow` funnels through) enforces the SAME no-reachable-base refusal, labelled
+/// `rigger workflow`. The refusal fires BEFORE the workflow driver, store, or sidecar start,
+/// so it is provable through the binary WITHOUT the Node driver. A missing call at this third
+/// call-site is an independent boundary bug; this drives the binary through the workflow
+/// driver and pins the `rigger workflow` label to prove that this call-site fired.
+#[test]
+fn run_workflow_refuses_when_there_is_no_reachable_base() {
+    // `temp_project()` is a `git init` with NO commit: an unborn HEAD, nothing to branch from.
+    let dir = temp_project();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+    let head_branch_before = git_out(root, &["symbolic-ref", "--short", "-q", "HEAD"]);
+
+    // An unresolvable base + the unborn HEAD => no reachable base at all.
+    let (out, err, ok) = run_rigger(
+        root,
+        &[
+            "run",
+            "--driver",
+            "workflow",
+            "--base",
+            "origin/does-not-exist",
+        ],
+    );
+    assert!(
+        !ok,
+        "`rigger run --driver workflow` with no reachable base must fail loudly; \
+         stdout: {out:?} stderr: {err:?}"
+    );
+    assert!(
+        err.contains("rigger workflow")
+            && err.contains("no reachable base")
+            && err.contains("--base"),
+        "the refusal must carry the `rigger workflow` label, name the missing base, and point \
+         at --base; got: {err:?}"
+    );
+
+    // Side-effect-free: no run branch was minted and the workflow driver never started, so
+    // HEAD is untouched (never rigger-run) and the corrected retry anchors the run fresh.
+    assert_ne!(
+        git_out(root, &["symbolic-ref", "--short", "-q", "HEAD"]).as_deref(),
+        Some("rigger-run"),
+        "a refused workflow run must NOT have created or checked out the run branch"
+    );
+    assert_eq!(
+        git_out(root, &["symbolic-ref", "--short", "-q", "HEAD"]),
+        head_branch_before,
+        "the refused workflow run leaves HEAD exactly where it was"
+    );
+}
+
 /// `rigger workflow <spec> --base <ref>` ACCEPTS `--base` (spec 18, criterion 6): the
 /// command an operator naturally reaches for no longer rejects the flag with "expected at
 /// most one spec path". The spec and the flag both parse, so the command proceeds past
