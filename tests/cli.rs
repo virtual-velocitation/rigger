@@ -8103,3 +8103,142 @@ fn a_step_started_dash_is_detached_and_outlives_its_step_process() {
         "the SAME detached dash must still SERVE {url} across a later step-process boundary"
     );
 }
+
+// --- Spec 39, criterion 3: the persistent step-path dash SELF-REAPS when the run it serves goes
+// idle. Criterion 1 owns start-once idempotency and criterion 2 owns persistence-across-steps;
+// THIS criterion owns the self-reaping LIFECYCLE - a completed or crashed run leaves NO orphaned
+// dash, and the reap is driven by the run's OWN liveness (its heartbeat markers going stale),
+// decoupled from any single `step` process exiting. The dash.rs unit test proves the pure reap
+// DECISION (`should_reap_on_idle`); only driving the real `rigger dash --reap-on-idle` binary
+// proves the watcher wiring: that a genuinely-serving detached dash keeps serving while the run's
+// heartbeat is fresh and exits ITSELF once that heartbeat goes stale, with no other process
+// killing it.
+
+/// Spec 39, criterion 3 end-to-end, through the BUILT binary: a detached `rigger dash`
+/// started with `--reap-on-idle` (the exact flag `spawn_run_dashboard_detached` passes) keeps
+/// serving WHILE the run it watches has a fresh heartbeat, and SELF-REAPS once that heartbeat
+/// goes stale - the run-idle backstop that leaves no orphaned dash after a crashed/wedged run.
+/// Nothing in this test ever kills the dash, so its exit is proof of SELF-reap driven by the
+/// run's liveness, not by a `step` process or a `ReapedChild` guard.
+///
+/// The run's heartbeat is a real, controlled liveness marker under the run's `agent-live/`
+/// directory (the SAME path authority `rigger::liveness::marker_path` the sweep and the worker
+/// share). A background thread TOUCHES it to simulate a live worker's heartbeat; while it does,
+/// the dash must stay up (it must NOT reap a live run, even though this run never reaches a clean
+/// fixpoint). When the thread STOPS, the marker goes stale past the short bound this test sets
+/// via `RIGGER_DASH_REAP_STALE_SECS`, and the dash must exit ITSELF. The piped stdout is a
+/// race-free liveness probe exactly as the reaping test uses: a blocked read means the dash lives;
+/// EOF means it exited.
+#[test]
+fn a_reap_on_idle_dash_serves_while_the_run_heartbeats_then_self_reaps_when_liveness_goes_stale() {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{mpsc, Arc};
+    use std::time::Duration;
+
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
+
+    // A run in flight but NOT terminal: a parked spawn with no recorded result, so the log never
+    // reads "complete" - the reap here is driven purely by the heartbeat going stale, the
+    // crashed/wedged-run backstop (never the terminal-fixpoint arm).
+    seed_run_events(
+        root,
+        &[
+            ("RunStarted", r#"{"run":"r1","criteria":["c"]}"#),
+            (
+                "SpawnRequested",
+                r#"{"id":"u/implementer#0","unit":"u","stage":"implement","prompt":"do it"}"#,
+            ),
+        ],
+    );
+
+    // Pin the scratch root so the marker the dash reads and the marker this test touches are the
+    // SAME path (the dash resolves it from RIGGER_TMPDIR). The marker path is the shared authority.
+    let scratch_root = root.join("rigger-scratch").to_string_lossy().into_owned();
+    let marker = rigger::liveness::marker_path(&scratch_root, "r1", "u/implementer#0");
+    std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+    std::fs::write(&marker, b"").unwrap(); // an initial fresh heartbeat
+
+    // A background heartbeat: touch the marker every 200ms to simulate a live worker, so the run's
+    // liveness stays FRESH until this test decides to let it go stale.
+    let stop = Arc::new(AtomicBool::new(false));
+    let hb_marker = marker.clone();
+    let hb_stop = stop.clone();
+    let heartbeat = std::thread::spawn(move || {
+        while !hb_stop.load(Ordering::Relaxed) {
+            let _ = std::fs::write(&hb_marker, b"");
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    });
+
+    let port = free_loopback_port();
+    let mut child = Command::new(rigger_bin())
+        .args(["dash", "--port", &port.to_string(), "--reap-on-idle"])
+        .current_dir(root)
+        .env("RIGGER_TMPDIR", &scratch_root)
+        // Poll fast and treat a heartbeat older than 2s as stale, so the self-reap is observable
+        // within the test rather than on the shipped multi-minute cadence.
+        .env("RIGGER_DASH_REAP_POLL_MS", "150")
+        .env("RIGGER_DASH_REAP_STALE_SECS", "2")
+        .env_remove("RIGGER_NO_DASH")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn `rigger dash --reap-on-idle`");
+    let mut out = child.stdout.take().expect("dash stdout is piped");
+
+    // Watch the piped stdout: a blocked read means the dash is alive; a 0-byte read means it
+    // exited and stdout hit EOF (the dash logs to stderr, so stdout stays empty-and-open until
+    // the process dies).
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 1];
+        let n = out.read(&mut buf).unwrap_or(0);
+        let _ = tx.send(n);
+    });
+
+    // The dash is genuinely SERVING the run: an HTTP GET returns its read-only page. Reap on
+    // failure so nothing leaks.
+    if !matches!(http_get(&format!("http://127.0.0.1:{port}/")), Some(body) if body.contains("rigger dash"))
+    {
+        stop.store(true, Ordering::Relaxed);
+        let _ = heartbeat.join();
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("the `rigger dash --reap-on-idle` never served its page");
+    }
+
+    // While the heartbeat thread keeps the marker fresh, the dash must NOT reap - a live run's
+    // dash stays up even though the run never reaches a clean fixpoint. A read arriving here would
+    // mean it reaped a LIVE run (a premature self-reap), which fails LOUD.
+    let premature = rx.recv_timeout(Duration::from_millis(1200));
+    if premature.is_ok() {
+        stop.store(true, Ordering::Relaxed);
+        let _ = heartbeat.join();
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("the dash self-reaped while the run's heartbeat was still fresh - premature reap");
+    }
+
+    // Let the run's liveness go STALE: stop touching the marker. After the 2s bound elapses the
+    // watcher must see a stale heartbeat and exit the process ITSELF.
+    stop.store(true, Ordering::Relaxed);
+    heartbeat.join().expect("heartbeat thread joins");
+
+    let reaped = rx.recv_timeout(Duration::from_secs(12));
+    // Reap defensively before asserting, so a failure never leaves the dash orphaned. On the
+    // success path the process has already exited itself, so this kill is a no-op and the wait
+    // only collects the already-exited child (no zombie).
+    let _ = child.kill();
+    let _ = child.wait();
+    let n = reaped.expect(
+        "the `rigger dash --reap-on-idle` did not SELF-REAP within 12s after its run's heartbeat \
+         went stale - a run-idle dash must not leak",
+    );
+    assert_eq!(
+        n, 0,
+        "a self-reaped dash should have its stdout at EOF (it exited on its own, un-killed)"
+    );
+}

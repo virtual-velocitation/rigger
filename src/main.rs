@@ -50,6 +50,20 @@ const DASH_MARKER_FILE: &str = "dash.marker";
 /// `rigger step` never spawns a real dashboard process.
 const DASH_DISABLE_ENV: &str = "RIGGER_NO_DASH";
 
+/// Env override (milliseconds) for the self-reap watcher's poll interval (spec 39, criterion 3),
+/// and its production default. The crate's own integration test sets the env small so the
+/// detached dash's self-reap is observable within the test, without changing the shipped cadence.
+const DASH_REAP_POLL_ENV: &str = "RIGGER_DASH_REAP_POLL_MS";
+const DASH_REAP_POLL_DEFAULT_MS: u64 = 5_000;
+
+/// Env override (seconds) for the self-reap watcher's heartbeat-staleness bound (spec 39,
+/// criterion 3), and its production default. Generous by design: a live run's inter-step gap
+/// (no marker touched for a few seconds while the driver launches the next `step`) must never
+/// read as idle, so this sits far above any plausible gap; a completed run still reaps promptly
+/// through the reclaimed-heartbeat + terminal arm, independent of this bound.
+const DASH_REAP_STALE_ENV: &str = "RIGGER_DASH_REAP_STALE_SECS";
+const DASH_REAP_STALE_DEFAULT_SECS: u64 = 900;
+
 /// The tracked file under `.rigger/` that carries the durable project identity (spec 09,
 /// Gap 20): one trimmed line committed to git, so the identity survives directory renames
 /// and machine moves instead of tracking the volatile directory basename.
@@ -3705,6 +3719,10 @@ fn spawn_run_dashboard_detached() -> std::io::Result<dash::DashMarker> {
         .arg("dash")
         .arg("--port")
         .arg(port.to_string())
+        // Self-reap on run-idle (spec 39, criterion 3): a DETACHED dash holds no `ReapedChild`,
+        // so it must watch the run's own liveness and exit once the run completes or its heartbeat
+        // goes stale - the backstop the process-bound guard provides on the `rigger run` paths.
+        .arg("--reap-on-idle")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -3760,8 +3778,12 @@ fn recorded_dash_url(loc: &StoreLocation) -> Option<String> {
 
 fn cmd_dash(args: &[String]) -> Res {
     // `--export <path>` and/or `--port <n>`; loopback only (no host flag by design).
+    // `--reap-on-idle` makes this dash SELF-REAP when the run it serves goes idle/complete
+    // (spec 39, criterion 3) - passed only by the DETACHED step-path spawn, never the
+    // guard-bound `rigger run` / `run_workflow` dash (which keeps its `ReapedChild`).
     let mut export: Option<String> = None;
     let mut port: u16 = dash::DEFAULT_PORT;
+    let mut reap_on_idle = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -3780,6 +3802,7 @@ fn cmd_dash(args: &[String]) -> Res {
                     .and_then(|p| p.parse().ok())
                     .ok_or("dash: --port expects a port number (1-65535)")?;
             }
+            "--reap-on-idle" => reap_on_idle = true,
             other => return Err(format!("dash: unknown argument {other:?}").into()),
         }
         i += 1;
@@ -3812,6 +3835,13 @@ fn cmd_dash(args: &[String]) -> Res {
     // repo) and carries no persisted base, keeping the dash and `rigger status` on one handoff.
     let (release_base, _) = resolve_run_base(None, std::env::var("RIGGER_BASE").ok().as_deref());
 
+    // Snapshot the read-only inputs the self-reap watcher needs (spec 39, criterion 3) BEFORE the
+    // provider closure below moves the originals - only when this is the detached, self-reaping
+    // dash (`--reap-on-idle`). `None` for the guard-bound `rigger run` / `run_workflow` dash, which
+    // never starts a watcher (it keeps its `ReapedChild`).
+    let reap_inputs =
+        reap_on_idle.then(|| (events_db.clone(), identity.clone(), scratch_root.clone()));
+
     // Fresh projection inputs on every request. Reading (not holding an open handle) is
     // what lets the dash start before the store exists and pick the run up once it does.
     let provider = move || -> Result<dash::DashInputs, String> {
@@ -3841,9 +3871,128 @@ fn cmd_dash(args: &[String]) -> Res {
             Ok(())
         }
         None => {
+            // Self-reap on run-idle (spec 39, criterion 3): the detached step-path dash is
+            // started with `--reap-on-idle`, so a background thread polls the run's own liveness
+            // and exits this process once the run is complete or its heartbeat has gone stale -
+            // leaving no orphaned dash after a completed OR crashed run, driven by the run's
+            // liveness and NOT by any `step` process exiting. Read-only: the watcher only reads
+            // the store. The guard-bound `rigger run` / `run_workflow` dash omits the flag and
+            // keeps its `ReapedChild` reaping instead.
+            if let Some((events_db, identity, scratch_root)) = reap_inputs {
+                let poll = dash_reap_poll();
+                let stale_after = dash_reap_stale();
+                std::thread::spawn(move || {
+                    watch_and_self_reap_on_idle(
+                        events_db,
+                        identity,
+                        scratch_root,
+                        poll,
+                        stale_after,
+                    )
+                });
+            }
             let addr = SocketAddr::from(([127, 0, 0, 1], port));
             dash::serve(addr, provider, max_retries, RUN_BRANCH, &release_base)?;
             Ok(())
+        }
+    }
+}
+
+/// The dash self-reap watcher's poll interval (spec 39, criterion 3): how often the detached
+/// step-path dash re-checks whether the run it serves has gone idle. Env-tunable via
+/// [`DASH_REAP_POLL_ENV`] (milliseconds) - the crate's own integration test sets it small so the
+/// self-reap is observable quickly - defaulting to [`DASH_REAP_POLL_DEFAULT_MS`]. Clamped to at
+/// least 1ms so a `0` override never spins the watcher into a busy loop.
+fn dash_reap_poll() -> std::time::Duration {
+    let ms = std::env::var(DASH_REAP_POLL_ENV)
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(DASH_REAP_POLL_DEFAULT_MS)
+        .max(1);
+    std::time::Duration::from_millis(ms)
+}
+
+/// The dash self-reap watcher's heartbeat-staleness bound (spec 39, criterion 3): once the run's
+/// freshest liveness marker is older than this, the run's liveness is treated as gone and the
+/// dash reaps (the crashed/wedged-run backstop). Env-tunable via [`DASH_REAP_STALE_ENV`]
+/// (seconds), defaulting to [`DASH_REAP_STALE_DEFAULT_SECS`] - generous, so a live run's normal
+/// inter-step gap (no marker touched for a few seconds between `step` processes) never trips a
+/// false reap; normal completion reaps promptly through the `None`-heartbeat + terminal arm
+/// regardless of this bound.
+fn dash_reap_stale() -> std::time::Duration {
+    let secs = std::env::var(DASH_REAP_STALE_ENV)
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(DASH_REAP_STALE_DEFAULT_SECS);
+    std::time::Duration::from_secs(secs)
+}
+
+/// The freshest per-spawn liveness-marker age across the WHOLE run's `agent-live/<run_id>/`
+/// directory (spec 39, criterion 3) - the run's HEARTBEAT, decoupled from any single wave's
+/// spawns. `None` when the run has no marker directory or it holds no marker: a run not yet
+/// heartbeating, or a completed run whose markers the terminal teardown (`reclaim_run_scratch`)
+/// already reclaimed. Reads the FRESHEST (minimum) age because ANY worker touching ANY marker
+/// means the run is still alive; the run's heartbeat is stale only once EVERY marker has aged
+/// out. Unlike [`dash_read_liveness`] (which reads only the current wave's unanswered spawns,
+/// for the per-agent view), this scans every marker the run left, so an inter-step gap - where
+/// the wave is momentarily empty yet the just-finished workers' markers are seconds old - reads
+/// as a LIVE heartbeat, not a false idle.
+fn run_heartbeat_age(
+    scratch_root: &str,
+    run_id: &str,
+    now: std::time::SystemTime,
+) -> Option<std::time::Duration> {
+    if scratch_root.is_empty() || run_id.is_empty() {
+        return None;
+    }
+    let dir = Path::new(scratch_root)
+        .join(rigger::liveness::MARKER_SUBDIR)
+        .join(rigger::liveness::marker_filename(run_id));
+    let mut freshest: Option<std::time::Duration> = None;
+    for entry in std::fs::read_dir(&dir).ok()?.flatten() {
+        let Ok(mtime) = entry.metadata().and_then(|m| m.modified()) else {
+            continue;
+        };
+        let age = now
+            .duration_since(mtime)
+            .unwrap_or(std::time::Duration::ZERO);
+        freshest = Some(freshest.map_or(age, |cur| cur.min(age)));
+    }
+    freshest
+}
+
+/// The dash self-reap watcher loop (spec 39, criterion 3), run on a background thread inside the
+/// detached step-path dash. On each `poll` tick it reads the run's events read-only, computes
+/// whether the run has STARTED, reached a TERMINAL fixpoint
+/// ([`terminal_and_no_live_worker`], the same predicate the step teardown gates on), and the
+/// run's current HEARTBEAT age ([`run_heartbeat_age`]); when [`dash::should_reap_on_idle`] says
+/// the run is over it exits the process, terminating the blocked [`dash::serve`] accept loop.
+/// This is the SELF-reap: the detached dash holds no `ReapedChild`, so its own liveness watch is
+/// what leaves no orphan after a completed or crashed run - and it fires on the run's liveness
+/// going idle, never on a single `step` process exiting. Never returns (it either loops or
+/// exits the process).
+fn watch_and_self_reap_on_idle(
+    events_db: String,
+    identity: String,
+    scratch_root: String,
+    poll: std::time::Duration,
+    stale_after: std::time::Duration,
+) -> ! {
+    loop {
+        std::thread::sleep(poll);
+        // Read-only snapshot of the run, exactly as the dash's own provider reads it.
+        let events = dash_read_run(&events_db, &identity).unwrap_or_default();
+        let run_started = !events.is_empty();
+        let run_terminal = terminal_and_no_live_worker(&events).unwrap_or(false);
+        let run_id = runscope::current_run_id(&events).unwrap_or_default();
+        let heartbeat = run_heartbeat_age(&scratch_root, &run_id, std::time::SystemTime::now());
+        if dash::should_reap_on_idle(run_started, run_terminal, heartbeat, stale_after) {
+            // Self-reap: exit the whole process so the detached dash leaves no orphan. The stale
+            // `.rigger/dash.marker` this leaves behind is deliberately NOT removed - a next run's
+            // first `step` already tolerates it (`dash_start_needed` probes the recorded pid, sees
+            // it dead, and starts a fresh dash), and removing it here would race a successor dash
+            // that may already have rewritten the marker with its own live pid.
+            std::process::exit(0);
         }
     }
 }
