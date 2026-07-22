@@ -92,7 +92,14 @@ pub fn extract_events(file: &str, fs: &FileSymbols) -> Vec<Event> {
             file: file.to_string(),
             name: r.name.clone(),
             lang: lang.to_string(),
+            // The first event of the file's batch marks the re-extraction boundary; set below.
             fresh: false,
+            // The enclosing definition this reference was attributed to during extraction (spec
+            // 37): the caller, same-file. Read straight off the `SymRef` in the already-fixed
+            // sorted order, never a new sort key, so the deterministic refs emission is unchanged;
+            // `None` (a top-level reference) is omitted on the wire, keeping the event
+            // byte-identical to the pre-37 form.
+            caller: r.enclosing.clone(),
         };
         events.push(Event::new(
             TYPE_EDGE_INFERRED,
@@ -248,6 +255,16 @@ mod tests {
         v.get("fresh").and_then(|f| f.as_bool()).unwrap_or(false)
     }
 
+    /// Read a reference event's `caller` (the enclosing definition it was attributed to) from its
+    /// raw on-log JSON. The field is `skip_serializing_if` `Option::is_none`, so an ABSENT key reads
+    /// as `None` - the exact wire form a caller-less (top-level) reference replays.
+    fn caller_of(e: &Event) -> Option<String> {
+        let v: serde_json::Value = serde_json::from_slice(&e.data).unwrap();
+        v.get("caller")
+            .and_then(|c| c.as_str())
+            .map(|s| s.to_string())
+    }
+
     #[test]
     fn extract_events_marks_exactly_the_first_event_of_a_files_batch_fresh() {
         // Criterion 3, emit side: the fold supersedes a file's prior structural edges ONLY at the
@@ -273,6 +290,7 @@ mod tests {
             refs: vec![SymRef {
                 name: "helper".to_string(),
                 line: 5,
+                enclosing: None,
             }],
         };
         let events = extract_events("src/a.rs", &fs);
@@ -317,10 +335,12 @@ mod tests {
                 SymRef {
                     name: "clamp".to_string(),
                     line: 2,
+                    enclosing: None,
                 },
                 SymRef {
                     name: "apply".to_string(),
                     line: 4,
+                    enclosing: None,
                 },
             ],
         };
@@ -340,6 +360,78 @@ mod tests {
         assert!(
             events.iter().skip(1).all(|e| !fresh_of(e)),
             "only the first event of the batch is fresh"
+        );
+    }
+
+    #[test]
+    fn extract_events_lowers_each_reference_to_an_edge_carrying_its_enclosing_caller() {
+        // Criterion 2 (the emit pass carries the caller): `extract_events` reads the enclosing
+        // definition c1 attributed onto each `SymRef` and lowers it onto the emitted `EdgeInferred`
+        // as `caller`. A reference inside `F` (attributed `enclosing = Some("F")`) emits an edge
+        // whose `caller` is `F`; a top-level reference (attributed `enclosing = None`, an import
+        // outside every definition) emits one with no caller. This unit does NOT own the extraction
+        // attribution (criterion 1) - it owns only that the emit faithfully carries what extraction
+        // attributed - so the fixture presets `enclosing` directly rather than driving the parser.
+        let fs = FileSymbols {
+            lang: Lang::Rust,
+            defs: vec![Def {
+                kind: Kind::Function,
+                name: "F".to_string(),
+                line: 1,
+            }],
+            refs: vec![
+                // A call to `G` from inside the body of `F`: attributed to its enclosing caller.
+                SymRef {
+                    name: "G".to_string(),
+                    line: 2,
+                    enclosing: Some("F".to_string()),
+                },
+                // A top-level `use` outside every definition: no caller.
+                SymRef {
+                    name: "std_thing".to_string(),
+                    line: 5,
+                    enclosing: None,
+                },
+            ],
+        };
+        let events = extract_events("src/combat.rs", &fs);
+
+        // Locate each reference's emitted edge by its referenced name (`caller_of` reads the raw
+        // wire form, so this fails RED until the emit actually writes the `caller` field).
+        let edge_for = |name: &str| -> &Event {
+            events
+                .iter()
+                .find(|e| {
+                    e.type_ == TYPE_EDGE_INFERRED
+                        && serde_json::from_slice::<serde_json::Value>(&e.data)
+                            .unwrap()
+                            .get("name")
+                            .and_then(|n| n.as_str())
+                            == Some(name)
+                })
+                .unwrap_or_else(|| {
+                    panic!("an EdgeInferred event was emitted for the reference {name}")
+                })
+        };
+        assert_eq!(
+            caller_of(edge_for("G")),
+            Some("F".to_string()),
+            "the reference inside F lowers to an edge whose caller is F"
+        );
+        assert_eq!(
+            caller_of(edge_for("std_thing")),
+            None,
+            "the top-level reference lowers to an edge with no caller (absent key)"
+        );
+
+        // Determinism by construction: identical source yields byte-identical events, so deriving
+        // the caller must not reorder or otherwise perturb the emitted bytes.
+        let again = extract_events("src/combat.rs", &fs);
+        let bytes = |es: &[Event]| -> Vec<Vec<u8>> { es.iter().map(|e| e.data.clone()).collect() };
+        assert_eq!(
+            bytes(&events),
+            bytes(&again),
+            "identical source yields byte-identical events"
         );
     }
 
