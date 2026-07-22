@@ -22,10 +22,11 @@
 //! traversal and delivering them to a spawn. The render fold + those node/edge kinds are always
 //! compiled, so these guard the boundary in BOTH feature lanes.
 
+use std::process::Command;
 use std::sync::Mutex;
 
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts};
-use rigger::config::{AgentDef, Config, Stage};
+use rigger::config::{AgentDef, Config, Gate, Stage};
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
     Projection, KIND_ARCH_DECISION, KIND_DESIGN_DOC, KIND_HANDBOOK_RULE, KIND_RATIONALE,
@@ -37,7 +38,9 @@ use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::Event;
 use rigger::gate::ExecRunner;
 use rigger::grounder::{Grounder, Ref};
+use rigger::spawn::ROLE_SDET_AUTHOR;
 use serde_json::{json, Value};
+use tempfile::TempDir;
 
 /// A driver that captures every prompt it is asked to spawn, then returns an empty result. It is
 /// the observation channel for the periphery boundary: the prompt a spawn actually receives.
@@ -55,6 +58,45 @@ impl AgentDriver for CapturingDriver {
         _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
     ) -> Result<AgentResult, Error> {
         self.prompts.lock().unwrap().push(prompt.to_string());
+        Ok(AgentResult {
+            output: String::new(),
+            resolved_model: String::new(),
+        })
+    }
+}
+
+/// A driver that records every spawn's `(agent id, prompt)` pair, so a test can isolate the prompt a
+/// SPECIFIC role received. The `sdet-author`'s build-seam spawn is a DIFFERENT call site than the
+/// implementer's (`spawn_sdet_author`) and threads its grounding slice INDEPENDENTLY, so keying the
+/// capture by agent id is what lets a test pin that one call site (and reddens only for a regression
+/// there, not for one at the implementer's call site). The implementer spawn also authors a one-line
+/// file into its worktree, so the unit has a non-empty diff and the run carries cleanly THROUGH the
+/// build seam - past the pre-gate commit and the gate - the sdet-author fires at.
+struct SeamDriver {
+    /// The implementer agent's id - the one spawn that authors the unit's feature file.
+    implementer: String,
+    /// `(agent id, prompt)` for every spawn, in spawn order.
+    prompts: Mutex<Vec<(String, String)>>,
+}
+
+impl AgentDriver for SeamDriver {
+    fn spawn(
+        &self,
+        agent: &AgentDef,
+        prompt: &str,
+        opts: &SpawnOpts,
+        _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+    ) -> Result<AgentResult, Error> {
+        self.prompts
+            .lock()
+            .unwrap()
+            .push((agent.id.clone(), prompt.to_string()));
+        // The implementer authors the unit's feature into its worktree, so the pre-gate commit has a
+        // non-empty diff and the unit integrates - carrying the run cleanly THROUGH the build seam
+        // where the sdet-author spawn (captured above) fires.
+        if agent.id == self.implementer && !opts.dir.is_empty() {
+            std::fs::write(format!("{}/feature.rs", opts.dir), "// unit feature\n").unwrap();
+        }
         Ok(AgentResult {
             output: String::new(),
             resolved_model: String::new(),
@@ -408,6 +450,218 @@ fn the_producer_prompt_keeps_the_full_grounding_context_not_the_implement_trim()
             && prompt.contains("PRODUCER_FINDING_MARKER"),
         "the producer prompt must keep the FULL findings section (the trim is implement-only); \
          prompt was:\n{prompt}"
+    );
+}
+
+/// `git init` a throwaway repo with one empty commit - the committed HEAD an isolated unit worktree
+/// branches from (mirrors the conductor's own scratch repo). A REAL repo is required for the seam
+/// test: the sdet-author spawn only fires for a unit that HAS a worktree (`spawn_sdet_author` skips an
+/// empty `dir`), so an `isolation: none` / repo-less run can never reach the build seam it observes.
+fn init_seam_repo() -> TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path();
+    for args in [
+        &["init", "-q"][..],
+        &["config", "user.email", "t@example.com"],
+        &["config", "user.name", "t"],
+        &["commit", "--allow-empty", "-q", "-m", "init"],
+    ] {
+        Command::new("git")
+            .arg("-C")
+            .arg(p)
+            .args(args)
+            .output()
+            .unwrap();
+    }
+    dir
+}
+
+/// Drive a real, WORKTREE-ISOLATED `conductor::run` of a single non-producer (implement) stage that
+/// also has an `sdet-author` agent configured, and return every prompt the `sdet-author` spawn
+/// received. The sdet-author runs at the BUILD SEAM - after the implementer emits green, in the
+/// implementer's OWN worktree - so this is the only PUBLIC path that exercises the sdet-author call
+/// site's grounding slice: the inside-out lifecycle tests run `graph: None` and cannot observe a
+/// slice at all. Seeded on `core.rs` via the stub `SeedGrounder`, exactly like the implement/producer
+/// trim tests, so the sdet-author's slice is compared against the SAME neighborhood.
+fn run_and_capture_sdet_author_prompts(graph: &Projector) -> Vec<String> {
+    let repo = init_seam_repo();
+    let mut cfg = Config::default();
+    cfg.agents.insert(
+        "worker".into(),
+        AgentDef {
+            id: "worker".into(),
+            ..Default::default()
+        },
+    );
+    cfg.agents.insert(
+        ROLE_SDET_AUTHOR.into(),
+        AgentDef {
+            id: ROLE_SDET_AUTHOR.into(),
+            ..Default::default()
+        },
+    );
+    cfg.workflow.gates.insert(
+        "ok".into(),
+        Gate {
+            run: "true".into(),
+            kind: "core".into(),
+            inputs: Vec::new(),
+        },
+    );
+    cfg.workflow.stages.insert(
+        "s".into(),
+        Stage {
+            name: "s".into(),
+            agent: "worker".into(),
+            coverage: "core".into(),
+            gates: vec!["ok".into()],
+            on_pass: "merge".into(),
+            ..Default::default()
+        },
+    );
+
+    let grounder = SeedGrounder {
+        file: "core.rs".into(),
+    };
+    let store = Store::open(":memory:").unwrap();
+    let driver = SeamDriver {
+        implementer: "worker".into(),
+        prompts: Mutex::new(Vec::new()),
+    };
+    let deps = Deps {
+        store: &store,
+        driver: &driver,
+        gates: &ExecRunner,
+        repo: repo.path().to_str().unwrap().to_string(),
+        grounder: Some(&grounder),
+        graph: Some(graph),
+        criteria: Vec::new(),
+    };
+    // The prompt is captured before the spawn returns, so the run's terminal disposition is
+    // irrelevant to what this periphery layer observes.
+    let _ = run(&cfg, &deps);
+    let all = driver.prompts.lock().unwrap().clone();
+    all.into_iter()
+        .filter(|(id, _)| id == ROLE_SDET_AUTHOR)
+        .map(|(_, prompt)| prompt)
+        .collect()
+}
+
+/// Criterion 1 (this unit OWNS the implement-stage trim), the SDET-author call site: the build-seam
+/// `sdet-author` spawn - a DIFFERENT call site than the implementer, threading its grounding slice
+/// INDEPENDENTLY - also receives the TRIMMED implement slice. The sdet-author authors periphery tests
+/// ALONGSIDE the implementer in the SAME worktree, so it gets the same trimmed intent layer: code
+/// neighborhood + design intent + the one-line pull-tools pointer, with the capped
+/// decisions/lessons/findings bulk OMITTED.
+///
+/// This closes a boundary the sibling tests leave open. `the_implement_prompt_is_trimmed_...` drives
+/// the IMPLEMENTER call site and `the_producer_prompt_keeps_the_full_...` the producer call site, but
+/// NEITHER reaches `spawn_sdet_author`: a regression flipping ONLY the sdet-author call site to the
+/// full slice leaves both of them green while silently un-trimming this spawn. The inside-out
+/// lifecycle tests run `graph: None`, so they cannot observe the slice at all; only a real
+/// worktree-isolated run with a seeded graph does.
+///
+/// Non-vacuous / mutation-isolating: seeded with a decision, a lesson, and a finding about the seed
+/// file (unique markers) that the FULL slice renders and the trimmed slice drops. Flipping the
+/// sdet-author call site (`spawn_sdet_author`'s `GroundingSlice::Implement`) to `Full` reddens the
+/// OMIT assertions here while leaving the implementer and producer tests untouched.
+#[test]
+fn the_sdet_author_build_seam_spawn_receives_the_trimmed_implement_slice() {
+    let graph = Projector::open(":memory:", "test").unwrap();
+    let mut pos = 0u64;
+
+    // CODE NEIGHBORHOOD (stays on both slices): a definition the run extracted from the touched file.
+    fold(
+        &graph,
+        &mut pos,
+        TYPE_CODE_ENTITY_EXTRACTED,
+        json!({ "file": "core.rs", "name": "run_unit", "kind": "function", "line": 42, "lang": "rust", "fresh": true }),
+    );
+    // DESIGN INTENT (stays on both slices): a handbook rule that GOVERNS the touched file.
+    fold_design_intent(
+        &graph,
+        &mut pos,
+        KIND_HANDBOOK_RULE,
+        "docs/handbook/loops.md",
+        "the loop discipline rule governing core",
+        REL_GOVERNS,
+        "core.rs",
+    );
+    // The capped dev-loop bulk the implement slice DROPS: a decision, a lesson, and a finding, all
+    // about the SAME seed file, so the one traversal reaches every one and their absence is the trim's
+    // doing, not a mis-seeded edge.
+    fold(
+        &graph,
+        &mut pos,
+        TYPE_DECISION_MADE,
+        json!({ "id": "d_core", "summary": "SDET_TRIM_DECISION_MARKER the decision governing core", "governs": ["core.rs"] }),
+    );
+    fold(
+        &graph,
+        &mut pos,
+        TYPE_LESSON_LEARNED,
+        json!({ "id": "l_core", "summary": "SDET_TRIM_LESSON_MARKER the lesson about core", "about": ["core.rs"] }),
+    );
+    fold(
+        &graph,
+        &mut pos,
+        TYPE_REVIEW_FINDING,
+        json!({ "id": "f_core", "by": "arch", "unit": "u1", "summary": "SDET_TRIM_FINDING_MARKER the finding about core", "about": ["core.rs"] }),
+    );
+
+    let prompts = run_and_capture_sdet_author_prompts(&graph);
+    assert!(
+        !prompts.is_empty(),
+        "the sdet-author must be spawned at the build seam so its grounding slice can be observed"
+    );
+    let prompt = &prompts[0];
+
+    // KEPT: the code neighborhood the one traversal surfaces (the deterministic intent layer).
+    assert!(
+        prompt.contains("run_unit") && prompt.contains("core.rs:42"),
+        "the sdet-author's trimmed prompt must KEEP the code-neighborhood section; prompt was:\n{prompt}"
+    );
+    // KEPT: the design intent bound to the touched file.
+    assert!(
+        prompt.contains("the loop discipline rule governing core"),
+        "the sdet-author's trimmed prompt must KEEP the design-intent section; prompt was:\n{prompt}"
+    );
+    // ADDED: the one-line pointer naming BOTH pull tools the reference bulk is retrievable through.
+    assert!(
+        prompt.contains("rigger_peers"),
+        "the sdet-author's trimmed prompt must point at `rigger_peers` for prior decisions / lessons \
+         / findings; prompt was:\n{prompt}"
+    );
+    assert!(
+        prompt.contains("rigger graph --around"),
+        "the sdet-author's trimmed prompt must point at `rigger graph --around` for code navigation; \
+         prompt was:\n{prompt}"
+    );
+    // DROPPED: the capped decisions / lessons / findings sections - proven by section header AND by
+    // the unique per-section marker, so neither the header nor the bulk body can slip through.
+    assert!(
+        !prompt.contains("Decisions that govern these files"),
+        "the sdet-author's trimmed prompt must OMIT the decisions section header; prompt was:\n{prompt}"
+    );
+    assert!(
+        !prompt.contains("SDET_TRIM_DECISION_MARKER"),
+        "the sdet-author's trimmed prompt must OMIT the capped decisions bulk; prompt was:\n{prompt}"
+    );
+    assert!(
+        !prompt.contains("Lessons already learned about these files"),
+        "the sdet-author's trimmed prompt must OMIT the lessons section header; prompt was:\n{prompt}"
+    );
+    assert!(
+        !prompt.contains("SDET_TRIM_LESSON_MARKER"),
+        "the sdet-author's trimmed prompt must OMIT the capped lessons bulk; prompt was:\n{prompt}"
+    );
+    assert!(
+        !prompt.contains("Findings other reviewers have already raised"),
+        "the sdet-author's trimmed prompt must OMIT the findings section header; prompt was:\n{prompt}"
+    );
+    assert!(
+        !prompt.contains("SDET_TRIM_FINDING_MARKER"),
+        "the sdet-author's trimmed prompt must OMIT the capped findings bulk; prompt was:\n{prompt}"
     );
 }
 
