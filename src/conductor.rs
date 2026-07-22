@@ -13533,6 +13533,101 @@ mod tests {
         assert!(!Path::new(&wt_dir).exists());
     }
 
+    #[test]
+    fn branch_gc_reclaims_every_integrated_unit_in_one_resume_not_just_the_first() {
+        // Periphery layer (SDET), spec 38 criterion 1: `gc_integrated_branches` is a LOOP
+        // over `rs.units` (`for u in rs.units.values()`), yet every other branch-GC test
+        // seeds exactly ONE integrated unit, so a regression that reclaimed only the first
+        // integrated unit found (a `find`/`break` where a `for` is required) would pass them
+        // all while leaking the debris the criterion eliminates. This drives the public
+        // `run()` resume seam with TWO integrated units plus one escalated, and pins that
+        // BOTH integrated branches are reclaimed in a single pass while the escalated one is
+        // retained as the human's evidence.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+
+        commit_on_unit_branch(&repo_path, "alpha", "alpha.rs", "fn alpha() {}\n");
+        commit_on_unit_branch(&repo_path, "beta", "beta.rs", "fn beta() {}\n");
+        commit_on_unit_branch(&repo_path, "stuck", "stuck.rs", "fn stuck() {}\n");
+        for u in ["alpha", "beta", "stuck"] {
+            assert!(
+                branch_present(&repo_path, &unit_branch(u)),
+                "precondition: {u}'s branch exists before the run"
+            );
+        }
+
+        let st = Store::open(":memory:").unwrap();
+        seed_events_in_run(
+            &st,
+            &[],
+            &[
+                Event::new(
+                    ledger::TYPE_UNIT_STARTED,
+                    serde_json::to_vec(
+                        &json!({"id": "alpha", "agent": "worker", "branch": unit_branch("alpha")}),
+                    )
+                    .unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_INTEGRATED,
+                    serde_json::to_vec(&json!({"id": "alpha", "commit": "a11"})).unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_STARTED,
+                    serde_json::to_vec(
+                        &json!({"id": "beta", "agent": "worker", "branch": unit_branch("beta")}),
+                    )
+                    .unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_INTEGRATED,
+                    serde_json::to_vec(&json!({"id": "beta", "commit": "b22"})).unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_STARTED,
+                    serde_json::to_vec(
+                        &json!({"id": "stuck", "agent": "worker", "branch": unit_branch("stuck")}),
+                    )
+                    .unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_ESCALATED,
+                    serde_json::to_vec(&json!({"id": "stuck"})).unwrap(),
+                ),
+            ],
+        );
+
+        let cfg = Config::default();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        assert_eq!(rs.units["alpha"].status, ledger::Status::Integrated);
+        assert_eq!(rs.units["beta"].status, ledger::Status::Integrated);
+        assert_eq!(rs.units["stuck"].status, ledger::Status::Escalated);
+
+        assert!(
+            !branch_present(&repo_path, &unit_branch("alpha")),
+            "the first integrated unit's branch must be reclaimed"
+        );
+        assert!(
+            !branch_present(&repo_path, &unit_branch("beta")),
+            "the SECOND integrated unit's branch must ALSO be reclaimed in the same resume"
+        );
+        assert!(
+            branch_present(&repo_path, &unit_branch("stuck")),
+            "the escalated unit's branch must be retained as the human's evidence"
+        );
+    }
+
     /// Build a single implement+review stage `s` (worker implements, one lens, one
     /// adjudicator), returning the config. The adjudicator's canned verdict is `verdict`.
     fn sha_stamp_cfg() -> Config {
