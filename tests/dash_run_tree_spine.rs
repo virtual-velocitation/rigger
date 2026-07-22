@@ -106,8 +106,17 @@ fn progress_event(id: &str, doing: &str) -> Event {
 /// The `StateView` as it goes on the wire: build it over the public API and serialize it to the
 /// same JSON the `/api/state` endpoint emits and the client parses.
 fn state_json(events: &[Event], progress: &[Event], liveness: &HashMap<String, u64>) -> Value {
-    let state = dash::build_state(events, &Graph::default(), false, progress, liveness, 3)
-        .expect("build_state projects the seeded run");
+    let state = dash::build_state(
+        events,
+        &Graph::default(),
+        false,
+        progress,
+        liveness,
+        3,
+        "rigger-run",
+        "origin/main",
+    )
+    .expect("build_state projects the seeded run");
     serde_json::to_value(&state).expect("the state view serializes")
 }
 
@@ -178,7 +187,7 @@ fn run_tree_spine_crosses_the_http_state_boundary() {
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     // A detached server thread: `serve` loops until the process ends; we drive one request.
     std::thread::spawn(move || {
-        let _ = dash::serve(addr, provider, 3);
+        let _ = dash::serve(addr, provider, 3, "rigger-run", "origin/main");
     });
 
     let mut client = connect_with_retry(addr);

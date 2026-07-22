@@ -26,6 +26,14 @@
   header .meta { color: var(--muted); font-size: 12px; }
   header .live { color: var(--accent); }
   header .stale { color: var(--warn); }
+  /* The ready-to-release handoff banner (spec 38 c3): shown only on a done run. */
+  .release { margin: 0 16px 12px; padding: 10px 14px; border: 1px solid var(--ok);
+    border-radius: 8px; background: rgba(74, 222, 128, 0.08); color: var(--ink);
+    font-size: 13px; line-height: 1.5; }
+  .release b { color: var(--ok); }
+  .release code { background: var(--panel); border: 1px solid var(--line);
+    border-radius: 4px; padding: 1px 5px; }
+  .release code.pr { display: inline-block; margin-top: 4px; color: var(--accent); }
   /* The content shell: a width-reflowing grid with NO fixed max-width cap, so it fills the
      whole viewport (as many columns as fit) and collapses to one column when narrow - no dead
      space at wide widths, no page-level horizontal scroll. auto-fit packs the view sections into
@@ -205,6 +213,7 @@
   <span class="meta" id="mode"></span>
   <span class="meta" id="clock"></span>
 </header>
+<div id="release" class="release" hidden></div>
 <main>
   <section class="view" id="kg">
     <h2>Knowledge graph - the unified graph (code, design, decisions)</h2>
@@ -364,6 +373,24 @@ function render(state) {
     ? blockers.map(b => '<div class="row blk-' + esc(b.kind) + '"><b>' + esc(b.subject)
         + '</b>: ' + esc(b.detail) + '</div>').join("")
     : '<div class="empty">nothing blocked</div>';
+
+  // RELEASE-READY handoff (spec 38 c3): present ONLY on a done run. The server ships
+  // state.release_ready from the SAME authority `rigger status` prints (run branch, base,
+  // integrated-unit count, PR command); it is absent (undefined) for a run that is not done,
+  // so the banner stays hidden - the loop stops at "ready to open a PR", it never merges.
+  const rr = state.release_ready;
+  const relEl = el("release");
+  if (rr) {
+    const n = rr.integrated_units || 0;
+    relEl.hidden = false;
+    relEl.innerHTML = '<b>Release-ready:</b> run branch <code>' + esc(rr.run_branch)
+      + '</code> is ready to open a PR to <code>' + esc(rr.base) + '</code> ('
+      + esc(String(n)) + ' unit' + (n === 1 ? '' : 's') + ' integrated)<br>'
+      + '<code class="pr">' + esc(rr.pr_command) + '</code>';
+  } else {
+    relEl.hidden = true;
+    relEl.innerHTML = "";
+  }
 
   // NOTE: the in-flight-units, live-agent-activity, and swimlane panels are SUBSUMED by the
   // run-tree spine (spec 30 c3, rendered above): the tree shows each unit's live status, the

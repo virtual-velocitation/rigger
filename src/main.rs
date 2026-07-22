@@ -501,13 +501,19 @@ fn definition_hash(dir: &str) -> Result<String, Box<dyn std::error::Error>> {
 /// returns a loud error, so `rigger step`/`run` HALTS naming the drift instead of driving a
 /// campaign whose replay semantics silently changed. The conductor's own (unpinned)
 /// `ensure_started` then simply ADOPTS the run this ensured.
+///
+/// `base` is the resolved run-branch base to persist on a freshly-minted RunStarted (spec 38,
+/// criterion 3), so `rigger status`/`rigger dash` later read the run's actual base from the
+/// log rather than re-resolving without the run's `--base` flag. On an ADOPTED (resumed) run
+/// it is ignored - the base its original start stamped stands.
 fn enforce_definition_pin(
     store: &dyn EventStore,
     criteria: &[String],
     definition: &str,
     rebase: bool,
+    base: &str,
 ) -> Res {
-    match runscope::ensure_started_pinned(store, criteria, definition, rebase)? {
+    match runscope::ensure_started_pinned(store, criteria, definition, rebase, base)? {
         runscope::RunStart::Ready(_) => Ok(()),
         runscope::RunStart::Rebased {
             run,
@@ -1384,6 +1390,10 @@ fn cmd_step(args: &[String]) -> Res {
         // `--base` retry re-runs this check and re-anchors fresh instead of reusing (and thus
         // self-disarming on) the wrong-base branch.
         let planned = Worktree::planned_run_branch_setup(&repo, RUN_BRANCH, &args.base);
+        // Loop-readiness gate (spec 38, criterion 2): refuse a run with no reachable base (an
+        // unresolvable base AND no HEAD to fall back to) loudly rather than minting a run branch
+        // that branches from nowhere.
+        refuse_when_base_unreachable(&repo, "rigger step", &args.base, planned)?;
         refuse_when_base_lacks_spec_paths(&repo, "rigger step", &args.base, planned, &criteria)?;
         let setup = Worktree::ensure_run_branch(&repo, RUN_BRANCH, &args.base).map_err(|e| {
             format!(
@@ -1426,7 +1436,10 @@ fn cmd_step(args: &[String]) -> Res {
     // began. The notice goes to STDERR - stdout carries only the `{wave,done}` JSON the
     // driver parses. See `runscope::start_fresh`.
     if args.fresh {
-        let run = runscope::start_fresh(&store, &criteria, &definition)?;
+        // Persist the resolved run-branch base on the fresh boundary (spec 38, criterion 3):
+        // `args.base` is the base this step anchored the run branch on, so `rigger status`/dash
+        // name the same base in the ready-to-release handoff.
+        let run = runscope::start_fresh(&store, &criteria, &definition, &args.base)?;
         eprintln!("rigger step: --fresh: began a new run {run} (the prior run stays in the log)");
     }
 
@@ -1446,7 +1459,13 @@ fn cmd_step(args: &[String]) -> Res {
     // it (a live run). A drifted live-run definition WITHOUT `--rebase-definition` HALTS here,
     // loudly and before any worktree work, so a mid-campaign prompt edit can never silently
     // change replay semantics; `--rebase-definition` records the supersession and continues.
-    if let Err(e) = enforce_definition_pin(&store, &criteria, &definition, args.rebase_definition) {
+    if let Err(e) = enforce_definition_pin(
+        &store,
+        &criteria,
+        &definition,
+        args.rebase_definition,
+        &args.base,
+    ) {
         // A definition-drift HALT is a terminal state for this run process (spec 34, criterion
         // 3): reclaim the run-level shared scratch before propagating the loud halt, so a halted
         // run leaves no shared build cache or agent scratch behind - the same run-teardown a
@@ -1969,6 +1988,13 @@ fn parse_step_args(args: &[String]) -> Result<StepArgs, Box<dyn std::error::Erro
 /// advisory reads true for whichever run entry anchored. Any primary output (the step's
 /// `{wave,done}` JSON) still goes to stdout untouched; these are stderr advisories, not
 /// errors - isolation is intact in every case, only the anchor differs.
+///
+/// A [`RunBranchSetup::CreatedFromHead`] here is a HEAD fallback with a VALID HEAD: the
+/// configured base did not resolve, but the current HEAD is a real commit, so the run branch
+/// descends from a reachable base (the operator's own branch) that a PR still applies to - it
+/// proceeds and is merely advised here. The genuinely baseless case (an unborn HEAD, nothing
+/// to branch from) never reaches this function: it is refused loudly upstream by the spec 38
+/// loop-readiness gate ([`refuse_when_base_unreachable`]).
 fn warn_on_run_branch_divergence(
     cmd: &str,
     setup: RunBranchSetup,
@@ -2014,6 +2040,44 @@ fn anchor_run_branch(repo: &str, cmd: &str, base: &str, base_explicit: bool) -> 
         )
     })?;
     warn_on_run_branch_divergence(cmd, setup, base, base_explicit);
+    Ok(())
+}
+
+/// Loop-readiness gate for run-branch basing (spec 38, criterion 2): REFUSE a run that has NO
+/// REACHABLE BASE - no configured base that resolves AND no HEAD commit to fall back to - so the
+/// run branch would "branch from nowhere" (an orphan history a pull request cannot apply to).
+/// The run stops loudly here instead of silently minting a baseless run branch.
+///
+/// The refusal is DELIBERATELY narrow. It fires ONLY on a would-be
+/// [`RunBranchSetup::CreatedFromHead`] (an absent run branch with an unresolvable base) whose
+/// HEAD ALSO does not resolve - a genuinely empty / unborn-HEAD repo. When the configured base
+/// does not resolve but the current HEAD IS a real commit, the HEAD fallback anchors the run
+/// branch on the operator's own branch: a REACHABLE base the run branch descends from, so a PR
+/// still applies. That case proceeds (and [`warn_on_run_branch_divergence`] advises it) - the
+/// established CLI contract (`step_creates_run_branch_off_head_when_base_unresolvable`) depends
+/// on it. A would-be [`RunBranchSetup::CreatedFromBase`] has a resolvable base and proceeds; a
+/// would-be [`RunBranchSetup::Reused`] means the run already exists (its base was vetted at
+/// creation), so it is NEVER refused - re-refusing on resume-by-replay would wedge a live run.
+///
+/// Gates on the side-effect-free PLANNED anchor and a read-only HEAD probe, so a refused run
+/// creates no branch: the operator who commits a base (or passes a reachable `--base`) and
+/// retries anchors the run FRESH. `cmd` labels the command in the refusal (matching
+/// [`refuse_when_base_lacks_spec_paths`]). Run BEFORE [`refuse_when_base_lacks_spec_paths`]:
+/// reachability is the more fundamental precondition (a base with no tree cannot have its paths
+/// inspected at all).
+fn refuse_when_base_unreachable(repo: &str, cmd: &str, base: &str, setup: RunBranchSetup) -> Res {
+    if matches!(setup, RunBranchSetup::CreatedFromHead)
+        && !rigger::worktree::ref_resolves(repo, "HEAD")
+    {
+        return Err(format!(
+            "{cmd}: no reachable base for the run branch {RUN_BRANCH:?}: the base {base:?} does not \
+             resolve and this repo has no commit to fall back to (an unborn HEAD), so the run branch \
+             would branch from nowhere - an orphan history a pull request cannot apply to. No run \
+             branch was created; commit a base first, or fetch/pass --base <a reachable ref>, then \
+             re-run so the run branch is based on the branch it integrates toward."
+        )
+        .into());
+    }
     Ok(())
 }
 
@@ -2109,6 +2173,10 @@ fn run_cli(parsed: &RunArgs) -> Res {
         // side-effect-free planned anchor so no wrong-base run branch is ever created and the
         // corrected `--base` retry re-anchors fresh.
         let planned = Worktree::planned_run_branch_setup(&repo, RUN_BRANCH, &base);
+        // Loop-readiness gate (spec 38, criterion 2): refuse a run with no reachable base (an
+        // unresolvable base AND no HEAD to fall back to) loudly rather than minting a run branch
+        // that branches from nowhere.
+        refuse_when_base_unreachable(&repo, "rigger run", &base, planned)?;
         refuse_when_base_lacks_spec_paths(&repo, "rigger run", &base, planned, &criteria)?;
         anchor_run_branch(&repo, "rigger run", &base, base_explicit)?;
     }
@@ -2145,7 +2213,23 @@ fn run_cli(parsed: &RunArgs) -> Res {
     // guard reaps the dash when this scope ends (unit 3's reaping mechanism).
     let _dash = start_run_dashboard();
     let rs = conductor::run(&cfg, &deps)?;
-    print_run_state(&rs);
+    // The release-target base the ready-to-release handoff names (spec 38, criterion 3): read
+    // the base PERSISTED on this run's RunStarted, so the end-of-run summary, `rigger status`,
+    // and `rigger dash` all name the ONE base the run anchored on. A run started before base
+    // persistence existed (or without a repo) carries none, so fall back to the same
+    // flag/env/default resolution the run branch was anchored with.
+    let release_base = store
+        .read_stream(conductor::STREAM, 0, Direction::Forward)
+        .ok()
+        .and_then(|events| runscope::current_run_base(&events))
+        .unwrap_or_else(|| {
+            resolve_run_base(
+                parsed.base.as_deref(),
+                std::env::var("RIGGER_BASE").ok().as_deref(),
+            )
+            .0
+        });
+    print_run_state(&rs, &release_base);
     // spec 17 criterion 4c: a silently-serializing fleet must WARN during a run, not only when the
     // operator later runs `rigger stats`. Re-project this run's metrics from the log and, if the
     // parallelism-retention floor was breached under structural grounding, log the SAME line the
@@ -2175,11 +2259,26 @@ fn fresh_run_if_requested(
     criteria: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let definition = definition_hash(".")?;
+    // The resolved run-branch base to persist on the RunStarted this mints (spec 38, criterion
+    // 3), resolved from the SAME precedence the run branch is anchored with (the `--base` flag,
+    // then the `RIGGER_BASE` env override, then the default) so the persisted base matches the
+    // branch the run actually targets. Persisted only on a mint (a `--fresh` boundary or a new
+    // campaign); an adopted resume keeps its original stamp.
+    let (base, _) = resolve_run_base(
+        parsed.base.as_deref(),
+        std::env::var("RIGGER_BASE").ok().as_deref(),
+    );
     if parsed.fresh {
-        let run = runscope::start_fresh(store, criteria, &definition)?;
+        let run = runscope::start_fresh(store, criteria, &definition, &base)?;
         println!("rigger: --fresh: began a new run {run} (the prior run stays in the log)");
     }
-    enforce_definition_pin(store, criteria, &definition, parsed.rebase_definition)?;
+    enforce_definition_pin(
+        store,
+        criteria,
+        &definition,
+        parsed.rebase_definition,
+        &base,
+    )?;
     Ok(())
 }
 
@@ -2211,6 +2310,10 @@ fn run_workflow(parsed: &RunArgs) -> Res {
             // the side-effect-free planned anchor so no wrong-base run branch is ever created and
             // the corrected `--base` retry re-anchors fresh.
             let planned = Worktree::planned_run_branch_setup(&repo, RUN_BRANCH, &base);
+            // Loop-readiness gate (spec 38, criterion 2): refuse a run with no reachable base
+            // (an unresolvable base AND no HEAD to fall back to) loudly rather than minting a run
+            // branch that branches from nowhere.
+            refuse_when_base_unreachable(&repo, "rigger workflow", &base, planned)?;
             refuse_when_base_lacks_spec_paths(&repo, "rigger workflow", &base, planned, &criteria)?;
             anchor_run_branch(&repo, "rigger workflow", &base, base_explicit)?;
         }
@@ -3157,7 +3260,9 @@ fn cmd_replay(args: &[String]) -> Res {
     let (candidate_metrics, drive_err) = {
         let iso_backend = Store::open(replay_db.to_str().unwrap_or_default())?;
         let iso = Namespaced::new(&iso_backend, "rigger-replay");
-        runscope::start_fresh(&iso, &criteria, &candidate_definition)?;
+        // An offline replay re-fold over an isolated store: no run branch, no PR, so no base
+        // to persist (spec 38, criterion 3).
+        runscope::start_fresh(&iso, &criteria, &candidate_definition, "")?;
         let trajectory = conductor::replay_trajectory(baseline);
         iso.append(conductor::STREAM, ExpectedRevision::Any, &trajectory)?;
 
@@ -3563,6 +3668,13 @@ fn cmd_dash(args: &[String]) -> Res {
             rigger::worktree::scratch_root_from_env(&repo, &workdir)
         }
     };
+    // The FALLBACK release-target base the ready-to-release handoff (spec 38, criterion 3) names
+    // on the dash. `build_state` reads the base PERSISTED on this run's RunStarted from the
+    // events it projects each request, so the live dash names the base the run actually anchored
+    // on even though it inherits only the environment (never the run's `--base` flag). This
+    // env/default resolution is used ONLY when the run predates base persistence (or ran with no
+    // repo) and carries no persisted base, keeping the dash and `rigger status` on one handoff.
+    let (release_base, _) = resolve_run_base(None, std::env::var("RIGGER_BASE").ok().as_deref());
 
     // Fresh projection inputs on every request. Reading (not holding an open handle) is
     // what lets the dash start before the store exists and pick the run up once it does.
@@ -3579,14 +3691,22 @@ fn cmd_dash(args: &[String]) -> Res {
         Some(path) => {
             let (events, graph, progress, liveness) =
                 provider().map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
-            let html = dash::render_export(&events, &graph, &progress, &liveness, max_retries)?;
+            let html = dash::render_export(
+                &events,
+                &graph,
+                &progress,
+                &liveness,
+                max_retries,
+                RUN_BRANCH,
+                &release_base,
+            )?;
             std::fs::write(&path, html)?;
             println!("wrote dash snapshot to {path}");
             Ok(())
         }
         None => {
             let addr = SocketAddr::from(([127, 0, 0, 1], port));
-            dash::serve(addr, provider, max_retries)?;
+            dash::serve(addr, provider, max_retries, RUN_BRANCH, &release_base)?;
             Ok(())
         }
     }
@@ -3995,6 +4115,20 @@ fn cmd_status(args: &[String]) -> Res {
     // budget halt (which have no live spawn) is still surfaced.
     let blocker_lines = status_blocker_lines(run_events, max_retries)?;
 
+    // The ready-to-release handoff (spec 38, criterion 3): surfaced on this status surface
+    // when the run is DONE (every unit integrated, no failed deferred gate), naming the run
+    // branch, the release-target base, the integrated-unit count, and the PR command. Empty
+    // for a run that is not done, so an unfinished run surfaces NO release-ready signal. The
+    // base is the one PERSISTED on this run's RunStarted, so status names the SAME base the run
+    // anchored on - `rigger status` runs without the run's `--base` flag on its argv and so
+    // cannot re-resolve it. A run predating base persistence (or with no repo) carries none, so
+    // fall back to the `RIGGER_BASE` env / load-bearing default. A done run has no live spawns,
+    // so this must also print in the no-agents-in-flight branch below, never only in the
+    // agents-in-flight path.
+    let release_base = runscope::current_run_base(run_events)
+        .unwrap_or_else(|| resolve_run_base(None, std::env::var("RIGGER_BASE").ok().as_deref()).0);
+    let release_lines = release_ready_lines(run_events, RUN_BRANCH, &release_base);
+
     // The auto-started dash's URL for this run (spec 19b, unit 1 discoverability): shown
     // whenever a driver recorded one, even for an otherwise-quiet run, so an operator can
     // always find the live observability page. Printed before the run summary so it appears
@@ -4007,6 +4141,9 @@ fn cmd_status(args: &[String]) -> Res {
     let short = |s: &str| s.chars().take(12).collect::<String>();
     if view.is_empty() && blocker_lines.is_empty() {
         println!("run {}: no agents in flight", short(&run_id));
+        for line in &release_lines {
+            println!("{line}");
+        }
         return Ok(());
     }
     if view.is_empty() {
@@ -4036,6 +4173,11 @@ fn cmd_status(args: &[String]) -> Res {
             println!("  {line}");
         }
     }
+    // Non-empty only when the run is done; a no-op otherwise, so an in-flight run prints
+    // nothing here (the done case has no live spawns and is handled in the branch above).
+    for line in &release_lines {
+        println!("{line}");
+    }
     Ok(())
 }
 
@@ -4053,6 +4195,21 @@ fn status_blocker_lines(
         run_events,
         configured_max_retries,
     )?))
+}
+
+/// The ready-to-release handoff lines `rigger status` prints (spec 38, criterion 3): empty
+/// for any run that is NOT done, else the summary naming the run branch, the release-target
+/// base, the integrated-unit count, and the exact PR command. Pure over the run's event
+/// slice plus the resolved run branch/base, so it is unit-testable without a store and
+/// renders identically wherever it is surfaced - the single authority is
+/// [`ledger::RunState::release_ready`] + [`ledger::ReleaseReady::lines`], never a second
+/// derivation. A projection hiccup yields no lines rather than failing the status read.
+fn release_ready_lines(run_events: &[Event], run_branch: &str, base: &str) -> Vec<String> {
+    ledger::project(run_events)
+        .ok()
+        .and_then(|rs| rs.release_ready(run_branch, base))
+        .map(|rr| rr.lines())
+        .unwrap_or_default()
 }
 
 /// `rigger reset --runs` (spec 21, unit 2) - drop the decisions and findings of every
@@ -6773,7 +6930,7 @@ fn git_repo_at(root: &Path) -> String {
         .unwrap_or_default()
 }
 
-fn print_run_state(rs: &RunState) {
+fn print_run_state(rs: &RunState, base: &str) {
     println!("run state:");
     for (name, u) in &rs.units {
         println!("  {:<20} {}", name, u.status.as_str());
@@ -6782,6 +6939,15 @@ fn print_run_state(rs: &RunState) {
         println!("done: every unit integrated");
     } else {
         println!("incomplete: not every unit integrated");
+    }
+    // The ready-to-release handoff (spec 38, criterion 3): on a DONE run, surface the run
+    // branch, the release-target base, the integrated-unit count, and the exact PR command
+    // the human runs to open the release PR - the same one-authority render `rigger status`
+    // shows. The loop STOPS here: it surfaces the handoff, it never merges to the base.
+    if let Some(rr) = rs.release_ready(RUN_BRANCH, base) {
+        for line in rr.lines() {
+            println!("{line}");
+        }
     }
 }
 
@@ -7531,6 +7697,8 @@ mod tests {
             &[],
             &HashMap::new(),
             max_retries,
+            RUN_BRANCH,
+            DEFAULT_BASE_REF,
         )
         .unwrap();
         let dash_lines: Vec<String> = state.blockers.iter().map(|b| b.line.clone()).collect();
@@ -7554,6 +7722,121 @@ mod tests {
                 "u-fail: reject-recurrence #2/6 (remediating)".to_string(),
             ]
         );
+    }
+
+    /// Spec 38, criterion 3 (the ready-to-release handoff): the exact lines the `rigger
+    /// status` surface prints are non-empty and name the run branch, the release-target base,
+    /// the integrated-unit count, and the PR command ONLY when the run is done; a run that is
+    /// NOT done surfaces no release-ready signal. Proven over the production render seam
+    /// (`release_ready_lines`) `cmd_status` prints, so the surface cannot silently drift from
+    /// the one authority.
+    #[test]
+    fn release_ready_lines_surface_only_on_a_done_run() {
+        // A done run: one integrated unit, no failed deferred gate.
+        let done = [
+            Event::new(ledger::TYPE_UNIT_STARTED, br#"{"id":"u1"}"#.to_vec()),
+            Event::new(
+                ledger::TYPE_UNIT_INTEGRATED,
+                br#"{"id":"u1","commit":"abc"}"#.to_vec(),
+            ),
+        ];
+        let lines = release_ready_lines(&done, RUN_BRANCH, DEFAULT_BASE_REF);
+        assert!(
+            !lines.is_empty(),
+            "a done run surfaces the release-ready handoff"
+        );
+        let text = lines.join("\n");
+        assert!(text.contains(RUN_BRANCH), "names the run branch: {text}");
+        assert!(
+            text.contains("1 unit"),
+            "names the integrated-unit count: {text}"
+        );
+        // `origin/main` is stripped to the release-target branch in the PR command.
+        assert!(
+            text.contains("gh pr create --base main --head rigger-run"),
+            "names the PR command: {text}"
+        );
+
+        // A run with a still-un-integrated unit surfaces NO release-ready signal.
+        let running = [
+            Event::new(ledger::TYPE_UNIT_STARTED, br#"{"id":"u1"}"#.to_vec()),
+            Event::new(
+                ledger::TYPE_UNIT_INTEGRATED,
+                br#"{"id":"u1","commit":"abc"}"#.to_vec(),
+            ),
+            Event::new(ledger::TYPE_UNIT_STARTED, br#"{"id":"u2"}"#.to_vec()),
+        ];
+        assert!(
+            release_ready_lines(&running, RUN_BRANCH, DEFAULT_BASE_REF).is_empty(),
+            "an unfinished run surfaces no release-ready signal"
+        );
+    }
+
+    #[test]
+    fn status_and_dash_read_the_runs_persisted_base_not_a_re_resolution() {
+        // The base-asymmetry fix (spec 38, criterion 3): a run started with an explicit
+        // `--base` and NO `RIGGER_BASE` in the environment persists that base as `META_BASE`
+        // on its RunStarted. `rigger status` and `rigger dash` run WITHOUT the run's `--base`
+        // flag on their argv, so before this fix they re-resolved via `resolve_run_base(None,
+        // env)` and named the WRONG default base for a `rigger run --base X` run. Now every
+        // surface reads the ONE persisted base, so all of status/dash/print_run_state name the
+        // base the run actually anchored on.
+
+        // `rigger run --base release/2.0` with no `RIGGER_BASE` resolves to the flag base...
+        let (flag_base, explicit) = resolve_run_base(Some("release/2.0"), None);
+        assert_eq!(flag_base, "release/2.0");
+        assert!(explicit, "an explicit --base is flagged explicit");
+
+        // ...and that resolved base is stamped as `META_BASE` on the run's RunStarted, exactly
+        // as `start_fresh`/`ensure_started_pinned` now stamp it at mint. A done run follows.
+        let events = [
+            Event::new(
+                runscope::TYPE_RUN_STARTED,
+                br#"{"run":"r1","criteria":[]}"#.to_vec(),
+            )
+            .with_meta(runscope::META_RUN_ID, "r1")
+            .with_meta(runscope::META_BASE, &flag_base),
+            Event::new(ledger::TYPE_UNIT_STARTED, br#"{"id":"u1"}"#.to_vec()),
+            Event::new(
+                ledger::TYPE_UNIT_INTEGRATED,
+                br#"{"id":"u1","commit":"abc"}"#.to_vec(),
+            ),
+        ];
+
+        // The persisted base is read straight back from the log - the single authority.
+        assert_eq!(
+            runscope::current_run_base(&events).as_deref(),
+            Some("release/2.0")
+        );
+
+        // The status/dash read pattern (persisted base, else the env/default fallback) names
+        // the flag base even though the surface's own argv has no `--base` and the env is
+        // empty here - the parity the fix restores...
+        let status_base =
+            runscope::current_run_base(&events).unwrap_or_else(|| resolve_run_base(None, None).0);
+        assert_eq!(status_base, "release/2.0");
+
+        // ...whereas the OLD asymmetric re-resolution (the defect) named the DEFAULT, not the
+        // run's base - documenting exactly the wrong PR command the persisted base eliminates.
+        assert_eq!(resolve_run_base(None, None).0, DEFAULT_BASE_REF);
+        assert_ne!(status_base, DEFAULT_BASE_REF);
+
+        // Every surface renders through `release_ready`, so the PR command names the run's
+        // actual base - not `main`.
+        let text = release_ready_lines(&events, RUN_BRANCH, &status_base).join("\n");
+        assert!(
+            text.contains("gh pr create --base release/2.0 --head rigger-run"),
+            "the PR command targets the run's persisted base: {text}"
+        );
+
+        // A run started BEFORE base persistence carries no `META_BASE`, so a surface falls back
+        // to the live env/default resolution - the legacy behavior is preserved untouched.
+        let legacy = [Event::new(
+            runscope::TYPE_RUN_STARTED,
+            br#"{"run":"r0","criteria":[]}"#.to_vec(),
+        )
+        .with_meta(runscope::META_RUN_ID, "r0")];
+        assert_eq!(runscope::current_run_base(&legacy), None);
     }
 
     // ---- `rigger validate` advisories (spec 05:55): pure seams + drift compare ----
@@ -7953,6 +8236,90 @@ mod tests {
             )
             .is_ok(),
             "a HEAD fallback (no resolvable base) must not refuse"
+        );
+    }
+
+    #[test]
+    fn refuse_when_base_unreachable_fails_loudly_only_when_no_reachable_base() {
+        // Loop-readiness gate (spec 38, criterion 2): a run with NO reachable base - an
+        // unresolvable base AND no HEAD commit to fall back to (an unborn / empty repo) - is
+        // REFUSED loudly rather than minting a run branch that branches from nowhere. The
+        // refusal is side-effect-free, so the corrected retry anchors the run fresh.
+        let empty = tempfile::tempdir().unwrap();
+        let empty_root = empty.path();
+        for args in [
+            &["init", "-q"][..],
+            &["config", "user.email", "t@example.com"],
+            &["config", "user.name", "t"],
+        ] {
+            assert!(
+                Command::new("git")
+                    .args(args)
+                    .current_dir(empty_root)
+                    .status()
+                    .unwrap()
+                    .success(),
+                "git {args:?} must succeed"
+            );
+        }
+        let empty_repo = empty_root.to_str().unwrap();
+        let err = refuse_when_base_unreachable(
+            empty_repo,
+            "rigger step",
+            "origin/main",
+            RunBranchSetup::CreatedFromHead,
+        )
+        .expect_err("an unborn-HEAD repo with an unresolvable base has no reachable base");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("origin/main"),
+            "the refusal must name the unresolved base; got: {msg}"
+        );
+        assert!(
+            msg.contains("--base"),
+            "the refusal must point at a reachable --base; got: {msg}"
+        );
+
+        // A repo whose base is unresolvable but whose HEAD IS a real commit: the HEAD fallback
+        // anchors on the operator's own branch - a REACHABLE base a PR still applies to - so it
+        // PROCEEDS (the established CLI HEAD-fallback contract), never a refusal.
+        let live = tempfile::tempdir().unwrap();
+        let live_root = live.path();
+        init_committed_repo(live_root, "src/main.rs", "fn main() {}\n");
+        let live_repo = live_root.to_str().unwrap();
+        assert!(
+            refuse_when_base_unreachable(
+                live_repo,
+                "rigger step",
+                "origin/main",
+                RunBranchSetup::CreatedFromHead,
+            )
+            .is_ok(),
+            "a HEAD fallback with a real HEAD is a reachable base and must proceed"
+        );
+
+        // A resolvable base (CreatedFromBase) always has a real anchor and passes. An existing
+        // run branch (Reused) is NEVER refused - its base was vetted at creation, so re-checking
+        // on resume-by-replay must not wedge a live run (proven here even on the empty repo).
+        assert!(
+            refuse_when_base_unreachable(
+                live_repo,
+                "rigger step",
+                "main",
+                RunBranchSetup::CreatedFromBase,
+            )
+            .is_ok(),
+            "a reachable base must pass the loop-readiness gate"
+        );
+        assert!(
+            refuse_when_base_unreachable(
+                empty_repo,
+                "rigger step",
+                "main",
+                RunBranchSetup::Reused,
+            )
+            .is_ok(),
+            "a reused run branch must never be refused (resume-safe), even on an empty repo"
         );
     }
 

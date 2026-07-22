@@ -114,7 +114,7 @@ fn try_fetch_served(path: &str, graph: Graph) -> Option<String> {
         Ok((Vec::new(), graph.clone(), Vec::new(), HashMap::new()))
     };
     std::thread::spawn(move || {
-        let _ = dash::serve(addr, provider, 3);
+        let _ = dash::serve(addr, provider, 3, "rigger-run", "origin/main");
     });
 
     let deadline = Instant::now() + Duration::from_millis(1500);
