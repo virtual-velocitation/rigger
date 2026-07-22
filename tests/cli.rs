@@ -7876,3 +7876,142 @@ fn seed_done_run_with_persisted_base(root: &Path, base: &str) {
         .append(rigger::conductor::STREAM, ExpectedRevision::Any, &events)
         .unwrap();
 }
+
+// --- Spec 39, criterion 1: idempotent always-on dash start on the native `rigger step` path.
+// These periphery tests drive the BUILT binary end-to-end - the layer the dash.rs/main.rs unit
+// tests (which inject the serving-check and the spawn) are structurally blind to: the real
+// `cmd_step` -> `ensure_run_dashboard` -> a real, detached `rigger dash` wiring, the on-disk
+// `.rigger/dash.marker` round-trip ACROSS two separate step processes, and the RIGGER_NO_DASH
+// opt-out honored by the actual binary.
+
+/// Read the per-project dash marker `.rigger/dash.marker` under `root` as its `(port, pid)`,
+/// or `None` when it is absent or malformed - the test-side reader of the `port\npid` record
+/// the step path writes (spec 39, criterion 1).
+fn read_dash_marker(root: &Path) -> Option<(u16, u32)> {
+    let s = std::fs::read_to_string(root.join(".rigger").join("dash.marker")).ok()?;
+    let mut lines = s.lines();
+    let port = lines.next()?.trim().parse().ok()?;
+    let pid = lines.next()?.trim().parse().ok()?;
+    Some((port, pid))
+}
+
+/// Best-effort kill+reap of a process by pid, so a test that drove the step path into starting
+/// a real, DETACHED `rigger dash` never leaves it orphaned. Ignores every error: the pid may
+/// already be gone, which is exactly the state we want.
+fn reap_pid(pid: u32) {
+    let _ = Command::new("kill").arg("-9").arg(pid.to_string()).status();
+}
+
+/// Run `rigger step` in `root` with the always-on step dash ENABLED - the RIGGER_NO_DASH
+/// opt-out explicitly REMOVED from the environment (so an ambient opt-out in CI cannot mask the
+/// behavior under test) - returning (stdout, stderr). Used only by the spec-39 idempotent-start
+/// test, which reaps any dash it starts.
+fn run_step_dash_enabled(root: &Path) -> (String, String) {
+    let out = Command::new(rigger_bin())
+        .args(["step"])
+        .current_dir(root)
+        .env_remove("RIGGER_NO_DASH")
+        .output()
+        .expect("failed to spawn the rigger binary");
+    (
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+/// Spec 39, criterion 1 end-to-end, through the BUILT binary: the FIRST `rigger step` of a run
+/// starts ONE persistent, detached run dashboard and records its port+pid in
+/// `.rigger/dash.marker`; every LATER step of the same run finds that live marker and starts
+/// NONE - never a second dash or a port fight. The unit tests prove the idempotency DECISION
+/// with an injected spawn; only driving the real binary proves the wiring, the on-disk marker
+/// round-trip across two separate step processes, and the `pid_is_alive` short-circuit against
+/// a genuinely-serving child.
+///
+/// The started dash is a real, long-lived process, so this test REAPS it by pid BEFORE its
+/// idempotency assertions - a failed assertion never leaks a dashboard (the reap discipline the
+/// `rigger serve` dash tests already follow).
+#[test]
+fn step_auto_starts_one_persistent_dash_and_a_second_step_starts_none() {
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
+    write_two_stage_workflow(root);
+
+    // First step: no dash is recorded, so it must start one and record its marker.
+    let (out1, err1) = run_step_dash_enabled(root);
+    assert!(
+        out1.contains(r#""wave":"#),
+        "the first step must run to completion (a printed wave), reaching the dash-start seam; \
+         stdout: {out1:?} stderr: {err1:?}"
+    );
+    let (port1, pid1) = read_dash_marker(root).unwrap_or_else(|| {
+        panic!("the first step must record a dash marker at .rigger/dash.marker; stderr:\n{err1}")
+    });
+    // A real dash is now alive; every exit path below must reap pid1.
+    assert!(
+        err1.contains("serving this run"),
+        "the first step announces the dash it started; stderr:\n{err1}"
+    );
+
+    // The recorded dash is a GENUINE serving process, not merely a written marker: an HTTP GET
+    // of its loopback URL returns the read-only page. Reap before failing so nothing leaks.
+    let url = format!("http://127.0.0.1:{port1}/");
+    if !matches!(http_get(&url), Some(body) if body.contains("rigger dash")) {
+        reap_pid(pid1);
+        panic!("the auto-started step dash at {url} did not serve its page");
+    }
+
+    // Second step of the SAME run: it must find the live marker and start NO second dash.
+    let (_out2, err2) = run_step_dash_enabled(root);
+    let marker2 = read_dash_marker(root);
+
+    // Reap every dash this test could have started BEFORE asserting, so a failed assertion
+    // never leaves an orphaned dashboard behind.
+    reap_pid(pid1);
+    if let Some((_, pid2)) = marker2 {
+        if pid2 != pid1 {
+            reap_pid(pid2);
+        }
+    }
+
+    assert_eq!(
+        marker2,
+        Some((port1, pid1)),
+        "the second step must leave the marker UNCHANGED - the idempotent no-op that starts no \
+         second dash"
+    );
+    assert!(
+        !err2.contains("serving this run"),
+        "the second step must announce no newly-started dash (it found the first still serving); \
+         stderr:\n{err2}"
+    );
+}
+
+/// Spec 39, criterion 1: the RIGGER_NO_DASH opt-out is honored by the BUILT binary on the step
+/// path - a step run under it reaches and passes the dash-start seam (it prints its wave) yet
+/// records NO `.rigger/dash.marker`, so a short-lived CI run or the crate's own integration
+/// harness never leaks a real dashboard. The companion
+/// `step_auto_starts_one_persistent_dash_and_a_second_step_starts_none` proves the SAME step
+/// path DOES record a marker WITHOUT the opt-out, so this absence is the opt-out at work, not a
+/// dead code path that never starts a dash at all.
+#[test]
+fn step_honors_the_rigger_no_dash_opt_out() {
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
+    write_two_stage_workflow(root);
+
+    // `run_rigger` sets RIGGER_NO_DASH=1 for exactly this reason.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""wave":"#),
+        "the step runs to completion (a printed wave), reaching the dash-start seam; stdout: {out:?}"
+    );
+    assert!(
+        !root.join(".rigger").join("dash.marker").exists(),
+        "under RIGGER_NO_DASH the step must record NO dash marker; one was written"
+    );
+    assert!(
+        !err.contains("serving this run"),
+        "under RIGGER_NO_DASH the step announces no dash; stderr:\n{err}"
+    );
+}
