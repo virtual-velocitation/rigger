@@ -726,8 +726,7 @@ fn the_sdet_author_build_seam_spawn_receives_the_trimmed_implement_slice() {
 /// AFTER the lens, so their prompts are where a finding the lens raised must still appear. A review
 /// tier's prompt is assembled by `build_review_prompt` then `build_prompt` at `GroundingSlice::Full`,
 /// the SAME full slice the producer keeps and the implement slice drops, so a regression that hands
-/// review the implement slice surfaces HERE, at the public boundary the inside-out lens-finding test
-/// (which reaches `graph_context` through a hand-built `RunCtx`) is structurally blind to.
+/// review the implement slice surfaces HERE, at the review call site.
 fn run_and_capture_review_prompts(graph: &Projector, finding: Value) -> Vec<(String, String)> {
     let grounder = SeedGrounder {
         file: "core.rs".into(),
@@ -770,7 +769,8 @@ fn run_and_capture_review_prompts(graph: &Projector, finding: Value) -> Vec<(Str
         gates: &ExecRunner,
         // A repo-less run: a standalone review stage owns no code to integrate, so it needs no
         // worktree, and its reviewers run in the project cwd (`assert_isolated_cwd` is a no-op with no
-        // repo). This mirrors the inside-out lens-finding test's setup - only the DRIVER path differs.
+        // repo). This mirrors the lib lens-finding test's setup (both drive the public `run` path);
+        // only the DRIVER differs.
         repo: String::new(),
         grounder: Some(&grounder),
         graph: Some(graph),
@@ -783,15 +783,24 @@ fn run_and_capture_review_prompts(graph: &Projector, finding: Value) -> Vec<(Str
     all
 }
 
-/// Criterion 3 (this unit OWNS the review-path preservation): the spec-36 trim is IMPLEMENT-ONLY, so
-/// it must NOT weaken review. Driven through a REAL fan-out review over the public `run` path, a
-/// finding the LENS raises must STILL reach the ADVERSARY and the ADJUDICATOR (which ground after it)
-/// under `graph_context`'s findings header, so neither review tier is blinded. This pins the
-/// review-not-blinded guarantee at the PUBLIC boundary: the sibling `the_implement_prompt_is_trimmed_`
-/// and `the_sdet_author_build_seam_` tests prove the implement/sdet call sites DROP the findings, and
-/// `the_producer_prompt_keeps_the_full_` proves the producer keeps them; this proves the REVIEW tiers
-/// keep them too, at the one call site (`build_prompt`, the FULL slice) whose regression would
-/// silently blind the adversary and adjudicator.
+/// Criterion 3 (this unit OWNS the review-path-preservation guardrail): the spec-36 trim is
+/// IMPLEMENT-ONLY, so it must NOT weaken review. Driven through a REAL fan-out review over the public
+/// `run` path, a finding the LENS raises must STILL reach the ADVERSARY and the ADJUDICATOR (which
+/// ground after it) under `graph_context`'s findings header, so neither review tier is blinded.
+///
+/// The review-not-blinded SEAM is ALSO regression-covered upstream by the pre-existing lib test
+/// `conductor::tests::lens_finding_reaches_later_tiers_through_the_graph`, which drives the SAME
+/// public `run` fan-out, emits a lens ReviewFinding, asserts the adversary and adjudicator prompts
+/// carry it under the same findings header, and reddens on the SAME `build_prompt`
+/// `GroundingSlice::Full`-to-`::Implement` flip. This co-located test does NOT claim unique regression
+/// coverage over it. Its value is (a) sibling-family cohesion: this file already holds the co-located
+/// slice-policy family - `the_implement_prompt_is_trimmed_` and `the_sdet_author_build_seam_` prove
+/// their call sites DROP the findings and `the_producer_prompt_keeps_the_full_` proves the producer
+/// KEEPS them - and this completes it so all four slice call sites are legible and guarded in ONE
+/// periphery file; and (b) a named, co-located guard on a correctness seam (blinding review is a
+/// regression per spec-36) that survives future edits to that lib test: if its review assertions are
+/// later refactored, this guard still reddens on the `build_prompt` Full-slice flip at the review
+/// call site.
 ///
 /// Non-vacuous / mutation-isolating: the lens's finding carries a unique marker the FULL slice renders
 /// and the implement slice would drop. Flipping the review call site (`build_prompt`'s
