@@ -1384,6 +1384,10 @@ fn cmd_step(args: &[String]) -> Res {
         // `--base` retry re-runs this check and re-anchors fresh instead of reusing (and thus
         // self-disarming on) the wrong-base branch.
         let planned = Worktree::planned_run_branch_setup(&repo, RUN_BRANCH, &args.base);
+        // Loop-readiness gate (spec 38, criterion 2): refuse a run with no reachable base (an
+        // unresolvable base AND no HEAD to fall back to) loudly rather than minting a run branch
+        // that branches from nowhere.
+        refuse_when_base_unreachable(&repo, "rigger step", &args.base, planned)?;
         refuse_when_base_lacks_spec_paths(&repo, "rigger step", &args.base, planned, &criteria)?;
         let setup = Worktree::ensure_run_branch(&repo, RUN_BRANCH, &args.base).map_err(|e| {
             format!(
@@ -1969,6 +1973,13 @@ fn parse_step_args(args: &[String]) -> Result<StepArgs, Box<dyn std::error::Erro
 /// advisory reads true for whichever run entry anchored. Any primary output (the step's
 /// `{wave,done}` JSON) still goes to stdout untouched; these are stderr advisories, not
 /// errors - isolation is intact in every case, only the anchor differs.
+///
+/// A [`RunBranchSetup::CreatedFromHead`] here is a HEAD fallback with a VALID HEAD: the
+/// configured base did not resolve, but the current HEAD is a real commit, so the run branch
+/// descends from a reachable base (the operator's own branch) that a PR still applies to - it
+/// proceeds and is merely advised here. The genuinely baseless case (an unborn HEAD, nothing
+/// to branch from) never reaches this function: it is refused loudly upstream by the spec 38
+/// loop-readiness gate ([`refuse_when_base_unreachable`]).
 fn warn_on_run_branch_divergence(
     cmd: &str,
     setup: RunBranchSetup,
@@ -2014,6 +2025,44 @@ fn anchor_run_branch(repo: &str, cmd: &str, base: &str, base_explicit: bool) -> 
         )
     })?;
     warn_on_run_branch_divergence(cmd, setup, base, base_explicit);
+    Ok(())
+}
+
+/// Loop-readiness gate for run-branch basing (spec 38, criterion 2): REFUSE a run that has NO
+/// REACHABLE BASE - no configured base that resolves AND no HEAD commit to fall back to - so the
+/// run branch would "branch from nowhere" (an orphan history a pull request cannot apply to).
+/// The run stops loudly here instead of silently minting a baseless run branch.
+///
+/// The refusal is DELIBERATELY narrow. It fires ONLY on a would-be
+/// [`RunBranchSetup::CreatedFromHead`] (an absent run branch with an unresolvable base) whose
+/// HEAD ALSO does not resolve - a genuinely empty / unborn-HEAD repo. When the configured base
+/// does not resolve but the current HEAD IS a real commit, the HEAD fallback anchors the run
+/// branch on the operator's own branch: a REACHABLE base the run branch descends from, so a PR
+/// still applies. That case proceeds (and [`warn_on_run_branch_divergence`] advises it) - the
+/// established CLI contract (`step_creates_run_branch_off_head_when_base_unresolvable`) depends
+/// on it. A would-be [`RunBranchSetup::CreatedFromBase`] has a resolvable base and proceeds; a
+/// would-be [`RunBranchSetup::Reused`] means the run already exists (its base was vetted at
+/// creation), so it is NEVER refused - re-refusing on resume-by-replay would wedge a live run.
+///
+/// Gates on the side-effect-free PLANNED anchor and a read-only HEAD probe, so a refused run
+/// creates no branch: the operator who commits a base (or passes a reachable `--base`) and
+/// retries anchors the run FRESH. `cmd` labels the command in the refusal (matching
+/// [`refuse_when_base_lacks_spec_paths`]). Run BEFORE [`refuse_when_base_lacks_spec_paths`]:
+/// reachability is the more fundamental precondition (a base with no tree cannot have its paths
+/// inspected at all).
+fn refuse_when_base_unreachable(repo: &str, cmd: &str, base: &str, setup: RunBranchSetup) -> Res {
+    if matches!(setup, RunBranchSetup::CreatedFromHead)
+        && !rigger::worktree::ref_resolves(repo, "HEAD")
+    {
+        return Err(format!(
+            "{cmd}: no reachable base for the run branch {RUN_BRANCH:?}: the base {base:?} does not \
+             resolve and this repo has no commit to fall back to (an unborn HEAD), so the run branch \
+             would branch from nowhere - an orphan history a pull request cannot apply to. No run \
+             branch was created; commit a base first, or fetch/pass --base <a reachable ref>, then \
+             re-run so the run branch is based on the branch it integrates toward."
+        )
+        .into());
+    }
     Ok(())
 }
 
@@ -2109,6 +2158,10 @@ fn run_cli(parsed: &RunArgs) -> Res {
         // side-effect-free planned anchor so no wrong-base run branch is ever created and the
         // corrected `--base` retry re-anchors fresh.
         let planned = Worktree::planned_run_branch_setup(&repo, RUN_BRANCH, &base);
+        // Loop-readiness gate (spec 38, criterion 2): refuse a run with no reachable base (an
+        // unresolvable base AND no HEAD to fall back to) loudly rather than minting a run branch
+        // that branches from nowhere.
+        refuse_when_base_unreachable(&repo, "rigger run", &base, planned)?;
         refuse_when_base_lacks_spec_paths(&repo, "rigger run", &base, planned, &criteria)?;
         anchor_run_branch(&repo, "rigger run", &base, base_explicit)?;
     }
@@ -2211,6 +2264,10 @@ fn run_workflow(parsed: &RunArgs) -> Res {
             // the side-effect-free planned anchor so no wrong-base run branch is ever created and
             // the corrected `--base` retry re-anchors fresh.
             let planned = Worktree::planned_run_branch_setup(&repo, RUN_BRANCH, &base);
+            // Loop-readiness gate (spec 38, criterion 2): refuse a run with no reachable base
+            // (an unresolvable base AND no HEAD to fall back to) loudly rather than minting a run
+            // branch that branches from nowhere.
+            refuse_when_base_unreachable(&repo, "rigger workflow", &base, planned)?;
             refuse_when_base_lacks_spec_paths(&repo, "rigger workflow", &base, planned, &criteria)?;
             anchor_run_branch(&repo, "rigger workflow", &base, base_explicit)?;
         }
@@ -7957,18 +8014,36 @@ mod tests {
     }
 
     #[test]
-    fn refuse_when_base_unreachable_fails_loudly_and_spares_reachable_and_reused() {
-        // Loop-readiness gate (spec 38, criterion 2): a run whose base does NOT resolve
-        // (a planned CreatedFromHead anchor) is REFUSED loudly rather than branching the run
-        // off HEAD into a history disjoint from the base - which produces a run branch a PR
-        // cannot apply to. The refusal gates on the side-effect-free PLANNED anchor, so no run
-        // branch is created and the corrected `--base` retry re-anchors fresh.
+    fn refuse_when_base_unreachable_fails_loudly_only_when_no_reachable_base() {
+        // Loop-readiness gate (spec 38, criterion 2): a run with NO reachable base - an
+        // unresolvable base AND no HEAD commit to fall back to (an unborn / empty repo) - is
+        // REFUSED loudly rather than minting a run branch that branches from nowhere. The
+        // refusal is side-effect-free, so the corrected retry anchors the run fresh.
+        let empty = tempfile::tempdir().unwrap();
+        let empty_root = empty.path();
+        for args in [
+            &["init", "-q"][..],
+            &["config", "user.email", "t@example.com"],
+            &["config", "user.name", "t"],
+        ] {
+            assert!(
+                Command::new("git")
+                    .args(args)
+                    .current_dir(empty_root)
+                    .status()
+                    .unwrap()
+                    .success(),
+                "git {args:?} must succeed"
+            );
+        }
+        let empty_repo = empty_root.to_str().unwrap();
         let err = refuse_when_base_unreachable(
+            empty_repo,
             "rigger step",
             "origin/main",
             RunBranchSetup::CreatedFromHead,
         )
-        .expect_err("an unreachable base must fail the loop-readiness gate");
+        .expect_err("an unborn-HEAD repo with an unresolvable base has no reachable base");
         let msg = err.to_string();
         assert!(
             msg.contains("origin/main"),
@@ -7979,18 +8054,46 @@ mod tests {
             "the refusal must point at a reachable --base; got: {msg}"
         );
 
-        // A base that resolves (CreatedFromBase) passes: the run branch anchors on it, so
-        // base..run-branch is exactly the run's work and a PR always applies.
+        // A repo whose base is unresolvable but whose HEAD IS a real commit: the HEAD fallback
+        // anchors on the operator's own branch - a REACHABLE base a PR still applies to - so it
+        // PROCEEDS (the established CLI HEAD-fallback contract), never a refusal.
+        let live = tempfile::tempdir().unwrap();
+        let live_root = live.path();
+        init_committed_repo(live_root, "src/main.rs", "fn main() {}\n");
+        let live_repo = live_root.to_str().unwrap();
         assert!(
-            refuse_when_base_unreachable("rigger step", "main", RunBranchSetup::CreatedFromBase)
-                .is_ok(),
+            refuse_when_base_unreachable(
+                live_repo,
+                "rigger step",
+                "origin/main",
+                RunBranchSetup::CreatedFromHead,
+            )
+            .is_ok(),
+            "a HEAD fallback with a real HEAD is a reachable base and must proceed"
+        );
+
+        // A resolvable base (CreatedFromBase) always has a real anchor and passes. An existing
+        // run branch (Reused) is NEVER refused - its base was vetted at creation, so re-checking
+        // on resume-by-replay must not wedge a live run (proven here even on the empty repo).
+        assert!(
+            refuse_when_base_unreachable(
+                live_repo,
+                "rigger step",
+                "main",
+                RunBranchSetup::CreatedFromBase,
+            )
+            .is_ok(),
             "a reachable base must pass the loop-readiness gate"
         );
-        // An existing run branch (Reused) is NEVER refused: the run already began (its base was
-        // vetted at creation), and re-refusing on resume-by-replay would wedge a live run.
         assert!(
-            refuse_when_base_unreachable("rigger step", "main", RunBranchSetup::Reused).is_ok(),
-            "a reused run branch must never be refused (resume-safe)"
+            refuse_when_base_unreachable(
+                empty_repo,
+                "rigger step",
+                "main",
+                RunBranchSetup::Reused,
+            )
+            .is_ok(),
+            "a reused run branch must never be refused (resume-safe), even on an empty repo"
         );
     }
 

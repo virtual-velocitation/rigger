@@ -1752,12 +1752,16 @@ mod tests {
 
     #[test]
     fn ensure_run_branch_creates_off_head_when_base_unresolvable() {
-        // BLOCKER regression: a repo whose base ref (e.g. the default origin/main) does
-        // NOT resolve - no remote, master-default, or pre-fetch. ensure_run_branch must
-        // NOT no-op (which would leave HEAD on the operator's branch and let the conductor
-        // branch/merge units directly onto it). It must create the run branch off the
-        // current HEAD, check it out, and report CreatedFromHead so isolation is always
-        // established on the native path.
+        // The pure git-adapter classification for a repo whose base ref (e.g. the default
+        // origin/main) does NOT resolve - no remote, master-default, or pre-fetch - but whose
+        // HEAD IS a real commit: it must NOT no-op (which would leave HEAD on the operator's
+        // branch) but create the run branch off the current HEAD, check it out, and report
+        // CreatedFromHead. Because HEAD is a real commit, the run branch descends from a
+        // reachable base (the operator's own branch) a PR still applies to, so the run-entry
+        // POLICY (the spec 38 loop-readiness gate `refuse_when_base_unreachable` in main.rs)
+        // lets this proceed and only advises the divergence. That gate refuses ONLY the
+        // genuinely baseless case (this same fallback but with an UNBORN HEAD - nothing to
+        // branch from), which is a separate test on the CLI path.
         let repo = init_repo();
         let p = repo.path().to_str().unwrap().to_string();
         let head_before = run_git(&p, &["rev-parse", "HEAD"])
@@ -1793,7 +1797,10 @@ mod tests {
         let repo = init_repo();
         let p = repo.path().to_str().unwrap().to_string();
         let base = current_branch(&p).expect("init_repo leaves a named branch checked out");
-        let base_tip = run_git(&p, &["rev-parse", &base]).unwrap().trim().to_string();
+        let base_tip = run_git(&p, &["rev-parse", &base])
+            .unwrap()
+            .trim()
+            .to_string();
 
         // Anchor the run branch on the release target.
         let setup = Worktree::ensure_run_branch(&p, "rigger-run", &base).unwrap();
@@ -1805,13 +1812,19 @@ mod tests {
             &["commit", "--allow-empty", "-q", "-m", "integrate unit A"],
         )
         .unwrap();
-        let a = run_git(&p, &["rev-parse", "HEAD"]).unwrap().trim().to_string();
+        let a = run_git(&p, &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
         run_git(
             &p,
             &["commit", "--allow-empty", "-q", "-m", "integrate unit B"],
         )
         .unwrap();
-        let b = run_git(&p, &["rev-parse", "HEAD"]).unwrap().trim().to_string();
+        let b = run_git(&p, &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
 
         // base..run-branch is EXACTLY the two integrated commits (newest first) - none of the
         // base's own history leaks into the run's PR range.
@@ -1830,7 +1843,11 @@ mod tests {
         // The release target is an ANCESTOR of the run branch, so a PR from the run branch to
         // the base applies cleanly (the disjoint-history failure this criterion prevents).
         assert!(
-            run_git(&p, &["merge-base", "--is-ancestor", &base_tip, "rigger-run"]).is_ok(),
+            run_git(
+                &p,
+                &["merge-base", "--is-ancestor", &base_tip, "rigger-run"]
+            )
+            .is_ok(),
             "the release target must be an ancestor of the run branch (an applicable PR diff)"
         );
     }

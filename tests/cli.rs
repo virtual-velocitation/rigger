@@ -2145,7 +2145,7 @@ stages:
 /// records each spawn's result, the next step replays past them and reports `done`.
 #[test]
 fn step_prints_a_disjoint_two_spawn_wave_then_reports_done() {
-    let dir = temp_project();
+    let dir = temp_git_project_with_commit();
     let root = dir.path();
     write_two_stage_workflow(root);
 
@@ -2336,7 +2336,7 @@ fn step_carries_the_escalated_set_when_a_fixpoint_is_reached_with_a_wedged_unit(
 /// and parked, the second is refused - the breaker trips and records the halt.
 #[test]
 fn step_prints_a_budget_halt_reason_when_the_breaker_trips() {
-    let dir = temp_project();
+    let dir = temp_git_project_with_commit();
     let root = dir.path();
     write_budget_one_two_stage_workflow(root);
 
@@ -2397,7 +2397,7 @@ fn plant_stale_marker(marker: &Path) {
 /// re-park across the step boundary AND the operator recovery (follow-up c).
 #[test]
 fn step_surfaces_a_hung_spawn_with_a_stale_marker_as_a_liveness_halt() {
-    let dir = temp_project();
+    let dir = temp_git_project_with_commit();
     let root = dir.path();
     write_liveness_workflow(root);
 
@@ -2509,7 +2509,7 @@ fn write_unbounded_liveness_workflow(root: &Path) {
 /// together they prove the criterion end to end without running the harness-only JS.
 #[test]
 fn step_surfaces_a_hung_unbounded_spawn_recorded_as_a_liveness_fault_by_the_driver() {
-    let dir = temp_project();
+    let dir = temp_git_project_with_commit();
     let root = dir.path();
     write_unbounded_liveness_workflow(root);
 
@@ -2601,7 +2601,7 @@ fn step_surfaces_a_hung_unbounded_spawn_recorded_as_a_liveness_fault_by_the_driv
 /// the non-default root.
 #[test]
 fn the_liveness_marker_path_follows_a_non_default_scratch_root() {
-    let dir = temp_project();
+    let dir = temp_git_project_with_commit();
     let root = dir.path();
     write_liveness_workflow(root);
     // A scratch root OUTSIDE the repo - the non-default case the reject named.
@@ -2645,7 +2645,7 @@ fn the_liveness_marker_path_follows_a_non_default_scratch_root() {
 /// aborted runs' units).
 #[test]
 fn step_scopes_the_wave_to_the_current_run_and_ignores_prior_run_residue() {
-    let dir = temp_project();
+    let dir = temp_git_project_with_commit();
     let root = dir.path();
     write_two_stage_workflow(root);
     seed_store(root);
@@ -2695,7 +2695,7 @@ fn step_scopes_the_wave_to_the_current_run_and_ignores_prior_run_residue() {
 /// scratch reclaim, so agent-scratch survives only because the orphan-sweep spares it.
 #[test]
 fn step_reclaims_orphaned_scratch_while_sparing_the_live_worker_area() {
-    let dir = temp_project();
+    let dir = temp_git_project_with_commit();
     let root = dir.path();
     write_two_stage_workflow(root);
     seed_store(root);
@@ -2796,7 +2796,7 @@ fn assert_run_level_scratch_reclaimed(scratch: &Path, ctx: &str) {
 /// spares, so its reclamation here is uniquely this run-level teardown's job.
 #[test]
 fn run_teardown_reclaims_run_level_scratch_at_an_escalation_terminal_state() {
-    let dir = temp_project();
+    let dir = temp_git_project_with_commit();
     let root = dir.path();
     write_failing_gate_escalating_workflow(root);
 
@@ -2847,7 +2847,7 @@ fn run_teardown_reclaims_run_level_scratch_at_an_escalation_terminal_state() {
 /// leaking it, exactly as it does on a clean fixpoint.
 #[test]
 fn run_teardown_reclaims_run_level_scratch_at_a_budget_halt_terminal_state() {
-    let dir = temp_project();
+    let dir = temp_git_project_with_commit();
     let root = dir.path();
     write_budget_one_two_stage_workflow(root);
 
@@ -2892,7 +2892,7 @@ fn run_teardown_reclaims_run_level_scratch_at_a_budget_halt_terminal_state() {
 /// the run-level shared scratch before propagating the loud halt, leaving no build cache behind.
 #[test]
 fn run_teardown_reclaims_run_level_scratch_at_a_definition_drift_halt() {
-    let dir = temp_project();
+    let dir = temp_git_project_with_commit();
     let root = dir.path();
     write_two_stage_workflow(root);
 
@@ -2957,7 +2957,7 @@ fn run_teardown_reclaims_run_level_scratch_at_a_definition_drift_halt() {
 /// hung spawn ever exists) could never exercise - the empty-frontier arm always fired there.
 #[test]
 fn run_teardown_spares_run_level_scratch_at_a_drift_halt_while_a_hung_spawn_may_be_alive() {
-    let dir = temp_project();
+    let dir = temp_git_project_with_commit();
     let root = dir.path();
     write_two_stage_workflow(root);
 
@@ -3036,7 +3036,7 @@ fn run_teardown_spares_run_level_scratch_at_a_drift_halt_while_a_hung_spawn_may_
 /// earlier step is pending there too, across the multi-step run - it is NOT exempt.)
 #[test]
 fn run_teardown_spares_run_level_scratch_at_a_manual_review_pause() {
-    let dir = temp_project();
+    let dir = temp_git_project_with_commit();
     let root = dir.path();
     write_manual_review_workflow(root);
 
@@ -3088,7 +3088,7 @@ fn run_teardown_spares_run_level_scratch_at_a_manual_review_pause() {
 /// within one step process, false across the multi-step run the persisted log spans) is gone.
 #[test]
 fn run_teardown_spares_run_level_scratch_at_a_drift_halt_while_a_manual_review_is_pending() {
-    let dir = temp_project();
+    let dir = temp_git_project_with_commit();
     let root = dir.path();
     write_manual_review_workflow(root);
 
@@ -3146,7 +3146,7 @@ fn run_teardown_spares_run_level_scratch_at_a_drift_halt_while_a_manual_review_i
 /// terminal exclusion would leak (spare forever); this test would catch it.
 #[test]
 fn run_teardown_reclaims_run_level_scratch_after_a_manual_review_is_integrated() {
-    let dir = temp_project();
+    let dir = temp_git_project_with_commit();
     let root = dir.path();
     write_manual_review_workflow(root);
 
@@ -3249,7 +3249,7 @@ fn a_step_stamps_the_run_id_on_the_run_started_and_every_event_it_emits() {
     use rigger::eventstore::sqlite::Store;
     use rigger::eventstore::{Direction, EventStore, Filter};
 
-    let dir = temp_project();
+    let dir = temp_git_project_with_commit();
     let root = dir.path();
     write_two_stage_workflow(root);
 
@@ -3310,7 +3310,7 @@ fn step_result_meta_stamps_the_resolved_model_on_the_replayed_units_events() {
     use rigger::eventstore::sqlite::Store;
     use rigger::eventstore::{Direction, EventStore, Filter};
 
-    let dir = temp_project();
+    let dir = temp_git_project_with_commit();
     let root = dir.path();
     write_two_stage_workflow(root);
 
@@ -3401,7 +3401,7 @@ fn step_resolves_the_model_ladders_first_rung_for_the_initial_attempt() {
     use rigger::eventstore::sqlite::Store;
     use rigger::eventstore::{Direction, EventStore, Filter};
 
-    let dir = temp_project();
+    let dir = temp_git_project_with_commit();
     let root = dir.path();
     let rigger = root.join(".rigger");
     std::fs::create_dir_all(rigger.join("agents")).unwrap();
@@ -3574,6 +3574,46 @@ fn step_creates_run_branch_off_head_when_base_unresolvable() {
     assert!(
         err.contains("did not resolve") && err.contains("HEAD"),
         "stderr must announce the HEAD fallback; got: {err:?}"
+    );
+}
+
+/// Loop-readiness gate (spec 38, criterion 2): on a repo with NO reachable base at all - an
+/// UNBORN HEAD (no commit to fall back to) AND an unresolvable base - `rigger step` must FAIL
+/// LOUDLY rather than mint a run branch that branches from nowhere (an orphan history a pull
+/// request cannot apply to). This is the deliberate contrast to
+/// `step_creates_run_branch_off_head_when_base_unresolvable`: there a REAL HEAD is a reachable
+/// base and the run PROCEEDS off it; here there is nothing to base on, so the run stops. The
+/// refusal is side-effect-free - no run branch is created - so a corrected retry anchors fresh.
+#[test]
+fn step_refuses_when_there_is_no_reachable_base() {
+    // `temp_project()` is a `git init` with NO commit: an unborn HEAD, nothing to branch from.
+    let dir = temp_project();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+    let head_branch_before = git_out(root, &["symbolic-ref", "--short", "-q", "HEAD"]);
+
+    // An unresolvable base + the unborn HEAD => no reachable base at all.
+    let (out, err, ok) = run_rigger(root, &["step", "--base", "origin/does-not-exist"]);
+    assert!(
+        !ok,
+        "a run with no reachable base must fail loudly; stdout: {out:?} stderr: {err:?}"
+    );
+    assert!(
+        err.contains("no reachable base") && err.contains("--base"),
+        "the refusal must name the missing base and point at --base; got: {err:?}"
+    );
+
+    // Side-effect-free: no run branch was minted, so HEAD is untouched (still the unborn
+    // default branch, never rigger-run) and the corrected retry can anchor the run fresh.
+    assert_ne!(
+        git_out(root, &["symbolic-ref", "--short", "-q", "HEAD"]).as_deref(),
+        Some("rigger-run"),
+        "a refused run must NOT have created or checked out the run branch"
+    );
+    assert_eq!(
+        git_out(root, &["symbolic-ref", "--short", "-q", "HEAD"]),
+        head_branch_before,
+        "the refused run leaves HEAD exactly where it was"
     );
 }
 
@@ -5425,7 +5465,7 @@ fn project_identity_survives_a_directory_rename() {
 /// no-op (idempotent).
 #[test]
 fn step_migrates_legacy_history_to_the_minted_identity() {
-    let dir = temp_project();
+    let dir = temp_git_project_with_commit();
     let root = dir.path();
     write_two_stage_workflow(root);
     seed_store(root);
@@ -5524,7 +5564,7 @@ fn edit_worker_prompt(root: &Path, new_body: &str) {
 /// steps no longer halt.
 #[test]
 fn step_halts_on_definition_drift_and_rebase_definition_continues() {
-    let dir = temp_project();
+    let dir = temp_git_project_with_commit();
     let root = dir.path();
     write_two_stage_workflow(root);
 
@@ -5597,7 +5637,7 @@ fn step_halts_on_definition_drift_and_rebase_definition_continues() {
 /// earlier run pinned - only a LIVE run pins, so a run boundary is always free to reconfigure.
 #[test]
 fn a_fresh_run_repins_the_current_definition_and_never_halts() {
-    let dir = temp_project();
+    let dir = temp_git_project_with_commit();
     let root = dir.path();
     write_two_stage_workflow(root);
 
