@@ -77,6 +77,14 @@ pub const REL_CONTAINS: &str = "CONTAINS";
 /// file-scoped `code-entity` id. A confidence tier is layered onto this edge by a later
 /// criterion; this criterion only makes the structural edge exist.
 pub const REL_REFERENCES: &str = "REFERENCES";
+/// A caller-attributed call edge (spec 37): `<file>::<caller> --CALLS--> <callee>`, folded from an
+/// `EdgeInferred` whose `caller` is set - the enclosing definition the reference was attributed to.
+/// It is added ALONGSIDE the file-level [`REL_REFERENCES`] edge (purely additive; the same callee
+/// resolution the REFERENCES edge uses), so one `subgraph` around a symbol answers "who calls it" by
+/// function, not merely "referenced from which file". A reference outside every definition
+/// (a top-level `use`/import) carries no caller and folds no CALLS edge. Re-extraction supersedes a
+/// file's CALLS edges under the same `fresh` batch boundary as its other structural edges (spec 29a).
+pub const REL_CALLS: &str = "CALLS";
 /// A `design-doc` SPECIFIES (designs) a code node (spec 29b): the design-intent edge from a
 /// reference-architecture / `architecture.md` / addendum node to the subsystem it designs, so a
 /// `subgraph` traversal from a touched file reaches the RA section that designed it. Folded from a
@@ -310,6 +318,16 @@ pub(crate) struct EdgeInferred {
     /// supersedes its prior edges regardless of whether it defines anything.
     #[serde(default, skip_serializing_if = "is_false")]
     pub fresh: bool,
+    /// The enclosing definition this reference was attributed to during extraction (spec 37): the
+    /// caller's name, same-file. `None` for a top-level reference outside every definition (an
+    /// import or an `impl`-header bound). The emit pass carries what extraction attributed onto the
+    /// `SymRef`; the fold, when it is present, adds a `<file>::<caller> --CALLS--> <callee>` edge
+    /// ALONGSIDE the existing file-level `REFERENCES` edge (a later criterion owns that fold).
+    /// Serde-defaulted and omitted when `None`, so a pre-37 log folds as caller-less and a
+    /// caller-less reference serializes byte-identically to before - the CALLS edge is purely
+    /// additive to the code layer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller: Option<String>,
 }
 
 /// Serde `skip_serializing_if` predicate: keep the `fresh` boundary marker off the wire for the
@@ -384,4 +402,79 @@ pub trait Projection: Send + Sync {
 
     /// Map a mention to a canonical node id, falling back to a direct id match.
     fn resolve(&self, mention: &str) -> Result<Option<String>, Error>;
+}
+
+/// Periphery layer (spec 37 criterion 2): the round-trip + back-compat CONTRACT of the
+/// [`EdgeInferred`] wire form now that it carries `caller`. This is the emit->log->fold seam,
+/// not the emit pass itself: the feature-gated `extract_events` (its own inside-out unit tests
+/// live in `grounder::symbols::events`) serializes the event, and the always-compiled fold in
+/// [`sqlite`] reads it straight back with `serde_json::from_slice::<EdgeInferred>` (see the
+/// `TYPE_EDGE_INFERRED` arm). These tests pin the serialized form the two sides share, so they
+/// are NOT feature-gated and run in BOTH lanes exactly like the fold they guard. They guard what
+/// the emit unit test is structurally blind to: the deserialize direction, the byte-identical
+/// omission of `caller` when it is `None`, and a pre-37 log's tolerance.
+#[cfg(test)]
+mod caller_wire_contract {
+    use super::EdgeInferred;
+
+    /// The full wire round-trip: an attributed reference serializes its `caller` and the fold's
+    /// exact read path (`from_slice::<EdgeInferred>`) recovers it. This is the emit->fold contract
+    /// the implementer's raw-JSON emit test does not close - that test never deserializes back into
+    /// an `EdgeInferred`, so nothing else proves the caller survives the deserialize direction the
+    /// fold depends on.
+    #[test]
+    fn a_caller_carrying_reference_event_round_trips_through_the_fold_deserialize_path() {
+        let edge = EdgeInferred {
+            file: "src/combat.rs".to_string(),
+            name: "G".to_string(),
+            lang: "rust".to_string(),
+            fresh: false,
+            caller: Some("F".to_string()),
+        };
+        let wire = serde_json::to_vec(&edge).unwrap();
+        let back: EdgeInferred = serde_json::from_slice(&wire).unwrap();
+        assert_eq!(
+            back.caller,
+            Some("F".to_string()),
+            "a caller-carrying reference preserves its caller across the emit->fold serde round-trip"
+        );
+    }
+
+    /// A top-level reference (no enclosing definition) carries `caller: None`, and
+    /// `skip_serializing_if = Option::is_none` keeps the key OFF the wire, so the event is
+    /// byte-identical to the pre-37 `EdgeInferred` form - the CALLS layer is purely additive.
+    /// The implementer's emit test only asserts `caller_of() == None`, which a stray `"caller":
+    /// null` would also satisfy; this pins the key's ABSENCE by comparing the exact bytes.
+    #[test]
+    fn a_caller_less_reference_event_serializes_byte_identically_to_the_pre37_wire_form() {
+        let edge = EdgeInferred {
+            file: "src/combat.rs".to_string(),
+            name: "std_thing".to_string(),
+            lang: "rust".to_string(),
+            fresh: false,
+            caller: None,
+        };
+        let wire = String::from_utf8(serde_json::to_vec(&edge).unwrap()).unwrap();
+        assert_eq!(
+            wire, r#"{"file":"src/combat.rs","name":"std_thing","lang":"rust"}"#,
+            "a caller-less reference serializes byte-identically to the pre-37 EdgeInferred form (no caller key)"
+        );
+    }
+
+    /// The fold reads historical logs with `from_slice::<EdgeInferred>`. A pre-37 event has NO
+    /// `caller` key; it must still deserialize (serde tolerates the absent optional field) and fold
+    /// as caller-less, so replaying an old log never errors on the new field. Guards the
+    /// back-compat the fold at `sqlite.rs`'s `TYPE_EDGE_INFERRED` arm silently relies on.
+    #[test]
+    fn a_pre37_reference_event_without_a_caller_key_still_deserializes_folding_caller_less() {
+        let pre37 = br#"{"file":"src/combat.rs","name":"G","lang":"rust"}"#;
+        let edge: EdgeInferred = serde_json::from_slice(pre37).unwrap();
+        assert_eq!(
+            edge.caller, None,
+            "a pre-37 reference event (no caller key) folds as caller-less"
+        );
+        // The pre-existing fields still deserialize unchanged (the new optional field is additive).
+        assert_eq!(edge.name, "G");
+        assert!(!edge.fresh);
+    }
 }

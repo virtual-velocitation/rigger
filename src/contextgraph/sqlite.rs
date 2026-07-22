@@ -12,10 +12,10 @@ use super::{
     Edge, Error, Graph, Node, Projection, KIND_AGENT, KIND_ARCH_DECISION, KIND_ARTIFACT,
     KIND_CODE_ENTITY, KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, KIND_FINDING, KIND_GATE,
     KIND_HANDBOOK_RULE, KIND_LESSON, KIND_RATIONALE, KIND_UNIT, META_ACTOR, REL_ABOUT,
-    REL_ASSIGNED_TO, REL_BLOCKS, REL_CONSTRAINS, REL_CONTAINS, REL_DECIDED, REL_DOC_REFERENCES,
-    REL_EXPLAINS, REL_GATED_BY, REL_GOVERNS, REL_RAISED, REL_REFERENCES, REL_SPECIFIES,
-    REL_SUPERSEDES, REL_TOUCHES, TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED, TYPE_ALIAS_DEFINED,
-    TYPE_ALIAS_UNRESOLVED, TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE,
+    REL_ASSIGNED_TO, REL_BLOCKS, REL_CALLS, REL_CONSTRAINS, REL_CONTAINS, REL_DECIDED,
+    REL_DOC_REFERENCES, REL_EXPLAINS, REL_GATED_BY, REL_GOVERNS, REL_RAISED, REL_REFERENCES,
+    REL_SPECIFIES, REL_SUPERSEDES, REL_TOUCHES, TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED,
+    TYPE_ALIAS_DEFINED, TYPE_ALIAS_UNRESOLVED, TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE,
     TYPE_DOC_CONCEPT_EXTRACTED, TYPE_DOC_LINK_EXTRACTED, TYPE_EDGE_INFERRED, TYPE_FILE_TOUCHED,
     TYPE_GATE_VERDICT, TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED,
     TYPE_UNIT_STARTED,
@@ -698,9 +698,15 @@ fn fold(tx: &Transaction, e: &Event, project: &str) -> Result<(), Error> {
             // wildcard, so a symbol whose name contains any character still matches precisely. A
             // same-file reference already folded EXTRACTED (definitions emit before references), so
             // excluding this definition's own entity id leaves it untouched, never demoting it.
+            //
+            // The caller-attributed CALLS edge (spec 37) shares the callee `target` and tier of its
+            // REFERENCES twin, so it is promoted in the SAME upgrade (`rel IN (REFERENCES, CALLS)`):
+            // one tier authority evolves both structural edges together, never a forked behavior
+            // where the CALLS edge lags its sibling's confidence. A same-file CALLS to this
+            // definition's own entity is excluded by the same `to_id != entity` guard.
             tx.execute(
                 "UPDATE edges SET tier = ?1
-                   WHERE rel = ?2 AND tier = ?3 AND project = ?4 AND valid_to IS NULL
+                   WHERE rel IN (?2, ?7) AND tier = ?3 AND project = ?4 AND valid_to IS NULL
                      AND to_id != ?5
                      AND substr(to_id, instr(to_id, '::') + 2) = ?6",
                 params![
@@ -709,7 +715,8 @@ fn fold(tx: &Transaction, e: &Event, project: &str) -> Result<(), Error> {
                     TIER_AMBIGUOUS,
                     project,
                     entity,
-                    c.name
+                    c.name,
+                    REL_CALLS
                 ],
             )
             .map_err(be)?;
@@ -751,6 +758,24 @@ fn fold(tx: &Transaction, e: &Event, project: &str) -> Result<(), Error> {
                 project,
                 tier,
             )?;
+            // Caller-attributed CALLS edge (spec 37): when extraction attributed this reference to an
+            // enclosing definition, ADD `<file>::<caller> --CALLS--> <callee>` ALONGSIDE the file
+            // REFERENCES edge above, so one `subgraph` around the callee answers "who calls it" by
+            // FUNCTION, not merely "referenced from which file". Purely additive: a caller-less
+            // reference (a top-level `use`/import) folds no CALLS edge, exactly today's behavior.
+            // Callee resolution is UNCHANGED - the SAME `target` and `tier` the REFERENCES edge uses,
+            // so the CALLS edge is a faithful caller-keyed twin (the definition arm's convergent
+            // upgrade promotes both rels together, keeping the twin's tier in lock-step). The caller
+            // entity node is `ensure_node`d bare like the target: in real extraction the enclosing
+            // definition folded first (defs emit before refs) so this is a no-op that keeps its
+            // attrs, and a reverse fold order still never leaves the CALLS edge dangling.
+            if let Some(caller) = &r.caller {
+                let caller_id = code_entity_id(&file, caller);
+                ensure_node(tx, &caller_id, KIND_CODE_ENTITY, &[], project)?;
+                add_edge(
+                    tx, &caller_id, &target, REL_CALLS, at, e.position, project, tier,
+                )?;
+            }
         }
         TYPE_DOC_CONCEPT_EXTRACTED => {
             // Spec 29b criterion 1: one design-intent concept the doc extraction pass emitted. Fold
@@ -938,24 +963,34 @@ fn invalidate_finding_edges(
 
 /// Supersede-on-re-extract (spec 29a criterion 3): set `valid_to` on (never delete - mirroring the
 /// decision-supersession arm and [`invalidate_finding_edges`]) every LIVE structural edge OUT of a
-/// file container node - its `CONTAINS` (to each definition) and `REFERENCES` (to each referenced
-/// symbol). Called at the boundary of a file's extraction batch (the `fresh` event), BEFORE that
-/// batch folds its own edges, so re-extracting a changed file REPLACES its structural edges rather
-/// than accreting duplicates: a removed definition's / reference's edge drops from the live
-/// `subgraph` (its `valid_to` is now set) while the new pass inserts fresh live edges. The old rows
-/// are retained with `valid_to` stamped, so a historical / as-of query still reaches the previous
-/// graph (bi-temporal, spec 29a section 6.4). Scoped to `from_id = file` and to the two structural
-/// rels, so a cross-file `REFERENCES` from ANOTHER file (whose `from_id` is that other file) and a
-/// non-structural edge INTO the file (an agent `TOUCHES` it, a decision `GOVERNS` it, the file
-/// `GATED_BY` a gate) are all left untouched - only the re-extracted file's own structure is
-/// retired. Project-scoped like every fold, so a shared backend never touches another project's
-/// edges. On the initial extraction this matches zero live edges (the file has none yet).
+/// file's OWN structure - the `CONTAINS` / `REFERENCES` edges out of its container node AND the
+/// `CALLS` edges out of the code entities it defines (spec 37). Called at the boundary of a file's
+/// extraction batch (the `fresh` event), BEFORE that batch folds its own edges, so re-extracting a
+/// changed file REPLACES its structural edges rather than accreting duplicates: a removed
+/// definition's / reference's / call's edge drops from the live `subgraph` (its `valid_to` is now
+/// set) while the new pass inserts fresh live edges. The old rows are retained with `valid_to`
+/// stamped, so a historical / as-of query still reaches the previous graph (bi-temporal, spec 29a
+/// section 6.4).
+///
+/// The `CONTAINS` / `REFERENCES` edges hang off `from_id = file` (the container node); a `CALLS`
+/// edge instead hangs off `from_id = <file>::<caller>` (the enclosing definition entity), so it is
+/// matched by an EXACT `<file>::` id prefix (`substr`, never a `LIKE`/`GLOB` whose `_`/`%`/`*`
+/// wildcards a real path could contain). Both scopings retire ONLY this file's own structure: a
+/// cross-file `REFERENCES` from ANOTHER file (whose `from_id` is that other file) and a cross-file
+/// `CALLS` whose caller lives in another file (whose `from_id` is `<other-file>::...`) are left
+/// untouched, as is a non-structural edge INTO the file (an agent `TOUCHES` it, a decision `GOVERNS`
+/// it, the file `GATED_BY` a gate). Project-scoped like every fold, so a shared backend never
+/// touches another project's edges. On the initial extraction this matches zero live edges (the
+/// file has none yet).
 fn supersede_file_edges(tx: &Transaction, file: &str, at: i64, project: &str) -> Result<(), Error> {
     tx.execute(
         "UPDATE edges SET valid_to = ?1
-         WHERE from_id = ?2 AND (rel = ?3 OR rel = ?4)
-           AND valid_to IS NULL AND project = ?5",
-        params![at, file, REL_CONTAINS, REL_REFERENCES, project],
+         WHERE valid_to IS NULL AND project = ?5
+           AND (
+             (from_id = ?2 AND (rel = ?3 OR rel = ?4))
+             OR (rel = ?6 AND substr(from_id, 1, length(?2) + 2) = ?2 || '::')
+           )",
+        params![at, file, REL_CONTAINS, REL_REFERENCES, project, REL_CALLS],
     )
     .map_err(be)?;
     Ok(())
@@ -1697,6 +1732,18 @@ mod tests {
         p.apply(&e).unwrap();
     }
 
+    /// Fold a CALLER-ATTRIBUTED reference (spec 37): `file` references `name` from inside the
+    /// enclosing definition `caller`, exactly the event the emit pass produces for a call in a
+    /// function body. Mirrors [`apply_batch_ref`] but sets the `caller` field the c3 fold reads.
+    fn apply_batch_ref_caller(p: &Projector, pos: u64, file: &str, name: &str, caller: &str) {
+        let payload = serde_json::json!({
+            "file": file, "name": name, "lang": "rust", "caller": caller,
+        });
+        let mut e = Event::new(TYPE_EDGE_INFERRED, serde_json::to_vec(&payload).unwrap());
+        e.position = pos;
+        p.apply(&e).unwrap();
+    }
+
     /// Every edge from `from`, as `(to, rel, valid_to)`, read STRAIGHT from the table - INCLUDING
     /// invalidated rows (a set `valid_to`) that the live `subgraph` filter hides. This is what lets
     /// a test prove supersede-not-delete: a superseded edge is RETAINED with `valid_to` stamped, so
@@ -1835,6 +1882,169 @@ mod tests {
         assert!(
             helper_edge.2.is_some(),
             "helper's REFERENCES edge is invalidated (valid_to set), not live; got {helper_edge:?}"
+        );
+    }
+
+    #[test]
+    fn the_fold_adds_a_caller_attributed_calls_edge_alongside_the_references_edge() {
+        // Spec 37 criterion 3: folding an `EdgeInferred` whose `caller` is `F` for a reference to
+        // `G` in `<file>` adds a `<file>::F --CALLS--> <callee-of-G>` edge, WHILE the existing
+        // `<file> --REFERENCES--> <callee-of-G>` edge is STILL produced. The CALLS edge is purely
+        // additive and uses the SAME callee resolution the REFERENCES edge already uses.
+        let p = Projector::open(":memory:", "test").unwrap();
+        let file = "src/a.rs";
+
+        // A file defining caller `F` and callee `G`, with `G` called from inside `F`'s body.
+        apply_batch_def(&p, 1, file, "F", 1, true);
+        apply_batch_def(&p, 2, file, "G", 5, false);
+        apply_batch_ref_caller(&p, 3, file, "G", "F");
+
+        let g = p.subgraph(&[file.to_string()], 2).unwrap();
+
+        // The additive REFERENCES edge is UNCHANGED: the file still references G.
+        assert!(
+            g.edges
+                .iter()
+                .any(|e| e.rel == REL_REFERENCES && e.from == file && e.to == "src/a.rs::G"),
+            "the file-level REFERENCES(G) edge is still produced (additive); got {:?}",
+            g.edges
+        );
+        // The new caller-attributed CALLS edge: F calls G, keyed by the enclosing definition.
+        assert!(
+            g.edges
+                .iter()
+                .any(|e| e.rel == REL_CALLS && e.from == "src/a.rs::F" && e.to == "src/a.rs::G"),
+            "the caller-attributed <file>::F --CALLS--> <file>::G edge is folded; got {:?}",
+            g.edges
+        );
+        // Same callee resolution: the CALLS edge lands on the SAME same-file definition entity the
+        // REFERENCES edge resolves to (both at the EXTRACTED tier for a resolved local symbol).
+        let calls = g
+            .edges
+            .iter()
+            .find(|e| e.rel == REL_CALLS && e.from == "src/a.rs::F")
+            .expect("CALLS edge present");
+        assert_eq!(
+            calls.tier, TIER_EXTRACTED,
+            "a resolved same-file call folds at EXTRACTED, mirroring its REFERENCES sibling; got {calls:?}"
+        );
+    }
+
+    #[test]
+    fn a_caller_less_reference_folds_no_calls_edge() {
+        // Spec 37 (purely additive): a reference OUTSIDE every definition (a top-level `use`/import)
+        // carries no caller, so it folds EXACTLY today's file-level REFERENCES edge and NO CALLS
+        // edge. This pins the additive boundary: the CALLS edge appears ONLY when a caller is set.
+        let p = Projector::open(":memory:", "test").unwrap();
+        let file = "src/a.rs";
+
+        apply_batch_def(&p, 1, file, "G", 5, true);
+        apply_batch_ref(&p, 2, file, "G", false); // caller-less: a top-level reference
+
+        let g = p.subgraph(&[file.to_string()], 2).unwrap();
+        assert!(
+            g.edges
+                .iter()
+                .any(|e| e.rel == REL_REFERENCES && e.to == "src/a.rs::G"),
+            "the caller-less reference still folds today's REFERENCES(G) edge; got {:?}",
+            g.edges
+        );
+        assert!(
+            !g.edges.iter().any(|e| e.rel == REL_CALLS),
+            "a caller-less reference folds NO CALLS edge; got {:?}",
+            g.edges
+        );
+    }
+
+    #[test]
+    fn re_extraction_supersedes_a_files_prior_calls_edges() {
+        // Spec 37 + spec 29a criterion 3: a re-extracted file SUPERSEDES its own CALLS edges under
+        // the same `fresh` batch boundary as its CONTAINS/REFERENCES edges. A CALLS edge's `from_id`
+        // is `<file>::<caller>` (not the bare file node), so the supersede must retire it too -
+        // otherwise a changed file would ACCRETE stale call edges rather than replace them.
+        let p = Projector::open(":memory:", "test").unwrap();
+        let file = "src/a.rs";
+
+        // Initial extraction: F calls G.
+        apply_batch_def(&p, 1, file, "F", 1, true);
+        apply_batch_def(&p, 2, file, "G", 5, false);
+        apply_batch_ref_caller(&p, 3, file, "G", "F");
+        let g0 = p.subgraph(&[file.to_string()], 2).unwrap();
+        assert!(
+            g0.edges
+                .iter()
+                .any(|e| e.rel == REL_CALLS && e.from == "src/a.rs::F"),
+            "precondition: F --CALLS--> G is live before re-extraction; got {:?}",
+            g0.edges
+        );
+
+        // The file CHANGES: F no longer calls anything; the call is GONE.
+        apply_batch_def(&p, 10, file, "F", 1, true); // fresh: first event of the re-extraction batch
+
+        // LIVE view: the stale CALLS edge is GONE from the live subgraph (superseded, not accreted).
+        let g1 = p.subgraph(&[file.to_string()], 2).unwrap();
+        assert!(
+            !g1.edges.iter().any(|e| e.rel == REL_CALLS),
+            "the removed call is superseded - no live CALLS edge after re-extraction; got {:?}",
+            g1.edges
+        );
+        // Supersede-NOT-delete: the old CALLS row is RETAINED with `valid_to` stamped (bi-temporal).
+        let from_caller = edges_from(&p, "src/a.rs::F");
+        let calls_row = from_caller
+            .iter()
+            .find(|t| t.1 == REL_CALLS && t.0 == "src/a.rs::G")
+            .expect("the prior F --CALLS--> G row is retained, not deleted");
+        assert!(
+            calls_row.2.is_some(),
+            "the prior CALLS edge is invalidated (valid_to set), not live; got {calls_row:?}"
+        );
+    }
+
+    #[test]
+    fn a_cross_file_calls_edge_upgrades_ambiguous_to_inferred_with_its_references_twin() {
+        // Spec 37 tier-consistency: a CALLS edge to a callee defined in ANOTHER file, folded BEFORE
+        // that definition exists, is tiered AMBIGUOUS - then the definition's convergent upgrade
+        // promotes it AMBIGUOUS -> INFERRED, identically to its REFERENCES twin, so the CALLS edge
+        // never lags its sibling's confidence. One tier authority governs both structural edges.
+        let p = Projector::open(":memory:", "test").unwrap();
+        let a = "src/a.rs";
+        let b = "src/b.rs";
+
+        // File A: `F` calls `G`, but `G` is NOT yet defined anywhere the graph knows -> AMBIGUOUS.
+        apply_batch_def(&p, 1, a, "F", 1, true);
+        apply_batch_ref_caller(&p, 2, a, "G", "F");
+        let g_pre = p.subgraph(&[a.to_string()], 2).unwrap();
+        let calls_pre = g_pre
+            .edges
+            .iter()
+            .find(|e| e.rel == REL_CALLS && e.from == "src/a.rs::F")
+            .expect("CALLS edge present pre-definition");
+        assert_eq!(
+            calls_pre.tier, TIER_AMBIGUOUS,
+            "a call to a not-yet-known name folds AMBIGUOUS; got {calls_pre:?}"
+        );
+
+        // File B DEFINES `G`: the convergent upgrade promotes A's cross-file edges to INFERRED.
+        apply_batch_def(&p, 3, b, "G", 9, true);
+
+        let g_post = p.subgraph(&[a.to_string()], 2).unwrap();
+        let calls_post = g_post
+            .edges
+            .iter()
+            .find(|e| e.rel == REL_CALLS && e.from == "src/a.rs::F")
+            .expect("CALLS edge present post-definition");
+        assert_eq!(
+            calls_post.tier, TIER_INFERRED,
+            "the cross-file CALLS edge upgrades AMBIGUOUS -> INFERRED with its REFERENCES twin; got {calls_post:?}"
+        );
+        let refs_post = g_post
+            .edges
+            .iter()
+            .find(|e| e.rel == REL_REFERENCES && e.to == "src/a.rs::G")
+            .expect("REFERENCES twin present");
+        assert_eq!(
+            refs_post.tier, TIER_INFERRED,
+            "the REFERENCES twin also upgraded (baseline the CALLS edge must match); got {refs_post:?}"
         );
     }
 
