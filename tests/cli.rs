@@ -8270,13 +8270,15 @@ fn a_reap_on_idle_dash_self_reaps_when_its_run_reaches_a_terminal_fixpoint() {
     let proj = temp_git_project_with_commit();
     let root = proj.path();
 
-    // A run IN FLIGHT: a spawn requested but not yet answered, so the frontier is open and
-    // `terminal_and_no_live_worker` reads FALSE. No liveness markers are ever written, so the
-    // run's heartbeat stays `None` throughout - isolating the terminal arm from the stale arm.
+    // A run IN FLIGHT: a unit is started and its spawn requested but not yet answered, so the
+    // frontier is open and `terminal_and_no_live_worker` reads FALSE. No liveness markers are ever
+    // written, so the run's heartbeat stays `None` throughout - isolating the terminal arm from the
+    // stale arm. The unit is NON-terminal (not integrated), so the run is not yet settled either.
     seed_run_events(
         root,
         &[
             ("RunStarted", r#"{"run":"r1","criteria":["c"]}"#),
+            ("UnitStarted", r#"{"id":"u","spec_criterion":"c"}"#),
             (
                 "SpawnRequested",
                 r#"{"id":"u/implementer#0","unit":"u","stage":"implement","prompt":"do it"}"#,
@@ -8330,15 +8332,19 @@ fn a_reap_on_idle_dash_self_reaps_when_its_run_reaches_a_terminal_fixpoint() {
         panic!("the dash self-reaped while its run's frontier was still open - premature reap");
     }
 
-    // Complete the run: answer the parked spawn. The frontier closes, so on the next poll
-    // `terminal_and_no_live_worker` reads TRUE while the heartbeat is still `None` - the
-    // normal-completion reap arm the dash must now fire.
+    // Complete the run: answer the parked spawn AND integrate its unit (the genuine completion the
+    // final step records). The frontier closes and every unit is terminal, so on the next poll
+    // `terminal_and_no_live_worker` reads TRUE and the run is SETTLED while the heartbeat is still
+    // `None` - the normal-completion reap arm the dash must now fire.
     seed_run_events(
         root,
-        &[(
-            "SpawnResult",
-            r#"{"id":"u/implementer#0","output":"did the unit"}"#,
-        )],
+        &[
+            (
+                "SpawnResult",
+                r#"{"id":"u/implementer#0","output":"did the unit"}"#,
+            ),
+            ("UnitIntegrated", r#"{"id":"u","commit":"abc123"}"#),
+        ],
     );
 
     let reaped = rx.recv_timeout(Duration::from_secs(12));
@@ -8349,6 +8355,130 @@ fn a_reap_on_idle_dash_self_reaps_when_its_run_reaches_a_terminal_fixpoint() {
     let n = reaped.expect(
         "the `rigger dash --reap-on-idle` did not SELF-REAP within 12s after its run reached a \
          terminal fixpoint - a completed run must leave no orphaned dash",
+    );
+    assert_eq!(
+        n, 0,
+        "a self-reaped dash should have its stdout at EOF (it exited on its own, un-killed)"
+    );
+}
+
+/// Spec 39, criterion 3 - the UNBOUNDED-run guard against a mid-run reap. The default `rigger
+/// init` scaffold runs UNBOUNDED (no `max_wall_clock`), so `rigger step` stamps NO liveness
+/// marker on any wave item and the run's heartbeat is PERMANENTLY `None`. Between two waves - after
+/// a wave's spawns all report their results and BEFORE the next `rigger step` runs the conductor's
+/// integration pass and parks the next wave - the raw event log is TRANSIENTLY terminal
+/// (`terminal_and_no_live_worker` reads true: every parked spawn is answered, none hung, no
+/// manual-review pause) even though the run is still advancing. The detached dash's watcher polls
+/// the store ASYNCHRONOUSLY, so it observes exactly that transient snapshot; with a permanently
+/// `None` heartbeat, a reap keyed on `terminal` ALONE would exit the dash MID-RUN at the first
+/// inter-wave gap, before the next step parks its wave.
+///
+/// This drives that exact scenario end-to-end through the BUILT binary: a run whose implement
+/// spawn is ANSWERED (frontier closed -> terminal) but whose unit is NOT yet integrated (the
+/// conductor integrates on the NEXT step), with no `agent-live/` dir so the heartbeat is `None`.
+/// The dash MUST keep serving - the run has not reached a unit-level fixpoint, so it is between
+/// waves, not done. Then we INTEGRATE the unit (the genuine completion the next step would record)
+/// and the dash MUST self-reap. The staleness bound is set far above the test so the stale arm can
+/// never fire - the only reap path is the `None` + terminal arm, which is precisely the arm this
+/// pins to a will-not-advance completion signal (every unit terminal) rather than the transiently
+/// terminal snapshot.
+#[test]
+fn a_reap_on_idle_dash_serving_an_unbounded_run_does_not_reap_between_waves() {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
+
+    // A TRANSIENTLY-terminal unbounded run: a unit is started (non-terminal) and its implement
+    // spawn is requested AND answered, so the frontier is closed and `terminal_and_no_live_worker`
+    // reads TRUE - yet the unit is NOT integrated (the conductor's integration pass runs on the
+    // NEXT step). No liveness marker is ever written (unbounded run), so the heartbeat is `None`.
+    // This is the exact between-waves snapshot the async watcher can catch, and the exact state a
+    // reap-on-terminal-alone would wrongly treat as completion.
+    seed_run_events(
+        root,
+        &[
+            ("RunStarted", r#"{"run":"r1","criteria":["c"]}"#),
+            ("UnitStarted", r#"{"id":"u","spec_criterion":"c"}"#),
+            (
+                "SpawnRequested",
+                r#"{"id":"u/implementer#0","unit":"u","stage":"implement","prompt":"do it"}"#,
+            ),
+            (
+                "SpawnResult",
+                r#"{"id":"u/implementer#0","output":"did the unit"}"#,
+            ),
+        ],
+    );
+
+    // Pin the scratch root the dash resolves from. No `agent-live/` dir is ever created under it,
+    // so `run_heartbeat_age` reads a missing dir and yields `None` every poll (the unbounded shape).
+    let scratch_root = root.join("rigger-scratch").to_string_lossy().into_owned();
+
+    let port = free_loopback_port();
+    let mut child = Command::new(rigger_bin())
+        .args(["dash", "--port", &port.to_string(), "--reap-on-idle"])
+        .current_dir(root)
+        .env("RIGGER_TMPDIR", &scratch_root)
+        // Poll fast so a (buggy) mid-run reap would fire quickly; set the staleness bound absurdly
+        // high so a stale-heartbeat reap can NEVER fire - the ONLY reap path is the `None` +
+        // terminal arm this test guards.
+        .env("RIGGER_DASH_REAP_POLL_MS", "150")
+        .env("RIGGER_DASH_REAP_STALE_SECS", "86400")
+        .env_remove("RIGGER_NO_DASH")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn `rigger dash --reap-on-idle`");
+    let mut out = child.stdout.take().expect("dash stdout is piped");
+
+    // A blocked read means the dash is alive; a 0-byte read means it exited and stdout hit EOF.
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 1];
+        let n = out.read(&mut buf).unwrap_or(0);
+        let _ = tx.send(n);
+    });
+
+    // The dash is genuinely SERVING the transiently-terminal run. Reap on failure so nothing leaks.
+    if !matches!(http_get(&format!("http://127.0.0.1:{port}/")), Some(body) if body.contains("rigger dash"))
+    {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("the `rigger dash --reap-on-idle` never served its between-waves run");
+    }
+
+    // Across MANY poll intervals, the dash must STAY UP: the run is transiently terminal between
+    // waves, not done, so the `None` + terminal arm must NOT reap it. A read arriving here is the
+    // gating mid-run reap this test exists to prevent, and it fails LOUD.
+    if let Ok(n) = rx.recv_timeout(Duration::from_secs(3)) {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!(
+            "the dash self-reaped ({n}-byte read) while its unbounded run was only TRANSIENTLY \
+             terminal between waves - a mid-run reap before the next step parks its wave"
+        );
+    }
+
+    // Now record the genuine completion the next step would: integrate the unit. Every unit is now
+    // terminal (the unit-level fixpoint), so on the next poll the dash MUST self-reap through the
+    // `None` + terminal arm.
+    seed_run_events(
+        root,
+        &[("UnitIntegrated", r#"{"id":"u","commit":"abc123"}"#)],
+    );
+
+    let reaped = rx.recv_timeout(Duration::from_secs(12));
+    // Reap defensively so a failure never orphans the dash; on the success path it has already
+    // exited itself, so this kill is a no-op and the wait only collects the exited child.
+    let _ = child.kill();
+    let _ = child.wait();
+    let n = reaped.expect(
+        "the `rigger dash --reap-on-idle` did not SELF-REAP within 12s after every unit integrated \
+         - a genuinely-completed run must leave no orphaned dash",
     );
     assert_eq!(
         n, 0,

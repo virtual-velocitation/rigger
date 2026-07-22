@@ -3961,6 +3961,32 @@ fn run_heartbeat_age(
     freshest
 }
 
+/// The UNIT-level fixpoint for the dash self-reap watcher (spec 39, criterion 3): true when the
+/// current run has at least one unit and EVERY unit is terminal (integrated or escalated), read
+/// through the single ledger authority ([`ledger::project`] + [`ledger::RunState::is_terminal`]).
+///
+/// This is the will-not-advance completion signal the `None`-heartbeat reap arm needs.
+/// [`terminal_and_no_live_worker`] is only a SPAWN-level fixpoint that is TRANSIENTLY true in every
+/// inter-wave gap (a wave's spawns are answered but the conductor has not parked the next wave yet);
+/// by contrast a unit reaches a terminal state ONLY through the conductor's integration pass inside
+/// `rigger step`, never merely because a worker reported its result. So this is FALSE while a wave's
+/// results are reported-but-not-yet-integrated and while any later-wave unit is still pending, and
+/// TRUE only once the run genuinely completed (every unit integrated) or wedged to an
+/// escalation-halt (every unit terminal). An UNBOUNDED run writes no liveness marker and so
+/// heartbeats a permanent `None`, so liveness alone cannot tell a completed run from one merely
+/// between waves; this settled signal makes that distinction, so the dash serves through inter-wave
+/// gaps and reaps only at genuine completion.
+///
+/// Scoped to the CURRENT run (`runscope::current_run`) so a prior run's units never gate this run.
+/// An unprojectable stream is treated as NOT settled (never reap on uncertainty).
+fn run_settled(events: &[Event]) -> bool {
+    let scoped = runscope::current_run(events);
+    match ledger::project(scoped) {
+        Ok(rs) => !rs.units.is_empty() && rs.units.keys().all(|id| rs.is_terminal(id)),
+        Err(_) => false,
+    }
+}
+
 /// The dash self-reap watcher loop (spec 39, criterion 3), run on a background thread inside the
 /// detached step-path dash. On each `poll` tick it reads the run's events read-only, computes
 /// whether the run has STARTED, reached a TERMINAL fixpoint
@@ -3984,9 +4010,13 @@ fn watch_and_self_reap_on_idle(
         let events = dash_read_run(&events_db, &identity).unwrap_or_default();
         let run_started = !events.is_empty();
         let run_terminal = terminal_and_no_live_worker(&events).unwrap_or(false);
+        // The UNIT-level fixpoint: every unit terminal. Distinct from `run_terminal` (a spawn-level
+        // fixpoint that is transiently true between waves), it is what keeps an UNBOUNDED run's dash
+        // - which never heartbeats - from self-reaping mid-run in an inter-wave gap.
+        let settled = run_settled(&events);
         let run_id = runscope::current_run_id(&events).unwrap_or_default();
         let heartbeat = run_heartbeat_age(&scratch_root, &run_id, std::time::SystemTime::now());
-        if dash::should_reap_on_idle(run_started, run_terminal, heartbeat, stale_after) {
+        if dash::should_reap_on_idle(run_started, run_terminal, settled, heartbeat, stale_after) {
             // Self-reap: exit the whole process so the detached dash leaves no orphan. The stale
             // `.rigger/dash.marker` this leaves behind is deliberately NOT removed - a next run's
             // first `step` already tolerates it (`dash_start_needed` probes the recorded pid, sees
