@@ -7957,6 +7957,44 @@ mod tests {
     }
 
     #[test]
+    fn refuse_when_base_unreachable_fails_loudly_and_spares_reachable_and_reused() {
+        // Loop-readiness gate (spec 38, criterion 2): a run whose base does NOT resolve
+        // (a planned CreatedFromHead anchor) is REFUSED loudly rather than branching the run
+        // off HEAD into a history disjoint from the base - which produces a run branch a PR
+        // cannot apply to. The refusal gates on the side-effect-free PLANNED anchor, so no run
+        // branch is created and the corrected `--base` retry re-anchors fresh.
+        let err = refuse_when_base_unreachable(
+            "rigger step",
+            "origin/main",
+            RunBranchSetup::CreatedFromHead,
+        )
+        .expect_err("an unreachable base must fail the loop-readiness gate");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("origin/main"),
+            "the refusal must name the unresolved base; got: {msg}"
+        );
+        assert!(
+            msg.contains("--base"),
+            "the refusal must point at a reachable --base; got: {msg}"
+        );
+
+        // A base that resolves (CreatedFromBase) passes: the run branch anchors on it, so
+        // base..run-branch is exactly the run's work and a PR always applies.
+        assert!(
+            refuse_when_base_unreachable("rigger step", "main", RunBranchSetup::CreatedFromBase)
+                .is_ok(),
+            "a reachable base must pass the loop-readiness gate"
+        );
+        // An existing run branch (Reused) is NEVER refused: the run already began (its base was
+        // vetted at creation), and re-refusing on resume-by-replay would wedge a live run.
+        assert!(
+            refuse_when_base_unreachable("rigger step", "main", RunBranchSetup::Reused).is_ok(),
+            "a reused run branch must never be refused (resume-safe)"
+        );
+    }
+
+    #[test]
     fn human_size_formats_bytes_through_gib() {
         assert_eq!(human_size(0), "0B");
         assert_eq!(human_size(18), "18B");

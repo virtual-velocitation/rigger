@@ -1785,6 +1785,57 @@ mod tests {
     }
 
     #[test]
+    fn run_branch_based_on_release_target_contains_exactly_the_runs_work() {
+        // Spec 38, criterion 2 (run-branch basing): a run branch created off the release
+        // target (base) yields a clean, APPLICABLE PR diff - base..run-branch is EXACTLY the
+        // run's integrated commits and base is an ANCESTOR of the run branch, never the
+        // history disjoint from the base that a PR refuses to apply.
+        let repo = init_repo();
+        let p = repo.path().to_str().unwrap().to_string();
+        let base = current_branch(&p).expect("init_repo leaves a named branch checked out");
+        let base_tip = run_git(&p, &["rev-parse", &base]).unwrap().trim().to_string();
+
+        // Anchor the run branch on the release target.
+        let setup = Worktree::ensure_run_branch(&p, "rigger-run", &base).unwrap();
+        assert_eq!(setup, RunBranchSetup::CreatedFromBase);
+
+        // Two units integrate onto the run branch (empty commits stand in for merged work).
+        run_git(
+            &p,
+            &["commit", "--allow-empty", "-q", "-m", "integrate unit A"],
+        )
+        .unwrap();
+        let a = run_git(&p, &["rev-parse", "HEAD"]).unwrap().trim().to_string();
+        run_git(
+            &p,
+            &["commit", "--allow-empty", "-q", "-m", "integrate unit B"],
+        )
+        .unwrap();
+        let b = run_git(&p, &["rev-parse", "HEAD"]).unwrap().trim().to_string();
+
+        // base..run-branch is EXACTLY the two integrated commits (newest first) - none of the
+        // base's own history leaks into the run's PR range.
+        let range = run_git(&p, &["rev-list", &format!("{base}..rigger-run")]).unwrap();
+        let commits: Vec<&str> = range
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .collect();
+        assert_eq!(
+            commits,
+            vec![b.as_str(), a.as_str()],
+            "base..run-branch must be exactly the run's integrated commits"
+        );
+
+        // The release target is an ANCESTOR of the run branch, so a PR from the run branch to
+        // the base applies cleanly (the disjoint-history failure this criterion prevents).
+        assert!(
+            run_git(&p, &["merge-base", "--is-ancestor", &base_tip, "rigger-run"]).is_ok(),
+            "the release target must be an ancestor of the run branch (an applicable PR diff)"
+        );
+    }
+
+    #[test]
     fn changed_files_unquotes_paths_with_spaces() {
         let repo = init_repo();
         let repo_path = repo.path().to_str().unwrap().to_string();
