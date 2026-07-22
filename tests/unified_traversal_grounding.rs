@@ -104,6 +104,60 @@ impl AgentDriver for SeamDriver {
     }
 }
 
+/// A driver for a fan-out REVIEW stage (lens -> adversary -> adjudicator). It records every spawn's
+/// `(agent id, prompt)` pair so a test can isolate a SPECIFIC tier's prompt (the adversary's / the
+/// adjudicator's), and it emits a ReviewFinding on the LENS's behalf - the lens's REAL work channel
+/// (the review_protocol) - so the finding folds into the graph BEFORE the later tiers ground and
+/// their `graph_context` can surface it. The lens id it emits for, and the finding payload, are
+/// injected so a test controls exactly what a later tier must retrieve. The adjudicator returns an
+/// approve verdict (its stdout IS the gating verdict); every OTHER tier returns a substantive stdout
+/// so `run_reviewer` reads it as non-degenerate (Gap 18) and the run proceeds to the next tier
+/// instead of respawning/halting before the adversary and adjudicator are reached.
+struct ReviewDriver {
+    /// The lens agent id - the one spawn that emits the ReviewFinding.
+    lens: String,
+    /// The adjudicator agent id - the one spawn whose stdout is the gating verdict.
+    adjudicator: String,
+    /// The ReviewFinding payload the lens emits (folded ABOUT the seed file).
+    finding: Value,
+    /// `(agent id, prompt)` for every spawn, in spawn order.
+    prompts: Mutex<Vec<(String, String)>>,
+}
+
+impl AgentDriver for ReviewDriver {
+    fn spawn(
+        &self,
+        agent: &AgentDef,
+        prompt: &str,
+        _opts: &SpawnOpts,
+        emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+    ) -> Result<AgentResult, Error> {
+        self.prompts
+            .lock()
+            .unwrap()
+            .push((agent.id.clone(), prompt.to_string()));
+        // The lens raises its finding to the graph (the review_protocol channel), so the adversary
+        // and the adjudicator - which ground AFTER it - retrieve it through `graph_context`, never a
+        // hand-threaded stdout block. This is the exact cross-tier path the implement-only trim must
+        // not sever: emitting here (not pre-folding) drives the REAL fan-out threading end to end.
+        if agent.id == self.lens {
+            emit(TYPE_REVIEW_FINDING, self.finding.clone())?;
+        }
+        // The adjudicator's stdout IS its gating verdict; every other tier's stdout is discarded but
+        // must be non-empty so `run_reviewer` does not read the spawn as a degenerate infrastructure
+        // fault (Gap 18) and halt the run before the next tier is spawned and captured.
+        let output = if agent.id == self.adjudicator {
+            r#"{"verdict":"approve"}"#.to_string()
+        } else {
+            "reviewed".to_string()
+        };
+        Ok(AgentResult {
+            output,
+            resolved_model: String::new(),
+        })
+    }
+}
+
 /// A grounder that resolves any query to a single file - the NL/turbovec seeding the spec retains,
 /// stubbed so the seed is deterministic and the file's code neighborhood comes ONLY from the graph
 /// traversal (its ref carries no text, so nothing the grounder returns is itself rendered).
@@ -662,6 +716,137 @@ fn the_sdet_author_build_seam_spawn_receives_the_trimmed_implement_slice() {
     assert!(
         !prompt.contains("SDET_TRIM_FINDING_MARKER"),
         "the sdet-author's trimmed prompt must OMIT the capped findings bulk; prompt was:\n{prompt}"
+    );
+}
+
+/// Drive a real fan-out REVIEW stage (lens then adversary then adjudicator) through the public `run`
+/// path, grounding every tier on `core.rs` via the stub `SeedGrounder`, with the lens emitting one
+/// ReviewFinding about that file, and return every spawn's `(agent id, prompt)` pair. This is the
+/// observation channel for the review-not-blinded guardrail: the adversary and the adjudicator ground
+/// AFTER the lens, so their prompts are where a finding the lens raised must still appear. A review
+/// tier's prompt is assembled by `build_review_prompt` then `build_prompt` at `GroundingSlice::Full`,
+/// the SAME full slice the producer keeps and the implement slice drops, so a regression that hands
+/// review the implement slice surfaces HERE, at the public boundary the inside-out lens-finding test
+/// (which reaches `graph_context` through a hand-built `RunCtx`) is structurally blind to.
+fn run_and_capture_review_prompts(graph: &Projector, finding: Value) -> Vec<(String, String)> {
+    let grounder = SeedGrounder {
+        file: "core.rs".into(),
+    };
+    let mut cfg = Config::default();
+    for id in ["lens", "adversary", "adj"] {
+        cfg.agents.insert(
+            id.into(),
+            AgentDef {
+                id: id.into(),
+                ..Default::default()
+            },
+        );
+    }
+    cfg.workflow.stages.insert(
+        "review".into(),
+        Stage {
+            name: "review".into(),
+            // An empty `agent` with a non-empty `agents` lens list is what marks this a fan-out REVIEW
+            // stage (`is_fan_out`), so the three tiers run and communicate THROUGH the graph: the lens
+            // emits, then the adversary and adjudicator ground and retrieve it.
+            agents: vec!["lens".into()],
+            adversary: "adversary".into(),
+            adjudicator: "adj".into(),
+            coverage: "core".into(),
+            ..Default::default()
+        },
+    );
+
+    let store = Store::open(":memory:").unwrap();
+    let driver = ReviewDriver {
+        lens: "lens".into(),
+        adjudicator: "adj".into(),
+        finding,
+        prompts: Mutex::new(Vec::new()),
+    };
+    let deps = Deps {
+        store: &store,
+        driver: &driver,
+        gates: &ExecRunner,
+        // A repo-less run: a standalone review stage owns no code to integrate, so it needs no
+        // worktree, and its reviewers run in the project cwd (`assert_isolated_cwd` is a no-op with no
+        // repo). This mirrors the inside-out lens-finding test's setup - only the DRIVER path differs.
+        repo: String::new(),
+        grounder: Some(&grounder),
+        graph: Some(graph),
+        criteria: Vec::new(),
+    };
+    // Prompts are captured before each spawn returns, so the run's terminal disposition is irrelevant
+    // to what this periphery layer observes.
+    let _ = run(&cfg, &deps);
+    let all = driver.prompts.lock().unwrap().clone();
+    all
+}
+
+/// Criterion 3 (this unit OWNS the review-path preservation): the spec-36 trim is IMPLEMENT-ONLY, so
+/// it must NOT weaken review. Driven through a REAL fan-out review over the public `run` path, a
+/// finding the LENS raises must STILL reach the ADVERSARY and the ADJUDICATOR (which ground after it)
+/// under `graph_context`'s findings header, so neither review tier is blinded. This pins the
+/// review-not-blinded guarantee at the PUBLIC boundary: the sibling `the_implement_prompt_is_trimmed_`
+/// and `the_sdet_author_build_seam_` tests prove the implement/sdet call sites DROP the findings, and
+/// `the_producer_prompt_keeps_the_full_` proves the producer keeps them; this proves the REVIEW tiers
+/// keep them too, at the one call site (`build_prompt`, the FULL slice) whose regression would
+/// silently blind the adversary and adjudicator.
+///
+/// Non-vacuous / mutation-isolating: the lens's finding carries a unique marker the FULL slice renders
+/// and the implement slice would drop. Flipping the review call site (`build_prompt`'s
+/// `GroundingSlice::Full` to `::Implement`) reddens BOTH assertions here - the adversary and
+/// adjudicator would then receive the trimmed slice and lose the findings section - while leaving the
+/// implement/producer/sdet-author trim tests (which exercise their OWN call sites) untouched.
+#[test]
+fn the_review_prompt_keeps_the_full_findings_so_a_lens_finding_reaches_the_adversary_and_adjudicator(
+) {
+    let graph = Projector::open(":memory:", "test").unwrap();
+
+    // A lens raises one finding about the seed file. On the FULL review slice the adversary and the
+    // adjudicator retrieve it through `graph_context`; on the (wrong) implement slice it would be
+    // dropped for a pull-tool pointer and review would be blinded to the reviewer that raised it.
+    let finding = json!({
+        "id": "f_review",
+        "by": "lens:lens",
+        "unit": "u1",
+        "summary": "REVIEW_FINDING_MARKER the lens finding the later review tiers must retrieve",
+        "about": ["core.rs"],
+    });
+    let prompts = run_and_capture_review_prompts(&graph, finding);
+
+    let prompt_for = |role: &str| -> String {
+        prompts
+            .iter()
+            .find(|(id, _)| id == role)
+            .unwrap_or_else(|| {
+                panic!(
+                    "the {role:?} review tier must have been spawned; spawns were:\n{prompts:#?}"
+                )
+            })
+            .1
+            .clone()
+    };
+
+    // The ADVERSARY grounds after the lens, so the lens's finding must reach it under the
+    // `graph_context` findings header - proven by the section header AND the unique finding marker, so
+    // neither an empty header nor an incidental match can pass for the retrieved finding.
+    let adv = prompt_for("adversary");
+    assert!(
+        adv.contains("Findings other reviewers have already raised")
+            && adv.contains("REVIEW_FINDING_MARKER"),
+        "the adversary's review prompt must keep the FULL findings section so a lens finding reaches \
+         it (the trim is implement-only; review is not blinded); prompt was:\n{adv}"
+    );
+
+    // The ADJUDICATOR grounds last and gates the stage; it too must retrieve the lens's finding, or
+    // its verdict would be blind to what the lens raised.
+    let adj = prompt_for("adj");
+    assert!(
+        adj.contains("Findings other reviewers have already raised")
+            && adj.contains("REVIEW_FINDING_MARKER"),
+        "the adjudicator's review prompt must keep the FULL findings section so a lens finding reaches \
+         it (the trim is implement-only; review is not blinded); prompt was:\n{adj}"
     );
 }
 
