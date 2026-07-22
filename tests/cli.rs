@@ -8242,3 +8242,207 @@ fn a_reap_on_idle_dash_serves_while_the_run_heartbeats_then_self_reaps_when_live
         "a self-reaped dash should have its stdout at EOF (it exited on its own, un-killed)"
     );
 }
+
+/// Spec 39, criterion 3 - the COMPLETION reap arm through the BUILT binary, the arm the
+/// heartbeat-staleness test above deliberately does NOT exercise. A detached
+/// `rigger dash --reap-on-idle` serving a run whose frontier is still OPEN (a parked, unanswered
+/// spawn) must KEEP serving; once that run reaches a TERMINAL fixpoint (every spawn answered, no
+/// hung spawn, no manual-review pause - the `terminal_and_no_live_worker` predicate the step
+/// teardown itself gates on) with NO liveness markers left (the normal-completion shape, where the
+/// final step's teardown reclaimed `agent-live/`), it must SELF-REAP through the `None`-heartbeat
+/// + terminal arm of `should_reap_on_idle`.
+///
+/// This drives the OTHER reap arm end-to-end: the crashed/wedged-run backstop test above proves
+/// `Some(stale)`; THIS proves `None` + terminal. The run's terminality is a real projected fact of
+/// the seeded event log (the SAME predicate the teardown reads), not a marker mtime, so it also
+/// proves the watcher's `main -> terminal_and_no_live_worker` seam on a genuinely-terminal log and
+/// the `run_heartbeat_age`-yields-`None`-on-a-missing-`agent-live`-dir path. The staleness bound is
+/// set FAR above the test so a stale-arm reap can never fire - the ONLY exit path left is the
+/// terminal arm. Nothing ever kills the dash, so its exit is proof of SELF-reap driven by the run
+/// reaching completion, not by any `step` process or a `ReapedChild` guard.
+#[test]
+fn a_reap_on_idle_dash_self_reaps_when_its_run_reaches_a_terminal_fixpoint() {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
+
+    // A run IN FLIGHT: a spawn requested but not yet answered, so the frontier is open and
+    // `terminal_and_no_live_worker` reads FALSE. No liveness markers are ever written, so the
+    // run's heartbeat stays `None` throughout - isolating the terminal arm from the stale arm.
+    seed_run_events(
+        root,
+        &[
+            ("RunStarted", r#"{"run":"r1","criteria":["c"]}"#),
+            (
+                "SpawnRequested",
+                r#"{"id":"u/implementer#0","unit":"u","stage":"implement","prompt":"do it"}"#,
+            ),
+        ],
+    );
+
+    // Pin the scratch root the dash resolves from (RIGGER_TMPDIR). No `agent-live/` dir is ever
+    // created under it, so `run_heartbeat_age` reads a missing dir and yields `None` every poll.
+    let scratch_root = root.join("rigger-scratch").to_string_lossy().into_owned();
+
+    let port = free_loopback_port();
+    let mut child = Command::new(rigger_bin())
+        .args(["dash", "--port", &port.to_string(), "--reap-on-idle"])
+        .current_dir(root)
+        .env("RIGGER_TMPDIR", &scratch_root)
+        // Poll fast so the terminal-arm reap is observable within the test; set the staleness
+        // bound absurdly high so a stale-heartbeat reap can NEVER fire - the ONLY reap path left
+        // is the `None`-heartbeat + terminal arm this test targets.
+        .env("RIGGER_DASH_REAP_POLL_MS", "150")
+        .env("RIGGER_DASH_REAP_STALE_SECS", "86400")
+        .env_remove("RIGGER_NO_DASH")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn `rigger dash --reap-on-idle`");
+    let mut out = child.stdout.take().expect("dash stdout is piped");
+
+    // A blocked read means the dash is alive; a 0-byte read means it exited and stdout hit EOF.
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 1];
+        let n = out.read(&mut buf).unwrap_or(0);
+        let _ = tx.send(n);
+    });
+
+    // The dash is genuinely SERVING the in-flight run. Reap on failure so nothing leaks.
+    if !matches!(http_get(&format!("http://127.0.0.1:{port}/")), Some(body) if body.contains("rigger dash"))
+    {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("the `rigger dash --reap-on-idle` never served its in-flight run");
+    }
+
+    // While the frontier stays OPEN (the spawn unanswered) and no marker exists, the dash must
+    // NOT reap: a `None` heartbeat only reaps when the run is ALSO terminal. A read arriving here
+    // would be a premature reap of a still-running run, and it fails LOUD.
+    if rx.recv_timeout(Duration::from_millis(1000)).is_ok() {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("the dash self-reaped while its run's frontier was still open - premature reap");
+    }
+
+    // Complete the run: answer the parked spawn. The frontier closes, so on the next poll
+    // `terminal_and_no_live_worker` reads TRUE while the heartbeat is still `None` - the
+    // normal-completion reap arm the dash must now fire.
+    seed_run_events(
+        root,
+        &[(
+            "SpawnResult",
+            r#"{"id":"u/implementer#0","output":"did the unit"}"#,
+        )],
+    );
+
+    let reaped = rx.recv_timeout(Duration::from_secs(12));
+    // Reap defensively so a failure never orphans the dash; on the success path it has already
+    // exited itself, so this kill is a no-op and the wait only collects the exited child.
+    let _ = child.kill();
+    let _ = child.wait();
+    let n = reaped.expect(
+        "the `rigger dash --reap-on-idle` did not SELF-REAP within 12s after its run reached a \
+         terminal fixpoint - a completed run must leave no orphaned dash",
+    );
+    assert_eq!(
+        n, 0,
+        "a self-reaped dash should have its stdout at EOF (it exited on its own, un-killed)"
+    );
+}
+
+/// Spec 39, criterion 3 - the `--reap-on-idle` flag is the GATE for the self-reap watcher, so a
+/// dash started WITHOUT it (the guard-bound `rigger run` / `run_workflow` dash, which keeps its
+/// own `ReapedChild`) must NEVER self-reap, even when the run it serves is already idle/complete.
+/// This pins the boundary the detached step-path dash and the run-bound dash share: ONLY the
+/// flagged dash watches its run's liveness; the unflagged dash's lifecycle stays owned entirely by
+/// its parent's guard. Were the watcher to start unconditionally, it would exit the run-bound dash
+/// out from under its `ReapedChild`, racing / double-reaping the guard.
+///
+/// The seeded run is ALREADY terminal with no liveness markers - the EXACT state that makes the
+/// flagged dash self-reap in the test above - and the poll/staleness envs are set so that IF a
+/// watcher ran at all it would reap within ~1s. That the dash is still serving well past that
+/// window is a strong signal the flag genuinely gates the watcher, not merely that the window was
+/// too short.
+#[test]
+fn a_dash_without_reap_on_idle_never_self_reaps_even_when_its_run_is_idle() {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
+
+    // An ALREADY-terminal run (spawn requested AND answered -> empty frontier) with no liveness
+    // markers: the precise state that drives the FLAGGED dash to self-reap. An unflagged dash must
+    // ignore it entirely and keep serving.
+    seed_run_events(
+        root,
+        &[
+            ("RunStarted", r#"{"run":"r1","criteria":["c"]}"#),
+            (
+                "SpawnRequested",
+                r#"{"id":"u/implementer#0","unit":"u","stage":"implement","prompt":"do it"}"#,
+            ),
+            (
+                "SpawnResult",
+                r#"{"id":"u/implementer#0","output":"did the unit"}"#,
+            ),
+        ],
+    );
+
+    let scratch_root = root.join("rigger-scratch").to_string_lossy().into_owned();
+
+    let port = free_loopback_port();
+    // NOTE: no `--reap-on-idle`. A fast poll and a tiny staleness bound are set so that IF a
+    // watcher ran at all it would reap almost immediately - making the ABSENCE of a reap a strong
+    // signal the flag genuinely gates the watcher off.
+    let mut child = Command::new(rigger_bin())
+        .args(["dash", "--port", &port.to_string()])
+        .current_dir(root)
+        .env("RIGGER_TMPDIR", &scratch_root)
+        .env("RIGGER_DASH_REAP_POLL_MS", "100")
+        .env("RIGGER_DASH_REAP_STALE_SECS", "1")
+        .env_remove("RIGGER_NO_DASH")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn `rigger dash`");
+    let mut out = child.stdout.take().expect("dash stdout is piped");
+
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 1];
+        let n = out.read(&mut buf).unwrap_or(0);
+        let _ = tx.send(n);
+    });
+
+    // It serves the terminal run's read-only page. Reap on failure so nothing leaks.
+    if !matches!(http_get(&format!("http://127.0.0.1:{port}/")), Some(body) if body.contains("rigger dash"))
+    {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("the `rigger dash` (no --reap-on-idle) never served its page");
+    }
+
+    // Well past many poll intervals, the unflagged dash must STILL be up: no watcher was ever
+    // started, so an idle/terminal run does not make it exit. A read here is a self-reap the flag
+    // was supposed to gate off.
+    let reaped = rx.recv_timeout(Duration::from_secs(2));
+    let still_serving = reaped.is_err();
+    // Nothing owns this dash in the test (in production its parent's `ReapedChild` would), so reap
+    // it here regardless of outcome.
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(
+        still_serving,
+        "a `rigger dash` WITHOUT --reap-on-idle self-reaped on an idle run - the flag must gate \
+         the watcher so the guard-bound run dash never exits out from under its ReapedChild"
+    );
+}
