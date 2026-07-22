@@ -113,6 +113,14 @@ pub struct StateView {
     /// without a network fetch.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub events: Option<Vec<EventView>>,
+    /// The ready-to-release handoff (spec 38, criterion 3): present ONLY when the run is done
+    /// (every unit integrated, no failed deferred gate), naming the run branch, the
+    /// release-target base, the integrated-unit count, and the PR command - so the dash and
+    /// `rigger status` surface the SAME handoff from the SAME authority
+    /// ([`ledger::RunState::release_ready`]). Absent (`None`) for a run that is not done, so an
+    /// unfinished run surfaces no release-ready signal here either.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub release_ready: Option<ledger::ReleaseReady>,
 }
 
 /// The ledger projection, flattened for the wire.
@@ -343,7 +351,9 @@ pub struct EventView {
 ///
 /// `configured_max_retries` is `defaults.max_retries` (the caller's config, unresolved):
 /// it sets the `#n/max` bound on a `reject-recurrence` current-blocker line so it matches
-/// the depth the run escalates at.
+/// the depth the run escalates at. `run_branch`/`base` name the release target for the
+/// ready-to-release handoff (spec 38, criterion 3), threaded from the serving command.
+#[allow(clippy::too_many_arguments)]
 pub fn build_state(
     events: &[Event],
     graph: &Graph,
@@ -351,8 +361,13 @@ pub fn build_state(
     progress_events: &[Event],
     liveness_ages: &HashMap<String, u64>,
     configured_max_retries: u32,
+    run_branch: &str,
+    base: &str,
 ) -> Result<StateView, serde_json::Error> {
     let run = ledger::project(events)?;
+    // The ready-to-release handoff (spec 38, criterion 3): `Some` only on a done run, from the
+    // SAME authority `rigger status` reads, so the two surfaces cannot drift.
+    let release_ready = run.release_ready(run_branch, base);
     let m = metrics::project(events);
     let step = spawn::step_result(events)?;
     // The live per-agent view, folded from the frontier + this run's progress + the marker
@@ -442,6 +457,7 @@ pub fn build_state(
         graph: build_graph_view(graph),
         tree,
         events: events_view,
+        release_ready,
     })
 }
 
@@ -1222,6 +1238,8 @@ pub fn state_json(
     progress_events: &[Event],
     liveness_ages: &HashMap<String, u64>,
     configured_max_retries: u32,
+    run_branch: &str,
+    base: &str,
 ) -> Result<String, serde_json::Error> {
     serde_json::to_string(&build_state(
         events,
@@ -1230,6 +1248,8 @@ pub fn state_json(
         progress_events,
         liveness_ages,
         configured_max_retries,
+        run_branch,
+        base,
     )?)
 }
 
@@ -1264,6 +1284,8 @@ pub fn render_export(
     progress_events: &[Event],
     liveness_ages: &HashMap<String, u64>,
     configured_max_retries: u32,
+    run_branch: &str,
+    base: &str,
 ) -> Result<String, serde_json::Error> {
     let json = serde_json::to_string(&build_state(
         events,
@@ -1272,6 +1294,8 @@ pub fn render_export(
         progress_events,
         liveness_ages,
         configured_max_retries,
+        run_branch,
+        base,
     )?)?;
     Ok(PAGE_TEMPLATE.replace(STATE_PLACEHOLDER, &escape_for_script(&json)))
 }
@@ -1368,6 +1392,9 @@ impl Response {
 /// The single routing authority. Answers only `GET`; every other method - on every path -
 /// is a `405`, which is the structural guarantee that the dash exposes NO mutating
 /// endpoint. Pure over the projected inputs, so it is unit-testable without a socket.
+/// `run_branch`/`base` name the release target for the ready-to-release handoff (spec 38,
+/// criterion 3) the `/api/state` body carries on a done run.
+#[allow(clippy::too_many_arguments)]
 pub fn route(
     method: &str,
     target: &str,
@@ -1376,6 +1403,8 @@ pub fn route(
     progress_events: &[Event],
     liveness_ages: &HashMap<String, u64>,
     configured_max_retries: u32,
+    run_branch: &str,
+    base: &str,
 ) -> Response {
     if method != "GET" {
         return Response::text(
@@ -1394,6 +1423,8 @@ pub fn route(
                 progress_events,
                 liveness_ages,
                 configured_max_retries,
+                run_branch,
+                base,
             ) {
                 Ok(body) => Response::json(200, body),
                 Err(e) => Response::text(500, &format!("dash: state projection failed: {e}")),
@@ -1491,7 +1522,13 @@ fn parse_request_line(line: &str) -> Option<(String, String)> {
 /// async runtime. Only the `/api/*` paths consult `provider`; the static page and the
 /// method/not-found guards need no store read, so the page still serves before a run has
 /// created the store.
-pub fn serve<F>(addr: SocketAddr, provider: F, configured_max_retries: u32) -> io::Result<()>
+pub fn serve<F>(
+    addr: SocketAddr,
+    provider: F,
+    configured_max_retries: u32,
+    run_branch: &str,
+    base: &str,
+) -> io::Result<()>
 where
     F: Fn() -> Result<DashInputs, String>,
 {
@@ -1501,7 +1538,8 @@ where
     for stream in listener.incoming() {
         match stream {
             Ok(s) => {
-                if let Err(e) = handle_conn(s, &provider, configured_max_retries) {
+                if let Err(e) = handle_conn(s, &provider, configured_max_retries, run_branch, base)
+                {
                     eprintln!("rigger dash: connection error: {e}");
                 }
             }
@@ -1514,7 +1552,13 @@ where
 /// Read one request, route it, and write the response. Splits the store read from the
 /// pure [`route`] so a `provider` failure degrades only the `/api/*` paths (to `500`),
 /// never the static page.
-fn handle_conn<F>(stream: TcpStream, provider: &F, configured_max_retries: u32) -> io::Result<()>
+fn handle_conn<F>(
+    stream: TcpStream,
+    provider: &F,
+    configured_max_retries: u32,
+    run_branch: &str,
+    base: &str,
+) -> io::Result<()>
 where
     F: Fn() -> Result<DashInputs, String>,
 {
@@ -1551,6 +1595,8 @@ where
                         &progress,
                         &liveness,
                         configured_max_retries,
+                        run_branch,
+                        base,
                     ),
                     Err(e) => Response::text(500, &format!("dash: reading the store failed: {e}")),
                 }
@@ -1564,6 +1610,8 @@ where
                     &[],
                     &HashMap::new(),
                     configured_max_retries,
+                    run_branch,
+                    base,
                 )
             }
         }
@@ -1756,7 +1804,17 @@ mod tests {
 
     #[test]
     fn root_serves_the_embedded_page_with_the_placeholder_resolved() {
-        let r = route("GET", "/", &[], &Graph::default(), &[], &HashMap::new(), 3);
+        let r = route(
+            "GET",
+            "/",
+            &[],
+            &Graph::default(),
+            &[],
+            &HashMap::new(),
+            3,
+            "rigger-run",
+            "origin/main",
+        );
         assert_eq!(r.status, 200);
         assert_eq!(r.content_type, "text/html; charset=utf-8");
         let body = String::from_utf8(r.body).unwrap();
@@ -2129,6 +2187,8 @@ mod tests {
             &[],
             &HashMap::new(),
             3,
+            "rigger-run",
+            "origin/main",
         );
         assert_eq!(r.status, 200);
         assert_eq!(r.content_type, "application/json");
@@ -2178,6 +2238,8 @@ mod tests {
             &progress_events,
             &liveness,
             3,
+            "rigger-run",
+            "origin/main",
         )
         .unwrap();
         assert_eq!(
@@ -2193,7 +2255,16 @@ mod tests {
         assert_eq!(a.last_milestone.as_deref(), Some("UnitStarted"));
 
         // And the activity serializes into the /api/state body the page renders.
-        let body = state_json(&events, &Graph::default(), &progress_events, &liveness, 3).unwrap();
+        let body = state_json(
+            &events,
+            &Graph::default(),
+            &progress_events,
+            &liveness,
+            3,
+            "rigger-run",
+            "origin/main",
+        )
+        .unwrap();
         assert!(
             body.contains("grep #12: conductor.rs"),
             "the live activity appears in the emitted state"
@@ -2277,6 +2348,8 @@ mod tests {
             &progress_events,
             &liveness,
             3,
+            "rigger-run",
+            "origin/main",
         )
         .unwrap();
         let tree = &state.tree;
@@ -2372,7 +2445,16 @@ mod tests {
         assert!(!unit_a.auto_expand, "a done unit is not auto-expanded");
 
         // The tree serializes into the /api/state body the page renders.
-        let body = state_json(&events, &Graph::default(), &progress_events, &liveness, 3).unwrap();
+        let body = state_json(
+            &events,
+            &Graph::default(),
+            &progress_events,
+            &liveness,
+            3,
+            "rigger-run",
+            "origin/main",
+        )
+        .unwrap();
         assert!(
             body.contains("\"tree\""),
             "the run tree ships in the emitted state"
@@ -2394,8 +2476,17 @@ mod tests {
             ev("UnitStatus", r#"{"id":"b","status":"reviewed"}"#),
         ]);
         let m = metrics::project(&events);
-        let state =
-            build_state(&events, &Graph::default(), false, &[], &HashMap::new(), 3).unwrap();
+        let state = build_state(
+            &events,
+            &Graph::default(),
+            false,
+            &[],
+            &HashMap::new(),
+            3,
+            "rigger-run",
+            "origin/main",
+        )
+        .unwrap();
         assert_eq!(state.metrics.review_reject, m.review_reject);
         assert_eq!(state.metrics.review_approve, m.review_approve);
         assert_eq!(
@@ -2441,6 +2532,8 @@ mod tests {
                     &[],
                     &HashMap::new(),
                     3,
+                    "rigger-run",
+                    "origin/main",
                 );
                 assert_eq!(
                     r.status, 405,
@@ -2460,6 +2553,8 @@ mod tests {
             &[],
             &HashMap::new(),
             3,
+            "rigger-run",
+            "origin/main",
         );
         assert_eq!(r.status, 404);
     }
@@ -2467,7 +2562,16 @@ mod tests {
     #[test]
     fn export_inlines_the_snapshot_as_a_static_page() {
         let events = seeded_run();
-        let html = render_export(&events, &Graph::default(), &[], &HashMap::new(), 3).unwrap();
+        let html = render_export(
+            &events,
+            &Graph::default(),
+            &[],
+            &HashMap::new(),
+            3,
+            "rigger-run",
+            "origin/main",
+        )
+        .unwrap();
         assert!(
             !html.contains(STATE_PLACEHOLDER),
             "export must resolve the placeholder"
@@ -2497,7 +2601,16 @@ mod tests {
         // A realistic malicious payload: it inlines verbatim into the feed summary.
         let payload = r#"{"id":"u1","note":"</script><img src=x onerror=alert(1)>"}"#;
         let events = positioned(vec![ev("DecisionMade", payload)]);
-        let html = render_export(&events, &Graph::default(), &[], &HashMap::new(), 3).unwrap();
+        let html = render_export(
+            &events,
+            &Graph::default(),
+            &[],
+            &HashMap::new(),
+            3,
+            "rigger-run",
+            "origin/main",
+        )
+        .unwrap();
 
         // The template carries exactly ONE real `</script>` (its own script close). Were the
         // inlined snapshot left raw, the payload's `</script>` would add a second and break the
@@ -2613,6 +2726,8 @@ mod tests {
             &[],
             &HashMap::new(),
             3,
+            "rigger-run",
+            "origin/main",
         );
         assert_eq!(r.status, 200, "the KG route answers 200");
         assert_eq!(r.content_type, "application/json", "self-contained JSON");
@@ -2698,6 +2813,8 @@ mod tests {
             &[],
             &HashMap::new(),
             3,
+            "rigger-run",
+            "origin/main",
         );
         assert_eq!(r.status, 200);
         let body: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
@@ -2733,6 +2850,8 @@ mod tests {
                 &[],
                 &HashMap::new(),
                 3,
+                "rigger-run",
+                "origin/main",
             );
             assert_eq!(r.status, 200, "{label}: never a 500/404");
             assert_eq!(r.content_type, "application/json", "{label}");
@@ -2760,6 +2879,8 @@ mod tests {
                 &[],
                 &HashMap::new(),
                 3,
+                "rigger-run",
+                "origin/main",
             );
             assert_eq!(
                 r.status, 405,
@@ -2980,6 +3101,8 @@ mod tests {
             &[],
             &HashMap::new(),
             3,
+            "rigger-run",
+            "origin/main",
         );
         assert_eq!(r.status, 200);
         let body: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
@@ -3015,6 +3138,8 @@ mod tests {
             &[],
             &HashMap::new(),
             3,
+            "rigger-run",
+            "origin/main",
         );
         assert_eq!(r2.status, 200);
         let body2: serde_json::Value = serde_json::from_slice(&r2.body).unwrap();
@@ -3159,6 +3284,8 @@ mod tests {
             &[],
             &HashMap::new(),
             3,
+            "rigger-run",
+            "origin/main",
         );
         assert_eq!(r.status, 200);
         let body: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
@@ -3202,6 +3329,8 @@ mod tests {
             &[],
             &HashMap::new(),
             3,
+            "rigger-run",
+            "origin/main",
         );
         let body2: serde_json::Value = serde_json::from_slice(&r2.body).unwrap();
         assert!(
@@ -3227,12 +3356,102 @@ mod tests {
 
     #[test]
     fn build_state_on_an_empty_run_is_empty_not_a_panic() {
-        let state = build_state(&[], &Graph::default(), false, &[], &HashMap::new(), 3).unwrap();
+        let state = build_state(
+            &[],
+            &Graph::default(),
+            false,
+            &[],
+            &HashMap::new(),
+            3,
+            "rigger-run",
+            "origin/main",
+        )
+        .unwrap();
         assert!(state.run.units.is_empty());
         assert!(state.blockers.is_empty());
         assert_eq!(state.metrics.units_started, 0);
         assert_eq!(state.position, 0);
         assert!(state.step.wave.is_empty());
+        // An empty run is not done, so no release-ready handoff is surfaced on the dash.
+        assert!(state.release_ready.is_none());
+    }
+
+    /// Spec 38, criterion 3: the dash surfaces the SAME ready-to-release handoff as `rigger
+    /// status`, from the SAME authority ([`ledger::RunState::release_ready`]) - present in the
+    /// `/api/state` snapshot ONLY on a done run, naming the run branch, the release-target
+    /// base, the integrated-unit count, and the PR command; absent for a run that is not done.
+    #[test]
+    fn release_ready_is_surfaced_on_the_dash_only_for_a_done_run() {
+        // A done run: one integrated unit, no failed deferred gate.
+        let done = positioned(vec![
+            ev("UnitStarted", r#"{"id":"u1"}"#),
+            ev("UnitIntegrated", r#"{"id":"u1","commit":"abc"}"#),
+        ]);
+        let state = build_state(
+            &done,
+            &Graph::default(),
+            false,
+            &[],
+            &HashMap::new(),
+            3,
+            "rigger-run",
+            "origin/main",
+        )
+        .unwrap();
+        let rr = state
+            .release_ready
+            .as_ref()
+            .expect("a done run surfaces the release-ready handoff on the dash");
+        assert_eq!(rr.run_branch, "rigger-run");
+        assert_eq!(rr.base, "main");
+        assert_eq!(rr.integrated_units, 1);
+        assert_eq!(rr.pr_command, "gh pr create --base main --head rigger-run");
+        // It serializes into the /api/state body the page reads.
+        let body = state_json(
+            &done,
+            &Graph::default(),
+            &[],
+            &HashMap::new(),
+            3,
+            "rigger-run",
+            "origin/main",
+        )
+        .unwrap();
+        assert!(
+            body.contains("gh pr create --base main --head rigger-run"),
+            "the handoff appears in the emitted state: {body}"
+        );
+
+        // A run with a still-un-integrated unit surfaces no release-ready signal.
+        let running = positioned(vec![
+            ev("UnitStarted", r#"{"id":"u1"}"#),
+            ev("UnitIntegrated", r#"{"id":"u1","commit":"abc"}"#),
+            ev("UnitStarted", r#"{"id":"u2"}"#),
+        ]);
+        let state = build_state(
+            &running,
+            &Graph::default(),
+            false,
+            &[],
+            &HashMap::new(),
+            3,
+            "rigger-run",
+            "origin/main",
+        )
+        .unwrap();
+        assert!(state.release_ready.is_none());
+        // ... and the absent field is omitted from the serialized snapshot entirely.
+        let body = state_json(
+            &running,
+            &Graph::default(),
+            &[],
+            &HashMap::new(),
+            3,
+            "rigger-run",
+            "origin/main",
+        )
+        .unwrap();
+        assert!(!body.contains("release_ready"), "{body}");
     }
 
     #[test]
@@ -3301,7 +3520,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let server = std::thread::spawn(move || {
             let (conn, _) = listener.accept().unwrap();
-            handle_conn(conn, &provider, 3).unwrap();
+            handle_conn(conn, &provider, 3, "rigger-run", "origin/main").unwrap();
         });
 
         let mut client = TcpStream::connect(addr).unwrap();
@@ -3339,7 +3558,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let server = std::thread::spawn(move || {
             let (conn, _) = listener.accept().unwrap();
-            handle_conn(conn, &provider, 3).unwrap();
+            handle_conn(conn, &provider, 3, "rigger-run", "origin/main").unwrap();
         });
 
         let mut client = TcpStream::connect(addr).unwrap();

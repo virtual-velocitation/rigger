@@ -2145,7 +2145,14 @@ fn run_cli(parsed: &RunArgs) -> Res {
     // guard reaps the dash when this scope ends (unit 3's reaping mechanism).
     let _dash = start_run_dashboard();
     let rs = conductor::run(&cfg, &deps)?;
-    print_run_state(&rs);
+    // The release-target base the ready-to-release handoff names (spec 38, criterion 3),
+    // resolved exactly as the run branch was anchored above (the `--base` flag, then the
+    // `RIGGER_BASE` override, then the default).
+    let (release_base, _) = resolve_run_base(
+        parsed.base.as_deref(),
+        std::env::var("RIGGER_BASE").ok().as_deref(),
+    );
+    print_run_state(&rs, &release_base);
     // spec 17 criterion 4c: a silently-serializing fleet must WARN during a run, not only when the
     // operator later runs `rigger stats`. Re-project this run's metrics from the log and, if the
     // parallelism-retention floor was breached under structural grounding, log the SAME line the
@@ -3563,6 +3570,11 @@ fn cmd_dash(args: &[String]) -> Res {
             rigger::worktree::scratch_root_from_env(&repo, &workdir)
         }
     };
+    // The release target the ready-to-release handoff (spec 38, criterion 3) names on the dash:
+    // the run branch, and the base resolved exactly as a run entry's is (the `RIGGER_BASE`
+    // override, else the load-bearing default), so the dash and `rigger status` surface the
+    // same handoff on a done run.
+    let (release_base, _) = resolve_run_base(None, std::env::var("RIGGER_BASE").ok().as_deref());
 
     // Fresh projection inputs on every request. Reading (not holding an open handle) is
     // what lets the dash start before the store exists and pick the run up once it does.
@@ -3579,14 +3591,22 @@ fn cmd_dash(args: &[String]) -> Res {
         Some(path) => {
             let (events, graph, progress, liveness) =
                 provider().map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
-            let html = dash::render_export(&events, &graph, &progress, &liveness, max_retries)?;
+            let html = dash::render_export(
+                &events,
+                &graph,
+                &progress,
+                &liveness,
+                max_retries,
+                RUN_BRANCH,
+                &release_base,
+            )?;
             std::fs::write(&path, html)?;
             println!("wrote dash snapshot to {path}");
             Ok(())
         }
         None => {
             let addr = SocketAddr::from(([127, 0, 0, 1], port));
-            dash::serve(addr, provider, max_retries)?;
+            dash::serve(addr, provider, max_retries, RUN_BRANCH, &release_base)?;
             Ok(())
         }
     }
@@ -3995,6 +4015,16 @@ fn cmd_status(args: &[String]) -> Res {
     // budget halt (which have no live spawn) is still surfaced.
     let blocker_lines = status_blocker_lines(run_events, max_retries)?;
 
+    // The ready-to-release handoff (spec 38, criterion 3): surfaced on this status surface
+    // when the run is DONE (every unit integrated, no failed deferred gate), naming the run
+    // branch, the release-target base, the integrated-unit count, and the PR command. Empty
+    // for a run that is not done, so an unfinished run surfaces NO release-ready signal. The
+    // base resolves exactly as a run entry's does (the `RIGGER_BASE` override, else the
+    // load-bearing default); a done run has no live spawns, so this must also print in the
+    // no-agents-in-flight branch below, never only in the agents-in-flight path.
+    let (release_base, _) = resolve_run_base(None, std::env::var("RIGGER_BASE").ok().as_deref());
+    let release_lines = release_ready_lines(run_events, RUN_BRANCH, &release_base);
+
     // The auto-started dash's URL for this run (spec 19b, unit 1 discoverability): shown
     // whenever a driver recorded one, even for an otherwise-quiet run, so an operator can
     // always find the live observability page. Printed before the run summary so it appears
@@ -4007,6 +4037,9 @@ fn cmd_status(args: &[String]) -> Res {
     let short = |s: &str| s.chars().take(12).collect::<String>();
     if view.is_empty() && blocker_lines.is_empty() {
         println!("run {}: no agents in flight", short(&run_id));
+        for line in &release_lines {
+            println!("{line}");
+        }
         return Ok(());
     }
     if view.is_empty() {
@@ -4036,6 +4069,11 @@ fn cmd_status(args: &[String]) -> Res {
             println!("  {line}");
         }
     }
+    // Non-empty only when the run is done; a no-op otherwise, so an in-flight run prints
+    // nothing here (the done case has no live spawns and is handled in the branch above).
+    for line in &release_lines {
+        println!("{line}");
+    }
     Ok(())
 }
 
@@ -4053,6 +4091,21 @@ fn status_blocker_lines(
         run_events,
         configured_max_retries,
     )?))
+}
+
+/// The ready-to-release handoff lines `rigger status` prints (spec 38, criterion 3): empty
+/// for any run that is NOT done, else the summary naming the run branch, the release-target
+/// base, the integrated-unit count, and the exact PR command. Pure over the run's event
+/// slice plus the resolved run branch/base, so it is unit-testable without a store and
+/// renders identically wherever it is surfaced - the single authority is
+/// [`ledger::RunState::release_ready`] + [`ledger::ReleaseReady::lines`], never a second
+/// derivation. A projection hiccup yields no lines rather than failing the status read.
+fn release_ready_lines(run_events: &[Event], run_branch: &str, base: &str) -> Vec<String> {
+    ledger::project(run_events)
+        .ok()
+        .and_then(|rs| rs.release_ready(run_branch, base))
+        .map(|rr| rr.lines())
+        .unwrap_or_default()
 }
 
 /// `rigger reset --runs` (spec 21, unit 2) - drop the decisions and findings of every
@@ -6773,7 +6826,7 @@ fn git_repo_at(root: &Path) -> String {
         .unwrap_or_default()
 }
 
-fn print_run_state(rs: &RunState) {
+fn print_run_state(rs: &RunState, base: &str) {
     println!("run state:");
     for (name, u) in &rs.units {
         println!("  {:<20} {}", name, u.status.as_str());
@@ -6782,6 +6835,15 @@ fn print_run_state(rs: &RunState) {
         println!("done: every unit integrated");
     } else {
         println!("incomplete: not every unit integrated");
+    }
+    // The ready-to-release handoff (spec 38, criterion 3): on a DONE run, surface the run
+    // branch, the release-target base, the integrated-unit count, and the exact PR command
+    // the human runs to open the release PR - the same one-authority render `rigger status`
+    // shows. The loop STOPS here: it surfaces the handoff, it never merges to the base.
+    if let Some(rr) = rs.release_ready(RUN_BRANCH, base) {
+        for line in rr.lines() {
+            println!("{line}");
+        }
     }
 }
 
@@ -7531,6 +7593,8 @@ mod tests {
             &[],
             &HashMap::new(),
             max_retries,
+            RUN_BRANCH,
+            DEFAULT_BASE_REF,
         )
         .unwrap();
         let dash_lines: Vec<String> = state.blockers.iter().map(|b| b.line.clone()).collect();
@@ -7553,6 +7617,54 @@ mod tests {
                 "u-esc: escalated (awaiting a human)".to_string(),
                 "u-fail: reject-recurrence #2/6 (remediating)".to_string(),
             ]
+        );
+    }
+
+    /// Spec 38, criterion 3 (the ready-to-release handoff): the exact lines the `rigger
+    /// status` surface prints are non-empty and name the run branch, the release-target base,
+    /// the integrated-unit count, and the PR command ONLY when the run is done; a run that is
+    /// NOT done surfaces no release-ready signal. Proven over the production render seam
+    /// (`release_ready_lines`) `cmd_status` prints, so the surface cannot silently drift from
+    /// the one authority.
+    #[test]
+    fn release_ready_lines_surface_only_on_a_done_run() {
+        // A done run: one integrated unit, no failed deferred gate.
+        let done = [
+            Event::new(ledger::TYPE_UNIT_STARTED, br#"{"id":"u1"}"#.to_vec()),
+            Event::new(
+                ledger::TYPE_UNIT_INTEGRATED,
+                br#"{"id":"u1","commit":"abc"}"#.to_vec(),
+            ),
+        ];
+        let lines = release_ready_lines(&done, RUN_BRANCH, DEFAULT_BASE_REF);
+        assert!(
+            !lines.is_empty(),
+            "a done run surfaces the release-ready handoff"
+        );
+        let text = lines.join("\n");
+        assert!(text.contains(RUN_BRANCH), "names the run branch: {text}");
+        assert!(
+            text.contains("1 unit"),
+            "names the integrated-unit count: {text}"
+        );
+        // `origin/main` is stripped to the release-target branch in the PR command.
+        assert!(
+            text.contains("gh pr create --base main --head rigger-run"),
+            "names the PR command: {text}"
+        );
+
+        // A run with a still-un-integrated unit surfaces NO release-ready signal.
+        let running = [
+            Event::new(ledger::TYPE_UNIT_STARTED, br#"{"id":"u1"}"#.to_vec()),
+            Event::new(
+                ledger::TYPE_UNIT_INTEGRATED,
+                br#"{"id":"u1","commit":"abc"}"#.to_vec(),
+            ),
+            Event::new(ledger::TYPE_UNIT_STARTED, br#"{"id":"u2"}"#.to_vec()),
+        ];
+        assert!(
+            release_ready_lines(&running, RUN_BRANCH, DEFAULT_BASE_REF).is_empty(),
+            "an unfinished run surfaces no release-ready signal"
         );
     }
 

@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::eventstore::Event;
 
@@ -102,6 +102,44 @@ pub struct RunState {
     /// terminal exclusion needs the FINAL folded state: a unit that is manual-reviewed and
     /// then integrated must leave the inbox.
     pub manual_review: Vec<String>,
+}
+
+/// The ready-to-release handoff (spec 38, criterion 3): the human-facing summary the loop
+/// surfaces on a DONE run so the operator can open the release PR. It is a pure projection
+/// over the run state plus the run's branch/base config - NO new event and no auto-merge, so
+/// a resume-by-replay re-reaches the identical summary and the loop stops at "ready to open a
+/// PR" (the human owns release). Built only by [`RunState::release_ready`], which returns
+/// `None` for any run that is not [`RunState::done`], so an unfinished run surfaces nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ReleaseReady {
+    /// The run branch the approved units were integrated onto - the PR's head.
+    pub run_branch: String,
+    /// The release-target branch the run integrates toward - the PR's base. This is the
+    /// resolved base ref with a leading `origin/` remote prefix stripped (`origin/main` ->
+    /// `main`), so the surfaced PR command targets the branch and not the tracking ref.
+    pub base: String,
+    /// How many units landed on the run branch (every unit, since the run is done).
+    pub integrated_units: usize,
+    /// The exact command a human runs to open the release PR - `base..run_branch` is exactly
+    /// this run's work, so the PR always applies.
+    pub pr_command: String,
+}
+
+impl ReleaseReady {
+    /// The status-surface render: the human-readable lines `rigger status` and the run's
+    /// end-of-run summary print, naming the run branch, the base, the integrated-unit count,
+    /// and the PR command. ONE render authority so every surface reads identically.
+    pub fn lines(&self) -> Vec<String> {
+        let plural = if self.integrated_units == 1 { "" } else { "s" };
+        vec![
+            format!(
+                "release-ready: run branch {:?} is ready to open a PR to {:?} \
+                 ({} unit{} integrated)",
+                self.run_branch, self.base, self.integrated_units, plural
+            ),
+            format!("  {}", self.pr_command),
+        ]
+    }
 }
 
 // Run-event types the conductor emits (folded here into run state).
@@ -274,6 +312,36 @@ impl RunState {
             return self.done();
         }
         !self.units.is_empty() && self.units.values().all(|u| u.status == Status::Integrated)
+    }
+
+    /// The ready-to-release handoff for this run (spec 38, criterion 3), or `None` when the
+    /// run is not [`Self::done`] - so an unfinished run (a unit still un-integrated, an empty
+    /// run, or a failed deferred phase-boundary gate) surfaces NO release-ready signal. On a
+    /// done run it names `run_branch` as the PR head and the release-target `base` (the
+    /// resolved base ref with a leading `origin/` remote prefix stripped) as the PR base, so
+    /// the derived `gh pr create` command targets the branch a PR can actually apply to.
+    /// Purely derived (no new event, no auto-merge): a resume-by-replay re-reaches it.
+    pub fn release_ready(&self, run_branch: &str, base: &str) -> Option<ReleaseReady> {
+        if !self.done() {
+            return None;
+        }
+        let integrated_units = self
+            .units
+            .values()
+            .filter(|u| u.status == Status::Integrated)
+            .count();
+        // The PR base is the release-target BRANCH, not a remote tracking ref: `gh pr create
+        // --base` takes a branch name, so strip the default remote's `origin/` prefix
+        // (`origin/main` -> `main`). A base that is already a plain branch, or one on another
+        // remote, is left intact for the human to adjust.
+        let base = base.strip_prefix("origin/").unwrap_or(base).to_string();
+        let pr_command = format!("gh pr create --base {base} --head {run_branch}");
+        Some(ReleaseReady {
+            run_branch: run_branch.to_string(),
+            base,
+            integrated_units,
+            pr_command,
+        })
     }
 
     /// Whether a unit has reached a terminal state (integrated or escalated).
@@ -489,6 +557,73 @@ mod tests {
             !r.fully_done(&[]),
             "a failing deferred gate must gate `fully_done` with no criteria"
         );
+    }
+
+    #[test]
+    fn release_ready_surfaces_only_a_done_run() {
+        // Spec 38 criterion 3 (the ready-to-release handoff): on a DONE run the projection
+        // yields the summary naming the run branch, the release-target base, the
+        // integrated-unit count, and the exact PR command; a run that is NOT done yields
+        // None so no release-ready signal is ever surfaced for unfinished work.
+
+        // A done run (one integrated unit) IS release-ready.
+        let done = project(&[
+            ev(TYPE_UNIT_STARTED, r#"{"id":"u1"}"#),
+            ev(TYPE_UNIT_INTEGRATED, r#"{"id":"u1","commit":"abc"}"#),
+        ])
+        .unwrap();
+        let rr = done
+            .release_ready("rigger-run", "origin/main")
+            .expect("a done run is release-ready");
+        assert_eq!(rr.run_branch, "rigger-run");
+        // The release target is the base ref with the `origin/` remote prefix stripped, so
+        // the PR command targets the branch (`main`), not the tracking ref (`origin/main`).
+        assert_eq!(rr.base, "main");
+        assert_eq!(rr.integrated_units, 1);
+        assert_eq!(rr.pr_command, "gh pr create --base main --head rigger-run");
+        // The human render names all four facts on the status surface.
+        let text = rr.lines().join("\n");
+        assert!(text.contains("rigger-run"), "{text}");
+        assert!(text.contains("main"), "{text}");
+        assert!(text.contains("1 unit"), "{text}");
+        assert!(
+            text.contains("gh pr create --base main --head rigger-run"),
+            "{text}"
+        );
+
+        // A base that is already a plain branch name is passed through unchanged.
+        let plain = done.release_ready("rigger-run", "develop").unwrap();
+        assert_eq!(plain.base, "develop");
+        assert_eq!(
+            plain.pr_command,
+            "gh pr create --base develop --head rigger-run"
+        );
+
+        // A run with a not-yet-integrated unit surfaces NO release-ready signal.
+        let running = project(&[
+            ev(TYPE_UNIT_STARTED, r#"{"id":"u1"}"#),
+            ev(TYPE_UNIT_INTEGRATED, r#"{"id":"u1","commit":"abc"}"#),
+            ev(TYPE_UNIT_STARTED, r#"{"id":"u2"}"#),
+        ])
+        .unwrap();
+        assert!(running.release_ready("rigger-run", "origin/main").is_none());
+
+        // An empty run (nothing landed) is not release-ready.
+        assert!(RunState::new()
+            .release_ready("rigger-run", "origin/main")
+            .is_none());
+
+        // A failing deferred phase-boundary gate is never release-ready, even with every
+        // unit integrated - it must not be reported as a finished, releasable run.
+        let deferred_failed = project(&[
+            ev(TYPE_UNIT_STARTED, r#"{"id":"u1"}"#),
+            ev(TYPE_UNIT_INTEGRATED, r#"{"id":"u1","commit":"abc"}"#),
+            ev(TYPE_DEFERRED_GATE_FAILED, r#"{"gate":"itest"}"#),
+        ])
+        .unwrap();
+        assert!(deferred_failed
+            .release_ready("rigger-run", "origin/main")
+            .is_none());
     }
 
     #[test]
