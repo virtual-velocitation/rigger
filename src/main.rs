@@ -36,6 +36,20 @@ const RIGGER_DIR: &str = ".rigger";
 /// lifecycle concern owned by unit 3's reaping, not this unit's start + discoverability.
 const DASH_URL_FILE: &str = "dash.url";
 
+/// The per-project dash marker file, under [`RIGGER_DIR`] alongside [`DASH_URL_FILE`]: the
+/// port + pid of the run dashboard currently serving this project (a [`dash::DashMarker`]).
+/// The step drive path reads it before spawning and writes it after, so the first `step` of
+/// a run starts a dashboard and every later `step` finds it recorded and starts none - at
+/// most one run dashboard per project (spec 39, criterion 1: idempotent start on step).
+const DASH_MARKER_FILE: &str = "dash.marker";
+
+/// Environment opt-out for the step path's always-on dashboard: when
+/// [`DASH_DISABLE_ENV`] is set (to any value) the step does NOT auto-start a run
+/// dashboard. Production leaves it unset (the dash is always-on, no opt-in flag - spec
+/// 19b); a headless CI or the crate's own integration tests set it so a short-lived
+/// `rigger step` never spawns a real dashboard process.
+const DASH_DISABLE_ENV: &str = "RIGGER_NO_DASH";
+
 /// The tracked file under `.rigger/` that carries the durable project identity (spec 09,
 /// Gap 20): one trimmed line committed to git, so the identity survives directory renames
 /// and machine moves instead of tracking the volatile directory basename.
@@ -1555,6 +1569,17 @@ fn cmd_step(args: &[String]) -> Res {
             Err(e) => eprintln!("rigger step: orphan sweep skipped: {e}"),
         }
     }
+
+    // Always-on dash on the native step path (spec 39, criterion 1): start a PERSISTENT run
+    // dashboard for this project if none is already serving, so the loop the driver actually
+    // advances through many short-lived `rigger step` invocations is never invisible. The
+    // first step of a run starts it; the per-project marker check makes every later step a
+    // no-op (never a second dash or a port fight). Started DETACHED so it survives across the
+    // run's many step processes, and best-effort so a start failure only warns - the run
+    // proceeds headless, exactly as the guard-bound `start_run_dashboard` degrades. Placed
+    // just before the conductor advances the frontier so the dash is serving while this
+    // step's gates and spawns are in flight.
+    ensure_run_dashboard();
 
     let driver = ReplayDriver::new(&store);
     let deps = Deps {
@@ -3610,6 +3635,117 @@ fn spawn_run_dashboard() -> Result<(dash::ReapedChild, String), Box<dyn std::err
     // `.rigger/` already exists (the driver created it before reaching here).
     let _ = std::fs::write(db_path(DASH_URL_FILE), &url);
     Ok((dash::ReapedChild::new(child), url))
+}
+
+/// The outcome of the step path's idempotent dash-start attempt (spec 39, criterion 1).
+#[derive(Debug, PartialEq, Eq)]
+enum DashStart {
+    /// No dash was serving this project, so this step STARTED one on the given port.
+    Started(u16),
+    /// A dash was already serving on the given port, so this step started NONE (the
+    /// idempotent no-op that makes the second and every later `step` of a run a no-op).
+    AlreadyServing(u16),
+    /// The best-effort start failed; the run proceeds headless (a start failure never
+    /// fails the step - the dash is observability, not the deliverable).
+    Failed,
+}
+
+/// Idempotently ensure a run dashboard serves the project whose marker lives at
+/// `marker_path` (spec 39, criterion 1: idempotent start on step). Reads the per-project
+/// [`dash::DashMarker`]; if it names a still-serving dash (per `still_serving`), returns
+/// [`DashStart::AlreadyServing`] WITHOUT spawning a second one - the marker/pid short-circuit
+/// that makes the second and every later `step` of a run a no-op, never a port fight.
+/// Otherwise calls `start` to spawn one, records its marker, and returns [`DashStart::Started`].
+///
+/// `still_serving` and `start` are INJECTED so the start-once behavior is provable without a
+/// real dashboard process; the production caller ([`ensure_run_dashboard`]) passes
+/// [`dash::pid_is_alive`] over the marker's pid and [`spawn_run_dashboard_detached`].
+fn ensure_run_dashboard_at(
+    marker_path: &Path,
+    still_serving: impl Fn(dash::DashMarker) -> bool,
+    start: impl FnOnce() -> std::io::Result<dash::DashMarker>,
+) -> DashStart {
+    let existing = dash::DashMarker::read(marker_path);
+    if !dash::dash_start_needed(existing, &still_serving) {
+        // `dash_start_needed` only returns false when `existing` is a still-serving marker,
+        // so this port is that live dash's port; the `unwrap_or` is unreachable-but-safe.
+        return DashStart::AlreadyServing(existing.map(|m| m.port).unwrap_or_default());
+    }
+    match start() {
+        Ok(marker) => {
+            // Record the marker so the NEXT step of this run discovers this dash and does not
+            // start a second. Best-effort: a failed write only risks a later duplicate start,
+            // never a broken step.
+            let _ = marker.write(marker_path);
+            DashStart::Started(marker.port)
+        }
+        Err(_) => DashStart::Failed,
+    }
+}
+
+/// Spawn `rigger dash --port <n>` as a DETACHED child - NO [`dash::ReapedChild`] guard is
+/// held - returning its port + pid as a [`dash::DashMarker`] the caller records. Detached is
+/// deliberate: the step path that starts it returns per frontier, so a guard-bound child would
+/// be reaped on that return and the very next step would find no live dash and start another.
+/// Not reaping here is what lets the dash keep serving across the run's many `step`
+/// invocations (spec 39). Also records the dash-url breadcrumb `rigger status` reads.
+///
+/// ALL THREE of the child's standard streams are closed (`stdin`/`stdout`/`stderr` ->
+/// [`Stdio::null`]). This matters precisely BECAUSE it is detached and outlives the `step`:
+/// an inherited stderr (or stdout) would keep the step process's pipe write-end open after
+/// the step exits, so any parent capturing the step's output (the thin driver, or a plain
+/// `rigger step 2>&1 | ...`) would BLOCK on EOF until the long-lived dash died. A guard-bound
+/// dash can inherit stderr safely because it is reaped when the driver exits; a detached one
+/// must hold no inherited descriptor. The dash's own startup errors are therefore silent -
+/// acceptable for a best-effort, self-contained observability process whose logs nothing reads.
+fn spawn_run_dashboard_detached() -> std::io::Result<dash::DashMarker> {
+    let port = dash::free_port_from(dash::DEFAULT_PORT)?;
+    let exe = std::env::current_exe()?;
+    let child = Command::new(exe)
+        .arg("dash")
+        .arg("--port")
+        .arg(port.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let pid = child.id();
+    // Detach: `child` is dropped at the end of this function. A std `Child`'s Drop neither
+    // waits nor kills, so the dash process keeps running after this step returns. (Contrast
+    // `dash::ReapedChild`, whose Drop reaps - deliberately NOT used on the step path.)
+    let url = format!("http://127.0.0.1:{port}/");
+    let _ = std::fs::write(db_path(DASH_URL_FILE), &url);
+    Ok(dash::DashMarker { port, pid })
+}
+
+/// Start a persistent run dashboard for the step drive path if none is already serving this
+/// project (spec 39, criterion 1). The always-on promise of spec 19b, wired onto the native
+/// step path: the first `step` of a run starts a dashboard, later steps find its marker and
+/// start none. Best-effort and headless-degrading: a failed start only warns (the run
+/// continues headless), and the [`DASH_DISABLE_ENV`] opt-out skips the start entirely for a
+/// headless CI or the crate's own integration tests. The started dash is DETACHED so it
+/// survives across the run's many short-lived `step` processes.
+fn ensure_run_dashboard() {
+    if std::env::var_os(DASH_DISABLE_ENV).is_some() {
+        return;
+    }
+    let marker_path = std::path::PathBuf::from(db_path(DASH_MARKER_FILE));
+    match ensure_run_dashboard_at(
+        &marker_path,
+        |m| dash::pid_is_alive(m.pid),
+        spawn_run_dashboard_detached,
+    ) {
+        DashStart::Started(port) => {
+            // Stderr, not stdout: in the workflow driver (`rigger serve`) stdout is the MCP
+            // transport; in the step driver stdout carries only the `{wave,done}` JSON.
+            eprintln!("rigger dash: serving this run at http://127.0.0.1:{port}/");
+        }
+        // A prior step already started it - the idempotent no-op, nothing to announce.
+        DashStart::AlreadyServing(_) => {}
+        DashStart::Failed => {
+            eprintln!("rigger: could not auto-start the dashboard; the run continues headless");
+        }
+    }
 }
 
 /// The URL of the dash a driver auto-started for THIS run, recorded in `.rigger/`[`DASH_URL_FILE`]
@@ -7133,6 +7269,129 @@ blocks integration no matter what the static gates say.\n",
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- Spec 39, criterion 1: idempotent start of the run dashboard on the step path ---
+
+    /// The flagship criterion-1 proof: a `step` with NO dash serving starts exactly one, and
+    /// a later `step` while it is serving starts NONE - the marker/pid check short-circuits.
+    /// `start` is injected (counting spawns and recording a marker owned by THIS process, a
+    /// guaranteed-live pid), so the real `pid_is_alive` predicate finds the recorded dash
+    /// serving on the second call - proving idempotency without a real dashboard process.
+    #[test]
+    fn ensure_run_dashboard_at_starts_once_then_short_circuits_on_a_live_marker() {
+        use std::cell::Cell;
+        let dir = tempfile::tempdir().unwrap();
+        let marker_path = dir.path().join(DASH_MARKER_FILE);
+        let starts = Cell::new(0u32);
+        let live = dash::DashMarker {
+            port: 54321,
+            pid: std::process::id(),
+        };
+
+        // First step of the run: no marker yet -> start one and record its marker.
+        let first = ensure_run_dashboard_at(
+            &marker_path,
+            |m| dash::pid_is_alive(m.pid),
+            || {
+                starts.set(starts.get() + 1);
+                Ok(live)
+            },
+        );
+        assert_eq!(
+            first,
+            DashStart::Started(54321),
+            "the first step starts a dash"
+        );
+        assert_eq!(starts.get(), 1, "exactly one dash was started");
+        assert_eq!(
+            dash::DashMarker::read(&marker_path),
+            Some(live),
+            "the started dash is recorded for later steps to discover"
+        );
+
+        // A later step WHILE it is serving: the marker names a live dash -> NO second start.
+        let second = ensure_run_dashboard_at(
+            &marker_path,
+            |m| dash::pid_is_alive(m.pid),
+            || {
+                starts.set(starts.get() + 1);
+                Ok(dash::DashMarker {
+                    port: 60000,
+                    pid: std::process::id(),
+                })
+            },
+        );
+        assert_eq!(
+            second,
+            DashStart::AlreadyServing(54321),
+            "a later step is a no-op while a dash is serving"
+        );
+        assert_eq!(
+            starts.get(),
+            1,
+            "no second dash was started - the start is idempotent across steps"
+        );
+    }
+
+    /// A marker left by a crashed/reaped dash (recorded but NOT serving) does not suppress a
+    /// fresh start: the step starts a new dash and overwrites the stale marker.
+    #[test]
+    fn ensure_run_dashboard_at_restarts_when_the_recorded_dash_is_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker_path = dir.path().join(DASH_MARKER_FILE);
+        dash::DashMarker {
+            port: 40000,
+            pid: 123,
+        }
+        .write(&marker_path)
+        .unwrap();
+        let outcome = ensure_run_dashboard_at(
+            &marker_path,
+            |_| false, // the recorded dash is gone
+            || {
+                Ok(dash::DashMarker {
+                    port: 40001,
+                    pid: 456,
+                })
+            },
+        );
+        assert_eq!(
+            outcome,
+            DashStart::Started(40001),
+            "a dead marker -> start a fresh dash"
+        );
+        assert_eq!(
+            dash::DashMarker::read(&marker_path),
+            Some(dash::DashMarker {
+                port: 40001,
+                pid: 456
+            }),
+            "the fresh dash replaces the stale marker"
+        );
+    }
+
+    /// A best-effort start failure degrades to headless (a warning, `DashStart::Failed`) and
+    /// records no marker - never a panic or a failed step.
+    #[test]
+    fn ensure_run_dashboard_at_reports_failed_when_the_start_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker_path = dir.path().join(DASH_MARKER_FILE);
+        let outcome = ensure_run_dashboard_at(
+            &marker_path,
+            |_| false,
+            || Err(std::io::Error::other("no free port")),
+        );
+        assert_eq!(
+            outcome,
+            DashStart::Failed,
+            "a start failure degrades to headless, not a panic"
+        );
+        assert_eq!(
+            dash::DashMarker::read(&marker_path),
+            None,
+            "a failed start records no marker"
+        );
+    }
 
     /// spec 24, crit 1: `compose_precommit` is the PURE, filesystem-free composer for the
     /// docs pre-commit hook. A FRESH install (no existing hook) yields a runnable `/bin/sh`

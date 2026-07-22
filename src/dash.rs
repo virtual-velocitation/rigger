@@ -21,6 +21,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
@@ -64,6 +65,78 @@ pub fn free_port_from(start: u16) -> io::Result<u16> {
         io::ErrorKind::AddrNotAvailable,
         "no free loopback port at or above the requested start port",
     ))
+}
+
+/// The per-project record of the run dashboard currently serving a project: the loopback
+/// PORT it bound and the PID of its process. The step drive path writes it when it starts a
+/// dash and reads it before starting one, so at most one run dashboard serves a project at a
+/// time (spec 39, criterion 1: idempotent start on step). It sits alongside the dash-url
+/// breadcrumb `rigger status` already reads, and is a plain `port\npid` text record - so it
+/// round-trips with no serde and compiles identically in BOTH feature lanes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DashMarker {
+    /// The loopback port the recorded dash bound.
+    pub port: u16,
+    /// The PID of the recorded dash process, used to check whether it is still serving.
+    pub pid: u32,
+}
+
+impl DashMarker {
+    /// Render the marker as its on-disk `port\npid\n` record.
+    pub fn serialize(&self) -> String {
+        format!("{}\n{}\n", self.port, self.pid)
+    }
+
+    /// Parse a marker from its on-disk record, or `None` when it is malformed. A corrupt or
+    /// truncated marker reads as "no dash recorded" so the step path starts a fresh dash
+    /// rather than trusting garbage - the safe direction (start-if-unsure never suppresses a
+    /// real dash).
+    pub fn parse(s: &str) -> Option<DashMarker> {
+        let mut lines = s.lines();
+        let port = lines.next()?.trim().parse().ok()?;
+        let pid = lines.next()?.trim().parse().ok()?;
+        Some(DashMarker { port, pid })
+    }
+
+    /// Read the marker at `path`, or `None` when it is absent, unreadable, or malformed
+    /// (each of which means "no dash is recorded as serving here").
+    pub fn read(path: &Path) -> Option<DashMarker> {
+        Self::parse(&std::fs::read_to_string(path).ok()?)
+    }
+
+    /// Write the marker to `path`, overwriting any prior record. Best-effort at the call
+    /// site: a failed write only means a later step cannot discover this dash and may start
+    /// a second one, never a broken step.
+    pub fn write(&self, path: &Path) -> io::Result<()> {
+        std::fs::write(path, self.serialize())
+    }
+}
+
+/// Whether process `pid` is still alive, Linux-first via `/proc/<pid>` existence
+/// (`std`-only - no `libc` - so it holds in BOTH feature lanes, exactly as
+/// [`crate::reap`] detects processes). Off a platform without `/proc` the directory is
+/// absent, so this reports `false`; the step path treats "not verifiably alive" as "no
+/// dash serving" and starts a fresh one rather than suppressing one on an unverifiable
+/// marker - the same safe direction [`DashMarker::parse`] takes for a corrupt record.
+pub fn pid_is_alive(pid: u32) -> bool {
+    Path::new("/proc").join(pid.to_string()).is_dir()
+}
+
+/// The idempotency decision for the step drive path (spec 39, criterion 1): given the
+/// per-project [`DashMarker`] recorded on disk (if any) and a predicate reporting whether a
+/// recorded dash is STILL serving, returns `true` iff the step must START a run dashboard -
+/// i.e. NONE is already serving. A marker naming a still-serving dash short-circuits to
+/// `false`, so the second and every later `step` of a run is a no-op, never a second dash
+/// or a port fight. `still_serving` is injected so the decision is provable without a real
+/// dash process; production passes [`pid_is_alive`] over the marker's pid.
+pub fn dash_start_needed(
+    marker: Option<DashMarker>,
+    still_serving: impl Fn(DashMarker) -> bool,
+) -> bool {
+    match marker {
+        Some(m) => !still_serving(m),
+        None => true,
+    }
 }
 
 /// What the dash's data provider yields per request: the run's events, its context subgraph,
@@ -3577,6 +3650,100 @@ mod tests {
         assert!(
             resp.starts_with("HTTP/1.1 405"),
             "a write method is refused read-only:\n{resp}"
+        );
+    }
+
+    // --- Spec 39, criterion 1: the per-project dash marker + idempotency decision ---
+
+    #[test]
+    fn dash_marker_round_trips_through_its_on_disk_record() {
+        let m = DashMarker {
+            port: 7431,
+            pid: 12345,
+        };
+        assert_eq!(
+            DashMarker::parse(&m.serialize()),
+            Some(m),
+            "a marker must survive serialize -> parse unchanged"
+        );
+    }
+
+    #[test]
+    fn dash_marker_parse_rejects_a_malformed_record() {
+        // A corrupt/truncated marker reads as "no dash recorded" (None), so the step path
+        // starts a fresh dash rather than trusting garbage.
+        assert_eq!(DashMarker::parse(""), None, "empty is not a marker");
+        assert_eq!(
+            DashMarker::parse("7431"),
+            None,
+            "a port alone is not a marker"
+        );
+        assert_eq!(
+            DashMarker::parse("not-a-port\n123"),
+            None,
+            "a non-numeric port is not a marker"
+        );
+        assert_eq!(
+            DashMarker::parse("7431\nnot-a-pid"),
+            None,
+            "a non-numeric pid is not a marker"
+        );
+    }
+
+    #[test]
+    fn dash_marker_reads_none_for_an_absent_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dash.marker");
+        assert_eq!(
+            DashMarker::read(&path),
+            None,
+            "an absent marker file reads as no dash recorded"
+        );
+        let m = DashMarker {
+            port: 7440,
+            pid: 99,
+        };
+        m.write(&path).unwrap();
+        assert_eq!(
+            DashMarker::read(&path),
+            Some(m),
+            "a written marker reads back verbatim"
+        );
+    }
+
+    #[test]
+    fn pid_is_alive_reports_self_and_rejects_an_impossible_pid() {
+        // These probes assume `/proc` (Linux, as CI and the operator run). Skip elsewhere.
+        if !Path::new("/proc").is_dir() {
+            return;
+        }
+        assert!(
+            pid_is_alive(std::process::id()),
+            "this very process must read as alive"
+        );
+        assert!(
+            !pid_is_alive(u32::MAX),
+            "an impossible pid must read as not alive"
+        );
+    }
+
+    #[test]
+    fn dash_start_needed_is_true_when_none_serving_and_false_when_one_serves() {
+        let m = DashMarker { port: 7442, pid: 7 };
+        // No marker at all -> a step must start one.
+        assert!(
+            dash_start_needed(None, |_| panic!("must not probe when there is no marker")),
+            "no recorded dash -> start one"
+        );
+        // A marker whose dash is NOT serving (e.g. a crashed/reaped dash) -> start a fresh one.
+        assert!(
+            dash_start_needed(Some(m), |_| false),
+            "a stale marker (dash gone) -> start a fresh one"
+        );
+        // A marker whose dash IS still serving -> no-op (the idempotent short-circuit).
+        assert!(
+            !dash_start_needed(Some(m), |_| true),
+            "a live recorded dash -> start NO second one"
         );
     }
 }

@@ -145,6 +145,11 @@ fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
 fn run_rigger_envs(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> (String, String, bool) {
     let mut cmd = Command::new(rigger_bin());
     cmd.args(args).current_dir(cwd);
+    // The step path auto-starts a persistent, detached run dashboard (spec 39, criterion 1);
+    // opt out so these short-lived integration invocations never spawn a real dashboard
+    // process that would outlive the test. Set before the caller's envs so a test could still
+    // override it.
+    cmd.env("RIGGER_NO_DASH", "1");
     for (k, v) in envs {
         cmd.env(k, v);
     }
@@ -222,6 +227,9 @@ fn run_rigger_env(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> RiggerOut
     use std::os::unix::process::ExitStatusExt;
     let mut cmd = Command::new(rigger_bin());
     cmd.args(args).current_dir(cwd);
+    // Opt out of the step path's auto-started dashboard (spec 39, criterion 1) so no real
+    // dashboard process outlives the test; set before the caller's envs so it can override.
+    cmd.env("RIGGER_NO_DASH", "1");
     for (k, v) in envs {
         cmd.env(k, v);
     }
