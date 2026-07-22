@@ -137,3 +137,35 @@ fn release_ready_is_absent_from_the_wire_for_an_unfinished_run() {
         "a failed deferred gate keeps release_ready off the wire; got:\n{v}"
     );
 }
+
+/// The integrated-unit COUNT crosses the wire correctly for a run that integrated MORE THAN
+/// ONE unit (spec 38, criterion 3): the served `release_ready.integrated_units` is the value
+/// the dash's client-side render pluralizes, and every other release-ready test seeds exactly
+/// ONE integrated unit - so a count-of-two never crosses the socket and a miscount would ship
+/// green. This seeds two integrated units and asserts the wire carries `integrated_units: 2`,
+/// with the run branch and PR command intact, so the dash pluralizes off a truthful count.
+#[test]
+fn release_ready_carries_a_multi_unit_count_across_the_wire() {
+    let done_two = positioned(&[
+        ("UnitStarted", r#"{"id":"u1"}"#),
+        ("UnitIntegrated", r#"{"id":"u1","commit":"abc"}"#),
+        ("UnitStarted", r#"{"id":"u2"}"#),
+        ("UnitIntegrated", r#"{"id":"u2","commit":"def"}"#),
+    ]);
+    let v = served_state(done_two);
+    let rr = &v["release_ready"];
+    assert!(
+        rr.is_object(),
+        "a done two-unit run ships the release_ready DTO over the wire; got:\n{v}"
+    );
+    assert_eq!(
+        rr["integrated_units"], 2,
+        "the plural integrated-unit count crosses the wire truthfully (the value the dash \
+         pluralizes off); got:\n{v}"
+    );
+    assert_eq!(rr["run_branch"], "rigger-run");
+    assert_eq!(
+        rr["pr_command"],
+        "gh pr create --base main --head rigger-run"
+    );
+}
