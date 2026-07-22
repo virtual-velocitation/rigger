@@ -7548,3 +7548,323 @@ fn setup_precommit_hook_stays_inert_when_only_one_doc_is_tracked() {
         "the untracked handbook must never ride the commit; tree:\n{tree}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Spec 38, criterion 3 - the ready-to-release handoff, PROVEN THROUGH THE BINARY.
+//
+// The inside-out unit tests (`ledger::release_ready_surfaces_only_a_done_run`,
+// `main::release_ready_lines_surface_only_on_a_done_run`, `dash::release_ready_is_surfaced_
+// on_the_dash_only_for_a_done_run`) call the pure projection and render seams IN-PROCESS.
+// They never drive the compiled `rigger` binary against a REAL namespaced event store, so
+// they cannot prove that `cmd_status` / `cmd_dash` actually WIRE the handoff onto the
+// operator-facing surfaces, that the run-branch/base resolution (`resolve_run_base`, the
+// `RIGGER_BASE` override, the `origin/` -> branch strip) reaches the printed PR command
+// end-to-end, or that an unfinished / deferred-gate-failed run surfaces NOTHING through the
+// same seam. These periphery tests drive the binary against a seeded store to guard exactly
+// that boundary.
+// ---------------------------------------------------------------------------
+
+/// The handoff (`ReleaseReady::lines`) surfaces on `rigger status` for a DONE run: the run
+/// branch, the release-target base, the integrated-unit count, and the EXACT `gh pr create`
+/// command, resolved through the whole store -> project -> release_ready -> render path the
+/// binary walks. The `RIGGER_BASE` override then proves the resolved base (with the
+/// `origin/` remote prefix stripped) reaches the surfaced PR command, which no in-process
+/// unit test exercises (they call `release_ready` with a fixed base directly).
+#[test]
+fn release_ready_handoff_surfaces_on_status_for_a_done_run() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+    // A done run: one unit started and integrated, no failed deferred gate.
+    seed_run_events(
+        root,
+        &[
+            ("RunStarted", r#"{"run":"r1","criteria":["spec 38"]}"#),
+            ("UnitStarted", r#"{"id":"u1","agent":"worker"}"#),
+            ("UnitIntegrated", r#"{"id":"u1","commit":"abc"}"#),
+        ],
+    );
+
+    // Default base (`origin/main` -> `main`): `rigger status` names all four facts.
+    let (out, err, ok) = run_rigger(root, &["status"]);
+    assert!(
+        ok,
+        "rigger status must succeed on a done run; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("release-ready:"),
+        "a done run surfaces the release-ready handoff on status; got:\n{out}"
+    );
+    assert!(
+        out.contains("rigger-run"),
+        "the handoff names the run branch (the PR head); got:\n{out}"
+    );
+    assert!(
+        out.contains("1 unit integrated"),
+        "the handoff names the integrated-unit count; got:\n{out}"
+    );
+    assert!(
+        out.contains("gh pr create --base main --head rigger-run"),
+        "the handoff names the exact PR command, with `origin/main` stripped to `main`; \
+         got:\n{out}"
+    );
+
+    // The `RIGGER_BASE` override flows through `resolve_run_base` into the surfaced PR
+    // command, and its `origin/` remote prefix is stripped to the release-target branch -
+    // proven end-to-end through the binary, not just the in-process projection.
+    let (out, err, ok) =
+        run_rigger_envs(root, &["status"], &[("RIGGER_BASE", "origin/release-2.0")]);
+    assert!(ok, "rigger status honors RIGGER_BASE; stderr:\n{err}");
+    assert!(
+        out.contains("gh pr create --base release-2.0 --head rigger-run"),
+        "the RIGGER_BASE override reaches the PR command with `origin/` stripped; got:\n{out}"
+    );
+}
+
+/// The handoff is SILENT through `rigger status` for any run that is not done: a
+/// still-un-integrated unit, and (the load-bearing guard) a run whose every unit integrated
+/// but whose deferred phase-boundary gate FAILED - which must never be advertised as a
+/// finished, releasable run. No in-process test proves the CLI seam honors either negative.
+#[test]
+fn release_ready_is_silent_on_status_for_an_unfinished_run() {
+    // A run with a still-un-integrated unit surfaces no release-ready signal.
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+    seed_run_events(
+        root,
+        &[
+            ("RunStarted", r#"{"run":"r1","criteria":["spec 38"]}"#),
+            ("UnitStarted", r#"{"id":"u1","agent":"worker"}"#),
+            ("UnitIntegrated", r#"{"id":"u1","commit":"abc"}"#),
+            ("UnitStarted", r#"{"id":"u2","agent":"worker"}"#),
+        ],
+    );
+    let (out, err, ok) = run_rigger(root, &["status"]);
+    assert!(ok, "rigger status must succeed; stderr:\n{err}");
+    assert!(
+        !out.contains("release-ready:") && !out.contains("gh pr create"),
+        "an unfinished run surfaces NO release-ready handoff on status; got:\n{out}"
+    );
+
+    // Every unit integrated, but a deferred phase-boundary gate FAILED: not done, so the
+    // handoff must stay silent - the run is not releasable.
+    let dir2 = temp_project();
+    let root2 = dir2.path();
+    seed_store(root2);
+    seed_run_events(
+        root2,
+        &[
+            ("RunStarted", r#"{"run":"r2","criteria":["spec 38"]}"#),
+            ("UnitStarted", r#"{"id":"u1","agent":"worker"}"#),
+            ("UnitIntegrated", r#"{"id":"u1","commit":"abc"}"#),
+            ("DeferredGateFailed", r#"{"gate":"itest"}"#),
+        ],
+    );
+    let (out, err, ok) = run_rigger(root2, &["status"]);
+    assert!(ok, "rigger status must succeed; stderr:\n{err}");
+    assert!(
+        !out.contains("release-ready:") && !out.contains("gh pr create"),
+        "a failed deferred phase-boundary gate is never advertised as releasable; got:\n{out}"
+    );
+}
+
+/// `rigger dash --export` threads the run branch and the resolved release base into
+/// `render_export`, so the exported static snapshot carries the SAME handoff on a done run -
+/// and omits it for an unfinished run. This is the ONLY periphery coverage of the `cmd_dash`
+/// export seam (no in-process test drives `cmd_dash`), and it proves the exported artifact -
+/// the file an operator opens - carries the exact PR command.
+#[test]
+fn release_ready_handoff_reaches_the_dash_export_snapshot() {
+    // A done run: the exported HTML carries the exact PR command.
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+    seed_run_events(
+        root,
+        &[
+            ("RunStarted", r#"{"run":"r1","criteria":["spec 38"]}"#),
+            ("UnitStarted", r#"{"id":"u1","agent":"worker"}"#),
+            ("UnitIntegrated", r#"{"id":"u1","commit":"abc"}"#),
+        ],
+    );
+    let (out, err, ok) = run_rigger(root, &["dash", "--export", "snapshot.html"]);
+    assert!(ok, "rigger dash --export must succeed; stderr:\n{err}");
+    assert!(
+        out.contains("wrote dash snapshot"),
+        "the export confirms it wrote the snapshot; got:\n{out}"
+    );
+    let html = std::fs::read_to_string(root.join("snapshot.html"))
+        .expect("the export writes the snapshot file");
+    assert!(
+        html.contains("gh pr create --base main --head rigger-run"),
+        "the exported snapshot carries the handoff's exact PR command"
+    );
+
+    // An unfinished run: the exported snapshot carries NO release-ready handoff.
+    let dir2 = temp_project();
+    let root2 = dir2.path();
+    seed_store(root2);
+    seed_run_events(
+        root2,
+        &[
+            ("RunStarted", r#"{"run":"r2","criteria":["spec 38"]}"#),
+            ("UnitStarted", r#"{"id":"u1","agent":"worker"}"#),
+            ("UnitIntegrated", r#"{"id":"u1","commit":"abc"}"#),
+            ("UnitStarted", r#"{"id":"u2","agent":"worker"}"#),
+        ],
+    );
+    let (_out, err, ok) = run_rigger(root2, &["dash", "--export", "snapshot.html"]);
+    assert!(ok, "rigger dash --export must succeed; stderr:\n{err}");
+    let html = std::fs::read_to_string(root2.join("snapshot.html"))
+        .expect("the export writes the snapshot file");
+    assert!(
+        !html.contains("gh pr create"),
+        "an unfinished run's exported snapshot carries no release-ready handoff"
+    );
+}
+
+/// The handoff PLURALIZES the integrated-unit count on `rigger status` for a run that
+/// integrated MORE THAN ONE unit. Every other release-ready test seeds exactly ONE
+/// integrated unit, so `integrated_units` is only ever asserted `== 1` and only the
+/// singular branch of `ReleaseReady::lines` runs; the count-of-two and the plural
+/// (`unit` -> `units`) arm ship unexercised, so a miscount or a wrong pluralization would
+/// stay green. This drives the binary against a two-integrated-unit done run and asserts
+/// the plural render reaches the operator's terminal.
+#[test]
+fn release_ready_pluralizes_the_unit_count_on_status_for_a_multi_unit_run() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+    // A done run with TWO integrated units (no failed deferred gate, no spec defect).
+    seed_run_events(
+        root,
+        &[
+            ("RunStarted", r#"{"run":"r1","criteria":["spec 38"]}"#),
+            ("UnitStarted", r#"{"id":"u1","agent":"worker"}"#),
+            ("UnitIntegrated", r#"{"id":"u1","commit":"abc"}"#),
+            ("UnitStarted", r#"{"id":"u2","agent":"worker"}"#),
+            ("UnitIntegrated", r#"{"id":"u2","commit":"def"}"#),
+        ],
+    );
+    let (out, err, ok) = run_rigger(root, &["status"]);
+    assert!(
+        ok,
+        "rigger status must succeed on a done run; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("release-ready:"),
+        "a done multi-unit run surfaces the release-ready handoff on status; got:\n{out}"
+    );
+    assert!(
+        out.contains("2 units integrated"),
+        "the handoff pluralizes the count for more than one integrated unit (the plural \
+         arm of ReleaseReady::lines), naming BOTH the count 2 and the plural noun; got:\n{out}"
+    );
+    assert!(
+        !out.contains("1 unit integrated"),
+        "a two-integrated-unit run must not render the singular count; got:\n{out}"
+    );
+}
+
+/// `rigger status` names the run's PERSISTED base (spec 38, criterion 3): the base is read
+/// from the run's `RunStarted` `META_BASE` metadata via `runscope::current_run_base`, so the
+/// surfaced PR command targets the branch the run ACTUALLY anchored on - even though status
+/// runs without the run's `--base` flag on its argv. This is the outside-in guard for the
+/// base-asymmetry boundary: the persisted base must WIN over the live env re-resolution, so
+/// the test seeds `META_BASE = origin/release-9.9` AND passes a DECOY `RIGGER_BASE` the
+/// re-resolution would otherwise pick; a status that re-resolved (the pre-fix behavior) would
+/// name the decoy. `current_run_base` / `META_BASE` are new public API exercised end-to-end
+/// through the compiled binary here, which no in-process unit test does.
+#[test]
+fn release_ready_names_the_runs_persisted_base_on_status_over_a_re_resolution() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+    // A done run whose RunStarted persists its resolved run-branch base in META_BASE, the way
+    // `runscope::start_fresh` stamps the resolved `--base` at mint.
+    seed_done_run_with_persisted_base(root, "origin/release-9.9");
+
+    // No `--base` on the status argv, and a DECOY `RIGGER_BASE` the fallback re-resolution
+    // would pick: the persisted base must win, so the PR command names `release-9.9` (with the
+    // `origin/` remote prefix stripped), never the decoy `main-decoy`.
+    let (out, err, ok) =
+        run_rigger_envs(root, &["status"], &[("RIGGER_BASE", "origin/main-decoy")]);
+    assert!(ok, "rigger status must succeed; stderr:\n{err}");
+    assert!(
+        out.contains("gh pr create --base release-9.9 --head rigger-run"),
+        "status names the run's PERSISTED base (origin/release-9.9 -> release-9.9), read from \
+         META_BASE, not a re-resolution off the decoy RIGGER_BASE; got:\n{out}"
+    );
+    assert!(
+        !out.contains("main-decoy"),
+        "the decoy RIGGER_BASE must never reach the PR command once a base is persisted; \
+         got:\n{out}"
+    );
+}
+
+/// The handoff is SILENT through `rigger status` for a run that HALTED on a coverage gap - a
+/// flagged `SpecDefect` - even though the one unit it did plan integrated (so `done()` alone
+/// is true). Release-ready gates on the full-done predicate (`!done() || spec_defect`): a
+/// spec-defective run has NOT finished the job, so it must advertise no release PR. This
+/// drives the exact boundary a prior review found gate-invisible (no seeded spec-defect run),
+/// proving the spec-defect conjunct of the release_ready gate holds through the binary.
+#[test]
+fn release_ready_is_silent_on_status_for_a_spec_defective_run() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+    // Every planned unit integrated, but the coverage gate flagged a SpecDefect: done() is
+    // true, yet the run halted on an uncovered criterion, so it is not releasable.
+    seed_run_events(
+        root,
+        &[
+            ("RunStarted", r#"{"run":"r1","criteria":["spec 38"]}"#),
+            ("UnitStarted", r#"{"id":"u1","agent":"worker"}"#),
+            ("UnitIntegrated", r#"{"id":"u1","commit":"abc"}"#),
+            ("SpecDefect", r#"{"criterion":"c2"}"#),
+        ],
+    );
+    let (out, err, ok) = run_rigger(root, &["status"]);
+    assert!(ok, "rigger status must succeed; stderr:\n{err}");
+    assert!(
+        !out.contains("release-ready:") && !out.contains("gh pr create"),
+        "a run halted on a coverage gap (SpecDefect) is never advertised as releasable; \
+         got:\n{out}"
+    );
+}
+
+/// Seed a done run whose `RunStarted` carries a PERSISTED release base in `META_BASE`
+/// metadata (spec 38, criterion 3), the way `runscope::start_fresh` stamps the resolved
+/// `--base` at mint - so a later `rigger status`, which runs without the run's `--base` on
+/// its argv, reads the run's ACTUAL base from the log via `runscope::current_run_base`
+/// instead of re-resolving it from the environment. One unit is started and integrated so the
+/// run is done and the handoff surfaces.
+fn seed_done_run_with_persisted_base(root: &Path, base: &str) {
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Event, EventStore, ExpectedRevision};
+
+    let rigger_dir = root.join(".rigger");
+    std::fs::create_dir_all(&rigger_dir).unwrap();
+    let backend = Store::open(rigger_dir.join("events.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, &run_stream_identity(root));
+    let events = [
+        Event::new(
+            rigger::run::TYPE_RUN_STARTED,
+            br#"{"run":"r1","criteria":["spec 38"]}"#.to_vec(),
+        )
+        .with_meta(rigger::run::META_BASE, base),
+        Event::new(
+            rigger::ledger::TYPE_UNIT_STARTED,
+            br#"{"id":"u1","agent":"worker"}"#.to_vec(),
+        ),
+        Event::new(
+            rigger::ledger::TYPE_UNIT_INTEGRATED,
+            br#"{"id":"u1","commit":"abc"}"#.to_vec(),
+        ),
+    ];
+    store
+        .append(rigger::conductor::STREAM, ExpectedRevision::Any, &events)
+        .unwrap();
+}
