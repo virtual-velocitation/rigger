@@ -366,8 +366,13 @@ pub fn build_state(
 ) -> Result<StateView, serde_json::Error> {
     let run = ledger::project(events)?;
     // The ready-to-release handoff (spec 38, criterion 3): `Some` only on a done run, from the
-    // SAME authority `rigger status` reads, so the two surfaces cannot drift.
-    let release_ready = run.release_ready(run_branch, base);
+    // SAME authority `rigger status` reads, so the two surfaces cannot drift. The release-target
+    // base is the one PERSISTED on this run's RunStarted (read from the same `events`), so the
+    // dash names the base the run actually anchored on - the auto-started dash inherits only the
+    // environment and so cannot see the run's `--base` flag. `base` (the serving command's
+    // env/default resolution) is the fallback for a run started before base persistence existed.
+    let effective_base = crate::run::current_run_base(events).unwrap_or_else(|| base.to_string());
+    let release_ready = run.release_ready(run_branch, &effective_base);
     let m = metrics::project(events);
     let step = spawn::step_result(events)?;
     // The live per-agent view, folded from the frontier + this run's progress + the marker

@@ -315,14 +315,23 @@ impl RunState {
     }
 
     /// The ready-to-release handoff for this run (spec 38, criterion 3), or `None` when the
-    /// run is not [`Self::done`] - so an unfinished run (a unit still un-integrated, an empty
-    /// run, or a failed deferred phase-boundary gate) surfaces NO release-ready signal. On a
-    /// done run it names `run_branch` as the PR head and the release-target `base` (the
-    /// resolved base ref with a leading `origin/` remote prefix stripped) as the PR base, so
-    /// the derived `gh pr create` command targets the branch a PR can actually apply to.
-    /// Purely derived (no new event, no auto-merge): a resume-by-replay re-reaches it.
+    /// run has not FULLY finished the job - so an unfinished run (a unit still un-integrated,
+    /// an empty run, a failed deferred phase-boundary gate, or a run halted on an uncovered
+    /// criterion) surfaces NO release-ready signal. On a fully-done run it names `run_branch`
+    /// as the PR head and the release-target `base` (the resolved base ref with a leading
+    /// `origin/` remote prefix stripped) as the PR base, so the derived `gh pr create`
+    /// command targets the branch a PR can actually apply to. Purely derived (no new event,
+    /// no auto-merge): a resume-by-replay re-reaches it.
+    ///
+    /// The gate is [`Self::done`] AND no flagged spec defect - together exactly the
+    /// [`Self::fully_done`] predicate ("every criterion covered + every unit integrated +
+    /// every gate green"). A `spec_defect` means the run HALTED on a coverage gap (§4.4): even
+    /// though every unit it did plan integrated (so `done()` alone is true), the run has NOT
+    /// finished the job, so it must not advertise a release PR. Spec-38-c3 binds release-ready
+    /// to the "every criterion covered" sense, which is the `fully_done` semantic, not the
+    /// narrower `done()`.
     pub fn release_ready(&self, run_branch: &str, base: &str) -> Option<ReleaseReady> {
-        if !self.done() {
+        if !self.done() || self.spec_defect {
             return None;
         }
         let integrated_units = self
@@ -624,6 +633,29 @@ mod tests {
         assert!(deferred_failed
             .release_ready("rigger-run", "origin/main")
             .is_none());
+
+        // A run that HALTED on a coverage gap (a flagged SpecDefect) is never
+        // release-ready, even though the one unit it did plan integrated: a
+        // spec-defective run has NOT finished the job (spec-38-c3 binds release-ready to
+        // the "every criterion covered" sense the codebase implements as `fully_done`),
+        // so it must surface NO release-ready signal. `done()` alone would let this
+        // through and advertise a PR for a run that stopped on an uncovered criterion.
+        let spec_defective = project(&[
+            ev(TYPE_UNIT_STARTED, r#"{"id":"u1"}"#),
+            ev(TYPE_UNIT_INTEGRATED, r#"{"id":"u1","commit":"abc"}"#),
+            ev(TYPE_SPEC_DEFECT, r#"{"criterion":"c2"}"#),
+        ])
+        .unwrap();
+        assert!(
+            spec_defective.done(),
+            "the un-fixed gate: done() is still true"
+        );
+        assert!(
+            spec_defective
+                .release_ready("rigger-run", "origin/main")
+                .is_none(),
+            "a run halted on a coverage gap (SpecDefect) surfaces no release-ready signal"
+        );
     }
 
     #[test]

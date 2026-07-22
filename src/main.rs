@@ -501,13 +501,19 @@ fn definition_hash(dir: &str) -> Result<String, Box<dyn std::error::Error>> {
 /// returns a loud error, so `rigger step`/`run` HALTS naming the drift instead of driving a
 /// campaign whose replay semantics silently changed. The conductor's own (unpinned)
 /// `ensure_started` then simply ADOPTS the run this ensured.
+///
+/// `base` is the resolved run-branch base to persist on a freshly-minted RunStarted (spec 38,
+/// criterion 3), so `rigger status`/`rigger dash` later read the run's actual base from the
+/// log rather than re-resolving without the run's `--base` flag. On an ADOPTED (resumed) run
+/// it is ignored - the base its original start stamped stands.
 fn enforce_definition_pin(
     store: &dyn EventStore,
     criteria: &[String],
     definition: &str,
     rebase: bool,
+    base: &str,
 ) -> Res {
-    match runscope::ensure_started_pinned(store, criteria, definition, rebase)? {
+    match runscope::ensure_started_pinned(store, criteria, definition, rebase, base)? {
         runscope::RunStart::Ready(_) => Ok(()),
         runscope::RunStart::Rebased {
             run,
@@ -1426,7 +1432,10 @@ fn cmd_step(args: &[String]) -> Res {
     // began. The notice goes to STDERR - stdout carries only the `{wave,done}` JSON the
     // driver parses. See `runscope::start_fresh`.
     if args.fresh {
-        let run = runscope::start_fresh(&store, &criteria, &definition)?;
+        // Persist the resolved run-branch base on the fresh boundary (spec 38, criterion 3):
+        // `args.base` is the base this step anchored the run branch on, so `rigger status`/dash
+        // name the same base in the ready-to-release handoff.
+        let run = runscope::start_fresh(&store, &criteria, &definition, &args.base)?;
         eprintln!("rigger step: --fresh: began a new run {run} (the prior run stays in the log)");
     }
 
@@ -1446,7 +1455,13 @@ fn cmd_step(args: &[String]) -> Res {
     // it (a live run). A drifted live-run definition WITHOUT `--rebase-definition` HALTS here,
     // loudly and before any worktree work, so a mid-campaign prompt edit can never silently
     // change replay semantics; `--rebase-definition` records the supersession and continues.
-    if let Err(e) = enforce_definition_pin(&store, &criteria, &definition, args.rebase_definition) {
+    if let Err(e) = enforce_definition_pin(
+        &store,
+        &criteria,
+        &definition,
+        args.rebase_definition,
+        &args.base,
+    ) {
         // A definition-drift HALT is a terminal state for this run process (spec 34, criterion
         // 3): reclaim the run-level shared scratch before propagating the loud halt, so a halted
         // run leaves no shared build cache or agent scratch behind - the same run-teardown a
@@ -2145,13 +2160,22 @@ fn run_cli(parsed: &RunArgs) -> Res {
     // guard reaps the dash when this scope ends (unit 3's reaping mechanism).
     let _dash = start_run_dashboard();
     let rs = conductor::run(&cfg, &deps)?;
-    // The release-target base the ready-to-release handoff names (spec 38, criterion 3),
-    // resolved exactly as the run branch was anchored above (the `--base` flag, then the
-    // `RIGGER_BASE` override, then the default).
-    let (release_base, _) = resolve_run_base(
-        parsed.base.as_deref(),
-        std::env::var("RIGGER_BASE").ok().as_deref(),
-    );
+    // The release-target base the ready-to-release handoff names (spec 38, criterion 3): read
+    // the base PERSISTED on this run's RunStarted, so the end-of-run summary, `rigger status`,
+    // and `rigger dash` all name the ONE base the run anchored on. A run started before base
+    // persistence existed (or without a repo) carries none, so fall back to the same
+    // flag/env/default resolution the run branch was anchored with.
+    let release_base = store
+        .read_stream(conductor::STREAM, 0, Direction::Forward)
+        .ok()
+        .and_then(|events| runscope::current_run_base(&events))
+        .unwrap_or_else(|| {
+            resolve_run_base(
+                parsed.base.as_deref(),
+                std::env::var("RIGGER_BASE").ok().as_deref(),
+            )
+            .0
+        });
     print_run_state(&rs, &release_base);
     // spec 17 criterion 4c: a silently-serializing fleet must WARN during a run, not only when the
     // operator later runs `rigger stats`. Re-project this run's metrics from the log and, if the
@@ -2182,11 +2206,26 @@ fn fresh_run_if_requested(
     criteria: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let definition = definition_hash(".")?;
+    // The resolved run-branch base to persist on the RunStarted this mints (spec 38, criterion
+    // 3), resolved from the SAME precedence the run branch is anchored with (the `--base` flag,
+    // then the `RIGGER_BASE` env override, then the default) so the persisted base matches the
+    // branch the run actually targets. Persisted only on a mint (a `--fresh` boundary or a new
+    // campaign); an adopted resume keeps its original stamp.
+    let (base, _) = resolve_run_base(
+        parsed.base.as_deref(),
+        std::env::var("RIGGER_BASE").ok().as_deref(),
+    );
     if parsed.fresh {
-        let run = runscope::start_fresh(store, criteria, &definition)?;
+        let run = runscope::start_fresh(store, criteria, &definition, &base)?;
         println!("rigger: --fresh: began a new run {run} (the prior run stays in the log)");
     }
-    enforce_definition_pin(store, criteria, &definition, parsed.rebase_definition)?;
+    enforce_definition_pin(
+        store,
+        criteria,
+        &definition,
+        parsed.rebase_definition,
+        &base,
+    )?;
     Ok(())
 }
 
@@ -3164,7 +3203,9 @@ fn cmd_replay(args: &[String]) -> Res {
     let (candidate_metrics, drive_err) = {
         let iso_backend = Store::open(replay_db.to_str().unwrap_or_default())?;
         let iso = Namespaced::new(&iso_backend, "rigger-replay");
-        runscope::start_fresh(&iso, &criteria, &candidate_definition)?;
+        // An offline replay re-fold over an isolated store: no run branch, no PR, so no base
+        // to persist (spec 38, criterion 3).
+        runscope::start_fresh(&iso, &criteria, &candidate_definition, "")?;
         let trajectory = conductor::replay_trajectory(baseline);
         iso.append(conductor::STREAM, ExpectedRevision::Any, &trajectory)?;
 
@@ -3570,10 +3611,12 @@ fn cmd_dash(args: &[String]) -> Res {
             rigger::worktree::scratch_root_from_env(&repo, &workdir)
         }
     };
-    // The release target the ready-to-release handoff (spec 38, criterion 3) names on the dash:
-    // the run branch, and the base resolved exactly as a run entry's is (the `RIGGER_BASE`
-    // override, else the load-bearing default), so the dash and `rigger status` surface the
-    // same handoff on a done run.
+    // The FALLBACK release-target base the ready-to-release handoff (spec 38, criterion 3) names
+    // on the dash. `build_state` reads the base PERSISTED on this run's RunStarted from the
+    // events it projects each request, so the live dash names the base the run actually anchored
+    // on even though it inherits only the environment (never the run's `--base` flag). This
+    // env/default resolution is used ONLY when the run predates base persistence (or ran with no
+    // repo) and carries no persisted base, keeping the dash and `rigger status` on one handoff.
     let (release_base, _) = resolve_run_base(None, std::env::var("RIGGER_BASE").ok().as_deref());
 
     // Fresh projection inputs on every request. Reading (not holding an open handle) is
@@ -4019,10 +4062,14 @@ fn cmd_status(args: &[String]) -> Res {
     // when the run is DONE (every unit integrated, no failed deferred gate), naming the run
     // branch, the release-target base, the integrated-unit count, and the PR command. Empty
     // for a run that is not done, so an unfinished run surfaces NO release-ready signal. The
-    // base resolves exactly as a run entry's does (the `RIGGER_BASE` override, else the
-    // load-bearing default); a done run has no live spawns, so this must also print in the
-    // no-agents-in-flight branch below, never only in the agents-in-flight path.
-    let (release_base, _) = resolve_run_base(None, std::env::var("RIGGER_BASE").ok().as_deref());
+    // base is the one PERSISTED on this run's RunStarted, so status names the SAME base the run
+    // anchored on - `rigger status` runs without the run's `--base` flag on its argv and so
+    // cannot re-resolve it. A run predating base persistence (or with no repo) carries none, so
+    // fall back to the `RIGGER_BASE` env / load-bearing default. A done run has no live spawns,
+    // so this must also print in the no-agents-in-flight branch below, never only in the
+    // agents-in-flight path.
+    let release_base = runscope::current_run_base(run_events)
+        .unwrap_or_else(|| resolve_run_base(None, std::env::var("RIGGER_BASE").ok().as_deref()).0);
     let release_lines = release_ready_lines(run_events, RUN_BRANCH, &release_base);
 
     // The auto-started dash's URL for this run (spec 19b, unit 1 discoverability): shown
@@ -7666,6 +7713,73 @@ mod tests {
             release_ready_lines(&running, RUN_BRANCH, DEFAULT_BASE_REF).is_empty(),
             "an unfinished run surfaces no release-ready signal"
         );
+    }
+
+    #[test]
+    fn status_and_dash_read_the_runs_persisted_base_not_a_re_resolution() {
+        // The base-asymmetry fix (spec 38, criterion 3): a run started with an explicit
+        // `--base` and NO `RIGGER_BASE` in the environment persists that base as `META_BASE`
+        // on its RunStarted. `rigger status` and `rigger dash` run WITHOUT the run's `--base`
+        // flag on their argv, so before this fix they re-resolved via `resolve_run_base(None,
+        // env)` and named the WRONG default base for a `rigger run --base X` run. Now every
+        // surface reads the ONE persisted base, so all of status/dash/print_run_state name the
+        // base the run actually anchored on.
+
+        // `rigger run --base release/2.0` with no `RIGGER_BASE` resolves to the flag base...
+        let (flag_base, explicit) = resolve_run_base(Some("release/2.0"), None);
+        assert_eq!(flag_base, "release/2.0");
+        assert!(explicit, "an explicit --base is flagged explicit");
+
+        // ...and that resolved base is stamped as `META_BASE` on the run's RunStarted, exactly
+        // as `start_fresh`/`ensure_started_pinned` now stamp it at mint. A done run follows.
+        let events = [
+            Event::new(
+                runscope::TYPE_RUN_STARTED,
+                br#"{"run":"r1","criteria":[]}"#.to_vec(),
+            )
+            .with_meta(runscope::META_RUN_ID, "r1")
+            .with_meta(runscope::META_BASE, &flag_base),
+            Event::new(ledger::TYPE_UNIT_STARTED, br#"{"id":"u1"}"#.to_vec()),
+            Event::new(
+                ledger::TYPE_UNIT_INTEGRATED,
+                br#"{"id":"u1","commit":"abc"}"#.to_vec(),
+            ),
+        ];
+
+        // The persisted base is read straight back from the log - the single authority.
+        assert_eq!(
+            runscope::current_run_base(&events).as_deref(),
+            Some("release/2.0")
+        );
+
+        // The status/dash read pattern (persisted base, else the env/default fallback) names
+        // the flag base even though the surface's own argv has no `--base` and the env is
+        // empty here - the parity the fix restores...
+        let status_base =
+            runscope::current_run_base(&events).unwrap_or_else(|| resolve_run_base(None, None).0);
+        assert_eq!(status_base, "release/2.0");
+
+        // ...whereas the OLD asymmetric re-resolution (the defect) named the DEFAULT, not the
+        // run's base - documenting exactly the wrong PR command the persisted base eliminates.
+        assert_eq!(resolve_run_base(None, None).0, DEFAULT_BASE_REF);
+        assert_ne!(status_base, DEFAULT_BASE_REF);
+
+        // Every surface renders through `release_ready`, so the PR command names the run's
+        // actual base - not `main`.
+        let text = release_ready_lines(&events, RUN_BRANCH, &status_base).join("\n");
+        assert!(
+            text.contains("gh pr create --base release/2.0 --head rigger-run"),
+            "the PR command targets the run's persisted base: {text}"
+        );
+
+        // A run started BEFORE base persistence carries no `META_BASE`, so a surface falls back
+        // to the live env/default resolution - the legacy behavior is preserved untouched.
+        let legacy = [Event::new(
+            runscope::TYPE_RUN_STARTED,
+            br#"{"run":"r0","criteria":[]}"#.to_vec(),
+        )
+        .with_meta(runscope::META_RUN_ID, "r0")];
+        assert_eq!(runscope::current_run_base(&legacy), None);
     }
 
     // ---- `rigger validate` advisories (spec 05:55): pure seams + drift compare ----
