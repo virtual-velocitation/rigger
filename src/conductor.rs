@@ -13202,6 +13202,168 @@ mod tests {
         );
     }
 
+    /// Commit throwaway work on an ARBITRARY branch name (periphery seed helper). The
+    /// sibling `commit_on_unit_branch` only ever commits on the CANONICAL
+    /// `unit_branch(id)`, so it cannot stage a unit whose RECORDED branch differs from
+    /// that derivation; this stages exactly that case for the recorded-branch-preference
+    /// boundary below. Mirrors `commit_on_unit_branch`: a one-file worktree, committed and
+    /// immediately removed, leaving the branch carrying real work.
+    fn commit_on_named_branch(repo: &str, branch: &str, file: &str, content: &str) {
+        let dir = std::env::temp_dir().join(format!(
+            "rigger-seed-{}-{}",
+            sanitize_for_path(branch),
+            &uuid::Uuid::new_v4().to_string()[..8]
+        ));
+        let wt = crate::worktree::Worktree::create(repo, dir.to_str().unwrap(), branch).unwrap();
+        std::fs::write(Path::new(&wt.dir).join(file), content).unwrap();
+        let committed = wt.commit("rigger: prior window work").unwrap();
+        assert!(!committed.is_empty(), "the prior window must commit work");
+        wt.remove().unwrap();
+        assert!(
+            crate::worktree::Worktree::branch_has_work(repo, branch),
+            "the seeded branch must carry committed work"
+        );
+    }
+
+    // Periphery layer (SDET), spec 38 criterion 1: the inside-out test
+    // `branch_gc_reclaims_integrated_units_and_retains_escalated_ones_on_resume` proves
+    // the happy path of the ONE cross-module seam this unit adds - `run` at resume folds
+    // the prior log and calls `gc_integrated_branches`, which projects
+    // `ledger::RunState` and drives `Worktree::delete_branch` per Integrated unit. That
+    // seam's branch-name resolution has two arms:
+    //   let branch = if u.branch.is_empty() { unit_branch(&u.id) } else { u.branch.clone() };
+    // The unit test only ever seeds `branch == unit_branch(id)` (non-empty AND equal to
+    // the derivation), so it exercises neither the `is_empty()` FALLBACK arm nor the
+    // RECORDED-vs-derived distinction. The two tests below drive the same public `run`
+    // seam and pin those two boundary edges the inside-out layer is structurally blind to.
+
+    #[test]
+    fn branch_gc_falls_back_to_the_derived_branch_when_unitstarted_recorded_no_branch() {
+        // Edge: an integrated unit whose `UnitStarted` carried NO `branch` field. The
+        // fold defaults `u.branch` to empty (serde default on `UnitStarted::branch`), so
+        // the sweep's `u.branch.is_empty()` arm must reclaim it by the DERIVED name.
+        // Without that arm such a unit's `rigger/u/<unit>` branch accumulates forever -
+        // the very debris spec 38 corrects - and the unit test never reaches it.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+
+        // The prior window committed `orphan` on its canonical branch; the seeded
+        // `UnitStarted` omits `branch`, so only the DERIVED name can reclaim it.
+        commit_on_unit_branch(&repo_path, "orphan", "orphan.rs", "fn orphan() {}\n");
+        assert!(
+            branch_present(&repo_path, &unit_branch("orphan")),
+            "precondition: the integrated unit's derived branch exists before the run"
+        );
+
+        let st = Store::open(":memory:").unwrap();
+        seed_events_in_run(
+            &st,
+            &[],
+            &[
+                // No `branch` field -> the fold leaves `u.branch` empty (serde default).
+                Event::new(
+                    ledger::TYPE_UNIT_STARTED,
+                    serde_json::to_vec(&json!({"id": "orphan", "agent": "worker"})).unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_INTEGRATED,
+                    serde_json::to_vec(&json!({"id": "orphan", "commit": "def456"})).unwrap(),
+                ),
+            ],
+        );
+
+        let cfg = Config::default();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        assert_eq!(rs.units["orphan"].status, ledger::Status::Integrated);
+        assert!(
+            rs.units["orphan"].branch.is_empty(),
+            "fold precondition: no recorded branch, so only the derivation can reclaim it"
+        );
+        assert!(
+            !branch_present(&repo_path, &unit_branch("orphan")),
+            "an integrated unit whose UnitStarted recorded no branch is reclaimed via the DERIVED name"
+        );
+    }
+
+    #[test]
+    fn branch_gc_reclaims_the_recorded_branch_not_the_derived_name_when_they_differ() {
+        // Edge: an integrated unit whose RECORDED branch differs from today's
+        // `unit_branch(id)` derivation. The sweep PREFERS the recorded value
+        // (`else { u.branch.clone() }`); a "simplification" to always derive
+        // `unit_branch(&u.id)` would pass the unit test (there recorded == derived) yet
+        // strand every unit recorded under an older naming scheme - the back-compat
+        // vector. A canonical-name decoy proves the sweep reclaims the RECORDED ref and
+        // leaves the derivation untouched.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+
+        let recorded = "rigger/u/relic-legacy-scheme";
+        assert_ne!(
+            recorded,
+            unit_branch("relic"),
+            "the recorded branch must DIFFER from the derivation for this test to discriminate"
+        );
+
+        commit_on_named_branch(&repo_path, recorded, "relic.rs", "fn relic() {}\n");
+        commit_on_unit_branch(&repo_path, "relic", "decoy.rs", "fn decoy() {}\n");
+        assert!(branch_present(&repo_path, recorded));
+        assert!(branch_present(&repo_path, &unit_branch("relic")));
+
+        let st = Store::open(":memory:").unwrap();
+        seed_events_in_run(
+            &st,
+            &[],
+            &[
+                Event::new(
+                    ledger::TYPE_UNIT_STARTED,
+                    serde_json::to_vec(
+                        &json!({"id": "relic", "agent": "worker", "branch": recorded}),
+                    )
+                    .unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_INTEGRATED,
+                    serde_json::to_vec(&json!({"id": "relic", "commit": "aaa111"})).unwrap(),
+                ),
+            ],
+        );
+
+        let cfg = Config::default();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        assert_eq!(rs.units["relic"].status, ledger::Status::Integrated);
+        assert_eq!(rs.units["relic"].branch, recorded);
+        assert!(
+            !branch_present(&repo_path, recorded),
+            "the sweep must reclaim the unit's RECORDED branch"
+        );
+        assert!(
+            branch_present(&repo_path, &unit_branch("relic")),
+            "the canonical-derived branch is a different ref and must be left untouched"
+        );
+    }
+
     /// Build a single implement+review stage `s` (worker implements, one lens, one
     /// adjudicator), returning the config. The adjudicator's canned verdict is `verdict`.
     fn sha_stamp_cfg() -> Config {
