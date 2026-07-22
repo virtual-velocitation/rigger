@@ -8015,3 +8015,91 @@ fn step_honors_the_rigger_no_dash_opt_out() {
         "under RIGGER_NO_DASH the step announces no dash; stderr:\n{err}"
     );
 }
+
+// --- Spec 39, criterion 2: the step-started dash is DETACHED - it persists across the run's
+// many short-lived `step` processes. Criterion 1 (above) owns start-once idempotency; THIS
+// criterion owns PERSISTENCE: the dash a `step` starts is still serving after that step process
+// has exited, and stays the same live process across a LATER step process, because it is NOT
+// bound to a `ReapedChild` in any step process (a guard-bound dash would be reaped the instant
+// the step's `main` returned, and nothing would be alive or serving afterwards).
+
+/// Spec 39, criterion 2 end-to-end, through the BUILT binary: a run dashboard started by one
+/// `rigger step` OUTLIVES that step process and keeps serving, and is still the SAME live
+/// process after a LATER step of the same run has itself started and exited - proving the dash
+/// is DETACHED, not bound to a per-step [`rigger::dash::ReapedChild`]. `run_step_dash_enabled`
+/// waits on the step process before returning, so every observation below happens strictly
+/// AFTER that process is gone; were the dash guard-bound, its `ReapedChild::drop` would have
+/// killed+reaped it as the step's `main` returned and neither `pid_is_alive` nor an HTTP GET
+/// would hold here. The main.rs/dash.rs unit tests inject the spawn and never fork a real step
+/// process, so this persistence-across-a-process-boundary is the layer they are structurally
+/// blind to.
+///
+/// This test OWNS persistence, NOT the idempotent no-op (criterion 1's): it asserts only that
+/// the ORIGINAL dash lives and serves across step-process boundaries, and never that a second
+/// step started no second dash. It reaps every dash it could have started BEFORE any assertion,
+/// so a failed assertion never leaks a dashboard.
+#[test]
+fn a_step_started_dash_is_detached_and_outlives_its_step_process() {
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
+    write_two_stage_workflow(root);
+
+    // A first, now-EXITED step process starts the detached dash and records its (port, pid).
+    let (out1, err1) = run_step_dash_enabled(root);
+    assert!(
+        out1.contains(r#""wave":"#),
+        "the first step must run to completion (a printed wave), reaching the dash-start seam; \
+         stdout: {out1:?} stderr: {err1:?}"
+    );
+    let (port, pid) = read_dash_marker(root).unwrap_or_else(|| {
+        panic!("the first step must record a dash marker at .rigger/dash.marker; stderr:\n{err1}")
+    });
+    let url = format!("http://127.0.0.1:{port}/");
+
+    // The step process has already been waited on, so it is GONE. A `ReapedChild`-bound dash
+    // would have been reaped on that process's return; a detached one is still alive AND serving.
+    // Probe both liveness (the pid) and reachability (the served page).
+    let alive_after_step1 = rigger::dash::pid_is_alive(pid);
+    let served_after_step1 = matches!(http_get(&url), Some(body) if body.contains("rigger dash"));
+
+    // Drive a SECOND, independent step process to completion and let it too exit. The dash must
+    // persist ACROSS this step boundary as the very same live process (persistence, NOT
+    // idempotency: we assert the ORIGINAL pid still lives and serves, never that no second dash
+    // was started - that no-op is criterion 1's).
+    let (out2, _err2) = run_step_dash_enabled(root);
+    // Reap defensively any dash a (buggy) second start could have spawned, without asserting on
+    // it - keeping this test off criterion 1's idempotency ground while never leaking a dash.
+    if let Some((_, pid2)) = read_dash_marker(root) {
+        if pid2 != pid {
+            reap_pid(pid2);
+        }
+    }
+    let alive_after_step2 = rigger::dash::pid_is_alive(pid);
+    let served_after_step2 = matches!(http_get(&url), Some(body) if body.contains("rigger dash"));
+
+    // Reap the original detached dash BEFORE asserting, so a failure never leaves it orphaned.
+    reap_pid(pid);
+
+    assert!(
+        out2.contains(r#""wave":"#),
+        "the second step must also run to completion (a printed wave); stdout: {out2:?}"
+    );
+    assert!(
+        alive_after_step1,
+        "the detached dash (pid {pid}) must stay ALIVE after the step process that started it \
+         exited - a `ReapedChild`-bound dash would be reaped on the step's `main` return"
+    );
+    assert!(
+        served_after_step1,
+        "the detached dash must still SERVE {url} after its step process exited"
+    );
+    assert!(
+        alive_after_step2,
+        "the SAME detached dash (pid {pid}) must still be alive after a LATER step process ran \
+         and exited - it persists across the run's many step invocations"
+    );
+    assert!(
+        served_after_step2,
+        "the SAME detached dash must still SERVE {url} across a later step-process boundary"
+    );
+}
