@@ -1518,6 +1518,18 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         .map(|u| u.id.clone())
         .collect();
 
+    // Branch-GC on resume (spec 38, criterion 1): reclaim the per-unit branch of every
+    // unit the PRIOR log already marks Integrated. A unit integrated in an earlier
+    // window is seeded into `integrated` above and never re-enters `run_stage`, so the
+    // in-window post-integrate delete never fires for it and its `rigger/u/<unit>`
+    // branch would otherwise accumulate forever. This is the REPLAY half of the one
+    // branch-GC rule (integrated => no branch); the FRESH half is `run_stage`'s delete
+    // when a unit integrates in THIS window. Both drive the same idempotent
+    // [`Worktree::delete_branch`] primitive, so re-reaching this on a further resume,
+    // with the branch already gone, is a no-op. An escalated (or otherwise
+    // un-integrated) unit is NOT in this set, so its branch is retained as evidence.
+    ctx.gc_integrated_branches(&prior);
+
     // Deterministic decomposition baseline (§3.2): when the run is spec-driven
     // (`deps.criteria` non-empty), the conductor itself creates ONE implement unit per
     // acceptance criterion from the fan-out implement TEMPLATE, BEFORE any agent runs.
@@ -5618,6 +5630,39 @@ impl RunCtx<'_> {
         // demote-vs-hold authority as the early-return above and the deferred gate.
         let ratchet = GateRatchet::for_persistent_failure(class);
         (false, false, ratchet, first_evidence)
+    }
+
+    /// Branch-GC as a projection over the log (spec 38, criterion 1): reclaim the
+    /// per-unit `rigger/u/<unit>` branch of every unit `rs` marks `Integrated`, so a
+    /// completed run leaves no per-unit debris and a resume-by-replay re-reaches the
+    /// same end state.
+    ///
+    /// It keys off the projected `Status::Integrated` (the durable, event-sourced
+    /// signal) rather than the transient `run_stage` return, so it is the REPLAY half
+    /// of the one branch-GC rule: run start hands it the PRIOR state so a unit
+    /// integrated in an earlier window (its worktree long gone, never re-entering
+    /// `run_stage` on resume) is still reclaimed, closing the accumulation vector the
+    /// in-window post-integrate delete cannot reach. The FRESH half is `run_stage`'s
+    /// delete when a unit integrates in THIS window; both drive this same
+    /// [`Worktree::delete_branch`] primitive, not a parallel reconciled implementation.
+    /// An ESCALATED or otherwise un-integrated unit is NOT in this set, so its branch is
+    /// RETAINED as the human's evidence. `delete_branch` is idempotent (a no-op when the
+    /// branch is already gone), so re-reaching this on a further resume is a no-op, never
+    /// an error.
+    fn gc_integrated_branches(&self, rs: &ledger::RunState) {
+        for u in rs.units.values() {
+            if u.status != ledger::Status::Integrated {
+                continue;
+            }
+            // Prefer the branch recorded on the unit's `UnitStarted`; fall back to the
+            // canonical derivation for any unit whose event carried none.
+            let branch = if u.branch.is_empty() {
+                unit_branch(&u.id)
+            } else {
+                u.branch.clone()
+            };
+            let _ = Worktree::delete_branch(&self.deps.repo, &branch);
+        }
     }
 
     /// Run the workflow's DEFERRED gates ONCE at the run's phase boundary (§4.3).
@@ -13057,6 +13102,103 @@ mod tests {
         assert!(
             repo.path().join("feature.rs").exists(),
             "the prior window's committed file must land in the base on resume-integrate"
+        );
+    }
+
+    #[test]
+    fn branch_gc_reclaims_integrated_units_and_retains_escalated_ones_on_resume() {
+        // Spec 38, criterion 1: branch-GC is a PROJECTION over the log, so a resume
+        // re-reaches the same end state. A unit that reached `integrated` in a PRIOR
+        // window is seeded into `integrated` at run start and never re-enters
+        // `run_stage` (its worktree is gone, its work merged) - so the inline
+        // post-integrate delete never fires for it. Without the resume-time reclaim its
+        // `rigger/u/<unit>` branch survives forever (the "15 accumulated" debris the
+        // spec corrects). An ESCALATED unit is NOT integrated: the human needs its
+        // branch as evidence, so it is RETAINED. Re-folding the same integration on a
+        // second resume, with the branch already gone, is a no-op (idempotent).
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+
+        // Two prior-window units, each with a durable branch carrying committed work:
+        // `landed` reached integrated; `stuck` escalated at the retry bound.
+        commit_on_unit_branch(&repo_path, "landed", "landed.rs", "fn landed() {}\n");
+        commit_on_unit_branch(&repo_path, "stuck", "stuck.rs", "fn stuck() {}\n");
+        assert!(
+            branch_present(&repo_path, &unit_branch("landed")),
+            "precondition: the integrated unit's branch exists before the run"
+        );
+        assert!(
+            branch_present(&repo_path, &unit_branch("stuck")),
+            "precondition: the escalated unit's branch exists before the run"
+        );
+
+        let st = Store::open(":memory:").unwrap();
+        seed_events_in_run(
+            &st,
+            &[],
+            &[
+                Event::new(
+                    ledger::TYPE_UNIT_STARTED,
+                    serde_json::to_vec(
+                        &json!({"id": "landed", "agent": "worker", "branch": unit_branch("landed")}),
+                    )
+                    .unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_INTEGRATED,
+                    serde_json::to_vec(&json!({"id": "landed", "commit": "abc123"})).unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_STARTED,
+                    serde_json::to_vec(
+                        &json!({"id": "stuck", "agent": "worker", "branch": unit_branch("stuck")}),
+                    )
+                    .unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_ESCALATED,
+                    serde_json::to_vec(&json!({"id": "stuck"})).unwrap(),
+                ),
+            ],
+        );
+
+        let cfg = Config::default();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        // The projection agrees on the terminal states the sweep keys off.
+        assert_eq!(rs.units["landed"].status, ledger::Status::Integrated);
+        assert_eq!(rs.units["stuck"].status, ledger::Status::Escalated);
+
+        assert!(
+            !branch_present(&repo_path, &unit_branch("landed")),
+            "the integrated unit's per-unit branch must be reclaimed on resume"
+        );
+        assert!(
+            branch_present(&repo_path, &unit_branch("stuck")),
+            "the escalated unit's branch must be RETAINED as the human's evidence"
+        );
+
+        // Idempotent on a further resume-by-replay: re-folding the same integration
+        // whose branch is already gone is a no-op, never an error.
+        let rs2 = run(&cfg, &deps).unwrap();
+        assert_eq!(rs2.units["landed"].status, ledger::Status::Integrated);
+        assert!(
+            !branch_present(&repo_path, &unit_branch("landed")),
+            "the reclaimed branch stays gone (idempotent)"
+        );
+        assert!(
+            branch_present(&repo_path, &unit_branch("stuck")),
+            "the escalated unit's branch is still retained on the second resume"
         );
     }
 
