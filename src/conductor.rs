@@ -1518,16 +1518,18 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         .map(|u| u.id.clone())
         .collect();
 
-    // Branch-GC on resume (spec 38, criterion 1): reclaim the per-unit branch of every
-    // unit the PRIOR log already marks Integrated. A unit integrated in an earlier
-    // window is seeded into `integrated` above and never re-enters `run_stage`, so the
-    // in-window post-integrate delete never fires for it and its `rigger/u/<unit>`
-    // branch would otherwise accumulate forever. This is the REPLAY half of the one
-    // branch-GC rule (integrated => no branch); the FRESH half is `run_stage`'s delete
-    // when a unit integrates in THIS window. Both drive the same idempotent
-    // [`Worktree::delete_branch`] primitive, so re-reaching this on a further resume,
-    // with the branch already gone, is a no-op. An escalated (or otherwise
-    // un-integrated) unit is NOT in this set, so its branch is retained as evidence.
+    // Branch-GC on resume (spec 38, criterion 1): reclaim the per-unit branch AND any
+    // lingering worktree of every unit the PRIOR log already marks Integrated. A unit
+    // integrated in an earlier window is seeded into `integrated` above and never
+    // re-enters `run_stage`, so the in-window post-integrate teardown never fires for it
+    // and its `rigger/u/<unit>` branch (and a worktree a killed step left checked out on
+    // it) would otherwise accumulate forever. This is the REPLAY half of the one
+    // branch-GC rule (integrated => no branch, no worktree); the FRESH half is
+    // `run_stage`'s remove-then-delete when a unit integrates in THIS window. Both drive
+    // the same ordered teardown (worktree first, then the idempotent branch delete), so
+    // re-reaching this on a further resume, with both already gone, re-reaches the same
+    // end state. An escalated (or otherwise un-integrated) unit is NOT in this set, so
+    // its branch is retained as evidence.
     ctx.gc_integrated_branches(&prior);
 
     // Deterministic decomposition baseline (§3.2): when the run is spec-driven
@@ -5640,15 +5642,28 @@ impl RunCtx<'_> {
     /// It keys off the projected `Status::Integrated` (the durable, event-sourced
     /// signal) rather than the transient `run_stage` return, so it is the REPLAY half
     /// of the one branch-GC rule: run start hands it the PRIOR state so a unit
-    /// integrated in an earlier window (its worktree long gone, never re-entering
-    /// `run_stage` on resume) is still reclaimed, closing the accumulation vector the
-    /// in-window post-integrate delete cannot reach. The FRESH half is `run_stage`'s
-    /// delete when a unit integrates in THIS window; both drive this same
-    /// [`Worktree::delete_branch`] primitive, not a parallel reconciled implementation.
-    /// An ESCALATED or otherwise un-integrated unit is NOT in this set, so its branch is
-    /// RETAINED as the human's evidence. `delete_branch` is idempotent (a no-op when the
-    /// branch is already gone), so re-reaching this on a further resume is a no-op, never
-    /// an error.
+    /// integrated in an earlier window - never re-entering `run_stage` on resume - is
+    /// still reclaimed, closing the accumulation vector the in-window post-integrate
+    /// delete cannot reach.
+    ///
+    /// The teardown is TWO ordered steps, mirroring the FRESH half (`run_stage`'s
+    /// `w.remove()` THEN `Worktree::delete_branch` on a live integrate): for each unit,
+    /// FIRST remove any worktree still checked out on its branch, THEN delete the branch.
+    /// The order is load-bearing - git REFUSES to `branch -D` a branch checked out in a
+    /// worktree. A unit whose worktree LINGERS (a step process killed between its
+    /// `UnitIntegrated` emit and `Worktree::remove`) is the resume case the reaper
+    /// (`worktree::sweep_terminal`, on the `rigger step` path only) does NOT cover on the
+    /// `rigger run` resume path, so this reclaims it "if the reaper has not": a
+    /// branch-only reclaim would fail the delete on the lingering worktree and leave BOTH
+    /// the branch and the worktree as debris. Both steps drive the SHARED single-authority
+    /// primitives (`worktree::reclaim_worktree_on_branch` composed from the same
+    /// `sweep_terminal`/`Worktree::remove` machinery; `Worktree::delete_branch`), not a
+    /// parallel reconciled implementation.
+    ///
+    /// An ESCALATED or otherwise un-integrated unit is NOT in this set, so its branch and
+    /// worktree are RETAINED as the human's evidence. Both steps are idempotent (a no-op
+    /// when the worktree is already gone / the branch already deleted), so re-reaching
+    /// this on a further resume re-reaches the SAME end state, never an error.
     fn gc_integrated_branches(&self, rs: &ledger::RunState) {
         for u in rs.units.values() {
             if u.status != ledger::Status::Integrated {
@@ -5661,6 +5676,10 @@ impl RunCtx<'_> {
             } else {
                 u.branch.clone()
             };
+            // Ordered teardown, mirroring the fresh half: remove the lingering worktree
+            // FIRST (or `git branch -D` refuses the checked-out branch and BOTH survive),
+            // THEN delete the branch. Best-effort exactly like the fresh half's `let _`.
+            let _ = worktree::reclaim_worktree_on_branch(&self.deps.repo, &branch);
             let _ = Worktree::delete_branch(&self.deps.repo, &branch);
         }
     }
@@ -13362,6 +13381,156 @@ mod tests {
             branch_present(&repo_path, &unit_branch("relic")),
             "the canonical-derived branch is a different ref and must be left untouched"
         );
+    }
+
+    /// Seed an integrated unit's DURABLE branch WITH a worktree STILL checked out on it -
+    /// the crash residue branch-GC must reclaim on resume. A step process killed between
+    /// its `UnitIntegrated` emit and `Worktree::remove` leaves exactly this: the branch
+    /// carries committed work AND a worktree lingers on it, so `git branch -D` REFUSES to
+    /// delete the branch until the worktree is torn down. Unlike `commit_on_unit_branch`
+    /// (which `wt.remove()`s the seed worktree, leaving only the branch, the
+    /// worktree-already-gone happy path), this LEAVES the worktree registered. Returns the
+    /// lingering worktree dir and its owning `TempDir`, kept alive by the caller so the dir
+    /// survives into `run()` and is cleaned only when the test ends.
+    fn seed_lingering_worktree_on_unit_branch(
+        repo: &str,
+        unit_id: &str,
+        file: &str,
+        content: &str,
+    ) -> (String, tempfile::TempDir) {
+        let parent = tempfile::tempdir().unwrap();
+        // A UNIT_WORKTREE_PREFIX-named dir so the residue is realistic (it also owns a
+        // `cargo-target-*` sibling the reclaim path is responsible for).
+        let dir = parent.path().join("rigger-wt-lingering");
+        let branch = unit_branch(unit_id);
+        let wt = crate::worktree::Worktree::create(repo, dir.to_str().unwrap(), &branch).unwrap();
+        std::fs::write(Path::new(&wt.dir).join(file), content).unwrap();
+        let committed = wt
+            .commit("rigger: prior window work (worktree left lingering)")
+            .unwrap();
+        assert!(
+            !committed.is_empty(),
+            "the prior window must commit work on the branch"
+        );
+        // Deliberately DO NOT call `wt.remove()`: the worktree lingers on the branch,
+        // exactly as a killed step process leaves it.
+        (wt.dir.clone(), parent)
+    }
+
+    /// Whether any git worktree is still registered on `branch` (parsed from
+    /// `git worktree list --porcelain`). A stale registration keeps git treating the
+    /// branch as checked-out, so `git branch -D` refuses it - the proof a reclaim that
+    /// only deletes the dir off disk, without deregistering, would fail.
+    fn worktree_registered_on(repo: &str, branch: &str) -> bool {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(["worktree", "list", "--porcelain"])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .any(|l| l.trim() == format!("branch refs/heads/{branch}"))
+    }
+
+    #[test]
+    fn branch_gc_removes_a_lingering_worktree_before_reclaiming_the_branch_on_resume() {
+        // Resume-safety (spec 38 criterion 1 + its DESIGN clause "delete its
+        // rigger/u/<unit> branch AND remove its worktree if the reaper has not"): a unit
+        // integrated in a PRIOR window can leave BOTH a durable branch AND a worktree still
+        // checked out on it - a step process killed between its UnitIntegrated emit and
+        // Worktree::remove. The reaper (sweep_terminal) runs only on the `rigger step`
+        // path, NOT on the `rigger run` resume path this exercises, so branch-GC itself
+        // must reclaim the residue. git REFUSES to `branch -D` a branch checked out in a
+        // worktree, so a branch-only reclaim (delete_branch alone, its Err swallowed)
+        // leaves BOTH the branch and the worktree - the exact per-unit debris this
+        // criterion eliminates. The GC must mirror run_stage's ORDERED teardown: remove the
+        // lingering worktree FIRST, THEN delete the branch, so a resume-by-replay
+        // re-reaches {branch gone, worktree gone}.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+
+        let (wt_dir, _parent) = seed_lingering_worktree_on_unit_branch(
+            &repo_path,
+            "landed",
+            "landed.rs",
+            "fn landed() {}\n",
+        );
+        assert!(
+            branch_present(&repo_path, &unit_branch("landed")),
+            "precondition: the integrated unit's branch exists before the run"
+        );
+        assert!(
+            Path::new(&wt_dir).is_dir(),
+            "precondition: a worktree lingers checked out on the branch before the run"
+        );
+        assert!(
+            worktree_registered_on(&repo_path, &unit_branch("landed")),
+            "precondition: the lingering worktree is registered on the branch"
+        );
+        // The lingering worktree makes a bare `branch -D` FAIL, so a branch-only reclaim
+        // cannot succeed - the worktree MUST be torn down first. This is exactly the arm
+        // whose swallowed Err the branch-only implementation dropped.
+        assert!(
+            crate::worktree::Worktree::delete_branch(&repo_path, &unit_branch("landed")).is_err(),
+            "precondition: git refuses to delete a branch still checked out in a worktree"
+        );
+
+        let st = Store::open(":memory:").unwrap();
+        seed_events_in_run(
+            &st,
+            &[],
+            &[
+                Event::new(
+                    ledger::TYPE_UNIT_STARTED,
+                    serde_json::to_vec(
+                        &json!({"id": "landed", "agent": "worker", "branch": unit_branch("landed")}),
+                    )
+                    .unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_INTEGRATED,
+                    serde_json::to_vec(&json!({"id": "landed", "commit": "abc123"})).unwrap(),
+                ),
+            ],
+        );
+
+        let cfg = Config::default();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        assert_eq!(rs.units["landed"].status, ledger::Status::Integrated);
+        // BOTH must be reclaimed. The branch being gone PROVES the worktree was removed
+        // FIRST: git would refuse `branch -D` otherwise (the precondition above), so a
+        // reclaimed branch is only reachable through the ordered teardown.
+        assert!(
+            !branch_present(&repo_path, &unit_branch("landed")),
+            "the integrated unit's branch must be reclaimed - which requires removing the lingering worktree first"
+        );
+        assert!(
+            !Path::new(&wt_dir).exists(),
+            "the lingering worktree dir must be torn down on resume, not left as debris"
+        );
+        assert!(
+            !worktree_registered_on(&repo_path, &unit_branch("landed")),
+            "no worktree registration for the branch may survive the reclaim"
+        );
+
+        // Idempotent on a further resume-by-replay: the branch and worktree are already
+        // gone, so re-reaching the reclaim is a no-op, never an error.
+        let rs2 = run(&cfg, &deps).unwrap();
+        assert_eq!(rs2.units["landed"].status, ledger::Status::Integrated);
+        assert!(!branch_present(&repo_path, &unit_branch("landed")));
+        assert!(!Path::new(&wt_dir).exists());
     }
 
     /// Build a single implement+review stage `s` (worker implements, one lens, one

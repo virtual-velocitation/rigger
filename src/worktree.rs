@@ -746,6 +746,36 @@ fn clear_worktree_dir(repo: &str, dir: &str) -> Result<(), Error> {
     Ok(())
 }
 
+/// Tear down any scratch worktree still CHECKED OUT on `branch`, then reclaim its sibling
+/// per-unit build cache - the branch-keyed half of the ordered teardown that both
+/// [`Worktree::remove`] (the graceful `run_stage` path) and [`sweep_terminal`] (crash
+/// recovery) already perform. git REFUSES to delete a branch that is still checked out in
+/// a worktree, so branch-GC on resume must remove the lingering worktree FIRST or the
+/// `git branch -D` fails and BOTH the branch and the worktree survive as per-unit debris.
+///
+/// The residue this reclaims: a step process killed between its `UnitIntegrated` emit and
+/// [`Worktree::remove`] leaves a worktree still registered on the unit's now-integrated
+/// branch. The reaper ([`sweep_terminal`]) runs only on the `rigger step` path, so on the
+/// `rigger run` resume path the branch-GC must reclaim it here - the spec's "and remove
+/// its worktree if the reaper has not".
+///
+/// This composes the EXISTING single-authorities, minting no parallel teardown:
+/// [`registered_worktree_for`] finds the dir, [`clear_worktree_dir`] deregisters it
+/// (tolerating both a still-tracked worktree and a bare leftover dir, and pruning a stale
+/// registration whose dir was deleted out from under git - so even a residue that no
+/// longer occupies disk stops holding the branch), and [`reclaim_cache_sibling`] reclaims
+/// the multi-gigabyte `cargo-target-<slug>` cache, exactly as the two teardowns above do.
+/// A branch with no lingering worktree is a graceful no-op. The owning process is already
+/// dead on this path, so no process reap is needed (that is [`Worktree::remove`]'s concern
+/// on the live in-window teardown).
+pub fn reclaim_worktree_on_branch(repo: &str, branch: &str) -> Result<(), Error> {
+    if let Some(dir) = registered_worktree_for(repo, branch) {
+        clear_worktree_dir(repo, &dir)?;
+        reclaim_cache_sibling(&dir);
+    }
+    Ok(())
+}
+
 /// The current HEAD sha of the git checkout at `dir`, or `""` when `dir` is empty
 /// (a repo-less run, which has no worktree to stamp) or git cannot resolve it.
 ///
