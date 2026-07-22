@@ -42,11 +42,18 @@ pub struct Def {
     pub line: u32,
 }
 
-/// A reference site: the referenced name and its 1-based line.
+/// A reference site: the referenced name, its 1-based line, and the ENCLOSING definition the
+/// reference occurs inside (the caller). `None` for a top-level reference outside every
+/// definition - an import or an `impl`-header trait bound that belongs to no function body. Set
+/// during extraction by attributing the reference to the innermost definition whose body contains
+/// it (spec 37). Serde-defaulted and omitted when `None` so a pre-37 persisted index folds as
+/// caller-less and a caller-less ref serializes byte-identically to before.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SymRef {
     pub name: String,
     pub line: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enclosing: Option<String>,
 }
 
 /// One file's extracted symbols, tagged with the language it was parsed as (the scope key for
@@ -197,6 +204,7 @@ mod tests {
                 refs: vec![SymRef {
                     name: "parse".into(),
                     line: 9,
+                    enclosing: None,
                 }],
             },
         );
@@ -234,6 +242,7 @@ mod tests {
                     refs: vec![SymRef {
                         name: "new".into(),
                         line: 1,
+                        enclosing: None,
                     }],
                 },
             );
@@ -250,6 +259,7 @@ mod tests {
                 refs: vec![SymRef {
                     name: "apply_damage".into(),
                     line: 2,
+                    enclosing: None,
                 }],
             },
         );
@@ -281,6 +291,7 @@ mod tests {
             refs.push(SymRef {
                 name: format!("hapax_{i}"),
                 line: 1,
+                enclosing: None,
             });
         }
         // Two genuine high-degree outliers (degree 15 each) - the real hubs.
@@ -288,10 +299,12 @@ mod tests {
             refs.push(SymRef {
                 name: "hub_a".into(),
                 line: 1,
+                enclosing: None,
             });
             refs.push(SymRef {
                 name: "hub_b".into(),
                 line: 1,
+                enclosing: None,
             });
         }
         idx.insert_file(
@@ -342,6 +355,7 @@ mod tests {
                 flat_refs.push(SymRef {
                     name: name.into(),
                     line: 1,
+                    enclosing: None,
                 });
             }
         }
@@ -377,6 +391,7 @@ mod tests {
                     refs: vec![SymRef {
                         name: "parse".into(),
                         line: 1,
+                        enclosing: None,
                     }],
                 },
             );
@@ -390,6 +405,7 @@ mod tests {
                 refs: vec![SymRef {
                     name: "parse".into(),
                     line: 3,
+                    enclosing: None,
                 }],
             },
         );
@@ -402,6 +418,7 @@ mod tests {
                     refs: vec![SymRef {
                         name: "new".into(),
                         line: 1,
+                        enclosing: None,
                     }],
                 },
             );
@@ -446,6 +463,7 @@ mod tests {
                 refs: vec![SymRef {
                     name: "clamp".into(),
                     line: 9,
+                    enclosing: None,
                 }],
             },
         );
