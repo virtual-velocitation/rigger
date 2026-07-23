@@ -1137,6 +1137,22 @@ fn ensure_node(
     Ok(())
 }
 
+/// Assert a live edge, UPSERT-LIVE (spec 40): at most one live edge per
+/// `(from_id, to_id, rel, tier, project)`. Every fold arm re-asserts relationships over time - a
+/// `FileTouched` refolds `agent --TOUCHES--> file` on EVERY touch, a re-run refolds `GOVERNS` /
+/// `ABOUT`, and so on. A bare `INSERT ... valid_to = NULL` therefore accreted an identical live
+/// row per fold, bloating the graph and the grounding slice injected into every prompt. So before
+/// inserting, look for the existing LIVE edge with this exact key: if one is present, record the
+/// latest assertion in place - bump `source` to the newest position, keep the EARLIEST `valid_from`
+/// (the fact has held since it first became true) - and add NO row; otherwise INSERT as before.
+///
+/// Keyed on LIVE edges only (`valid_to IS NULL`), so it never suppresses a legitimate re-assertion
+/// AFTER an invalidation: a superseded `GOVERNS` (its `valid_to` set) that is later re-asserted
+/// correctly folds a NEW live edge. Dedup collapses only EXACT duplicates (identical
+/// `from`/`to`/`rel`/`tier`), so it never merges two DISTINCT edges - the safe superset is
+/// preserved. `max`/`min` are the scalar SQLite functions, making the update order-independent so a
+/// rebuild from the log re-derives byte-identical provenance regardless of fold order. This one
+/// localized change dedups every fold arm at once, without touching a single call site.
 #[allow(clippy::too_many_arguments)]
 fn add_edge(
     tx: &Transaction,
@@ -1148,12 +1164,22 @@ fn add_edge(
     project: &str,
     tier: &str,
 ) -> Result<(), Error> {
-    tx.execute(
-        "INSERT INTO edges (from_id, to_id, rel, valid_from, valid_to, source, project, tier)
-         VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7)",
-        params![from, to, rel, at, src as i64, project, tier],
-    )
-    .map_err(be)?;
+    let updated = tx
+        .execute(
+            "UPDATE edges SET source = max(source, ?5), valid_from = min(valid_from, ?4)
+             WHERE from_id = ?1 AND to_id = ?2 AND rel = ?3 AND tier = ?7 AND project = ?6
+               AND valid_to IS NULL",
+            params![from, to, rel, at, src as i64, project, tier],
+        )
+        .map_err(be)?;
+    if updated == 0 {
+        tx.execute(
+            "INSERT INTO edges (from_id, to_id, rel, valid_from, valid_to, source, project, tier)
+             VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7)",
+            params![from, to, rel, at, src as i64, project, tier],
+        )
+        .map_err(be)?;
+    }
     Ok(())
 }
 
@@ -1291,6 +1317,80 @@ mod tests {
         let g = p.subgraph(&["mod.rs".to_string()], 2).unwrap();
         let governs = g.edges.iter().filter(|e| e.rel == REL_GOVERNS).count();
         assert_eq!(governs, 1, "a replayed event must not double the edge");
+    }
+
+    /// Fold a `FileTouched` (`by` touches `path`) from its raw on-log JSON at `pos`, exactly the
+    /// event the loop records each time an agent writes a file. `secs` sets the event's
+    /// valid-from (when the touch happened) so a test can assert the collapsed edge keeps the
+    /// EARLIEST assertion time; `pos` becomes the edge's `source`, so the LATEST assertion wins.
+    fn apply_touch(p: &Projector, pos: u64, by: &str, path: &str, secs: u64) {
+        let payload = serde_json::json!({ "path": path, "by": by });
+        let mut e = Event::new(TYPE_FILE_TOUCHED, serde_json::to_vec(&payload).unwrap())
+            .with_valid_from(UNIX_EPOCH + std::time::Duration::from_secs(secs));
+        e.position = pos;
+        p.apply(&e).unwrap();
+    }
+
+    /// Every LIVE `TOUCHES` edge as `(from, to, source, valid_from)`, read straight from the
+    /// table (not through the live `subgraph` filter), so a test can COUNT the rows and prove a
+    /// re-assertion collapsed into the one existing live edge rather than accreting a row per fold.
+    fn live_touches(p: &Projector) -> Vec<(String, String, i64, i64)> {
+        let conn = p.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT from_id, to_id, source, valid_from FROM edges
+                 WHERE rel = ?1 AND valid_to IS NULL ORDER BY from_id, to_id",
+            )
+            .unwrap();
+        stmt.query_map(params![REL_TOUCHES], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, i64>(3)?,
+            ))
+        })
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+    }
+
+    #[test]
+    fn touches_folds_to_one_live_edge_with_latest_provenance() {
+        // Spec 40 criterion 1: every `FileTouched` re-asserts `agent --TOUCHES--> file`, and the
+        // old bare-insert fold appended a fresh live row per touch (measured: 45 identical live
+        // rows for a single relationship - 60% of the live graph redundant). The upsert-live fold
+        // collapses a re-assertion into the ONE existing live edge, bumping its provenance to the
+        // LATEST assertion (source) and keeping the EARLIEST valid_from - so N touches yield
+        // exactly ONE live edge, while a DIFFERENT agent or a DIFFERENT file still folds its own
+        // distinct live edge (dedup removes only EXACT (from, rel, to, tier) duplicates).
+        let p = Projector::open(":memory:", "test").unwrap();
+
+        // agent-a touches src/f.rs four times (positions 10..=13; valid_from 100..=400s).
+        apply_touch(&p, 10, "agent-a", "src/f.rs", 100);
+        apply_touch(&p, 11, "agent-a", "src/f.rs", 200);
+        apply_touch(&p, 12, "agent-a", "src/f.rs", 300);
+        apply_touch(&p, 13, "agent-a", "src/f.rs", 400);
+
+        // A DIFFERENT agent and a DIFFERENT file each fold their own distinct live edge.
+        apply_touch(&p, 14, "agent-b", "src/f.rs", 500);
+        apply_touch(&p, 15, "agent-a", "src/g.rs", 600);
+
+        let f = to_nanos(UNIX_EPOCH + std::time::Duration::from_secs(100));
+        let g = to_nanos(UNIX_EPOCH + std::time::Duration::from_secs(600));
+        let b = to_nanos(UNIX_EPOCH + std::time::Duration::from_secs(500));
+        assert_eq!(
+            live_touches(&p),
+            vec![
+                // a->f collapsed from FOUR folds to ONE: source = latest (13), valid_from = earliest.
+                ("agent-a".to_string(), "src/f.rs".to_string(), 13, f),
+                // a different FILE is a distinct edge, untouched by the a->f dedup.
+                ("agent-a".to_string(), "src/g.rs".to_string(), 15, g),
+                // a different AGENT is a distinct edge, untouched by the a->f dedup.
+                ("agent-b".to_string(), "src/f.rs".to_string(), 14, b),
+            ],
+            "N touches of one relationship collapse to ONE live edge (source=latest, valid_from=earliest); a different agent/file keeps its own distinct live edge"
+        );
     }
 
     fn apply_code_entity(
