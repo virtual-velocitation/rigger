@@ -689,6 +689,61 @@ fn node_label(node: &Node) -> String {
     node.id.clone()
 }
 
+// ---------------------------------------------------------------------------
+// The whole-graph exploration fold (spec 42 c1): [`cluster_key`] folds EVERY graph node into one
+// super-node bucket, so the KG panel can render a 7k-node graph as a few dozen clusters instead of
+// node-for-node. A node whose id NAMES A FILE - a code entity (`<file>::<name>`), a rationale anchor
+// (`<file>#L<n>`), or a path id (a file / design-doc whose last segment carries an extension) -
+// clusters by that file's DIRECTORY (its module); a directory-less (repo-root) path falls back to
+// the `(root)` bucket. Every other node - the dev-loop nodes with NO path id (a decision, finding,
+// unit, agent, gate, lesson) - clusters by its KIND. The fold is a pure function of `(id, kind)`, so
+// a given graph yields one stable overview (the determinism the spec requires by construction). This
+// is the fold KEY only; the overview and drill aggregations (c2, c3) consume it.
+// ---------------------------------------------------------------------------
+
+/// The bucket a directory-less (repo-root) path id folds to, since it names a file with no parent
+/// module. A `(root)` sentinel - the parentheses keep it from ever colliding with a real directory
+/// name - so the overview can name and colour the repo-root cluster like any other.
+pub const CLUSTER_ROOT: &str = "(root)";
+
+/// Fold a graph node `(id, kind)` into its exploration super-node bucket (spec 42 c1).
+///
+/// A node whose id NAMES A FILE clusters by that file's DIRECTORY (its module); a directory-less
+/// (repo-root) file falls back to [`CLUSTER_ROOT`]. Every other node clusters by its `kind`. An id
+/// names a file after reducing it to a file path: a code entity `<file>::<name>` reduces to the part
+/// before the first `::`; a rationale anchor `<file>#L<n>` or a design-doc section `<doc>#<slug>`
+/// reduces to the part before the first `#`; a plain path id `<file>` (a file / design-doc) is
+/// itself. The reduced path names a file iff its last segment carries an extension. A file path
+/// contains neither `::` nor `#`, so those splits leave a plain path untouched, and a dev-loop id (a
+/// decision / finding / unit / agent / gate / lesson), whose last segment carries no extension, is
+/// never mistaken for one. The fold is a pure, total function of `(id, kind)`, so a given graph folds
+/// to one stable set of buckets (the determinism the exploration view relies on).
+pub fn cluster_key(id: &str, kind: &str) -> String {
+    // Reduce a path-bearing id to the file path it names by stripping a code-entity `::name` suffix,
+    // then a rationale / doc-section `#...` suffix. A plain path id survives both untouched.
+    let file = id.split_once("::").map_or(id, |(f, _)| f);
+    let file = file.split_once('#').map_or(file, |(f, _)| f);
+
+    // The id names a file iff its LAST path segment carries an extension: a `.` with a non-empty
+    // stem AND a non-empty suffix (so a dotfile like `.gitignore` - whose only `.` is leading - is
+    // NOT treated as an extensioned path, and a dev-loop id like `plan-critique` never is either).
+    let last_segment = file.rsplit_once('/').map_or(file, |(_, seg)| seg);
+    let names_a_file = last_segment
+        .rsplit_once('.')
+        .is_some_and(|(stem, ext)| !stem.is_empty() && !ext.is_empty());
+
+    if names_a_file {
+        // Cluster by the file's DIRECTORY (its module); a directory-less repo-root file -> `(root)`.
+        return match file.rsplit_once('/') {
+            Some((dir, _)) if !dir.is_empty() => dir.to_string(),
+            _ => CLUSTER_ROOT.to_string(),
+        };
+    }
+
+    // Every other node is a dev-loop node with no path id: cluster by its KIND.
+    kind.to_string()
+}
+
 /// Compute the seeded neighborhood of `seed` WITHIN the already-projected `graph` (spec 30 c5): a
 /// breadth-first walk following currently-valid edges in EITHER direction up to `depth` hops,
 /// returning the reachable nodes and the TIER-TAGGED edges among them. This mirrors
@@ -1921,8 +1976,9 @@ mod supervised_lifecycle {
 mod tests {
     use super::*;
     use crate::contextgraph::{
-        Edge, Node, KIND_UNIT, REL_DECIDED, REL_GOVERNS, REL_REFERENCES, TIER_AMBIGUOUS,
-        TIER_EXTRACTED, TIER_INFERRED,
+        Edge, Node, KIND_AGENT, KIND_CODE_ENTITY, KIND_DESIGN_DOC, KIND_FILE, KIND_RATIONALE,
+        KIND_UNIT, REL_DECIDED, REL_GOVERNS, REL_REFERENCES, TIER_AMBIGUOUS, TIER_EXTRACTED,
+        TIER_INFERRED,
     };
     use crate::eventstore::Event;
 
@@ -2824,6 +2880,78 @@ mod tests {
         let new = view.decisions.iter().find(|d| d.id == "d-new").unwrap();
         assert!(old.superseded, "a SUPERSEDES target is struck through");
         assert!(!new.superseded, "the superseding decision is not");
+    }
+
+    /// Spec 42 c1: [`cluster_key`] folds every node into ONE super-node bucket. A node whose id NAMES
+    /// A FILE (a code entity `<file>::<name>`, a rationale anchor `<file>#L<n>`, or a path id whose
+    /// last segment carries an extension) clusters by that file's DIRECTORY (its module); a
+    /// directory-less repo-root path falls back to the [`CLUSTER_ROOT`] bucket; every other node - a
+    /// dev-loop node with no path id - clusters by its KIND. The mapping is deterministic. This test
+    /// OWNS the fold key; it does not exercise the overview/drill aggregations (c2, c3).
+    #[test]
+    fn cluster_key_folds_paths_by_directory_and_dev_loop_nodes_by_kind() {
+        // A code entity `<file>::<name>` folds to its file's DIRECTORY (its module) - the `::name`
+        // suffix is stripped, then the file clusters by its parent directory.
+        assert_eq!(
+            cluster_key("src/conductor.rs::gate_verdict_key", KIND_CODE_ENTITY),
+            "src"
+        );
+        // A nested module keeps its FULL directory path (not just the leaf directory).
+        assert_eq!(
+            cluster_key("src/contextgraph/sqlite.rs::project", KIND_CODE_ENTITY),
+            "src/contextgraph"
+        );
+        // A rationale anchor `<file>#L<n>` folds to the SAME file directory as its code entity.
+        assert_eq!(
+            cluster_key("src/conductor.rs#L20616", KIND_RATIONALE),
+            "src"
+        );
+        // A plain path id (a file / design-doc whose last segment carries an extension) folds to its
+        // directory, whatever its node kind is.
+        assert_eq!(
+            cluster_key("shim/mock-rigger-server.mjs", KIND_FILE),
+            "shim"
+        );
+        assert_eq!(cluster_key("docs/architecture.md", KIND_DESIGN_DOC), "docs");
+        // A design-doc SECTION id `<doc>#<slug>` folds to the doc's directory too (the `#slug` is
+        // stripped exactly like a rationale's `#L<n>`).
+        assert_eq!(
+            cluster_key("docs/architecture.md#grounding", KIND_DESIGN_DOC),
+            "docs"
+        );
+        // A directory-less (repo-root) path id falls back to the `(root)` bucket - a bare file, a
+        // root-file code entity, and a root-doc section all land there.
+        assert_eq!(cluster_key("Cargo.toml", KIND_FILE), CLUSTER_ROOT);
+        assert_eq!(
+            cluster_key("build.rs::args", KIND_CODE_ENTITY),
+            CLUSTER_ROOT
+        );
+        assert_eq!(
+            cluster_key("README.md#usage", KIND_DESIGN_DOC),
+            CLUSTER_ROOT
+        );
+        // A non-path dev-loop node (a decision / finding / agent - no path id) folds to its KIND.
+        assert_eq!(
+            cluster_key("adj-u41c1-approve", KIND_DECISION),
+            KIND_DECISION
+        );
+        assert_eq!(
+            cluster_key("adv-pc-project-scoping-untested", KIND_FINDING),
+            KIND_FINDING
+        );
+        assert_eq!(
+            cluster_key("adjudicator/plan-critique", KIND_AGENT),
+            KIND_AGENT
+        );
+        // A dev-loop id carrying slashes AND a `#` (e.g. a spawn-style agent id) is still NOT a path:
+        // its last segment has no extension, so it folds by kind, never mistaken for a file.
+        assert_eq!(cluster_key("u42-c1/implementer#0", KIND_AGENT), KIND_AGENT);
+        // Determinism: two entities in the SAME file fold to one identical module bucket.
+        assert_eq!(
+            cluster_key("src/dash.rs::cluster_key", KIND_CODE_ENTITY),
+            cluster_key("src/dash.rs::neighborhood", KIND_CODE_ENTITY),
+            "two entities in the same file fold to the same module bucket"
+        );
     }
 
     /// A small tier-tagged fixture graph: a chain seed `a` -[extracted]- `b` -[inferred]- `c`
