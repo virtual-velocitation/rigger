@@ -21,6 +21,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
@@ -64,6 +65,151 @@ pub fn free_port_from(start: u16) -> io::Result<u16> {
         io::ErrorKind::AddrNotAvailable,
         "no free loopback port at or above the requested start port",
     ))
+}
+
+/// The per-project record of the run dashboard currently serving a project: the loopback
+/// PORT it bound and the PID of its process. The step drive path writes it when it starts a
+/// dash and reads it before starting one, so at most one run dashboard serves a project at a
+/// time (spec 39, criterion 1: idempotent start on step). It sits alongside the dash-url
+/// breadcrumb `rigger status` already reads, and is a plain `port\npid` text record - so it
+/// round-trips with no serde and compiles identically in BOTH feature lanes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DashMarker {
+    /// The loopback port the recorded dash bound.
+    pub port: u16,
+    /// The PID of the recorded dash process, used to check whether it is still serving.
+    pub pid: u32,
+}
+
+impl DashMarker {
+    /// Render the marker as its on-disk `port\npid\n` record.
+    pub fn serialize(&self) -> String {
+        format!("{}\n{}\n", self.port, self.pid)
+    }
+
+    /// Parse a marker from its on-disk record, or `None` when it is malformed. A corrupt or
+    /// truncated marker reads as "no dash recorded" so the step path starts a fresh dash
+    /// rather than trusting garbage - the safe direction (start-if-unsure never suppresses a
+    /// real dash).
+    pub fn parse(s: &str) -> Option<DashMarker> {
+        let mut lines = s.lines();
+        let port = lines.next()?.trim().parse().ok()?;
+        let pid = lines.next()?.trim().parse().ok()?;
+        Some(DashMarker { port, pid })
+    }
+
+    /// Read the marker at `path`, or `None` when it is absent, unreadable, or malformed
+    /// (each of which means "no dash is recorded as serving here").
+    pub fn read(path: &Path) -> Option<DashMarker> {
+        Self::parse(&std::fs::read_to_string(path).ok()?)
+    }
+
+    /// Write the marker to `path`, overwriting any prior record. Best-effort at the call
+    /// site: a failed write only means a later step cannot discover this dash and may start
+    /// a second one, never a broken step.
+    pub fn write(&self, path: &Path) -> io::Result<()> {
+        std::fs::write(path, self.serialize())
+    }
+}
+
+/// Whether process `pid` is still alive, Linux-first via `/proc/<pid>` existence
+/// (`std`-only - no `libc` - so it holds in BOTH feature lanes, exactly as
+/// [`crate::reap`] detects processes). Off a platform without `/proc` the directory is
+/// absent, so this reports `false`; the step path treats "not verifiably alive" as "no
+/// dash serving" and starts a fresh one rather than suppressing one on an unverifiable
+/// marker - the same safe direction [`DashMarker::parse`] takes for a corrupt record.
+pub fn pid_is_alive(pid: u32) -> bool {
+    Path::new("/proc").join(pid.to_string()).is_dir()
+}
+
+/// The idempotency decision for the step drive path (spec 39, criterion 1): given the
+/// per-project [`DashMarker`] recorded on disk (if any) and a predicate reporting whether a
+/// recorded dash is STILL serving, returns `true` iff the step must START a run dashboard -
+/// i.e. NONE is already serving. A marker naming a still-serving dash short-circuits to
+/// `false`, so the second and every later `step` of a run is a no-op, never a second dash
+/// or a port fight. `still_serving` is injected so the decision is provable without a real
+/// dash process; production passes [`pid_is_alive`] over the marker's pid.
+pub fn dash_start_needed(
+    marker: Option<DashMarker>,
+    still_serving: impl Fn(DashMarker) -> bool,
+) -> bool {
+    match marker {
+        Some(m) => !still_serving(m),
+        None => true,
+    }
+}
+
+/// The self-reap decision for the step-path PERSISTENT dashboard (spec 39, criterion 3):
+/// given a snapshot of the run it serves, returns `true` iff the dash should REAP ITSELF now -
+/// the run is complete or its liveness has gone stale - so a completed or crashed run leaves no
+/// orphaned dash. This is the domain core the detached dash's watcher polls; the watcher owns
+/// only the I/O (reading the store, scanning the heartbeat markers, sleeping, and exiting on
+/// `true`), so the DECISION is provable here without a real dashboard process or a real run.
+///
+/// The trigger is LIVENESS, never the pure `done` flag alone: between two `rigger step`
+/// processes the log's [`spawn::step_result`] `done` is transiently `true` (the last wave is
+/// answered but the conductor has not parked the next one yet), so a continuously-polling
+/// watcher that reaped on `done` would kill a live run's dash in an inter-step gap. The run's
+/// HEARTBEAT - the freshest liveness-marker mtime, which stays fresh while any worker is alive
+/// and only goes absent/stale once the run stops - distinguishes a truly idle run from one merely
+/// between steps FOR A BOUNDED RUN. But an UNBOUNDED run (the default scaffold sets no
+/// `max_wall_clock`) writes NO liveness marker at all, so its heartbeat is PERMANENTLY `None`; the
+/// heartbeat alone cannot then tell a genuinely-complete run from one transiently terminal between
+/// waves. So the `None` arm is additionally gated on a UNIT-LEVEL fixpoint, `run_settled`, which
+/// only the conductor's integration pass produces - never a bare inter-wave frontier snapshot.
+///
+/// - `run_started`: the run has produced at least one event (a non-empty current-run slice).
+///   Guards a just-started dash on an empty store from reaping before its run has begun - an
+///   empty log is vacuously `done`, so without this a fresh dash would reap on its first poll.
+/// - `run_terminal`: the run reached a SPAWN-level terminal fixpoint (`terminal_and_no_live_worker`
+///   in the binary): every parked spawn answered, no hung spawn, no manual-review pause. This is
+///   TRANSIENTLY true in every inter-wave gap (the wave answered, the next not parked yet).
+/// - `run_settled`: the run reached a UNIT-level fixpoint - it has at least one unit and EVERY unit
+///   is terminal (integrated or escalated). A unit becomes terminal ONLY through the conductor's
+///   integration pass (which runs inside `rigger step`), never merely because a worker reported its
+///   result, so `run_settled` is FALSE in the transient inter-wave window where results are in but
+///   not yet integrated, and false while any later-wave unit is still pending. It is the
+///   will-not-advance signal that distinguishes genuine completion from a transiently-terminal
+///   snapshot when there is no heartbeat to consult (the unbounded run), and it stays correct for a
+///   bounded run too (whose markers the final teardown reclaims, so it also lands on the `None` arm).
+/// - `heartbeat_age`: the freshest per-spawn liveness-marker age across the WHOLE run's markers
+///   (not just the unanswered wave), or `None` when none is recorded - a run not yet heartbeating,
+///   an unbounded run that never heartbeats, or a completed run whose `agent-live` markers the
+///   terminal teardown reclaimed.
+/// - `stale_after`: the heartbeat-staleness bound; a heartbeat older than this means the run's
+///   liveness has gone stale (a crashed or wedged run that never reached a clean fixpoint).
+///
+/// The two reap arms:
+/// - `None` heartbeat: reap only when the run has STARTED, is spawn-level TERMINAL, and is
+///   unit-level SETTLED - genuine completion (or an escalation-halt), where every unit reached a
+///   terminal state and, for a bounded run, the final step's teardown reclaimed the markers. A
+///   `None` heartbeat that is terminal but NOT settled is either a run still coming up (a wave
+///   parked whose workers have not touched a marker yet) OR an unbounded run merely between waves
+///   (results reported, integration not yet run) - both must keep serving.
+/// - `Some(age)` heartbeat: reap once `age > stale_after`. A fresh heartbeat (small age) means a
+///   worker is alive - even when the log reads terminal in an inter-step gap - so the dash keeps
+///   serving; a stale heartbeat means the run's liveness died, whether it reached a clean
+///   fixpoint (markers not yet reclaimed) or wedged, so the dash reaps.
+pub fn should_reap_on_idle(
+    run_started: bool,
+    run_terminal: bool,
+    run_settled: bool,
+    heartbeat_age: Option<Duration>,
+    stale_after: Duration,
+) -> bool {
+    match heartbeat_age {
+        // No heartbeat recorded: reap only when the run has STARTED, the log confirms a spawn-level
+        // terminal fixpoint, AND every unit is terminal (the unit-level fixpoint the conductor's
+        // integration pass produces). Requiring `run_settled` here is what keeps an UNBOUNDED run's
+        // dash serving through inter-wave gaps: with no heartbeat, `run_terminal` alone is
+        // transiently true between waves, so without the settled gate the dash would self-reap
+        // mid-run. A `None` heartbeat that is terminal-but-not-settled is a run still coming up or
+        // merely between waves - keep serving.
+        None => run_started && run_terminal && run_settled,
+        // A heartbeat is recorded: reap once it has gone stale. A fresh heartbeat means a worker
+        // is alive (a live run, even between steps when the log reads terminal), so keep serving.
+        Some(age) => age > stale_after,
+    }
 }
 
 /// What the dash's data provider yields per request: the run's events, its context subgraph,
@@ -3577,6 +3723,175 @@ mod tests {
         assert!(
             resp.starts_with("HTTP/1.1 405"),
             "a write method is refused read-only:\n{resp}"
+        );
+    }
+
+    // --- Spec 39, criterion 1: the per-project dash marker + idempotency decision ---
+
+    #[test]
+    fn dash_marker_round_trips_through_its_on_disk_record() {
+        let m = DashMarker {
+            port: 7431,
+            pid: 12345,
+        };
+        assert_eq!(
+            DashMarker::parse(&m.serialize()),
+            Some(m),
+            "a marker must survive serialize -> parse unchanged"
+        );
+    }
+
+    #[test]
+    fn dash_marker_parse_rejects_a_malformed_record() {
+        // A corrupt/truncated marker reads as "no dash recorded" (None), so the step path
+        // starts a fresh dash rather than trusting garbage.
+        assert_eq!(DashMarker::parse(""), None, "empty is not a marker");
+        assert_eq!(
+            DashMarker::parse("7431"),
+            None,
+            "a port alone is not a marker"
+        );
+        assert_eq!(
+            DashMarker::parse("not-a-port\n123"),
+            None,
+            "a non-numeric port is not a marker"
+        );
+        assert_eq!(
+            DashMarker::parse("7431\nnot-a-pid"),
+            None,
+            "a non-numeric pid is not a marker"
+        );
+    }
+
+    #[test]
+    fn dash_marker_reads_none_for_an_absent_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dash.marker");
+        assert_eq!(
+            DashMarker::read(&path),
+            None,
+            "an absent marker file reads as no dash recorded"
+        );
+        let m = DashMarker {
+            port: 7440,
+            pid: 99,
+        };
+        m.write(&path).unwrap();
+        assert_eq!(
+            DashMarker::read(&path),
+            Some(m),
+            "a written marker reads back verbatim"
+        );
+    }
+
+    #[test]
+    fn pid_is_alive_reports_self_and_rejects_an_impossible_pid() {
+        // These probes assume `/proc` (Linux, as CI and the operator run). Skip elsewhere.
+        if !Path::new("/proc").is_dir() {
+            return;
+        }
+        assert!(
+            pid_is_alive(std::process::id()),
+            "this very process must read as alive"
+        );
+        assert!(
+            !pid_is_alive(u32::MAX),
+            "an impossible pid must read as not alive"
+        );
+    }
+
+    #[test]
+    fn dash_start_needed_is_true_when_none_serving_and_false_when_one_serves() {
+        let m = DashMarker { port: 7442, pid: 7 };
+        // No marker at all -> a step must start one.
+        assert!(
+            dash_start_needed(None, |_| panic!("must not probe when there is no marker")),
+            "no recorded dash -> start one"
+        );
+        // A marker whose dash is NOT serving (e.g. a crashed/reaped dash) -> start a fresh one.
+        assert!(
+            dash_start_needed(Some(m), |_| false),
+            "a stale marker (dash gone) -> start a fresh one"
+        );
+        // A marker whose dash IS still serving -> no-op (the idempotent short-circuit).
+        assert!(
+            !dash_start_needed(Some(m), |_| true),
+            "a live recorded dash -> start NO second one"
+        );
+    }
+
+    #[test]
+    fn should_reap_on_idle_reaps_on_completion_or_stale_liveness_but_never_on_a_live_or_starting_run(
+    ) {
+        let stale = Duration::from_secs(900);
+        let fresh = Some(Duration::from_secs(5));
+        let gone_stale = Some(Duration::from_secs(1_000));
+
+        // A run that has not started yet (empty log is vacuously terminal): a just-spawned dash
+        // must KEEP serving, never reap on its first poll.
+        assert!(
+            !should_reap_on_idle(false, true, false, None, stale),
+            "a not-yet-started run's dash must not reap"
+        );
+
+        // A started run mid-flight, wave parked but no worker has touched a marker yet
+        // (heartbeat None, not terminal): the dash is coming up on a live run - keep serving.
+        assert!(
+            !should_reap_on_idle(true, false, false, None, stale),
+            "a starting run (parked wave, no heartbeat yet) must not reap"
+        );
+
+        // THE GATING CASE (unbounded run, between waves): started + spawn-level terminal + NO
+        // heartbeat, but NOT unit-level settled (a wave's results are in yet the conductor has not
+        // integrated them, or later-wave units are still pending). An unbounded run has NO marker
+        // to consult, so a reap keyed on `terminal` alone would exit the dash MID-RUN here. The
+        // `run_settled` gate is what keeps it serving until the run genuinely completes.
+        assert!(
+            !should_reap_on_idle(true, true, false, None, stale),
+            "an unbounded run that is only transiently terminal between waves (not settled) must \
+             not reap - this is the mid-run reap the settled gate prevents"
+        );
+
+        // A live run with a FRESH heartbeat, even when the log reads terminal in an inter-step
+        // gap (the next wave is not parked yet): a worker touched a marker seconds ago, so the
+        // run is between steps, NOT idle - keep serving. This is the inter-step false-positive
+        // the done-flag alone would trip.
+        assert!(
+            !should_reap_on_idle(true, true, false, fresh, stale),
+            "a fresh heartbeat means a live run between steps - must not reap"
+        );
+        assert!(
+            !should_reap_on_idle(true, false, false, fresh, stale),
+            "a fresh heartbeat on a non-terminal run must not reap"
+        );
+
+        // Normal completion: the run is started + spawn-terminal + unit-settled (every unit
+        // integrated) and its `agent-live` markers were reclaimed by the final step's teardown
+        // (heartbeat None) -> reap. This is genuine completion for both bounded (markers reclaimed)
+        // and unbounded (never had markers) runs.
+        assert!(
+            should_reap_on_idle(true, true, true, None, stale),
+            "a completed run (every unit terminal) whose heartbeat is None must reap"
+        );
+
+        // A crashed / wedged run that never reached a clean fixpoint but whose heartbeat has
+        // gone stale (no worker touched a marker within the bound) -> reap, the backstop. The
+        // `Some(age)` arm is independent of `run_settled`: a stale heartbeat is itself the
+        // liveness-died signal.
+        assert!(
+            should_reap_on_idle(true, false, false, gone_stale, stale),
+            "a non-terminal run whose heartbeat went stale must reap (crashed-run backstop)"
+        );
+        // A terminal run whose markers were not reclaimed but have aged past the bound -> reap.
+        assert!(
+            should_reap_on_idle(true, true, false, gone_stale, stale),
+            "a terminal run whose stale heartbeat markers linger must still reap"
+        );
+
+        // Exactly-at-the-bound is NOT yet stale (strictly greater): still serving.
+        assert!(
+            !should_reap_on_idle(true, false, false, Some(stale), stale),
+            "a heartbeat exactly at the bound is not yet stale"
         );
     }
 }
