@@ -1480,6 +1480,95 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_rebuild_collapses_existing_duplicate_live_edges_to_one_per_relationship() {
+        // Spec 40 criterion 3 (rebuild-dedup / projection idempotency). The graph is a rebuildable
+        // projection of the log (spec 29a), so the operational cleanup for the measured 39,340
+        // duplicate live edges is a fresh graph REBUILD. This proves it: a log that under the OLD
+        // bare `INSERT ... valid_to = NULL` accreted K identical live edges per relationship, folded
+        // from scratch into a FRESH projection with the upsert-live `add_edge`, yields exactly ONE
+        // live edge per `(from, rel, to, tier)` - with distinct relationships each surviving as
+        // their own single live edge. This owns the rebuild-dedup; it leans on (but does not own)
+        // the upsert-live fold arm (criterion 1) or the live-only scoping (criterion 2).
+
+        // The canonical log the rebuild re-folds: agent-a --TOUCHES--> src/f.rs re-asserted 45
+        // times (the measured worst case - one `FileTouched` fold per touch), interleaved with two
+        // DISTINCT relationships (a different agent, a different file) that must each survive the
+        // rebuild as their own single live edge.
+        let fold_log = |p: &Projector| {
+            for pos in 1..=45u64 {
+                apply_touch(p, pos, "agent-a", "src/f.rs", 100 * pos);
+            }
+            apply_touch(p, 46, "agent-b", "src/f.rs", 5000);
+            apply_touch(p, 47, "agent-a", "src/g.rs", 6000);
+        };
+
+        // PREMISE - reproduce the dirty on-disk graph the OLD bare-insert left behind. Each of the
+        // 45 folds ran exactly this `INSERT ... valid_to = NULL`, so the pre-rebuild graph.db
+        // carried 45 live rows for the ONE relationship (identical from/rel/to/tier; only
+        // source/valid_from differ). Seed that state directly so the rebuild has a real duplicate
+        // pile to collapse, not a hypothetical one.
+        let dirty = Projector::open(":memory:", "test").unwrap();
+        {
+            let conn = dirty.conn.lock().unwrap();
+            for pos in 1..=45i64 {
+                conn.execute(
+                    "INSERT INTO edges (from_id, to_id, rel, valid_from, valid_to, source, project, tier)
+                     VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7)",
+                    params![
+                        "agent-a",
+                        "src/f.rs",
+                        REL_TOUCHES,
+                        to_nanos(UNIX_EPOCH + std::time::Duration::from_secs((100 * pos) as u64)),
+                        pos,
+                        "test",
+                        TIER_EXTRACTED
+                    ],
+                )
+                .unwrap();
+            }
+        }
+        assert_eq!(
+            live_touches(&dirty).len(),
+            45,
+            "premise: the old bare-insert fold left K=45 identical live rows for one relationship - the duplicates a rebuild must collapse"
+        );
+
+        // REBUILD - discard the dirty graph and fold the SAME log from scratch into a FRESH, EMPTY
+        // projection. Every relationship collapses to exactly ONE live edge: the 45-fold agent-a
+        // ->src/f.rs to a single row (source = latest position 45, valid_from = earliest), and the
+        // two DISTINCT relationships each to their own single live edge.
+        let rebuilt = Projector::open(":memory:", "test").unwrap();
+        fold_log(&rebuilt);
+
+        let f = to_nanos(UNIX_EPOCH + std::time::Duration::from_secs(100));
+        let g = to_nanos(UNIX_EPOCH + std::time::Duration::from_secs(6000));
+        let b = to_nanos(UNIX_EPOCH + std::time::Duration::from_secs(5000));
+        let want = vec![
+            // agent-a->src/f.rs: 45 duplicate live edges collapsed to ONE (source=45, valid_from=earliest).
+            ("agent-a".to_string(), "src/f.rs".to_string(), 45, f),
+            // a different FILE is a distinct relationship, its own single live edge.
+            ("agent-a".to_string(), "src/g.rs".to_string(), 47, g),
+            // a different AGENT is a distinct relationship, its own single live edge.
+            ("agent-b".to_string(), "src/f.rs".to_string(), 46, b),
+        ];
+        assert_eq!(
+            live_touches(&rebuilt),
+            want,
+            "a rebuild collapses the 45 duplicate live edges to exactly ONE per (from, rel, to, tier); distinct relationships each survive as their own single live edge"
+        );
+
+        // REBUILDABLE - a rebuild is a pure, reproducible function of the log: folding the SAME log
+        // into ANOTHER fresh, empty projection re-derives the identical single-edge-per-key set.
+        let rebuilt_again = Projector::open(":memory:", "test").unwrap();
+        fold_log(&rebuilt_again);
+        assert_eq!(
+            live_touches(&rebuilt_again),
+            want,
+            "rebuilding the same log from scratch re-derives the identical deduped live edges"
+        );
+    }
+
     fn apply_code_entity(
         p: &Projector,
         pos: u64,
