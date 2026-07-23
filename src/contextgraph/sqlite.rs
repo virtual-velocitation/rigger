@@ -1393,6 +1393,93 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_re_assertion_after_invalidation_folds_a_new_live_edge_dedup_keys_on_live_edges_only() {
+        // Spec 40 criterion 2: the upsert-live fold keys on LIVE edges ONLY - `add_edge`'s dedup
+        // UPDATE carries `AND valid_to IS NULL`. So it collapses a re-assertion into an EXISTING
+        // live edge, but NEVER suppresses a legitimate re-assertion of a relationship that has since
+        // been INVALIDATED. Drive the GOVERNS supersession path: d1 governs mod.rs (live), d2
+        // supersedes d1 (stamping valid_to on d1's GOVERNS edge - invalidated, not deleted), then d1
+        // is re-asserted. Because the one prior d1->mod.rs GOVERNS edge is invalidated, the dedup
+        // UPDATE matches no live row and the fold INSERTs a NEW live edge, retained beside the dead
+        // one. Were the dedup keyed on ALL edges instead of live-only, the re-assertion would be
+        // swallowed into the invalidated row and no live edge would exist - the relationship would
+        // be silently lost.
+        //
+        // The structural re-extraction variant of live-only scoping (a superseded
+        // CONTAINS/REFERENCES edge re-asserted by a fresh batch) is already exercised by
+        // `re_extraction_supersedes_a_files_prior_structural_edges_without_deleting_them`; the
+        // GOVERNS supersession path here is the demonstration unique to this criterion. Scope is
+        // strictly criterion 2 (live-only scoping): it does NOT own the TOUCHES re-assert fold
+        // (criterion 1) nor the rebuild-collapse of pre-existing duplicates (criterion 3).
+        let p = Projector::open(":memory:", "test").unwrap();
+
+        // d1 governs mod.rs, then d2 supersedes d1 - stamping valid_to on d1's GOVERNS edge.
+        apply_decision(&p, 1, "d1", "v1", &["mod.rs"], "");
+        apply_decision(&p, 2, "d2", "v2", &[], "d1");
+
+        // Precondition: exactly ONE d1->mod.rs GOVERNS edge exists and it is now INVALIDATED
+        // (valid_to set), so NO live d1->mod.rs GOVERNS edge remains for the dedup to key on.
+        let after_supersede: Vec<_> = edges_from(&p, "d1")
+            .into_iter()
+            .filter(|t| t.1 == REL_GOVERNS && t.0 == "mod.rs")
+            .collect();
+        assert_eq!(
+            after_supersede.len(),
+            1,
+            "precondition: one d1->mod.rs GOVERNS edge after supersession; got {after_supersede:?}"
+        );
+        assert!(
+            after_supersede[0].2.is_some(),
+            "precondition: the supersession invalidated d1's GOVERNS edge (valid_to set); got {after_supersede:?}"
+        );
+        assert!(
+            !p.subgraph(&["mod.rs".to_string()], 2)
+                .unwrap()
+                .edges
+                .iter()
+                .any(|e| e.rel == REL_GOVERNS && e.from == "d1"),
+            "precondition: the invalidated edge is absent from the live view before the re-assertion"
+        );
+
+        // d1 is re-asserted at a later position - a legitimate re-assertion after invalidation.
+        apply_decision(&p, 3, "d1", "v1", &["mod.rs"], "");
+
+        // Live-only scoping: the dedup did NOT collapse the re-assertion into the dead row. A NEW
+        // live edge is folded and RETAINED beside the invalidated one - exactly ONE historical +
+        // ONE live d1->mod.rs GOVERNS edge.
+        let after_reassert: Vec<_> = edges_from(&p, "d1")
+            .into_iter()
+            .filter(|t| t.1 == REL_GOVERNS && t.0 == "mod.rs")
+            .collect();
+        assert_eq!(
+            after_reassert.len(),
+            2,
+            "the re-assertion folds a NEW row beside the invalidated one, not swallowed into it; got {after_reassert:?}"
+        );
+        assert_eq!(
+            after_reassert.iter().filter(|t| t.2.is_none()).count(),
+            1,
+            "exactly ONE d1->mod.rs GOVERNS edge is live after the re-assertion; got {after_reassert:?}"
+        );
+        assert_eq!(
+            after_reassert.iter().filter(|t| t.2.is_some()).count(),
+            1,
+            "the prior invalidated edge is retained (valid_to stamped), never overwritten; got {after_reassert:?}"
+        );
+
+        // The live view a grounding consumer reads once again shows d1 governing mod.rs - the
+        // re-assertion took effect through a fresh live edge, not the suppressed dead one.
+        assert!(
+            p.subgraph(&["mod.rs".to_string()], 2)
+                .unwrap()
+                .edges
+                .iter()
+                .any(|e| e.rel == REL_GOVERNS && e.from == "d1" && e.to == "mod.rs"),
+            "the re-asserted d1->mod.rs GOVERNS edge is LIVE in the projection"
+        );
+    }
+
     fn apply_code_entity(
         p: &Projector,
         pos: u64,
