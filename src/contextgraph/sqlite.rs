@@ -2443,6 +2443,161 @@ mod tests {
         );
     }
 
+    /// A live `subgraph` result reduced to a sorted, comparable form: nodes as `(id, kind, attrs)`
+    /// and edges as `(from, rel, to, tier, valid_from, source)`. `subgraph` returns ONLY live rows
+    /// (`valid_to IS NULL`), so this is exactly the slice a grounding consumer reads; the
+    /// superseded-edge prune must leave it identical, because it reclaims only historical rows a
+    /// live query never sees. Sorted so the comparison is order-independent (SQLite returns rows in
+    /// no guaranteed order).
+    #[allow(clippy::type_complexity)]
+    fn live_slice(
+        g: &Graph,
+    ) -> (
+        Vec<(String, String, BTreeMap<String, String>)>,
+        Vec<(String, String, String, String, i64, Position)>,
+    ) {
+        let mut nodes: Vec<_> = g
+            .nodes
+            .iter()
+            .map(|n| (n.id.clone(), n.kind.clone(), n.attrs.clone()))
+            .collect();
+        nodes.sort();
+        let mut edges: Vec<_> = g
+            .edges
+            .iter()
+            .map(|e| {
+                (
+                    e.from.clone(),
+                    e.rel.clone(),
+                    e.to.clone(),
+                    e.tier.clone(),
+                    e.valid_from,
+                    e.source,
+                )
+            })
+            .collect();
+        edges.sort();
+        (nodes, edges)
+    }
+
+    #[test]
+    fn pruning_superseded_edges_leaves_the_live_grounding_subgraph_exactly_unchanged() {
+        // Spec 41 criterion 2 (OWNS the live-invariant guarantee): the superseded-edge prune reclaims
+        // ONLY historical rows (`valid_to IS NOT NULL`), so the LIVE slice a grounding consumer reads
+        // through `subgraph` (which filters `valid_to IS NULL`) is byte-for-byte identical before and
+        // after. This is the dedicated grounding-unaffected proof - a RICH live slice (two files;
+        // CONTAINS / REFERENCES / caller-attributed CALLS) over a table carrying MANY superseded rows,
+        // pruned NON-vacuously, returns the exact same nodes AND edges, and no live edge is removed at
+        // the storage layer either. It does NOT own the prune mechanism's exact reclamation semantics
+        // (criterion 1) or the bounded-growth regression (criterion 3) - only that LIVE is sacrosanct,
+        // so no grounding, blast-radius, or safe-superset consumer loses a reference it needs.
+        let p = Projector::open(":memory:", "test").unwrap();
+        let a = "src/a.rs";
+        let b = "src/b.rs";
+
+        // Project-scoped raw edge counts, straight from the private table, so the LIVE-invariant is
+        // proven at the storage layer INCLUDING the caller-attributed CALLS rows (from an entity, not
+        // the file, so `edges_from(a)` alone would miss them).
+        let count_live = |proj: &Projector| -> i64 {
+            let conn = proj.conn.lock().unwrap();
+            conn.query_row(
+                "SELECT COUNT(*) FROM edges WHERE valid_to IS NULL AND project = ?1",
+                params![proj.project],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        let count_superseded = |proj: &Projector| -> i64 {
+            let conn = proj.conn.lock().unwrap();
+            conn.query_row(
+                "SELECT COUNT(*) FROM edges WHERE valid_to IS NOT NULL AND project = ?1",
+                params![proj.project],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+
+        // a.rs is re-extracted across THREE runs, so the edges table accretes a superseded copy of its
+        // prior structural edges on every re-extraction - historical rows the live view never shows.
+        // b.rs is extracted ONCE and never re-extracted, contributing purely-live structure the prune
+        // must equally leave untouched.
+        //
+        // Run 1 (t=100s): a.rs defines foo + bar and CALLS helper from inside foo; b.rs defines gadget
+        // and CALLS widget from inside gadget.
+        apply_batch_def_at(&p, 1, a, "foo", 5, true, 100);
+        apply_batch_def_at(&p, 2, a, "bar", 9, false, 100);
+        apply_batch_ref_caller(&p, 3, a, "helper", "foo");
+        apply_batch_def_at(&p, 4, b, "gadget", 2, true, 100);
+        apply_batch_ref_caller(&p, 5, b, "widget", "gadget");
+
+        // Run 2 (t=200s): re-extract a.rs (bar deleted). The fresh event supersedes run-1's a.rs edges
+        // with valid_to=to_nanos(200s), then folds a.rs's new live structure.
+        apply_batch_def_at(&p, 10, a, "foo", 12, true, 200);
+        apply_batch_ref_caller(&p, 11, a, "helper", "foo");
+
+        // Run 3 (t=300s, the ACTIVE run): re-extract a.rs adding baz. Supersedes run-2's a.rs edges
+        // with valid_to=to_nanos(300s); folds a.rs's final live structure (foo, baz, helper).
+        apply_batch_def_at(&p, 20, a, "foo", 3, true, 300);
+        apply_batch_def_at(&p, 21, a, "baz", 7, false, 300);
+        apply_batch_ref_caller(&p, 22, a, "helper", "foo");
+
+        let boundary = to_nanos(UNIX_EPOCH + std::time::Duration::from_secs(300));
+
+        // Precondition (non-vacuity): the table genuinely carries superseded rows retired BEFORE the
+        // boundary - without them the prune is a no-op and the invariance vacuous.
+        let superseded_pre = count_superseded(&p);
+        assert!(
+            superseded_pre > 0,
+            "precondition: re-extraction accrued superseded historical rows to reclaim; got {superseded_pre}"
+        );
+        let live_pre = count_live(&p);
+
+        // The LIVE slice a grounding consumer reads, captured over BOTH files at a depth spanning the
+        // whole live structure, BEFORE the prune.
+        let seed = [a.to_string(), b.to_string()];
+        let before = live_slice(&p.subgraph(&seed, 3).unwrap());
+        assert!(
+            !before.0.is_empty() && !before.1.is_empty(),
+            "the captured live slice is non-empty - real nodes and edges to protect; got {before:?}"
+        );
+
+        // Prune the superseded edges at the active-run boundary (no dead-run nodes). This reclaims
+        // historical rows the live view never shows - and it MUST reclaim some, or the invariance
+        // below is proven only against a no-op.
+        let stats: PruneStats = p.prune(&[], Some(boundary)).unwrap();
+        assert!(
+            stats.superseded_edges > 0,
+            "the prune reclaimed historical rows (non-vacuous); got {stats:?}"
+        );
+        assert_eq!(
+            stats.nodes, 0,
+            "no node was named to drop - only the superseded-edge reclamation ran"
+        );
+
+        // THE criterion-2 proof: the LIVE slice a grounding consumer reads is EXACTLY the same after
+        // the prune - the same nodes AND the same edges. Grounding, blast-radius, and the two-view
+        // safe superset are unaffected because only historical rows were reclaimed.
+        let after = live_slice(&p.subgraph(&seed, 3).unwrap());
+        assert_eq!(
+            before, after,
+            "the live subgraph a grounding consumer reads is byte-for-byte unchanged by the prune"
+        );
+
+        // The LIVE-invariant at the storage layer: NOT ONE live edge was removed (a live edge outside
+        // the seeded slice would escape the subgraph check above but not this project-wide count),
+        // while the superseded tail genuinely shrank - the prune removed ONLY historical rows.
+        assert_eq!(
+            count_live(&p),
+            live_pre,
+            "no live edge is removed by the prune - the live edge count is unchanged (LIVE is sacrosanct)"
+        );
+        assert!(
+            count_superseded(&p) < superseded_pre,
+            "the superseded historical tail genuinely shrank; before={superseded_pre} after={}",
+            count_superseded(&p)
+        );
+    }
+
     #[test]
     fn a_cross_file_calls_edge_upgrades_ambiguous_to_inferred_with_its_references_twin() {
         // Spec 37 tier-consistency: a CALLS edge to a callee defined in ANOTHER file, folded BEFORE
