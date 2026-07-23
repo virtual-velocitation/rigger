@@ -199,11 +199,18 @@ fn cluster_detail_is_a_pure_stable_drill_that_never_dangles_an_edge() {
             "a returned edge {e:?} must have both endpoints in the rendered node set"
         );
     }
-    // The cap genuinely fired here, so at least one member (and thus its edges) was dropped: the
-    // no-dangle invariant above is exercised, not vacuous.
-    assert!(
-        first.edges.len() < spokes,
-        "some hub-to-spoke edges were dropped with their capped spokes, so no-dangle is non-vacuous"
+    // The cap genuinely fired here, and the no-dangle loop above is NON-VACUOUSLY exercised: pin the
+    // in-view edge count EXACTLY, not just "fewer than the spokes". The hub (highest intra-cluster
+    // degree) always survives, so the rendered set is the hub plus the CLUSTER_RENDER_BUDGET - 1
+    // smallest-id spokes; each surviving spoke keeps its single hub-edge, the dropped spokes take
+    // theirs away, so EXACTLY CLUSTER_RENDER_BUDGET - 1 edges remain in view. A positive exact count
+    // cannot be satisfied by an empty edge set, so were a regression to drop the hub (dangling every
+    // edge to zero) this assertion turns RED instead of passing vacuously through a 0-iteration loop.
+    assert_eq!(
+        first.edges.len(),
+        CLUSTER_RENDER_BUDGET - 1,
+        "the surviving hub keeps exactly its CLUSTER_RENDER_BUDGET - 1 kept-spoke edges, so the \
+         no-dangle check ran over a non-empty edge set (a dropped hub would zero this and go RED)"
     );
 }
 
