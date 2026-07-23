@@ -443,6 +443,56 @@ pub struct ProvenanceEdge {
     pub source: Position,
 }
 
+/// One super-node in the whole-graph clustered overview (spec 42 c2): a [`cluster_key`] bucket the
+/// KG panel draws as a single circle instead of its member nodes. `count` is how many graph nodes
+/// folded into it (the circle's size) and `kind` is its DOMINANT member kind (the kind the most of
+/// its members carry, for the circle's colour). Ties for the dominant kind resolve to the
+/// lexicographically-smallest kind, so a given graph yields one stable colour per cluster. Built by
+/// [`clustered_overview`] so the overview is a pure read over the already-projected graph.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct Cluster {
+    /// The cluster's fold key: a module DIRECTORY, the [`CLUSTER_ROOT`] sentinel, or a node KIND -
+    /// whatever [`cluster_key`] folded its members into. Also the panel's cluster label.
+    pub key: String,
+    /// The number of graph nodes that folded into this cluster (its super-node size).
+    pub count: usize,
+    /// The cluster's DOMINANT member kind (the most common kind among its members; ties broken by the
+    /// lexicographically-smallest kind), so the panel colours the super-node without re-counting.
+    pub kind: String,
+}
+
+/// A weighted, symmetric edge between two DIFFERENT clusters in the overview (spec 42 c2): its
+/// `weight` is the number of currently-valid graph edges that cross from one cluster to the other.
+/// Directionless - `from` and `to` are canonicalized so `from <= to` by cluster key - so an `a -> b`
+/// and a `b -> a` graph edge fold into ONE cluster edge whose weight sums both. Intra-cluster graph
+/// edges (both endpoints in one cluster, self-loops included) contribute nothing. Built by
+/// [`clustered_overview`], so the panel scales the line thickness by `weight` with no re-derivation.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct ClusterEdge {
+    /// The lexicographically-smaller endpoint cluster key (the canonical `from <= to` orientation).
+    pub from: String,
+    /// The lexicographically-larger endpoint cluster key.
+    pub to: String,
+    /// How many currently-valid graph edges cross between the two clusters (the line's thickness).
+    pub weight: usize,
+}
+
+/// The whole-graph clustered overview (spec 42 c2): the DEFAULT KG view. Every graph node is folded
+/// (by [`cluster_key`]) into a few dozen [`Cluster`] super-nodes and the [`ClusterEdge`]s among them,
+/// plus the full node `total` so the panel can say "N nodes in M clusters". Bounded by the module /
+/// kind count, never the node count, so it renders at any graph size. Built by [`clustered_overview`]
+/// as a pure read over the already-projected graph - it adds no event type and never touches the
+/// store; the panel drills a cluster (spec 42 c3) and finally seeds one node's neighborhood (spec 30).
+#[derive(Debug, Serialize, PartialEq, Eq, Default)]
+pub struct ClusterOverview {
+    /// The cluster super-nodes, ordered deterministically by [`Cluster::key`].
+    pub clusters: Vec<Cluster>,
+    /// The cross-cluster edges, ordered deterministically by `(from, to)` key.
+    pub edges: Vec<ClusterEdge>,
+    /// The full graph node count (every node, folded or not), so the panel reports the whole size.
+    pub total: usize,
+}
+
 /// One node in the run-tree SPINE (spec 30 c3): the run projected as
 /// `spec -> unit -> stage -> role -> agent`, each node carrying its live status plus the
 /// collapse/expand hints the client renders. It is a plain serde DTO built HERE from the
@@ -742,6 +792,97 @@ pub fn cluster_key(id: &str, kind: &str) -> String {
 
     // Every other node is a dev-loop node with no path id: cluster by its KIND.
     kind.to_string()
+}
+
+/// Fold the WHOLE graph into its clustered overview (spec 42 c2): the default KG view that renders a
+/// ~7k-node graph as a few dozen super-nodes. Every node is folded (by [`cluster_key`]) into a
+/// [`Cluster`] carrying its member count and its DOMINANT member kind; every currently-valid edge
+/// whose endpoints fall in two DIFFERENT clusters weights a symmetric [`ClusterEdge`]; and `total`
+/// carries the full node count. Deterministic by construction (folds over `BTreeMap`s keyed by
+/// cluster key / kind, so clusters and edges come out sorted and the dominant-kind tie resolves to
+/// the lexicographically-smallest kind). A pure read over the already-projected `graph`: it reads
+/// nothing from the store and adds no event type. Bounded by the module / kind count, never the node
+/// count, so it renders at any graph size; an empty graph yields an empty overview (zero clusters,
+/// zero total), never an error.
+pub fn clustered_overview(graph: &Graph) -> ClusterOverview {
+    // Fold every node into its cluster bucket, remembering each node's cluster (so edges can be
+    // classified) and, per bucket, the member count and a kind histogram (to pick the dominant kind).
+    // A `BTreeMap` keeps the buckets - and each bucket's kind histogram - in sorted order, so the
+    // overview is deterministic and the dominant-kind tie resolves to the smallest kind by iteration.
+    let mut node_cluster: BTreeMap<&str, String> = BTreeMap::new();
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    let mut kind_hist: BTreeMap<String, BTreeMap<&str, usize>> = BTreeMap::new();
+    for n in &graph.nodes {
+        let key = cluster_key(&n.id, &n.kind);
+        node_cluster.insert(n.id.as_str(), key.clone());
+        *counts.entry(key.clone()).or_default() += 1;
+        *kind_hist
+            .entry(key)
+            .or_default()
+            .entry(n.kind.as_str())
+            .or_default() += 1;
+    }
+
+    // Each bucket becomes a Cluster whose kind is its DOMINANT member kind: the kind with the highest
+    // member count, ties broken by the lexicographically-smallest kind. The histogram iterates in
+    // sorted kind order, so replacing only on a STRICTLY-greater count keeps the first (smallest) kind
+    // on a tie - the deterministic colour the spec requires by construction.
+    let clusters: Vec<Cluster> = counts
+        .into_iter()
+        .map(|(key, count)| {
+            let hist = kind_hist.remove(&key).unwrap_or_default();
+            let mut dominant = "";
+            let mut best = 0usize;
+            for (kind, c) in &hist {
+                if *c > best {
+                    best = *c;
+                    dominant = kind;
+                }
+            }
+            Cluster {
+                key,
+                count,
+                kind: dominant.to_string(),
+            }
+        })
+        .collect();
+
+    // Every currently-valid edge whose two endpoints are known nodes in DIFFERENT clusters weights a
+    // symmetric cluster edge. The endpoint pair is canonicalized (smaller cluster key first) so an
+    // `a -> b` and a `b -> a` graph edge fold into one weighted edge; an intra-cluster edge (both
+    // endpoints in one cluster, self-loops included) is skipped, and an invalidated edge counts for
+    // nothing (matching the currently-valid view the rest of the KG panel reads).
+    let mut weights: BTreeMap<(String, String), usize> = BTreeMap::new();
+    for e in &graph.edges {
+        if e.valid_to.is_some() {
+            continue;
+        }
+        let (Some(a), Some(b)) = (
+            node_cluster.get(e.from.as_str()),
+            node_cluster.get(e.to.as_str()),
+        ) else {
+            continue; // an endpoint that is not a known graph node has no cluster to weight
+        };
+        if a == b {
+            continue; // an intra-cluster edge (or self-loop) adds no cross-cluster weight
+        }
+        let pair = if a <= b {
+            (a.clone(), b.clone())
+        } else {
+            (b.clone(), a.clone())
+        };
+        *weights.entry(pair).or_default() += 1;
+    }
+    let edges: Vec<ClusterEdge> = weights
+        .into_iter()
+        .map(|((from, to), weight)| ClusterEdge { from, to, weight })
+        .collect();
+
+    ClusterOverview {
+        clusters,
+        edges,
+        total: graph.nodes.len(),
+    }
 }
 
 /// Compute the seeded neighborhood of `seed` WITHIN the already-projected `graph` (spec 30 c5): a
@@ -2951,6 +3092,109 @@ mod tests {
             cluster_key("src/dash.rs::cluster_key", KIND_CODE_ENTITY),
             cluster_key("src/dash.rs::neighborhood", KIND_CODE_ENTITY),
             "two entities in the same file fold to the same module bucket"
+        );
+    }
+
+    /// Spec 42 c2: [`clustered_overview`] folds the WHOLE graph into cluster super-nodes. Each
+    /// [`cluster_key`] bucket becomes a [`Cluster`] carrying its member COUNT and its DOMINANT member
+    /// KIND (ties broken by the lexicographically-smallest kind, so the colour is deterministic);
+    /// every currently-valid edge whose endpoints fall in two DIFFERENT clusters adds weight to a
+    /// symmetric [`ClusterEdge`] (an intra-cluster edge adds none, an invalidated edge counts for
+    /// nothing); and `total` carries the full node count. This test OWNS the overview aggregation; it
+    /// does NOT own the fold key (c1) or the drill projection (c3).
+    #[test]
+    fn clustered_overview_folds_the_graph_into_counted_dominant_kind_clusters_and_cross_cluster_edges(
+    ) {
+        let node = |id: &str, kind: &str| Node {
+            id: id.to_string(),
+            kind: kind.to_string(),
+            attrs: BTreeMap::new(),
+        };
+        let edge = |from: &str, to: &str, valid_to: Option<i64>| Edge {
+            from: from.to_string(),
+            to: to.to_string(),
+            rel: REL_REFERENCES.to_string(),
+            valid_from: 0,
+            valid_to,
+            source: 0,
+            tier: TIER_EXTRACTED.to_string(),
+        };
+        let graph = Graph {
+            nodes: vec![
+                // Cluster "src": one code-entity + one file -> count 2, kinds TIE 1-1, so the
+                // dominant kind resolves to the lexicographically-smallest ("code-entity" < "file").
+                node("src/a.rs::foo", KIND_CODE_ENTITY),
+                node("src/b.rs", KIND_FILE),
+                // Cluster "docs": three design-docs -> count 3, dominant "design-doc".
+                node("docs/x.md", KIND_DESIGN_DOC),
+                node("docs/y.md", KIND_DESIGN_DOC),
+                node("docs/z.md#s", KIND_DESIGN_DOC),
+                // Cluster "decision": two dev-loop decision nodes -> count 2, dominant "decision".
+                node("d1", KIND_DECISION),
+                node("d2", KIND_DECISION),
+            ],
+            edges: vec![
+                // Cross-cluster src<->docs, twice -> one symmetric edge of weight 2.
+                edge("src/a.rs::foo", "docs/x.md", None),
+                edge("src/b.rs", "docs/y.md", None),
+                // Cross-cluster decision<->src -> weight 1.
+                edge("d1", "src/a.rs::foo", None),
+                // INTRA-cluster (both in "src") -> adds NO weight.
+                edge("src/a.rs::foo", "src/b.rs", None),
+                // INTRA-cluster (both in "decision") -> adds NO weight.
+                edge("d1", "d2", None),
+                // Cross-cluster decision<->docs but INVALIDATED -> must NOT count.
+                edge("d2", "docs/x.md", Some(42)),
+            ],
+        };
+
+        let overview = clustered_overview(&graph);
+
+        // `total` is the FULL node count, independent of the cluster count.
+        assert_eq!(overview.total, 7, "total carries every node in the graph");
+
+        // Clusters come out deterministically ordered by key, each with its member count and its
+        // dominant kind; the "src" tie (1 code-entity vs 1 file) resolves to the smallest kind.
+        assert_eq!(
+            overview.clusters,
+            vec![
+                Cluster {
+                    key: "decision".to_string(),
+                    count: 2,
+                    kind: KIND_DECISION.to_string(),
+                },
+                Cluster {
+                    key: "docs".to_string(),
+                    count: 3,
+                    kind: KIND_DESIGN_DOC.to_string(),
+                },
+                Cluster {
+                    key: "src".to_string(),
+                    count: 2,
+                    kind: KIND_CODE_ENTITY.to_string(),
+                },
+            ],
+            "each cluster_key bucket folds to a counted, dominant-kind Cluster; the src tie resolves to the smallest kind"
+        );
+
+        // Only cross-cluster, currently-valid edges carry weight; symmetric pairs canonicalize to
+        // from<=to and merge, so src<->docs (twice) is one weight-2 edge, and the invalidated
+        // decision<->docs edge is absent entirely.
+        assert_eq!(
+            overview.edges,
+            vec![
+                ClusterEdge {
+                    from: "decision".to_string(),
+                    to: "src".to_string(),
+                    weight: 1,
+                },
+                ClusterEdge {
+                    from: "docs".to_string(),
+                    to: "src".to_string(),
+                    weight: 2,
+                },
+            ],
+            "cross-cluster currently-valid edges weight symmetric ClusterEdges; intra-cluster and invalidated edges add none"
         );
     }
 
