@@ -27,8 +27,8 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use rigger::contextgraph::{
-    Edge, Graph, Node, KIND_DECISION, KIND_UNIT, REL_DECIDED, REL_REFERENCES, TIER_EXTRACTED,
-    TIER_INFERRED,
+    Edge, Graph, Node, KIND_CODE_ENTITY, KIND_DECISION, KIND_UNIT, REL_DECIDED, REL_REFERENCES,
+    TIER_EXTRACTED, TIER_INFERRED,
 };
 use rigger::dash::{self, DashInputs};
 
@@ -1352,5 +1352,133 @@ fn the_served_root_page_ships_the_tier_toggles_and_the_explain_provenance() {
     assert!(
         page.contains("kggod") && page.contains("onpath"),
         "the c7 tier filter must coexist with (not replace) the c6 god/path render"
+    );
+}
+
+/// A two-module + decision fixture the EXPLORATION route (spec 42 c4) drills, overviews, and seeds
+/// over the real socket: two distinct file directories (`src/a`, `src/b`) fold to two file clusters
+/// and a bare `decision` node folds by KIND, so the three served views are visibly different.
+fn exploration_graph() -> Graph {
+    let ce = |id: &str| Node {
+        id: id.to_string(),
+        kind: KIND_CODE_ENTITY.to_string(),
+        attrs: BTreeMap::new(),
+    };
+    let refs = |from: &str, to: &str| Edge {
+        from: from.to_string(),
+        to: to.to_string(),
+        rel: REL_REFERENCES.to_string(),
+        valid_from: 0,
+        valid_to: None,
+        source: 0,
+        tier: TIER_EXTRACTED.to_string(),
+    };
+    Graph {
+        nodes: vec![
+            ce("src/a/mod.rs::foo"), // cluster "src/a"
+            ce("src/a/mod.rs::bar"), // cluster "src/a"
+            ce("src/b/mod.rs::baz"), // cluster "src/b"
+            Node {
+                id: "d1".to_string(),
+                kind: KIND_DECISION.to_string(),
+                attrs: BTreeMap::new(),
+            }, // cluster "decision"
+        ],
+        edges: vec![
+            refs("src/a/mod.rs::foo", "src/a/mod.rs::bar"), // intra src/a
+            refs("src/a/mod.rs::bar", "src/b/mod.rs::baz"), // cross src/a <-> src/b
+            refs("d1", "src/a/mod.rs::foo"),                // cross decision <-> src/a
+        ],
+    }
+}
+
+/// The SERVED `/api/graph` route is ONE endpoint with THREE views selected by parameter (spec 42
+/// c4), proven over the REAL `serve` socket: `cluster=<key>` returns the cluster DRILL, an empty
+/// `seed` with no `cluster` returns the clustered OVERVIEW (the default KG view), and a non-empty
+/// `seed` returns the spec-30 SEEDED neighborhood unchanged. The pure in-process `route` test in
+/// `dash.rs` is blind to the serve/framing seam; this proves the exploration dispatch reaches the
+/// browser end-to-end and self-discriminates by JSON shape.
+#[test]
+fn the_served_graph_route_dispatches_the_exploration_overview_drill_and_seed() {
+    let graph = exploration_graph();
+
+    let served = |path: &str| -> serde_json::Value {
+        let resp = fetch_served(path, &graph);
+        assert!(
+            resp.starts_with("HTTP/1.1 200 OK"),
+            "GET {path} is served 200 over the real socket:\n{resp}"
+        );
+        assert!(
+            resp.contains("application/json"),
+            "the served exploration route is self-contained JSON:\n{resp}"
+        );
+        serde_json::from_str(body_of(&resp)).expect("the served body is valid JSON")
+    };
+
+    // DRILL: `cluster=src%2Fa` (the `/` in the module key is `encodeURIComponent`d) is decoded back
+    // and returns the src/a cluster's members as a neighborhood echoing the cluster key as its seed.
+    let drill = served("/api/graph?cluster=src%2Fa");
+    assert_eq!(
+        drill["seed"], "src/a",
+        "the served drill echoes the decoded cluster key as its seed: {drill}"
+    );
+    let drill_ids: BTreeSet<&str> = drill["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        drill_ids,
+        ["src/a/mod.rs::foo", "src/a/mod.rs::bar"]
+            .into_iter()
+            .collect(),
+        "the served drill returns exactly the src/a members: {drill}"
+    );
+
+    // OVERVIEW: the no-argument request returns the whole-graph fold (clusters + total), NOT a
+    // neighborhood - the default KG view the panel loads on open.
+    let overview = served("/api/graph");
+    assert_eq!(
+        overview["total"], 4,
+        "the served overview reports the full node total: {overview}"
+    );
+    assert!(
+        overview["nodes"].is_null(),
+        "the served overview is an overview, not a neighborhood (no nodes key): {overview}"
+    );
+    let keys: BTreeSet<&str> = overview["clusters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["key"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        keys,
+        ["decision", "src/a", "src/b"].into_iter().collect(),
+        "the served overview folds the graph into its three clusters: {overview}"
+    );
+
+    // SEED: a non-empty seed returns the spec-30 neighborhood unchanged - depth-1 from `d1` reaches
+    // {d1, foo}, the seed is echoed, and no overview/drill key rides the body.
+    let seeded = served("/api/graph?seed=d1&depth=1");
+    assert_eq!(
+        seeded["seed"], "d1",
+        "the served seeded route echoes the seed: {seeded}"
+    );
+    assert!(
+        seeded["clusters"].is_null() && seeded["truncated"].is_null(),
+        "the served seeded neighborhood carries no overview/drill keys: {seeded}"
+    );
+    let seeded_ids: BTreeSet<&str> = seeded["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        seeded_ids,
+        ["d1", "src/a/mod.rs::foo"].into_iter().collect(),
+        "the served depth-1 neighborhood of d1 is {{d1, foo}}: {seeded}"
     );
 }
