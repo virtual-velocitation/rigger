@@ -252,3 +252,37 @@ fn clustered_overview_folds_a_kind_named_directory_into_one_deterministic_cluste
     );
     assert_eq!(overview.total, 3, "every node is still counted in total");
 }
+
+/// The overview folds an EMPTY graph into a well-formed EMPTY overview, never an error, and that empty
+/// shape is exactly `ClusterOverview::default()`. This pins two boundary facts the in-module unit test
+/// (populated graph only) leaves unproven: that `clustered_overview`'s documented empty-graph edge
+/// ("zero clusters, zero total, never an error") actually holds, and that the DERIVED public
+/// `ClusterOverview::default()` is reachable across the crate boundary and yields that same empty shape,
+/// the empty value the c4 route dispatch and the c6 empty/degraded path lean on. c2 owns the pure fold
+/// over an empty graph; it does NOT own the c6 route-level empty handling, which this never drives.
+#[test]
+fn clustered_overview_over_an_empty_graph_is_the_default_empty_overview() {
+    let graph = Graph {
+        nodes: vec![],
+        edges: vec![],
+    };
+
+    let overview = clustered_overview(&graph);
+
+    assert_eq!(overview.total, 0, "an empty graph has zero nodes in total");
+    assert!(
+        overview.clusters.is_empty(),
+        "an empty graph yields no cluster super-nodes"
+    );
+    assert!(
+        overview.edges.is_empty(),
+        "an empty graph yields no cross-cluster edges"
+    );
+    // The derived, publicly-reachable Default is the same empty overview the empty-graph fold produces
+    // - so a caller (the c4 route, the c6 empty path) can use either and get an identical wire shape.
+    assert_eq!(
+        overview,
+        ClusterOverview::default(),
+        "the empty-graph fold equals ClusterOverview::default(): the empty value callers rely on"
+    );
+}
