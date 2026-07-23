@@ -253,6 +253,9 @@ function __parseDecisions(html){
   return out;
 }
 const document = { getElementById: function(id){ return __els[id] || (__els[id] = new __El(id)); } };
+// The page (spec 42 c5) installs its drag-pan handlers on the window global at load; a faithful
+// browser shim provides it (a no-op addEventListener; this harness only drives the decisions region).
+const window = { addEventListener: function(){} };
 const fetch = function(){ return Promise.reject(new Error("no network in the render harness")); };
 const setTimeout = function(){ return 0; };
 `;
@@ -398,6 +401,9 @@ Object.defineProperty(__El.prototype, "textContent", { get(){ return this._text;
 __El.prototype.querySelectorAll = function(){ return []; };
 __El.prototype.addEventListener = function(){};
 const document = { getElementById: function(id){ return __els[id] || (__els[id] = new __El(id)); } };
+// The page (spec 42 c5) installs its drag-pan handlers on the window global at load; a faithful
+// browser shim provides it (a no-op addEventListener; this harness only drives the decisions region).
+const window = { addEventListener: function(){} };
 const fetch = function(){ return Promise.reject(new Error("no network in the preview harness")); };
 const setTimeout = function(){ return 0; };
 `;
