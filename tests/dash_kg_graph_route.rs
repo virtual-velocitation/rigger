@@ -350,6 +350,9 @@ Object.defineProperty(__El.prototype, "textContent", { get(){ return this._text;
 __El.prototype.querySelectorAll = function(){ return []; };
 __El.prototype.addEventListener = function(t,f){ (this._listeners[t]=this._listeners[t]||[]).push(f); };
 const document = { getElementById: function(id){ return __els[id] || (__els[id] = new __El(id)); } };
+// The page (spec 42 c5) installs its drag-pan handlers on the window global at load; a faithful
+// browser shim provides it (a no-op addEventListener; this harness only loads-and-dispatches).
+const window = { addEventListener: function(){} };
 const fetch = function(url){
   if (String(url).indexOf("/api/graph") !== -1) {
     __fetchedGraphUrl = String(url);
@@ -782,6 +785,9 @@ Object.defineProperty(__El.prototype, "textContent", { get(){ return this._text;
 __El.prototype.querySelectorAll = function(){ return []; };
 __El.prototype.addEventListener = function(t,f){ (this._listeners[t]=this._listeners[t]||[]).push(f); };
 const document = { getElementById: function(id){ return __els[id] || (__els[id] = new __El(id)); } };
+// The page (spec 42 c5) installs its drag-pan handlers on the window global at load; a faithful
+// browser shim provides it (a no-op addEventListener; this harness only loads-and-dispatches).
+const window = { addEventListener: function(){} };
 const fetch = function(url){
   if (String(url).indexOf("/api/graph") !== -1) {
     __fetchedGraphUrl = String(url);
@@ -1197,6 +1203,9 @@ Object.defineProperty(__El.prototype, "textContent", { get(){ return this._text;
 __El.prototype.querySelectorAll = function(){ return []; };
 __El.prototype.addEventListener = function(t,f){ (this._listeners[t]=this._listeners[t]||[]).push(f); };
 const document = { getElementById: function(id){ return __els[id] || (__els[id] = new __El(id)); } };
+// The page (spec 42 c5) installs its drag-pan handlers on the window global at load; a faithful
+// browser shim provides it (a no-op addEventListener; this harness only loads-and-dispatches).
+const window = { addEventListener: function(){} };
 const fetch = function(url){ return Promise.reject(new Error("no network for " + url)); };
 const setTimeout = function(){ return 0; };
 `;
