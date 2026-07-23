@@ -2444,6 +2444,116 @@ mod tests {
     }
 
     #[test]
+    fn pruning_keeps_the_superseded_edge_count_bounded_by_the_window_across_n_re_extractions() {
+        // Spec 41 criterion 3 (OWNS the bounded-growth regression). The measured failure was the
+        // superseded-edge table growing WITHOUT bound as runs re-extract: every re-extraction's
+        // `fresh` batch boundary retires the file's prior live structural edges (spec 29a), and
+        // before spec 41 nothing reclaimed them - 301,156 superseded rows piled up, ~90% of the
+        // table and 70MB of an 83MB graph, slow enough on every fold to stall a loop run. This
+        // proves the fix BOUNDS that growth: re-extracting the SAME file N times accretes O(N)
+        // superseded rows, but a prune at the active-run boundary leaves a count fixed by the
+        // RETENTION WINDOW (the most recent run's supersessions), NOT growing with N. It is proven
+        // for two Ns an order of magnitude apart - the pre-prune tail scales with N while the
+        // post-prune count is IDENTICAL - so a regression that stopped reclaiming would make the two
+        // post-prune counts diverge and fail here.
+        //
+        // Scope is strictly the O(N) bound: the LIVE-untouched / subgraph-equivalence guarantee is
+        // criterion 2's to own, and the prune mechanism itself is criterion 1's. The single
+        // live-count assertion here is a guard on this test's premise, not the owned criterion.
+
+        // Re-extract a file with a STABLE two-definition shape (foo + bar) across `runs` runs, run r
+        // at t=100*r s. Run r's FIRST event is `fresh`, so it retires run (r-1)'s two live CONTAINS
+        // edges, stamping their valid_to = to_nanos(100*r), then the batch re-folds the two live
+        // edges. Prune at the ACTIVE run's (run `runs`) boundary and return the superseded/live row
+        // counts read straight from the edge table, before and after the prune.
+        let experiment = |runs: u64| -> (usize, usize, usize, usize) {
+            let p = Projector::open(":memory:", "test").unwrap();
+            let file = "src/a.rs";
+            let mut pos = 0u64;
+            for r in 1..=runs {
+                let secs = 100 * r;
+                pos += 1;
+                apply_batch_def_at(&p, pos, file, "foo", 5, true, secs); // fresh: retires prior live
+                pos += 1;
+                apply_batch_def_at(&p, pos, file, "bar", 9, false, secs);
+            }
+            // Count the file's outgoing CONTAINS rows by liveness, straight from the table (the live
+            // `subgraph` filter hides the superseded ones this bound is about).
+            let superseded = |p: &Projector| {
+                edges_from(p, file)
+                    .into_iter()
+                    .filter(|(_, _, vt)| vt.is_some())
+                    .count()
+            };
+            let live = |p: &Projector| {
+                edges_from(p, file)
+                    .into_iter()
+                    .filter(|(_, _, vt)| vt.is_none())
+                    .count()
+            };
+            let superseded_before = superseded(&p);
+            let live_before = live(&p);
+            // The active run's start is the retention boundary (the same run-boundary attribution
+            // `reset --runs` uses): reclaim only superseded rows retired BEFORE it.
+            let boundary = to_nanos(UNIX_EPOCH + std::time::Duration::from_secs(100 * runs));
+            let stats = p.prune(&[], Some(boundary)).unwrap();
+            let superseded_after = superseded(&p);
+            let live_after = live(&p);
+            // The prune's reported reclamation equals the rows it actually removed from the table.
+            assert_eq!(
+                stats.superseded_edges,
+                superseded_before - superseded_after,
+                "prune's reported superseded_edges equals the superseded rows it removed (runs={runs})"
+            );
+            (superseded_before, superseded_after, live_before, live_after)
+        };
+
+        let (before_5, after_5, live_before_5, live_after_5) = experiment(5);
+        let (before_50, after_50, live_before_50, live_after_50) = experiment(50);
+
+        // UNBOUNDED WITHOUT THE PRUNE: the superseded tail grows O(N) with re-extractions - each of
+        // the (runs - 1) supersessions retires the stable 2-edge shape, so before any prune the
+        // count is 2*(runs - 1), and an order-of-magnitude-larger N carries an order-of-magnitude-
+        // larger tail (the unbounded accumulation spec 41 measured).
+        assert_eq!(
+            before_5,
+            2 * (5 - 1),
+            "5 re-extractions accrue 2*(5-1) superseded rows"
+        );
+        assert_eq!(
+            before_50,
+            2 * (50 - 1),
+            "50 re-extractions accrue 2*(50-1) superseded rows"
+        );
+        assert!(
+            before_50 > before_5,
+            "the pre-prune superseded tail GROWS with N: {before_50} (N=50) > {before_5} (N=5)"
+        );
+
+        // BOUNDED WITH THE PRUNE: after the active-run-boundary prune, the superseded count is fixed
+        // by the retention window - exactly the most recent run's supersessions (the stable 2-edge
+        // shape, retired AT the boundary and so kept as recent history) - independent of N. The
+        // count is IDENTICAL for N=5 and N=50: the regression guard, since a reclamation that
+        // stopped would leave O(N) rows and the two counts would diverge.
+        assert_eq!(
+            after_5, 2,
+            "after the prune only the last run's 2 supersessions (the window) remain, not O(N)"
+        );
+        assert_eq!(
+            after_50, after_5,
+            "the post-prune superseded count is bounded by the window - IDENTICAL for N=50 and N=5, not O(N): {after_50} vs {after_5}"
+        );
+
+        // Premise guard (criterion 2 OWNS the full live-invariant): the active run's live shape is
+        // unchanged by the prune and independent of N - the prune reclaimed history only.
+        assert_eq!(
+            (live_before_5, live_after_5, live_before_50, live_after_50),
+            (2, 2, 2, 2),
+            "the prune leaves the active run's live edges untouched (a guard; criterion 2 owns this)"
+        );
+    }
+
+    #[test]
     fn a_cross_file_calls_edge_upgrades_ambiguous_to_inferred_with_its_references_twin() {
         // Spec 37 tier-consistency: a CALLS edge to a callee defined in ANOTHER file, folded BEFORE
         // that definition exists, is tiered AMBIGUOUS - then the definition's convergent upgrade
