@@ -9,16 +9,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 
 use super::{
-    Edge, Error, Graph, Node, Projection, KIND_AGENT, KIND_ARCH_DECISION, KIND_ARTIFACT,
-    KIND_CODE_ENTITY, KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, KIND_FINDING, KIND_GATE,
-    KIND_HANDBOOK_RULE, KIND_LESSON, KIND_RATIONALE, KIND_UNIT, META_ACTOR, REL_ABOUT,
-    REL_ASSIGNED_TO, REL_BLOCKS, REL_CALLS, REL_CONSTRAINS, REL_CONTAINS, REL_DECIDED,
-    REL_DOC_REFERENCES, REL_EXPLAINS, REL_GATED_BY, REL_GOVERNS, REL_RAISED, REL_REFERENCES,
-    REL_SPECIFIES, REL_SUPERSEDES, REL_TOUCHES, TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED,
-    TYPE_ALIAS_DEFINED, TYPE_ALIAS_UNRESOLVED, TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE,
-    TYPE_DOC_CONCEPT_EXTRACTED, TYPE_DOC_LINK_EXTRACTED, TYPE_EDGE_INFERRED, TYPE_FILE_TOUCHED,
-    TYPE_GATE_VERDICT, TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED,
-    TYPE_UNIT_STARTED,
+    Edge, Error, Graph, Node, Projection, KIND_ARCH_DECISION, KIND_ARTIFACT, KIND_CODE_ENTITY,
+    KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, KIND_FINDING, KIND_HANDBOOK_RULE, KIND_LESSON,
+    KIND_RATIONALE, REL_ABOUT, REL_CALLS, REL_CONSTRAINS, REL_CONTAINS, REL_DOC_REFERENCES,
+    REL_EXPLAINS, REL_GOVERNS, REL_RAISED, REL_REFERENCES, REL_SPECIFIES, REL_SUPERSEDES,
+    TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED, TYPE_ALIAS_DEFINED, TYPE_ALIAS_UNRESOLVED,
+    TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED,
+    TYPE_DOC_LINK_EXTRACTED, TYPE_EDGE_INFERRED, TYPE_FILE_TOUCHED, TYPE_GATE_VERDICT,
+    TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
 };
 use crate::eventstore::{Event, Position};
 use crate::spawn::{SpawnResult, TYPE_SPAWN_RESULT};
@@ -449,20 +447,11 @@ fn fold(tx: &Transaction, e: &Event, project: &str) -> Result<(), Error> {
                 &[("summary", &d.summary)],
                 project,
             )?;
-            // DECIDED: the acting agent (from event metadata) made this decision.
-            if let Some(actor) = e.meta.get(META_ACTOR).filter(|a| !a.is_empty()) {
-                ensure_node(tx, actor, KIND_AGENT, &[], project)?;
-                add_edge(
-                    tx,
-                    actor,
-                    &d.id,
-                    REL_DECIDED,
-                    at,
-                    e.position,
-                    project,
-                    TIER_EXTRACTED,
-                )?;
-            }
+            // De-noise (spec 43): the graph models the TARGET PROJECT, not the loop's own
+            // machinery, so no fold produces a KIND_AGENT node or an agent-attribution edge.
+            // The acting persona (event actor) is NOT projected - the decision's CONTENT and its
+            // GOVERNS edges to the code it concerns are what the graph is about. The actor stays
+            // in the log for metrics and the run-tree, which read events, not this projection.
             for path in &d.governs {
                 let canonical = resolve_in_tx(tx, path);
                 ensure_node(tx, &canonical, KIND_ARTIFACT, &[], project)?;
@@ -501,94 +490,29 @@ fn fold(tx: &Transaction, e: &Event, project: &str) -> Result<(), Error> {
             }
         }
         TYPE_FILE_TOUCHED => {
-            let f: super::FileTouched = serde_json::from_slice(&e.data).map_err(be)?;
-            let path = resolve_in_tx(tx, &f.path);
-            ensure_node(tx, &path, KIND_ARTIFACT, &[], project)?;
-            if !f.by.is_empty() {
-                ensure_node(tx, &f.by, KIND_AGENT, &[], project)?;
-                add_edge(
-                    tx,
-                    &f.by,
-                    &path,
-                    REL_TOUCHES,
-                    at,
-                    e.position,
-                    project,
-                    TIER_EXTRACTED,
-                )?;
-            }
+            // De-noise (spec 43): `agent --TOUCHES--> file` is run machinery, not the target
+            // project's structure, so this arm is a graph no-op. The FileTouched event stays in
+            // the log (metrics and the run-tree read it); it just no longer projects a KIND_AGENT
+            // node or a REL_TOUCHES edge. The file's node, when it is one, is created by the code
+            // structure folds and by the decisions/findings that GOVERN / are ABOUT it.
         }
         TYPE_GATE_VERDICT => {
-            let g: super::GateVerdict = serde_json::from_slice(&e.data).map_err(be)?;
-            ensure_node(
-                tx,
-                &g.gate,
-                KIND_GATE,
-                &[("pass", &g.pass.to_string())],
-                project,
-            )?;
-            if !g.artifact.is_empty() {
-                let artifact = resolve_in_tx(tx, &g.artifact);
-                ensure_node(tx, &artifact, KIND_ARTIFACT, &[], project)?;
-                add_edge(
-                    tx,
-                    &artifact,
-                    &g.gate,
-                    REL_GATED_BY,
-                    at,
-                    e.position,
-                    project,
-                    TIER_EXTRACTED,
-                )?;
-            }
+            // De-noise (spec 43): a gate is run machinery, not the target project, so this arm is
+            // a graph no-op - no KIND_GATE node, no REL_GATED_BY edge. The GateVerdict event stays
+            // in the log, where metrics (per-gate remediation counts) and the run-tree read it.
         }
         TYPE_UNIT_STARTED => {
-            let u: super::UnitStarted = serde_json::from_slice(&e.data).map_err(be)?;
-            ensure_node(
-                tx,
-                &u.unit,
-                KIND_UNIT,
-                &[("criterion", &u.criterion), ("status", "started")],
-                project,
-            )?;
-            // ASSIGNED_TO: the unit is assigned to its agent.
-            if !u.agent.is_empty() {
-                ensure_node(tx, &u.agent, KIND_AGENT, &[], project)?;
-                add_edge(
-                    tx,
-                    &u.unit,
-                    &u.agent,
-                    REL_ASSIGNED_TO,
-                    at,
-                    e.position,
-                    project,
-                    TIER_EXTRACTED,
-                )?;
-            }
-            // BLOCKS: each dependency blocks this unit until it lands.
-            for need in &u.needs {
-                ensure_node(tx, need, KIND_UNIT, &[], project)?;
-                add_edge(
-                    tx,
-                    need,
-                    &u.unit,
-                    REL_BLOCKS,
-                    at,
-                    e.position,
-                    project,
-                    TIER_EXTRACTED,
-                )?;
-            }
+            // De-noise (spec 43): a unit is run machinery, not the target project, so this arm is
+            // a graph no-op - no KIND_UNIT node, no KIND_AGENT node, no REL_ASSIGNED_TO / REL_BLOCKS
+            // edge. The UnitStarted event stays in the log; the run-tree projects units/stages
+            // straight from events (its proper home), and metrics reads it for units-started.
         }
         TYPE_UNIT_INTEGRATED => {
             let u: super::UnitIntegrated = serde_json::from_slice(&e.data).map_err(be)?;
-            ensure_node(
-                tx,
-                &u.unit,
-                KIND_UNIT,
-                &[("commit", &u.commit), ("status", "integrated")],
-                project,
-            )?;
+            // De-noise (spec 43): no KIND_UNIT node is projected (a unit is run machinery). But the
+            // integrate still drives disposition-expiry below - the LIFECYCLE the fold owns, which
+            // reads the finding's `$.unit` string attribute (a token, never a KIND_UNIT node) and
+            // is therefore unaffected by dropping the unit node.
             // Disposition-expiry (spec 25, criterion 2 - the UPHELD-AND-ADDRESSED trigger's
             // INVALIDATE half): integrating a unit ADDRESSES every finding its review upheld,
             // so those findings are now resolved. The adjudicator's earlier SpawnResult marked
@@ -647,9 +571,11 @@ fn fold(tx: &Transaction, e: &Event, project: &str) -> Result<(), Error> {
             // node carries the summary, the reviewer (`by`), and the unit; an ABOUT
             // edge ties it to each file it concerns (so a later reviewer grounded on
             // those files reaches it the same way it reaches the decisions that GOVERN
-            // them); and a RAISED edge records the reviewer's provenance (the
-            // DECIDED-style link). The actor metadata, when present, takes precedence
-            // over `by` as the provenance source so it matches the other folds.
+            // them). De-noise (spec 43): the reviewer's provenance is NOT projected as a
+            // KIND_AGENT node or a REL_RAISED edge - that agent attribution is run
+            // machinery, not the target project. The `by` reviewer stays as a node
+            // ATTRIBUTE on the finding (read by consumers off the content node), and the
+            // event's actor stays in the log for metrics and the run-tree.
             let f: super::ReviewFinding = serde_json::from_slice(&e.data).map_err(be)?;
             ensure_node(
                 tx,
@@ -658,25 +584,6 @@ fn fold(tx: &Transaction, e: &Event, project: &str) -> Result<(), Error> {
                 &[("summary", &f.summary), ("by", &f.by), ("unit", &f.unit)],
                 project,
             )?;
-            let raiser = e
-                .meta
-                .get(META_ACTOR)
-                .filter(|a| !a.is_empty())
-                .map(String::as_str)
-                .unwrap_or(f.by.as_str());
-            if !raiser.is_empty() {
-                ensure_node(tx, raiser, KIND_AGENT, &[], project)?;
-                add_edge(
-                    tx,
-                    raiser,
-                    &f.id,
-                    REL_RAISED,
-                    at,
-                    e.position,
-                    project,
-                    TIER_EXTRACTED,
-                )?;
-            }
             for path in &f.about {
                 let canonical = resolve_in_tx(tx, path);
                 ensure_node(tx, &canonical, KIND_ARTIFACT, &[], project)?;
@@ -1237,6 +1144,13 @@ fn add_edge(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Machinery kinds/rels the fold no longer projects (spec 43 de-noise): imported here because
+    // only these tests - which PROVE the machinery is gone - still name them. REL_RAISED stays in
+    // the module-level import (invalidate_finding_edges still references it).
+    use super::super::{
+        KIND_AGENT, KIND_GATE, KIND_UNIT, META_ACTOR, REL_ASSIGNED_TO, REL_BLOCKS, REL_DECIDED,
+        REL_GATED_BY, REL_TOUCHES,
+    };
 
     fn apply_decision(
         p: &Projector,
@@ -1374,22 +1288,28 @@ mod tests {
         assert_eq!(governs, 1, "a replayed event must not double the edge");
     }
 
-    /// Fold a `FileTouched` (`by` touches `path`) from its raw on-log JSON at `pos`, exactly the
-    /// event the loop records each time an agent writes a file. `secs` sets the event's
-    /// valid-from (when the touch happened) so a test can assert the collapsed edge keeps the
-    /// EARLIEST assertion time; `pos` becomes the edge's `source`, so the LATEST assertion wins.
-    fn apply_touch(p: &Projector, pos: u64, by: &str, path: &str, secs: u64) {
-        let payload = serde_json::json!({ "path": path, "by": by });
-        let mut e = Event::new(TYPE_FILE_TOUCHED, serde_json::to_vec(&payload).unwrap())
+    /// Fold a `DecisionMade` (`id` GOVERNS `path`) from its raw on-log JSON at `pos`, with the
+    /// event's valid-from set to `secs`. GOVERNS (decision -> file) is the SURVIVING content edge
+    /// the spec-40 upsert-live dedup is demonstrated over: the fold no longer projects the old
+    /// `agent --TOUCHES--> file` machinery edge (spec 43 de-noise), but `add_edge`'s collapse-a-
+    /// re-assertion-into-the-one-live-edge behaviour is edge-agnostic, so a re-asserted
+    /// decision->file GOVERNS edge exercises it exactly as a re-touch once did. `secs` sets the
+    /// event's valid-from so a test can assert the collapsed edge keeps the EARLIEST assertion
+    /// time; `pos` becomes the edge's `source`, so the LATEST assertion wins.
+    fn apply_governs_at(p: &Projector, pos: u64, id: &str, path: &str, secs: u64) {
+        let payload = serde_json::json!({
+            "id": id, "summary": "x", "governs": [path], "supersedes": "",
+        });
+        let mut e = Event::new(TYPE_DECISION_MADE, serde_json::to_vec(&payload).unwrap())
             .with_valid_from(UNIX_EPOCH + std::time::Duration::from_secs(secs));
         e.position = pos;
         p.apply(&e).unwrap();
     }
 
-    /// Every LIVE `TOUCHES` edge as `(from, to, source, valid_from)`, read straight from the
+    /// Every LIVE `GOVERNS` edge as `(from, to, source, valid_from)`, read straight from the
     /// table (not through the live `subgraph` filter), so a test can COUNT the rows and prove a
     /// re-assertion collapsed into the one existing live edge rather than accreting a row per fold.
-    fn live_touches(p: &Projector) -> Vec<(String, String, i64, i64)> {
+    fn live_governs(p: &Projector) -> Vec<(String, String, i64, i64)> {
         let conn = p.conn.lock().unwrap();
         let mut stmt = conn
             .prepare(
@@ -1397,7 +1317,7 @@ mod tests {
                  WHERE rel = ?1 AND valid_to IS NULL ORDER BY from_id, to_id",
             )
             .unwrap();
-        stmt.query_map(params![REL_TOUCHES], |r| {
+        stmt.query_map(params![REL_GOVERNS], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
@@ -1410,41 +1330,83 @@ mod tests {
         .unwrap()
     }
 
+    /// Every node as `(id, kind)`.
+    type NodeKinds = Vec<(String, String)>;
+    /// Every live edge as `(from, rel, to)`.
+    type LiveEdges = Vec<(String, String, String)>;
+
+    /// Every node's `(id, kind)` and every LIVE edge's `(from, rel, to)`, read straight from the
+    /// tables. Unlike a seeded `subgraph`, this sees the WHOLE graph, so a test can prove a node
+    /// kind or edge rel is ABSENT everywhere (a seeded neighborhood could only prove local absence).
+    fn all_nodes_edges(p: &Projector) -> (NodeKinds, LiveEdges) {
+        let conn = p.conn.lock().unwrap();
+        let nodes = {
+            let mut s = conn
+                .prepare("SELECT id, kind FROM nodes ORDER BY id")
+                .unwrap();
+            s.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap()
+        };
+        let edges = {
+            let mut s = conn
+                .prepare(
+                    "SELECT from_id, rel, to_id FROM edges
+                     WHERE valid_to IS NULL ORDER BY from_id, rel, to_id",
+                )
+                .unwrap();
+            s.query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+        };
+        (nodes, edges)
+    }
+
     #[test]
-    fn touches_folds_to_one_live_edge_with_latest_provenance() {
-        // Spec 40 criterion 1: every `FileTouched` re-asserts `agent --TOUCHES--> file`, and the
-        // old bare-insert fold appended a fresh live row per touch (measured: 45 identical live
-        // rows for a single relationship - 60% of the live graph redundant). The upsert-live fold
-        // collapses a re-assertion into the ONE existing live edge, bumping its provenance to the
-        // LATEST assertion (source) and keeping the EARLIEST valid_from - so N touches yield
-        // exactly ONE live edge, while a DIFFERENT agent or a DIFFERENT file still folds its own
-        // distinct live edge (dedup removes only EXACT (from, rel, to, tier) duplicates).
+    fn re_asserted_governs_folds_to_one_live_edge_with_latest_provenance() {
+        // Spec 40 criterion 1 (demonstrated over the surviving GOVERNS edge after the spec 43
+        // de-noise dropped the old TOUCHES machinery vehicle): every re-fold of a decision that
+        // GOVERNS a file re-asserts `decision --GOVERNS--> file`, and the old bare-insert fold
+        // appended a fresh live row per assertion (measured worst case: 45 identical live rows for
+        // a single relationship). The upsert-live fold collapses a re-assertion into the ONE
+        // existing live edge, bumping its provenance to the LATEST assertion (source) and keeping
+        // the EARLIEST valid_from - so N re-assertions yield exactly ONE live edge, while a
+        // DIFFERENT decision or a DIFFERENT file still folds its own distinct live edge (dedup
+        // removes only EXACT (from, rel, to, tier) duplicates).
         let p = Projector::open(":memory:", "test").unwrap();
 
-        // agent-a touches src/f.rs four times (positions 10..=13; valid_from 100..=400s).
-        apply_touch(&p, 10, "agent-a", "src/f.rs", 100);
-        apply_touch(&p, 11, "agent-a", "src/f.rs", 200);
-        apply_touch(&p, 12, "agent-a", "src/f.rs", 300);
-        apply_touch(&p, 13, "agent-a", "src/f.rs", 400);
+        // d1 governs src/f.rs four times (positions 10..=13; valid_from 100..=400s).
+        apply_governs_at(&p, 10, "d1", "src/f.rs", 100);
+        apply_governs_at(&p, 11, "d1", "src/f.rs", 200);
+        apply_governs_at(&p, 12, "d1", "src/f.rs", 300);
+        apply_governs_at(&p, 13, "d1", "src/f.rs", 400);
 
-        // A DIFFERENT agent and a DIFFERENT file each fold their own distinct live edge.
-        apply_touch(&p, 14, "agent-b", "src/f.rs", 500);
-        apply_touch(&p, 15, "agent-a", "src/g.rs", 600);
+        // A DIFFERENT decision and a DIFFERENT file each fold their own distinct live edge.
+        apply_governs_at(&p, 14, "d2", "src/f.rs", 500);
+        apply_governs_at(&p, 15, "d1", "src/g.rs", 600);
 
         let f = to_nanos(UNIX_EPOCH + std::time::Duration::from_secs(100));
         let g = to_nanos(UNIX_EPOCH + std::time::Duration::from_secs(600));
         let b = to_nanos(UNIX_EPOCH + std::time::Duration::from_secs(500));
         assert_eq!(
-            live_touches(&p),
+            live_governs(&p),
             vec![
-                // a->f collapsed from FOUR folds to ONE: source = latest (13), valid_from = earliest.
-                ("agent-a".to_string(), "src/f.rs".to_string(), 13, f),
-                // a different FILE is a distinct edge, untouched by the a->f dedup.
-                ("agent-a".to_string(), "src/g.rs".to_string(), 15, g),
-                // a different AGENT is a distinct edge, untouched by the a->f dedup.
-                ("agent-b".to_string(), "src/f.rs".to_string(), 14, b),
+                // d1->f collapsed from FOUR folds to ONE: source = latest (13), valid_from = earliest.
+                ("d1".to_string(), "src/f.rs".to_string(), 13, f),
+                // a different FILE is a distinct edge, untouched by the d1->f dedup.
+                ("d1".to_string(), "src/g.rs".to_string(), 15, g),
+                // a different DECISION is a distinct edge, untouched by the d1->f dedup.
+                ("d2".to_string(), "src/f.rs".to_string(), 14, b),
             ],
-            "N touches of one relationship collapse to ONE live edge (source=latest, valid_from=earliest); a different agent/file keeps its own distinct live edge"
+            "N re-assertions of one relationship collapse to ONE live edge (source=latest, valid_from=earliest); a different decision/file keeps its own distinct live edge"
         );
     }
 
@@ -1546,16 +1508,17 @@ mod tests {
         // their own single live edge. This owns the rebuild-dedup; it leans on (but does not own)
         // the upsert-live fold arm (criterion 1) or the live-only scoping (criterion 2).
 
-        // The canonical log the rebuild re-folds: agent-a --TOUCHES--> src/f.rs re-asserted 45
-        // times (the measured worst case - one `FileTouched` fold per touch), interleaved with two
-        // DISTINCT relationships (a different agent, a different file) that must each survive the
-        // rebuild as their own single live edge.
+        // The canonical log the rebuild re-folds: decision d1 --GOVERNS--> src/f.rs re-asserted 45
+        // times (the measured worst case - one fold per re-assertion), interleaved with two
+        // DISTINCT relationships (a different decision, a different file) that must each survive the
+        // rebuild as their own single live edge. GOVERNS is the surviving content edge the dedup is
+        // demonstrated over after the spec 43 de-noise dropped the old TOUCHES machinery vehicle.
         let fold_log = |p: &Projector| {
             for pos in 1..=45u64 {
-                apply_touch(p, pos, "agent-a", "src/f.rs", 100 * pos);
+                apply_governs_at(p, pos, "d1", "src/f.rs", 100 * pos);
             }
-            apply_touch(p, 46, "agent-b", "src/f.rs", 5000);
-            apply_touch(p, 47, "agent-a", "src/g.rs", 6000);
+            apply_governs_at(p, 46, "d2", "src/f.rs", 5000);
+            apply_governs_at(p, 47, "d1", "src/g.rs", 6000);
         };
 
         // PREMISE - reproduce the dirty on-disk graph the OLD bare-insert left behind. Each of the
@@ -1571,9 +1534,9 @@ mod tests {
                     "INSERT INTO edges (from_id, to_id, rel, valid_from, valid_to, source, project, tier)
                      VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7)",
                     params![
-                        "agent-a",
+                        "d1",
                         "src/f.rs",
-                        REL_TOUCHES,
+                        REL_GOVERNS,
                         to_nanos(UNIX_EPOCH + std::time::Duration::from_secs((100 * pos) as u64)),
                         pos,
                         "test",
@@ -1584,13 +1547,13 @@ mod tests {
             }
         }
         assert_eq!(
-            live_touches(&dirty).len(),
+            live_governs(&dirty).len(),
             45,
             "premise: the old bare-insert fold left K=45 identical live rows for one relationship - the duplicates a rebuild must collapse"
         );
 
         // REBUILD - discard the dirty graph and fold the SAME log from scratch into a FRESH, EMPTY
-        // projection. Every relationship collapses to exactly ONE live edge: the 45-fold agent-a
+        // projection. Every relationship collapses to exactly ONE live edge: the 45-fold d1
         // ->src/f.rs to a single row (source = latest position 45, valid_from = earliest), and the
         // two DISTINCT relationships each to their own single live edge.
         let rebuilt = Projector::open(":memory:", "test").unwrap();
@@ -1600,15 +1563,15 @@ mod tests {
         let g = to_nanos(UNIX_EPOCH + std::time::Duration::from_secs(6000));
         let b = to_nanos(UNIX_EPOCH + std::time::Duration::from_secs(5000));
         let want = vec![
-            // agent-a->src/f.rs: 45 duplicate live edges collapsed to ONE (source=45, valid_from=earliest).
-            ("agent-a".to_string(), "src/f.rs".to_string(), 45, f),
+            // d1->src/f.rs: 45 duplicate live edges collapsed to ONE (source=45, valid_from=earliest).
+            ("d1".to_string(), "src/f.rs".to_string(), 45, f),
             // a different FILE is a distinct relationship, its own single live edge.
-            ("agent-a".to_string(), "src/g.rs".to_string(), 47, g),
-            // a different AGENT is a distinct relationship, its own single live edge.
-            ("agent-b".to_string(), "src/f.rs".to_string(), 46, b),
+            ("d1".to_string(), "src/g.rs".to_string(), 47, g),
+            // a different DECISION is a distinct relationship, its own single live edge.
+            ("d2".to_string(), "src/f.rs".to_string(), 46, b),
         ];
         assert_eq!(
-            live_touches(&rebuilt),
+            live_governs(&rebuilt),
             want,
             "a rebuild collapses the 45 duplicate live edges to exactly ONE per (from, rel, to, tier); distinct relationships each survive as their own single live edge"
         );
@@ -1618,7 +1581,7 @@ mod tests {
         let rebuilt_again = Projector::open(":memory:", "test").unwrap();
         fold_log(&rebuilt_again);
         assert_eq!(
-            live_touches(&rebuilt_again),
+            live_governs(&rebuilt_again),
             want,
             "rebuilding the same log from scratch re-derives the identical deduped live edges"
         );
@@ -2790,7 +2753,10 @@ mod tests {
     }
 
     #[test]
-    fn decided_edge_links_the_acting_agent() {
+    fn decision_fold_projects_no_agent_node_or_decided_edge() {
+        // De-noise (spec 43): the acting persona is run machinery, not the target project, so a
+        // DecisionMade - even carrying an event actor - projects NO KIND_AGENT node and NO REL_DECIDED
+        // attribution edge. Its CONTENT survives: the decision node and its GOVERNS edge to the code.
         let p = Projector::open(":memory:", "test").unwrap();
         let payload = serde_json::json!({"id": "d1", "summary": "x", "governs": ["mod.rs"]});
         let mut e = Event::new(TYPE_DECISION_MADE, serde_json::to_vec(&payload).unwrap());
@@ -2798,21 +2764,39 @@ mod tests {
         e.meta.insert(META_ACTOR.to_string(), "agent-7".to_string());
         p.apply(&e).unwrap();
         let g = p.subgraph(&["d1".to_string()], 2).unwrap();
+        // Content survives.
+        assert!(
+            g.nodes
+                .iter()
+                .any(|n| n.id == "d1" && n.kind == KIND_DECISION),
+            "the decision content node survives the de-noise"
+        );
         assert!(
             g.edges
                 .iter()
-                .any(|x| x.rel == REL_DECIDED && x.from == "agent-7" && x.to == "d1"),
-            "DECIDED(agent-7 -> d1) must come from the event actor"
+                .any(|x| x.rel == REL_GOVERNS && x.from == "d1" && x.to == "mod.rs"),
+            "the decision's GOVERNS edge to the code it concerns survives"
+        );
+        // Machinery is gone.
+        assert!(
+            !g.nodes.iter().any(|n| n.kind == KIND_AGENT),
+            "no KIND_AGENT node is projected for the acting persona"
+        );
+        assert!(
+            !g.edges.iter().any(|x| x.rel == REL_DECIDED),
+            "no REL_DECIDED agent-attribution edge is projected"
         );
     }
 
     #[test]
     fn review_finding_creates_a_finding_node_about_each_file() {
-        // A ReviewFinding folds into a KIND_FINDING node carrying its summary, an
-        // ABOUT edge to each file it concerns, and a RAISED edge from the reviewer.
-        // The finding is reachable from the file it is ABOUT - the same traversal that
-        // returns the decisions GOVERNING the file - so a later reviewer grounded on
-        // that file retrieves it through the graph, not via hand-threaded prompts.
+        // A ReviewFinding folds into a KIND_FINDING node carrying its summary (and the reviewer
+        // as a node ATTRIBUTE), and an ABOUT edge to each file it concerns. The finding is
+        // reachable from the file it is ABOUT - the same traversal that returns the decisions
+        // GOVERNING the file - so a later reviewer grounded on that file retrieves it through the
+        // graph, not via hand-threaded prompts. De-noise (spec 43): the reviewer's provenance is
+        // NOT projected as a KIND_AGENT node or a REL_RAISED edge (that agent attribution is run
+        // machinery); the `by` reviewer remains only as the finding node's `by` attribute.
         let p = Projector::open(":memory:", "test").unwrap();
         let payload = serde_json::json!({
             "id": "f1",
@@ -2844,18 +2828,22 @@ mod tests {
                 .any(|x| x.rel == REL_ABOUT && x.from == "f1" && x.to == "combat.rs"),
             "ABOUT(f1 -> combat.rs)"
         );
+        // Machinery is gone: no reviewer agent node, no RAISED attribution edge.
         assert!(
-            g.edges
-                .iter()
-                .any(|x| x.rel == REL_RAISED && x.from == "tech-lens" && x.to == "f1"),
-            "RAISED(tech-lens -> f1): the reviewer's provenance"
+            !g.nodes.iter().any(|n| n.kind == KIND_AGENT),
+            "no KIND_AGENT node is projected for the reviewer"
+        );
+        assert!(
+            !g.edges.iter().any(|x| x.rel == REL_RAISED),
+            "no REL_RAISED agent-attribution edge is projected"
         );
     }
 
     #[test]
-    fn review_finding_actor_meta_takes_precedence_for_the_raised_edge() {
-        // The acting agent from the event's actor metadata is the RAISED source,
-        // matching the DecisionMade DECIDED fold. It takes precedence over `by`.
+    fn review_finding_projects_no_raised_edge_even_with_an_event_actor() {
+        // De-noise (spec 43): a ReviewFinding carrying an event actor still projects NO KIND_AGENT
+        // node and NO REL_RAISED edge - the agent attribution is run machinery, dropped for both
+        // the `by` reviewer and the actor override. Only the finding's CONTENT node survives.
         let p = Projector::open(":memory:", "test").unwrap();
         let payload = serde_json::json!({
             "id": "f1", "summary": "x", "about": ["a.rs"],
@@ -2867,10 +2855,18 @@ mod tests {
         p.apply(&e).unwrap();
         let g = p.subgraph(&["f1".to_string()], 2).unwrap();
         assert!(
-            g.edges
+            g.nodes
                 .iter()
-                .any(|x| x.rel == REL_RAISED && x.from == "adversary" && x.to == "f1"),
-            "RAISED(adversary -> f1) must come from the event actor"
+                .any(|n| n.id == "f1" && n.kind == KIND_FINDING),
+            "the finding content node survives the de-noise"
+        );
+        assert!(
+            !g.nodes.iter().any(|n| n.kind == KIND_AGENT),
+            "no KIND_AGENT node is projected for the actor"
+        );
+        assert!(
+            !g.edges.iter().any(|x| x.rel == REL_RAISED),
+            "no REL_RAISED edge is projected even when an event actor is present"
         );
     }
 
@@ -3050,7 +3046,8 @@ mod tests {
         let p = Projector::open(":memory:", "test").unwrap();
         // f-a is upheld for unit u1 (which will integrate); f-b is upheld for unit u2 (which
         // will NOT integrate). Emitted in production shape: id/by/summary/about + meta.spawn,
-        // no data.unit.
+        // no data.unit. (After the spec 43 de-noise a finding carries only its ABOUT edge - the
+        // RAISED agent-attribution edge is no longer projected - so integration invalidates ABOUT.)
         apply_review_finding(&p, 1, "f-a", "lens:sdet", "u1/lens:sdet#0", &["a.rs"]);
         apply_review_finding(&p, 2, "f-b", "lens:arch", "u2/lens:arch#0", &["b.rs"]);
 
@@ -3098,6 +3095,14 @@ mod tests {
         assert!(
             after.nodes.iter().any(|n| n.id == "f-b"),
             "an upheld finding whose unit has NOT integrated stays live"
+        );
+        // Spec 43 criterion 3 (LIFECYCLE survives the de-noise): disposition-expiry fired above
+        // even though NO KIND_UNIT node was ever created for u1 - the invalidation reads the
+        // finding's `$.unit` string attribute (a token), not a unit node.
+        let (nodes, _) = all_nodes_edges(&p);
+        assert!(
+            !nodes.iter().any(|(_, k)| k == KIND_UNIT),
+            "no KIND_UNIT node is projected, yet the integrate still drove disposition-expiry"
         );
     }
 
@@ -3237,25 +3242,243 @@ mod tests {
     }
 
     #[test]
-    fn unit_started_creates_assigned_to_and_blocks() {
+    fn unit_started_folds_to_no_node_or_edge() {
+        // De-noise (spec 43): a unit, its assigned agent, and its dependency edges are all run
+        // machinery, not the target project, so a UnitStarted folds to NOTHING in the graph - no
+        // KIND_UNIT node, no KIND_AGENT node, no REL_ASSIGNED_TO / REL_BLOCKS edge. The event stays
+        // in the log, where the run-tree (units/stages) and metrics read it. Seeding the graph on
+        // any of the ids the event named returns an empty neighborhood.
         let p = Projector::open(":memory:", "test").unwrap();
         let payload =
             serde_json::json!({"unit": "u2", "criterion": "c", "agent": "impl", "needs": ["u1"]});
         let mut e = Event::new(TYPE_UNIT_STARTED, serde_json::to_vec(&payload).unwrap());
         e.position = 1;
         p.apply(&e).unwrap();
-        let g = p.subgraph(&["u2".to_string()], 2).unwrap();
+        for seed in [["u2"], ["u1"], ["impl"]] {
+            let g = p
+                .subgraph(&seed.iter().map(|s| s.to_string()).collect::<Vec<_>>(), 2)
+                .unwrap();
+            assert!(
+                g.nodes.is_empty() && g.edges.is_empty(),
+                "a UnitStarted event folds to no node/edge; seeding {seed:?} gave {g:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn machinery_is_gone_after_folding_a_full_run() {
+        // Spec 43 criterion 1 (OWNS the machinery drop): after folding a run's FileTouched,
+        // UnitStarted, UnitIntegrated, GateVerdict, DecisionMade, and ReviewFinding events, the
+        // projection contains NO harness machinery anywhere - no KIND_AGENT / KIND_UNIT / KIND_GATE
+        // node, no REL_TOUCHES edge, and no agent-attribution edge (RAISED or DECIDED, nor the
+        // ASSIGNED_TO / BLOCKS / GATED_BY machinery edges). The graph models the TARGET PROJECT
+        // (its code and the design memory about it), not the loop's own bookkeeping.
+        let p = Projector::open(":memory:", "test").unwrap();
+
+        // DecisionMade with an acting agent (event actor), governing a file.
+        let mut d = Event::new(
+            TYPE_DECISION_MADE,
+            serde_json::to_vec(&serde_json::json!({
+                "id": "d1", "summary": "x", "governs": ["combat.rs"], "supersedes": ""
+            }))
+            .unwrap(),
+        );
+        d.position = 1;
+        d.meta
+            .insert(META_ACTOR.to_string(), "rust-engineer".to_string());
+        p.apply(&d).unwrap();
+
+        // FileTouched (agent touches file).
+        let mut ft = Event::new(
+            TYPE_FILE_TOUCHED,
+            serde_json::to_vec(&serde_json::json!({ "path": "combat.rs", "by": "rust-engineer" }))
+                .unwrap(),
+        );
+        ft.position = 2;
+        p.apply(&ft).unwrap();
+
+        // GateVerdict on the file.
+        let mut gv = Event::new(
+            TYPE_GATE_VERDICT,
+            serde_json::to_vec(
+                &serde_json::json!({ "gate": "cargo test", "pass": true, "artifact": "combat.rs" }),
+            )
+            .unwrap(),
+        );
+        gv.position = 3;
+        p.apply(&gv).unwrap();
+
+        // UnitStarted (unit assigned to an agent, blocked by another unit).
+        let mut us = Event::new(
+            TYPE_UNIT_STARTED,
+            serde_json::to_vec(&serde_json::json!({
+                "unit": "u2", "criterion": "c", "agent": "impl", "needs": ["u1"]
+            }))
+            .unwrap(),
+        );
+        us.position = 4;
+        p.apply(&us).unwrap();
+
+        // ReviewFinding raised by a reviewer about the file.
+        let mut rf = Event::new(
+            TYPE_REVIEW_FINDING,
+            serde_json::to_vec(&serde_json::json!({
+                "id": "f1", "by": "tech-lens", "unit": "u2", "summary": "y", "about": ["combat.rs"]
+            }))
+            .unwrap(),
+        );
+        rf.position = 5;
+        p.apply(&rf).unwrap();
+
+        // UnitIntegrated.
+        let mut ui = Event::new(
+            TYPE_UNIT_INTEGRATED,
+            serde_json::to_vec(&serde_json::json!({ "id": "u2", "commit": "abc" })).unwrap(),
+        );
+        ui.position = 6;
+        p.apply(&ui).unwrap();
+
+        let (nodes, edges) = all_nodes_edges(&p);
+        for kind in [KIND_AGENT, KIND_UNIT, KIND_GATE] {
+            assert!(
+                !nodes.iter().any(|(_, k)| k == kind),
+                "no {kind} machinery node is projected; got nodes {nodes:?}"
+            );
+        }
+        for rel in [
+            REL_TOUCHES,
+            REL_RAISED,
+            REL_DECIDED,
+            REL_ASSIGNED_TO,
+            REL_BLOCKS,
+            REL_GATED_BY,
+        ] {
+            assert!(
+                !edges.iter().any(|(_, r, _)| r == rel),
+                "no {rel} machinery edge is projected; got edges {edges:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn content_survives_the_de_noise() {
+        // Spec 43 criterion 2 (OWNS content preservation): the same fold that drops machinery STILL
+        // produces the KIND_DECISION / KIND_FINDING / KIND_LESSON content nodes and their edges to
+        // the code they concern (GOVERNS for a decision, ABOUT for a finding and a lesson). Only the
+        // agent attribution is absent. It does NOT own the machinery drop (criterion 1).
+        let p = Projector::open(":memory:", "test").unwrap();
+        apply_decision(&p, 1, "d1", "use the shared authority", &["combat.rs"], "");
+        apply_review_finding(&p, 2, "f1", "tech-lens", "u1/tech-lens#0", &["combat.rs"]);
+        let mut le = Event::new(
+            TYPE_LESSON_LEARNED,
+            serde_json::to_vec(
+                &serde_json::json!({ "id": "l1", "summary": "z", "about": ["combat.rs"] }),
+            )
+            .unwrap(),
+        );
+        le.position = 3;
+        p.apply(&le).unwrap();
+
+        let g = p.subgraph(&["combat.rs".to_string()], 2).unwrap();
+        // Content nodes survive, reachable from the code they concern.
+        assert!(
+            g.nodes
+                .iter()
+                .any(|n| n.id == "d1" && n.kind == KIND_DECISION),
+            "the decision content node survives"
+        );
+        assert!(
+            g.nodes
+                .iter()
+                .any(|n| n.id == "f1" && n.kind == KIND_FINDING),
+            "the finding content node survives"
+        );
+        assert!(
+            g.nodes
+                .iter()
+                .any(|n| n.id == "l1" && n.kind == KIND_LESSON),
+            "the lesson content node survives"
+        );
+        // Content edges to the code survive.
         assert!(
             g.edges
                 .iter()
-                .any(|x| x.rel == REL_ASSIGNED_TO && x.from == "u2" && x.to == "impl"),
-            "ASSIGNED_TO(u2 -> impl)"
+                .any(|e| e.rel == REL_GOVERNS && e.from == "d1" && e.to == "combat.rs"),
+            "the decision's GOVERNS edge survives"
         );
         assert!(
             g.edges
                 .iter()
-                .any(|x| x.rel == REL_BLOCKS && x.from == "u1" && x.to == "u2"),
-            "BLOCKS(u1 -> u2)"
+                .any(|e| e.rel == REL_ABOUT && e.from == "f1" && e.to == "combat.rs"),
+            "the finding's ABOUT edge survives"
+        );
+        assert!(
+            g.edges
+                .iter()
+                .any(|e| e.rel == REL_ABOUT && e.from == "l1" && e.to == "combat.rs"),
+            "the lesson's ABOUT edge survives"
+        );
+        // Only the agent attribution is absent.
+        assert!(
+            !g.nodes.iter().any(|n| n.kind == KIND_AGENT),
+            "no agent attribution node survives"
+        );
+        assert!(
+            !g.edges
+                .iter()
+                .any(|e| e.rel == REL_RAISED || e.rel == REL_DECIDED),
+            "no agent attribution edge survives"
+        );
+    }
+
+    #[test]
+    fn consumers_read_the_log_not_the_dropped_machinery_nodes() {
+        // Spec 43 criterion 4 (OWNS the safe-consumer guarantee): metrics folds the EVENT LOG, never
+        // the graph, so dropping the unit/gate nodes cannot change what it reports. Fold a run's
+        // UnitStarted + GateVerdicts into the de-noised projection AND compute metrics from the same
+        // events: the graph carries NO KIND_UNIT / KIND_GATE node, yet metrics still counts the unit
+        // from the log - proving the consumer never depended on the dropped nodes. It does NOT own
+        // content preservation (criterion 2).
+        let unit_started = {
+            // Production shape: the conductor emits UnitStarted with an `id` and `agent` (metrics
+            // keys on `id`), plus the `unit` the fold once read.
+            let mut e = Event::new(
+                TYPE_UNIT_STARTED,
+                serde_json::to_vec(&serde_json::json!({
+                    "id": "u1", "unit": "u1", "criterion": "c", "agent": "impl", "needs": []
+                }))
+                .unwrap(),
+            );
+            e.position = 1;
+            e
+        };
+        let gate_pass = {
+            let mut e = Event::new(
+                TYPE_GATE_VERDICT,
+                serde_json::to_vec(&serde_json::json!({ "gate": "cargo test", "pass": true }))
+                    .unwrap(),
+            );
+            e.position = 2;
+            e
+        };
+        let events = vec![unit_started, gate_pass];
+
+        // Fold into the (de-noised) graph.
+        let p = Projector::open(":memory:", "test").unwrap();
+        for e in &events {
+            p.apply(e).unwrap();
+        }
+        let (nodes, _) = all_nodes_edges(&p);
+        assert!(
+            !nodes.iter().any(|(_, k)| k == KIND_UNIT || k == KIND_GATE),
+            "the de-noised graph carries no unit/gate machinery node; got {nodes:?}"
+        );
+
+        // Metrics reads the LOG and is unaffected by the absent nodes.
+        let m = crate::metrics::project(&events);
+        assert_eq!(
+            m.units_started, 1,
+            "metrics counts the unit from the event log, not the (absent) graph node"
         );
     }
 
@@ -3660,8 +3883,10 @@ mod tests {
         //
         // One shared graph.db, two Projectors ("alpha", "beta"). BOTH fold a decision "d1" (and
         // an artifact "shared.rs") - the SAME seed ids under both projects - plus a
-        // project-UNIQUE neighbor decision ("only-alpha" / "only-beta") governing the same file
-        // and a project-unique DECIDING agent. On a shared backend the two projects occupy
+        // project-UNIQUE neighbor decision ("only-alpha" / "only-beta") governing the same file.
+        // Each decision carries an actor, but the de-noise (spec 43) drops it: no agent node is
+        // projected, so scoping is proven over the surviving decision/file nodes. On a shared
+        // backend the two projects occupy
         // DISTINCT global positions (the `Namespaced` decorator scopes streams over one global
         // log), so distinct positions keep the shared `applied` ledger from mistaking beta's
         // fold for an already-applied one.
@@ -3709,12 +3934,15 @@ mod tests {
             );
         }
         // alpha's own neighborhood is intact (the filter isolates, it does not empty the graph).
-        for kept in ["only-alpha", "agent-alpha"] {
-            assert!(
-                ag.nodes.iter().any(|n| n.id == kept),
-                "alpha's own node {kept} stays reachable under scope, got {ag:?}"
-            );
-        }
+        assert!(
+            ag.nodes.iter().any(|n| n.id == "only-alpha"),
+            "alpha's own node only-alpha stays reachable under scope, got {ag:?}"
+        );
+        // De-noise (spec 43): the DECIDING agent is never a node, in either project's read.
+        assert!(
+            !ag.nodes.iter().any(|n| n.kind == KIND_AGENT),
+            "no KIND_AGENT node is projected (the actor is dropped), got {ag:?}"
+        );
 
         // beta's read is the mirror image over the SAME shared backend.
         let bg = beta.subgraph(&["shared.rs".to_string()], 2).unwrap();
@@ -3735,12 +3963,14 @@ mod tests {
                 "beta's read must not surface alpha-only node {leaked}, got {bg:?}"
             );
         }
-        for kept in ["only-beta", "agent-beta"] {
-            assert!(
-                bg.nodes.iter().any(|n| n.id == kept),
-                "beta's own node {kept} stays reachable under scope, got {bg:?}"
-            );
-        }
+        assert!(
+            bg.nodes.iter().any(|n| n.id == "only-beta"),
+            "beta's own node only-beta stays reachable under scope, got {bg:?}"
+        );
+        assert!(
+            !bg.nodes.iter().any(|n| n.kind == KIND_AGENT),
+            "no KIND_AGENT node is projected in beta's read either, got {bg:?}"
+        );
     }
 
     #[test]
@@ -4006,24 +4236,25 @@ mod tests {
         // Each project's rebuilt subgraph reaches EXACTLY its own nodes - never the other's, even
         // though both share the seed ids d1 and shared.rs. Exact-set equality pins BOTH failure
         // directions at once: no beta node leaks into alpha's rebuild (over-reach), and none of
-        // alpha's own nodes go missing (under-derivation). agent-alpha/agent-beta are reached at
-        // depth 2 (shared.rs <- d1/only-* via GOVERNS, then agent -> decision via DECIDED), so the
-        // set exercises node, edge, and traversal re-derivation together.
-        let want = |own_decision: &str, own_agent: &str| -> BTreeSet<String> {
-            ["shared.rs", "d1", own_decision, own_agent]
+        // alpha's own nodes go missing (under-derivation). Each decision carries an actor, but the
+        // de-noise (spec 43) drops it - no agent node is re-derived - so the scoped set is the
+        // shared file, the shared decision id, and the project-unique decision, exercising node,
+        // edge, and traversal re-derivation together.
+        let want = |own_decision: &str| -> BTreeSet<String> {
+            ["shared.rs", "d1", own_decision]
                 .iter()
                 .map(|s| s.to_string())
                 .collect()
         };
         assert_eq!(
             scoped.get("alpha"),
-            Some(&want("only-alpha", "agent-alpha")),
+            Some(&want("only-alpha")),
             "the rebuilt alpha subgraph reaches EXACTLY alpha's own nodes (no beta leak, none \
              missing), got {scoped:?}"
         );
         assert_eq!(
             scoped.get("beta"),
-            Some(&want("only-beta", "agent-beta")),
+            Some(&want("only-beta")),
             "the rebuilt beta subgraph reaches EXACTLY beta's own nodes (no alpha leak, none \
              missing), got {scoped:?}"
         );

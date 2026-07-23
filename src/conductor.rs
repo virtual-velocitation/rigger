@@ -14964,7 +14964,11 @@ mod tests {
     }
 
     #[test]
-    fn agent_decision_creates_a_decided_edge() {
+    fn agent_decision_folds_content_but_no_agent_attribution() {
+        // De-noise (spec 43): a live run's DecisionMade folds its CONTENT - the decision node and
+        // its GOVERNS edge to the code it concerns - but NOT the acting agent. Even though the emit
+        // stamps the actor 'a', no KIND_AGENT node and no REL_DECIDED attribution edge is projected;
+        // the graph models the target project, not the persona that acted.
         let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
         let mut cfg = Config::default();
         cfg.agents.insert("a".into(), agent("a"));
@@ -14998,10 +15002,22 @@ mod tests {
         run(&cfg, &deps).unwrap();
         let g = graph.subgraph(&["d1".to_string()], 2).unwrap();
         assert!(
+            g.nodes.iter().any(|n| n.id == "d1"),
+            "the decision content node is folded"
+        );
+        assert!(
             g.edges
                 .iter()
-                .any(|e| e.rel == contextgraph::REL_DECIDED && e.from == "a" && e.to == "d1"),
-            "the acting agent 'a' must DECIDE d1 (actor stamped on the emit)"
+                .any(|e| e.rel == contextgraph::REL_GOVERNS && e.from == "d1" && e.to == "f.rs"),
+            "the decision's GOVERNS edge to the code it concerns is folded"
+        );
+        assert!(
+            !g.edges.iter().any(|e| e.rel == contextgraph::REL_DECIDED),
+            "de-noise (spec 43): no REL_DECIDED agent-attribution edge is folded"
+        );
+        assert!(
+            !g.nodes.iter().any(|n| n.kind == contextgraph::KIND_AGENT),
+            "de-noise (spec 43): no KIND_AGENT node is folded for the acting persona"
         );
     }
 
@@ -19460,10 +19476,11 @@ mod tests {
     }
 
     #[test]
-    fn live_run_produces_a_gated_by_edge() {
-        // After a stage with a gate touches a file and integrates, the graph must
-        // carry GATED_BY(file -> gate): the conductor emits a GateVerdict carrying
-        // the artifact, which the projector folds (§7, Phase 2 carryover).
+    fn live_run_folds_no_gate_machinery() {
+        // De-noise (spec 43): a gate is run machinery, not the target project. After a stage with a
+        // gate touches a file and integrates, the conductor still emits a GateVerdict (metrics and
+        // the run-tree read it from the log), but the fold projects NO KIND_GATE node and NO
+        // GATED_BY edge - the graph carries none of the gate bookkeeping.
         let repo = init_repo();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
@@ -19494,12 +19511,16 @@ mod tests {
             criteria: Vec::new(),
         };
         run(&cfg, &deps).unwrap();
-        let g = graph.subgraph(&["touched.rs".to_string()], 2).unwrap();
+        let g = graph
+            .subgraph(&["touched.rs".to_string(), "ok".to_string()], 2)
+            .unwrap();
         assert!(
-            g.edges.iter().any(|e| e.rel == contextgraph::REL_GATED_BY
-                && e.from == "touched.rs"
-                && e.to == "ok"),
-            "the live run must fold GATED_BY(touched.rs -> ok) after the stage integrates"
+            !g.edges.iter().any(|e| e.rel == contextgraph::REL_GATED_BY),
+            "de-noise (spec 43): the live run folds NO GATED_BY gate-machinery edge"
+        );
+        assert!(
+            !g.nodes.iter().any(|n| n.kind == contextgraph::KIND_GATE),
+            "de-noise (spec 43): the live run folds NO KIND_GATE node"
         );
     }
 

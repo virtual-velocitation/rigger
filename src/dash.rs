@@ -1655,23 +1655,35 @@ fn spec_of(unit_id: &str) -> String {
     }
 }
 
-/// The node ids to seed the context subgraph with: every unit, decision, and finding id
-/// named in the run's own events. Seeding by the ids the run actually produced (rather
-/// than a blast-radius file walk) lets the subgraph return their authoritative nodes and
-/// the valid SUPERSEDES edges among them at a shallow depth, independent of whether the
-/// run emitted the file-touch edges that would otherwise connect them.
+/// The node ids to seed the context subgraph with: every decision and finding the run produced,
+/// plus the files those decisions GOVERN and those findings are ABOUT. De-noise (spec 43): the
+/// graph no longer carries a KIND_UNIT node, so a unit-id seed would land nowhere. The run-tree's
+/// click-to-seed is therefore re-pointed OFF the unit and ONTO the decisions and files that unit
+/// produced (which remain in the graph) - so clicking a unit still lands on a real, non-empty
+/// neighborhood. Seeding by the ids the run actually produced (rather than a blast-radius file
+/// walk) lets the subgraph return their authoritative nodes and the valid SUPERSEDES edges among
+/// them at a shallow depth, independent of whether the run emitted the file edges that connect them.
 pub fn graph_seeds(events: &[Event]) -> Vec<String> {
-    use crate::contextgraph::{TYPE_DECISION_MADE, TYPE_REVIEW_FINDING, TYPE_UNIT_STARTED};
+    use crate::contextgraph::{TYPE_DECISION_MADE, TYPE_REVIEW_FINDING};
     let mut seeds: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for e in events {
-        let key = match e.type_.as_str() {
-            TYPE_DECISION_MADE | TYPE_REVIEW_FINDING => "id",
-            TYPE_UNIT_STARTED => "unit",
+        let files_key = match e.type_.as_str() {
+            TYPE_DECISION_MADE => "governs",
+            TYPE_REVIEW_FINDING => "about",
             _ => continue,
         };
-        if let Some(id) = field_str(e, key) {
+        // The content node id (the decision / finding itself).
+        if let Some(id) = field_str(e, "id") {
             if !id.is_empty() {
                 seeds.insert(id);
+            }
+        }
+        // The files it concerns - the code the unit produced, reached now that the unit node is
+        // gone. An unknown/unmatched seed contributes nothing, so a raw path that never became a
+        // node is harmless.
+        for f in field_str_array(e, files_key) {
+            if !f.is_empty() {
+                seeds.insert(f);
             }
         }
     }
@@ -1700,6 +1712,21 @@ fn field_str(e: &Event, key: &str) -> Option<String> {
         .get(key)?
         .as_str()
         .map(str::to_string)
+}
+
+/// Read a top-level array-of-strings field from an event's JSON payload (best-effort). An absent
+/// field, a non-array value, or non-string elements yield an empty vec.
+fn field_str_array(e: &Event, key: &str) -> Vec<String> {
+    serde_json::from_slice::<serde_json::Value>(&e.data)
+        .ok()
+        .and_then(|v| v.get(key).cloned())
+        .and_then(|v| v.as_array().cloned())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn now_unix() -> u64 {
@@ -4433,17 +4460,83 @@ mod tests {
     }
 
     #[test]
-    fn graph_seeds_enumerate_unit_decision_and_finding_ids() {
+    fn graph_seeds_enumerate_decisions_findings_and_their_files_never_units() {
+        // De-noise (spec 43): a unit is not a graph node, so its id is NEVER seeded - a unit seed
+        // would land nowhere. The seed set is the decisions and findings the run produced plus the
+        // files they GOVERN / are ABOUT: the content and code that remain in the graph.
         let events = vec![
             ev("UnitStarted", r#"{"unit":"u1"}"#),
-            ev("DecisionMade", r#"{"id":"d1","summary":"x"}"#),
-            ev("ReviewFinding", r#"{"id":"f1","by":"sdet"}"#),
+            ev(
+                "DecisionMade",
+                r#"{"id":"d1","summary":"x","governs":["a.rs"]}"#,
+            ),
+            ev(
+                "ReviewFinding",
+                r#"{"id":"f1","by":"sdet","about":["b.rs"]}"#,
+            ),
             ev("GateVerdict", r#"{"gate":"g","pass":true}"#),
         ];
         let seeds = graph_seeds(&events);
         assert_eq!(
             seeds,
-            vec!["d1".to_string(), "f1".to_string(), "u1".to_string()]
+            vec![
+                "a.rs".to_string(),
+                "b.rs".to_string(),
+                "d1".to_string(),
+                "f1".to_string(),
+            ],
+            "seeds are decisions + findings + the files they concern, never the unit id"
+        );
+        assert!(
+            !seeds.contains(&"u1".to_string()),
+            "a unit id is never a graph seed (it is not a node)"
+        );
+    }
+
+    #[test]
+    fn a_units_seed_lands_on_the_neighborhood_of_its_decisions_and_files() {
+        // Spec 43 criterion 5 (the click-to-seed re-point): with the KIND_UNIT node gone, seeding
+        // the graph from a unit's run - through the re-pointed graph_seeds - must STILL return a
+        // NON-EMPTY, real neighborhood (the unit's decisions and the files they produced), not an
+        // empty result. Fold a small run (a unit, and a decision it made governing a file) into a
+        // real projection, then seed it with graph_seeds output and confirm a live neighborhood.
+        use crate::contextgraph::sqlite::Projector;
+        use crate::contextgraph::Projection;
+        let run = positioned(vec![
+            ev(
+                "UnitStarted",
+                r#"{"unit":"u1","criterion":"c","agent":"impl","needs":[]}"#,
+            ),
+            ev(
+                "DecisionMade",
+                r#"{"id":"d1","summary":"use the shared authority","governs":["combat.rs"],"supersedes":""}"#,
+            ),
+        ]);
+        let p = Projector::open(":memory:", "test").unwrap();
+        for e in &run {
+            p.apply(e).unwrap();
+        }
+        let seeds = graph_seeds(&run);
+        assert!(
+            !seeds.contains(&"u1".to_string()),
+            "the unit id is not a seed - it was re-pointed to the decisions/files"
+        );
+        let g = p.subgraph(&seeds, 2).unwrap();
+        assert!(
+            !g.nodes.is_empty(),
+            "the re-pointed unit seed lands on a real, non-empty neighborhood, not an empty result"
+        );
+        assert!(
+            g.nodes.iter().any(|n| n.id == "d1"),
+            "the unit's decision is in the seeded neighborhood"
+        );
+        assert!(
+            g.nodes.iter().any(|n| n.id == "combat.rs"),
+            "the file the unit's decision produced is in the seeded neighborhood"
+        );
+        assert!(
+            !g.nodes.iter().any(|n| n.id == "u1"),
+            "no KIND_UNIT node exists (the machinery is gone); the seed landed via the decision/file"
         );
     }
 

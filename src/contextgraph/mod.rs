@@ -209,40 +209,19 @@ struct DecisionMade {
     #[serde(default)]
     supersedes: String,
 }
-#[derive(Deserialize)]
-struct FileTouched {
-    path: String,
-    #[serde(default)]
-    by: String,
-}
-#[derive(Deserialize)]
-struct GateVerdict {
-    gate: String,
-    #[serde(default)]
-    pass: bool,
-    #[serde(default)]
-    artifact: String,
-}
-#[derive(Deserialize)]
-struct UnitStarted {
-    unit: String,
-    #[serde(default)]
-    criterion: String,
-    #[serde(default)]
-    agent: String,
-    #[serde(default)]
-    needs: Vec<String>,
-}
+// De-noise (spec 43): the FileTouched / GateVerdict / UnitStarted fold DTOs are gone. Their fold
+// arms project only harness machinery (agent/unit/gate nodes and TOUCHES/ASSIGNED_TO/BLOCKS/
+// GATED_BY edges), which the graph no longer models - so those arms are now graph no-ops that
+// deserialize nothing. The events themselves stay in the log, read by metrics and the run-tree.
 #[derive(Deserialize)]
 struct UnitIntegrated {
     // The conductor emits UNIT_INTEGRATED with an `id` key (`{"id": <unit>, "commit": ...}`),
     // unlike UNIT_STARTED which redundantly carries both `id` and `unit`. Accept `id` as an
     // alias so this fold parses what production actually records; without it the fold fails to
-    // deserialize every real event and its disposition-expiry effect is dead in production.
+    // deserialize every real event and its disposition-expiry effect is dead in production. Only
+    // the unit id is read (to drive disposition-expiry); the commit is not projected (de-noise).
     #[serde(alias = "id")]
     unit: String,
-    #[serde(default)]
-    commit: String,
 }
 #[derive(Deserialize)]
 struct AliasDefined {
