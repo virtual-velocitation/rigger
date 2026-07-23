@@ -382,6 +382,13 @@ pub struct Neighborhood {
     /// unknown seed / empty graph, so the panel shows provenance only when there is a node to explain.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub explain: Option<Explanation>,
+    /// The DRILL RENDER-BUDGET marker (spec 42 c3): the FULL member count of a drilled cluster whose
+    /// membership EXCEEDED [`CLUSTER_RENDER_BUDGET`], so the panel can caption "showing the N
+    /// most-connected of M". Set ONLY by [`cluster_detail`] when the cap fired; omitted (`None`) for a
+    /// COMPLETE node set - a plain [`neighborhood`] and a drill at/under the budget - so a present
+    /// `truncated` unambiguously means "this view is capped to its highest-degree members".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncated: Option<usize>,
 }
 
 /// One node in a seeded KG neighborhood (spec 30 c5). `label` is the node's human-readable handle
@@ -885,6 +892,134 @@ pub fn clustered_overview(graph: &Graph) -> ClusterOverview {
     }
 }
 
+/// The RENDER BUDGET a drilled cluster is capped to (spec 42 c3). A cluster with at most this many
+/// members renders WHOLE; a bigger one (e.g. a `src` module of 1000+ code entities) is capped to its
+/// this-many highest-degree members - the hubs worth seeing - so the library-free SVG panel never
+/// tries to draw a thousand nodes. The cap bounds the drill render at ANY graph size, the drill's
+/// analogue of the overview folding a whole graph to a few dozen clusters.
+pub const CLUSTER_RENDER_BUDGET: usize = 60;
+
+/// Drill a cluster to its members (spec 42 c3): the nodes whose [`cluster_key`] equals `key`, the
+/// currently-valid edges AMONG them, each returned node carrying its degree WITHIN the returned set
+/// and its god-node flag - reusing spec 30's [`Neighborhood`] shape so the SAME renderer draws it.
+///
+/// A cluster with at most [`CLUSTER_RENDER_BUDGET`] members renders WHOLE ([`Neighborhood::truncated`]
+/// stays `None`). A bigger one keeps only its [`CLUSTER_RENDER_BUDGET`] highest-degree members - the
+/// hubs worth seeing - ranked by INTRA-CLUSTER degree (its true connectivity within the fully-known
+/// cluster) with an ID tie-break for a pick stable across polls, and sets `truncated = Some(total)` so
+/// the panel can caption "showing the N most-connected of M". Every returned edge has BOTH endpoints
+/// in the rendered set, so a budget-dropped member never dangles.
+///
+/// The degree the returned nodes CARRY is the in-view (returned-edge) degree - exactly what
+/// [`neighborhood`] reports and what [`NeighborhoodNode::degree`] documents - so the drawn hub is
+/// never over-claimed against edges the cap elided (the two coincide at/under budget). Nodes are
+/// emitted in ascending-id order for a poll-stable, spiral-seeded layout. An unknown / empty `key`
+/// (no node folds to it) yields an empty drill, never an error - the graceful degradation the panel
+/// relies on. `seed` echoes the drilled cluster `key` and `depth` is 0 (a cluster is not a
+/// hop-bounded walk), so the panel labels the drill and its "<- overview" back link.
+pub fn cluster_detail(graph: &Graph, key: &str) -> Neighborhood {
+    // The cluster's members: every node folding to `key`, keyed by id for a deterministic, deduped set.
+    let members: BTreeSet<&str> = graph
+        .nodes
+        .iter()
+        .filter(|n| cluster_key(&n.id, &n.kind) == key)
+        .map(|n| n.id.as_str())
+        .collect();
+    let total = members.len();
+
+    // Each member's INTRA-CLUSTER degree: the count of currently-valid edges with BOTH endpoints in
+    // the cluster incident to it (a self-loop counts once). This is the FULL cluster connectivity that
+    // ranks the hubs when the cluster is over budget; it is computed before any cap.
+    let mut cluster_degree: BTreeMap<&str, usize> = BTreeMap::new();
+    for e in &graph.edges {
+        if e.valid_to.is_none()
+            && members.contains(e.from.as_str())
+            && members.contains(e.to.as_str())
+        {
+            *cluster_degree.entry(e.from.as_str()).or_default() += 1;
+            if e.to != e.from {
+                *cluster_degree.entry(e.to.as_str()).or_default() += 1;
+            }
+        }
+    }
+
+    // Choose the rendered members: WHOLE at/under budget, else the CLUSTER_RENDER_BUDGET highest
+    // intra-cluster degree members (ties broken by id ascending, for a pick stable across polls).
+    // `truncated` carries the full member count only when the cap fired.
+    let (rendered, truncated) = if total <= CLUSTER_RENDER_BUDGET {
+        (members.iter().copied().collect::<Vec<&str>>(), None)
+    } else {
+        let mut ranked: Vec<&str> = members.iter().copied().collect();
+        ranked.sort_by(|a, b| {
+            let da = cluster_degree.get(*a).copied().unwrap_or(0);
+            let db = cluster_degree.get(*b).copied().unwrap_or(0);
+            db.cmp(&da).then_with(|| a.cmp(b))
+        });
+        ranked.truncate(CLUSTER_RENDER_BUDGET);
+        (ranked, Some(total))
+    };
+    let rendered: BTreeSet<&str> = rendered.into_iter().collect();
+
+    // The returned edges: currently-valid, BOTH endpoints in the RENDERED set (a dropped member's
+    // edges never dangle). Built FIRST so the in-view degree counts exactly what the panel draws.
+    let edges: Vec<NeighborhoodEdge> = graph
+        .edges
+        .iter()
+        .filter(|e| {
+            e.valid_to.is_none()
+                && rendered.contains(e.from.as_str())
+                && rendered.contains(e.to.as_str())
+        })
+        .map(|e| NeighborhoodEdge {
+            from: e.from.clone(),
+            to: e.to.clone(),
+            rel: e.rel.clone(),
+            tier: e.tier.clone(),
+        })
+        .collect();
+
+    // Each rendered node's degree WITHIN the returned set (the honest in-view degree [`neighborhood`]
+    // reports): the count of returned edges incident to it, a self-loop once.
+    let mut degree: BTreeMap<&str, usize> = BTreeMap::new();
+    for e in &edges {
+        *degree.entry(e.from.as_str()).or_default() += 1;
+        if e.to != e.from {
+            *degree.entry(e.to.as_str()).or_default() += 1;
+        }
+    }
+
+    // Emit the rendered nodes in ascending-id order (the `rendered` BTreeSet order) for a poll-stable
+    // layout, reusing `node_label` - the one label authority.
+    let by_id: BTreeMap<&str, &Node> = graph.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+    let nodes: Vec<NeighborhoodNode> = rendered
+        .iter()
+        .filter_map(|id| {
+            by_id.get(id).map(|n| {
+                let d = degree.get(id).copied().unwrap_or(0);
+                NeighborhoodNode {
+                    id: n.id.clone(),
+                    kind: n.kind.clone(),
+                    label: node_label(n),
+                    degree: d,
+                    god: d > GOD_NODE_DEGREE_THRESHOLD,
+                }
+            })
+        })
+        .collect();
+
+    Neighborhood {
+        // The panel echoes the drilled cluster key (labels the drill + its back link); a cluster is
+        // not a hop-bounded walk, so `depth` is 0 and there is no query path or seed provenance.
+        seed: key.to_string(),
+        depth: 0,
+        nodes,
+        edges,
+        path: Vec::new(),
+        explain: None,
+        truncated,
+    }
+}
+
 /// Compute the seeded neighborhood of `seed` WITHIN the already-projected `graph` (spec 30 c5): a
 /// breadth-first walk following currently-valid edges in EITHER direction up to `depth` hops,
 /// returning the reachable nodes and the TIER-TAGGED edges among them. This mirrors
@@ -972,6 +1107,8 @@ pub fn neighborhood(graph: &Graph, seed: &str, depth: i64) -> Neighborhood {
         path: Vec::new(),
         // The seed's provenance (spec 30 c7); the route fills it from `explain`, absent by default.
         explain: None,
+        // A seeded neighborhood is a COMPLETE node set (never capped); only `cluster_detail` sets this.
+        truncated: None,
     }
 }
 
@@ -3196,6 +3333,207 @@ mod tests {
             ],
             "cross-cluster currently-valid edges weight symmetric ClusterEdges; intra-cluster and invalidated edges add none"
         );
+    }
+
+    /// Spec 42 c3: [`cluster_detail`] drills a cluster to its members, reusing spec 30's
+    /// [`Neighborhood`] shape so the SAME renderer draws it. A cluster at/under
+    /// [`CLUSTER_RENDER_BUDGET`] renders WHOLE (`truncated` omitted); a bigger one keeps exactly
+    /// `CLUSTER_RENDER_BUDGET` members - the highest INTRA-CLUSTER degree, ties broken by id - sets
+    /// `truncated = Some(total)`, and every returned edge has BOTH endpoints in the returned set. The
+    /// DISPLAYED per-node degree is the in-view (returned-edge) degree, honoring
+    /// [`NeighborhoodNode`]'s documented `degree` contract while the SELECTION ranks by the full
+    /// intra-cluster degree. This test OWNS the drill projection + the budget cap; it does NOT
+    /// exercise the overview aggregation (c2) or the route dispatch (c4).
+    #[test]
+    fn cluster_detail_drills_a_cluster_to_its_members_and_caps_a_big_one_by_degree() {
+        let ce = |id: &str| Node {
+            id: id.to_string(),
+            kind: KIND_CODE_ENTITY.to_string(),
+            attrs: BTreeMap::new(),
+        };
+        let dec = |id: &str| Node {
+            id: id.to_string(),
+            kind: KIND_DECISION.to_string(),
+            attrs: BTreeMap::new(),
+        };
+        let refs = |from: &str, to: &str| Edge {
+            from: from.to_string(),
+            to: to.to_string(),
+            rel: REL_REFERENCES.to_string(),
+            valid_from: 0,
+            valid_to: None,
+            source: 0,
+            tier: TIER_EXTRACTED.to_string(),
+        };
+
+        let b = CLUSTER_RENDER_BUDGET;
+        // The hub's id sorts AFTER every spoke, so it survives the cap ONLY because its degree ranks
+        // it first - proving degree beats the id tie-break (not that the smallest id is kept).
+        let big_hub = "src/big/mod.rs::zzz_hub";
+        let spoke = |i: usize| format!("src/big/mod.rs::s{i:05}");
+
+        let mut nodes: Vec<Node> = Vec::new();
+        let mut edges: Vec<Edge> = Vec::new();
+
+        // OVER-BUDGET cluster `src/big`: a hub wired to b+1 spokes => b+2 members (over the b cap). The
+        // spokes all tie at intra-cluster degree 1, so the id tie-break keeps the b-1 SMALLEST ids and
+        // drops the two largest.
+        nodes.push(ce(big_hub));
+        for i in 0..=b {
+            nodes.push(ce(&spoke(i)));
+            edges.push(refs(big_hub, &spoke(i)));
+        }
+
+        // UNDER-BUDGET cluster `src/small`: a hub + 6 leaves (7 members, well under b). The hub's 6
+        // intra-cluster edges make it a god-node (degree 6 > threshold 5). A SUPERSEDED intra edge and
+        // a CROSS-cluster edge are both excluded from the drill.
+        let sm_hub = "src/small/lib.rs::hub";
+        for l in ["a", "b", "c", "d", "e", "f"] {
+            let leaf = format!("src/small/lib.rs::{l}");
+            nodes.push(ce(&leaf));
+            edges.push(refs(sm_hub, &leaf));
+        }
+        nodes.push(ce(sm_hub));
+        // A SUPERSEDED intra-cluster edge (a -> b): currently-invalid, so NOT a returned edge and it
+        // adds no degree.
+        edges.push(Edge {
+            from: "src/small/lib.rs::a".to_string(),
+            to: "src/small/lib.rs::b".to_string(),
+            rel: REL_REFERENCES.to_string(),
+            valid_from: 0,
+            valid_to: Some(9),
+            source: 0,
+            tier: TIER_EXTRACTED.to_string(),
+        });
+
+        // A dev-loop `decision` cluster (folds by KIND): two decision nodes + a CROSS-cluster edge from
+        // the small hub into it (which the src/small drill must exclude).
+        nodes.push(dec("d-xyz"));
+        nodes.push(dec("d-abc"));
+        edges.push(refs(sm_hub, "d-xyz"));
+
+        let g = Graph { nodes, edges };
+
+        // --- OVER-BUDGET DRILL: `src/big` (b+2 members, capped to b) ---
+        let big = cluster_detail(&g, "src/big");
+        assert_eq!(
+            big.seed, "src/big",
+            "the drill echoes the drilled cluster key as its seed"
+        );
+        assert_eq!(big.depth, 0, "a cluster drill is not a hop-bounded walk");
+        assert!(big.path.is_empty() && big.explain.is_none());
+        assert_eq!(
+            big.truncated,
+            Some(b + 2),
+            "an over-budget cluster reports its FULL member count as truncated"
+        );
+        assert_eq!(
+            big.nodes.len(),
+            b,
+            "exactly CLUSTER_RENDER_BUDGET members render"
+        );
+
+        let kept: std::collections::BTreeSet<&str> =
+            big.nodes.iter().map(|n| n.id.as_str()).collect();
+        assert!(
+            kept.contains(big_hub),
+            "the highest-degree hub is kept even with the largest id (degree beats the id tie-break)"
+        );
+        for i in 0..=(b - 2) {
+            assert!(
+                kept.contains(spoke(i).as_str()),
+                "the b-1 smallest-id spokes are kept"
+            );
+        }
+        assert!(
+            !kept.contains(spoke(b - 1).as_str()),
+            "a largest-id spoke is dropped by the id tie-break"
+        );
+        assert!(
+            !kept.contains(spoke(b).as_str()),
+            "the largest-id spoke is dropped by the id tie-break"
+        );
+
+        for e in &big.edges {
+            assert!(
+                kept.contains(e.from.as_str()) && kept.contains(e.to.as_str()),
+                "a returned edge {} -> {} references a budget-dropped member",
+                e.from,
+                e.to
+            );
+        }
+        assert_eq!(
+            big.edges.len(),
+            b - 1,
+            "one edge to each of the b-1 kept spokes; edges to dropped spokes are excluded"
+        );
+        // The DISPLAYED degree is the in-view (returned-edge) degree, NOT the b+1 intra-cluster degree.
+        let hub_view = big.nodes.iter().find(|n| n.id == big_hub).unwrap();
+        assert_eq!(
+            hub_view.degree,
+            b - 1,
+            "the hub's DISPLAYED degree is its returned-edge (in-view) degree, not b+1"
+        );
+        assert!(hub_view.god, "a degree-{} hub is a god-node", b - 1);
+        let spoke_view = big.nodes.iter().find(|n| n.id == spoke(0)).unwrap();
+        assert_eq!(
+            spoke_view.degree, 1,
+            "a kept spoke has one returned edge (to the hub)"
+        );
+        assert!(!spoke_view.god);
+
+        // --- UNDER-BUDGET DRILL: `src/small` (7 members, whole) ---
+        let small = cluster_detail(&g, "src/small");
+        assert_eq!(
+            small.truncated, None,
+            "an at/under-budget cluster renders WHOLE - truncated omitted"
+        );
+        assert_eq!(small.nodes.len(), 7, "all 7 members render");
+        let small_ids: std::collections::BTreeSet<&str> =
+            small.nodes.iter().map(|n| n.id.as_str()).collect();
+        assert!(
+            !small_ids.contains("d-xyz"),
+            "a different cluster's node is not a drill member"
+        );
+        for e in &small.edges {
+            assert!(
+                small_ids.contains(e.from.as_str()) && small_ids.contains(e.to.as_str()),
+                "a src/small drill edge crosses out of the cluster: {} -> {}",
+                e.from,
+                e.to
+            );
+        }
+        assert!(
+            !small
+                .edges
+                .iter()
+                .any(|e| e.from == "src/small/lib.rs::a" && e.to == "src/small/lib.rs::b"),
+            "a superseded (currently-invalid) intra-cluster edge is excluded"
+        );
+        let sm_hub_view = small.nodes.iter().find(|n| n.id == sm_hub).unwrap();
+        assert_eq!(
+            sm_hub_view.degree, 6,
+            "the small hub's in-view degree counts only its intra-cluster edges (not the cross edge)"
+        );
+        assert!(
+            sm_hub_view.god,
+            "a degree-6 hub is a god-node (above the threshold of 5)"
+        );
+
+        // --- DEV-LOOP KIND DRILL: `decision` (folds by kind) ---
+        let decisions = cluster_detail(&g, KIND_DECISION);
+        assert_eq!(decisions.truncated, None);
+        let dec_ids: std::collections::BTreeSet<&str> =
+            decisions.nodes.iter().map(|n| n.id.as_str()).collect();
+        let want: std::collections::BTreeSet<&str> = ["d-abc", "d-xyz"].into_iter().collect();
+        assert_eq!(
+            dec_ids, want,
+            "a dev-loop KIND drill returns exactly the nodes folding to that kind"
+        );
+
+        // --- GRACEFUL: an unknown cluster key drills to an empty result, never a panic ---
+        let empty = cluster_detail(&g, "no/such/module");
+        assert!(empty.nodes.is_empty() && empty.edges.is_empty() && empty.truncated.is_none());
     }
 
     /// A small tier-tagged fixture graph: a chain seed `a` -[extracted]- `b` -[inferred]- `c`
