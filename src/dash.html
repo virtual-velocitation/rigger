@@ -828,12 +828,11 @@ function forceLayout(nodes, edges, width, height) {
     curX += box.side;
     shelfH = Math.max(shelfH, box.side);
   });
-  const totalH = curY + shelfH;
-  if (totalH > height && totalH > 0) {
-    const s = height / totalH;
-    Object.keys(out).forEach(id => { out[id].x *= s; out[id].y *= s; });
-  }
-  return out;
+  // Fill the panel: the shelf-packed pieces are laid out from the top-left, so stretch the whole
+  // packing to fill the viewBox instead of clumping in a corner. This scales node CENTRES only (radii
+  // are fixed in kgSvg), so it spreads the clusters out and relieves label overlap without distorting
+  // the circles. Applies to the whole-graph overview and to a disconnected-file drill alike.
+  return fitToBox(out, ids, 0, 0, width, height);
 }
 
 // Emit the SVG for a graph: the force layout places the nodes, then we draw one <line> per edge, and
