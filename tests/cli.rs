@@ -8243,6 +8243,150 @@ fn a_reap_on_idle_dash_serves_while_the_run_heartbeats_then_self_reaps_when_live
     );
 }
 
+/// Spec 39, criterion 3 - the INTER-STEP false-positive guard through the BUILT binary, the one
+/// input combination none of the other criterion-3 tests drive end-to-end: a run whose event log
+/// ALREADY READS TERMINAL (`run_terminal` true) WHILE its heartbeat is `Some(fresh)`. A detached
+/// `rigger dash --reap-on-idle` serving such a run must KEEP serving, because a fresh liveness
+/// marker means a worker is still alive between two `rigger step` processes - so the terminal log
+/// is a transient inter-step snapshot, NOT completion. This is the exact false positive the whole
+/// feature keys on liveness to avoid: on a BOUNDED run the log momentarily reads done in the gap
+/// after a wave answers and before the next step parks its wave, while the just-finished worker's
+/// marker is still seconds old.
+///
+/// The stale-liveness test above keeps a fresh heartbeat but on a NON-terminal run; the completion
+/// and unbounded tests are all `None` heartbeat. Only the dash.rs unit truth-table covers
+/// `should_reap_on_idle(_, true, _, Some(fresh), _)`; this proves the composed WIRING - the real
+/// terminal-from-log seam (`terminal_and_no_live_worker` on a genuinely-terminal event log) AND the
+/// real fresh-marker seam (`run_heartbeat_age` on a live marker) both feeding the pure decision -
+/// keeps a terminal-looking-but-live run serving. It is the unique guard against a regression that
+/// let a terminal log override a fresh heartbeat (a `Some(age) => age > stale_after || run_terminal`
+/// -shaped bug), which every other criterion-3 test passes. When the heartbeat is then allowed to
+/// go stale, the dash SELF-reaps - proving the watcher was genuinely running and it was the FRESH
+/// heartbeat, not an absent watcher, that kept the terminal run's dash alive.
+#[test]
+fn a_reap_on_idle_dash_serving_a_terminal_log_keeps_serving_while_its_heartbeat_stays_fresh() {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{mpsc, Arc};
+    use std::time::Duration;
+
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
+
+    // A run whose log ALREADY READS TERMINAL: the implement spawn is requested AND answered, so the
+    // frontier is closed and `terminal_and_no_live_worker` reads TRUE. The unit is deliberately NOT
+    // integrated, so the run is NOT settled - the exact bounded inter-step gap where a wave has
+    // answered but the next step has not yet run the conductor's integration pass. The point of THIS
+    // test is that even this terminal signal must NOT reap while a worker's marker is still fresh.
+    seed_run_events(
+        root,
+        &[
+            ("RunStarted", r#"{"run":"r1","criteria":["c"]}"#),
+            ("UnitStarted", r#"{"id":"u","spec_criterion":"c"}"#),
+            (
+                "SpawnRequested",
+                r#"{"id":"u/implementer#0","unit":"u","stage":"implement","prompt":"do it"}"#,
+            ),
+            (
+                "SpawnResult",
+                r#"{"id":"u/implementer#0","output":"did the unit"}"#,
+            ),
+        ],
+    );
+
+    // Pin the scratch root so the marker the dash reads and the marker this test touches are the
+    // SAME path (the dash resolves it from RIGGER_TMPDIR). A live worker's fresh heartbeat marker,
+    // under the shared `rigger::liveness::marker_path` authority the sweep and the worker share.
+    let scratch_root = root.join("rigger-scratch").to_string_lossy().into_owned();
+    let marker = rigger::liveness::marker_path(&scratch_root, "r1", "u/implementer#0");
+    std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+    std::fs::write(&marker, b"").unwrap(); // an initial fresh heartbeat
+
+    // A background heartbeat: touch the marker every 200ms to simulate the still-alive worker, so
+    // the run's liveness stays FRESH until this test decides to let it go stale.
+    let stop = Arc::new(AtomicBool::new(false));
+    let hb_marker = marker.clone();
+    let hb_stop = stop.clone();
+    let heartbeat = std::thread::spawn(move || {
+        while !hb_stop.load(Ordering::Relaxed) {
+            let _ = std::fs::write(&hb_marker, b"");
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    });
+
+    let port = free_loopback_port();
+    let mut child = Command::new(rigger_bin())
+        .args(["dash", "--port", &port.to_string(), "--reap-on-idle"])
+        .current_dir(root)
+        .env("RIGGER_TMPDIR", &scratch_root)
+        // Poll fast and treat a heartbeat older than 2s as stale, so both the "stays up while
+        // fresh" window and the eventual self-reap are observable within the test.
+        .env("RIGGER_DASH_REAP_POLL_MS", "150")
+        .env("RIGGER_DASH_REAP_STALE_SECS", "2")
+        .env_remove("RIGGER_NO_DASH")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn `rigger dash --reap-on-idle`");
+    let mut out = child.stdout.take().expect("dash stdout is piped");
+
+    // A blocked read means the dash is alive; a 0-byte read means it exited and stdout hit EOF.
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 1];
+        let n = out.read(&mut buf).unwrap_or(0);
+        let _ = tx.send(n);
+    });
+
+    // The dash is genuinely SERVING the terminal-looking run. Reap on failure so nothing leaks.
+    if !matches!(http_get(&format!("http://127.0.0.1:{port}/")), Some(body) if body.contains("rigger dash"))
+    {
+        stop.store(true, Ordering::Relaxed);
+        let _ = heartbeat.join();
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("the `rigger dash --reap-on-idle` never served its terminal-log run");
+    }
+
+    // THE GUARD: while the heartbeat stays fresh, the dash must NOT reap even though the log reads
+    // TERMINAL - a fresh worker marker means a live run between steps, so the terminal snapshot is
+    // an inter-step false positive, not completion. A read arriving here is exactly the regression
+    // this test exists to catch (a terminal log overriding a fresh heartbeat), and it fails LOUD.
+    let premature = rx.recv_timeout(Duration::from_millis(1200));
+    if premature.is_ok() {
+        stop.store(true, Ordering::Relaxed);
+        let _ = heartbeat.join();
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!(
+            "the dash self-reaped while its run's log read terminal but its heartbeat was still \
+             FRESH - a terminal snapshot must not override a live worker's heartbeat (the \
+             inter-step false positive the liveness key exists to prevent)"
+        );
+    }
+
+    // Now let the run's liveness go STALE: stop touching the marker. Once the 2s bound elapses the
+    // watcher sees a stale heartbeat and the dash SELF-reaps - proving the watcher was genuinely
+    // running and it was the FRESH heartbeat, not an absent watcher, that kept the terminal run up.
+    stop.store(true, Ordering::Relaxed);
+    heartbeat.join().expect("heartbeat thread joins");
+
+    let reaped = rx.recv_timeout(Duration::from_secs(12));
+    // Reap defensively so a failure never orphans the dash; on the success path it has already
+    // exited itself, so this kill is a no-op and the wait only collects the exited child.
+    let _ = child.kill();
+    let _ = child.wait();
+    let n = reaped.expect(
+        "the `rigger dash --reap-on-idle` did not SELF-REAP within 12s after its run's heartbeat \
+         went stale - a run-idle dash must not leak even once its terminal log's liveness dies",
+    );
+    assert_eq!(
+        n, 0,
+        "a self-reaped dash should have its stdout at EOF (it exited on its own, un-killed)"
+    );
+}
+
 /// Spec 39, criterion 3 - the COMPLETION reap arm through the BUILT binary, the arm the
 /// heartbeat-staleness test above deliberately does NOT exercise. A detached
 /// `rigger dash --reap-on-idle` serving a run whose frontier is still OPEN (a parked, unanswered
