@@ -1482,3 +1482,81 @@ fn the_served_graph_route_dispatches_the_exploration_overview_drill_and_seed() {
         "the served depth-1 neighborhood of d1 is {{d1, foo}}: {seeded}"
     );
 }
+
+/// The exploration dispatch's remaining API edges over the REAL `serve` socket (spec 42 c4). The
+/// first served test pins the three normal views; this pins the two dispatch corners the route
+/// alone decides, which neither the in-process `route` test nor the first served test exercises:
+///
+///   * PRECEDENCE - when a request carries BOTH `cluster` and a non-empty `seed`, the `cluster`
+///     drill WINS and the seed is ignored. A browser never emits both, but a direct caller (curl,
+///     another tool) can hit the raw route, so the endpoint must have one decided answer; this pins
+///     it end-to-end so a later reorder that let `seed` win reddens here.
+///   * GRACEFUL DEAD KEY - an empty `cluster=` or an unknown `cluster=<nope>` drills to an EMPTY
+///     neighborhood: a 200 with zero members echoing the key, never a 500. This is the no-error
+///     degradation the route promises for a dead drill key.
+#[test]
+fn the_served_graph_route_precedence_and_graceful_empty_cluster() {
+    let graph = exploration_graph();
+
+    let served = |path: &str| -> String {
+        let resp = fetch_served(path, &graph);
+        assert!(
+            resp.starts_with("HTTP/1.1 200 OK"),
+            "GET {path} is served 200 over the real socket (never a 500):\n{resp}"
+        );
+        assert!(
+            resp.contains("application/json"),
+            "the served exploration route is JSON:\n{resp}"
+        );
+        resp
+    };
+
+    // PRECEDENCE: `cluster=src%2Fa` AND `seed=d1` are both present. The drill wins - the body echoes
+    // the src/a cluster key as its seed and carries the src/a members, NOT the depth-1 seeded
+    // neighborhood of `d1` (which would echo seed `d1` and carry {d1, foo}). Reordering the dispatch
+    // to check `seed` before `cluster` would return the d1 neighborhood and redden both asserts.
+    let resp = served("/api/graph?cluster=src%2Fa&seed=d1&depth=1");
+    let drill: serde_json::Value =
+        serde_json::from_str(body_of(&resp)).expect("the precedence body is valid JSON");
+    assert_eq!(
+        drill["seed"], "src/a",
+        "cluster takes precedence: the body echoes the cluster key, not the seed d1: {drill}"
+    );
+    let drill_ids: BTreeSet<&str> = drill["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        drill_ids,
+        ["src/a/mod.rs::foo", "src/a/mod.rs::bar"]
+            .into_iter()
+            .collect(),
+        "the drill wins over the seed: exactly the src/a members, not {{d1, foo}}: {drill}"
+    );
+
+    // GRACEFUL DEAD KEY: an empty `cluster=` and an unknown `cluster=nope` each drill to an EMPTY
+    // neighborhood - 200, zero members, the key echoed as seed, no `clusters` overview key - never a
+    // 500. The `served` closure already asserted 200/JSON; here we assert the empty-drill shape.
+    for (path, key) in [
+        ("/api/graph?cluster=", ""),
+        ("/api/graph?cluster=nope", "nope"),
+    ] {
+        let resp = served(path);
+        let body: serde_json::Value =
+            serde_json::from_str(body_of(&resp)).expect("the graceful drill body is valid JSON");
+        assert_eq!(
+            body["seed"], key,
+            "{path}: an empty/unknown cluster key echoes back as the drill seed: {body}"
+        );
+        assert!(
+            body["nodes"].as_array().unwrap().is_empty(),
+            "{path}: an empty/unknown cluster key drills to zero members, gracefully: {body}"
+        );
+        assert!(
+            body["clusters"].is_null(),
+            "{path}: the graceful drill is still a neighborhood, not an overview: {body}"
+        );
+    }
+}
