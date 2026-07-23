@@ -382,6 +382,13 @@ pub struct Neighborhood {
     /// unknown seed / empty graph, so the panel shows provenance only when there is a node to explain.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub explain: Option<Explanation>,
+    /// The DRILL RENDER-BUDGET marker (spec 42 c3): the FULL member count of a drilled cluster whose
+    /// membership EXCEEDED [`CLUSTER_RENDER_BUDGET`], so the panel can caption "showing the N
+    /// most-connected of M". Set ONLY by [`cluster_detail`] when the cap fired; omitted (`None`) for a
+    /// COMPLETE node set - a plain [`neighborhood`] and a drill at/under the budget - so a present
+    /// `truncated` unambiguously means "this view is capped to its highest-degree members".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncated: Option<usize>,
 }
 
 /// One node in a seeded KG neighborhood (spec 30 c5). `label` is the node's human-readable handle
@@ -441,6 +448,56 @@ pub struct ProvenanceEdge {
     pub to: String,
     pub tier: String,
     pub source: Position,
+}
+
+/// One super-node in the whole-graph clustered overview (spec 42 c2): a [`cluster_key`] bucket the
+/// KG panel draws as a single circle instead of its member nodes. `count` is how many graph nodes
+/// folded into it (the circle's size) and `kind` is its DOMINANT member kind (the kind the most of
+/// its members carry, for the circle's colour). Ties for the dominant kind resolve to the
+/// lexicographically-smallest kind, so a given graph yields one stable colour per cluster. Built by
+/// [`clustered_overview`] so the overview is a pure read over the already-projected graph.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct Cluster {
+    /// The cluster's fold key: a module DIRECTORY, the [`CLUSTER_ROOT`] sentinel, or a node KIND -
+    /// whatever [`cluster_key`] folded its members into. Also the panel's cluster label.
+    pub key: String,
+    /// The number of graph nodes that folded into this cluster (its super-node size).
+    pub count: usize,
+    /// The cluster's DOMINANT member kind (the most common kind among its members; ties broken by the
+    /// lexicographically-smallest kind), so the panel colours the super-node without re-counting.
+    pub kind: String,
+}
+
+/// A weighted, symmetric edge between two DIFFERENT clusters in the overview (spec 42 c2): its
+/// `weight` is the number of currently-valid graph edges that cross from one cluster to the other.
+/// Directionless - `from` and `to` are canonicalized so `from <= to` by cluster key - so an `a -> b`
+/// and a `b -> a` graph edge fold into ONE cluster edge whose weight sums both. Intra-cluster graph
+/// edges (both endpoints in one cluster, self-loops included) contribute nothing. Built by
+/// [`clustered_overview`], so the panel scales the line thickness by `weight` with no re-derivation.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct ClusterEdge {
+    /// The lexicographically-smaller endpoint cluster key (the canonical `from <= to` orientation).
+    pub from: String,
+    /// The lexicographically-larger endpoint cluster key.
+    pub to: String,
+    /// How many currently-valid graph edges cross between the two clusters (the line's thickness).
+    pub weight: usize,
+}
+
+/// The whole-graph clustered overview (spec 42 c2): the DEFAULT KG view. Every graph node is folded
+/// (by [`cluster_key`]) into a few dozen [`Cluster`] super-nodes and the [`ClusterEdge`]s among them,
+/// plus the full node `total` so the panel can say "N nodes in M clusters". Bounded by the module /
+/// kind count, never the node count, so it renders at any graph size. Built by [`clustered_overview`]
+/// as a pure read over the already-projected graph - it adds no event type and never touches the
+/// store; the panel drills a cluster (spec 42 c3) and finally seeds one node's neighborhood (spec 30).
+#[derive(Debug, Serialize, PartialEq, Eq, Default)]
+pub struct ClusterOverview {
+    /// The cluster super-nodes, ordered deterministically by [`Cluster::key`].
+    pub clusters: Vec<Cluster>,
+    /// The cross-cluster edges, ordered deterministically by `(from, to)` key.
+    pub edges: Vec<ClusterEdge>,
+    /// The full graph node count (every node, folded or not), so the panel reports the whole size.
+    pub total: usize,
 }
 
 /// One node in the run-tree SPINE (spec 30 c3): the run projected as
@@ -689,6 +746,280 @@ fn node_label(node: &Node) -> String {
     node.id.clone()
 }
 
+// ---------------------------------------------------------------------------
+// The whole-graph exploration fold (spec 42 c1): [`cluster_key`] folds EVERY graph node into one
+// super-node bucket, so the KG panel can render a 7k-node graph as a few dozen clusters instead of
+// node-for-node. A node whose id NAMES A FILE - a code entity (`<file>::<name>`), a rationale anchor
+// (`<file>#L<n>`), or a path id (a file / design-doc whose last segment carries an extension) -
+// clusters by that file's DIRECTORY (its module); a directory-less (repo-root) path falls back to
+// the `(root)` bucket. Every other node - the dev-loop nodes with NO path id (a decision, finding,
+// unit, agent, gate, lesson) - clusters by its KIND. The fold is a pure function of `(id, kind)`, so
+// a given graph yields one stable overview (the determinism the spec requires by construction). This
+// is the fold KEY only; the overview and drill aggregations (c2, c3) consume it.
+// ---------------------------------------------------------------------------
+
+/// The bucket a directory-less (repo-root) path id folds to, since it names a file with no parent
+/// module. A `(root)` sentinel - the parentheses keep it from ever colliding with a real directory
+/// name - so the overview can name and colour the repo-root cluster like any other.
+pub const CLUSTER_ROOT: &str = "(root)";
+
+/// Fold a graph node `(id, kind)` into its exploration super-node bucket (spec 42 c1).
+///
+/// A node whose id NAMES A FILE clusters by that file's DIRECTORY (its module); a directory-less
+/// (repo-root) file falls back to [`CLUSTER_ROOT`]. Every other node clusters by its `kind`. An id
+/// names a file after reducing it to a file path: a code entity `<file>::<name>` reduces to the part
+/// before the first `::`; a rationale anchor `<file>#L<n>` or a design-doc section `<doc>#<slug>`
+/// reduces to the part before the first `#`; a plain path id `<file>` (a file / design-doc) is
+/// itself. The reduced path names a file iff its last segment carries an extension. A file path
+/// contains neither `::` nor `#`, so those splits leave a plain path untouched, and a dev-loop id (a
+/// decision / finding / unit / agent / gate / lesson), whose last segment carries no extension, is
+/// never mistaken for one. The fold is a pure, total function of `(id, kind)`, so a given graph folds
+/// to one stable set of buckets (the determinism the exploration view relies on).
+pub fn cluster_key(id: &str, kind: &str) -> String {
+    // Reduce a path-bearing id to the file path it names by stripping a code-entity `::name` suffix,
+    // then a rationale / doc-section `#...` suffix. A plain path id survives both untouched.
+    let file = id.split_once("::").map_or(id, |(f, _)| f);
+    let file = file.split_once('#').map_or(file, |(f, _)| f);
+
+    // The id names a file iff its LAST path segment carries an extension: a `.` with a non-empty
+    // stem AND a non-empty suffix (so a dotfile like `.gitignore` - whose only `.` is leading - is
+    // NOT treated as an extensioned path, and a dev-loop id like `plan-critique` never is either).
+    let last_segment = file.rsplit_once('/').map_or(file, |(_, seg)| seg);
+    let names_a_file = last_segment
+        .rsplit_once('.')
+        .is_some_and(|(stem, ext)| !stem.is_empty() && !ext.is_empty());
+
+    if names_a_file {
+        // Cluster by the file's DIRECTORY (its module); a directory-less repo-root file -> `(root)`.
+        return match file.rsplit_once('/') {
+            Some((dir, _)) if !dir.is_empty() => dir.to_string(),
+            _ => CLUSTER_ROOT.to_string(),
+        };
+    }
+
+    // Every other node is a dev-loop node with no path id: cluster by its KIND.
+    kind.to_string()
+}
+
+/// Fold the WHOLE graph into its clustered overview (spec 42 c2): the default KG view that renders a
+/// ~7k-node graph as a few dozen super-nodes. Every node is folded (by [`cluster_key`]) into a
+/// [`Cluster`] carrying its member count and its DOMINANT member kind; every currently-valid edge
+/// whose endpoints fall in two DIFFERENT clusters weights a symmetric [`ClusterEdge`]; and `total`
+/// carries the full node count. Deterministic by construction (folds over `BTreeMap`s keyed by
+/// cluster key / kind, so clusters and edges come out sorted and the dominant-kind tie resolves to
+/// the lexicographically-smallest kind). A pure read over the already-projected `graph`: it reads
+/// nothing from the store and adds no event type. Bounded by the module / kind count, never the node
+/// count, so it renders at any graph size; an empty graph yields an empty overview (zero clusters,
+/// zero total), never an error.
+pub fn clustered_overview(graph: &Graph) -> ClusterOverview {
+    // Fold every node into its cluster bucket, remembering each node's cluster (so edges can be
+    // classified) and, per bucket, the member count and a kind histogram (to pick the dominant kind).
+    // A `BTreeMap` keeps the buckets - and each bucket's kind histogram - in sorted order, so the
+    // overview is deterministic and the dominant-kind tie resolves to the smallest kind by iteration.
+    let mut node_cluster: BTreeMap<&str, String> = BTreeMap::new();
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    let mut kind_hist: BTreeMap<String, BTreeMap<&str, usize>> = BTreeMap::new();
+    for n in &graph.nodes {
+        let key = cluster_key(&n.id, &n.kind);
+        node_cluster.insert(n.id.as_str(), key.clone());
+        *counts.entry(key.clone()).or_default() += 1;
+        *kind_hist
+            .entry(key)
+            .or_default()
+            .entry(n.kind.as_str())
+            .or_default() += 1;
+    }
+
+    // Each bucket becomes a Cluster whose kind is its DOMINANT member kind: the kind with the highest
+    // member count, ties broken by the lexicographically-smallest kind. The histogram iterates in
+    // sorted kind order, so replacing only on a STRICTLY-greater count keeps the first (smallest) kind
+    // on a tie - the deterministic colour the spec requires by construction.
+    let clusters: Vec<Cluster> = counts
+        .into_iter()
+        .map(|(key, count)| {
+            let hist = kind_hist.remove(&key).unwrap_or_default();
+            let mut dominant = "";
+            let mut best = 0usize;
+            for (kind, c) in &hist {
+                if *c > best {
+                    best = *c;
+                    dominant = kind;
+                }
+            }
+            Cluster {
+                key,
+                count,
+                kind: dominant.to_string(),
+            }
+        })
+        .collect();
+
+    // Every currently-valid edge whose two endpoints are known nodes in DIFFERENT clusters weights a
+    // symmetric cluster edge. The endpoint pair is canonicalized (smaller cluster key first) so an
+    // `a -> b` and a `b -> a` graph edge fold into one weighted edge; an intra-cluster edge (both
+    // endpoints in one cluster, self-loops included) is skipped, and an invalidated edge counts for
+    // nothing (matching the currently-valid view the rest of the KG panel reads).
+    let mut weights: BTreeMap<(String, String), usize> = BTreeMap::new();
+    for e in &graph.edges {
+        if e.valid_to.is_some() {
+            continue;
+        }
+        let (Some(a), Some(b)) = (
+            node_cluster.get(e.from.as_str()),
+            node_cluster.get(e.to.as_str()),
+        ) else {
+            continue; // an endpoint that is not a known graph node has no cluster to weight
+        };
+        if a == b {
+            continue; // an intra-cluster edge (or self-loop) adds no cross-cluster weight
+        }
+        let pair = if a <= b {
+            (a.clone(), b.clone())
+        } else {
+            (b.clone(), a.clone())
+        };
+        *weights.entry(pair).or_default() += 1;
+    }
+    let edges: Vec<ClusterEdge> = weights
+        .into_iter()
+        .map(|((from, to), weight)| ClusterEdge { from, to, weight })
+        .collect();
+
+    ClusterOverview {
+        clusters,
+        edges,
+        total: graph.nodes.len(),
+    }
+}
+
+/// The RENDER BUDGET a drilled cluster is capped to (spec 42 c3). A cluster with at most this many
+/// members renders WHOLE; a bigger one (e.g. a `src` module of 1000+ code entities) is capped to its
+/// this-many highest-degree members - the hubs worth seeing - so the library-free SVG panel never
+/// tries to draw a thousand nodes. The cap bounds the drill render at ANY graph size, the drill's
+/// analogue of the overview folding a whole graph to a few dozen clusters.
+pub const CLUSTER_RENDER_BUDGET: usize = 60;
+
+/// Drill a cluster to its members (spec 42 c3): the nodes whose [`cluster_key`] equals `key`, the
+/// currently-valid edges AMONG them, each returned node carrying its degree WITHIN the returned set
+/// and its god-node flag - reusing spec 30's [`Neighborhood`] shape so the SAME renderer draws it.
+///
+/// A cluster with at most [`CLUSTER_RENDER_BUDGET`] members renders WHOLE ([`Neighborhood::truncated`]
+/// stays `None`). A bigger one keeps only its [`CLUSTER_RENDER_BUDGET`] highest-degree members - the
+/// hubs worth seeing - ranked by INTRA-CLUSTER degree (its true connectivity within the fully-known
+/// cluster) with an ID tie-break for a pick stable across polls, and sets `truncated = Some(total)` so
+/// the panel can caption "showing the N most-connected of M". Every returned edge has BOTH endpoints
+/// in the rendered set, so a budget-dropped member never dangles.
+///
+/// The degree the returned nodes CARRY is the in-view (returned-edge) degree - exactly what
+/// [`neighborhood`] reports and what [`NeighborhoodNode::degree`] documents - so the drawn hub is
+/// never over-claimed against edges the cap elided (the two coincide at/under budget). Nodes are
+/// emitted in ascending-id order for a poll-stable, spiral-seeded layout. An unknown / empty `key`
+/// (no node folds to it) yields an empty drill, never an error - the graceful degradation the panel
+/// relies on. `seed` echoes the drilled cluster `key` and `depth` is 0 (a cluster is not a
+/// hop-bounded walk), so the panel labels the drill and its "<- overview" back link.
+pub fn cluster_detail(graph: &Graph, key: &str) -> Neighborhood {
+    // The cluster's members: every node folding to `key`, keyed by id for a deterministic, deduped set.
+    let members: BTreeSet<&str> = graph
+        .nodes
+        .iter()
+        .filter(|n| cluster_key(&n.id, &n.kind) == key)
+        .map(|n| n.id.as_str())
+        .collect();
+    let total = members.len();
+
+    // Each member's INTRA-CLUSTER degree: the count of currently-valid edges with BOTH endpoints in
+    // the cluster incident to it (a self-loop counts once). This is the FULL cluster connectivity that
+    // ranks the hubs when the cluster is over budget; it is computed before any cap.
+    let mut cluster_degree: BTreeMap<&str, usize> = BTreeMap::new();
+    for e in &graph.edges {
+        if e.valid_to.is_none()
+            && members.contains(e.from.as_str())
+            && members.contains(e.to.as_str())
+        {
+            *cluster_degree.entry(e.from.as_str()).or_default() += 1;
+            if e.to != e.from {
+                *cluster_degree.entry(e.to.as_str()).or_default() += 1;
+            }
+        }
+    }
+
+    // Choose the rendered members: WHOLE at/under budget, else the CLUSTER_RENDER_BUDGET highest
+    // intra-cluster degree members (ties broken by id ascending, for a pick stable across polls).
+    // `truncated` carries the full member count only when the cap fired.
+    let (rendered, truncated) = if total <= CLUSTER_RENDER_BUDGET {
+        (members.iter().copied().collect::<Vec<&str>>(), None)
+    } else {
+        let mut ranked: Vec<&str> = members.iter().copied().collect();
+        ranked.sort_by(|a, b| {
+            let da = cluster_degree.get(*a).copied().unwrap_or(0);
+            let db = cluster_degree.get(*b).copied().unwrap_or(0);
+            db.cmp(&da).then_with(|| a.cmp(b))
+        });
+        ranked.truncate(CLUSTER_RENDER_BUDGET);
+        (ranked, Some(total))
+    };
+    let rendered: BTreeSet<&str> = rendered.into_iter().collect();
+
+    // The returned edges: currently-valid, BOTH endpoints in the RENDERED set (a dropped member's
+    // edges never dangle). Built FIRST so the in-view degree counts exactly what the panel draws.
+    let edges: Vec<NeighborhoodEdge> = graph
+        .edges
+        .iter()
+        .filter(|e| {
+            e.valid_to.is_none()
+                && rendered.contains(e.from.as_str())
+                && rendered.contains(e.to.as_str())
+        })
+        .map(|e| NeighborhoodEdge {
+            from: e.from.clone(),
+            to: e.to.clone(),
+            rel: e.rel.clone(),
+            tier: e.tier.clone(),
+        })
+        .collect();
+
+    // Each rendered node's degree WITHIN the returned set (the honest in-view degree [`neighborhood`]
+    // reports): the count of returned edges incident to it, a self-loop once.
+    let mut degree: BTreeMap<&str, usize> = BTreeMap::new();
+    for e in &edges {
+        *degree.entry(e.from.as_str()).or_default() += 1;
+        if e.to != e.from {
+            *degree.entry(e.to.as_str()).or_default() += 1;
+        }
+    }
+
+    // Emit the rendered nodes in ascending-id order (the `rendered` BTreeSet order) for a poll-stable
+    // layout, reusing `node_label` - the one label authority.
+    let by_id: BTreeMap<&str, &Node> = graph.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+    let nodes: Vec<NeighborhoodNode> = rendered
+        .iter()
+        .filter_map(|id| {
+            by_id.get(id).map(|n| {
+                let d = degree.get(id).copied().unwrap_or(0);
+                NeighborhoodNode {
+                    id: n.id.clone(),
+                    kind: n.kind.clone(),
+                    label: node_label(n),
+                    degree: d,
+                    god: d > GOD_NODE_DEGREE_THRESHOLD,
+                }
+            })
+        })
+        .collect();
+
+    Neighborhood {
+        // The panel echoes the drilled cluster key (labels the drill + its back link); a cluster is
+        // not a hop-bounded walk, so `depth` is 0 and there is no query path or seed provenance.
+        seed: key.to_string(),
+        depth: 0,
+        nodes,
+        edges,
+        path: Vec::new(),
+        explain: None,
+        truncated,
+    }
+}
+
 /// Compute the seeded neighborhood of `seed` WITHIN the already-projected `graph` (spec 30 c5): a
 /// breadth-first walk following currently-valid edges in EITHER direction up to `depth` hops,
 /// returning the reachable nodes and the TIER-TAGGED edges among them. This mirrors
@@ -776,6 +1107,8 @@ pub fn neighborhood(graph: &Graph, seed: &str, depth: i64) -> Neighborhood {
         path: Vec::new(),
         // The seed's provenance (spec 30 c7); the route fills it from `explain`, absent by default.
         explain: None,
+        // A seeded neighborhood is a COMPLETE node set (never capped); only `cluster_detail` sets this.
+        truncated: None,
     }
 }
 
@@ -1587,27 +1920,45 @@ pub fn route(
                 .unwrap_or(0);
             Response::json(200, events_json(events, since))
         }
-        // The unified-KG detail panel (spec 30 c5): the seeded neighborhood of the selected node.
-        // `seed` is percent-decoded (the client `encodeURIComponent`s an id that may carry `#` /
-        // `::` / `/`); `depth` defaults to two hops and is clamped so a hostile value cannot make
-        // the walk churn. `tier=` is accepted as part of the route surface but NOT filtered here -
-        // the neighborhood ships every edge TIER-TAGGED and the c7 tier filter partitions visibility
-        // CLIENT-side over those tags (the route never drops edges, per d30-tier-param-ownership).
-        // `from=`/`to=` (spec 30 c6) select two nodes: when BOTH are present the body also carries
-        // the shortest QUERY-PATH between them (each is percent-decoded like `seed`, since a node id
-        // may carry `#` / `::` / `/`). The body also carries the seed's EXPLAIN provenance (spec 30
-        // c7) - the events/decisions that produced it - built by `graph_json` over the neighborhood.
+        // The unified-KG panel: ONE route, THREE views selected by parameter (spec 42 c4, extending
+        // the spec 30 c5 seeded panel):
+        //   * `cluster=<key>` -> the DRILL: `cluster_detail(key)` as a Neighborhood (the cluster's
+        //     members, so the same renderer draws it). The key is a module DIRECTORY (carries `/`) or
+        //     a node KIND, `encodeURIComponent`d by the client like a seed id, so it is percent-decoded
+        //     back to the exact fold key; an empty / unknown key drills to an empty neighborhood
+        //     (graceful), never an error.
+        //   * an empty `seed` with no `cluster` -> the DEFAULT view: `clustered_overview`, the
+        //     whole-graph fold the panel loads on open.
+        //   * a non-empty `seed` -> the spec 30 seeded neighborhood, UNCHANGED. A spec-30 request never
+        //     carries `cluster=`, so it always falls through to this branch; the c4 dispatch cannot
+        //     regress the seeded panel.
+        // The seed branch is verbatim spec 30: `seed` is percent-decoded (the client encodes an id that
+        // may carry `#` / `::` / `/`); `depth` defaults to two hops and is clamped so a hostile value
+        // cannot make the walk churn; `tier=` is accepted but NOT filtered here (the neighborhood ships
+        // every edge TIER-TAGGED and the c7 tier filter partitions visibility CLIENT-side over those
+        // tags, per d30-tier-param-ownership); `from=`/`to=` (spec 30 c6) select two nodes whose
+        // shortest QUERY-PATH rides the body when BOTH are present; and the body carries the seed's
+        // EXPLAIN provenance (spec 30 c7), all built by `graph_json` over the neighborhood.
         "/api/graph" => {
-            let seed = query_param(target, "seed")
-                .map(percent_decode)
-                .unwrap_or_default();
-            let depth = query_param(target, "depth")
-                .and_then(|v| v.parse::<i64>().ok())
-                .unwrap_or(DEFAULT_GRAPH_DEPTH)
-                .clamp(0, MAX_GRAPH_DEPTH);
-            let from = query_param(target, "from").map(percent_decode);
-            let to = query_param(target, "to").map(percent_decode);
-            match graph_json(graph, &seed, depth, from.as_deref(), to.as_deref()) {
+            let body = if let Some(raw_cluster) = query_param(target, "cluster") {
+                serde_json::to_string(&cluster_detail(graph, &percent_decode(raw_cluster)))
+            } else {
+                let seed = query_param(target, "seed")
+                    .map(percent_decode)
+                    .unwrap_or_default();
+                if seed.is_empty() {
+                    serde_json::to_string(&clustered_overview(graph))
+                } else {
+                    let depth = query_param(target, "depth")
+                        .and_then(|v| v.parse::<i64>().ok())
+                        .unwrap_or(DEFAULT_GRAPH_DEPTH)
+                        .clamp(0, MAX_GRAPH_DEPTH);
+                    let from = query_param(target, "from").map(percent_decode);
+                    let to = query_param(target, "to").map(percent_decode);
+                    graph_json(graph, &seed, depth, from.as_deref(), to.as_deref())
+                }
+            };
+            match body {
                 Ok(body) => Response::json(200, body),
                 Err(e) => Response::text(500, &format!("dash: graph projection failed: {e}")),
             }
@@ -1921,8 +2272,9 @@ mod supervised_lifecycle {
 mod tests {
     use super::*;
     use crate::contextgraph::{
-        Edge, Node, KIND_UNIT, REL_DECIDED, REL_GOVERNS, REL_REFERENCES, TIER_AMBIGUOUS,
-        TIER_EXTRACTED, TIER_INFERRED,
+        Edge, Node, KIND_AGENT, KIND_CODE_ENTITY, KIND_DESIGN_DOC, KIND_FILE, KIND_RATIONALE,
+        KIND_UNIT, REL_DECIDED, REL_GOVERNS, REL_REFERENCES, TIER_AMBIGUOUS, TIER_EXTRACTED,
+        TIER_INFERRED,
     };
     use crate::eventstore::Event;
 
@@ -2826,6 +3178,382 @@ mod tests {
         assert!(!new.superseded, "the superseding decision is not");
     }
 
+    /// Spec 42 c1: [`cluster_key`] folds every node into ONE super-node bucket. A node whose id NAMES
+    /// A FILE (a code entity `<file>::<name>`, a rationale anchor `<file>#L<n>`, or a path id whose
+    /// last segment carries an extension) clusters by that file's DIRECTORY (its module); a
+    /// directory-less repo-root path falls back to the [`CLUSTER_ROOT`] bucket; every other node - a
+    /// dev-loop node with no path id - clusters by its KIND. The mapping is deterministic. This test
+    /// OWNS the fold key; it does not exercise the overview/drill aggregations (c2, c3).
+    #[test]
+    fn cluster_key_folds_paths_by_directory_and_dev_loop_nodes_by_kind() {
+        // A code entity `<file>::<name>` folds to its file's DIRECTORY (its module) - the `::name`
+        // suffix is stripped, then the file clusters by its parent directory.
+        assert_eq!(
+            cluster_key("src/conductor.rs::gate_verdict_key", KIND_CODE_ENTITY),
+            "src"
+        );
+        // A nested module keeps its FULL directory path (not just the leaf directory).
+        assert_eq!(
+            cluster_key("src/contextgraph/sqlite.rs::project", KIND_CODE_ENTITY),
+            "src/contextgraph"
+        );
+        // A rationale anchor `<file>#L<n>` folds to the SAME file directory as its code entity.
+        assert_eq!(
+            cluster_key("src/conductor.rs#L20616", KIND_RATIONALE),
+            "src"
+        );
+        // A plain path id (a file / design-doc whose last segment carries an extension) folds to its
+        // directory, whatever its node kind is.
+        assert_eq!(
+            cluster_key("shim/mock-rigger-server.mjs", KIND_FILE),
+            "shim"
+        );
+        assert_eq!(cluster_key("docs/architecture.md", KIND_DESIGN_DOC), "docs");
+        // A design-doc SECTION id `<doc>#<slug>` folds to the doc's directory too (the `#slug` is
+        // stripped exactly like a rationale's `#L<n>`).
+        assert_eq!(
+            cluster_key("docs/architecture.md#grounding", KIND_DESIGN_DOC),
+            "docs"
+        );
+        // A directory-less (repo-root) path id falls back to the `(root)` bucket - a bare file, a
+        // root-file code entity, and a root-doc section all land there.
+        assert_eq!(cluster_key("Cargo.toml", KIND_FILE), CLUSTER_ROOT);
+        assert_eq!(
+            cluster_key("build.rs::args", KIND_CODE_ENTITY),
+            CLUSTER_ROOT
+        );
+        assert_eq!(
+            cluster_key("README.md#usage", KIND_DESIGN_DOC),
+            CLUSTER_ROOT
+        );
+        // A non-path dev-loop node (a decision / finding / agent - no path id) folds to its KIND.
+        assert_eq!(
+            cluster_key("adj-u41c1-approve", KIND_DECISION),
+            KIND_DECISION
+        );
+        assert_eq!(
+            cluster_key("adv-pc-project-scoping-untested", KIND_FINDING),
+            KIND_FINDING
+        );
+        assert_eq!(
+            cluster_key("adjudicator/plan-critique", KIND_AGENT),
+            KIND_AGENT
+        );
+        // A dev-loop id carrying slashes AND a `#` (e.g. a spawn-style agent id) is still NOT a path:
+        // its last segment has no extension, so it folds by kind, never mistaken for a file.
+        assert_eq!(cluster_key("u42-c1/implementer#0", KIND_AGENT), KIND_AGENT);
+        // Determinism: two entities in the SAME file fold to one identical module bucket.
+        assert_eq!(
+            cluster_key("src/dash.rs::cluster_key", KIND_CODE_ENTITY),
+            cluster_key("src/dash.rs::neighborhood", KIND_CODE_ENTITY),
+            "two entities in the same file fold to the same module bucket"
+        );
+    }
+
+    /// Spec 42 c2: [`clustered_overview`] folds the WHOLE graph into cluster super-nodes. Each
+    /// [`cluster_key`] bucket becomes a [`Cluster`] carrying its member COUNT and its DOMINANT member
+    /// KIND (ties broken by the lexicographically-smallest kind, so the colour is deterministic);
+    /// every currently-valid edge whose endpoints fall in two DIFFERENT clusters adds weight to a
+    /// symmetric [`ClusterEdge`] (an intra-cluster edge adds none, an invalidated edge counts for
+    /// nothing); and `total` carries the full node count. This test OWNS the overview aggregation; it
+    /// does NOT own the fold key (c1) or the drill projection (c3).
+    #[test]
+    fn clustered_overview_folds_the_graph_into_counted_dominant_kind_clusters_and_cross_cluster_edges(
+    ) {
+        let node = |id: &str, kind: &str| Node {
+            id: id.to_string(),
+            kind: kind.to_string(),
+            attrs: BTreeMap::new(),
+        };
+        let edge = |from: &str, to: &str, valid_to: Option<i64>| Edge {
+            from: from.to_string(),
+            to: to.to_string(),
+            rel: REL_REFERENCES.to_string(),
+            valid_from: 0,
+            valid_to,
+            source: 0,
+            tier: TIER_EXTRACTED.to_string(),
+        };
+        let graph = Graph {
+            nodes: vec![
+                // Cluster "src": one code-entity + one file -> count 2, kinds TIE 1-1, so the
+                // dominant kind resolves to the lexicographically-smallest ("code-entity" < "file").
+                node("src/a.rs::foo", KIND_CODE_ENTITY),
+                node("src/b.rs", KIND_FILE),
+                // Cluster "docs": three design-docs -> count 3, dominant "design-doc".
+                node("docs/x.md", KIND_DESIGN_DOC),
+                node("docs/y.md", KIND_DESIGN_DOC),
+                node("docs/z.md#s", KIND_DESIGN_DOC),
+                // Cluster "decision": two dev-loop decision nodes -> count 2, dominant "decision".
+                node("d1", KIND_DECISION),
+                node("d2", KIND_DECISION),
+            ],
+            edges: vec![
+                // Cross-cluster src<->docs, twice -> one symmetric edge of weight 2.
+                edge("src/a.rs::foo", "docs/x.md", None),
+                edge("src/b.rs", "docs/y.md", None),
+                // Cross-cluster decision<->src -> weight 1.
+                edge("d1", "src/a.rs::foo", None),
+                // INTRA-cluster (both in "src") -> adds NO weight.
+                edge("src/a.rs::foo", "src/b.rs", None),
+                // INTRA-cluster (both in "decision") -> adds NO weight.
+                edge("d1", "d2", None),
+                // Cross-cluster decision<->docs but INVALIDATED -> must NOT count.
+                edge("d2", "docs/x.md", Some(42)),
+            ],
+        };
+
+        let overview = clustered_overview(&graph);
+
+        // `total` is the FULL node count, independent of the cluster count.
+        assert_eq!(overview.total, 7, "total carries every node in the graph");
+
+        // Clusters come out deterministically ordered by key, each with its member count and its
+        // dominant kind; the "src" tie (1 code-entity vs 1 file) resolves to the smallest kind.
+        assert_eq!(
+            overview.clusters,
+            vec![
+                Cluster {
+                    key: "decision".to_string(),
+                    count: 2,
+                    kind: KIND_DECISION.to_string(),
+                },
+                Cluster {
+                    key: "docs".to_string(),
+                    count: 3,
+                    kind: KIND_DESIGN_DOC.to_string(),
+                },
+                Cluster {
+                    key: "src".to_string(),
+                    count: 2,
+                    kind: KIND_CODE_ENTITY.to_string(),
+                },
+            ],
+            "each cluster_key bucket folds to a counted, dominant-kind Cluster; the src tie resolves to the smallest kind"
+        );
+
+        // Only cross-cluster, currently-valid edges carry weight; symmetric pairs canonicalize to
+        // from<=to and merge, so src<->docs (twice) is one weight-2 edge, and the invalidated
+        // decision<->docs edge is absent entirely.
+        assert_eq!(
+            overview.edges,
+            vec![
+                ClusterEdge {
+                    from: "decision".to_string(),
+                    to: "src".to_string(),
+                    weight: 1,
+                },
+                ClusterEdge {
+                    from: "docs".to_string(),
+                    to: "src".to_string(),
+                    weight: 2,
+                },
+            ],
+            "cross-cluster currently-valid edges weight symmetric ClusterEdges; intra-cluster and invalidated edges add none"
+        );
+    }
+
+    /// Spec 42 c3: [`cluster_detail`] drills a cluster to its members, reusing spec 30's
+    /// [`Neighborhood`] shape so the SAME renderer draws it. A cluster at/under
+    /// [`CLUSTER_RENDER_BUDGET`] renders WHOLE (`truncated` omitted); a bigger one keeps exactly
+    /// `CLUSTER_RENDER_BUDGET` members - the highest INTRA-CLUSTER degree, ties broken by id - sets
+    /// `truncated = Some(total)`, and every returned edge has BOTH endpoints in the returned set. The
+    /// DISPLAYED per-node degree is the in-view (returned-edge) degree, honoring
+    /// [`NeighborhoodNode`]'s documented `degree` contract while the SELECTION ranks by the full
+    /// intra-cluster degree. This test OWNS the drill projection + the budget cap; it does NOT
+    /// exercise the overview aggregation (c2) or the route dispatch (c4).
+    #[test]
+    fn cluster_detail_drills_a_cluster_to_its_members_and_caps_a_big_one_by_degree() {
+        let ce = |id: &str| Node {
+            id: id.to_string(),
+            kind: KIND_CODE_ENTITY.to_string(),
+            attrs: BTreeMap::new(),
+        };
+        let dec = |id: &str| Node {
+            id: id.to_string(),
+            kind: KIND_DECISION.to_string(),
+            attrs: BTreeMap::new(),
+        };
+        let refs = |from: &str, to: &str| Edge {
+            from: from.to_string(),
+            to: to.to_string(),
+            rel: REL_REFERENCES.to_string(),
+            valid_from: 0,
+            valid_to: None,
+            source: 0,
+            tier: TIER_EXTRACTED.to_string(),
+        };
+
+        let b = CLUSTER_RENDER_BUDGET;
+        // The hub's id sorts AFTER every spoke, so it survives the cap ONLY because its degree ranks
+        // it first - proving degree beats the id tie-break (not that the smallest id is kept).
+        let big_hub = "src/big/mod.rs::zzz_hub";
+        let spoke = |i: usize| format!("src/big/mod.rs::s{i:05}");
+
+        let mut nodes: Vec<Node> = Vec::new();
+        let mut edges: Vec<Edge> = Vec::new();
+
+        // OVER-BUDGET cluster `src/big`: a hub wired to b+1 spokes => b+2 members (over the b cap). The
+        // spokes all tie at intra-cluster degree 1, so the id tie-break keeps the b-1 SMALLEST ids and
+        // drops the two largest.
+        nodes.push(ce(big_hub));
+        for i in 0..=b {
+            nodes.push(ce(&spoke(i)));
+            edges.push(refs(big_hub, &spoke(i)));
+        }
+
+        // UNDER-BUDGET cluster `src/small`: a hub + 6 leaves (7 members, well under b). The hub's 6
+        // intra-cluster edges make it a god-node (degree 6 > threshold 5). A SUPERSEDED intra edge and
+        // a CROSS-cluster edge are both excluded from the drill.
+        let sm_hub = "src/small/lib.rs::hub";
+        for l in ["a", "b", "c", "d", "e", "f"] {
+            let leaf = format!("src/small/lib.rs::{l}");
+            nodes.push(ce(&leaf));
+            edges.push(refs(sm_hub, &leaf));
+        }
+        nodes.push(ce(sm_hub));
+        // A SUPERSEDED intra-cluster edge (a -> b): currently-invalid, so NOT a returned edge and it
+        // adds no degree.
+        edges.push(Edge {
+            from: "src/small/lib.rs::a".to_string(),
+            to: "src/small/lib.rs::b".to_string(),
+            rel: REL_REFERENCES.to_string(),
+            valid_from: 0,
+            valid_to: Some(9),
+            source: 0,
+            tier: TIER_EXTRACTED.to_string(),
+        });
+
+        // A dev-loop `decision` cluster (folds by KIND): two decision nodes + a CROSS-cluster edge from
+        // the small hub into it (which the src/small drill must exclude).
+        nodes.push(dec("d-xyz"));
+        nodes.push(dec("d-abc"));
+        edges.push(refs(sm_hub, "d-xyz"));
+
+        let g = Graph { nodes, edges };
+
+        // --- OVER-BUDGET DRILL: `src/big` (b+2 members, capped to b) ---
+        let big = cluster_detail(&g, "src/big");
+        assert_eq!(
+            big.seed, "src/big",
+            "the drill echoes the drilled cluster key as its seed"
+        );
+        assert_eq!(big.depth, 0, "a cluster drill is not a hop-bounded walk");
+        assert!(big.path.is_empty() && big.explain.is_none());
+        assert_eq!(
+            big.truncated,
+            Some(b + 2),
+            "an over-budget cluster reports its FULL member count as truncated"
+        );
+        assert_eq!(
+            big.nodes.len(),
+            b,
+            "exactly CLUSTER_RENDER_BUDGET members render"
+        );
+
+        let kept: std::collections::BTreeSet<&str> =
+            big.nodes.iter().map(|n| n.id.as_str()).collect();
+        assert!(
+            kept.contains(big_hub),
+            "the highest-degree hub is kept even with the largest id (degree beats the id tie-break)"
+        );
+        for i in 0..=(b - 2) {
+            assert!(
+                kept.contains(spoke(i).as_str()),
+                "the b-1 smallest-id spokes are kept"
+            );
+        }
+        assert!(
+            !kept.contains(spoke(b - 1).as_str()),
+            "a largest-id spoke is dropped by the id tie-break"
+        );
+        assert!(
+            !kept.contains(spoke(b).as_str()),
+            "the largest-id spoke is dropped by the id tie-break"
+        );
+
+        for e in &big.edges {
+            assert!(
+                kept.contains(e.from.as_str()) && kept.contains(e.to.as_str()),
+                "a returned edge {} -> {} references a budget-dropped member",
+                e.from,
+                e.to
+            );
+        }
+        assert_eq!(
+            big.edges.len(),
+            b - 1,
+            "one edge to each of the b-1 kept spokes; edges to dropped spokes are excluded"
+        );
+        // The DISPLAYED degree is the in-view (returned-edge) degree, NOT the b+1 intra-cluster degree.
+        let hub_view = big.nodes.iter().find(|n| n.id == big_hub).unwrap();
+        assert_eq!(
+            hub_view.degree,
+            b - 1,
+            "the hub's DISPLAYED degree is its returned-edge (in-view) degree, not b+1"
+        );
+        assert!(hub_view.god, "a degree-{} hub is a god-node", b - 1);
+        let spoke_view = big.nodes.iter().find(|n| n.id == spoke(0)).unwrap();
+        assert_eq!(
+            spoke_view.degree, 1,
+            "a kept spoke has one returned edge (to the hub)"
+        );
+        assert!(!spoke_view.god);
+
+        // --- UNDER-BUDGET DRILL: `src/small` (7 members, whole) ---
+        let small = cluster_detail(&g, "src/small");
+        assert_eq!(
+            small.truncated, None,
+            "an at/under-budget cluster renders WHOLE - truncated omitted"
+        );
+        assert_eq!(small.nodes.len(), 7, "all 7 members render");
+        let small_ids: std::collections::BTreeSet<&str> =
+            small.nodes.iter().map(|n| n.id.as_str()).collect();
+        assert!(
+            !small_ids.contains("d-xyz"),
+            "a different cluster's node is not a drill member"
+        );
+        for e in &small.edges {
+            assert!(
+                small_ids.contains(e.from.as_str()) && small_ids.contains(e.to.as_str()),
+                "a src/small drill edge crosses out of the cluster: {} -> {}",
+                e.from,
+                e.to
+            );
+        }
+        assert!(
+            !small
+                .edges
+                .iter()
+                .any(|e| e.from == "src/small/lib.rs::a" && e.to == "src/small/lib.rs::b"),
+            "a superseded (currently-invalid) intra-cluster edge is excluded"
+        );
+        let sm_hub_view = small.nodes.iter().find(|n| n.id == sm_hub).unwrap();
+        assert_eq!(
+            sm_hub_view.degree, 6,
+            "the small hub's in-view degree counts only its intra-cluster edges (not the cross edge)"
+        );
+        assert!(
+            sm_hub_view.god,
+            "a degree-6 hub is a god-node (above the threshold of 5)"
+        );
+
+        // --- DEV-LOOP KIND DRILL: `decision` (folds by kind) ---
+        let decisions = cluster_detail(&g, KIND_DECISION);
+        assert_eq!(decisions.truncated, None);
+        let dec_ids: std::collections::BTreeSet<&str> =
+            decisions.nodes.iter().map(|n| n.id.as_str()).collect();
+        let want: std::collections::BTreeSet<&str> = ["d-abc", "d-xyz"].into_iter().collect();
+        assert_eq!(
+            dec_ids, want,
+            "a dev-loop KIND drill returns exactly the nodes folding to that kind"
+        );
+
+        // --- GRACEFUL: an unknown cluster key drills to an empty result, never a panic ---
+        let empty = cluster_detail(&g, "no/such/module");
+        assert!(empty.nodes.is_empty() && empty.edges.is_empty() && empty.truncated.is_none());
+    }
+
     /// A small tier-tagged fixture graph: a chain seed `a` -[extracted]- `b` -[inferred]- `c`
     /// -[ambiguous]- `d`, so a depth-2 walk from `a` reaches {a,b,c} (never the depth-3 `d`) and the
     /// reachable edges carry two distinct tiers. `a` is a unit node; `b` a decision (its label is its
@@ -3036,6 +3764,220 @@ mod tests {
             assert_eq!(
                 r.status, 405,
                 "{method} /api/graph must be rejected read-only"
+            );
+        }
+    }
+
+    /// A small two-module + decision graph the ROUTE-DISPATCH test drills, overviews, and seeds. Two
+    /// distinct file directories (`src/a`, `src/b`) fold to two file clusters and a bare `decision`
+    /// node folds by KIND, so the three views are visibly different: the overview reports all three
+    /// clusters, the drill returns one cluster's members, and the seed walks one node's neighborhood.
+    fn dispatch_graph() -> Graph {
+        let ce = |id: &str| Node {
+            id: id.to_string(),
+            kind: KIND_CODE_ENTITY.to_string(),
+            attrs: BTreeMap::new(),
+        };
+        let refs = |from: &str, to: &str| Edge {
+            from: from.to_string(),
+            to: to.to_string(),
+            rel: REL_REFERENCES.to_string(),
+            valid_from: 0,
+            valid_to: None,
+            source: 0,
+            tier: TIER_EXTRACTED.to_string(),
+        };
+        Graph {
+            nodes: vec![
+                ce("src/a/mod.rs::foo"), // cluster "src/a"
+                ce("src/a/mod.rs::bar"), // cluster "src/a"
+                ce("src/b/mod.rs::baz"), // cluster "src/b"
+                Node {
+                    id: "d1".to_string(),
+                    kind: KIND_DECISION.to_string(),
+                    attrs: BTreeMap::new(),
+                }, // cluster "decision"
+            ],
+            edges: vec![
+                refs("src/a/mod.rs::foo", "src/a/mod.rs::bar"), // intra src/a
+                refs("src/a/mod.rs::bar", "src/b/mod.rs::baz"), // cross src/a <-> src/b
+                refs("d1", "src/a/mod.rs::foo"),                // cross decision <-> src/a
+            ],
+        }
+    }
+
+    /// The `/api/graph` route is ONE endpoint with THREE views selected by parameter (spec 42 c4):
+    /// `cluster=<key>` returns the cluster DRILL, an empty `seed` with no `cluster` returns the
+    /// clustered OVERVIEW (the new default KG view), and a non-empty `seed` returns the spec-30 SEEDED
+    /// neighborhood unchanged. This test OWNS the route dispatch; it does NOT re-prove the projections
+    /// (c1-c3 own the fold / overview / drill) - it proves each parameter combination reaches the
+    /// RIGHT projection and serves its shape as JSON.
+    #[test]
+    fn the_graph_route_dispatches_cluster_overview_and_seed_by_parameter() {
+        let graph = dispatch_graph();
+        let call = |target: &str| {
+            let r = route(
+                "GET",
+                target,
+                &[],
+                &graph,
+                &[],
+                &HashMap::new(),
+                3,
+                "rigger-run",
+                "origin/main",
+            );
+            assert_eq!(r.status, 200, "{target} answers 200");
+            assert_eq!(r.content_type, "application/json", "{target} is JSON");
+            let body: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
+            body
+        };
+
+        // VIEW 1 - DRILL: `cluster=<key>` returns `cluster_detail(key)` (a Neighborhood echoing the
+        // drilled cluster key as its seed, its members as nodes). The key `src/a` carries a `/`, so the
+        // client `encodeURIComponent`s it (`src%2Fa`) and the route percent-decodes it back, exactly
+        // like a seed id.
+        let drill = call("/api/graph?cluster=src%2Fa");
+        assert_eq!(
+            drill["seed"], "src/a",
+            "a cluster drill echoes the decoded cluster key as its seed: {drill}"
+        );
+        assert!(
+            drill["clusters"].is_null(),
+            "a drill is a neighborhood, not an overview (no clusters key): {drill}"
+        );
+        let drill_ids: std::collections::BTreeSet<&str> = drill["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| n["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            drill_ids,
+            ["src/a/mod.rs::foo", "src/a/mod.rs::bar"]
+                .into_iter()
+                .collect(),
+            "the drill returns exactly the src/a cluster's members: {drill}"
+        );
+
+        // VIEW 2 - OVERVIEW: an empty `seed` with no `cluster` returns `clustered_overview` (the
+        // default KG view) - the whole-graph fold, NOT a neighborhood. Both the no-argument request
+        // and an explicit empty `seed=` select it.
+        for target in ["/api/graph", "/api/graph?seed="] {
+            let overview = call(target);
+            assert_eq!(
+                overview["total"], 4,
+                "{target}: the overview reports the full node total: {overview}"
+            );
+            assert!(
+                overview["nodes"].is_null(),
+                "{target}: the overview is not a neighborhood (no nodes key): {overview}"
+            );
+            let keys: std::collections::BTreeSet<&str> = overview["clusters"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|c| c["key"].as_str().unwrap())
+                .collect();
+            assert_eq!(
+                keys,
+                ["decision", "src/a", "src/b"].into_iter().collect(),
+                "{target}: the overview folds the graph into its three clusters: {overview}"
+            );
+        }
+
+        // VIEW 3 - SEED: a non-empty `seed` returns the spec-30 seeded neighborhood UNCHANGED - the
+        // depth-1 walk from `d1` reaches `d1` and its only neighbor `foo`, the seed is echoed, and no
+        // `clusters`/`truncated` key rides along (the spec-30 shape is untouched).
+        let seeded = call("/api/graph?seed=d1&depth=1");
+        assert_eq!(
+            seeded["seed"], "d1",
+            "a non-empty seed echoes that seed: {seeded}"
+        );
+        assert_eq!(
+            seeded["depth"], 1,
+            "the seeded walk echoes its depth: {seeded}"
+        );
+        assert!(
+            seeded["clusters"].is_null() && seeded["truncated"].is_null(),
+            "the seeded neighborhood carries no overview/drill keys: {seeded}"
+        );
+        let seeded_ids: std::collections::BTreeSet<&str> = seeded["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| n["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            seeded_ids,
+            ["d1", "src/a/mod.rs::foo"].into_iter().collect(),
+            "the depth-1 neighborhood of d1 is {{d1, foo}}: {seeded}"
+        );
+    }
+
+    /// GRACEFUL DEGRADATION (spec 42 c6): the overview route over an EMPTY graph returns a
+    /// well-formed empty overview - zero clusters, zero cross-cluster edges, zero total - as a
+    /// `200` JSON response, NOT an error, so the KG panel renders its "empty graph" message
+    /// instead of throwing. This is the KG-feature-off / absent-graph.db case AT THE ROUTE
+    /// boundary: the serving command builds the context graph best-effort, so an absent or
+    /// unreadable graph arrives here as [`Graph::default`] (an empty graph). Both entry points
+    /// to the overview - the no-argument default view and an explicit empty `seed=` - must
+    /// degrade to the same well-formed empty overview, and (being un-feature-gated) this test
+    /// runs and passes in BOTH feature lanes. This test OWNS the empty / degraded path; it does
+    /// NOT re-prove the populated overview aggregation (c2 owns that) or the route's populated
+    /// dispatch (c4 owns that).
+    #[test]
+    fn the_overview_route_degrades_gracefully_on_an_empty_graph() {
+        let empty = Graph::default();
+        // The two entry points to the DEFAULT overview view - a bare request and an explicit
+        // empty `seed=` - are what the panel loads on open; each must degrade, never error.
+        for target in ["/api/graph", "/api/graph?seed="] {
+            let r = route(
+                "GET",
+                target,
+                &[],
+                &empty,
+                &[],
+                &HashMap::new(),
+                3,
+                "rigger-run",
+                "origin/main",
+            );
+            // A well-formed response, never the 500 projection-error path: the panel gets JSON.
+            assert_eq!(
+                r.status, 200,
+                "{target}: an empty graph answers 200, not an error status"
+            );
+            assert_eq!(
+                r.content_type, "application/json",
+                "{target}: the empty overview is served as JSON"
+            );
+            let body: serde_json::Value = serde_json::from_slice(&r.body)
+                .expect("the empty overview body is well-formed JSON");
+            // A well-formed empty OVERVIEW (not a neighborhood): the overview carries no `nodes`
+            // key, reports zero `total`, and folds into zero clusters and zero edges - exactly the
+            // shape the panel keys its empty-graph message off.
+            assert!(
+                body["nodes"].is_null(),
+                "{target}: the empty view is an overview, not a neighborhood (no `nodes`): {body}"
+            );
+            assert_eq!(
+                body["total"], 0,
+                "{target}: an empty graph reports zero total nodes: {body}"
+            );
+            let clusters = body["clusters"]
+                .as_array()
+                .expect("the overview carries a `clusters` array");
+            assert!(
+                clusters.is_empty(),
+                "{target}: an empty graph folds into ZERO clusters: {body}"
+            );
+            let edges = body["edges"]
+                .as_array()
+                .expect("the overview carries an `edges` array");
+            assert!(
+                edges.is_empty(),
+                "{target}: an empty graph has ZERO cross-cluster edges: {body}"
             );
         }
     }

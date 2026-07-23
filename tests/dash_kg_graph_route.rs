@@ -27,8 +27,8 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use rigger::contextgraph::{
-    Edge, Graph, Node, KIND_DECISION, KIND_UNIT, REL_DECIDED, REL_REFERENCES, TIER_EXTRACTED,
-    TIER_INFERRED,
+    Edge, Graph, Node, KIND_CODE_ENTITY, KIND_DECISION, KIND_UNIT, REL_DECIDED, REL_REFERENCES,
+    TIER_EXTRACTED, TIER_INFERRED,
 };
 use rigger::dash::{self, DashInputs};
 
@@ -350,6 +350,9 @@ Object.defineProperty(__El.prototype, "textContent", { get(){ return this._text;
 __El.prototype.querySelectorAll = function(){ return []; };
 __El.prototype.addEventListener = function(t,f){ (this._listeners[t]=this._listeners[t]||[]).push(f); };
 const document = { getElementById: function(id){ return __els[id] || (__els[id] = new __El(id)); } };
+// The page (spec 42 c5) installs its drag-pan handlers on the window global at load; a faithful
+// browser shim provides it (a no-op addEventListener; this harness only loads-and-dispatches).
+const window = { addEventListener: function(){} };
 const fetch = function(url){
   if (String(url).indexOf("/api/graph") !== -1) {
     __fetchedGraphUrl = String(url);
@@ -782,6 +785,9 @@ Object.defineProperty(__El.prototype, "textContent", { get(){ return this._text;
 __El.prototype.querySelectorAll = function(){ return []; };
 __El.prototype.addEventListener = function(t,f){ (this._listeners[t]=this._listeners[t]||[]).push(f); };
 const document = { getElementById: function(id){ return __els[id] || (__els[id] = new __El(id)); } };
+// The page (spec 42 c5) installs its drag-pan handlers on the window global at load; a faithful
+// browser shim provides it (a no-op addEventListener; this harness only loads-and-dispatches).
+const window = { addEventListener: function(){} };
 const fetch = function(url){
   if (String(url).indexOf("/api/graph") !== -1) {
     __fetchedGraphUrl = String(url);
@@ -1197,6 +1203,9 @@ Object.defineProperty(__El.prototype, "textContent", { get(){ return this._text;
 __El.prototype.querySelectorAll = function(){ return []; };
 __El.prototype.addEventListener = function(t,f){ (this._listeners[t]=this._listeners[t]||[]).push(f); };
 const document = { getElementById: function(id){ return __els[id] || (__els[id] = new __El(id)); } };
+// The page (spec 42 c5) installs its drag-pan handlers on the window global at load; a faithful
+// browser shim provides it (a no-op addEventListener; this harness only loads-and-dispatches).
+const window = { addEventListener: function(){} };
 const fetch = function(url){ return Promise.reject(new Error("no network for " + url)); };
 const setTimeout = function(){ return 0; };
 `;
@@ -1353,4 +1362,210 @@ fn the_served_root_page_ships_the_tier_toggles_and_the_explain_provenance() {
         page.contains("kggod") && page.contains("onpath"),
         "the c7 tier filter must coexist with (not replace) the c6 god/path render"
     );
+}
+
+/// A two-module + decision fixture the EXPLORATION route (spec 42 c4) drills, overviews, and seeds
+/// over the real socket: two distinct file directories (`src/a`, `src/b`) fold to two file clusters
+/// and a bare `decision` node folds by KIND, so the three served views are visibly different.
+fn exploration_graph() -> Graph {
+    let ce = |id: &str| Node {
+        id: id.to_string(),
+        kind: KIND_CODE_ENTITY.to_string(),
+        attrs: BTreeMap::new(),
+    };
+    let refs = |from: &str, to: &str| Edge {
+        from: from.to_string(),
+        to: to.to_string(),
+        rel: REL_REFERENCES.to_string(),
+        valid_from: 0,
+        valid_to: None,
+        source: 0,
+        tier: TIER_EXTRACTED.to_string(),
+    };
+    Graph {
+        nodes: vec![
+            ce("src/a/mod.rs::foo"), // cluster "src/a"
+            ce("src/a/mod.rs::bar"), // cluster "src/a"
+            ce("src/b/mod.rs::baz"), // cluster "src/b"
+            Node {
+                id: "d1".to_string(),
+                kind: KIND_DECISION.to_string(),
+                attrs: BTreeMap::new(),
+            }, // cluster "decision"
+        ],
+        edges: vec![
+            refs("src/a/mod.rs::foo", "src/a/mod.rs::bar"), // intra src/a
+            refs("src/a/mod.rs::bar", "src/b/mod.rs::baz"), // cross src/a <-> src/b
+            refs("d1", "src/a/mod.rs::foo"),                // cross decision <-> src/a
+        ],
+    }
+}
+
+/// The SERVED `/api/graph` route is ONE endpoint with THREE views selected by parameter (spec 42
+/// c4), proven over the REAL `serve` socket: `cluster=<key>` returns the cluster DRILL, an empty
+/// `seed` with no `cluster` returns the clustered OVERVIEW (the default KG view), and a non-empty
+/// `seed` returns the spec-30 SEEDED neighborhood unchanged. The pure in-process `route` test in
+/// `dash.rs` is blind to the serve/framing seam; this proves the exploration dispatch reaches the
+/// browser end-to-end and self-discriminates by JSON shape.
+#[test]
+fn the_served_graph_route_dispatches_the_exploration_overview_drill_and_seed() {
+    let graph = exploration_graph();
+
+    let served = |path: &str| -> serde_json::Value {
+        let resp = fetch_served(path, &graph);
+        assert!(
+            resp.starts_with("HTTP/1.1 200 OK"),
+            "GET {path} is served 200 over the real socket:\n{resp}"
+        );
+        assert!(
+            resp.contains("application/json"),
+            "the served exploration route is self-contained JSON:\n{resp}"
+        );
+        serde_json::from_str(body_of(&resp)).expect("the served body is valid JSON")
+    };
+
+    // DRILL: `cluster=src%2Fa` (the `/` in the module key is `encodeURIComponent`d) is decoded back
+    // and returns the src/a cluster's members as a neighborhood echoing the cluster key as its seed.
+    let drill = served("/api/graph?cluster=src%2Fa");
+    assert_eq!(
+        drill["seed"], "src/a",
+        "the served drill echoes the decoded cluster key as its seed: {drill}"
+    );
+    let drill_ids: BTreeSet<&str> = drill["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        drill_ids,
+        ["src/a/mod.rs::foo", "src/a/mod.rs::bar"]
+            .into_iter()
+            .collect(),
+        "the served drill returns exactly the src/a members: {drill}"
+    );
+
+    // OVERVIEW: the no-argument request returns the whole-graph fold (clusters + total), NOT a
+    // neighborhood - the default KG view the panel loads on open.
+    let overview = served("/api/graph");
+    assert_eq!(
+        overview["total"], 4,
+        "the served overview reports the full node total: {overview}"
+    );
+    assert!(
+        overview["nodes"].is_null(),
+        "the served overview is an overview, not a neighborhood (no nodes key): {overview}"
+    );
+    let keys: BTreeSet<&str> = overview["clusters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["key"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        keys,
+        ["decision", "src/a", "src/b"].into_iter().collect(),
+        "the served overview folds the graph into its three clusters: {overview}"
+    );
+
+    // SEED: a non-empty seed returns the spec-30 neighborhood unchanged - depth-1 from `d1` reaches
+    // {d1, foo}, the seed is echoed, and no overview/drill key rides the body.
+    let seeded = served("/api/graph?seed=d1&depth=1");
+    assert_eq!(
+        seeded["seed"], "d1",
+        "the served seeded route echoes the seed: {seeded}"
+    );
+    assert!(
+        seeded["clusters"].is_null() && seeded["truncated"].is_null(),
+        "the served seeded neighborhood carries no overview/drill keys: {seeded}"
+    );
+    let seeded_ids: BTreeSet<&str> = seeded["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        seeded_ids,
+        ["d1", "src/a/mod.rs::foo"].into_iter().collect(),
+        "the served depth-1 neighborhood of d1 is {{d1, foo}}: {seeded}"
+    );
+}
+
+/// The exploration dispatch's remaining API edges over the REAL `serve` socket (spec 42 c4). The
+/// first served test pins the three normal views; this pins the two dispatch corners the route
+/// alone decides, which neither the in-process `route` test nor the first served test exercises:
+///
+///   * PRECEDENCE - when a request carries BOTH `cluster` and a non-empty `seed`, the `cluster`
+///     drill WINS and the seed is ignored. A browser never emits both, but a direct caller (curl,
+///     another tool) can hit the raw route, so the endpoint must have one decided answer; this pins
+///     it end-to-end so a later reorder that let `seed` win reddens here.
+///   * GRACEFUL DEAD KEY - an empty `cluster=` or an unknown `cluster=<nope>` drills to an EMPTY
+///     neighborhood: a 200 with zero members echoing the key, never a 500. This is the no-error
+///     degradation the route promises for a dead drill key.
+#[test]
+fn the_served_graph_route_precedence_and_graceful_empty_cluster() {
+    let graph = exploration_graph();
+
+    let served = |path: &str| -> String {
+        let resp = fetch_served(path, &graph);
+        assert!(
+            resp.starts_with("HTTP/1.1 200 OK"),
+            "GET {path} is served 200 over the real socket (never a 500):\n{resp}"
+        );
+        assert!(
+            resp.contains("application/json"),
+            "the served exploration route is JSON:\n{resp}"
+        );
+        resp
+    };
+
+    // PRECEDENCE: `cluster=src%2Fa` AND `seed=d1` are both present. The drill wins - the body echoes
+    // the src/a cluster key as its seed and carries the src/a members, NOT the depth-1 seeded
+    // neighborhood of `d1` (which would echo seed `d1` and carry {d1, foo}). Reordering the dispatch
+    // to check `seed` before `cluster` would return the d1 neighborhood and redden both asserts.
+    let resp = served("/api/graph?cluster=src%2Fa&seed=d1&depth=1");
+    let drill: serde_json::Value =
+        serde_json::from_str(body_of(&resp)).expect("the precedence body is valid JSON");
+    assert_eq!(
+        drill["seed"], "src/a",
+        "cluster takes precedence: the body echoes the cluster key, not the seed d1: {drill}"
+    );
+    let drill_ids: BTreeSet<&str> = drill["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        drill_ids,
+        ["src/a/mod.rs::foo", "src/a/mod.rs::bar"]
+            .into_iter()
+            .collect(),
+        "the drill wins over the seed: exactly the src/a members, not {{d1, foo}}: {drill}"
+    );
+
+    // GRACEFUL DEAD KEY: an empty `cluster=` and an unknown `cluster=nope` each drill to an EMPTY
+    // neighborhood - 200, zero members, the key echoed as seed, no `clusters` overview key - never a
+    // 500. The `served` closure already asserted 200/JSON; here we assert the empty-drill shape.
+    for (path, key) in [
+        ("/api/graph?cluster=", ""),
+        ("/api/graph?cluster=nope", "nope"),
+    ] {
+        let resp = served(path);
+        let body: serde_json::Value =
+            serde_json::from_str(body_of(&resp)).expect("the graceful drill body is valid JSON");
+        assert_eq!(
+            body["seed"], key,
+            "{path}: an empty/unknown cluster key echoes back as the drill seed: {body}"
+        );
+        assert!(
+            body["nodes"].as_array().unwrap().is_empty(),
+            "{path}: an empty/unknown cluster key drills to zero members, gracefully: {body}"
+        );
+        assert!(
+            body["clusters"].is_null(),
+            "{path}: the graceful drill is still a neighborhood, not an overview: {body}"
+        );
+    }
 }

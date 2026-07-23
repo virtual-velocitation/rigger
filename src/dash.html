@@ -205,6 +205,24 @@
   .kgfact { padding: 3px 5px; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; font-size: 13px; }
   .kgfact .kgrel { color: var(--accent); }
   .kgsrc { color: var(--muted); font-size: 11px; margin-left: 6px; white-space: nowrap; }
+  /* Whole-graph EXPLORATION VIZ (spec 42 c5): a library-free, SVG-rendered graph fills the KG panel.
+     The clustered OVERVIEW (super-nodes) and the cluster DRILL (member nodes) both draw here; the svg
+     PANS/ZOOMS within its own box (a #kgzoom group transforms) so the page body never scrolls. */
+  .kgtoolbar { font-size: 12px; color: var(--muted); margin: 0 0 6px; overflow-wrap: anywhere; }
+  .kgtoolbar b { color: var(--ink); }
+  .kgback { color: var(--accent); text-decoration: none; cursor: pointer; }
+  .kgback:hover { text-decoration: underline; }
+  .kgsvg { display: block; width: 100%; overflow: hidden; background: rgba(110, 168, 254, 0.03);
+    border: 1px solid var(--line); border-radius: 6px; cursor: grab; touch-action: none; user-select: none; }
+  .kgsvg:active { cursor: grabbing; }
+  .kgline { stroke: var(--dim); }
+  .kgn { cursor: pointer; }
+  .kgn circle { stroke: var(--panel); stroke-width: 1; }
+  .kgn:hover circle { stroke: var(--ink); }
+  .kgcluster circle { opacity: 0.9; }
+  /* A GOD-NODE (a high-degree hub the drill flags) gets a warning ring so a hub reads at a glance. */
+  .kggodnode circle { stroke: var(--warn); stroke-width: 2; }
+  .kglabel { fill: var(--ink); font-size: 10px; text-anchor: middle; pointer-events: none; }
 </style>
 </head>
 <body>
@@ -552,7 +570,11 @@ function renderGraph(g) {
     onPathEdge.add(path[i + 1] + " " + path[i]);
   }
   const edgeOnPath = e => onPathEdge.has(e.from + " " + e.to);
-  const head = '<div class="kgseed">neighborhood of <b>' + esc(g.seed || "")
+  // A "<- overview" back link (spec 42 c5) closes the exploration round-trip: the seeded neighborhood
+  // is the leaf of overview -> drill -> seed, so it carries the same data-kgback handle back to the
+  // whole-graph overview. The delegated listener already routes data-kgback; this only adds the affordance.
+  const head = '<div class="kgtoolbar"><a class="kgback" href="#" data-kgback="1">&larr; overview</a></div>'
+    + '<div class="kgseed">neighborhood of <b>' + esc(g.seed || "")
     + '</b> (depth ' + esc(g.depth || 0) + ')'
     + (path.length ? ' &middot; path <b>' + esc(path[0]) + '</b> &rarr; <b>' + esc(path[path.length - 1])
         + '</b> (' + esc(path.length - 1) + ' hop' + (path.length - 1 === 1 ? '' : 's') + ')' : '')
@@ -645,6 +667,338 @@ async function pathTo(target) {
   }
 }
 
+// ---------------------------------------------------------------------------------------------------
+// Whole-graph EXPLORATION VIZ (spec 42 c5): the KG panel opens on the clustered OVERVIEW (a few dozen
+// super-nodes for the whole graph), a click DRILLS a cluster to its members, and a member click hands
+// off to the spec 30 seeded neighborhood - one coherent path from "the whole graph" down to "the
+// provenance of one node". The graph is drawn library-free: a deterministic force layout computes
+// positions and we emit <circle>/<line>/<text> from them (what a graph library does, minus the
+// library, honoring the dash charter - one self-contained page, no CDN, no build step).
+// ---------------------------------------------------------------------------------------------------
+
+// Which view the panel currently holds ("overview" | "drill"); the seed view is spec 30's renderGraph.
+let kgMode = "overview";
+
+// A deterministic per-kind colour, so a given graph yields one stable palette every poll (no
+// Math.random anywhere). Known dev-loop/code kinds get a fixed hue; any other kind hashes to a stable
+// HSL, so a new kind still gets a consistent colour without a lookup-table edit.
+function kindColor(kind) {
+  const known = {
+    "code-entity": "#6ea8fe", "file": "#4ade80", "design-doc": "#fbbf24", "rationale": "#a78bfa",
+    "decision": "#f472b6", "finding": "#f87171", "unit": "#22d3ee", "agent": "#94a3b8",
+    "gate": "#fb923c", "lesson": "#34d399"
+  };
+  const s = String(kind || "");
+  if (known[s]) return known[s];
+  let h = 0;
+  for (let i = 0; i < s.length; i++) { h = (h * 31 + s.charCodeAt(i)) >>> 0; }
+  return "hsl(" + (h % 360) + ",55%,62%)";
+}
+
+// The live drawing box: the panel's own width/height (minus the toolbar), so the viz fills whatever
+// size the responsive shell gives it (it reads the aspect ratio at render time).
+function kgDims() {
+  const p = el("kgpanel");
+  const w = Math.max(320, p.clientWidth || 800);
+  const h = Math.max(200, (p.clientHeight || 320) - 44);
+  return { w: w, h: h };
+}
+
+// Union-find (path-compressed) over node ids, so a DISCONNECTED graph (a drilled cluster's separate
+// files) can be split into connected COMPONENTS and laid out piece by piece instead of flung to the
+// corners as one tangle.
+function ufFind(parent, x) {
+  while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; }
+  return x;
+}
+function ufUnion(parent, a, b) { parent[ufFind(parent, a)] = ufFind(parent, b); }
+
+// Normalize a component's raw positions to FILL a target box (with padding) - a single connected graph
+// is stretched on x/y to fill the wide, short panel; a packed component fills its shelf cell - so the
+// drawing uses the whole space instead of clumping in the middle.
+function fitToBox(pos, ids, x0, y0, w, h) {
+  let minx = Infinity, miny = Infinity, maxx = -Infinity, maxy = -Infinity;
+  ids.forEach(id => {
+    const q = pos[id];
+    minx = Math.min(minx, q.x); miny = Math.min(miny, q.y);
+    maxx = Math.max(maxx, q.x); maxy = Math.max(maxy, q.y);
+  });
+  const pad = 26;
+  const sw = (maxx - minx) || 1, sh = (maxy - miny) || 1;
+  const sx = (w - 2 * pad) / sw, sy = (h - 2 * pad) / sh;
+  const out = {};
+  ids.forEach(id => {
+    const q = pos[id];
+    out[id] = { x: x0 + pad + (q.x - minx) * sx, y: y0 + pad + (q.y - miny) * sy };
+  });
+  return out;
+}
+
+// A Fruchterman-Reingold force layout for ONE connected component, SEEDED ON A SPIRAL (golden-angle,
+// no Math.random) so the same component lays out identically every poll. Repulsion pushes every pair
+// apart (k^2/d), attraction pulls edges together (d^2/k), and a cooling temperature caps each step so
+// the sim settles. Bounded work: the drill render budget keeps the node count small, so the O(n^2) per
+// step is cheap.
+function frComponent(ids, adj, w, h) {
+  const n = ids.length;
+  const pos = {};
+  const cx = w / 2, cy = h / 2;
+  const spread = Math.min(w, h) / (2 * Math.sqrt(n + 1));
+  ids.forEach((id, i) => {
+    const a = i * 2.399963229728653;               // the golden angle, a deterministic spiral seed
+    const r = Math.sqrt(i + 1) * spread;
+    pos[id] = { x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) };
+  });
+  if (n <= 1) { if (n === 1) pos[ids[0]] = { x: cx, y: cy }; return pos; }
+  const k = Math.sqrt((w * h) / n);                 // the ideal edge length
+  const iters = 300;
+  let temp = Math.min(w, h) * 0.12;
+  const cool = temp / (iters + 1);
+  for (let it = 0; it < iters; it++) {
+    const disp = {};
+    ids.forEach(id => { disp[id] = { x: 0, y: 0 }; });
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        const a = ids[i], b = ids[j];
+        let dx = pos[a].x - pos[b].x, dy = pos[a].y - pos[b].y;
+        const dist = Math.sqrt(dx * dx + dy * dy) || 0.01;
+        const rep = (k * k) / dist;
+        const ux = dx / dist, uy = dy / dist;
+        disp[a].x += ux * rep; disp[a].y += uy * rep;
+        disp[b].x -= ux * rep; disp[b].y -= uy * rep;
+      }
+    }
+    adj.forEach(e => {
+      const a = e[0], b = e[1];
+      if (!pos[a] || !pos[b]) return;
+      let dx = pos[a].x - pos[b].x, dy = pos[a].y - pos[b].y;
+      const dist = Math.sqrt(dx * dx + dy * dy) || 0.01;
+      const att = (dist * dist) / k;
+      const ux = dx / dist, uy = dy / dist;
+      disp[a].x -= ux * att; disp[a].y -= uy * att;
+      disp[b].x += ux * att; disp[b].y += uy * att;
+    });
+    ids.forEach(id => {
+      const dx = disp[id].x, dy = disp[id].y;
+      const d = Math.sqrt(dx * dx + dy * dy) || 0.01;
+      const step = Math.min(d, temp);
+      pos[id].x += (dx / d) * step;
+      pos[id].y += (dy / d) * step;
+    });
+    temp -= cool;
+  }
+  return pos;
+}
+
+// The deterministic layout for a WHOLE drawing: split into connected components (union-find); a single
+// connected graph is force-laid then stretched to fill the panel; a disconnected graph lays out each
+// component and SHELF-PACKS the pieces (rows, left to right, wrapping) so they tile the panel. Returns
+// a map id -> {x, y} with FINITE positions for every node.
+function forceLayout(nodes, edges, width, height) {
+  const ids = nodes.map(n => n.id);
+  if (!ids.length) return {};
+  const idset = {};
+  ids.forEach(id => { idset[id] = true; });
+  const inGraph = edges.filter(e => idset[e.from] && idset[e.to]);
+  const adjAll = inGraph.map(e => [e.from, e.to]);
+  const parent = {};
+  ids.forEach(id => { parent[id] = id; });
+  inGraph.forEach(e => ufUnion(parent, e.from, e.to));
+  const comps = {};
+  ids.forEach(id => { const r = ufFind(parent, id); (comps[r] = comps[r] || []).push(id); });
+  const compList = Object.keys(comps).sort().map(r => comps[r].slice().sort());
+  if (compList.length === 1) {
+    return fitToBox(frComponent(compList[0], adjAll, width, height), compList[0], 0, 0, width, height);
+  }
+  // Disconnected: pack each component's box into shelves (rows) so the pieces tile the panel.
+  const out = {};
+  const boxes = compList.map(cids => ({
+    ids: cids,
+    side: Math.max(64, Math.min(Math.min(width, height), 44 * Math.sqrt(cids.length)))
+  }));
+  let curX = 0, curY = 0, shelfH = 0;
+  boxes.forEach(box => {
+    if (curX + box.side > width && curX > 0) { curX = 0; curY += shelfH; shelfH = 0; }
+    const bset = {};
+    box.ids.forEach(id => { bset[id] = true; });
+    const localAdj = adjAll.filter(e => bset[e[0]] && bset[e[1]]);
+    const fitted = fitToBox(frComponent(box.ids, localAdj, box.side, box.side),
+      box.ids, curX, curY, box.side, box.side);
+    box.ids.forEach(id => { out[id] = fitted[id]; });
+    curX += box.side;
+    shelfH = Math.max(shelfH, box.side);
+  });
+  // Fill the panel: the shelf-packed pieces are laid out from the top-left, so stretch the whole
+  // packing to fill the viewBox instead of clumping in a corner. This scales node CENTRES only (radii
+  // are fixed in kgSvg), so it spreads the clusters out and relieves label overlap without distorting
+  // the circles. Applies to the whole-graph overview and to a disconnected-file drill alike.
+  return fitToBox(out, ids, 0, 0, width, height);
+}
+
+// Emit the SVG for a graph: the force layout places the nodes, then we draw one <line> per edge, and
+// one <g><circle><text></g> per node - all inside a single #kgzoom group the pan/zoom transforms. The
+// caller supplies per-node radius/colour/class/label and the select handle (data-cluster on a cluster
+// super-node, data-seed on a member), so ONE emitter serves both the overview and the drill.
+function kgSvg(nodes, edges, width, height, opts) {
+  const pos = forceLayout(nodes, edges, width, height);
+  const lines = edges.map(e => {
+    const a = pos[e.from], b = pos[e.to];
+    if (!a || !b) return "";
+    const sw = opts.edgeWidth ? opts.edgeWidth(e) : 1;
+    return '<line class="kgline" x1="' + a.x.toFixed(1) + '" y1="' + a.y.toFixed(1)
+      + '" x2="' + b.x.toFixed(1) + '" y2="' + b.y.toFixed(1) + '" stroke-width="' + sw.toFixed(2) + '"/>';
+  }).join("");
+  const circles = nodes.map(n => {
+    const q = pos[n.id];
+    if (!q) return "";
+    const r = opts.radius(n);
+    const cls = opts.nodeClass ? opts.nodeClass(n) : "kgdot";
+    const attrs = opts.nodeAttrs ? opts.nodeAttrs(n) : "";
+    const fill = opts.fill ? ' fill="' + esc(opts.fill(n)) + '"' : "";
+    return '<g class="kgn ' + cls + '"' + attrs + ' transform="translate(' + q.x.toFixed(1) + ','
+      + q.y.toFixed(1) + ')"><circle r="' + r.toFixed(1) + '"' + fill + '/>'
+      + '<text class="kglabel" y="' + (r + 11).toFixed(1) + '">' + esc(opts.label(n)) + '</text></g>';
+  }).join("");
+  return '<svg class="kgsvg" width="100%" height="' + height + '" viewBox="0 0 ' + width + ' ' + height
+    + '" preserveAspectRatio="xMidYMid meet">'
+    + '<g id="kgzoom">' + lines + circles + '</g></svg>';
+}
+
+// PAN + ZOOM over the drawn graph: scroll zooms toward the cursor and drag pans, both by transforming
+// the #kgzoom group (never re-laying-out). The wheel + mousedown bind to the FRESH svg each render (a
+// drill / back rebinds and RESETS the view); the drag move/up live on `window` (installed once, below)
+// so a drag that leaves the svg still tracks.
+let kgView = { k: 1, x: 0, y: 0 };
+let kgDrag = null;
+function applyKgView() {
+  const g = el("kgpanel").querySelector("#kgzoom");
+  if (g) g.setAttribute("transform", "translate(" + kgView.x + "," + kgView.y + ") scale(" + kgView.k + ")");
+}
+function bindKgView() {
+  kgView = { k: 1, x: 0, y: 0 };               // a fresh render resets the view
+  const svg = el("kgpanel").querySelector("svg");
+  if (!svg) return;
+  applyKgView();
+  svg.addEventListener("wheel", ev => {
+    ev.preventDefault();
+    const rect = svg.getBoundingClientRect();
+    const mx = ev.clientX - rect.left, my = ev.clientY - rect.top;
+    const factor = ev.deltaY < 0 ? 1.1 : 1 / 1.1;
+    const nk = Math.max(0.2, Math.min(8, kgView.k * factor));
+    // Keep the graph point under the cursor fixed while scaling (zoom TOWARD the cursor).
+    kgView.x = mx - (mx - kgView.x) * (nk / kgView.k);
+    kgView.y = my - (my - kgView.y) * (nk / kgView.k);
+    kgView.k = nk;
+    applyKgView();
+  });
+  svg.addEventListener("mousedown", ev => {
+    kgDrag = { sx: ev.clientX, sy: ev.clientY, ox: kgView.x, oy: kgView.y };
+  });
+}
+
+// The clustered OVERVIEW (spec 42 c5, the default view): each cluster is a super-node sized by
+// sqrt(count) and coloured by its dominant kind, labelled "key (count)"; each cross-cluster edge's
+// thickness scales with its weight. A click on a super-node (data-cluster) DRILLS it. An empty graph
+// degrades to an empty-graph message, never an error.
+function renderKgOverview(ov) {
+  kgMode = "overview";
+  const clusters = (ov && ov.clusters) || [];
+  const total = (ov && ov.total) || 0;
+  if (!clusters.length) {
+    el("kgpanel").innerHTML = '<div class="kgtoolbar">whole-graph overview</div>'
+      + '<div class="empty">empty graph - nothing to explore yet</div>';
+    return;
+  }
+  const dims = kgDims();
+  const nodes = clusters.map(c => ({ id: c.key, count: c.count, kind: c.kind }));
+  const edges = ((ov && ov.edges) || []).map(e => ({ from: e.from, to: e.to, weight: e.weight }));
+  const maxCount = clusters.reduce((m, c) => Math.max(m, c.count), 1);
+  const maxW = edges.reduce((m, e) => Math.max(m, e.weight), 1);
+  const svg = kgSvg(nodes, edges, dims.w, dims.h, {
+    radius: n => 7 + 22 * (Math.sqrt(n.count) / Math.sqrt(maxCount)),
+    fill: n => kindColor(n.kind),
+    nodeClass: () => "kgcluster",
+    nodeAttrs: n => ' data-cluster="' + esc(n.id) + '"',
+    label: n => n.id + " (" + n.count + ")",
+    edgeWidth: e => 0.6 + 4 * (e.weight / maxW)
+  });
+  const toolbar = '<div class="kgtoolbar">' + total + " node" + (total === 1 ? "" : "s")
+    + " in " + clusters.length + " cluster" + (clusters.length === 1 ? "" : "s")
+    + " - click a cluster to drill in</div>";
+  el("kgpanel").innerHTML = toolbar + svg;
+  bindKgView();
+}
+
+// The cluster DRILL (spec 42 c5): a cluster's member nodes, each a select-to-seed handle (data-seed)
+// that hands off to the spec 30 seeded neighborhood; god-nodes (high-degree hubs the drill flagged) are
+// emphasized; a "<- overview" back link (data-kgback) returns to the overview; and when the drill was
+// capped the toolbar captions "showing the N most-connected of M". An empty cluster degrades to a
+// message, never an error.
+function renderKgDrill(nb) {
+  kgMode = "drill";
+  const nodes = (nb && nb.nodes) || [];
+  const edges = (nb && nb.edges) || [];
+  const key = (nb && nb.seed) || "";
+  const back = '<a class="kgback" href="#" data-kgback="1">&larr; overview</a>';
+  if (!nodes.length) {
+    el("kgpanel").innerHTML = '<div class="kgtoolbar">' + back + ' &middot; cluster <b>' + esc(key)
+      + '</b></div><div class="empty">this cluster has no members to show</div>';
+    return;
+  }
+  const dims = kgDims();
+  const cap = (nb && nb.truncated)
+    ? " &middot; showing the " + nodes.length + " most-connected of " + nb.truncated
+    : "";
+  const toolbar = '<div class="kgtoolbar">' + back + ' &middot; cluster <b>' + esc(key) + '</b> ('
+    + nodes.length + " member" + (nodes.length === 1 ? "" : "s") + cap + ")</div>";
+  const maxDeg = nodes.reduce((m, n) => Math.max(m, n.degree || 0), 1);
+  const svg = kgSvg(nodes, edges, dims.w, dims.h, {
+    radius: n => (n.god ? 9 : 5) + 6 * (Math.sqrt(n.degree || 0) / Math.sqrt(maxDeg)),
+    fill: n => kindColor(n.kind),
+    nodeClass: n => n.god ? "kgmember kggodnode" : "kgmember",
+    nodeAttrs: n => ' data-seed="' + esc(n.id) + '"',
+    label: n => n.label || n.id,
+    edgeWidth: () => 1.2
+  });
+  el("kgpanel").innerHTML = toolbar + svg;
+  bindKgView();
+}
+
+// Load the whole-graph clustered OVERVIEW - the DEFAULT KG view (spec 42 c5). Fetches the no-argument
+// /api/graph route (the c4 default). A static export has no server, so it says so; a failed fetch
+// degrades to a message. The panel never throws.
+async function loadKgOverview() {
+  kgSeed = null;
+  if (!LIVE) {
+    el("kgpanel").innerHTML =
+      '<div class="empty">the whole-graph explorer is available in the live dash (this is a static export)</div>';
+    return;
+  }
+  try {
+    const ov = await (await fetch("/api/graph", { cache: "no-store" })).json();
+    renderKgOverview(ov);
+  } catch (e) {
+    el("kgpanel").innerHTML = '<div class="empty">the knowledge graph is unavailable</div>';
+  }
+}
+
+// DRILL a cluster (spec 42 c5): fetch /api/graph?cluster=<key> (the key encodeURIComponent'd, since a
+// module key carries `/`) and render its members. A static export / failed fetch degrades to a message.
+async function drillCluster(key) {
+  kgSeed = null;
+  if (!LIVE) {
+    el("kgpanel").innerHTML =
+      '<div class="empty">cluster drill is available in the live dash (this is a static export)</div>';
+    return;
+  }
+  try {
+    const nb = await (await fetch("/api/graph?cluster=" + encodeURIComponent(key), { cache: "no-store" })).json();
+    renderKgDrill(nb);
+  } catch (e) {
+    el("kgpanel").innerHTML = '<div class="empty">the cluster is unavailable</div>';
+  }
+}
+
 // Wire select-to-seed ONCE (not per render): one delegated click listener on each stable container
 // (the tree and the KG panel itself), so it SURVIVES the render()/renderTree() innerHTML swaps that
 // destroy the individual nodes. A plain click on a node carrying data-seed sets the seed and drives
@@ -654,6 +1008,14 @@ async function pathTo(target) {
 function wireSelectToSeed() {
   ["tree", "kgpanel"].forEach(id => {
     el(id).addEventListener("click", ev => {
+      // Three-way exploration dispatch (spec 42 c5), most-specific handle first, so ONE delegated
+      // listener on the stable container survives the innerHTML swaps that destroy the individual
+      // nodes: a "<- overview" back link returns to the clustered overview; a cluster super-node
+      // DRILLS to its members; and a node's data-seed SEEDS the spec 30 neighborhood (unchanged).
+      const back = ev.target.closest("[data-kgback]");
+      if (back) { ev.preventDefault(); loadKgOverview(); return; }
+      const cluster = ev.target.closest("[data-cluster]");
+      if (cluster && cluster.dataset.cluster) { drillCluster(cluster.dataset.cluster); return; }
       const hit = ev.target.closest("[data-seed]");
       if (hit && hit.dataset.seed) {
         if (ev.shiftKey) pathTo(hit.dataset.seed);
@@ -691,9 +1053,23 @@ async function poll() {
   }
 }
 
-// Attach the select-to-seed listeners once, on the stable containers, before the first render/poll
-// so a selection works from the first painted tree.
+// Attach the select-to-seed / drill / back listeners once, on the stable containers, before the first
+// render/poll so an exploration click works from the first painted panel.
 wireSelectToSeed();
+
+// The drag PAN handlers live on `window`, installed ONCE, so a drag that leaves the svg still tracks
+// (mousedown binds per render on the fresh svg in bindKgView; move/up track globally until release).
+window.addEventListener("mousemove", ev => {
+  if (!kgDrag) return;
+  kgView.x = kgDrag.ox + (ev.clientX - kgDrag.sx);
+  kgView.y = kgDrag.oy + (ev.clientY - kgDrag.sy);
+  applyKgView();
+});
+window.addEventListener("mouseup", () => { kgDrag = null; });
+
+// DEFAULT the KG panel to the whole-graph clustered overview on load (spec 42 c5): the exploration
+// path starts from the whole graph. loadKgOverview handles the static-export and offline cases itself.
+loadKgOverview();
 
 if (LIVE) {
   el("mode").textContent = "connecting...";
