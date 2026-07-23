@@ -1920,27 +1920,45 @@ pub fn route(
                 .unwrap_or(0);
             Response::json(200, events_json(events, since))
         }
-        // The unified-KG detail panel (spec 30 c5): the seeded neighborhood of the selected node.
-        // `seed` is percent-decoded (the client `encodeURIComponent`s an id that may carry `#` /
-        // `::` / `/`); `depth` defaults to two hops and is clamped so a hostile value cannot make
-        // the walk churn. `tier=` is accepted as part of the route surface but NOT filtered here -
-        // the neighborhood ships every edge TIER-TAGGED and the c7 tier filter partitions visibility
-        // CLIENT-side over those tags (the route never drops edges, per d30-tier-param-ownership).
-        // `from=`/`to=` (spec 30 c6) select two nodes: when BOTH are present the body also carries
-        // the shortest QUERY-PATH between them (each is percent-decoded like `seed`, since a node id
-        // may carry `#` / `::` / `/`). The body also carries the seed's EXPLAIN provenance (spec 30
-        // c7) - the events/decisions that produced it - built by `graph_json` over the neighborhood.
+        // The unified-KG panel: ONE route, THREE views selected by parameter (spec 42 c4, extending
+        // the spec 30 c5 seeded panel):
+        //   * `cluster=<key>` -> the DRILL: `cluster_detail(key)` as a Neighborhood (the cluster's
+        //     members, so the same renderer draws it). The key is a module DIRECTORY (carries `/`) or
+        //     a node KIND, `encodeURIComponent`d by the client like a seed id, so it is percent-decoded
+        //     back to the exact fold key; an empty / unknown key drills to an empty neighborhood
+        //     (graceful), never an error.
+        //   * an empty `seed` with no `cluster` -> the DEFAULT view: `clustered_overview`, the
+        //     whole-graph fold the panel loads on open.
+        //   * a non-empty `seed` -> the spec 30 seeded neighborhood, UNCHANGED. A spec-30 request never
+        //     carries `cluster=`, so it always falls through to this branch; the c4 dispatch cannot
+        //     regress the seeded panel.
+        // The seed branch is verbatim spec 30: `seed` is percent-decoded (the client encodes an id that
+        // may carry `#` / `::` / `/`); `depth` defaults to two hops and is clamped so a hostile value
+        // cannot make the walk churn; `tier=` is accepted but NOT filtered here (the neighborhood ships
+        // every edge TIER-TAGGED and the c7 tier filter partitions visibility CLIENT-side over those
+        // tags, per d30-tier-param-ownership); `from=`/`to=` (spec 30 c6) select two nodes whose
+        // shortest QUERY-PATH rides the body when BOTH are present; and the body carries the seed's
+        // EXPLAIN provenance (spec 30 c7), all built by `graph_json` over the neighborhood.
         "/api/graph" => {
-            let seed = query_param(target, "seed")
-                .map(percent_decode)
-                .unwrap_or_default();
-            let depth = query_param(target, "depth")
-                .and_then(|v| v.parse::<i64>().ok())
-                .unwrap_or(DEFAULT_GRAPH_DEPTH)
-                .clamp(0, MAX_GRAPH_DEPTH);
-            let from = query_param(target, "from").map(percent_decode);
-            let to = query_param(target, "to").map(percent_decode);
-            match graph_json(graph, &seed, depth, from.as_deref(), to.as_deref()) {
+            let body = if let Some(raw_cluster) = query_param(target, "cluster") {
+                serde_json::to_string(&cluster_detail(graph, &percent_decode(raw_cluster)))
+            } else {
+                let seed = query_param(target, "seed")
+                    .map(percent_decode)
+                    .unwrap_or_default();
+                if seed.is_empty() {
+                    serde_json::to_string(&clustered_overview(graph))
+                } else {
+                    let depth = query_param(target, "depth")
+                        .and_then(|v| v.parse::<i64>().ok())
+                        .unwrap_or(DEFAULT_GRAPH_DEPTH)
+                        .clamp(0, MAX_GRAPH_DEPTH);
+                    let from = query_param(target, "from").map(percent_decode);
+                    let to = query_param(target, "to").map(percent_decode);
+                    graph_json(graph, &seed, depth, from.as_deref(), to.as_deref())
+                }
+            };
+            match body {
                 Ok(body) => Response::json(200, body),
                 Err(e) => Response::text(500, &format!("dash: graph projection failed: {e}")),
             }
@@ -3748,6 +3766,153 @@ mod tests {
                 "{method} /api/graph must be rejected read-only"
             );
         }
+    }
+
+    /// A small two-module + decision graph the ROUTE-DISPATCH test drills, overviews, and seeds. Two
+    /// distinct file directories (`src/a`, `src/b`) fold to two file clusters and a bare `decision`
+    /// node folds by KIND, so the three views are visibly different: the overview reports all three
+    /// clusters, the drill returns one cluster's members, and the seed walks one node's neighborhood.
+    fn dispatch_graph() -> Graph {
+        let ce = |id: &str| Node {
+            id: id.to_string(),
+            kind: KIND_CODE_ENTITY.to_string(),
+            attrs: BTreeMap::new(),
+        };
+        let refs = |from: &str, to: &str| Edge {
+            from: from.to_string(),
+            to: to.to_string(),
+            rel: REL_REFERENCES.to_string(),
+            valid_from: 0,
+            valid_to: None,
+            source: 0,
+            tier: TIER_EXTRACTED.to_string(),
+        };
+        Graph {
+            nodes: vec![
+                ce("src/a/mod.rs::foo"), // cluster "src/a"
+                ce("src/a/mod.rs::bar"), // cluster "src/a"
+                ce("src/b/mod.rs::baz"), // cluster "src/b"
+                Node {
+                    id: "d1".to_string(),
+                    kind: KIND_DECISION.to_string(),
+                    attrs: BTreeMap::new(),
+                }, // cluster "decision"
+            ],
+            edges: vec![
+                refs("src/a/mod.rs::foo", "src/a/mod.rs::bar"), // intra src/a
+                refs("src/a/mod.rs::bar", "src/b/mod.rs::baz"), // cross src/a <-> src/b
+                refs("d1", "src/a/mod.rs::foo"),                // cross decision <-> src/a
+            ],
+        }
+    }
+
+    /// The `/api/graph` route is ONE endpoint with THREE views selected by parameter (spec 42 c4):
+    /// `cluster=<key>` returns the cluster DRILL, an empty `seed` with no `cluster` returns the
+    /// clustered OVERVIEW (the new default KG view), and a non-empty `seed` returns the spec-30 SEEDED
+    /// neighborhood unchanged. This test OWNS the route dispatch; it does NOT re-prove the projections
+    /// (c1-c3 own the fold / overview / drill) - it proves each parameter combination reaches the
+    /// RIGHT projection and serves its shape as JSON.
+    #[test]
+    fn the_graph_route_dispatches_cluster_overview_and_seed_by_parameter() {
+        let graph = dispatch_graph();
+        let call = |target: &str| {
+            let r = route(
+                "GET",
+                target,
+                &[],
+                &graph,
+                &[],
+                &HashMap::new(),
+                3,
+                "rigger-run",
+                "origin/main",
+            );
+            assert_eq!(r.status, 200, "{target} answers 200");
+            assert_eq!(r.content_type, "application/json", "{target} is JSON");
+            let body: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
+            body
+        };
+
+        // VIEW 1 - DRILL: `cluster=<key>` returns `cluster_detail(key)` (a Neighborhood echoing the
+        // drilled cluster key as its seed, its members as nodes). The key `src/a` carries a `/`, so the
+        // client `encodeURIComponent`s it (`src%2Fa`) and the route percent-decodes it back, exactly
+        // like a seed id.
+        let drill = call("/api/graph?cluster=src%2Fa");
+        assert_eq!(
+            drill["seed"], "src/a",
+            "a cluster drill echoes the decoded cluster key as its seed: {drill}"
+        );
+        assert!(
+            drill["clusters"].is_null(),
+            "a drill is a neighborhood, not an overview (no clusters key): {drill}"
+        );
+        let drill_ids: std::collections::BTreeSet<&str> = drill["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| n["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            drill_ids,
+            ["src/a/mod.rs::foo", "src/a/mod.rs::bar"]
+                .into_iter()
+                .collect(),
+            "the drill returns exactly the src/a cluster's members: {drill}"
+        );
+
+        // VIEW 2 - OVERVIEW: an empty `seed` with no `cluster` returns `clustered_overview` (the
+        // default KG view) - the whole-graph fold, NOT a neighborhood. Both the no-argument request
+        // and an explicit empty `seed=` select it.
+        for target in ["/api/graph", "/api/graph?seed="] {
+            let overview = call(target);
+            assert_eq!(
+                overview["total"], 4,
+                "{target}: the overview reports the full node total: {overview}"
+            );
+            assert!(
+                overview["nodes"].is_null(),
+                "{target}: the overview is not a neighborhood (no nodes key): {overview}"
+            );
+            let keys: std::collections::BTreeSet<&str> = overview["clusters"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|c| c["key"].as_str().unwrap())
+                .collect();
+            assert_eq!(
+                keys,
+                ["decision", "src/a", "src/b"].into_iter().collect(),
+                "{target}: the overview folds the graph into its three clusters: {overview}"
+            );
+        }
+
+        // VIEW 3 - SEED: a non-empty `seed` returns the spec-30 seeded neighborhood UNCHANGED - the
+        // depth-1 walk from `d1` reaches `d1` and its only neighbor `foo`, the seed is echoed, and no
+        // `clusters`/`truncated` key rides along (the spec-30 shape is untouched).
+        let seeded = call("/api/graph?seed=d1&depth=1");
+        assert_eq!(
+            seeded["seed"], "d1",
+            "a non-empty seed echoes that seed: {seeded}"
+        );
+        assert_eq!(
+            seeded["depth"], 1,
+            "the seeded walk echoes its depth: {seeded}"
+        );
+        assert!(
+            seeded["clusters"].is_null() && seeded["truncated"].is_null(),
+            "the seeded neighborhood carries no overview/drill keys: {seeded}"
+        );
+        let seeded_ids: std::collections::BTreeSet<&str> = seeded["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| n["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            seeded_ids,
+            ["d1", "src/a/mod.rs::foo"].into_iter().collect(),
+            "the depth-1 neighborhood of d1 is {{d1, foo}}: {seeded}"
+        );
     }
 
     #[test]
