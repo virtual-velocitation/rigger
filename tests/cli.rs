@@ -792,6 +792,101 @@ fn reset_runs_prunes_dead_runs_from_the_graph_keeping_lessons_active_run_and_reu
     );
 }
 
+/// `rigger reset --runs` reclaims a SUPERSEDED edge retired before the retention boundary
+/// (spec 41 criterion 1) end-to-end through the COMPILED binary - the CLI seam the library-level
+/// periphery test (`tests/graph_superseded_prune.rs`) cannot reach. That test drives
+/// `Projector::prune` directly; this proves the composition root in `cmd_reset` wires the seam:
+/// it derives the retention boundary from the ACTIVE run's `RunStarted` (`superseded_edge_boundary`),
+/// hands it to the extended prune, and reports the reclaimed-edge count on the reset line - a count
+/// the pre-spec-41 message never carried and the existing node-prune test only ever sees as 0.
+///
+/// The superseded edge is created by DECISION supersession, which spec 41 names as one of the three
+/// accumulation sources and which the reclamation SQL matches relationship-agnostically (any
+/// `valid_to IS NOT NULL` row before the boundary). It is reachable through the `rigger emit`
+/// courier in EITHER feature lane - unlike a structural CONTAINS edge, whose extraction is
+/// symbols-gated - so this integration test drives the real binary in both lanes.
+///
+/// Fixture: `keep-d` (dead run r1) governs `old.rs`, then `super-d` (also r1) supersedes it - which
+/// retires `keep-d`'s GOVERNS(old.rs) edge with `valid_to` = super-d's fold time, strictly BEFORE
+/// r2's start. `keep-d` is re-recorded in the ACTIVE run r2 governing `new.rs`, so its NODE survives
+/// the reset as a reused id (the same keep-invariant the spec-21 node prune honors) - leaving the
+/// superseded-EDGE reclamation, not the node drop, as the only thing that can remove the retired
+/// GOVERNS(old.rs) row. GOVERNS(new.rs) is a LIVE edge the reclamation must never touch.
+#[test]
+fn reset_runs_reclaims_superseded_edges_retired_before_the_active_run_and_reports_the_count() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+
+    let emit = |typ: &str, json: &str| {
+        let (_o, err, ok) = run_rigger(root, &["emit", typ, json]);
+        assert!(ok, "emit {typ} must succeed; stderr: {err}");
+    };
+
+    // Dead run r1's boundary (seeded directly - `rigger emit` refuses RunStarted, spec 22).
+    seed_run_events(
+        root,
+        &[("RunStarted", r#"{"run":"r1","criteria":["crit"]}"#)],
+    );
+    // r1: `keep-d` governs old.rs (a live GOVERNS edge), then `super-d` supersedes keep-d - the fold
+    // retires keep-d's GOVERNS(old.rs) with valid_to = super-d's fold time, strictly before r2.
+    emit(
+        "DecisionMade",
+        r#"{"id":"keep-d","summary":"keep-d r1","governs":["old.rs"]}"#,
+    );
+    emit(
+        "DecisionMade",
+        r#"{"id":"super-d","summary":"supersedes keep-d","governs":[],"supersedes":"keep-d"}"#,
+    );
+
+    // The ACTIVE run r2's boundary - later in wall-clock than every r1 emit, so the retired edge's
+    // valid_to is strictly below it (reclaimable) while r2's own edges are recent history the window
+    // keeps. This is the SAME boundary `superseded_edge_boundary` derives for the reclamation.
+    seed_run_events(
+        root,
+        &[("RunStarted", r#"{"run":"r2","criteria":["crit"]}"#)],
+    );
+    // r2: re-record `keep-d` governing new.rs. Its NODE now survives the reset (reused across runs),
+    // and GOVERNS(new.rs) is a LIVE edge (valid_to IS NULL) the reclamation must leave untouched.
+    emit(
+        "DecisionMade",
+        r#"{"id":"keep-d","summary":"keep-d r2","governs":["new.rs"]}"#,
+    );
+
+    // Drive the real reset. The composition root derives the boundary from r2's RunStarted, drops
+    // super-d (a dead-run decision node), and reclaims exactly the ONE superseded GOVERNS(keep-d ->
+    // old.rs) edge retired before that boundary - a count the pre-spec-41 reset line never reported.
+    let (out, err, ok) = run_rigger(root, &["reset", "--runs"]);
+    assert!(ok, "reset --runs must succeed; stderr: {err}");
+    assert!(
+        out.contains("reclaimed 1 superseded edge(s)"),
+        "reset --runs must reclaim the one superseded edge retired before the active run; got: {out:?}"
+    );
+    assert!(
+        out.contains("pruned 1 dead-run node(s)"),
+        "reset --runs must drop the dead-run super-d node; got: {out:?}"
+    );
+
+    // LIVE is sacrosanct: keep-d's ACTIVE-run GOVERNS(new.rs) survived, so the live graph a grounding
+    // consumer reads still shows keep-d governing new.rs after the reclamation removed only history.
+    let (graph, err, ok) = run_rigger(root, &["graph", "--around", "new.rs", "--depth", "2"]);
+    assert!(ok, "graph must succeed after reset; stderr: {err}");
+    assert!(
+        graph.contains("keep-d"),
+        "the active-run live edge keep-d -> new.rs must survive the reclamation; got: {graph:?}"
+    );
+
+    // Idempotent at the binary boundary: a second reset at the same active-run boundary reclaims
+    // NOTHING - the pre-boundary superseded row is already gone and no live/recent row is touched,
+    // so the historical tail is bounded, not re-scanned into further removals.
+    let (again, err, ok) = run_rigger(root, &["reset", "--runs"]);
+    assert!(ok, "second reset --runs must succeed; stderr: {err}");
+    assert!(
+        again.contains("reclaimed 0 superseded edge(s)"),
+        "a second reset reclaims nothing - the reclamation is a stable, bounded set operation; got: {again:?}"
+    );
+}
+
 /// `rigger emit` from a directory with NO existing `.rigger/events.db` (and no ancestor
 /// that has one) REFUSES rather than fabricating a fresh empty store there (spec 05). The
 /// payload is valid JSON, so this reaches the store-open seam rather than failing at parse.

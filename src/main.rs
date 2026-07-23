@@ -4556,14 +4556,44 @@ fn cmd_reset(args: &[String]) -> Res {
     // lookup inside `superseded_graph_nodes`, honoring run_attribution's whole-stream contract.
     let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
     let drop = superseded_graph_nodes(&events);
+    // Spec 41: the retention cutoff for the superseded-edge reclamation - the active run's start,
+    // the SAME run boundary the node drop-set is derived against. `None` (a legacy store with no
+    // run) reclaims no edge, so LIVE and recent history are both untouched.
+    let boundary = superseded_edge_boundary(&events);
 
     let graph = Projector::open(&loc.file("graph.db"), &loc.identity())?;
-    let removed = graph.prune(&drop)?;
+    let removed = graph.prune(&drop, boundary)?;
     println!(
-        "reset --runs: pruned {removed} dead-run node(s) from the context graph \
-         (every lesson and the active run preserved; the event log is untouched)"
+        "reset --runs: pruned {} dead-run node(s) and reclaimed {} superseded edge(s) from the \
+         context graph (every lesson, the active run, and every live edge preserved; the event \
+         log is untouched)",
+        removed.nodes, removed.superseded_edges
     );
     Ok(())
+}
+
+/// The retention cutoff `rigger reset --runs` reclaims superseded structural edges beneath
+/// (spec 41): the nanosecond `valid_from` of the ACTIVE run's `RunStarted` - the SAME run boundary
+/// [`superseded_graph_nodes`] keeps the active run's decision/finding nodes by. A superseded edge
+/// (`valid_to IS NOT NULL`) retired BEFORE this cutoff belongs to a prior run and is dead cruft the
+/// log can re-derive; one retired at or after it is recent history kept inside the window. `None`
+/// when no run has started (a legacy store) - then nothing is reclaimed, so LIVE and recent history
+/// are both untouched.
+///
+/// Pure over the whole forward stream, reusing the SINGLE run-boundary authority
+/// ([`runscope::current_run`]) - never a second inline boundary scan. The cutoff is the graph's own
+/// `to_nanos` time base (nanoseconds since the Unix epoch), so it compares directly to an edge's
+/// stored `valid_to`.
+fn superseded_edge_boundary(events: &[Event]) -> Option<i64> {
+    runscope::current_run(events)
+        .first()
+        .filter(|e| e.type_ == runscope::TYPE_RUN_STARTED)
+        .map(|e| {
+            e.valid_from
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as i64)
+                .unwrap_or(0)
+        })
 }
 
 /// The decision and finding graph-node ids `rigger reset --runs` drops (spec 21, unit 2):
@@ -7872,6 +7902,53 @@ mod tests {
             vec!["pre-d", "pre-f", "r1-d", "r1-f"],
             "exactly the dead-run + pre-boundary decisions/findings, sorted; lessons, the active \
              run (r2), a cross-run-reused id, and malformed/empty-id events are all preserved"
+        );
+    }
+
+    /// Spec 41: the retention cutoff `rigger reset --runs` hands to the extended prune for the
+    /// superseded-edge reclamation. It is the ACTIVE run's `RunStarted` `valid_from` in the graph's
+    /// nanosecond-since-epoch time base (an edge's stored `valid_to`), derived from the SAME
+    /// `run::current_run` boundary the node drop-set uses - so a superseded edge retired before the
+    /// active run is reclaimed and one retired during it is kept. With NO run started (a legacy
+    /// store) it is `None`, so nothing is reclaimed and LIVE plus recent history are both untouched.
+    #[test]
+    fn superseded_edge_boundary_is_the_active_runs_start_or_none_without_a_run() {
+        use std::time::{Duration, UNIX_EPOCH};
+        fn run_started_at(run: &str, secs: u64) -> Event {
+            Event::new(
+                runscope::TYPE_RUN_STARTED,
+                format!(r#"{{"run":"{run}","criteria":["crit"]}}"#).into_bytes(),
+            )
+            .with_valid_from(UNIX_EPOCH + Duration::from_secs(secs))
+        }
+        fn decision(id: &str, secs: u64) -> Event {
+            Event::new(
+                contextgraph::TYPE_DECISION_MADE,
+                format!(r#"{{"id":"{id}"}}"#).into_bytes(),
+            )
+            .with_valid_from(UNIX_EPOCH + Duration::from_secs(secs))
+        }
+
+        // No RunStarted at all (a legacy store): no boundary, so the reclamation is skipped entirely.
+        let legacy = vec![decision("d0", 50)];
+        assert_eq!(
+            superseded_edge_boundary(&legacy),
+            None,
+            "with no run started there is no boundary - nothing is reclaimed"
+        );
+
+        // Two runs: the cutoff is the LATEST (active) run's start (300s), NOT the prior run's (100s),
+        // so an edge superseded during run r1 (before 300s) is reclaimable and r2's own is retained.
+        let events = vec![
+            run_started_at("r1", 100),
+            decision("r1-d", 150),
+            run_started_at("r2", 300),
+            decision("r2-d", 350),
+        ];
+        assert_eq!(
+            superseded_edge_boundary(&events),
+            Some(Duration::from_secs(300).as_nanos() as i64),
+            "the boundary is the active run's RunStarted valid_from in the edge time base (nanos)"
         );
     }
 
