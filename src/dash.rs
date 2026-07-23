@@ -3915,6 +3915,73 @@ mod tests {
         );
     }
 
+    /// GRACEFUL DEGRADATION (spec 42 c6): the overview route over an EMPTY graph returns a
+    /// well-formed empty overview - zero clusters, zero cross-cluster edges, zero total - as a
+    /// `200` JSON response, NOT an error, so the KG panel renders its "empty graph" message
+    /// instead of throwing. This is the KG-feature-off / absent-graph.db case AT THE ROUTE
+    /// boundary: the serving command builds the context graph best-effort, so an absent or
+    /// unreadable graph arrives here as [`Graph::default`] (an empty graph). Both entry points
+    /// to the overview - the no-argument default view and an explicit empty `seed=` - must
+    /// degrade to the same well-formed empty overview, and (being un-feature-gated) this test
+    /// runs and passes in BOTH feature lanes. This test OWNS the empty / degraded path; it does
+    /// NOT re-prove the populated overview aggregation (c2 owns that) or the route's populated
+    /// dispatch (c4 owns that).
+    #[test]
+    fn the_overview_route_degrades_gracefully_on_an_empty_graph() {
+        let empty = Graph::default();
+        // The two entry points to the DEFAULT overview view - a bare request and an explicit
+        // empty `seed=` - are what the panel loads on open; each must degrade, never error.
+        for target in ["/api/graph", "/api/graph?seed="] {
+            let r = route(
+                "GET",
+                target,
+                &[],
+                &empty,
+                &[],
+                &HashMap::new(),
+                3,
+                "rigger-run",
+                "origin/main",
+            );
+            // A well-formed response, never the 500 projection-error path: the panel gets JSON.
+            assert_eq!(
+                r.status, 200,
+                "{target}: an empty graph answers 200, not an error status"
+            );
+            assert_eq!(
+                r.content_type, "application/json",
+                "{target}: the empty overview is served as JSON"
+            );
+            let body: serde_json::Value = serde_json::from_slice(&r.body)
+                .expect("the empty overview body is well-formed JSON");
+            // A well-formed empty OVERVIEW (not a neighborhood): the overview carries no `nodes`
+            // key, reports zero `total`, and folds into zero clusters and zero edges - exactly the
+            // shape the panel keys its empty-graph message off.
+            assert!(
+                body["nodes"].is_null(),
+                "{target}: the empty view is an overview, not a neighborhood (no `nodes`): {body}"
+            );
+            assert_eq!(
+                body["total"], 0,
+                "{target}: an empty graph reports zero total nodes: {body}"
+            );
+            let clusters = body["clusters"]
+                .as_array()
+                .expect("the overview carries a `clusters` array");
+            assert!(
+                clusters.is_empty(),
+                "{target}: an empty graph folds into ZERO clusters: {body}"
+            );
+            let edges = body["edges"]
+                .as_array()
+                .expect("the overview carries an `edges` array");
+            assert!(
+                edges.is_empty(),
+                "{target}: an empty graph has ZERO cross-cluster edges: {body}"
+            );
+        }
+    }
+
     #[test]
     fn neighborhood_bounds_by_depth_follows_both_directions_and_skips_invalidated_edges() {
         let graph = tiered_chain_graph();
