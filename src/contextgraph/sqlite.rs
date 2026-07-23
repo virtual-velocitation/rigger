@@ -1137,6 +1137,22 @@ fn ensure_node(
     Ok(())
 }
 
+/// Assert a live edge, UPSERT-LIVE (spec 40): at most one live edge per
+/// `(from_id, to_id, rel, tier, project)`. Every fold arm re-asserts relationships over time - a
+/// `FileTouched` refolds `agent --TOUCHES--> file` on EVERY touch, a re-run refolds `GOVERNS` /
+/// `ABOUT`, and so on. A bare `INSERT ... valid_to = NULL` therefore accreted an identical live
+/// row per fold, bloating the graph and the grounding slice injected into every prompt. So before
+/// inserting, look for the existing LIVE edge with this exact key: if one is present, record the
+/// latest assertion in place - bump `source` to the newest position, keep the EARLIEST `valid_from`
+/// (the fact has held since it first became true) - and add NO row; otherwise INSERT as before.
+///
+/// Keyed on LIVE edges only (`valid_to IS NULL`), so it never suppresses a legitimate re-assertion
+/// AFTER an invalidation: a superseded `GOVERNS` (its `valid_to` set) that is later re-asserted
+/// correctly folds a NEW live edge. Dedup collapses only EXACT duplicates (identical
+/// `from`/`to`/`rel`/`tier`), so it never merges two DISTINCT edges - the safe superset is
+/// preserved. `max`/`min` are the scalar SQLite functions, making the update order-independent so a
+/// rebuild from the log re-derives byte-identical provenance regardless of fold order. This one
+/// localized change dedups every fold arm at once, without touching a single call site.
 #[allow(clippy::too_many_arguments)]
 fn add_edge(
     tx: &Transaction,
@@ -1148,12 +1164,22 @@ fn add_edge(
     project: &str,
     tier: &str,
 ) -> Result<(), Error> {
-    tx.execute(
-        "INSERT INTO edges (from_id, to_id, rel, valid_from, valid_to, source, project, tier)
-         VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7)",
-        params![from, to, rel, at, src as i64, project, tier],
-    )
-    .map_err(be)?;
+    let updated = tx
+        .execute(
+            "UPDATE edges SET source = max(source, ?5), valid_from = min(valid_from, ?4)
+             WHERE from_id = ?1 AND to_id = ?2 AND rel = ?3 AND tier = ?7 AND project = ?6
+               AND valid_to IS NULL",
+            params![from, to, rel, at, src as i64, project, tier],
+        )
+        .map_err(be)?;
+    if updated == 0 {
+        tx.execute(
+            "INSERT INTO edges (from_id, to_id, rel, valid_from, valid_to, source, project, tier)
+             VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7)",
+            params![from, to, rel, at, src as i64, project, tier],
+        )
+        .map_err(be)?;
+    }
     Ok(())
 }
 
@@ -1291,6 +1317,256 @@ mod tests {
         let g = p.subgraph(&["mod.rs".to_string()], 2).unwrap();
         let governs = g.edges.iter().filter(|e| e.rel == REL_GOVERNS).count();
         assert_eq!(governs, 1, "a replayed event must not double the edge");
+    }
+
+    /// Fold a `FileTouched` (`by` touches `path`) from its raw on-log JSON at `pos`, exactly the
+    /// event the loop records each time an agent writes a file. `secs` sets the event's
+    /// valid-from (when the touch happened) so a test can assert the collapsed edge keeps the
+    /// EARLIEST assertion time; `pos` becomes the edge's `source`, so the LATEST assertion wins.
+    fn apply_touch(p: &Projector, pos: u64, by: &str, path: &str, secs: u64) {
+        let payload = serde_json::json!({ "path": path, "by": by });
+        let mut e = Event::new(TYPE_FILE_TOUCHED, serde_json::to_vec(&payload).unwrap())
+            .with_valid_from(UNIX_EPOCH + std::time::Duration::from_secs(secs));
+        e.position = pos;
+        p.apply(&e).unwrap();
+    }
+
+    /// Every LIVE `TOUCHES` edge as `(from, to, source, valid_from)`, read straight from the
+    /// table (not through the live `subgraph` filter), so a test can COUNT the rows and prove a
+    /// re-assertion collapsed into the one existing live edge rather than accreting a row per fold.
+    fn live_touches(p: &Projector) -> Vec<(String, String, i64, i64)> {
+        let conn = p.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT from_id, to_id, source, valid_from FROM edges
+                 WHERE rel = ?1 AND valid_to IS NULL ORDER BY from_id, to_id",
+            )
+            .unwrap();
+        stmt.query_map(params![REL_TOUCHES], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, i64>(3)?,
+            ))
+        })
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+    }
+
+    #[test]
+    fn touches_folds_to_one_live_edge_with_latest_provenance() {
+        // Spec 40 criterion 1: every `FileTouched` re-asserts `agent --TOUCHES--> file`, and the
+        // old bare-insert fold appended a fresh live row per touch (measured: 45 identical live
+        // rows for a single relationship - 60% of the live graph redundant). The upsert-live fold
+        // collapses a re-assertion into the ONE existing live edge, bumping its provenance to the
+        // LATEST assertion (source) and keeping the EARLIEST valid_from - so N touches yield
+        // exactly ONE live edge, while a DIFFERENT agent or a DIFFERENT file still folds its own
+        // distinct live edge (dedup removes only EXACT (from, rel, to, tier) duplicates).
+        let p = Projector::open(":memory:", "test").unwrap();
+
+        // agent-a touches src/f.rs four times (positions 10..=13; valid_from 100..=400s).
+        apply_touch(&p, 10, "agent-a", "src/f.rs", 100);
+        apply_touch(&p, 11, "agent-a", "src/f.rs", 200);
+        apply_touch(&p, 12, "agent-a", "src/f.rs", 300);
+        apply_touch(&p, 13, "agent-a", "src/f.rs", 400);
+
+        // A DIFFERENT agent and a DIFFERENT file each fold their own distinct live edge.
+        apply_touch(&p, 14, "agent-b", "src/f.rs", 500);
+        apply_touch(&p, 15, "agent-a", "src/g.rs", 600);
+
+        let f = to_nanos(UNIX_EPOCH + std::time::Duration::from_secs(100));
+        let g = to_nanos(UNIX_EPOCH + std::time::Duration::from_secs(600));
+        let b = to_nanos(UNIX_EPOCH + std::time::Duration::from_secs(500));
+        assert_eq!(
+            live_touches(&p),
+            vec![
+                // a->f collapsed from FOUR folds to ONE: source = latest (13), valid_from = earliest.
+                ("agent-a".to_string(), "src/f.rs".to_string(), 13, f),
+                // a different FILE is a distinct edge, untouched by the a->f dedup.
+                ("agent-a".to_string(), "src/g.rs".to_string(), 15, g),
+                // a different AGENT is a distinct edge, untouched by the a->f dedup.
+                ("agent-b".to_string(), "src/f.rs".to_string(), 14, b),
+            ],
+            "N touches of one relationship collapse to ONE live edge (source=latest, valid_from=earliest); a different agent/file keeps its own distinct live edge"
+        );
+    }
+
+    #[test]
+    fn a_re_assertion_after_invalidation_folds_a_new_live_edge_dedup_keys_on_live_edges_only() {
+        // Spec 40 criterion 2: the upsert-live fold keys on LIVE edges ONLY - `add_edge`'s dedup
+        // UPDATE carries `AND valid_to IS NULL`. So it collapses a re-assertion into an EXISTING
+        // live edge, but NEVER suppresses a legitimate re-assertion of a relationship that has since
+        // been INVALIDATED. Drive the GOVERNS supersession path: d1 governs mod.rs (live), d2
+        // supersedes d1 (stamping valid_to on d1's GOVERNS edge - invalidated, not deleted), then d1
+        // is re-asserted. Because the one prior d1->mod.rs GOVERNS edge is invalidated, the dedup
+        // UPDATE matches no live row and the fold INSERTs a NEW live edge, retained beside the dead
+        // one. Were the dedup keyed on ALL edges instead of live-only, the re-assertion would be
+        // swallowed into the invalidated row and no live edge would exist - the relationship would
+        // be silently lost.
+        //
+        // The structural re-extraction variant of live-only scoping (a superseded
+        // CONTAINS/REFERENCES edge re-asserted by a fresh batch) is already exercised by
+        // `re_extraction_supersedes_a_files_prior_structural_edges_without_deleting_them`; the
+        // GOVERNS supersession path here is the demonstration unique to this criterion. Scope is
+        // strictly criterion 2 (live-only scoping): it does NOT own the TOUCHES re-assert fold
+        // (criterion 1) nor the rebuild-collapse of pre-existing duplicates (criterion 3).
+        let p = Projector::open(":memory:", "test").unwrap();
+
+        // d1 governs mod.rs, then d2 supersedes d1 - stamping valid_to on d1's GOVERNS edge.
+        apply_decision(&p, 1, "d1", "v1", &["mod.rs"], "");
+        apply_decision(&p, 2, "d2", "v2", &[], "d1");
+
+        // Precondition: exactly ONE d1->mod.rs GOVERNS edge exists and it is now INVALIDATED
+        // (valid_to set), so NO live d1->mod.rs GOVERNS edge remains for the dedup to key on.
+        let after_supersede: Vec<_> = edges_from(&p, "d1")
+            .into_iter()
+            .filter(|t| t.1 == REL_GOVERNS && t.0 == "mod.rs")
+            .collect();
+        assert_eq!(
+            after_supersede.len(),
+            1,
+            "precondition: one d1->mod.rs GOVERNS edge after supersession; got {after_supersede:?}"
+        );
+        assert!(
+            after_supersede[0].2.is_some(),
+            "precondition: the supersession invalidated d1's GOVERNS edge (valid_to set); got {after_supersede:?}"
+        );
+        assert!(
+            !p.subgraph(&["mod.rs".to_string()], 2)
+                .unwrap()
+                .edges
+                .iter()
+                .any(|e| e.rel == REL_GOVERNS && e.from == "d1"),
+            "precondition: the invalidated edge is absent from the live view before the re-assertion"
+        );
+
+        // d1 is re-asserted at a later position - a legitimate re-assertion after invalidation.
+        apply_decision(&p, 3, "d1", "v1", &["mod.rs"], "");
+
+        // Live-only scoping: the dedup did NOT collapse the re-assertion into the dead row. A NEW
+        // live edge is folded and RETAINED beside the invalidated one - exactly ONE historical +
+        // ONE live d1->mod.rs GOVERNS edge.
+        let after_reassert: Vec<_> = edges_from(&p, "d1")
+            .into_iter()
+            .filter(|t| t.1 == REL_GOVERNS && t.0 == "mod.rs")
+            .collect();
+        assert_eq!(
+            after_reassert.len(),
+            2,
+            "the re-assertion folds a NEW row beside the invalidated one, not swallowed into it; got {after_reassert:?}"
+        );
+        assert_eq!(
+            after_reassert.iter().filter(|t| t.2.is_none()).count(),
+            1,
+            "exactly ONE d1->mod.rs GOVERNS edge is live after the re-assertion; got {after_reassert:?}"
+        );
+        assert_eq!(
+            after_reassert.iter().filter(|t| t.2.is_some()).count(),
+            1,
+            "the prior invalidated edge is retained (valid_to stamped), never overwritten; got {after_reassert:?}"
+        );
+
+        // The live view a grounding consumer reads once again shows d1 governing mod.rs - the
+        // re-assertion took effect through a fresh live edge, not the suppressed dead one.
+        assert!(
+            p.subgraph(&["mod.rs".to_string()], 2)
+                .unwrap()
+                .edges
+                .iter()
+                .any(|e| e.rel == REL_GOVERNS && e.from == "d1" && e.to == "mod.rs"),
+            "the re-asserted d1->mod.rs GOVERNS edge is LIVE in the projection"
+        );
+    }
+
+    #[test]
+    fn a_rebuild_collapses_existing_duplicate_live_edges_to_one_per_relationship() {
+        // Spec 40 criterion 3 (rebuild-dedup / projection idempotency). The graph is a rebuildable
+        // projection of the log (spec 29a), so the operational cleanup for the measured 39,340
+        // duplicate live edges is a fresh graph REBUILD. This proves it: a log that under the OLD
+        // bare `INSERT ... valid_to = NULL` accreted K identical live edges per relationship, folded
+        // from scratch into a FRESH projection with the upsert-live `add_edge`, yields exactly ONE
+        // live edge per `(from, rel, to, tier)` - with distinct relationships each surviving as
+        // their own single live edge. This owns the rebuild-dedup; it leans on (but does not own)
+        // the upsert-live fold arm (criterion 1) or the live-only scoping (criterion 2).
+
+        // The canonical log the rebuild re-folds: agent-a --TOUCHES--> src/f.rs re-asserted 45
+        // times (the measured worst case - one `FileTouched` fold per touch), interleaved with two
+        // DISTINCT relationships (a different agent, a different file) that must each survive the
+        // rebuild as their own single live edge.
+        let fold_log = |p: &Projector| {
+            for pos in 1..=45u64 {
+                apply_touch(p, pos, "agent-a", "src/f.rs", 100 * pos);
+            }
+            apply_touch(p, 46, "agent-b", "src/f.rs", 5000);
+            apply_touch(p, 47, "agent-a", "src/g.rs", 6000);
+        };
+
+        // PREMISE - reproduce the dirty on-disk graph the OLD bare-insert left behind. Each of the
+        // 45 folds ran exactly this `INSERT ... valid_to = NULL`, so the pre-rebuild graph.db
+        // carried 45 live rows for the ONE relationship (identical from/rel/to/tier; only
+        // source/valid_from differ). Seed that state directly so the rebuild has a real duplicate
+        // pile to collapse, not a hypothetical one.
+        let dirty = Projector::open(":memory:", "test").unwrap();
+        {
+            let conn = dirty.conn.lock().unwrap();
+            for pos in 1..=45i64 {
+                conn.execute(
+                    "INSERT INTO edges (from_id, to_id, rel, valid_from, valid_to, source, project, tier)
+                     VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7)",
+                    params![
+                        "agent-a",
+                        "src/f.rs",
+                        REL_TOUCHES,
+                        to_nanos(UNIX_EPOCH + std::time::Duration::from_secs((100 * pos) as u64)),
+                        pos,
+                        "test",
+                        TIER_EXTRACTED
+                    ],
+                )
+                .unwrap();
+            }
+        }
+        assert_eq!(
+            live_touches(&dirty).len(),
+            45,
+            "premise: the old bare-insert fold left K=45 identical live rows for one relationship - the duplicates a rebuild must collapse"
+        );
+
+        // REBUILD - discard the dirty graph and fold the SAME log from scratch into a FRESH, EMPTY
+        // projection. Every relationship collapses to exactly ONE live edge: the 45-fold agent-a
+        // ->src/f.rs to a single row (source = latest position 45, valid_from = earliest), and the
+        // two DISTINCT relationships each to their own single live edge.
+        let rebuilt = Projector::open(":memory:", "test").unwrap();
+        fold_log(&rebuilt);
+
+        let f = to_nanos(UNIX_EPOCH + std::time::Duration::from_secs(100));
+        let g = to_nanos(UNIX_EPOCH + std::time::Duration::from_secs(6000));
+        let b = to_nanos(UNIX_EPOCH + std::time::Duration::from_secs(5000));
+        let want = vec![
+            // agent-a->src/f.rs: 45 duplicate live edges collapsed to ONE (source=45, valid_from=earliest).
+            ("agent-a".to_string(), "src/f.rs".to_string(), 45, f),
+            // a different FILE is a distinct relationship, its own single live edge.
+            ("agent-a".to_string(), "src/g.rs".to_string(), 47, g),
+            // a different AGENT is a distinct relationship, its own single live edge.
+            ("agent-b".to_string(), "src/f.rs".to_string(), 46, b),
+        ];
+        assert_eq!(
+            live_touches(&rebuilt),
+            want,
+            "a rebuild collapses the 45 duplicate live edges to exactly ONE per (from, rel, to, tier); distinct relationships each survive as their own single live edge"
+        );
+
+        // REBUILDABLE - a rebuild is a pure, reproducible function of the log: folding the SAME log
+        // into ANOTHER fresh, empty projection re-derives the identical single-edge-per-key set.
+        let rebuilt_again = Projector::open(":memory:", "test").unwrap();
+        fold_log(&rebuilt_again);
+        assert_eq!(
+            live_touches(&rebuilt_again),
+            want,
+            "rebuilding the same log from scratch re-derives the identical deduped live edges"
+        );
     }
 
     fn apply_code_entity(
