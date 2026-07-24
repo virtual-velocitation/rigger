@@ -266,3 +266,95 @@ fn the_actor_metadata_on_a_decision_and_finding_never_folds_an_agent_node() {
         "the finding's `by` is the reviewer content, not the differing event actor"
     );
 }
+
+#[test]
+fn disposition_expiry_still_fires_on_integration_with_no_unit_node() {
+    // Spec 43 criterion 3 - the LIFECYCLE the fold owns survives the de-noise. Integrating a unit
+    // STILL drives disposition-expiry (spec 25): an upheld finding owned by that unit is invalidated
+    // on the integrate - even though the de-noise no longer projects a KIND_UNIT node. The
+    // invalidation keys on the finding's `$.unit` STRING attribute (the token the adjudicator's
+    // SpawnResult stamps), never on a KIND_UNIT graph node, so dropping the unit node cannot break
+    // it. This owns the guarantee at the exact public boundary a consumer crosses (`apply` ->
+    // `subgraph`), and it proves the SIDE EFFECT actively FIRES - an upheld finding is really
+    // expired - not merely that the integrate arm is a graph no-op (the whole-run test above pins
+    // the no-op case, where nothing is upheld and so nothing expires).
+    let p = Projector::open(":memory:", "test").unwrap();
+
+    // A review finding about a file, in raw production shape (id/by/summary/about). A real finding
+    // stamps NO `$.unit` of its own - the owning unit is named only by the adjudicator spawn id
+    // below - so an expiry keyed on a hand-injected unit attr would be vacuous here.
+    fold(
+        &p,
+        1,
+        TYPE_REVIEW_FINDING,
+        serde_json::json!({ "id": "f-lifecycle", "by": "lens:sdet", "summary": "misses the buffer authority", "about": ["src/combat.rs"] }),
+        Some("lens:sdet"),
+    );
+
+    // The adjudicator UPHOLDS the finding: its SpawnResult MARKS the finding node
+    // (disposition=upheld, unit=u1, the unit token taken from the adjudicator spawn id) but
+    // invalidates nothing yet - the finding is resolved only when u1 integrates. Built through the
+    // public `SpawnResult -> event` path the conductor uses, so this folds the real production shape.
+    let mut adj = rigger::spawn::SpawnResult::ok(
+        "u1/adjudicator#0",
+        r#"{"verdict":"approve","upheld":["f-lifecycle"]}"#,
+    )
+    .to_event()
+    .unwrap();
+    adj.position = 2;
+    p.apply(&adj).unwrap();
+
+    // Marking alone expires nothing: the upheld finding is still LIVE (reachable from the file it is
+    // ABOUT) until its unit lands.
+    let marked = p.subgraph(&["src/combat.rs".to_string()], 2).unwrap();
+    assert!(
+        marked.nodes.iter().any(|n| n.id == "f-lifecycle"),
+        "an upheld finding stays live until its unit integrates - the mark alone expires nothing"
+    );
+
+    // u1 integrates, in raw production shape (`{id, commit}`). The arm folds NO KIND_UNIT node, yet
+    // it STILL drives disposition-expiry: the finding is now ADDRESSED, so its ABOUT edge is
+    // invalidated.
+    fold(
+        &p,
+        3,
+        TYPE_UNIT_INTEGRATED,
+        serde_json::json!({ "id": "u1", "commit": "abc1234" }),
+        None,
+    );
+
+    // The LIFECYCLE fired: the addressed finding drops from the live subgraph (its edge was
+    // invalidated), and no live edge touches it.
+    let after = p.subgraph(&["src/combat.rs".to_string()], 2).unwrap();
+    assert!(
+        !after.nodes.iter().any(|n| n.id == "f-lifecycle"),
+        "the upheld finding of the INTEGRATED unit expires - disposition-expiry still fires (its edge was invalidated)"
+    );
+    assert!(
+        !after
+            .edges
+            .iter()
+            .any(|e| e.from == "f-lifecycle" || e.to == "f-lifecycle"),
+        "no live edge touches the addressed finding after its unit integrates"
+    );
+
+    // ...and it fired with NO KIND_UNIT node anywhere. Seed EVERY id the run named - the unit token
+    // `u1` included - so a KIND_UNIT node, had the integrate arm projected one, would be reached and
+    // caught here (a `u1` that never became a node contributes nothing). The expiry above therefore
+    // read the finding's `$.unit` string token, not a unit node.
+    let full = p
+        .subgraph(
+            &[
+                "src/combat.rs".to_string(),
+                "f-lifecycle".to_string(),
+                "u1".to_string(),
+            ],
+            2,
+        )
+        .unwrap();
+    assert!(
+        !full.nodes.iter().any(|n| n.kind == KIND_UNIT),
+        "disposition-expiry fired with NO KIND_UNIT node projected - the lifecycle reads the finding's `$.unit` token, not a unit node; got {:?}",
+        full.nodes.iter().map(|n| (&n.id, &n.kind)).collect::<Vec<_>>()
+    );
+}
