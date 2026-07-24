@@ -1525,6 +1525,147 @@ fn graph_build_exits_clean_and_creates_the_store_in_both_lanes() {
     );
 }
 
+/// API contract of the shared ingest authority (spec 45): `rigger::ingest::ingest_project` is
+/// the ONE walk-and-content-key entry BOTH the live run (`conductor`) and the cold `graph build`
+/// (`main`) call, so the content key an event is deduped under can never fork between them.
+/// Proven at the API edge rather than only end-to-end through one caller: the function is a
+/// DETERMINISTIC function of the tree - two calls over one unchanged tree emit the identical SET
+/// of keys - and every key carries the documented `<prefix>/<file>@<hash>#<idx>` shape (`gc` for
+/// the code half, `gd` for the design half). Because the keys are a pure function of the tree,
+/// any two callers passing the same root necessarily agree; that IS the "cannot drift between
+/// the two ingest entries" contract. The incremental refresh (an unchanged file re-ingests
+/// nothing) rests on this same identical-keys property.
+#[cfg(feature = "symbols")]
+#[test]
+fn ingest_project_emits_deterministic_content_keys() {
+    use std::collections::BTreeSet;
+
+    let dir = temp_project();
+    let root = dir.path();
+    // A `.rigger/` for the symbols grounder to persist its index under, mirroring the store
+    // `graph build` creates before it walks.
+    std::fs::create_dir_all(root.join(".rigger")).unwrap();
+    std::fs::write(
+        root.join("combat.rs"),
+        "fn helper() {}\nfn caller() { helper(); }\n",
+    )
+    .unwrap();
+    let root_str = root.to_str().unwrap();
+
+    let collect_keys = || {
+        let mut keys: BTreeSet<String> = BTreeSet::new();
+        rigger::ingest::ingest_project(root_str, |key, _ev| {
+            keys.insert(key.to_string());
+        });
+        keys
+    };
+
+    let first = collect_keys();
+    let second = collect_keys();
+
+    assert!(
+        !first.is_empty(),
+        "the symbols-lane walk must emit content keys for a .rs source file"
+    );
+    assert_eq!(
+        first, second,
+        "the shared ingest authority must key an unchanged tree identically across calls - the \
+         property that keeps the run and a cold `graph build` from forking the dedup key"
+    );
+    // Every key is `<prefix>/<file>@<hash>#<idx>` with the prefix in {gc, gd}.
+    for key in &first {
+        let (prefix, rest) = key
+            .split_once('/')
+            .unwrap_or_else(|| panic!("key {key:?} must be `<prefix>/<file>@<hash>#<idx>`"));
+        assert!(
+            prefix == "gc" || prefix == "gd",
+            "key {key:?} must carry the `gc` (code) or `gd` (design) prefix"
+        );
+        let (file_hash, idx) = rest
+            .rsplit_once('#')
+            .unwrap_or_else(|| panic!("key {key:?} must end with `#<idx>`"));
+        assert!(
+            !idx.is_empty() && idx.chars().all(|c| c.is_ascii_digit()),
+            "key {key:?} must end with a numeric event index"
+        );
+        assert!(
+            file_hash.contains('@'),
+            "key {key:?} must carry the `@<hash>` content fingerprint"
+        );
+    }
+    assert!(
+        first.iter().any(|k| k.starts_with("gc/")),
+        "the code half (spec 29a) must emit a `gc/` key for combat.rs; got: {first:?}"
+    );
+}
+
+/// Light-lane contract of the shared ingest authority (spec 45 global constraint): with the
+/// extraction pass off (`--no-default-features`), `rigger::ingest::ingest_project` is a genuine
+/// NO-OP - it emits NOTHING even over a tree that carries real `.rs` source, which is why
+/// `graph build` there degrades to an empty graph rather than erroring. This asserts strictly
+/// more than the empty-tree CLI test can: real source is present, yet the light-lane authority
+/// still yields zero events, so the no-op is the lane's behavior and not merely an empty input.
+#[cfg(not(feature = "symbols"))]
+#[test]
+fn ingest_project_is_a_noop_in_the_light_lane() {
+    let dir = temp_project();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(".rigger")).unwrap();
+    std::fs::write(
+        root.join("combat.rs"),
+        "fn helper() {}\nfn caller() { helper(); }\n",
+    )
+    .unwrap();
+
+    let mut emits = 0usize;
+    rigger::ingest::ingest_project(root.to_str().unwrap(), |_key, _ev| {
+        emits += 1;
+    });
+    assert_eq!(
+        emits, 0,
+        "the light lane compiles no extraction pass, so the ingest authority must emit nothing"
+    );
+}
+
+/// Cold-checkout build resolves the whole-project root, not the cwd (spec 45): a `graph build`
+/// launched from a SUBDIRECTORY still folds the ENTIRE project - `cmd_graph_build` walks the git
+/// top-level (the same root a run's `deps.repo` carries), not the directory it was invoked from.
+/// The implementer's build test runs from the project root, so this guards the root-resolution
+/// seam it leaves open: a root-level source file is folded even though the build ran from a
+/// nested dir, read back through the shipped `graph --around` inspector run in that same
+/// subdirectory (so the build and the read share one store, isolating the tree-root property).
+#[cfg(feature = "symbols")]
+#[test]
+fn graph_build_from_a_subdirectory_ingests_the_whole_project() {
+    let dir = temp_project();
+    let root = dir.path();
+    std::fs::write(
+        root.join("combat.rs"),
+        "fn helper() {}\nfn caller() { helper(); }\n",
+    )
+    .unwrap();
+    let sub = root.join("engine").join("nested");
+    std::fs::create_dir_all(&sub).unwrap();
+
+    let (out, err, ok) = run_rigger(&sub, &["graph", "build"]);
+    assert!(
+        ok,
+        "graph build from a subdirectory must succeed; stderr: {err}; stdout: {out}"
+    );
+
+    // Read back from the SAME subdirectory (the store the subdir build wrote): the root-level
+    // combat.rs entities were folded, proving the walk rooted at the git top-level, not the cwd.
+    let (g, gerr, gok) = run_rigger(&sub, &["graph", "--around", "combat.rs::helper"]);
+    assert!(
+        gok,
+        "graph --around must succeed after a subdirectory build; stderr: {gerr}"
+    );
+    assert!(
+        g.contains("caller") && g.contains("helper"),
+        "a root-level source file must be folded by a build launched from a subdirectory; got:\n{g}"
+    );
+}
+
 /// End-to-end selection wiring (spec 15, unit 4): with `defaults.grounder: symbols`, `rigger
 /// ground` resolves the real `Symbols` grounder through `select_grounder` - building + persisting
 /// the structural index over the project - and ranks a DEFINITION above an incidental prose
