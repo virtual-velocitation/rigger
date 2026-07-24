@@ -47,15 +47,24 @@ fn try_fetch_served_root_page() -> Option<String> {
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
 
     // The root page never reads the provider; a trivial empty-inputs provider satisfies `serve`'s
-    // `Fn() -> Result<DashInputs, String>` bound.
+    // `Fn() -> Result<DashInputs, String>` bound, and an empty graph provider its `Fn() -> Graph`
+    // bound (spec 45, criterion 1: the lazy `/api/graph` provider, never consulted for the page).
     let provider = || -> Result<DashInputs, String> {
         Ok((Vec::new(), Graph::default(), Vec::new(), HashMap::new()))
     };
+    let graph_provider = Graph::default;
 
     // A detached server thread: `serve` loops until the process ends; we drive one request. If its
     // internal bind lost the race (EADDRINUSE), the thread returns at once and nobody answers here.
     std::thread::spawn(move || {
-        let _ = dash::serve(addr, provider, 3, "rigger-run", "origin/main");
+        let _ = dash::serve(
+            addr,
+            provider,
+            graph_provider,
+            3,
+            "rigger-run",
+            "origin/main",
+        );
     });
 
     // Connect within a SHORT budget: `serve` binds within a few ms when it wins the port, so a

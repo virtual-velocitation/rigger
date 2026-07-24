@@ -2147,20 +2147,29 @@ fn parse_request_line(line: &str) -> Option<(String, String)> {
 /// Serve the dash on `addr` until the process is stopped, re-reading fresh projection
 /// inputs from `provider` on each request (the run advances while the dash watches).
 ///
+/// Two providers, split by cadence (spec 45, criterion 1): `provider` yields the cheap
+/// run-scoped inputs (events, the run-seeded graph, progress, liveness) every `/api/*`
+/// request rides - including the 1.5s state poll - while `graph_provider` opens the
+/// projection and reads the whole graph LAZILY, consulted ONLY on a `/api/graph` request.
+/// So the state poll never triggers a whole-graph read; the overview/drill/neighborhood
+/// views read the projection directly through their own provider.
+///
 /// One connection at a time, synchronously: loopback single-operator traffic needs no
 /// concurrency, and a serial loop keeps the sqlite reads and the whole server free of any
-/// async runtime. Only the `/api/*` paths consult `provider`; the static page and the
+/// async runtime. Only the `/api/*` paths consult a provider; the static page and the
 /// method/not-found guards need no store read, so the page still serves before a run has
 /// created the store.
-pub fn serve<F>(
+pub fn serve<F, G>(
     addr: SocketAddr,
     provider: F,
+    graph_provider: G,
     configured_max_retries: u32,
     run_branch: &str,
     base: &str,
 ) -> io::Result<()>
 where
     F: Fn() -> Result<DashInputs, String>,
+    G: Fn() -> Graph,
 {
     let listener = TcpListener::bind(addr)?;
     let bound = listener.local_addr()?;
@@ -2168,8 +2177,14 @@ where
     for stream in listener.incoming() {
         match stream {
             Ok(s) => {
-                if let Err(e) = handle_conn(s, &provider, configured_max_retries, run_branch, base)
-                {
+                if let Err(e) = handle_conn(
+                    s,
+                    &provider,
+                    &graph_provider,
+                    configured_max_retries,
+                    run_branch,
+                    base,
+                ) {
                     eprintln!("rigger dash: connection error: {e}");
                 }
             }
@@ -2182,15 +2197,22 @@ where
 /// Read one request, route it, and write the response. Splits the store read from the
 /// pure [`route`] so a `provider` failure degrades only the `/api/*` paths (to `500`),
 /// never the static page.
-fn handle_conn<F>(
+///
+/// The graph is sourced by cadence (spec 45, criterion 1): every `/api/*` path reads the
+/// cheap run-scoped inputs from `provider`, but a `/api/graph` request additionally opens
+/// the whole-graph projection through `graph_provider` (consulted HERE and nowhere else),
+/// so the state poll never rides a whole-graph read.
+fn handle_conn<F, G>(
     stream: TcpStream,
     provider: &F,
+    graph_provider: &G,
     configured_max_retries: u32,
     run_branch: &str,
     base: &str,
 ) -> io::Result<()>
 where
     F: Fn() -> Result<DashInputs, String>,
+    G: Fn() -> Graph,
 {
     // Bound how long a slow or broken client can hold the single serving slot.
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
@@ -2217,17 +2239,29 @@ where
             let needs_data = method == "GET" && target.starts_with("/api/");
             if needs_data {
                 match provider() {
-                    Ok((events, graph, progress, liveness)) => route(
-                        &method,
-                        &target,
-                        &events,
-                        &graph,
-                        &progress,
-                        &liveness,
-                        configured_max_retries,
-                        run_branch,
-                        base,
-                    ),
+                    Ok((events, polled_graph, progress, liveness)) => {
+                        // The whole-graph views (only `/api/graph`) read the projection through
+                        // the SEPARATE lazy provider, opened HERE and never on the state poll;
+                        // every other `/api/*` path keeps the cheap run-seeded graph the polled
+                        // provider yields (spec 45, criterion 1).
+                        let path = target.split('?').next().unwrap_or(&target);
+                        let graph = if path == "/api/graph" {
+                            graph_provider()
+                        } else {
+                            polled_graph
+                        };
+                        route(
+                            &method,
+                            &target,
+                            &events,
+                            &graph,
+                            &progress,
+                            &liveness,
+                            configured_max_retries,
+                            run_branch,
+                            base,
+                        )
+                    }
                     Err(e) => Response::text(500, &format!("dash: reading the store failed: {e}")),
                 }
             } else {
@@ -4986,9 +5020,18 @@ mod tests {
 
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let addr = listener.local_addr().unwrap();
+        let graph_provider = Graph::default;
         let server = std::thread::spawn(move || {
             let (conn, _) = listener.accept().unwrap();
-            handle_conn(conn, &provider, 3, "rigger-run", "origin/main").unwrap();
+            handle_conn(
+                conn,
+                &provider,
+                &graph_provider,
+                3,
+                "rigger-run",
+                "origin/main",
+            )
+            .unwrap();
         });
 
         let mut client = TcpStream::connect(addr).unwrap();
@@ -5022,11 +5065,22 @@ mod tests {
         let provider = || -> Result<DashInputs, String> {
             panic!("a non-GET request must never read the store");
         };
+        let graph_provider = || -> Graph {
+            panic!("a non-GET request must never open the graph projection");
+        };
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let addr = listener.local_addr().unwrap();
         let server = std::thread::spawn(move || {
             let (conn, _) = listener.accept().unwrap();
-            handle_conn(conn, &provider, 3, "rigger-run", "origin/main").unwrap();
+            handle_conn(
+                conn,
+                &provider,
+                &graph_provider,
+                3,
+                "rigger-run",
+                "origin/main",
+            )
+            .unwrap();
         });
 
         let mut client = TcpStream::connect(addr).unwrap();
@@ -5040,6 +5094,120 @@ mod tests {
         assert!(
             resp.starts_with("HTTP/1.1 405"),
             "a write method is refused read-only:\n{resp}"
+        );
+    }
+
+    /// Spec 45, criterion 1 (the PROVIDER SPLIT): `/api/graph` reads through a SEPARATE,
+    /// lazy graph provider that is opened ONLY when a graph request arrives - a `/api/state`
+    /// (or `/api/events`) request must NEVER consult it, so the 1.5s state poll no longer
+    /// rides a whole-graph read. A spy graph provider counts each time it is consulted:
+    /// after `/api/state` and `/api/events` the count stays 0; a `/api/graph` request opens it
+    /// exactly once and the served body is derived from the graph the provider yields (not the
+    /// polled tuple's run-seeded graph). This drives the real `serve` -> `handle_conn` -> `route`
+    /// socket path, so it proves the split at the served boundary the pure `route` test is blind to.
+    #[test]
+    fn the_graph_provider_is_consulted_only_on_graph_requests_not_the_state_poll() {
+        use std::io::{Read, Write};
+        use std::net::{TcpListener, TcpStream};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        // The polled provider: the cheap run-scoped inputs `/api/state` and `/api/events` ride.
+        // Its graph slot is the run-seeded slice (here empty); it is what the decisions/findings
+        // panel reads, and it must be the ONLY graph the state poll touches.
+        let provider = || -> Result<DashInputs, String> {
+            Ok((Vec::new(), Graph::default(), Vec::new(), HashMap::new()))
+        };
+
+        // The SEPARATE whole-graph provider: it counts every consultation and yields a fixture
+        // graph carrying one node, so a graph request produces a graph-derived body while the
+        // count proves it was opened ONLY on that request.
+        let hits = Arc::new(AtomicUsize::new(0));
+        let hits_for_provider = Arc::clone(&hits);
+        let graph_provider = move || -> Graph {
+            hits_for_provider.fetch_add(1, Ordering::SeqCst);
+            Graph {
+                nodes: vec![Node {
+                    id: "seed-node".to_string(),
+                    kind: KIND_UNIT.to_string(),
+                    attrs: BTreeMap::new(),
+                }],
+                edges: Vec::new(),
+            }
+        };
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        // A bounded accept loop (three requests) so the server thread joins deterministically.
+        let server = std::thread::spawn(move || {
+            for _ in 0..3 {
+                let (conn, _) = listener.accept().unwrap();
+                handle_conn(
+                    conn,
+                    &provider,
+                    &graph_provider,
+                    3,
+                    "rigger-run",
+                    "origin/main",
+                )
+                .unwrap();
+            }
+        });
+
+        let get = |path: &str| -> String {
+            let mut client = TcpStream::connect(addr).unwrap();
+            client
+                .write_all(format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes())
+                .unwrap();
+            let mut resp = String::new();
+            client.read_to_string(&mut resp).unwrap();
+            resp
+        };
+
+        // The state poll must NOT open the whole-graph projection.
+        let state = get("/api/state");
+        assert!(
+            state.starts_with("HTTP/1.1 200 OK"),
+            "the state poll is served: {state}"
+        );
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            0,
+            "a /api/state request must NOT consult the whole-graph provider"
+        );
+
+        // Nor must the events feed.
+        let events = get("/api/events");
+        assert!(
+            events.starts_with("HTTP/1.1 200 OK"),
+            "the events feed is served: {events}"
+        );
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            0,
+            "a /api/events request must NOT consult the whole-graph provider"
+        );
+
+        // A graph request DOES consult it - exactly once - and the body is graph-derived.
+        let graph = get("/api/graph?seed=seed-node&depth=1");
+        server.join().unwrap();
+        assert!(
+            graph.starts_with("HTTP/1.1 200 OK"),
+            "the graph route is served: {graph}"
+        );
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            1,
+            "a /api/graph request opens the whole-graph projection exactly once"
+        );
+        let body = graph
+            .split("\r\n\r\n")
+            .nth(1)
+            .expect("a graph response body");
+        assert!(
+            body.contains("seed-node"),
+            "the graph body is derived from the graph provider's projection, not the polled \
+             run-seeded graph: {body}"
         );
     }
 

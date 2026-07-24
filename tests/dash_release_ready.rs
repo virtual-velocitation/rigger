@@ -49,10 +49,20 @@ fn served_state(events: Vec<Event>) -> Value {
         .unwrap()
         .port();
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    // The lazy `/api/graph` provider (spec 45, criterion 1): this test drives the state poll, which
+    // never consults it, so an empty graph provider satisfies `serve`'s `Fn() -> Graph` bound.
+    let graph_provider = Graph::default;
     // A detached server thread: `serve` loops until the process ends; we drive one request.
     // `run_branch`/`base` are the same values `cmd_dash` threads from `resolve_run_base`.
     std::thread::spawn(move || {
-        let _ = dash::serve(addr, provider, 3, "rigger-run", "origin/main");
+        let _ = dash::serve(
+            addr,
+            provider,
+            graph_provider,
+            3,
+            "rigger-run",
+            "origin/main",
+        );
     });
 
     let mut client = connect_with_retry(addr);

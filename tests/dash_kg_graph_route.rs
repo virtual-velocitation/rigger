@@ -110,11 +110,25 @@ fn try_fetch_served(path: &str, graph: Graph) -> Option<String> {
         .port();
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
 
+    // The `/api/graph` route now reads through the SEPARATE lazy graph provider (spec 45,
+    // criterion 1), NOT the polled tuple's graph, so the fixture graph is what `graph_provider`
+    // yields; the polled provider still carries a run-seeded slice for the state poll (unused here).
+    let graph_provider = {
+        let graph = graph.clone();
+        move || -> Graph { graph.clone() }
+    };
     let provider = move || -> Result<DashInputs, String> {
         Ok((Vec::new(), graph.clone(), Vec::new(), HashMap::new()))
     };
     std::thread::spawn(move || {
-        let _ = dash::serve(addr, provider, 3, "rigger-run", "origin/main");
+        let _ = dash::serve(
+            addr,
+            provider,
+            graph_provider,
+            3,
+            "rigger-run",
+            "origin/main",
+        );
     });
 
     let deadline = Instant::now() + Duration::from_millis(1500);

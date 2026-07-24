@@ -3868,6 +3868,22 @@ fn cmd_dash(args: &[String]) -> Res {
     let reap_inputs =
         reap_on_idle.then(|| (events_db.clone(), identity.clone(), scratch_root.clone()));
 
+    // The SEPARATE, lazy graph provider for `/api/graph` (spec 45, criterion 1). It opens the
+    // projection and reads the graph ONLY when a graph request arrives - never on the 1.5s state
+    // poll - so a whole-graph read never rides the poll. Read-only and per-request-open like the
+    // polled provider: the dash still starts before the store exists, and an absent/empty graph
+    // degrades to an empty result (`dash_read_graph`), never an error. Its own clones of the db
+    // paths + identity, captured before the polled `provider` below moves the originals.
+    let graph_provider = {
+        let graph_db = graph_db.clone();
+        let events_db = events_db.clone();
+        let identity = identity.clone();
+        move || -> contextgraph::Graph {
+            let events = dash_read_run(&events_db, &identity).unwrap_or_default();
+            dash_read_graph(&graph_db, &identity, &events)
+        }
+    };
+
     // Fresh projection inputs on every request. Reading (not holding an open handle) is
     // what lets the dash start before the store exists and pick the run up once it does.
     let provider = move || -> Result<dash::DashInputs, String> {
@@ -3918,7 +3934,14 @@ fn cmd_dash(args: &[String]) -> Res {
                 });
             }
             let addr = SocketAddr::from(([127, 0, 0, 1], port));
-            dash::serve(addr, provider, max_retries, RUN_BRANCH, &release_base)?;
+            dash::serve(
+                addr,
+                provider,
+                graph_provider,
+                max_retries,
+                RUN_BRANCH,
+                &release_base,
+            )?;
             Ok(())
         }
     }
