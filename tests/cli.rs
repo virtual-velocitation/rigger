@@ -8897,3 +8897,106 @@ fn a_dash_without_reap_on_idle_never_self_reaps_even_when_its_run_is_idle() {
          the watcher so the guard-bound run dash never exits out from under its ReapedChild"
     );
 }
+
+// --- Spec 44, criterion 3: the always-on step dash is SESSION-DETACHED from the `rigger step`
+// command's PROCESS GROUP. Spec 39 criterion 2 (above) proves the dash outlives the step PROCESS
+// (it holds no `ReapedChild` guard); THIS criterion owns the distinct failure spec 44 fixes: when
+// the workflow courier runs `rigger step` as a FOREGROUND command, the harness tears down that
+// command's whole process GROUP on return - a merely-"detached" but group-INHERITING dash shares
+// that group and is reaped with it, so the spec-39 always-on dash dies the instant every step
+// returns. The fix puts the spawned dash in its OWN process group. The main.rs unit tests check
+// the process group of an isolated `sleep` child and of `spawn_run_dashboard_detached` called
+// DIRECTLY; only driving the real `rigger step` binary proves the production wiring end-to-end:
+// that the dash the actual step binary spawns lands OUTSIDE the step command's process group.
+
+/// Read the process-group id (`pgrp`) of `pid` from `/proc/<pid>/stat` - pure std, no signal
+/// delivery, so it is reliable and race-free (a not-yet-reaped process, even a zombie, still has
+/// a readable `stat`). `/proc/<pid>/stat` is `pid (comm) state ppid pgrp ...`; `comm` may itself
+/// contain spaces and parens, so split AFTER the last `)` and take the third whitespace token.
+#[cfg(target_os = "linux")]
+fn proc_pgid_of(pid: u32) -> u32 {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        .unwrap_or_else(|e| panic!("read /proc/{pid}/stat: {e}"));
+    let after_comm = stat
+        .rsplit_once(')')
+        .expect("/proc stat has a parenthesised comm field")
+        .1;
+    after_comm
+        .split_whitespace()
+        .nth(2)
+        .expect("/proc stat has a pgrp field after comm")
+        .parse()
+        .expect("pgrp is a base-10 integer")
+}
+
+/// Spec 44, criterion 3 end-to-end, through the BUILT binary: a `rigger step` run as its OWN
+/// process-group leader (mirroring the courier running `rigger step` as a foreground command in
+/// its own group) spawns the always-on dash into a DIFFERENT process group - the dash's own
+/// group (its PGID equals its PID), never the step command's group. That out-of-group placement
+/// is exactly what lets a later teardown of the step command's process group leave the dash
+/// serving (spec 44). The proof is by direct PGID OBSERVATION via `/proc` - no signal is sent, so
+/// it is deterministic and fail-closed in any environment: were the dash still group-inheriting
+/// (the pre-spec-44 regression), the real step binary would spawn it INTO the step command's
+/// group and `dash_pgid == step_pgid` would fail this test RED.
+///
+/// The dash is a real, long-lived detached process; this test reaps it by pid BEFORE its
+/// assertions, so a failed assertion never leaks a dashboard.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_real_rigger_step_session_detaches_the_dash_from_the_step_command_process_group() {
+    use std::os::unix::process::CommandExt;
+    use std::process::Stdio;
+
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
+    write_two_stage_workflow(root);
+
+    // Run `rigger step` as its OWN process-group leader: `process_group(0)` makes the step a group
+    // leader whose PGID equals its PID - the exact shape of a foreground command the courier's
+    // harness later tears down by group. RIGGER_NO_DASH is removed so the always-on dash starts.
+    let mut step = Command::new(rigger_bin())
+        .args(["step"])
+        .current_dir(root)
+        .env_remove("RIGGER_NO_DASH")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .expect("failed to spawn `rigger step`");
+    // The step is its own group leader, so its process-group id IS its pid - the group whose
+    // teardown must NOT reach the dash.
+    let step_pgid = step.id();
+    step.wait().expect("wait on the step process");
+
+    // The now-exited step recorded its detached dash. Read its (port, pid).
+    let (port, dash_pid) =
+        read_dash_marker(root).expect("the step must record a dash marker at .rigger/dash.marker");
+    let url = format!("http://127.0.0.1:{port}/");
+
+    // The dash is a GENUINE serving process (not a stale marker or a recycled pid): confirm it
+    // serves its page before observing its group. Reap on failure so nothing leaks.
+    if !matches!(http_get(&url), Some(body) if body.contains("rigger dash")) {
+        reap_pid(dash_pid);
+        panic!("the step-started dash at {url} did not serve its page");
+    }
+
+    // Observe the dash's process group directly from `/proc` - no signal sent.
+    let dash_pgid = proc_pgid_of(dash_pid);
+
+    // Reap the detached dash BEFORE asserting, so a failed assertion never leaves it orphaned.
+    reap_pid(dash_pid);
+
+    assert_eq!(
+        dash_pgid, dash_pid,
+        "the step-spawned dash must be its OWN process-group leader (PGID == its PID) - the \
+         session-detachment spec 44 requires"
+    );
+    assert_ne!(
+        dash_pgid, step_pgid,
+        "the step-spawned dash must NOT be in the `rigger step` command's process group (pgid \
+         {step_pgid}) - it is the out-of-group placement that lets a teardown of the step \
+         command's group leave the always-on dash serving (spec 44 c3); a group-inheriting dash \
+         would carry the step command's pgid here"
+    );
+}

@@ -3697,6 +3697,28 @@ fn ensure_run_dashboard_at(
     }
 }
 
+/// Place `cmd`'s spawned child in its OWN process group (a new group whose PGID equals the
+/// child's PID, via `process_group(0)`), detached from the parent command's process group.
+/// This is the session-detachment that makes the always-on dash actually survive across steps
+/// (spec 44): WITHOUT it a detached dash inherits `rigger step`'s process group, and when the
+/// workflow courier runs `rigger step` as a foreground command the harness tears down that
+/// command's process group on completion and reaps the dash with it - the spec-39 always-on
+/// dash then dies the instant every step returns. `process_group(0)` makes the child a group
+/// leader in a group the parent's teardown never reaches. Std-only (no `libc`), so it compiles
+/// and holds identically on BOTH the default and `--no-default-features` lanes. Non-Unix builds
+/// keep the group-inheriting behavior (the always-on dash is a Unix-path feature).
+#[cfg(unix)]
+fn detach_process_group(cmd: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    // `process_group(0)` runs a `setpgid(0, 0)`-equivalent in the child before exec, making it a
+    // group leader whose PGID equals its own PID - a brand-new process group the parent command's
+    // group teardown never reaches.
+    cmd.process_group(0);
+}
+
+#[cfg(not(unix))]
+fn detach_process_group(_cmd: &mut Command) {}
+
 /// Spawn `rigger dash --port <n>` as a DETACHED child - NO [`dash::ReapedChild`] guard is
 /// held - returning its port + pid as a [`dash::DashMarker`] the caller records. Detached is
 /// deliberate: the step path that starts it returns per frontier, so a guard-bound child would
@@ -3715,8 +3737,8 @@ fn ensure_run_dashboard_at(
 fn spawn_run_dashboard_detached() -> std::io::Result<dash::DashMarker> {
     let port = dash::free_port_from(dash::DEFAULT_PORT)?;
     let exe = std::env::current_exe()?;
-    let child = Command::new(exe)
-        .arg("dash")
+    let mut cmd = Command::new(exe);
+    cmd.arg("dash")
         .arg("--port")
         .arg(port.to_string())
         // Self-reap on run-idle (spec 39, criterion 3): a DETACHED dash holds no `ReapedChild`,
@@ -3725,8 +3747,12 @@ fn spawn_run_dashboard_detached() -> std::io::Result<dash::DashMarker> {
         .arg("--reap-on-idle")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()?;
+        .stderr(Stdio::null());
+    // Session-detach BEFORE spawning: put the dash in its own process group so the teardown of
+    // the foreground `rigger step` command's process group does not reap it (spec 44). Without
+    // this the "detached" child still shares step's group and dies the instant the step returns.
+    detach_process_group(&mut cmd);
+    let child = cmd.spawn()?;
     let pid = child.id();
     // Detach: `child` is dropped at the end of this function. A std `Child`'s Drop neither
     // waits nor kills, so the dash process keeps running after this step returns. (Contrast
@@ -13275,6 +13301,121 @@ mod tests {
         assert!(
             extra.to_string().contains("rigger reported <id>"),
             "the extra-args error must show the usage; got: {extra}"
+        );
+    }
+
+    // --- Spec 44, criterion 3: the always-on dash is SESSION-DETACHED from `rigger step` ---
+
+    /// Read the process-group id (PGID / `pgrp`) of `pid` from `/proc/<pid>/stat`. Pure std, so
+    /// it holds on BOTH feature lanes. `/proc/<pid>/stat` is `pid (comm) state ppid pgrp ...`;
+    /// `comm` may itself contain spaces and parens, so we split AFTER the last `)` - the tokens
+    /// that follow are then `state ppid pgrp ...`, making `pgrp` the third whitespace token. A
+    /// zombie (an exited-but-unreaped child) still has a readable `stat`, so this is race-free
+    /// against the child having already exited; only a fully reaped pid is gone.
+    #[cfg(target_os = "linux")]
+    fn pgid_of(pid: u32) -> u32 {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .unwrap_or_else(|e| panic!("read /proc/{pid}/stat: {e}"));
+        let after_comm = stat
+            .rsplit_once(')')
+            .expect("/proc stat has a parenthesised comm field")
+            .1;
+        after_comm
+            .split_whitespace()
+            .nth(2)
+            .expect("/proc stat has a pgrp field after comm")
+            .parse()
+            .expect("pgrp is a base-10 integer")
+    }
+
+    /// The load-bearing detachment proof: `detach_process_group` puts a spawned child in its OWN
+    /// process group - a group whose PGID equals the child's own PID (it is the group leader) and
+    /// which DIFFERS from this test process's process group. That different group is exactly what
+    /// lets the detached dash survive the teardown of the parent `rigger step` command's process
+    /// group (spec 44): a group-scoped teardown of the parent's group never reaches the child's
+    /// own group. Uses a controlled, fully-reaped `sleep` child so the test is deterministic and
+    /// leaks nothing.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn detach_process_group_places_the_child_in_its_own_process_group() {
+        let parent_pgid = pgid_of(std::process::id());
+
+        let mut cmd = Command::new("sleep");
+        cmd.arg("30")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        detach_process_group(&mut cmd);
+        let mut child = cmd.spawn().expect("spawn a controlled child");
+        let child_pgid = pgid_of(child.id());
+
+        assert_eq!(
+            child_pgid,
+            child.id(),
+            "a detached child is its OWN process-group leader (PGID == its PID)"
+        );
+        assert_ne!(
+            child_pgid, parent_pgid,
+            "a detached child is in a DIFFERENT process group than its parent - so a teardown of \
+             the parent command's process group cannot reap it"
+        );
+
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    /// The control that makes the assertion above meaningful: WITHOUT `detach_process_group`, a
+    /// spawned child INHERITS the parent's process group. So the detachment is load-bearing - it
+    /// is precisely what moves the child out of `rigger step`'s group. If this ever failed
+    /// (child already in its own group with no detach), the detached-case assertion would prove
+    /// nothing.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_child_spawned_without_detachment_inherits_the_parent_process_group() {
+        let parent_pgid = pgid_of(std::process::id());
+
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn a controlled child");
+        let child_pgid = pgid_of(child.id());
+
+        assert_eq!(
+            child_pgid, parent_pgid,
+            "a child spawned WITHOUT detachment stays in the parent's process group - the very \
+             group whose teardown would otherwise reap the dash; detach_process_group is what \
+             breaks it out"
+        );
+
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    /// End-to-end wiring: the dash actually spawned by `spawn_run_dashboard_detached` is placed
+    /// in its own process group (PGID == the spawned pid, a different group than this parent), so
+    /// the production step path really does session-detach the always-on dash (spec 44 criterion
+    /// 3), not merely the seam in isolation. The spawned child is deliberately un-reaped - being
+    /// un-reaped across steps is the whole point of "detached" - and the OS reaps this transient
+    /// child when the test process exits.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn spawn_run_dashboard_detached_session_detaches_the_dash() {
+        let parent_pgid = pgid_of(std::process::id());
+
+        let marker = spawn_run_dashboard_detached().expect("spawn the detached dash");
+        let dash_pgid = pgid_of(marker.pid);
+
+        assert_eq!(
+            dash_pgid, marker.pid,
+            "the spawned dash is its own process-group leader (PGID == its PID)"
+        );
+        assert_ne!(
+            dash_pgid, parent_pgid,
+            "the spawned dash is in a DIFFERENT process group than the step process that spawned \
+             it - so tearing down the step command's process group does not reap the dash"
         );
     }
 }
