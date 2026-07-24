@@ -947,6 +947,8 @@ SDK, and drives the loop (one command; run `rigger\n                            
 setup` first - it provisions the driver in .rigger/shim/)\n  \
 rigger serve [opts]         run as an MCP server the driver connects to\n  \
 rigger graph --around <id>  print the context subgraph around a node\n  \
+rigger graph build          fold the project's source into the graph from a cold\n                              \
+checkout (no run required)\n  \
 rigger stats                print the run's operator metrics: first-pass yield,\n                              \
 per-gate remediation counts, escalation rate, and\n                              \
 review approve/reject counts. --canary reports the\n                              \
@@ -2572,6 +2574,11 @@ fn load_criteria(spec_path: Option<&str>) -> Result<Vec<String>, Box<dyn std::er
 }
 
 fn cmd_graph(args: &[String]) -> Res {
+    // `rigger graph build` is a distinct verb (populate) from the default `--around` inspector
+    // read: fold the project's source into the graph from a cold checkout, no run required.
+    if args.first().map(String::as_str) == Some("build") {
+        return cmd_graph_build(&args[1..]);
+    }
     let mut around = String::new();
     let mut depth: i64 = 2;
     let mut i = 0;
@@ -2604,6 +2611,85 @@ fn cmd_graph(args: &[String]) -> Res {
     if g.nodes.is_empty() {
         println!("  (nothing found; has `rigger run` been run yet?)");
     }
+    Ok(())
+}
+
+/// `rigger graph build` - fold the project's source into `.rigger/graph.db` from a COLD checkout
+/// (spec 45): no run, no `RunStarted`, no event beyond the code-ingest events the fold already
+/// emits, so the graph exists on any repo the tool has merely cloned - not only ones a run has
+/// driven. It reuses the SAME walk-and-content-key ingest authority ([`rigger::ingest::ingest_project`])
+/// the live run uses; only this standalone entry is new, so a build and a run can never fork the
+/// key an event is deduped under.
+///
+/// Store lifecycle mirrors the RUN DRIVER, not the couriers: it CREATES the store under the cwd's
+/// `.rigger/` when absent (a cold checkout legitimately has none yet - this command's whole point
+/// is to populate it) rather than the courier walk-up that refuses a missing store. On an EXISTING
+/// store it refreshes incrementally: the seen-key set is seeded from the log's replay keys, so an
+/// unchanged file's content key is already recorded and its batch re-ingests nothing, while a
+/// changed file hashes to new keys and re-emits. The light lane compiles no extraction pass, so
+/// `graph build` there degrades to an empty graph (it still creates the store) and exits 0, never
+/// an error.
+fn cmd_graph_build(_args: &[String]) -> Res {
+    // Bootstrap the store like `run`/`step` do (create-or-open under the cwd's `.rigger/`), NOT the
+    // courier `require_store_dir` walk-up that refuses when none exists.
+    std::fs::create_dir_all(RIGGER_DIR)?;
+    let backend = Store::open(&db_path("events.db"))?;
+    let store = Namespaced::new(&backend, &project_identity());
+    let graph = Projector::open(&db_path("graph.db"), &project_identity())?;
+
+    // The tree to fold: the git top-level, so a build launched from a subdirectory still ingests
+    // the WHOLE project (the same root a run's `deps.repo` carries), falling back to the cwd
+    // outside any git context.
+    let root = {
+        let top = git_repo();
+        if top.is_empty() {
+            ".".to_string()
+        } else {
+            top
+        }
+    };
+
+    // Seed the seen-keys from the existing log's replay keys so a re-build refreshes incrementally
+    // (spec 45: "on an existing one it refreshes incrementally"). This mirrors the run's
+    // `replayed_keys` seeding - the SAME content-keyed dedup, driven from the log rather than a
+    // live run - so an unchanged file's already-recorded key is skipped and only changed files
+    // re-emit.
+    let prior = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+    let mut seen: std::collections::HashSet<String> = prior
+        .iter()
+        .filter_map(|e| e.meta.get(conductor::META_REPLAY_KEY).cloned())
+        .collect();
+
+    // The walk and content key are the shared authority; the cold build's emit SINK appends each
+    // new event to the run stream and folds it into the graph (the code-ingest fold), skipping any
+    // key already seen. There is no run to stamp, so the events carry no run id - matching the
+    // run's own ingest events when no run id is set.
+    let mut appended = 0usize;
+    rigger::ingest::ingest_project(&root, |key, ev| {
+        if !seen.insert(key.to_string()) {
+            return;
+        }
+        let mut folded = ev.clone().with_meta(conductor::META_REPLAY_KEY, key);
+        match store.append(
+            conductor::STREAM,
+            ExpectedRevision::Any,
+            std::slice::from_ref(&folded),
+        ) {
+            Ok(pos) => {
+                // Fold best-effort, exactly as the run's `append_and_fold` does: a fold failure must
+                // not fail the ingest, which already landed durably in the log.
+                folded.position = pos;
+                let _ = graph.apply(&folded);
+                appended += 1;
+            }
+            Err(e) => eprintln!("graph build: skipping an event that failed to append: {e}"),
+        }
+    });
+
+    println!(
+        "graph build: ingested {appended} code-ingest event(s) into {}",
+        db_path("graph.db")
+    );
     Ok(())
 }
 

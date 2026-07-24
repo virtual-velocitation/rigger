@@ -6452,42 +6452,22 @@ impl RunCtx<'_> {
             return;
         }
         let root = self.deps.repo.clone();
-        // The code half (29a): the project's real definitions and references. Reuses the `symbols`
-        // grounder's persisted index when present (no re-parse), so in a live run this is a cheap
-        // read of what the grounder already built - not a second whole-tree parse.
-        for (file, batch) in crate::grounder::symbols::events::project_batches(&root) {
-            self.emit_ingest_batch("gc", &file, &batch);
-        }
-        // The design half (29b): the project's design docs and inline source rationale.
-        for (file, batch) in crate::grounder::design::events::project_batches(&root) {
-            self.emit_ingest_batch("gd", &file, &batch);
-        }
-    }
-
-    /// Emit one file's extraction batch through the keyed emit authority (spec 29c criterion 5),
-    /// keyed `<prefix>/<file>@<hash>#<i>` where `<hash>` fingerprints the WHOLE batch's bytes. Every
-    /// event of a file shares one `<hash>`, so a re-ingest of an UNCHANGED file finds every key
-    /// already recorded and appends nothing (it is not re-ingested), while a CHANGED file's batch
-    /// hashes differently - so every key differs and the whole batch re-emits, its `fresh` head
-    /// superseding the file's prior structural edges by 29a's mechanism. The replay-key metadata is
-    /// audit-only; the fold ignores it exactly as it ignores every other replay key.
-    #[cfg(feature = "symbols")]
-    fn emit_ingest_batch(&self, prefix: &str, file: &str, batch: &[Event]) {
-        // A stable content fingerprint of the batch: the SAME line-ending-normalized FNV content
-        // primitive the symbols reindex freshening gate keys on, reused (not a fresh hash copy) so
-        // the change-detection key is one content-identity authority. The batch bytes are JSON the
-        // emit pass just serialized, so they are valid UTF-8.
-        let concat: String = batch
-            .iter()
-            .filter_map(|e| std::str::from_utf8(&e.data).ok())
-            .collect();
-        let hash = crate::grounder::symbols::store::content_hash(&concat);
-        for (i, ev) in batch.iter().enumerate() {
-            let key = format!("{prefix}/{file}@{hash}#{i}");
+        // The walk over the project's per-file extraction batches AND their `<prefix>/<file>@<hash>#<i>`
+        // content key are the shared ingest authority ([`crate::ingest::ingest_project`]) - the SAME
+        // walk and keying a standalone `rigger graph build` uses, so the two can never fork the key an
+        // event is deduped under. The run's emit SINK is its replay-keyed, concurrency-safe
+        // [`emit_keyed`](RunCtx::emit_keyed): each event is appended-and-folded through the single
+        // mutation authority, keyed so a re-ingest of an UNCHANGED file finds every key already
+        // recorded (seeded into `replayed_keys` at run start) and appends nothing, while a CHANGED
+        // file's batch hashes differently - every key differs, so the whole batch, its `fresh` head
+        // included, re-emits and supersedes the file's prior structural edges by 29a's mechanism. The
+        // per-event lock granularity is preserved (the sink calls `emit_keyed` once per event), so a
+        // concurrent unit in the wave still appends its own keyed events in parallel.
+        crate::ingest::ingest_project(&root, |key, ev| {
             if let Ok(payload) = serde_json::from_slice::<Value>(&ev.data) {
-                let _ = self.emit_keyed(&key, &ev.type_, payload);
+                let _ = self.emit_keyed(key, &ev.type_, payload);
             }
-        }
+        });
     }
 
     /// Light lane: no extraction pass is compiled, so there is nothing to ingest - the always-

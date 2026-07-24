@@ -1427,6 +1427,245 @@ fn symbol_index_is_byte_identical_across_processes() {
     );
 }
 
+/// The count of `CodeEntityExtracted` events the cold-checkout `graph build` recorded into the
+/// run stream, read back through the same namespaced store the binary writes. Used to prove the
+/// incremental refresh: a re-build over an unchanged tree re-ingests NOTHING (the content key of
+/// an unchanged file is already recorded), so this count is stable across a second build.
+#[cfg(feature = "symbols")]
+fn code_entity_event_count(root: &Path) -> usize {
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Direction, EventStore};
+
+    let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, &run_stream_identity(root));
+    store
+        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
+        .unwrap()
+        .iter()
+        .filter(|e| e.type_ == rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED)
+        .count()
+}
+
+/// Cold-checkout build (spec 45, criterion 3): `rigger graph build` folds the project's source
+/// into `.rigger/graph.db` with NO run - no `RunStarted`, no event beyond the code-ingest events
+/// the fold already emits - so the graph is populated from source alone, on a repo the tool has
+/// merely cloned. Proven end-to-end through the shipped surface: `graph build` creates the store,
+/// then `graph --around` reads back the code-entity nodes and the `CALLS` edge the fold emits.
+/// The second build proves the incremental refresh - an unchanged tree re-ingests nothing.
+#[cfg(feature = "symbols")]
+#[test]
+fn graph_build_folds_source_into_the_graph_with_no_run() {
+    let dir = temp_project();
+    let root = dir.path();
+    // A callee and a caller in one file: the fold emits `combat.rs::helper` / `combat.rs::caller`
+    // code-entity nodes and a `combat.rs::caller --CALLS--> combat.rs::helper` edge.
+    std::fs::write(
+        root.join("combat.rs"),
+        "fn helper() {}\nfn caller() { helper(); }\n",
+    )
+    .unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["graph", "build"]);
+    assert!(ok, "graph build must succeed; stderr: {err}; stdout: {out}");
+    assert!(
+        root.join(".rigger").join("graph.db").exists(),
+        "graph build must create .rigger/graph.db from a cold checkout"
+    );
+
+    // Read it back through the shipped inspector command: the code-entity nodes AND the CALLS edge
+    // were folded from source alone (no run seeded `graph_seeds`, no conductor ingest ran).
+    let (g, gerr, gok) = run_rigger(root, &["graph", "--around", "combat.rs::helper"]);
+    assert!(
+        gok,
+        "graph --around must succeed after a build; stderr: {gerr}"
+    );
+    assert!(
+        g.contains("caller") && g.contains("helper"),
+        "the code-entity nodes must be folded from source; got:\n{g}"
+    );
+    assert!(
+        g.contains("-CALLS->"),
+        "the CALLS edge the fold emits must be present in the built graph; got:\n{g}"
+    );
+
+    // Incremental refresh: a second build over the byte-identical tree re-ingests NOTHING (the
+    // content-keyed dedup, seeded from the log) and still exits clean.
+    let before = code_entity_event_count(root);
+    assert!(
+        before > 0,
+        "the first build must have recorded code-ingest events"
+    );
+    let (_o2, e2, ok2) = run_rigger(root, &["graph", "build"]);
+    assert!(ok2, "a second graph build must succeed; stderr: {e2}");
+    assert_eq!(
+        before,
+        code_entity_event_count(root),
+        "a re-build over an unchanged tree must not re-ingest (content-keyed incremental refresh)"
+    );
+}
+
+/// Cold-checkout build degrades cleanly in BOTH feature lanes (spec 45 global constraint): with
+/// the extraction pass off (`--no-default-features`) `graph build` has nothing to walk, so it
+/// produces an EMPTY graph - it still opens/creates the store and exits 0, never an error. Run
+/// without a `#[cfg]` so it exercises whichever lane the test binary is built for; in the symbols
+/// lane the empty tree likewise yields an empty graph, so the clean-exit contract holds in both.
+#[test]
+fn graph_build_exits_clean_and_creates_the_store_in_both_lanes() {
+    let dir = temp_project();
+    let root = dir.path();
+    let (out, err, ok) = run_rigger(root, &["graph", "build"]);
+    assert!(
+        ok,
+        "graph build must exit clean with nothing to ingest, in both lanes; stderr: {err}; stdout: {out}"
+    );
+    assert!(
+        root.join(".rigger").join("graph.db").exists(),
+        "graph build must create .rigger/graph.db even when there is nothing to ingest"
+    );
+}
+
+/// API contract of the shared ingest authority (spec 45): `rigger::ingest::ingest_project` is
+/// the ONE walk-and-content-key entry BOTH the live run (`conductor`) and the cold `graph build`
+/// (`main`) call, so the content key an event is deduped under can never fork between them.
+/// Proven at the API edge rather than only end-to-end through one caller: the function is a
+/// DETERMINISTIC function of the tree - two calls over one unchanged tree emit the identical SET
+/// of keys - and every key carries the documented `<prefix>/<file>@<hash>#<idx>` shape (`gc` for
+/// the code half, `gd` for the design half). Because the keys are a pure function of the tree,
+/// any two callers passing the same root necessarily agree; that IS the "cannot drift between
+/// the two ingest entries" contract. The incremental refresh (an unchanged file re-ingests
+/// nothing) rests on this same identical-keys property.
+#[cfg(feature = "symbols")]
+#[test]
+fn ingest_project_emits_deterministic_content_keys() {
+    use std::collections::BTreeSet;
+
+    let dir = temp_project();
+    let root = dir.path();
+    // A `.rigger/` for the symbols grounder to persist its index under, mirroring the store
+    // `graph build` creates before it walks.
+    std::fs::create_dir_all(root.join(".rigger")).unwrap();
+    std::fs::write(
+        root.join("combat.rs"),
+        "fn helper() {}\nfn caller() { helper(); }\n",
+    )
+    .unwrap();
+    let root_str = root.to_str().unwrap();
+
+    let collect_keys = || {
+        let mut keys: BTreeSet<String> = BTreeSet::new();
+        rigger::ingest::ingest_project(root_str, |key, _ev| {
+            keys.insert(key.to_string());
+        });
+        keys
+    };
+
+    let first = collect_keys();
+    let second = collect_keys();
+
+    assert!(
+        !first.is_empty(),
+        "the symbols-lane walk must emit content keys for a .rs source file"
+    );
+    assert_eq!(
+        first, second,
+        "the shared ingest authority must key an unchanged tree identically across calls - the \
+         property that keeps the run and a cold `graph build` from forking the dedup key"
+    );
+    // Every key is `<prefix>/<file>@<hash>#<idx>` with the prefix in {gc, gd}.
+    for key in &first {
+        let (prefix, rest) = key
+            .split_once('/')
+            .unwrap_or_else(|| panic!("key {key:?} must be `<prefix>/<file>@<hash>#<idx>`"));
+        assert!(
+            prefix == "gc" || prefix == "gd",
+            "key {key:?} must carry the `gc` (code) or `gd` (design) prefix"
+        );
+        let (file_hash, idx) = rest
+            .rsplit_once('#')
+            .unwrap_or_else(|| panic!("key {key:?} must end with `#<idx>`"));
+        assert!(
+            !idx.is_empty() && idx.chars().all(|c| c.is_ascii_digit()),
+            "key {key:?} must end with a numeric event index"
+        );
+        assert!(
+            file_hash.contains('@'),
+            "key {key:?} must carry the `@<hash>` content fingerprint"
+        );
+    }
+    assert!(
+        first.iter().any(|k| k.starts_with("gc/")),
+        "the code half (spec 29a) must emit a `gc/` key for combat.rs; got: {first:?}"
+    );
+}
+
+/// Light-lane contract of the shared ingest authority (spec 45 global constraint): with the
+/// extraction pass off (`--no-default-features`), `rigger::ingest::ingest_project` is a genuine
+/// NO-OP - it emits NOTHING even over a tree that carries real `.rs` source, which is why
+/// `graph build` there degrades to an empty graph rather than erroring. This asserts strictly
+/// more than the empty-tree CLI test can: real source is present, yet the light-lane authority
+/// still yields zero events, so the no-op is the lane's behavior and not merely an empty input.
+#[cfg(not(feature = "symbols"))]
+#[test]
+fn ingest_project_is_a_noop_in_the_light_lane() {
+    let dir = temp_project();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(".rigger")).unwrap();
+    std::fs::write(
+        root.join("combat.rs"),
+        "fn helper() {}\nfn caller() { helper(); }\n",
+    )
+    .unwrap();
+
+    let mut emits = 0usize;
+    rigger::ingest::ingest_project(root.to_str().unwrap(), |_key, _ev| {
+        emits += 1;
+    });
+    assert_eq!(
+        emits, 0,
+        "the light lane compiles no extraction pass, so the ingest authority must emit nothing"
+    );
+}
+
+/// Cold-checkout build resolves the whole-project root, not the cwd (spec 45): a `graph build`
+/// launched from a SUBDIRECTORY still folds the ENTIRE project - `cmd_graph_build` walks the git
+/// top-level (the same root a run's `deps.repo` carries), not the directory it was invoked from.
+/// The implementer's build test runs from the project root, so this guards the root-resolution
+/// seam it leaves open: a root-level source file is folded even though the build ran from a
+/// nested dir, read back through the shipped `graph --around` inspector run in that same
+/// subdirectory (so the build and the read share one store, isolating the tree-root property).
+#[cfg(feature = "symbols")]
+#[test]
+fn graph_build_from_a_subdirectory_ingests_the_whole_project() {
+    let dir = temp_project();
+    let root = dir.path();
+    std::fs::write(
+        root.join("combat.rs"),
+        "fn helper() {}\nfn caller() { helper(); }\n",
+    )
+    .unwrap();
+    let sub = root.join("engine").join("nested");
+    std::fs::create_dir_all(&sub).unwrap();
+
+    let (out, err, ok) = run_rigger(&sub, &["graph", "build"]);
+    assert!(
+        ok,
+        "graph build from a subdirectory must succeed; stderr: {err}; stdout: {out}"
+    );
+
+    // Read back from the SAME subdirectory (the store the subdir build wrote): the root-level
+    // combat.rs entities were folded, proving the walk rooted at the git top-level, not the cwd.
+    let (g, gerr, gok) = run_rigger(&sub, &["graph", "--around", "combat.rs::helper"]);
+    assert!(
+        gok,
+        "graph --around must succeed after a subdirectory build; stderr: {gerr}"
+    );
+    assert!(
+        g.contains("caller") && g.contains("helper"),
+        "a root-level source file must be folded by a build launched from a subdirectory; got:\n{g}"
+    );
+}
+
 /// End-to-end selection wiring (spec 15, unit 4): with `defaults.grounder: symbols`, `rigger
 /// ground` resolves the real `Symbols` grounder through `select_grounder` - building + persisting
 /// the structural index over the project - and ranks a DEFINITION above an incidental prose
