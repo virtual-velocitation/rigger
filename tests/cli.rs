@@ -890,8 +890,9 @@ fn reset_runs_reclaims_superseded_edges_retired_before_the_active_run_and_report
 /// `rigger reset --runs` COMPACTS the on-disk graph after reclaiming (spec 46, criterion 3).
 /// The documented pre-run hygiene command must reclaim DISK, not just rows: the prune's DELETE
 /// only frees pages inside the file (SQLite keeps them for reuse), so without a VACUUM the graph
-/// file stays large and the start-of-step fold stays slow even after a prune. This drives the
-/// COMPILED binary end to end and proves the file actually SHRINKS: seed a bloated `graph.db`
+/// file stays as LARGE on disk as before even after a prune (VACUUM reclaims disk only - it changes
+/// no query result and gives no query or fold speedup). This drives the COMPILED binary end to end
+/// and proves the file actually SHRINKS: seed a bloated `graph.db`
 /// (thousands of SUPERSEDED structural edges retired before the active run's boundary, plus ONE
 /// LIVE edge), run `rigger reset --runs`, then assert the on-disk `graph.db` is STRICTLY smaller,
 /// the live edge survived, and the event log is byte-for-byte the same length. Seeded directly

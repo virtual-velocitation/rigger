@@ -4719,8 +4719,9 @@ fn cmd_reset(args: &[String]) -> Res {
     let removed = graph.prune(&drop, boundary)?;
     // Compact the projection file so the prune reclaims DISK, not just rows (spec 46, criterion 3):
     // the deletes free pages inside graph.db that SQLite retains on a freelist, so without a VACUUM
-    // the file - and the start-of-step re-fold that reads it - stays as large and slow as before.
-    // The VACUUM rebuilds only the rebuildable projection; the event log is untouched.
+    // the file stays as LARGE on disk as before even though the dead rows are gone. VACUUM reclaims
+    // disk ONLY - it changes no query result and gives no query or fold speedup; it rebuilds only
+    // the rebuildable projection and the event log is untouched.
     let reclaimed_bytes = graph.compact()?;
     println!(
         "reset --runs: pruned {} dead-run node(s) and reclaimed {} superseded edge(s) from the \
