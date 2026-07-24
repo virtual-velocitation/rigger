@@ -5794,6 +5794,69 @@ fn installed_workflow_courier_prompt_is_foreground_and_honest() {
     );
 }
 
+/// Spec 46, criterion 1 - PERIPHERY (setup -> gitignore-on-disk seam): the always-on dash
+/// writes two runtime breadcrumbs under `.rigger/` - `.rigger/dash.url` and
+/// `.rigger/dash.marker`. Left untracked-and-not-ignored in a consumer's repo they get swept
+/// into a unit worktree's commit by `git add`, then collide with the live dash's rewrites when
+/// the conductor merges the unit ("untracked working tree files would be overwritten"). The
+/// implementer's unit tests call `init_project` IN-PROCESS and assert the `.gitignore` CONTENT
+/// and the returned report - but neither drives the real `rigger setup` subcommand end-to-end
+/// (arg dispatch -> cmd_setup -> init_project -> file write), and neither proves that a real
+/// git actually HONORS the written lines. This test closes that boundary: it runs the built
+/// binary's `setup`, reads the on-disk `.gitignore` the consumer keeps, and then proves the
+/// actual collision-preventing behavior - a real `git check-ignore` treats both breadcrumbs as
+/// ignored, so a later `git add` never sweeps them into a unit commit.
+#[test]
+fn setup_gitignores_the_dash_breadcrumbs_and_git_honors_them_end_to_end() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    // Drive the REAL `rigger setup` subcommand (RIGGER_NPM stubs npm so the shim step needs no
+    // network; run_rigger_envs sets RIGGER_NO_DASH so no live dashboard starts - the breadcrumbs
+    // are created by hand below to model the dash having written them).
+    let (_out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok, "rigger setup must succeed; stderr:\n{err}");
+
+    // 1. CLI -> init_project -> disk wiring: the consumer's on-disk `.gitignore` ignores BOTH
+    //    dash breadcrumbs, exactly as it does for the other machine-local installs.
+    let gitignore = std::fs::read_to_string(root.join(".gitignore"))
+        .expect("rigger setup must write a .gitignore at the project root");
+    assert!(
+        gitignore.lines().any(|l| l.trim() == ".rigger/dash.url"),
+        "the installed .gitignore must ignore the dash url breadcrumb; got:\n{gitignore}"
+    );
+    assert!(
+        gitignore.lines().any(|l| l.trim() == ".rigger/dash.marker"),
+        "the installed .gitignore must ignore the dash marker breadcrumb; got:\n{gitignore}"
+    );
+
+    // 2. The actual collision-preventing behavior, end to end: create the two breadcrumbs the
+    //    live dash would write, then prove a REAL git treats each as ignored. `git check-ignore
+    //    -q` exits 0 only for an ignored path, so a subsequent `git add -A` (which the conductor
+    //    runs before committing a unit) never sweeps them in, and the "untracked working tree
+    //    files would be overwritten" merge collision cannot arise.
+    std::fs::create_dir_all(root.join(".rigger")).unwrap();
+    std::fs::write(
+        root.join(".rigger").join("dash.url"),
+        "http://127.0.0.1:7420/\n",
+    )
+    .unwrap();
+    std::fs::write(root.join(".rigger").join("dash.marker"), "7420\n1234\n").unwrap();
+    for breadcrumb in [".rigger/dash.url", ".rigger/dash.marker"] {
+        let ignored = Command::new("git")
+            .args(["check-ignore", "-q", breadcrumb])
+            .current_dir(root)
+            .status()
+            .expect("git must be runnable")
+            .success();
+        assert!(
+            ignored,
+            "a real git must treat {breadcrumb} as ignored after rigger setup, so `git add` \
+             never sweeps it into a unit commit"
+        );
+    }
+}
+
 /// Spec 44, criterion 2 - PERIPHERY (setup -> disk seam): the driver's null-step guard must
 /// survive to the artifact the harness actually loads and runs. The implementer's unit test
 /// asserts the guard structurally over the IN-MEMORY `RIGGER_WORKFLOW` constant, and a
