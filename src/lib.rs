@@ -25,6 +25,10 @@ pub mod failure;
 pub mod gate;
 pub mod grounder;
 pub mod hooks;
+/// Project-source ingest into the context graph (spec 45): the ONE walk-and-content-key
+/// authority both the live run and the standalone `rigger graph build` entry share, so the
+/// content key an event is deduped under can never drift between the two ingest entries.
+pub mod ingest;
 pub mod ledger;
 pub mod liveness;
 pub mod mcpserver;

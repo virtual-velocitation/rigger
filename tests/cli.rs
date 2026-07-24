@@ -1427,6 +1427,104 @@ fn symbol_index_is_byte_identical_across_processes() {
     );
 }
 
+/// The count of `CodeEntityExtracted` events the cold-checkout `graph build` recorded into the
+/// run stream, read back through the same namespaced store the binary writes. Used to prove the
+/// incremental refresh: a re-build over an unchanged tree re-ingests NOTHING (the content key of
+/// an unchanged file is already recorded), so this count is stable across a second build.
+#[cfg(feature = "symbols")]
+fn code_entity_event_count(root: &Path) -> usize {
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Direction, EventStore};
+
+    let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, &run_stream_identity(root));
+    store
+        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
+        .unwrap()
+        .iter()
+        .filter(|e| e.type_ == rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED)
+        .count()
+}
+
+/// Cold-checkout build (spec 45, criterion 3): `rigger graph build` folds the project's source
+/// into `.rigger/graph.db` with NO run - no `RunStarted`, no event beyond the code-ingest events
+/// the fold already emits - so the graph is populated from source alone, on a repo the tool has
+/// merely cloned. Proven end-to-end through the shipped surface: `graph build` creates the store,
+/// then `graph --around` reads back the code-entity nodes and the `CALLS` edge the fold emits.
+/// The second build proves the incremental refresh - an unchanged tree re-ingests nothing.
+#[cfg(feature = "symbols")]
+#[test]
+fn graph_build_folds_source_into_the_graph_with_no_run() {
+    let dir = temp_project();
+    let root = dir.path();
+    // A callee and a caller in one file: the fold emits `combat.rs::helper` / `combat.rs::caller`
+    // code-entity nodes and a `combat.rs::caller --CALLS--> combat.rs::helper` edge.
+    std::fs::write(
+        root.join("combat.rs"),
+        "fn helper() {}\nfn caller() { helper(); }\n",
+    )
+    .unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["graph", "build"]);
+    assert!(ok, "graph build must succeed; stderr: {err}; stdout: {out}");
+    assert!(
+        root.join(".rigger").join("graph.db").exists(),
+        "graph build must create .rigger/graph.db from a cold checkout"
+    );
+
+    // Read it back through the shipped inspector command: the code-entity nodes AND the CALLS edge
+    // were folded from source alone (no run seeded `graph_seeds`, no conductor ingest ran).
+    let (g, gerr, gok) = run_rigger(root, &["graph", "--around", "combat.rs::helper"]);
+    assert!(
+        gok,
+        "graph --around must succeed after a build; stderr: {gerr}"
+    );
+    assert!(
+        g.contains("caller") && g.contains("helper"),
+        "the code-entity nodes must be folded from source; got:\n{g}"
+    );
+    assert!(
+        g.contains("-CALLS->"),
+        "the CALLS edge the fold emits must be present in the built graph; got:\n{g}"
+    );
+
+    // Incremental refresh: a second build over the byte-identical tree re-ingests NOTHING (the
+    // content-keyed dedup, seeded from the log) and still exits clean.
+    let before = code_entity_event_count(root);
+    assert!(
+        before > 0,
+        "the first build must have recorded code-ingest events"
+    );
+    let (_o2, e2, ok2) = run_rigger(root, &["graph", "build"]);
+    assert!(ok2, "a second graph build must succeed; stderr: {e2}");
+    assert_eq!(
+        before,
+        code_entity_event_count(root),
+        "a re-build over an unchanged tree must not re-ingest (content-keyed incremental refresh)"
+    );
+}
+
+/// Cold-checkout build degrades cleanly in BOTH feature lanes (spec 45 global constraint): with
+/// the extraction pass off (`--no-default-features`) `graph build` has nothing to walk, so it
+/// produces an EMPTY graph - it still opens/creates the store and exits 0, never an error. Run
+/// without a `#[cfg]` so it exercises whichever lane the test binary is built for; in the symbols
+/// lane the empty tree likewise yields an empty graph, so the clean-exit contract holds in both.
+#[test]
+fn graph_build_exits_clean_and_creates_the_store_in_both_lanes() {
+    let dir = temp_project();
+    let root = dir.path();
+    let (out, err, ok) = run_rigger(root, &["graph", "build"]);
+    assert!(
+        ok,
+        "graph build must exit clean with nothing to ingest, in both lanes; stderr: {err}; stdout: {out}"
+    );
+    assert!(
+        root.join(".rigger").join("graph.db").exists(),
+        "graph build must create .rigger/graph.db even when there is nothing to ingest"
+    );
+}
+
 /// End-to-end selection wiring (spec 15, unit 4): with `defaults.grounder: symbols`, `rigger
 /// ground` resolves the real `Symbols` grounder through `select_grounder` - building + persisting
 /// the structural index over the project - and ranks a DEFINITION above an incidental prose
