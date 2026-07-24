@@ -169,7 +169,8 @@ enum DriverKind {
 }
 
 /// Which event-store backend a run uses (§10): `sqlite` is the embedded default;
-/// `kurrentdb` is the server backend (built only behind the `kurrentdb` feature).
+/// `kurrentdb` is the server backend, compiled into every build (spec 47) and
+/// selected at runtime by `--eventstore kurrentdb`.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum StoreKind {
     Sqlite,
@@ -303,10 +304,10 @@ fn resolve_run_base(argv_base: Option<&str>, env_base: Option<&str>) -> (String,
 }
 
 /// Construct the selected event-store backend as a boxed port (§10). `sqlite` (the
-/// default) opens the embedded file under `.rigger/`; `kurrentdb` reads its
-/// connection string from `--conn` or `KURRENTDB_CONN` and is built only behind the
-/// `kurrentdb` feature - requesting it without the feature is a clear error, so the
-/// default build stays green.
+/// default) opens the embedded file under `.rigger/`; `kurrentdb` is compiled into
+/// every build (spec 47) and reads its connection string from `--conn` or
+/// `KURRENTDB_CONN`, failing with a clear missing-connection error when neither is
+/// set.
 fn open_store(
     kind: StoreKind,
     conn: Option<&str>,
@@ -317,7 +318,10 @@ fn open_store(
     }
 }
 
-#[cfg(feature = "kurrentdb")]
+/// Open the KurrentDB server backend (spec 47: always compiled in). The connection
+/// string comes from `--conn` or the `KURRENTDB_CONN` env var; without either, this
+/// fails with a clear missing-connection error rather than a dead end - the adapter
+/// is present, it just needs a server to point at.
 fn open_kurrentdb(conn: Option<&str>) -> Result<Box<dyn EventStore>, Box<dyn std::error::Error>> {
     let conn = conn
         .map(str::to_string)
@@ -326,14 +330,6 @@ fn open_kurrentdb(conn: Option<&str>) -> Result<Box<dyn EventStore>, Box<dyn std
             "run: --eventstore kurrentdb needs a connection string via --conn <url> or KURRENTDB_CONN",
         )?;
     Ok(Box::new(rigger::eventstore::kurrentdb::Store::open(&conn)?))
-}
-
-#[cfg(not(feature = "kurrentdb"))]
-fn open_kurrentdb(_conn: Option<&str>) -> Result<Box<dyn EventStore>, Box<dyn std::error::Error>> {
-    Err(
-        "run: --eventstore kurrentdb requires the `kurrentdb` cargo feature (build with -F kurrentdb)"
-            .into(),
-    )
 }
 
 /// The project identity that scopes the event streams and context graph (§5.1.1,
@@ -1019,7 +1015,7 @@ run/serve options:\n  \
 --driver <cli|workflow>          cli (default): standalone claude subprocess;\n                                   \
 workflow: in-Claude-Code MCP server\n  \
 --eventstore <sqlite|kurrentdb>  sqlite (default): embedded file in .rigger/;\n                                   \
-kurrentdb: server (needs the kurrentdb feature)\n  \
+kurrentdb: shared server backend, always available\n  \
 --conn <url>                     KurrentDB connection url (or set KURRENTDB_CONN)\n  \
 --fresh                          begin a NEW run even if the latest run matches this\n                                   \
 spec (which is otherwise adopted/resumed). The evented\n                                   \
@@ -10797,18 +10793,42 @@ mod tests {
         );
     }
 
-    /// With the default build (no `kurrentdb` feature), requesting the server store
-    /// is a clear error, never a silent fallback - the default build stays green.
-    #[cfg(not(feature = "kurrentdb"))]
+    /// KurrentDB is ALWAYS AVAILABLE (spec 47): the adapter is compiled into every
+    /// build, not gated behind a cargo feature. Selecting it WITHOUT a connection
+    /// string fails with the missing-`--conn` error - proving the real adapter is
+    /// compiled in and reachable - and NEVER with a missing-cargo-feature error
+    /// (which can no longer happen). Ungated on purpose: this must hold in BOTH
+    /// feature lanes (default and `--no-default-features`).
     #[test]
-    fn kurrentdb_without_the_feature_is_a_clear_error() {
-        match open_store(StoreKind::KurrentDb, Some("kurrentdb://x")) {
-            Ok(_) => panic!("kurrentdb must not open without the feature"),
-            Err(e) => assert!(
-                e.to_string().contains("kurrentdb"),
-                "the error must name the missing feature; got: {e}"
-            ),
+    fn kurrentdb_is_always_available_and_needs_a_conn() {
+        // Guard against a KURRENTDB_CONN leaking in from the environment: with a
+        // connection string present, `open` takes the eager-connect path instead of
+        // the missing-conn guard this test asserts on.
+        let prior = std::env::var("KURRENTDB_CONN").ok();
+        std::env::remove_var("KURRENTDB_CONN");
+
+        let err = match open_store(StoreKind::KurrentDb, None) {
+            Ok(_) => panic!("kurrentdb without a conn must not open a store"),
+            Err(e) => e.to_string(),
+        };
+
+        if let Some(v) = prior {
+            std::env::set_var("KURRENTDB_CONN", v);
         }
+
+        // The real adapter's missing-conn guard names the --conn / KURRENTDB_CONN
+        // channel - reaching it proves the adapter is compiled in.
+        assert!(
+            err.contains("--conn") || err.contains("KURRENTDB_CONN"),
+            "the error must be the missing-connection-string error, proving the adapter is \
+             reachable; got: {err}"
+        );
+        // It must NOT be the retired missing-feature error: the adapter is always
+        // compiled in, so no "requires the cargo feature" dead end can occur.
+        assert!(
+            !err.contains("feature"),
+            "the adapter is always compiled in, so no missing-feature error can occur; got: {err}"
+        );
     }
 
     /// With the turbovec feature compiled OUT, selecting the DEFAULT grounder (an

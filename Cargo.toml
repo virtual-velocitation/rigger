@@ -44,10 +44,6 @@ symbols = [
     "dep:tree-sitter-go",
     "dep:tree-sitter-python",
 ]
-# The KurrentDB EventStore adapter (the trait's server-backed implementation). It
-# pulls the async gRPC client + a tokio runtime; testcontainers drives its
-# contract test against a real KurrentDB.
-kurrentdb = ["dep:kurrentdb", "dep:tokio", "dep:testcontainers"]
 
 [dependencies]
 rusqlite = { version = "0.32", features = ["bundled"] }
@@ -102,9 +98,15 @@ ort-sys = { version = "=2.0.0-rc.9", default-features = false, optional = true }
 # - a `parallel()` lens, a `rigger reindex`) never observes a half-written or
 # index/meta-mismatched store. Only pulled in with the turbovec feature.
 libc = { version = "0.2", optional = true }
-kurrentdb = { version = "1.2", optional = true }
-tokio = { version = "1", features = ["rt-multi-thread", "time"], optional = true }
-testcontainers = { version = "0.27", optional = true }
+# The KurrentDB EventStore adapter (the trait's server-backed implementation) is
+# part of the product, compiled into EVERY build: the shared-store capability
+# (many rigger instances appending to one KurrentDB so agent context is shared
+# across a team) is reachable in the default binary with a runtime flag, never a
+# recompile. `kurrentdb` is the async gRPC client and `tokio` is the runtime that
+# bridges its async API onto the (sync) EventStore port - both unconditional. The
+# sqlite backend stays the default; `--eventstore kurrentdb` is the runtime opt-in.
+kurrentdb = { version = "1.2" }
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }
 # Structural grounding (spec 15, `symbols` feature). tree-sitter parses source into a
 # concrete syntax tree; tree-sitter-tags runs each grammar's `tags` query to yield uniform
 # definition/reference tags. `tree-sitter-tags` requires an exact `tree-sitter` MINOR, so it
@@ -143,6 +145,11 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 # build a model at the same time. (The grounder's own CONSTRUCT_MU only covers a single
 # process; this guards the test harness's cross-binary parallelism.)
 serial_test = { version = "3", features = ["file_locks"] }
+# Drives the KurrentDB adapter's contract TEST only - it starts a real KurrentDB in
+# a container to run the backend-agnostic store contract against it. A test-only
+# concern, so it is a dev-dependency and never sits in the production dependency
+# tree, even though the adapter it exercises is now compiled into every build.
+testcontainers = { version = "0.27" }
 
 [profile.release]
 opt-level = 3

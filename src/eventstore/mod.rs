@@ -7,7 +7,9 @@
 pub mod namespace;
 pub mod sqlite;
 
-#[cfg(feature = "kurrentdb")]
+// The KurrentDB adapter is always compiled in (spec 47): the shared-store backend is
+// a first-class product capability reachable in the default build via a runtime flag,
+// never a recompile - so the module is not gated behind a cargo feature.
 pub mod kurrentdb;
 
 #[cfg(test)]

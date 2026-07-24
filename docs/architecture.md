@@ -545,18 +545,20 @@ check `err()` for a terminal error after it ends; dropping it stops the feed.
   thread; at Rigger's event volume (hundreds to thousands of events per run) this is
   trivial. A single connection behind a mutex serializes writes (the SQLITE_BUSY
   lock-upgrade class). Backed by bundled `rusqlite`; zero external service; one file.
-- **`kurrentdb` (behind the `kurrentdb` cargo feature).** A thin adapter over the
+- **`kurrentdb` (compiled into every build).** A thin adapter over the
   official KurrentDB Rust client, bridging its async gRPC API onto the (sync) port
   through a tokio runtime: `append`→`AppendToStream`, `read_all`→`$all` read,
   `subscribe_all`→a filtered catch-up subscription. `open` connects eagerly and
   **fails fast on an unreachable server** (a trivial `$all` read forces the connection
-  at startup). Selected at the composition root when built with `-F kurrentdb`.
+  at startup). Always available (no build-time feature gate) and selected at the
+  composition root by `--eventstore kurrentdb` at runtime, so a consumer of the
+  default build can point at a shared store with a flag, never a recompile.
 
 Because the trait *is* the KurrentDB model, the contract suite
 (`eventstore::contract::assert_contract`: revision assignment, append ordering,
 optimistic-concurrency conflicts that carry `actual`, meta/valid_from round-trip,
 catch-up replay-then-live) is run against **both** backends - the SQLite impl and,
-behind its `kurrentdb` CI job, the KurrentDB adapter against a real KurrentDB via
+in the `kurrentdb` CI job, the KurrentDB adapter against a real KurrentDB via
 testcontainers. One suite, two backends green: the proxy fidelity the design needs.
 
 ### 5.1.1 Per-project segregation (one mechanism, every backend)  **[AS-BUILT]**
@@ -1057,8 +1059,9 @@ rigger graph --around modifier.rs   # inspect the context graph (subgraph query)
 rigger validate                     # load + validate the workflow + agents
 ```
 
-The optional backends are selected at build time by cargo feature (`-F kurrentdb`,
-`-F turbovec`), not by a runtime flag. Library use (embed the harness) imports the same
+The KurrentDB event-store backend is compiled into every build and selected at
+runtime by `--eventstore kurrentdb`; the semantic grounder is a build-time cargo
+feature (`-F turbovec`, on by default). Library use (embed the harness) imports the same
 modules from the `rigger` crate directly.
 
 ---
