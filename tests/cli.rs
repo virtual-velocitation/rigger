@@ -5555,6 +5555,96 @@ fn installed_workflow_courier_prompt_is_foreground_and_honest() {
     );
 }
 
+/// Spec 44, criterion 2 - PERIPHERY (setup -> disk seam): the driver's null-step guard must
+/// survive to the artifact the harness actually loads and runs. The implementer's unit test
+/// asserts the guard structurally over the IN-MEMORY `RIGGER_WORKFLOW` constant, and a
+/// separate unit test asserts the installed file is byte-identical to that constant - but
+/// byte-identity says nothing about the constant's CONTENT (a regressed driver would still
+/// install byte-for-byte), and neither drives the real `rigger setup` subcommand end-to-end.
+/// This test closes that boundary: it runs the built binary's `setup` (arg dispatch ->
+/// cmd_setup -> install_workflow -> file write), then reads the on-disk
+/// `.claude/workflows/rigger.js` - the exact driver the harness auto-discovers and runs - and
+/// pins that its loop STILL guards a null step before dereferencing it. `agent()` can RESOLVE
+/// to null (not reject) when the step-courier dies on a terminal error, so an unguarded
+/// `step.error` read would crash the driver uncaught; the guard turns that into a clean, loud,
+/// resumable stop. Both the guard's PRESENCE and its ORDERING (guard before the dereference)
+/// and its loud `stop()` and its cause-naming, resumable diagnostic must reach the installed
+/// file, or the fix never protects a real run.
+#[test]
+fn installed_workflow_driver_guards_a_null_step() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    // Drive the REAL `rigger setup` subcommand (RIGGER_NPM stubs npm so the shim step needs
+    // no network); it writes the native driver workflow to disk.
+    let (_out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok, "rigger setup must succeed; stderr:\n{err}");
+
+    // The user-facing artifact: the driver file the harness auto-discovers and runs.
+    let installed = root.join(".claude").join("workflows").join("rigger.js");
+    let workflow = std::fs::read_to_string(&installed).unwrap_or_else(|e| {
+        panic!(
+            "rigger setup must install the workflow at {}; read failed: {e}",
+            installed.display()
+        )
+    });
+
+    // 1. The guard EXISTS in the installed driver: it tests `!step` (agent() resolved to null)
+    //    before touching the step's fields.
+    assert!(
+        workflow.contains("if (!step)"),
+        "the installed driver must guard a null step with `if (!step)` before dereferencing it; \
+         got:\n{workflow}"
+    );
+
+    // 2. The guard PRECEDES the dereference in the installed driver. Anchor the dereference on
+    //    the code conditional `if (step.error)` (not a bare `step.error`, which also appears in
+    //    the explanatory comment): a null step reaching `if (step.error)` before the guard runs
+    //    would crash on the very read the guard exists to prevent. Both tokens are code and each
+    //    appears once, so `find` positions order them unambiguously.
+    let guard = workflow
+        .find("if (!step)")
+        .expect("the installed driver must guard a null step");
+    let deref = workflow
+        .find("if (step.error)")
+        .expect("the installed driver must read step.error after the guard");
+    assert!(
+        guard < deref,
+        "the `if (!step)` guard must precede the `if (step.error)` dereference in the installed \
+         driver, or a null step (agent() resolved to null) would still crash before the guard \
+         runs; got:\n{workflow}"
+    );
+
+    // 3. The guard stops CLEANLY and LOUDLY: it routes the null step through the throwing
+    //    `stop()`, not a silent fall-through, and that stop lives BETWEEN the guard and the
+    //    dereference.
+    assert!(
+        workflow[guard..deref].contains("stop("),
+        "the installed null-step guard must stop loudly via `stop(...)` before the dereference, \
+         not fall through; got:\n{workflow}"
+    );
+
+    // 4. The diagnostic names the LIKELY CAUSE (the courier agent died on a terminal error - an
+    //    expired login / an exhausted quota - so agent() RESOLVED TO NULL) and that the run is
+    //    RESUMABLE, the two things spec 44 requires the message to carry so the operator knows
+    //    why it stopped and that a re-run continues from this frontier.
+    assert!(
+        workflow.contains("resolved to null"),
+        "the installed null-step diagnostic must name the cause: agent() RESOLVED TO NULL rather \
+         than rejecting; got:\n{workflow}"
+    );
+    assert!(
+        workflow.contains("expired login") && workflow.contains("quota"),
+        "the installed null-step diagnostic must name the likely terminal cause (an expired \
+         login or an exhausted API quota); got:\n{workflow}"
+    );
+    assert!(
+        workflow.contains("RESUMABLE"),
+        "the installed null-step diagnostic must tell the operator the run is RESUMABLE (a \
+         re-run continues from this frontier); got:\n{workflow}"
+    );
+}
+
 /// `rigger result <id> --if-absent` records a died-worker outcome only when the spawn is
 /// still unanswered: on a fresh run stream it writes the result and exits 0, so `rigger
 /// reported <id>` then confirms the spawn is answered. The "records when absent" half of
