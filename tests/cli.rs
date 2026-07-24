@@ -7531,6 +7531,81 @@ fn setup_installs_the_using_rigger_skill_with_project_overlay() {
     );
 }
 
+/// Spec 46, criterion 2 (the pre-run graph-hygiene guidance ships to CONSUMERS through the
+/// INSTALL seam): a consumer never edits rigger's own repo copies - they run `rigger setup`,
+/// which renders and INSTALLS the `using-rigger` skill into THEIR project at
+/// `.claude/skills/using-rigger/SKILL.md`. That install path (`render_installed_skill`:
+/// docs_context -> overlay merge -> render -> write) is DISTINCT from the `rigger docs`
+/// repo-copy path the sibling `docs_ships_graph_hygiene_guidance_to_consumers` test drives,
+/// so a regression in the install/overlay composition could ship a consumer skill missing
+/// the guidance while the repo copies stay fine. This periphery test drives the real
+/// `rigger setup` binary and reads the INSTALLED skill to prove the graph-hygiene section
+/// reaches the consumer's project with its truthful WHY: graph.db is a PERSISTENT
+/// incremental projection (a step never re-folds the whole history), so across runs it
+/// accumulates dead-run rows no live query reads, which `rigger reset --runs` prunes to
+/// reclaim the disk they held - and NOT the discredited fold-speed framing.
+#[test]
+fn setup_installs_graph_hygiene_guidance_into_consumer_skill() {
+    let proj = temp_project();
+    let root = proj.path();
+
+    // npm is stubbed to a no-op so the shim provision step does not need a real npm; this
+    // mirrors the sibling setup-install test.
+    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok, "rigger setup must succeed; stderr:\n{err}");
+    assert!(
+        out.contains(".claude/skills/using-rigger/SKILL.md"),
+        "setup must report installing the using-rigger skill into the consumer project; got:\n{out}"
+    );
+
+    let installed = std::fs::read_to_string(root.join(".claude/skills/using-rigger/SKILL.md"))
+        .expect("setup installed the consumer skill");
+
+    // The INSTALLED consumer skill carries the graph-hygiene section, names the pre-run
+    // command, and frames the truthful WHY (a persistent incremental projection whose
+    // dead-run accumulation `rigger reset --runs` prunes to reclaim the disk it held) - the
+    // guidance ships all the way into the consumer's own project, not just rigger's repo.
+    assert!(
+        installed.contains("## Graph hygiene"),
+        "the installed consumer skill must carry the graph-hygiene section; got:\n{installed}"
+    );
+    assert!(
+        installed.contains("rigger reset --runs"),
+        "the installed consumer skill must name `rigger reset --runs` as the pre-run hygiene step"
+    );
+    assert!(
+        installed.contains("persistent projection"),
+        "the installed consumer skill must frame graph.db as a persistent incremental \
+         projection (the corrected WHY, not a per-step whole-stream re-fold)"
+    );
+    assert!(
+        installed.contains("reclaims the disk"),
+        "the installed consumer skill must explain reset --runs reclaims the disk the dead-run \
+         rows held (bounded growth, not a fold-speed claim)"
+    );
+
+    // NEGATIVE regression guard (spec 46 c2): the DISCREDITED fold-speed framing that
+    // rejected this unit's first attempt (graph.db re-folded whole-history each step, the
+    // fold slow in proportion to graph size, a prune speeding it up) must never reach the
+    // consumer's installed skill. graph.db is a PERSISTENT incremental projection; a prune
+    // reclaims DISK, it speeds no fold. Pin those phrases OUT (case-insensitively) so a
+    // future edit resurrecting the false mechanism fails LOUDLY here instead of installing
+    // it into consumer projects.
+    let lower = installed.to_lowercase();
+    for banned in [
+        "re-folded each step",
+        "fold stays slow",
+        "proportional to graph size",
+        "faster fold",
+    ] {
+        assert!(
+            !lower.contains(banned),
+            "the installed consumer skill must NOT resurrect the discredited fold-speed framing \
+             (found {banned:?}); a prune reclaims disk, it does not speed a fold"
+        );
+    }
+}
+
 /// Stage a `rigger` shim (a tiny sh script that execs the freshly built binary) in a
 /// `shim-bin/` under `root` and return a `PATH` value with that dir prepended, so a `git
 /// commit` run with this `PATH` finds `rigger` BY NAME - the pre-commit hook invokes `rigger`
