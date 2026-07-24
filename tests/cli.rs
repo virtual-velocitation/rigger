@@ -5857,6 +5857,88 @@ fn setup_gitignores_the_dash_breadcrumbs_and_git_honors_them_end_to_end() {
     }
 }
 
+/// Spec 46, criterion 1 - PERIPHERY (setup -> gitignore under a HOSTILE global git config):
+/// the committed `.gitignore` setup writes must be SELF-CONTAINED and portable, never
+/// contingent on the setup-runner's machine-local git configuration. `git`'s full ignore
+/// resolution consults global sources (`core.excludesFile`, `~/.config/git/ignore`,
+/// `.git/info/exclude`); if setup let those decide what to append, an operator whose global
+/// excludes already cover `.claude/` and `.rigger/` would ship a `.gitignore` MISSING the
+/// dash-breadcrumb lines - and a teammate or CI cloning with a clean HOME would then let
+/// `git add` sweep `.rigger/dash.url` / `.rigger/dash.marker` into a unit commit, the exact
+/// "untracked working tree files would be overwritten" collision criterion 1 exists to
+/// prevent. This test runs the real `rigger setup` under a `GIT_CONFIG_GLOBAL` whose
+/// `core.excludesFile` already ignores `.claude/` and `.rigger/`, and asserts the committed
+/// `.gitignore` STILL carries every required line - so the shipped artifact is machine
+/// independent. It is a regression guard against re-introducing a machine-local ignore lookup
+/// (e.g. `git check-ignore`) that would silently omit the lines.
+#[test]
+fn setup_writes_a_machine_independent_gitignore_under_a_hostile_global_config() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    // A hostile global git config: its excludes list already ignores `.claude/` and the whole
+    // `.rigger/` runtime dir (a common configuration - so a full `git check-ignore` would report
+    // every setup-written pattern already ignored).
+    let global_ignore = root.join("hostile_global_ignore");
+    std::fs::write(&global_ignore, ".claude/\n.rigger/\n").unwrap();
+    let global_config = root.join("hostile_global_config");
+    std::fs::write(
+        &global_config,
+        format!(
+            "[core]\n\texcludesFile = {}\n",
+            global_ignore.to_str().unwrap()
+        ),
+    )
+    .unwrap();
+    let global_config_str = global_config.to_str().unwrap();
+
+    // Sanity: prove the global config is genuinely HOSTILE - a full `git check-ignore` (which is
+    // what a machine-local lookup would use) reports the dash breadcrumb already ignored via the
+    // global rule, so this config WOULD have suppressed the append under a check-ignore skip.
+    let would_be_suppressed = Command::new("git")
+        .args(["check-ignore", "-q", ".rigger/dash.url"])
+        .current_dir(root)
+        .env("GIT_CONFIG_GLOBAL", global_config_str)
+        .status()
+        .expect("git must be runnable")
+        .success();
+    assert!(
+        would_be_suppressed,
+        "the test's global config must actually ignore .rigger/dash.url (else the regression \
+         guard is inconclusive)"
+    );
+
+    // Drive the REAL `rigger setup` under that hostile global config.
+    let (_out, err, ok) = run_rigger_envs(
+        root,
+        &["setup"],
+        &[
+            ("RIGGER_NPM", "true"),
+            ("GIT_CONFIG_GLOBAL", global_config_str),
+        ],
+    );
+    assert!(ok, "rigger setup must succeed; stderr:\n{err}");
+
+    // The committed `.gitignore` carries EVERY setup-written pattern despite the hostile global
+    // excludes - the artifact is self-contained and portable to a clean-HOME teammate/CI. The
+    // patterns are written in their normalized form (a trailing slash is stripped before the
+    // line is appended), so `.claude/` lands as `.claude` and `.rigger/shim/` as `.rigger/shim`.
+    let gitignore = std::fs::read_to_string(root.join(".gitignore"))
+        .expect("rigger setup must write a .gitignore at the project root");
+    for pattern in [
+        ".claude",
+        ".rigger/shim",
+        ".rigger/dash.url",
+        ".rigger/dash.marker",
+    ] {
+        assert!(
+            gitignore.lines().any(|l| l.trim() == pattern),
+            "the committed .gitignore must contain `{pattern}` even under a global config that \
+             already ignores it, so the shipped file is machine independent; got:\n{gitignore}"
+        );
+    }
+}
+
 /// Spec 44, criterion 2 - PERIPHERY (setup -> disk seam): the driver's null-step guard must
 /// survive to the artifact the harness actually loads and runs. The implementer's unit test
 /// asserts the guard structurally over the IN-MEMORY `RIGGER_WORKFLOW` constant, and a
