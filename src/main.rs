@@ -7952,6 +7952,292 @@ mod tests {
         );
     }
 
+    /// Spec 43, criterion 4 (CONSUMERS ARE UNAFFECTED). The graph fold de-noises to the target
+    /// project: it stopped projecting the loop's own run machinery (the agent / unit / gate NODES,
+    /// the `agent --TOUCHES--> file` edge, and the agent-attribution edges). This test proves the
+    /// three named functional consumers produce the SAME result before and after that de-noise,
+    /// because NONE of them reads a dropped node - each reads a substrate the fold change never
+    /// touches:
+    ///
+    ///   * `metrics::project` folds the EVENT LOG. The de-noise removed the graph NODES for
+    ///     `GateVerdict` / `UnitStarted` / `UnitIntegrated`, but those EVENTS still stand in the
+    ///     log, and metrics reads them from there (it never receives a `Projection`), so its counts
+    ///     are unmoved.
+    ///   * run pruning (`superseded_graph_nodes` -> `Projector::prune`) derives its drop set from
+    ///     the EVENT LOG through the one `run::run_attribution` authority, which attributes ONLY
+    ///     decisions / findings / lessons - never a `UnitStarted` / `FileTouched` / `GateVerdict`.
+    ///     So no machinery id can enter the drop set, the derivation is byte-identical whether or
+    ///     not the machinery events are present, and pruning the de-noised graph (which has no
+    ///     machinery nodes) still drops exactly the dead-run content and keeps the active run's.
+    ///   * blast radius grounds over the CODE cross-reference (here the always-available `Grep`
+    ///     default over the source tree; the `symbols` grounder likewise reads its symbol index) -
+    ///     never the context graph - so a graph-only change cannot alter a radius.
+    ///
+    /// This owns the safe-consumer guarantee; it deliberately does NOT re-assert content survival
+    /// (criterion 2 owns that). The event stream carries the machinery in its RAW production shape
+    /// (a `UnitStarted` with both `id` and `unit`, a `GateVerdict` with `pass`, a `FileTouched`
+    /// with `by`) - the exact payloads the log records and the de-noise now ignores.
+    #[test]
+    fn the_denoise_leaves_metrics_run_pruning_and_blast_radius_unaffected() {
+        use rigger::grounder::{Grep, Grounder};
+
+        // One positioned event in raw on-log JSON. Distinct positions are required: the graph fold
+        // dedups on position (`INSERT OR IGNORE INTO applied`), and metrics / attribution key by
+        // index, so a monotonic position per event models the real append order.
+        fn ev(pos: u64, type_: &str, json: serde_json::Value) -> Event {
+            let mut e = Event::new(type_, serde_json::to_vec(&json).unwrap());
+            e.position = pos;
+            e
+        }
+
+        // A whole run stream spanning a DEAD run r1 and the ACTIVE run r2, each interleaving the
+        // machinery the de-noise dropped (FileTouched / UnitStarted / GateVerdict / UnitIntegrated)
+        // with the content (DecisionMade / ReviewFinding) and the unit lifecycle metrics folds.
+        let stream = vec![
+            // --- Dead run r1 ---
+            ev(
+                1,
+                runscope::TYPE_RUN_STARTED,
+                serde_json::json!({ "run": "r1", "criteria": ["c"] }),
+            ),
+            ev(
+                2,
+                contextgraph::TYPE_FILE_TOUCHED,
+                serde_json::json!({ "path": "src/combat.rs", "by": "rust-engineer" }),
+            ),
+            ev(
+                3,
+                ledger::TYPE_UNIT_STARTED,
+                serde_json::json!({ "id": "u_r1", "unit": "u_r1", "criterion": "c1", "agent": "rust-engineer", "needs": [] }),
+            ),
+            ev(
+                4,
+                contextgraph::TYPE_GATE_VERDICT,
+                serde_json::json!({ "gate": "build", "pass": true }),
+            ),
+            ev(
+                5,
+                contextgraph::TYPE_DECISION_MADE,
+                serde_json::json!({ "id": "d_r1", "summary": "dead-run decision", "governs": ["src/combat.rs"], "supersedes": "" }),
+            ),
+            ev(
+                6,
+                contextgraph::TYPE_REVIEW_FINDING,
+                serde_json::json!({ "id": "f_r1", "by": "tech-lens", "unit": "u_r1", "summary": "dead-run finding", "about": ["src/combat.rs"] }),
+            ),
+            ev(
+                7,
+                ledger::TYPE_UNIT_STATUS,
+                serde_json::json!({ "id": "u_r1", "status": "verified" }),
+            ),
+            ev(
+                8,
+                ledger::TYPE_UNIT_STATUS,
+                serde_json::json!({ "id": "u_r1", "status": "reviewed" }),
+            ),
+            ev(
+                9,
+                ledger::TYPE_UNIT_INTEGRATED,
+                serde_json::json!({ "id": "u_r1", "commit": "abc1" }),
+            ),
+            // --- Active run r2 ---
+            ev(
+                10,
+                runscope::TYPE_RUN_STARTED,
+                serde_json::json!({ "run": "r2", "criteria": ["c"] }),
+            ),
+            ev(
+                11,
+                contextgraph::TYPE_FILE_TOUCHED,
+                serde_json::json!({ "path": "src/combat.rs", "by": "rust-engineer" }),
+            ),
+            ev(
+                12,
+                ledger::TYPE_UNIT_STARTED,
+                serde_json::json!({ "id": "u_r2", "unit": "u_r2", "criterion": "c1", "agent": "rust-engineer", "needs": [] }),
+            ),
+            ev(
+                13,
+                contextgraph::TYPE_GATE_VERDICT,
+                serde_json::json!({ "gate": "clippy", "pass": true }),
+            ),
+            ev(
+                14,
+                contextgraph::TYPE_DECISION_MADE,
+                serde_json::json!({ "id": "d_r2", "summary": "active-run decision", "governs": ["src/combat.rs"], "supersedes": "" }),
+            ),
+            ev(
+                15,
+                ledger::TYPE_UNIT_STATUS,
+                serde_json::json!({ "id": "u_r2", "status": "verified" }),
+            ),
+            ev(
+                16,
+                ledger::TYPE_UNIT_STATUS,
+                serde_json::json!({ "id": "u_r2", "status": "reviewed" }),
+            ),
+            ev(
+                17,
+                ledger::TYPE_UNIT_INTEGRATED,
+                serde_json::json!({ "id": "u_r2", "commit": "abc2" }),
+            ),
+        ];
+
+        // ===================================================================================
+        // CONSUMER 1 - metrics::project folds the EVENT LOG, machinery events and all.
+        // ===================================================================================
+        // The de-noise stopped projecting `GateVerdict` / `UnitStarted` / `UnitIntegrated` as graph
+        // nodes, but metrics reads those events from the log - so it still tallies two started
+        // units, two clean first passes, both gates, and two review approvals. Asserting the
+        // headline fields (not the whole struct) keeps the pin focused on the de-noised event types
+        // without coupling to the unrelated review-quality fold.
+        let m = metrics::project(&stream);
+        assert_eq!(
+            m.units_started, 2,
+            "both UnitStarted events fold from the log"
+        );
+        assert_eq!(
+            m.first_pass_clean, 2,
+            "both units integrated with no failure - metrics reads the lifecycle from the log, not the graph"
+        );
+        assert_eq!(
+            m.gates.get("build").map(|g| (g.pass, g.fail)),
+            Some((1, 0)),
+            "the build GateVerdict is still folded from the log though it is no longer a graph node"
+        );
+        assert_eq!(
+            m.gates.get("clippy").map(|g| (g.pass, g.fail)),
+            Some((1, 0)),
+            "the clippy GateVerdict is still folded from the log"
+        );
+        assert_eq!(m.units_escalated, 0, "no unit escalated");
+        assert_eq!(
+            m.review_approve, 2,
+            "both `reviewed` statuses count as approvals"
+        );
+        assert_eq!(m.review_reject, 0, "no review rejected");
+
+        // ===================================================================================
+        // CONSUMER 2 - run pruning derives its drop set from the EVENT LOG.
+        // ===================================================================================
+        // `superseded_graph_nodes` reuses `run::run_attribution`, which attributes ONLY
+        // decision / finding / lesson events - so the machinery events (a `UnitStarted` carrying an
+        // `id`, a `FileTouched`, a `GateVerdict`, a `UnitIntegrated`) contribute NOTHING to the drop
+        // set, and it is exactly the dead run's decision and finding.
+        let drop = superseded_graph_nodes(&stream);
+        assert_eq!(
+            drop,
+            vec!["d_r1", "f_r1"],
+            "the drop set is precisely the dead run's content - no machinery id (u_r1, u_r2, build, clippy, src/combat.rs) leaks in"
+        );
+
+        // The derivation is UNAFFECTED by the machinery events' presence: stripping every
+        // FileTouched / UnitStarted / GateVerdict / UnitStatus / UnitIntegrated from the stream (the
+        // events the de-noise stopped projecting) leaves the drop set byte-identical. This is the
+        // "same result before and after the de-noise" guarantee for the pruning consumer.
+        let content_only: Vec<Event> = stream
+            .iter()
+            .filter(|e| {
+                e.type_ == runscope::TYPE_RUN_STARTED
+                    || e.type_ == contextgraph::TYPE_DECISION_MADE
+                    || e.type_ == contextgraph::TYPE_REVIEW_FINDING
+                    || e.type_ == contextgraph::TYPE_LESSON_LEARNED
+            })
+            .cloned()
+            .collect();
+        assert_eq!(
+            superseded_graph_nodes(&content_only),
+            drop,
+            "removing the machinery events does not change the pruning drop set - it reads only the run windows and the content ids"
+        );
+
+        // End-to-end: fold the whole run into the DE-NOISED graph (which projects no machinery
+        // node), then run the real prune. It still drops exactly the dead-run content and keeps the
+        // active run's decision plus the code it governs.
+        let graph = Projector::open(":memory:", "test").unwrap();
+        for e in &stream {
+            graph.apply(e).unwrap();
+        }
+        let boundary = superseded_edge_boundary(&stream);
+        graph.prune(&drop, boundary).unwrap();
+
+        let g = graph
+            .subgraph(
+                &[
+                    "d_r1".to_string(),
+                    "f_r1".to_string(),
+                    "d_r2".to_string(),
+                    "src/combat.rs".to_string(),
+                ],
+                2,
+            )
+            .unwrap();
+        assert!(
+            g.nodes
+                .iter()
+                .any(|n| n.id == "d_r2" && n.kind == contextgraph::KIND_DECISION),
+            "the active run's decision survives the prune; got {:?}",
+            g.nodes.iter().map(|n| (&n.id, &n.kind)).collect::<Vec<_>>()
+        );
+        assert!(
+            g.edges.iter().any(|e| e.rel == contextgraph::REL_GOVERNS
+                && e.from == "d_r2"
+                && e.to == "src/combat.rs"),
+            "and its GOVERNS edge to the code it concerns survives"
+        );
+        assert!(
+            !g.nodes.iter().any(|n| n.id == "d_r1"),
+            "the dead run's decision is pruned"
+        );
+        assert!(
+            !g.nodes.iter().any(|n| n.id == "f_r1"),
+            "the dead run's finding is pruned"
+        );
+
+        // ===================================================================================
+        // CONSUMER 3 - blast radius grounds over the CODE cross-reference, never the graph.
+        // ===================================================================================
+        // A blast radius is a function of the source tree (via the `Grep` default here, or the
+        // `symbols` grounder's cross-reference index), never of the context graph - so removing
+        // machinery graph nodes cannot move it. The radius of `apply_damage` covers the file that
+        // defines it and the file that references it, and excludes an unrelated file.
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::write(
+            repo.path().join("combat.rs"),
+            "pub fn apply_damage(target: &mut Enemy) { target.hp -= 1; }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            repo.path().join("enemy.rs"),
+            "fn hit(e: &mut Enemy) { apply_damage(e); }\n",
+        )
+        .unwrap();
+        std::fs::write(repo.path().join("audio.rs"), "pub fn play_sound() {}\n").unwrap();
+        let grep = Grep {
+            root: repo.path().to_string_lossy().into_owned(),
+        };
+        let br = grep.blast_radius("apply_damage", 8);
+        assert!(
+            br.safe.iter().any(|f| f == "combat.rs"),
+            "the safe radius covers the file that DEFINES apply_damage; got {:?}",
+            br.safe
+        );
+        assert!(
+            br.safe.iter().any(|f| f == "enemy.rs"),
+            "and the file that REFERENCES it; got {:?}",
+            br.safe
+        );
+        assert!(
+            !br.safe.iter().any(|f| f == "audio.rs"),
+            "an unrelated file is not in the radius; got {:?}",
+            br.safe
+        );
+        assert!(
+            !br.serialize,
+            "apply_damage is not a hub, so the radius does not serialize"
+        );
+    }
+
     /// The single-source version line must carry BOTH the crate version and the
     /// (non-empty) embedded build provenance, so `rigger version` / `--version` can
     /// identify the exact binary. Pins the format helper both invocation arms print.
