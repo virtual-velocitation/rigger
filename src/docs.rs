@@ -144,6 +144,23 @@ fn discipline_body(ctx: &DocsContext) -> String {
          the next unit and forks the code from the log - fix the loop instead (see below).\n"
     );
 
+    let _ = writeln!(s, "## Graph hygiene before a large run\n");
+    let _ = writeln!(
+        s,
+        "The context graph the loop reasons over is a persistent projection rigger \
+         maintains incrementally: each run's decisions and findings are folded in one event \
+         at a time as they are emitted, and superseded rows are retired in place rather than \
+         re-derived from scratch, so a step never re-folds the whole history. Across many \
+         runs graph.db therefore ACCUMULATES the dead-run rows and retired edges that no \
+         live query reads, so the file grows on disk without bound even though the live \
+         graph the loop grounds on does not. Keep it lean before a large run with `rigger \
+         reset --runs`, which prunes that dead-run accumulation and reclaims the disk it \
+         held; a very stale graph should be pruned this way first. This is PRE-RUN hygiene \
+         through a real command, NOT a hand-driven `rigger step`: hand-stepping races the \
+         driver (see the one-blessed-driver anti-patterns above), whereas `rigger reset \
+         --runs` is a one-shot prune you run BEFORE launching the loop.\n"
+    );
+
     let _ = writeln!(s, "## Spec shape\n");
     let _ = writeln!(
         s,
@@ -328,6 +345,40 @@ mod tests {
             render_handbook_discipline(&ctx),
             render_handbook_discipline(&ctx)
         );
+    }
+
+    /// Spec 46, criterion 2 (the shipped operator guidance): the shared discipline body
+    /// carries a graph-hygiene section that names `rigger reset --runs` as the PRE-RUN
+    /// hygiene step and explains WHY truthfully - graph.db is a PERSISTENT incremental
+    /// projection (a step never re-folds the whole history), so across runs it accumulates
+    /// dead-run rows and retired edges no live query reads, which `rigger reset --runs`
+    /// prunes to reclaim the disk they held. Because BOTH outputs render from
+    /// `discipline_body`, the skill and the handbook chapter cannot disagree, so the
+    /// guidance ships identically through the skill and the handbook.
+    #[test]
+    fn discipline_carries_graph_hygiene_pre_run_reset() {
+        let ctx = sentinel_ctx();
+        for (label, out) in [
+            ("skill", render_using_rigger_skill(&ctx)),
+            ("handbook", render_handbook_discipline(&ctx)),
+        ] {
+            assert!(
+                out.contains("## Graph hygiene"),
+                "{label} must carry the graph-hygiene section"
+            );
+            assert!(
+                out.contains("rigger reset --runs"),
+                "{label} must name `rigger reset --runs` as the pre-run hygiene step"
+            );
+            assert!(
+                out.contains("persistent projection"),
+                "{label} must frame graph.db as a persistent incremental projection"
+            );
+            assert!(
+                out.contains("reclaims the disk"),
+                "{label} must explain reset --runs reclaims the disk dead-run rows held"
+            );
+        }
     }
 
     #[test]
