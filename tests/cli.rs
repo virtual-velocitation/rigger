@@ -1150,11 +1150,15 @@ fn reset_runs_reports_nonzero_bytes_reclaimed_then_a_second_pass_is_an_idempoten
     );
     let reclaimed1 = reported_reclaimed_bytes(&out1)
         .unwrap_or_else(|| panic!("first reset --runs must REPORT a compaction; got: {out1:?}"));
-    // The guard the on-disk-only check is blind to: without the in-process `wal_checkpoint(TRUNCATE)`
-    // the file still shrinks at process close, but this REPORTED count collapses to 0.
+    // A real prune must format a PARSEABLE, non-zero reclaimed-byte count through the `cmd_reset`
+    // report seam. That count is `page_count`-based (measured BEFORE the VACUUM), so it is non-zero
+    // whenever the VACUUM actually frees pages, independent of the WAL checkpoint - this assertion
+    // guards the report seam, NOT the checkpoint. The checkpoint's own guarantee, that the on-disk
+    // file shrinks SYNCHRONOUSLY while the connection is still open, is guarded precisely by
+    // `projector_compact_returns_the_on_disk_bytes_reclaimed_and_never_changes_a_query`.
     assert!(
         reclaimed1 > 0,
-        "first reset --runs must REPORT a non-zero on-disk reclamation (the checkpoint ran); got {reclaimed1} from {out1:?}"
+        "first reset --runs must REPORT a non-zero reclaimed-byte count on a real prune; got {reclaimed1} from {out1:?}"
     );
     let after1 = std::fs::metadata(&graph_path).unwrap().len();
     assert!(
