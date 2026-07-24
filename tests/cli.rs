@@ -887,6 +887,484 @@ fn reset_runs_reclaims_superseded_edges_retired_before_the_active_run_and_report
     );
 }
 
+/// `rigger reset --runs` COMPACTS the on-disk graph after reclaiming (spec 46, criterion 3).
+/// The documented pre-run hygiene command must reclaim DISK, not just rows: the prune's DELETE
+/// only frees pages inside the file (SQLite keeps them for reuse), so without a VACUUM the graph
+/// file stays as LARGE on disk as before even after a prune (VACUUM reclaims disk only - it changes
+/// no query result and gives no query or fold speedup). This drives the COMPILED binary end to end
+/// and proves the file actually SHRINKS: seed a bloated `graph.db`
+/// (thousands of SUPERSEDED structural edges retired before the active run's boundary, plus ONE
+/// LIVE edge), run `rigger reset --runs`, then assert the on-disk `graph.db` is STRICTLY smaller,
+/// the live edge survived, and the event log is byte-for-byte the same length. Seeded directly
+/// through the graph's own edge table (thousands of `rigger emit`s would be far slower) after
+/// `Projector::open` lays down the canonical, fully-migrated schema so the binary re-opens it
+/// with every migration a no-op. Owns the reset COMPACTION (it does NOT own the operator
+/// guidance, criterion 2, nor the reclaimed-row semantics the spec-41 test already pins).
+#[test]
+fn reset_runs_compacts_the_on_disk_graph_after_reclaiming_superseded_rows() {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Direction, EventStore};
+
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+    let id = run_stream_identity(root);
+
+    // The ACTIVE run's boundary. `superseded_edge_boundary` derives the retention cutoff from this
+    // RunStarted's wall-clock `valid_from` (nanoseconds since the epoch, ~1.7e18 for 2026), so every
+    // edge seeded below at `valid_to = 1` is strictly before it and thus reclaimable.
+    seed_run_events(root, &[("RunStarted", r#"{"run":"r1","criteria":["c"]}"#)]);
+
+    let graph_path = root.join(".rigger").join("graph.db");
+
+    // Lay down the canonical, fully-migrated schema exactly as the binary opens it, so the binary's
+    // own `Projector::open` re-runs every migration as a no-op and never rewrites the file itself.
+    {
+        let _p = Projector::open(graph_path.to_str().unwrap(), &id).unwrap();
+    }
+
+    // Bloat `graph.db` directly: a big pile of SUPERSEDED structural edges (`valid_to = 1`, strictly
+    // before the boundary) the reclamation deletes, plus ONE LIVE edge (`valid_to` NULL) it must
+    // preserve. One transaction, then a TRUNCATE checkpoint so the whole pile folds into the MAIN db
+    // file (not the WAL side-file) before we measure its on-disk size.
+    const SUPERSEDED: usize = 8_000;
+    {
+        let conn = rusqlite::Connection::open(&graph_path).unwrap();
+        conn.execute_batch("BEGIN").unwrap();
+        {
+            let mut stmt = conn
+                .prepare(
+                    "INSERT INTO edges (from_id, to_id, rel, valid_from, valid_to, source, project, tier)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'extracted')",
+                )
+                .unwrap();
+            for i in 0..SUPERSEDED {
+                stmt.execute(rusqlite::params![
+                    format!("dead-from-{i}"),
+                    format!("dead-to-{i}"),
+                    "GOVERNS",
+                    1i64,
+                    1i64, // retired at t=1, strictly before the active-run boundary
+                    i as i64,
+                    id,
+                ])
+                .unwrap();
+            }
+            // The one LIVE edge (valid_to NULL) the reclamation must never touch.
+            stmt.execute(rusqlite::params![
+                "keep-from",
+                "keep-to",
+                "GOVERNS",
+                2i64,
+                None::<i64>,
+                999i64,
+                id,
+            ])
+            .unwrap();
+        }
+        conn.execute_batch("COMMIT").unwrap();
+        // Fold the WAL into the main db file so the measured on-disk size reflects the whole pile.
+        let _: (i64, i64, i64) = conn
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .unwrap();
+    }
+
+    let before = std::fs::metadata(&graph_path).unwrap().len();
+
+    // Drive the real reset: it reclaims every pre-boundary superseded edge, then VACUUMs so the file
+    // shrinks to match, reporting BOTH on the reset line.
+    let (out, err, ok) = run_rigger(root, &["reset", "--runs"]);
+    assert!(
+        ok,
+        "reset --runs must succeed; stderr: {err}\nstdout: {out}"
+    );
+    assert!(
+        out.contains(&format!("reclaimed {SUPERSEDED} superseded edge(s)")),
+        "reset --runs must reclaim all {SUPERSEDED} seeded superseded edges; got: {out:?}"
+    );
+    assert!(
+        out.contains("compact"),
+        "reset --runs must report the graph-file compaction alongside the reclaimed count; got: {out:?}"
+    );
+
+    // The on-disk graph file is STRICTLY smaller: a VACUUM ran. Without the compaction the DELETE
+    // only frees internal pages and the file stays exactly `before` bytes.
+    let after = std::fs::metadata(&graph_path).unwrap().len();
+    assert!(
+        after < before,
+        "reset --runs must COMPACT the on-disk graph (a VACUUM ran): file went from {before} to {after} bytes"
+    );
+
+    // LIVE is sacrosanct and every superseded edge is gone: the reclamation removed only history.
+    let conn = rusqlite::Connection::open(&graph_path).unwrap();
+    let live: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM edges WHERE from_id = 'keep-from' AND to_id = 'keep-to' \
+             AND valid_to IS NULL AND project = ?1",
+            rusqlite::params![id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        live, 1,
+        "the one LIVE edge must survive the compacting prune"
+    );
+    let dead: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM edges WHERE valid_to IS NOT NULL AND project = ?1",
+            rusqlite::params![id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        dead, 0,
+        "every superseded edge retired before the boundary must be reclaimed"
+    );
+    drop(conn);
+
+    // The event log is UNTOUCHED - the compaction rewrites only the graph projection file, never the
+    // store: the seeded RunStarted is still the one and only event.
+    let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, &id);
+    let log = store
+        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
+        .unwrap();
+    assert_eq!(
+        log.len(),
+        1,
+        "reset --runs must not touch the event log - the seeded RunStarted is still the only event"
+    );
+}
+
+/// Extract the compaction's REPORTED reclaimed byte count from a `rigger reset --runs` line
+/// (spec 46, criterion 3). The line reads `... then compacted the graph file (reclaimed N
+/// byte(s) on disk) ...`; this parses `N`. Returns `None` when the phrase is absent, so a
+/// caller can distinguish "compaction was reported" from "no compaction phrase at all".
+fn reported_reclaimed_bytes(reset_line: &str) -> Option<u64> {
+    let marker = "compacted the graph file (reclaimed ";
+    let start = reset_line.find(marker)? + marker.len();
+    let rest = &reset_line[start..];
+    let end = rest.find(" byte(s)")?;
+    rest[..end].trim().parse().ok()
+}
+
+/// `rigger reset --runs` REPORTS the bytes its compaction reclaimed, and a SECOND pass is an
+/// idempotent no-op (spec 46, criterion 3). Two operator-facing boundaries the happy-path
+/// compaction test does not reach, both driven through the COMPILED binary: (1) the reset line
+/// actually REPORTS the compaction with a PARSEABLE, non-zero reclaimed-byte count on a real
+/// prune - guarding the `cmd_reset` report seam that formats `Projector::compact`'s return value
+/// (the happy-path test only checks the line CONTAINS "compact", which a `reclaimed 0` report
+/// also satisfies). The checkpoint that makes the on-disk shrink SYNCHRONOUS is guarded
+/// separately and precisely by `projector_compact_returns_the_on_disk_bytes_reclaimed_and_never_changes_a_query`,
+/// which reads the file in-process; here the count is `page_count`-based and correct regardless.
+/// (2) Running the documented hygiene command TWICE must be safe: the second pass finds nothing
+/// retired before the boundary, so it prunes 0 edges, reclaims 0 bytes (the "nothing was freed
+/// reclaims 0" contract), never GROWS the file, keeps the one live edge, and never touches the
+/// event log. Seeds the bloated `graph.db` directly through the edge table (thousands of `rigger
+/// emit`s would be far slower) after `Projector::open` lays the canonical migrated schema, so the
+/// binary re-opens it with every migration a no-op.
+#[test]
+fn reset_runs_reports_nonzero_bytes_reclaimed_then_a_second_pass_is_an_idempotent_no_op() {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Direction, EventStore};
+
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+    let id = run_stream_identity(root);
+
+    // The ACTIVE run's boundary; every edge seeded at `valid_to = 1` is strictly before it and
+    // thus reclaimable on the FIRST pass, while nothing seeded after it survives to a second pass.
+    seed_run_events(root, &[("RunStarted", r#"{"run":"r1","criteria":["c"]}"#)]);
+
+    let graph_path = root.join(".rigger").join("graph.db");
+
+    // Lay down the canonical, fully-migrated schema exactly as the binary opens it, so the binary's
+    // own `Projector::open` re-runs every migration as a no-op and never rewrites the file itself.
+    {
+        let _p = Projector::open(graph_path.to_str().unwrap(), &id).unwrap();
+    }
+
+    // Bloat `graph.db`: a big pile of SUPERSEDED structural edges the first reset reclaims, plus ONE
+    // LIVE edge (`valid_to` NULL) it must preserve across BOTH passes. One transaction, then a
+    // TRUNCATE checkpoint so the whole pile lands in the MAIN file before it is measured.
+    const SUPERSEDED: usize = 8_000;
+    {
+        let conn = rusqlite::Connection::open(&graph_path).unwrap();
+        conn.execute_batch("BEGIN").unwrap();
+        {
+            let mut stmt = conn
+                .prepare(
+                    "INSERT INTO edges (from_id, to_id, rel, valid_from, valid_to, source, project, tier)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'extracted')",
+                )
+                .unwrap();
+            for i in 0..SUPERSEDED {
+                stmt.execute(rusqlite::params![
+                    format!("dead-from-{i}"),
+                    format!("dead-to-{i}"),
+                    "GOVERNS",
+                    1i64,
+                    1i64, // retired at t=1, strictly before the active-run boundary
+                    i as i64,
+                    id,
+                ])
+                .unwrap();
+            }
+            stmt.execute(rusqlite::params![
+                "keep-from",
+                "keep-to",
+                "GOVERNS",
+                2i64,
+                None::<i64>,
+                999i64,
+                id,
+            ])
+            .unwrap();
+        }
+        conn.execute_batch("COMMIT").unwrap();
+        let _: (i64, i64, i64) = conn
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .unwrap();
+    }
+
+    let before = std::fs::metadata(&graph_path).unwrap().len();
+
+    // FIRST pass: reclaims every pre-boundary superseded edge and reports a NON-ZERO reclamation.
+    let (out1, err1, ok1) = run_rigger(root, &["reset", "--runs"]);
+    assert!(
+        ok1,
+        "first reset --runs must succeed; stderr: {err1}\n{out1}"
+    );
+    assert!(
+        out1.contains(&format!("reclaimed {SUPERSEDED} superseded edge(s)")),
+        "first reset --runs must reclaim all {SUPERSEDED} superseded edges; got: {out1:?}"
+    );
+    let reclaimed1 = reported_reclaimed_bytes(&out1)
+        .unwrap_or_else(|| panic!("first reset --runs must REPORT a compaction; got: {out1:?}"));
+    // A real prune must format a PARSEABLE, non-zero reclaimed-byte count through the `cmd_reset`
+    // report seam. That count is `page_count`-based (measured BEFORE the VACUUM), so it is non-zero
+    // whenever the VACUUM actually frees pages, independent of the WAL checkpoint - this assertion
+    // guards the report seam, NOT the checkpoint. The checkpoint's own guarantee, that the on-disk
+    // file shrinks SYNCHRONOUSLY while the connection is still open, is guarded precisely by
+    // `projector_compact_returns_the_on_disk_bytes_reclaimed_and_never_changes_a_query`.
+    assert!(
+        reclaimed1 > 0,
+        "first reset --runs must REPORT a non-zero reclaimed-byte count on a real prune; got {reclaimed1} from {out1:?}"
+    );
+    let after1 = std::fs::metadata(&graph_path).unwrap().len();
+    assert!(
+        after1 < before,
+        "first reset --runs must shrink the on-disk graph: {before} -> {after1} bytes"
+    );
+
+    // SECOND pass: nothing is retired before the boundary anymore, so it is a provable no-op.
+    let (out2, err2, ok2) = run_rigger(root, &["reset", "--runs"]);
+    assert!(
+        ok2,
+        "second reset --runs must succeed; stderr: {err2}\n{out2}"
+    );
+    assert!(
+        out2.contains("reclaimed 0 superseded edge(s)"),
+        "second reset --runs must prune nothing (all cruft already gone); got: {out2:?}"
+    );
+    let reclaimed2 = reported_reclaimed_bytes(&out2)
+        .unwrap_or_else(|| panic!("second reset --runs must REPORT a compaction; got: {out2:?}"));
+    assert_eq!(
+        reclaimed2, 0,
+        "second reset --runs compacts an already-compact file, so nothing was freed and it reclaims 0 bytes; got {reclaimed2}"
+    );
+    let after2 = std::fs::metadata(&graph_path).unwrap().len();
+    assert!(
+        after2 <= after1,
+        "an idempotent second reset --runs must never GROW the on-disk graph: {after1} -> {after2} bytes"
+    );
+
+    // The one LIVE edge is still there after both passes, and no superseded edge lingers.
+    let conn = rusqlite::Connection::open(&graph_path).unwrap();
+    let live: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM edges WHERE from_id = 'keep-from' AND to_id = 'keep-to' \
+             AND valid_to IS NULL AND project = ?1",
+            rusqlite::params![id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(live, 1, "the LIVE edge must survive both reset passes");
+    drop(conn);
+
+    // The event log is byte-for-byte the same length after both passes: compaction rewrites only
+    // the projection file, never the store (the seeded RunStarted is still the one and only event).
+    let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, &id);
+    let log = store
+        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
+        .unwrap();
+    assert_eq!(
+        log.len(),
+        1,
+        "two reset --runs passes must not touch the event log - the seeded RunStarted is still the only event"
+    );
+}
+
+/// `Projector::compact()` is the new PUBLIC graph-mutation API (spec 46, criterion 3); this drives
+/// it DIRECTLY (the CLI tests reach it only through `rigger reset --runs`) to pin its return-value
+/// contract at the port edge: (1) after a `prune` frees pages onto the freelist, `compact()` returns
+/// a POSITIVE byte count that EXACTLY equals the on-disk file-size drop it caused - the reported
+/// reclamation is the truth on disk, not an estimate (this also fails closed if the internal
+/// `wal_checkpoint(TRUNCATE)` is removed: with the connection still open the main file has not
+/// shrunk, so `reclaimed > 0` and `reclaimed == before - after` cannot both hold); (2) it never
+/// changes a QUERY result - the whole live projection is byte-identical before and after, only the
+/// file size moves; and (3) a second `compact()` on the now-compact file freed nothing, so it
+/// reclaims exactly 0 bytes and does not shrink the file further. Seeds directly through the edge
+/// table for speed, then prunes and compacts through the real `Projector` API on ONE connection.
+#[test]
+fn projector_compact_returns_the_on_disk_bytes_reclaimed_and_never_changes_a_query() {
+    use rigger::contextgraph::sqlite::Projector;
+
+    let dir = temp_project();
+    let root = dir.path();
+    let id = run_stream_identity(root);
+    let rigger_dir = root.join(".rigger");
+    std::fs::create_dir_all(&rigger_dir).unwrap();
+    let graph_path = rigger_dir.join("graph.db");
+
+    // Lay the canonical migrated schema, then bloat the file directly and fold the WAL into the MAIN
+    // file, so the pre-compaction on-disk size is authoritative before the Projector under test opens.
+    {
+        let _p = Projector::open(graph_path.to_str().unwrap(), &id).unwrap();
+    }
+    const SUPERSEDED: usize = 8_000;
+    {
+        let conn = rusqlite::Connection::open(&graph_path).unwrap();
+        conn.execute_batch("BEGIN").unwrap();
+        {
+            let mut stmt = conn
+                .prepare(
+                    "INSERT INTO edges (from_id, to_id, rel, valid_from, valid_to, source, project, tier)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'extracted')",
+                )
+                .unwrap();
+            for i in 0..SUPERSEDED {
+                stmt.execute(rusqlite::params![
+                    format!("dead-from-{i}"),
+                    format!("dead-to-{i}"),
+                    "GOVERNS",
+                    1i64,
+                    1i64, // superseded, retired before any boundary -> reclaimable
+                    i as i64,
+                    id,
+                ])
+                .unwrap();
+            }
+            // Three LIVE edges that whole() returns; the query result must be invariant across compact.
+            for (f, t, vf, src) in [
+                ("live-a", "live-b", 10i64, 1_000i64),
+                ("live-c", "live-d", 20i64, 1_001i64),
+                ("live-e", "live-f", 30i64, 1_002i64),
+            ] {
+                stmt.execute(rusqlite::params![f, t, "GOVERNS", vf, None::<i64>, src, id])
+                    .unwrap();
+            }
+        }
+        conn.execute_batch("COMMIT").unwrap();
+        let _: (i64, i64, i64) = conn
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .unwrap();
+    }
+
+    // Comparable projection of the WHOLE live graph (source Position aside, which whole() derives):
+    // the identity of every live edge the compaction must preserve exactly.
+    let project = |p: &Projector| -> Vec<(String, String, String, i64, Option<i64>, String)> {
+        let g = p.whole().unwrap();
+        let mut edges: Vec<_> = g
+            .edges
+            .iter()
+            .map(|e| {
+                (
+                    e.from.clone(),
+                    e.to.clone(),
+                    e.rel.clone(),
+                    e.valid_from,
+                    e.valid_to,
+                    e.tier.clone(),
+                )
+            })
+            .collect();
+        edges.sort();
+        edges
+    };
+
+    let graph = Projector::open(graph_path.to_str().unwrap(), &id).unwrap();
+
+    // Free the superseded pile onto the freelist. `valid_to = 1 < 2`, so a boundary of 2 reclaims
+    // every superseded edge; the live edges (`valid_to` NULL) are never matched. The DELETE frees
+    // internal pages WITHOUT shrinking the main file - exactly the state compact() exists to fix.
+    let pruned = graph.prune(&[], Some(2)).unwrap();
+    assert_eq!(
+        pruned.superseded_edges, SUPERSEDED,
+        "prune must free all {SUPERSEDED} superseded edges onto the freelist before compaction"
+    );
+
+    let before = std::fs::metadata(&graph_path).unwrap().len();
+    let query_before = project(&graph);
+    assert_eq!(
+        query_before.len(),
+        3,
+        "the three LIVE edges are the query result compaction must preserve"
+    );
+
+    // The API under test: compact and read back the reclaimed byte count.
+    let reclaimed = graph.compact().unwrap();
+    let after = std::fs::metadata(&graph_path).unwrap().len();
+
+    assert!(
+        reclaimed > 0,
+        "compact() must reclaim the freed pages after a prune; got {reclaimed} bytes"
+    );
+    assert!(
+        after < before,
+        "compact() must shrink the on-disk file: {before} -> {after} bytes"
+    );
+    // The reported reclamation IS the on-disk truth (and fails closed without the WAL checkpoint,
+    // since the still-open connection would leave `after == before`).
+    assert_eq!(
+        reclaimed,
+        before - after,
+        "compact() must return EXACTLY the on-disk bytes it reclaimed: reported {reclaimed}, file dropped {}",
+        before - after
+    );
+
+    // Only the file size moved: the whole live projection is byte-identical.
+    let query_after = project(&graph);
+    assert_eq!(
+        query_before, query_after,
+        "compact() must never change a query result - the live projection must be identical after the VACUUM"
+    );
+
+    // A second compaction freed nothing: it reclaims exactly 0 bytes and does not shrink further.
+    let reclaimed_again = graph.compact().unwrap();
+    let after_again = std::fs::metadata(&graph_path).unwrap().len();
+    assert_eq!(
+        reclaimed_again, 0,
+        "compacting an already-compact file frees nothing, so it must reclaim 0 bytes; got {reclaimed_again}"
+    );
+    assert_eq!(
+        after_again, after,
+        "a no-op compaction must not change the on-disk file size: {after} -> {after_again}"
+    );
+}
+
 /// `rigger emit` from a directory with NO existing `.rigger/events.db` (and no ancestor
 /// that has one) REFUSES rather than fabricating a fresh empty store there (spec 05). The
 /// payload is valid JSON, so this reaches the store-open seam rather than failing at parse.

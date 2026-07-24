@@ -4717,11 +4717,17 @@ fn cmd_reset(args: &[String]) -> Res {
 
     let graph = Projector::open(&loc.file("graph.db"), &loc.identity())?;
     let removed = graph.prune(&drop, boundary)?;
+    // Compact the projection file so the prune reclaims DISK, not just rows (spec 46, criterion 3):
+    // the deletes free pages inside graph.db that SQLite retains on a freelist, so without a VACUUM
+    // the file stays as LARGE on disk as before even though the dead rows are gone. VACUUM reclaims
+    // disk ONLY - it changes no query result and gives no query or fold speedup; it rebuilds only
+    // the rebuildable projection and the event log is untouched.
+    let reclaimed_bytes = graph.compact()?;
     println!(
         "reset --runs: pruned {} dead-run node(s) and reclaimed {} superseded edge(s) from the \
-         context graph (every lesson, the active run, and every live edge preserved; the event \
-         log is untouched)",
-        removed.nodes, removed.superseded_edges
+         context graph, then compacted the graph file (reclaimed {} byte(s) on disk) - every \
+         lesson, the active run, and every live edge are preserved; the event log is untouched",
+        removed.nodes, removed.superseded_edges, reclaimed_bytes
     );
     Ok(())
 }
