@@ -8197,7 +8197,16 @@ fn run_step_dash_enabled(root: &Path) -> (String, String) {
 /// The started dash is a real, long-lived process, so this test REAPS it by pid BEFORE its
 /// idempotency assertions - a failed assertion never leaks a dashboard (the reap discipline the
 /// `rigger serve` dash tests already follow).
+// Serialized on `dash_default_port` with the other two step-path dash tests
+// (`a_step_started_dash_is_detached_and_outlives_its_step_process` and
+// `a_real_rigger_step_session_detaches_the_dash_from_the_step_command_process_group`): each spawns
+// a real `rigger step` whose always-on dash binds the FIXED `dash::DEFAULT_PORT`, because the step
+// path picks its own port via `free_port_from` with no override. Two of them running in parallel
+// both see that one port free and race to bind it; the loser's dash exits unbound and its marker
+// points at a port nothing serves, a nondeterministic RED. The direct-`rigger dash` tests are
+// immune because they pass an ephemeral `free_loopback_port`, so only these three need the key.
 #[test]
+#[serial_test::serial(dash_default_port)]
 fn step_auto_starts_one_persistent_dash_and_a_second_step_starts_none() {
     let proj = temp_git_project_with_commit();
     let root = proj.path();
@@ -8305,7 +8314,11 @@ fn step_honors_the_rigger_no_dash_opt_out() {
 /// the ORIGINAL dash lives and serves across step-process boundaries, and never that a second
 /// step started no second dash. It reaps every dash it could have started BEFORE any assertion,
 /// so a failed assertion never leaks a dashboard.
+// Serialized on `dash_default_port`: shares the one fixed `dash::DEFAULT_PORT` with the other
+// step-path dash tests, so it must not run concurrently with them (see
+// `step_auto_starts_one_persistent_dash_and_a_second_step_starts_none` for the full rationale).
 #[test]
+#[serial_test::serial(dash_default_port)]
 fn a_step_started_dash_is_detached_and_outlives_its_step_process() {
     let proj = temp_git_project_with_commit();
     let root = proj.path();
@@ -9032,7 +9045,11 @@ fn proc_pgid_of(pid: u32) -> u32 {
 /// The dash is a real, long-lived detached process; this test reaps it by pid BEFORE its
 /// assertions, so a failed assertion never leaks a dashboard.
 #[cfg(target_os = "linux")]
+// Serialized on `dash_default_port`: shares the one fixed `dash::DEFAULT_PORT` with the other
+// step-path dash tests, so it must not run concurrently with them (see
+// `step_auto_starts_one_persistent_dash_and_a_second_step_starts_none` for the full rationale).
 #[test]
+#[serial_test::serial(dash_default_port)]
 fn a_real_rigger_step_session_detaches_the_dash_from_the_step_command_process_group() {
     use std::os::unix::process::CommandExt;
     use std::process::Stdio;
