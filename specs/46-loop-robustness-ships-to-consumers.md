@@ -12,15 +12,20 @@ belongs in the SHIPPED product:
    commit by `git add`, then collide with the live dash's rewrites when the conductor merges the unit -
    `git merge` aborts with "untracked working tree files would be overwritten". This repo fixed its OWN
    `.gitignore`, which does nothing for a consumer; the fix must be in the setup-written patterns.
-2. **The operator needs graph-hygiene guidance before a run.** The context graph is re-folded at the
-   start of every step; on a large or long-unpruned graph the first fold is slow enough to blow the
-   driver's per-command time budget and stall the first step. A consumer has no way to know this. The
-   `using-rigger` skill (rendered from code, installed by setup) should tell them: keep the graph lean
-   with `rigger reset --runs` before a large run, and that a very stale graph should be pruned first.
+2. **The operator needs graph-hygiene guidance before a run.** The context graph is a PERSISTENT
+   projection rigger maintains incrementally: each run's decisions and findings are folded in one event
+   at a time as they are emitted, and superseded rows are retired in place, not re-derived from scratch
+   (a step never re-folds the whole history). Across many runs `graph.db` therefore accumulates dead-run
+   rows and retired edges that no live query reads (grounding filters `valid_to IS NULL`), so the file
+   grows on disk without bound even though the live graph the loop grounds on does not. A consumer has
+   no way to know this. The `using-rigger` skill (rendered from code, installed by setup) should tell
+   them: keep `graph.db` lean before a large run with `rigger reset --runs`, which prunes that dead-run
+   accumulation and reclaims the disk it held, and that a very stale graph should be pruned this way
+   first.
 3. **`rigger reset --runs` must actually reclaim disk.** Today it deletes superseded rows but does not
-   compact the database file, so the on-disk graph stays large and the fold stays slow even after a
-   prune - the documented hygiene command does not fully deliver. It must compact (VACUUM) after
-   reclaiming, so a pruned graph is both fewer rows AND a smaller, faster file.
+   compact the database file, so the on-disk graph stays large even after a prune - the documented
+   hygiene command does not fully deliver. It must compact (VACUUM) after reclaiming, so a pruned
+   graph is both fewer rows AND a smaller, faster file.
 
 ## Design
 
@@ -38,11 +43,14 @@ ignored-by-default, so `git add` never sweeps them and the merge-abort never hap
 `discipline_body` (the shared body both the `using-rigger` skill and the handbook chapter render from)
 gains a graph-hygiene section. Every fact stays code-derived (interpolated from `DocsContext` where it
 names a value), pure-ASCII (hyphens, the drift check forbids unicode dashes), and self-contained (it
-names only rigger's own surface). It states: the graph is re-folded each step; a large or long-unpruned
-graph slows the first fold; run `rigger reset --runs` to keep it lean before a large run; this is
-pre-run hygiene through a real command, NOT a hand-driven `rigger step` (which the same skill already
-warns races the driver). Because both docs render from this one body, the skill and handbook cannot
-disagree, and the docs-drift gate re-renders and diffs them so the guidance stays accurate.
+names only rigger's own surface). It states: `graph.db` is a persistent incremental projection, so a
+step never re-folds the whole history and the file instead accumulates the dead-run rows and retired
+edges that no live query reads; run `rigger reset --runs` before a large run to prune that accumulation
+and reclaim the disk it held, keeping the on-disk graph bounded; a very stale graph should be pruned
+this way first; this is pre-run hygiene through a real command, NOT a hand-driven `rigger step` (which
+the same skill already warns races the driver). Because both docs render from this one body, the skill
+and handbook cannot disagree, and the docs-drift gate re-renders and diffs them so the guidance stays
+accurate.
 
 ### Compacting prune (`src/main.rs` `cmd_reset`)
 

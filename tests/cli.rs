@@ -7441,6 +7441,83 @@ fn docs_renders_the_skill_and_handbook_with_code_facts_verbatim() {
     assert_eq!(std::fs::read_to_string(&handbook_path).unwrap(), handbook);
 }
 
+/// Spec 46, criterion 2 (the pre-run graph-hygiene guidance ships to CONSUMERS, end to
+/// end): the discipline is not merely present in an in-process render - it must survive the
+/// whole composition path (docs_context -> render -> write) that the real `rigger docs`
+/// binary drives, so it reaches the two consumer-facing files an author commits and ships.
+/// Driving the built binary and reading the WRITTEN skill and handbook proves the section
+/// actually LANDS in what consumers get, and that the shipped text carries the truthful WHY:
+/// graph.db is a PERSISTENT incremental projection (a step never re-folds the whole
+/// history), so across runs it accumulates dead-run rows no live query reads, which `rigger
+/// reset --runs` prunes to reclaim the disk they held. The implementer's in-process
+/// `discipline_carries_graph_hygiene_pre_run_reset` unit test pins the render output; this
+/// periphery layer pins that the write path in the built binary carries it all the way to
+/// the consumer's files - something an in-process render assertion cannot prove.
+#[test]
+fn docs_ships_graph_hygiene_guidance_to_consumers() {
+    let proj = temp_project();
+    let root = proj.path();
+
+    let (stdout, stderr, ok) = run_rigger(root, &["docs"]);
+    assert!(ok, "rigger docs must succeed; stderr: {stderr}");
+    assert!(
+        stdout.contains("skills/using-rigger/SKILL.md") && stdout.contains("using-rigger.md"),
+        "rigger docs must report writing both consumer-facing paths; got: {stdout}"
+    );
+
+    let skill = std::fs::read_to_string(root.join("skills/using-rigger/SKILL.md"))
+        .expect("the skill was rendered to disk");
+    let handbook = std::fs::read_to_string(root.join("docs/handbook/using-rigger.md"))
+        .expect("the handbook chapter was rendered to disk");
+
+    // BOTH consumer-facing outputs, as WRITTEN by the built binary, carry the graph-hygiene
+    // section, name the pre-run command, and frame the truthful WHY (a persistent
+    // incremental projection whose dead-run accumulation `rigger reset --runs` prunes to
+    // reclaim the disk it held) - not a per-step whole-stream re-fold, and not a fold-speed
+    // claim. Both render from the single `discipline_body` authority, so the skill and the
+    // handbook chapter ship the guidance identically.
+    for (label, out) in [("skill", &skill), ("handbook", &handbook)] {
+        assert!(
+            out.contains("## Graph hygiene"),
+            "{label} shipped by `rigger docs` must carry the graph-hygiene section"
+        );
+        assert!(
+            out.contains("rigger reset --runs"),
+            "{label} shipped by `rigger docs` must name `rigger reset --runs` as the pre-run \
+             hygiene step"
+        );
+        assert!(
+            out.contains("persistent projection"),
+            "{label} shipped by `rigger docs` must frame graph.db as a persistent incremental \
+             projection (the corrected WHY, not a per-step whole-stream re-fold)"
+        );
+        assert!(
+            out.contains("reclaims the disk"),
+            "{label} shipped by `rigger docs` must explain reset --runs reclaims the disk the \
+             dead-run rows held (bounded growth, not a fold-speed claim)"
+        );
+        // NEGATIVE regression guard (spec 46 c2): the DISCREDITED fold-speed framing that
+        // rejected this unit's first attempt (graph.db re-folded whole-history each step, the
+        // fold slow in proportion to graph size, a prune speeding it up) must never reach the
+        // consumer's files. graph.db is a PERSISTENT incremental projection; a prune reclaims
+        // DISK, it speeds no fold. Pin those phrases OUT (case-insensitively) so a future edit
+        // resurrecting the false mechanism fails LOUDLY here instead of shipping to consumers.
+        let lower = out.to_lowercase();
+        for banned in [
+            "re-folded each step",
+            "fold stays slow",
+            "proportional to graph size",
+            "faster fold",
+        ] {
+            assert!(
+                !lower.contains(banned),
+                "{label} shipped by `rigger docs` must NOT resurrect the discredited fold-speed \
+                 framing (found {banned:?}); a prune reclaims disk, it does not speed a fold"
+            );
+        }
+    }
+}
+
 /// Spec 20, unit 2 (the drift GATE, end to end): `rigger validate` FAILS LOUDLY when the
 /// committed `using-rigger` skill or the handbook discipline chapter has drifted from a
 /// fresh render, and PASSES when they are in sync - this is what makes the discipline STAY
@@ -7597,6 +7674,81 @@ fn setup_installs_the_using_rigger_skill_with_project_overlay() {
         "the committed shared source keeps the default base ref; the overlay only \
          customized the install"
     );
+}
+
+/// Spec 46, criterion 2 (the pre-run graph-hygiene guidance ships to CONSUMERS through the
+/// INSTALL seam): a consumer never edits rigger's own repo copies - they run `rigger setup`,
+/// which renders and INSTALLS the `using-rigger` skill into THEIR project at
+/// `.claude/skills/using-rigger/SKILL.md`. That install path (`render_installed_skill`:
+/// docs_context -> overlay merge -> render -> write) is DISTINCT from the `rigger docs`
+/// repo-copy path the sibling `docs_ships_graph_hygiene_guidance_to_consumers` test drives,
+/// so a regression in the install/overlay composition could ship a consumer skill missing
+/// the guidance while the repo copies stay fine. This periphery test drives the real
+/// `rigger setup` binary and reads the INSTALLED skill to prove the graph-hygiene section
+/// reaches the consumer's project with its truthful WHY: graph.db is a PERSISTENT
+/// incremental projection (a step never re-folds the whole history), so across runs it
+/// accumulates dead-run rows no live query reads, which `rigger reset --runs` prunes to
+/// reclaim the disk they held - and NOT the discredited fold-speed framing.
+#[test]
+fn setup_installs_graph_hygiene_guidance_into_consumer_skill() {
+    let proj = temp_project();
+    let root = proj.path();
+
+    // npm is stubbed to a no-op so the shim provision step does not need a real npm; this
+    // mirrors the sibling setup-install test.
+    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok, "rigger setup must succeed; stderr:\n{err}");
+    assert!(
+        out.contains(".claude/skills/using-rigger/SKILL.md"),
+        "setup must report installing the using-rigger skill into the consumer project; got:\n{out}"
+    );
+
+    let installed = std::fs::read_to_string(root.join(".claude/skills/using-rigger/SKILL.md"))
+        .expect("setup installed the consumer skill");
+
+    // The INSTALLED consumer skill carries the graph-hygiene section, names the pre-run
+    // command, and frames the truthful WHY (a persistent incremental projection whose
+    // dead-run accumulation `rigger reset --runs` prunes to reclaim the disk it held) - the
+    // guidance ships all the way into the consumer's own project, not just rigger's repo.
+    assert!(
+        installed.contains("## Graph hygiene"),
+        "the installed consumer skill must carry the graph-hygiene section; got:\n{installed}"
+    );
+    assert!(
+        installed.contains("rigger reset --runs"),
+        "the installed consumer skill must name `rigger reset --runs` as the pre-run hygiene step"
+    );
+    assert!(
+        installed.contains("persistent projection"),
+        "the installed consumer skill must frame graph.db as a persistent incremental \
+         projection (the corrected WHY, not a per-step whole-stream re-fold)"
+    );
+    assert!(
+        installed.contains("reclaims the disk"),
+        "the installed consumer skill must explain reset --runs reclaims the disk the dead-run \
+         rows held (bounded growth, not a fold-speed claim)"
+    );
+
+    // NEGATIVE regression guard (spec 46 c2): the DISCREDITED fold-speed framing that
+    // rejected this unit's first attempt (graph.db re-folded whole-history each step, the
+    // fold slow in proportion to graph size, a prune speeding it up) must never reach the
+    // consumer's installed skill. graph.db is a PERSISTENT incremental projection; a prune
+    // reclaims DISK, it speeds no fold. Pin those phrases OUT (case-insensitively) so a
+    // future edit resurrecting the false mechanism fails LOUDLY here instead of installing
+    // it into consumer projects.
+    let lower = installed.to_lowercase();
+    for banned in [
+        "re-folded each step",
+        "fold stays slow",
+        "proportional to graph size",
+        "faster fold",
+    ] {
+        assert!(
+            !lower.contains(banned),
+            "the installed consumer skill must NOT resurrect the discredited fold-speed framing \
+             (found {banned:?}); a prune reclaims disk, it does not speed a fold"
+        );
+    }
 }
 
 /// Stage a `rigger` shim (a tiny sh script that execs the freshly built binary) in a
