@@ -13,7 +13,10 @@
 //!   2. `testcontainers`, which drives the contract TEST only, is a dev-dependency
 //!      and never sits in the production dependency tree; and
 //!   3. `kurrentdb` and `tokio` (the gRPC client and its runtime, part of the
-//!      product) are UNCONDITIONAL `[dependencies]`, not optional.
+//!      product) are UNCONDITIONAL `[dependencies]`, not optional; and
+//!   4. the hand-maintained blueprint `docs/architecture.md` no longer describes
+//!      `kurrentdb` as a build-time cargo feature (a broken install command or a
+//!      self-contradictory "behind the feature" line).
 //!
 //! Deliberately NOT feature-gated: it parses a text file and touches no backend
 //! symbol, so it runs identically in both feature lanes.
@@ -202,5 +205,81 @@ fn no_source_still_gates_on_the_retired_kurrentdb_feature() {
         "the `kurrentdb` cargo feature is retired (spec 47), so no source may still gate on it - \
          a `cfg(feature = \"kurrentdb\")` predicate on a now-undefined feature evaluates FALSE and \
          silently compiles the guarded code out of every build. Offending lines: {offenders:?}"
+    );
+}
+
+/// Whether a single line of `docs/architecture.md` references `kurrentdb` in a cargo
+/// FEATURE position - the retired build-time flag - rather than as the runtime backend.
+/// It normalizes the line (backticks removed, lowercased) and matches only feature-shaped
+/// forms, so it flags a broken/self-contradictory reference while leaving the legitimate
+/// runtime selector `--eventstore kurrentdb` and the unrelated `-F turbovec` feature alone.
+fn line_references_retired_kurrentdb_feature(raw: &str) -> bool {
+    use std::sync::OnceLock;
+    // A `kurrentdb` token inside a cargo feature LIST (an install/build/test command or a
+    // Cargo.toml `features:` note): `--features ...,kurrentdb`, `features: ...,kurrentdb`,
+    // `-F kurrentdb`. Between the marker and the token only feature-list characters may
+    // appear, so unrelated prose cannot bridge the two.
+    static LIST: OnceLock<regex::Regex> = OnceLock::new();
+    // A cfg/toml gate on the feature: `feature = "kurrentdb"`.
+    static CFG: OnceLock<regex::Regex> = OnceLock::new();
+    // Prose that calls the adapter a cargo feature: `kurrentdb feature`,
+    // `kurrentdb (feature)`, `kurrentdb cargo feature`. The optional `(` / `cargo`
+    // between the two words keeps `--eventstore kurrentdb (no ... no cargo feature)` OUT
+    // (there "kurrentdb" is not immediately followed by a `feature` token).
+    static PROSE: OnceLock<regex::Regex> = OnceLock::new();
+    let list = LIST.get_or_init(|| {
+        regex::Regex::new(r"(?:--features|features:|-f)[a-z0-9_,\-\s]*kurrentdb").unwrap()
+    });
+    let cfg = CFG.get_or_init(|| regex::Regex::new(r#"feature\s*=\s*"kurrentdb""#).unwrap());
+    let prose =
+        PROSE.get_or_init(|| regex::Regex::new(r"kurrentdb\s*\(?\s*(?:cargo\s+)?feature").unwrap());
+
+    let normalized = raw.replace('`', "").to_lowercase();
+    list.is_match(&normalized) || cfg.is_match(&normalized) || prose.is_match(&normalized)
+}
+
+/// DOC BLUEPRINT HYGIENE (spec 47): the hand-maintained blueprint `docs/architecture.md`
+/// must not describe `kurrentdb` as a build-time cargo feature once the flag is retired.
+/// Two stale forms are more than cosmetic:
+///   1. an install/build command that ACTIVATES a `kurrentdb` cargo feature
+///      (`cargo install ... --features ...,kurrentdb`, `-F kurrentdb`, `cargo test
+///      --features kurrentdb`) is a BROKEN, executable command: Cargo.toml no longer
+///      declares that feature, so cargo rejects it ("package `rigger` does not contain
+///      this feature: kurrentdb"). A consumer who copy-pastes it hits a hard failure -
+///      the exact default-build consumer spec 47 exists to serve; and
+///   2. prose that calls the adapter a `kurrentdb` cargo feature ("behind the `kurrentdb`
+///      feature", "kurrentdb (feature)", "features: ...,kurrentdb") directly contradicts
+///      the retirement the same file now states ("compiled into every build ... no cargo
+///      feature"), leaving the blueprint self-contradictory.
+///
+/// This is the periphery guard for the boundary the blueprint itself is: a doc-only
+/// regression that re-introduces any feature-shaped `kurrentdb` reference fails HERE at
+/// `cargo test` time instead of shipping a broken install command. It deliberately leaves
+/// the legitimate runtime selector `--eventstore kurrentdb` and the unrelated `-F turbovec`
+/// feature untouched - only a `kurrentdb` reference in a cargo-FEATURE position is an
+/// offender. Like the rest of this file it reads a text file and touches no backend symbol,
+/// so it runs identically in both feature lanes.
+#[test]
+fn architecture_blueprint_has_no_retired_kurrentdb_feature_reference() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("docs")
+        .join("architecture.md");
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+
+    let offenders: Vec<String> = text
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| line_references_retired_kurrentdb_feature(line))
+        .map(|(idx, line)| format!("{}: {}", idx + 1, line.trim()))
+        .collect();
+
+    assert!(
+        offenders.is_empty(),
+        "the `kurrentdb` cargo feature is retired (spec 47), so the blueprint \
+         docs/architecture.md must not reference it in a feature position - an install \
+         command activating it (`--features ...,kurrentdb`) is a BROKEN command cargo now \
+         rejects, and calling the adapter a `kurrentdb` feature contradicts the same file's \
+         `compiled into every build` statement. Offending lines: {offenders:#?}"
     );
 }
