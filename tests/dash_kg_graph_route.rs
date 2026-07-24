@@ -1583,3 +1583,171 @@ fn the_served_graph_route_precedence_and_graceful_empty_cluster() {
         );
     }
 }
+
+/// Spec 45, criterion 1 (the PROVIDER SPLIT) proven at the PUBLIC `serve` boundary over the real
+/// loopback socket. `/api/graph` reads the whole graph through a SEPARATE, lazy `graph_provider`
+/// that `serve` opens ONLY when a graph request arrives; every other `/api/*` path - the 1.5s state
+/// poll and the events feed - rides the cheap polled `provider` and must NEVER consult it, so the
+/// poll no longer drags a whole-graph read. The implementer's inside-out test drives the PRIVATE
+/// `handle_conn` in-process; this crosses the public `serve` entrypoint `cmd_dash` actually calls,
+/// so it guards `serve`'s own wiring of the two providers into its connection loop - the seam the
+/// in-process test is structurally blind to. A `serve` that forgot the graph provider, or threaded
+/// the polled graph into `/api/graph`, would pass the in-process test and redden HERE.
+///
+/// The split is made OBSERVABLE by two graphs that SHARE a seed but diverge on its neighbor: both
+/// carry `shared-seed`, but the lazy provider's neighbor is `lazy-neighbor` while the polled
+/// tuple's decoy neighbor is `polled-neighbor`. A spy counts every consultation of the lazy
+/// provider. After `/api/state` and `/api/events` the count is 0; a `/api/graph?seed=shared-seed`
+/// request opens it EXACTLY once and the served depth-1 neighborhood carries `lazy-neighbor` and
+/// NOT `polled-neighbor` - proving the route read the SEPARATE lazy provider, never the polled
+/// tuple's graph. Reading the wrong provider flips BOTH neighbor asserts, so each is load-bearing.
+///
+/// `dash`/`contextgraph` are un-feature-gated, so this guards the served split in both lanes.
+#[test]
+fn the_served_graph_route_reads_the_lazy_provider_only_and_never_on_the_state_poll() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    // Two graphs sharing `shared-seed` but diverging on its depth-1 neighbor, so a served
+    // neighborhood names which provider the route read.
+    let build = |neighbor: &str| -> Graph {
+        Graph {
+            nodes: vec![
+                Node {
+                    id: "shared-seed".to_string(),
+                    kind: KIND_UNIT.to_string(),
+                    attrs: BTreeMap::new(),
+                },
+                Node {
+                    id: neighbor.to_string(),
+                    kind: KIND_UNIT.to_string(),
+                    attrs: BTreeMap::new(),
+                },
+            ],
+            edges: vec![Edge {
+                from: "shared-seed".to_string(),
+                to: neighbor.to_string(),
+                rel: REL_REFERENCES.to_string(),
+                valid_from: 0,
+                valid_to: None,
+                source: 0,
+                tier: TIER_EXTRACTED.to_string(),
+            }],
+        }
+    };
+
+    // One serve instance drives THREE sequential requests, retried whole on the port-handoff race
+    // `try_fetch_served` documents - with fresh spy state per attempt so a lost handoff never leaks
+    // a count into the next try.
+    let attempt = || -> Option<(String, usize, String, usize, String, usize)> {
+        let port = TcpListener::bind(("127.0.0.1", 0))
+            .ok()?
+            .local_addr()
+            .ok()?
+            .port();
+        let addr = SocketAddr::from(([127, 0, 0, 1], port));
+
+        // The polled provider: the cheap run-scoped inputs the state poll / events feed ride. Its
+        // graph slot is a DECOY (`polled-neighbor`) the `/api/graph` route must NOT read.
+        let polled_graph = build("polled-neighbor");
+        let provider = move || -> Result<DashInputs, String> {
+            Ok((Vec::new(), polled_graph.clone(), Vec::new(), HashMap::new()))
+        };
+
+        // The SEPARATE lazy provider: it counts every consultation and yields the REAL neighbor
+        // (`lazy-neighbor`) the served neighborhood must carry.
+        let lazy_graph = build("lazy-neighbor");
+        let hits = Arc::new(AtomicUsize::new(0));
+        let hits_for_provider = Arc::clone(&hits);
+        let graph_provider = move || -> Graph {
+            hits_for_provider.fetch_add(1, Ordering::SeqCst);
+            lazy_graph.clone()
+        };
+
+        std::thread::spawn(move || {
+            let _ = dash::serve(
+                addr,
+                provider,
+                graph_provider,
+                3,
+                "rigger-run",
+                "origin/main",
+            );
+        });
+
+        // The FIRST connect retries within a budget for the port handoff; a later connect/IO failure
+        // aborts the whole attempt (None) so the caller rebuilds a fresh server + spy.
+        let deadline = Instant::now() + Duration::from_millis(1500);
+        let get = |path: &str, first: bool| -> Option<String> {
+            let mut client = loop {
+                match TcpStream::connect(addr) {
+                    Ok(s) => break s,
+                    Err(_) if first && Instant::now() < deadline => {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(_) => return None,
+                }
+            };
+            let req = format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n");
+            client.write_all(req.as_bytes()).ok()?;
+            let mut resp = String::new();
+            client.read_to_string(&mut resp).ok()?;
+            Some(resp)
+        };
+
+        let state = get("/api/state", true)?;
+        let after_state = hits.load(Ordering::SeqCst);
+        let events = get("/api/events", false)?;
+        let after_events = hits.load(Ordering::SeqCst);
+        let graph = get("/api/graph?seed=shared-seed&depth=1", false)?;
+        let after_graph = hits.load(Ordering::SeqCst);
+        Some((state, after_state, events, after_events, graph, after_graph))
+    };
+
+    let (state, after_state, events, after_events, graph, after_graph) =
+        (0..200).find_map(|_| attempt()).expect(
+            "the dash served all three requests over the real socket after many fresh-port attempts",
+        );
+
+    // The state poll is served and NEVER opens the whole-graph projection.
+    assert!(
+        state.starts_with("HTTP/1.1 200 OK"),
+        "the state poll is served: {state}"
+    );
+    assert_eq!(
+        after_state, 0,
+        "a /api/state request must NOT consult the lazy graph provider"
+    );
+
+    // Nor does the events feed.
+    assert!(
+        events.starts_with("HTTP/1.1 200 OK"),
+        "the events feed is served: {events}"
+    );
+    assert_eq!(
+        after_events, 0,
+        "a /api/events request must NOT consult the lazy graph provider"
+    );
+
+    // A /api/graph request opens the lazy provider EXACTLY once...
+    assert!(
+        graph.starts_with("HTTP/1.1 200 OK"),
+        "the graph route is served: {graph}"
+    );
+    assert_eq!(
+        after_graph, 1,
+        "a /api/graph request opens the lazy graph provider exactly once, never on the state poll"
+    );
+
+    // ...and the served depth-1 neighborhood is derived from the LAZY provider's graph
+    // (`lazy-neighbor`), never the polled tuple's decoy (`polled-neighbor`).
+    let body = body_of(&graph);
+    assert!(
+        body.contains("lazy-neighbor"),
+        "the graph body is derived from the lazy provider's graph: {body}"
+    );
+    assert!(
+        !body.contains("polled-neighbor"),
+        "the graph route must NOT read the polled provider's decoy graph: {body}"
+    );
+}
