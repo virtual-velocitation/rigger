@@ -71,8 +71,8 @@ next agent is never blind to what the last one decided.** It is the *producing* 
 - Tied to Claude Code. The default agent driver shells out to the `claude` CLI; running
   *inside* Claude Code (with the Workflow tool) is an *optional* driver, not a requirement.
 - Tied to a database server. The default event store is embedded SQLite (zero-dependency,
-  single file). KurrentDB is an *optional* backend behind the same trait, built and shipped
-  behind the `kurrentdb` cargo feature.
+  single file). KurrentDB is an *optional* backend behind the same trait, compiled into every
+  build and selected at runtime with `--eventstore kurrentdb` (no recompile, no cargo feature).
 - Opinionated about your gates. A gate is "a command that must exit 0" plus an autonomy
   level. `cargo test`, `go test`, `pytest`, `npm test`, a custom lint: all just YAML.
 
@@ -124,7 +124,7 @@ flowchart TB
 
   subgraph SEAMS["🔌 PLUGGABLE SEAMS (traits, 2 impls each)"]
     direction LR
-    ES["EventStore<br/>■ sqlite (default)<br/>○ kurrentdb (feature)"]
+    ES["EventStore<br/>■ sqlite (default)<br/>○ kurrentdb (--eventstore)"]
     DR["AgentDriver<br/>■ cli  (claude, default)<br/>○ workflow (MCP shim)"]
     GR["Grounder<br/>■ grep (default)<br/>○ turbovec (feature)"]
   end
@@ -149,7 +149,7 @@ swapped by config / cargo feature:*
 
 | Seam | Trait | Default impl | Optional impl | Why pluggable |
 |---|---|---|---|---|
-| **EventStore** | `append` / `read_stream` / `read_all` / `subscribe_all` | `sqlite` (embedded, 1 file) | `kurrentdb` (gRPC server, `kurrentdb` feature) | local zero-dep dev vs. multi-machine / scale; KurrentDB-shaped so the *contract suite* of the embedded impl is a faithful proxy for the server |
+| **EventStore** | `append` / `read_stream` / `read_all` / `subscribe_all` | `sqlite` (embedded, 1 file) | `kurrentdb` (gRPC server, `--eventstore kurrentdb`) | local zero-dep dev vs. multi-machine / scale; KurrentDB-shaped so the *contract suite* of the embedded impl is a faithful proxy for the server |
 | **AgentDriver** | `spawn(agent, prompt, opts, emit) → result` | `cli` (`claude` subprocess) | `workflow` (MCP shim) | self-contained `cargo install` vs. in-Claude-Code parallel/journal/resume |
 | **Grounder** | `ground(query, k) → Vec<Ref>` | `grep` (default) / `Nop` | `turbovec` (native vector search, `turbovec` feature) | a project may want semantic grounding (turbovec) or none |
 
@@ -1015,7 +1015,7 @@ and adapters as modules under `src/`. Two opt-in cargo features keep the default
 
 ```
 github.com/virtual-velocitation/rigger
-├── Cargo.toml                   crate "rigger"; features: turbovec, kurrentdb
+├── Cargo.toml                   crate "rigger"; features: turbovec, symbols
 ├── src/
 │   ├── lib.rs                   the library: re-exports every module
 │   ├── main.rs                  the CLI binary (run/serve/graph/validate/init/setup/prime)
@@ -1023,7 +1023,7 @@ github.com/virtual-velocitation/rigger
 │   ├── eventstore/
 │   │   ├── mod.rs               the EventStore trait + Event/Position/Revision/Filter/Subscription
 │   │   ├── sqlite.rs            default adapter (embedded, bundled rusqlite)
-│   │   ├── kurrentdb.rs         server adapter (behind the `kurrentdb` feature)
+│   │   ├── kurrentdb.rs         server adapter (compiled in; `--eventstore kurrentdb`)
 │   │   ├── namespace.rs         per-project segregation decorator (Namespaced)
 │   │   └── contract.rs          the shared contract suite (assert_contract)
 │   ├── contextgraph/
@@ -1049,7 +1049,7 @@ github.com/virtual-velocitation/rigger
 ```bash
 cargo install --git https://github.com/virtual-velocitation/rigger
 # opt into the features (each pulls heavier deps):
-cargo install --git https://github.com/virtual-velocitation/rigger --features turbovec,kurrentdb
+cargo install --git https://github.com/virtual-velocitation/rigger --features turbovec
 
 cd my-project
 rigger init                         # scaffolds .rigger/workflow.yml + .rigger/agents/
@@ -1112,8 +1112,9 @@ Where each responsibility lives, and the design move that keeps it project-agnos
   - R6 MACHINE-VERIFIABLE DONE: every spec criterion covered + every unit integrated + every
     gate green; failures escalate or bounded-retry, never silently drop, never infinite-spin.
   - R7 SELF-CONTAINED PUBLISH: `cargo install`-able; no runtime dependency on Claude Code or a
-    database server in the default configuration (the server backend and semantic grounder are
-    opt-in cargo features).
+    database server in the default configuration (the KurrentDB backend is compiled in but
+    dormant unless selected at runtime with `--eventstore kurrentdb`; the semantic grounder is
+    a cargo feature).
   - R8 CLEAN ARCHITECTURE + DI: ports (EventStore/Projection/AgentDriver/Grounder/gate::Runner) are
     traits; sqlite/kurrentdb/cli/workflow are adapters that depend inward; use cases depend
     only on ports; a single composition root (`src/main.rs`) constructs the concrete adapters and
@@ -1157,7 +1158,7 @@ note. **Task 0 = ratify the records.**
 - **Phase 1: Event store.** `EventStore` trait + `sqlite` adapter + a contract suite
   (append ordering, optimistic-concurrency conflict, catch-up replay-then-live). *Done when:*
   the contract suite passes against `sqlite`.
-- **Phase 2: KurrentDB adapter.** `kurrentdb` adapter (behind the `kurrentdb` feature) passing
+- **Phase 2: KurrentDB adapter.** `kurrentdb` adapter passing
   the *same* contract suite. *Done when:* the proxy fidelity is proven (one suite, two backends
   green; the `kurrentdb` CI job runs it against a real KurrentDB via testcontainers).
 - **Phase 3: Context graph.** `Projection` trait + sqlite projector: fold events → nodes/edges,
@@ -1174,7 +1175,7 @@ note. **Task 0 = ratify the records.**
 - **Phase 7: Workflow driver + turbovec grounder + polish.** The optional MCP workflow shim, the
   turbovec semantic grounder (behind the `turbovec` feature), `rigger init/run/graph`,
   README/examples. *Done when:* `cargo install … && rigger run` works from a clean machine; both
-  drivers + both event stores are switchable (driver by config, store by cargo feature).
+  drivers + both event stores are switchable (driver by config, store by runtime flag).
 
 ---
 
