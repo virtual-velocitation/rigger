@@ -18,7 +18,7 @@
 //! Deliberately NOT feature-gated: it parses a text file and touches no backend
 //! symbol, so it runs identically in both feature lanes.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// The committed crate manifest, resolved from the manifest dir so the test does not
 /// depend on the process CWD (integration tests may run from anywhere).
@@ -127,4 +127,80 @@ fn kurrentdb_and_tokio_are_unconditional_dependencies() {
              the product, compiled into every build; got: {line}"
         );
     }
+}
+
+/// LIBRARY-CONSUMER EDGE (spec 47): retiring the cargo feature un-gates
+/// `pub mod kurrentdb` (`src/eventstore/mod.rs`), so a downstream crate that embeds the
+/// harness "imports the same modules from the rigger crate directly" (architecture) -
+/// no `-F kurrentdb` recompile. This ungated test crate IS such a consumer. Naming the
+/// fully-qualified path `rigger::eventstore::kurrentdb::Store::open` forces the compiler
+/// to resolve the adapter as a PUBLIC, unconditionally-compiled module: if a regression
+/// re-gated it behind `#[cfg(feature = ...)]`, this would fail to COMPILE in the
+/// `--no-default-features` lane, so its compilation is the guarantee. The runtime check
+/// only proves the resolved symbol is a real function pointer (never null); opening a
+/// real backend needs a server, so it is not called here.
+///
+/// This is the LIBRARY edge, distinct from the binary's internal `open_store` unit
+/// test: an internal caller says nothing about the module's visibility to an external
+/// crate, which is exactly the embed-the-harness promise spec 47 makes.
+#[test]
+fn kurrentdb_adapter_is_a_public_library_symbol_in_every_lane() {
+    // The type annotation coerces the zero-sized fn item to a fn pointer; the `_`
+    // infers the adapter's error type without naming it, so this stays robust to that
+    // type's visibility.
+    let open: fn(&str) -> Result<rigger::eventstore::kurrentdb::Store, _> =
+        rigger::eventstore::kurrentdb::Store::open;
+    assert!(
+        open as usize != 0,
+        "the adapter's `open` constructor must resolve as a public library symbol (spec 47)"
+    );
+}
+
+/// Recurse `dir`, invoking `visit(path, file_text)` for every `.rs` file beneath it.
+/// A std-only walk (no extra dev-dependency) sufficient for scanning the crate's `src/`.
+fn for_each_rs_file(dir: &Path, visit: &mut dyn FnMut(&Path, &str)) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(e) => panic!("cannot read dir {}: {e}", dir.display()),
+    };
+    for entry in entries {
+        let path = entry.expect("dir entry must be readable").path();
+        if path.is_dir() {
+            for_each_rs_file(&path, visit);
+        } else if path.extension().is_some_and(|x| x == "rs") {
+            let text = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+            visit(&path, &text);
+        }
+    }
+}
+
+/// SOURCE HYGIENE (spec 47): retiring the cargo feature is only half the story - NO
+/// `#[cfg(feature = "kurrentdb")]` (nor `cfg!(feature = "kurrentdb")`) may remain
+/// anywhere under `src/`. A lingering gate would be WORSE than a dead flag: a
+/// `cfg(feature = "...")` predicate on a feature that no longer exists always evaluates
+/// FALSE, so it would silently compile the guarded code OUT of every build - the adapter
+/// (or any code it still gated) would vanish with no error and no failing build. The
+/// Cargo.toml guard proves the feature is undeclared; this proves no source still
+/// branches on it. Space-insensitive so it catches `feature="kurrentdb"` too.
+#[test]
+fn no_source_still_gates_on_the_retired_kurrentdb_feature() {
+    let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut offenders = Vec::new();
+    for_each_rs_file(&src, &mut |path, text| {
+        for (idx, line) in text.lines().enumerate() {
+            let squeezed: String = line.chars().filter(|c| !c.is_whitespace()).collect();
+            if squeezed.contains("cfg(feature=\"kurrentdb\"")
+                || squeezed.contains("cfg!(feature=\"kurrentdb\"")
+            {
+                offenders.push(format!("{}:{}", path.display(), idx + 1));
+            }
+        }
+    });
+    assert!(
+        offenders.is_empty(),
+        "the `kurrentdb` cargo feature is retired (spec 47), so no source may still gate on it - \
+         a `cfg(feature = \"kurrentdb\")` predicate on a now-undefined feature evaluates FALSE and \
+         silently compiles the guarded code out of every build. Offending lines: {offenders:?}"
+    );
 }

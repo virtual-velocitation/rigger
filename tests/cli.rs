@@ -4532,6 +4532,60 @@ fn run_workflow_refuses_when_there_is_no_reachable_base() {
     );
 }
 
+/// Spec 47 - KurrentDB is always available (the CLI/binary edge). Before spec 47 the
+/// DEFAULT build answered `rigger run --eventstore kurrentdb` with a recompile-required
+/// dead end ("requires the `kurrentdb` cargo feature"); the adapter was gated behind a
+/// build-time flag. Now it is compiled into EVERY build, so the SAME command in the
+/// default binary reaches the real adapter and fails only for the reason a server-backed
+/// store legitimately can: no connection string. This drives the COMPILED binary (the
+/// consumer's exact command) to prove a RUNTIME flag - not a recompile - selects the
+/// shared backend. It is the outside-in proof the binary's internal `open_store` unit
+/// test cannot give: that the `--eventstore kurrentdb` flag is wired to the adapter and
+/// surfaces the right error. Ungated, so it runs in both feature lanes' `cargo test`.
+#[test]
+fn run_eventstore_kurrentdb_reaches_the_adapter_not_a_missing_feature_dead_end() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+
+    // Drive `rigger run --eventstore kurrentdb` with NO connection string. `--base HEAD`
+    // resolves in the committed repo, so the run clears its base/anchor gates and reaches
+    // the store-open seam (`open_store`). KURRENTDB_CONN is REMOVED from the child so the
+    // missing-connection guard - not an eager connect attempt against a leaked url - is the
+    // path under test. RIGGER_NO_DASH keeps the step path from spawning a real dashboard
+    // (spec 39); the failure fires before the dashboard would start anyway.
+    let out = Command::new(rigger_bin())
+        .args(["run", "--base", "HEAD", "--eventstore", "kurrentdb"])
+        .current_dir(root)
+        .env("RIGGER_NO_DASH", "1")
+        .env_remove("KURRENTDB_CONN")
+        .output()
+        .expect("failed to spawn the rigger binary");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let combined = format!("{stdout}{stderr}");
+
+    assert!(
+        !out.status.success(),
+        "kurrentdb with no connection string must fail; stdout: {stdout:?} stderr: {stderr:?}"
+    );
+    // It reaches the REAL adapter's missing-connection guard, which names the
+    // --conn / KURRENTDB_CONN channel - proving the compiled binary reached the adapter and
+    // the runtime flag selected it (not a config/base failure short of the store seam).
+    assert!(
+        combined.contains("--conn") || combined.contains("KURRENTDB_CONN"),
+        "the failure must be the missing-connection error, proving the default binary reached the \
+         adapter via the runtime flag; got stdout: {stdout:?} stderr: {stderr:?}"
+    );
+    // And NEVER the retired recompile-required dead end: the adapter is always compiled in,
+    // so no "requires the cargo feature" / "-F kurrentdb" message can occur in any build.
+    assert!(
+        !combined.contains("feature"),
+        "the retired missing-feature dead end must be gone (spec 47): the default binary must not \
+         tell a consumer to recompile with a cargo feature; got stdout: {stdout:?} stderr: {stderr:?}"
+    );
+}
+
 /// `rigger workflow <spec> --base <ref>` ACCEPTS `--base` (spec 18, criterion 6): the
 /// command an operator naturally reaches for no longer rejects the flag with "expected at
 /// most one spec path". The spec and the flag both parse, so the command proceeds past
