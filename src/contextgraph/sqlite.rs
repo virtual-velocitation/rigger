@@ -80,6 +80,7 @@ impl Projector {
         conn.execute_batch(SCHEMA).map_err(be)?;
         migrate_project_scope(&conn, project)?;
         migrate_edge_tier(&conn)?;
+        migrate_indexes(&conn)?;
         Ok(Projector {
             conn: Mutex::new(conn),
             project: project.to_string(),
@@ -268,6 +269,37 @@ fn migrate_edge_tier(conn: &Connection) -> Result<(), Error> {
         .map_err(be)?;
     }
     Ok(())
+}
+
+/// Additive read-path indexes (spec 45, unit 4). Two pure additions - no column, no data
+/// migration, no result change - that keep the whole-graph and directed-call reads sub-linear as a
+/// repository grows. Run AFTER [`migrate_project_scope`] and [`migrate_edge_tier`] so both indexes
+/// land on the FINAL table shapes: on a pre-spec-28 graph.db the scope migration DROPS and recreates
+/// `nodes`, which would strand a `nodes` index created any earlier, so this must fire last. Unlike
+/// the column migrations, `CREATE INDEX IF NOT EXISTS` is inherently idempotent, so it needs no
+/// [`column_exists`] guard - a fresh db and an existing one both gain both indexes on open, and a
+/// re-open is a no-op.
+///
+/// - `idx_edges_live_rel_from` is a PARTIAL index on `(rel, from_id) WHERE valid_to IS NULL`: the
+///   relationship-scoped forward scan a directed CALLS/REFERENCES traversal (spec 46) walks reads
+///   only LIVE edges, so restricting the index to `valid_to IS NULL` keeps it small and lets SQLite
+///   seek by `rel` then `from_id` instead of scanning every historical edge. A query MUST carry the
+///   exact `valid_to IS NULL` term for SQLite to use a partial index.
+/// - `idx_nodes_name_suffix` is an EXPRESSION index on `substr(id, instr(id, '::') + 2)` - the
+///   entity-name suffix of a `<file>::<name>` [`code_entity_id`]. This is the SAME expression the
+///   convergent-tier-upgrade fold already uses on the edge side (`substr(to_id, instr(to_id, '::') +
+///   2)`), pinned here on `nodes.id` so the coming cross-file name resolution resolves a bare name to
+///   its definition node via an index seek, not a full scan. SQLite uses an expression index only
+///   when the query's expression MATCHES the indexed one, so the resolution query must be phrased
+///   with this identical expression or it silently misses the index.
+fn migrate_indexes(conn: &Connection) -> Result<(), Error> {
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_edges_live_rel_from
+             ON edges(rel, from_id) WHERE valid_to IS NULL;
+         CREATE INDEX IF NOT EXISTS idx_nodes_name_suffix
+             ON nodes(substr(id, instr(id, '::') + 2));",
+    )
+    .map_err(be)
 }
 
 /// Whether `table` (a trusted schema-literal name, never caller input) has a column named
@@ -4635,6 +4667,93 @@ mod tests {
             (nodes, edges),
             rebuilt_again,
             "rebuilding the code log from scratch re-derives the identical nodes and tiered edges"
+        );
+    }
+
+    /// Every user-defined index name on the graph tables, read from `sqlite_master` (the
+    /// implicit `sqlite_autoindex_*` primary-key indexes are excluded), so a test can assert an
+    /// additive migration created a named index.
+    fn index_names(p: &Projector) -> BTreeSet<String> {
+        let conn = p.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT name FROM sqlite_master
+                  WHERE type = 'index' AND name NOT LIKE 'sqlite_%'",
+            )
+            .unwrap();
+        stmt.query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    /// The `EXPLAIN QUERY PLAN` `detail` lines for `sql`, so a test can assert the planner chose a
+    /// named index rather than a full table scan.
+    fn query_plan(p: &Projector, sql: &str) -> Vec<String> {
+        let conn = p.conn.lock().unwrap();
+        let mut stmt = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+        stmt.query_map([], |r| r.get::<_, String>(3))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn additive_indexes_exist_and_the_pinned_name_suffix_query_uses_its_index() {
+        // Spec 45 criterion 4: the two additive indexes that keep whole-graph and directed reads
+        // sub-linear are present after migration and are actually USED. This test names NO
+        // feature-gated symbol, so it compiles and runs identically on the default and
+        // `--no-default-features` lanes - the "in BOTH feature lanes" clause is satisfied by
+        // construction. `open` runs the migration, so a fresh db already carries both indexes.
+        let p = Projector::open(":memory:", "test").unwrap();
+        let names = index_names(&p);
+        assert!(
+            names.contains("idx_edges_live_rel_from"),
+            "the partial live-edge index edges(rel, from_id) WHERE valid_to IS NULL is present; got {names:?}"
+        );
+        assert!(
+            names.contains("idx_nodes_name_suffix"),
+            "the entity-name-suffix expression index on nodes is present; got {names:?}"
+        );
+
+        // A few code-entity nodes (`<file>::<name>` ids) so the resolution query has a realistic
+        // target space to resolve `Foo` against.
+        {
+            let conn = p.conn.lock().unwrap();
+            for id in ["a.rs::Foo", "b.rs::Foo", "c.rs::Bar"] {
+                conn.execute(
+                    "INSERT INTO nodes (id, kind, attrs, project) VALUES (?1, ?2, NULL, 'test')",
+                    params![id, KIND_CODE_ENTITY],
+                )
+                .unwrap();
+            }
+        }
+
+        // ARE USED (expression index): a name-resolution query phrased with the PINNED expression
+        // `substr(id, instr(id, '::') + 2)` - identical to the fold's twin on `to_id` - hits the
+        // expression index, not a full scan. SQLite uses an expression index only when the query's
+        // expression matches it, so this pins the exact phrasing the coming cross-file resolution
+        // (spec 46) MUST reuse or silently miss the index.
+        let plan = query_plan(
+            &p,
+            "SELECT id FROM nodes WHERE substr(id, instr(id, '::') + 2) = 'Foo'",
+        );
+        assert!(
+            plan.iter().any(|d| d.contains("idx_nodes_name_suffix")),
+            "the pinned substr(id, instr(id,'::')+2) resolution uses idx_nodes_name_suffix; plan was {plan:?}"
+        );
+
+        // ARE USED (partial index): the relationship-scoped forward scan
+        // (`rel = ? AND valid_to IS NULL`, the shape a directed CALLS traversal walks) is served by
+        // the partial live-edge index. The query carries the exact `valid_to IS NULL` term, so
+        // SQLite is allowed to pick the partial index over the plain `from_id`/`to_id` indexes.
+        let plan = query_plan(
+            &p,
+            "SELECT to_id FROM edges WHERE rel = 'CALLS' AND valid_to IS NULL",
+        );
+        assert!(
+            plan.iter().any(|d| d.contains("idx_edges_live_rel_from")),
+            "the relationship-scoped forward scan uses the partial idx_edges_live_rel_from; plan was {plan:?}"
         );
     }
 }

@@ -130,6 +130,11 @@ tree-sitter-python = { version = "0.23", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
+# A raw connection for the periphery layer to open a BUILT graph.db as an independent
+# reader and inspect what the public `Projector` API deliberately does not expose: the
+# names in `sqlite_master` and the `EXPLAIN QUERY PLAN` a query resolves to. Pinned to the
+# SAME spec as the normal dependency above so Cargo unifies to one build (no second copy).
+rusqlite = { version = "0.32", features = ["bundled"] }
 # Serializes the GPU-model tests: constructing an ort/CUDA session concurrently (as
 # `cargo test`'s default thread-per-test would) corrupts the heap on a CUDA box. Every
 # test that builds a `Turbovec` model is `#[file_serial(turbovec_model)]`; the
