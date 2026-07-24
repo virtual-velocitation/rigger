@@ -3954,20 +3954,20 @@ fn cmd_dash(args: &[String]) -> Res {
     let reap_inputs =
         reap_on_idle.then(|| (events_db.clone(), identity.clone(), scratch_root.clone()));
 
-    // The SEPARATE, lazy graph provider for `/api/graph` (spec 45, criterion 1). It opens the
+    // The SEPARATE, lazy graph provider for `/api/graph` (spec 45, criteria 1+2). It opens the
     // projection and reads the graph ONLY when a graph request arrives - never on the 1.5s state
-    // poll - so a whole-graph read never rides the poll. Read-only and per-request-open like the
-    // polled provider: the dash still starts before the store exists, and an absent/empty graph
-    // degrades to an empty result (`dash_read_graph`), never an error. Its own clones of the db
-    // paths + identity, captured before the polled `provider` below moves the originals.
+    // poll - so a whole-graph read never rides the poll. It reads the WHOLE projection DIRECTLY
+    // (`dash_read_whole_graph`), NOT the run-seeded `subgraph(graph_seeds(events), 2)` the polled
+    // provider uses, so the overview and the seeded neighborhood reach any node the projection
+    // holds - fixing the never-built-repo dead-end where an empty run-seed set collapsed the graph
+    // to `Graph::default()`. Read-only and per-request-open like the polled provider: the dash
+    // still starts before the store exists, and an absent/empty graph degrades to an empty result,
+    // never an error. Its own clones of the db path + identity, captured before the polled
+    // `provider` below moves the originals.
     let graph_provider = {
         let graph_db = graph_db.clone();
-        let events_db = events_db.clone();
         let identity = identity.clone();
-        move || -> contextgraph::Graph {
-            let events = dash_read_run(&events_db, &identity).unwrap_or_default();
-            dash_read_graph(&graph_db, &identity, &events)
-        }
+        move || -> contextgraph::Graph { dash_read_whole_graph(&graph_db, &identity) }
     };
 
     // Fresh projection inputs on every request. Reading (not holding an open handle) is
@@ -4192,6 +4192,25 @@ fn dash_read_graph(graph_db: &str, identity: &str, events: &[Event]) -> contextg
     }
     match Projector::open(graph_db, identity) {
         Ok(p) => p.subgraph(&seeds, 2).unwrap_or_default(),
+        Err(_) => contextgraph::Graph::default(),
+    }
+}
+
+/// The WHOLE projection for the `/api/graph` provider (spec 45, criterion 2): the direct-projection
+/// read the dedicated, lazy graph provider consults on a graph request. Unlike [`dash_read_graph`]
+/// it does NOT go through `graph_seeds` - it reads the entire live projection ([`Projector::whole`]),
+/// so the seeded neighborhood and whole-graph overview reach ANY node the projection holds. That
+/// fixes the never-built-repo dead-end: on a graph populated by code ingest with no run
+/// decisions/findings, `graph_seeds` is empty and the run-seeded read collapses to
+/// `Graph::default()`, whereas this read still returns the code nodes and their edges. Best-effort
+/// like the run-seeded read: an absent graph (a grep-only run never builds one), an open error, or a
+/// query error all degrade to an empty graph, never an error, so the rest of the dash still serves.
+fn dash_read_whole_graph(graph_db: &str, identity: &str) -> contextgraph::Graph {
+    if !Path::new(graph_db).exists() {
+        return contextgraph::Graph::default();
+    }
+    match Projector::open(graph_db, identity) {
+        Ok(p) => p.whole().unwrap_or_default(),
         Err(_) => contextgraph::Graph::default(),
     }
 }
@@ -11245,6 +11264,171 @@ mod tests {
                 .iter()
                 .any(|e| e.type_ == "UnitStarted"),
             "the pre-mint history now lives under the minted namespace"
+        );
+    }
+
+    /// Spec 45, criterion 2 (DIRECT-PROJECTION REACH): the `/api/graph` provider reads the WHOLE
+    /// projection directly, not the run-seeded `subgraph(graph_seeds(events), 2)`. So on an
+    /// indexed-but-never-built repo - a graph populated by code ingest with NO run
+    /// decisions/findings, hence an EMPTY `graph_seeds` - a seed naming a real node still returns
+    /// its neighborhood and the whole-graph overview still returns its clusters, instead of the
+    /// `Graph::default()` dead-end the run-seeded read produced.
+    #[test]
+    fn dash_graph_provider_reaches_the_whole_projection_when_run_seeds_are_empty() {
+        use std::collections::HashMap;
+
+        let dir = tempfile::tempdir().unwrap();
+        let graph_path = dir.path().join("graph.db");
+        let graph_path = graph_path.to_str().unwrap();
+        let identity = "reachtest";
+
+        // A projection built from CODE INGEST alone (spec 29a: CodeEntityExtracted + EdgeInferred),
+        // exactly what a cold-checkout `graph build` folds. No decision, no finding - so nothing a
+        // run would seed a subgraph from.
+        {
+            let p = Projector::open(graph_path, identity).unwrap();
+            let def = serde_json::json!({
+                "file": "src/combat.rs", "name": "apply_damage",
+                "kind": "function", "line": 7, "lang": "rust",
+            });
+            let mut e = Event::new(
+                contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+                serde_json::to_vec(&def).unwrap(),
+            );
+            e.position = 1;
+            p.apply(&e).unwrap();
+            let refr =
+                serde_json::json!({ "file": "src/combat.rs", "name": "clamp", "lang": "rust" });
+            let mut e2 = Event::new(
+                contextgraph::TYPE_EDGE_INFERRED,
+                serde_json::to_vec(&refr).unwrap(),
+            );
+            e2.position = 2;
+            p.apply(&e2).unwrap();
+        }
+
+        // Precondition = the never-built dead-end. The run log carries no content events, so
+        // `graph_seeds` is EMPTY and the OLD run-seeded read collapses to `Graph::default()`.
+        let no_run_events: Vec<Event> = Vec::new();
+        assert!(
+            dash::graph_seeds(&no_run_events).is_empty(),
+            "the never-built repo has no run seeds"
+        );
+        let run_seeded = dash_read_graph(graph_path, identity, &no_run_events);
+        assert!(
+            run_seeded.nodes.is_empty(),
+            "the run-seeded read is the empty dead-end this criterion removes, got {run_seeded:?}"
+        );
+
+        // The fix: the graph provider reads the whole projection directly, so a real code node is
+        // reachable with no run seeds at all.
+        let whole = dash_read_whole_graph(graph_path, identity);
+        assert!(
+            whole
+                .nodes
+                .iter()
+                .any(|n| n.id == "src/combat.rs::apply_damage"),
+            "the whole-projection read reaches a code node with no run seeds, got {whole:?}"
+        );
+
+        // Seeded-neighborhood reach: `/api/graph?seed=<real node>` over the whole graph returns the
+        // node's neighborhood - not the empty default.
+        let seed = "src/combat.rs::apply_damage";
+        let resp = dash::route(
+            "GET",
+            &format!("/api/graph?seed={seed}"),
+            &no_run_events,
+            &whole,
+            &[],
+            &HashMap::new(),
+            3,
+            "rigger-run",
+            "main",
+        );
+        assert_eq!(resp.status, 200);
+        let body = String::from_utf8(resp.body).unwrap();
+        let nb: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(
+            nb["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|n| n["id"] == seed),
+            "the seeded neighborhood over the whole projection contains the seed node, got {body}"
+        );
+
+        // Whole-graph overview reach: `/api/graph` (no seed) returns clusters over the whole graph,
+        // never an empty default.
+        let resp2 = dash::route(
+            "GET",
+            "/api/graph",
+            &no_run_events,
+            &whole,
+            &[],
+            &HashMap::new(),
+            3,
+            "rigger-run",
+            "main",
+        );
+        assert_eq!(resp2.status, 200);
+        let body2 = String::from_utf8(resp2.body).unwrap();
+        let ov: serde_json::Value = serde_json::from_str(&body2).unwrap();
+        assert!(
+            !ov["clusters"].as_array().unwrap().is_empty() && ov["total"].as_u64().unwrap() > 0,
+            "the whole-graph overview returns clusters, not an empty default, got {body2}"
+        );
+    }
+
+    /// Spec 45 GLOBAL CONSTRAINT (read-only provider, L33-34 / L72-73): the direct-projection
+    /// provider is READ-ONLY, and "the dash still starts before the store exists; an absent graph
+    /// degrades to an empty result, never an error". `dash_read_whole_graph` over an ABSENT graph db
+    /// (the grep-only / never-built repo that has no `.rigger/graph.db`) must return an EMPTY graph
+    /// and MUST NOT materialize the db.
+    ///
+    /// This pins the load-bearing `if !Path::new(graph_db).exists()` guard: `Projector::open` opens
+    /// with the default `OPEN_READWRITE | OPEN_CREATE` and runs `execute_batch(SCHEMA)`, so WITHOUT
+    /// the guard a read would spuriously CREATE the file+schema on a repo that never built one - a
+    /// real, user-facing WRITE that breaks the read-only contract. The file-not-created assertion is
+    /// the guard's teeth: delete the guard and this test reddens.
+    #[test]
+    fn dash_read_whole_graph_on_an_absent_db_is_empty_and_creates_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        // A path that does NOT exist: the never-built repo has no graph projection at all.
+        let graph_path = dir.path().join("graph.db");
+        let graph_db = graph_path.to_str().unwrap();
+        let identity = "reachtest";
+        assert!(
+            !Path::new(graph_db).exists(),
+            "precondition: the never-built repo has no graph db yet"
+        );
+
+        // (a) The read degrades to an EMPTY graph, never an error.
+        let whole = dash_read_whole_graph(graph_db, identity);
+        assert!(
+            whole.nodes.is_empty() && whole.edges.is_empty(),
+            "an absent projection reads as an empty graph, got {whole:?}"
+        );
+
+        // (b) The read is READ-ONLY: it must NOT have materialized the db. Removing the
+        // `if !Path::new(graph_db).exists()` guard makes `Projector::open` CREATE + SCHEMA-write the
+        // file here, reddening this assertion - these are the guard's teeth.
+        assert!(
+            !Path::new(graph_db).exists(),
+            "a read over an absent projection must NOT create {graph_db} (read-only provider)"
+        );
+
+        // The composed provider closure the dash consults on /api/graph (main.rs, the
+        // `move || dash_read_whole_graph(..)` provider) honors the same read-only contract over the
+        // absent path.
+        let provider = || -> contextgraph::Graph { dash_read_whole_graph(graph_db, identity) };
+        let via_provider = provider();
+        assert!(
+            via_provider.nodes.is_empty() && via_provider.edges.is_empty(),
+            "the composed provider over an absent projection is empty, got {via_provider:?}"
+        );
+        assert!(
+            !Path::new(graph_db).exists(),
+            "the composed provider must NOT create the db either (read-only provider)"
         );
     }
 
