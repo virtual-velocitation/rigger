@@ -6089,11 +6089,21 @@ fn init_project(root: &Path) -> Result<ScaffoldReport, Box<dyn std::error::Error
         std::fs::write(&settings_path, &merged)?;
     }
 
-    // 4. Write .gitignore entries for machine-local installs (.claude/ and .rigger/shim/)
-    // when they are not already ignored or tracked. Record WHICH patterns were appended
-    // so the summary reports the real gitignore change and nothing it did not do.
+    // 4. Write .gitignore entries for machine-local installs and the always-on dash's
+    // runtime breadcrumbs, when they are not already ignored or tracked. `.claude/` and
+    // `.rigger/shim/` are the machine-local installs; `.rigger/dash.url` and
+    // `.rigger/dash.marker` are the dash's discoverability breadcrumbs (spec 39) - left
+    // untracked-and-not-ignored they get swept into a unit worktree's commit by `git add`
+    // and then collide with the live dash's rewrites when the conductor merges the unit
+    // ("untracked working tree files would be overwritten"). Record WHICH patterns were
+    // appended so the summary reports the real gitignore change and nothing it did not do.
     let mut gitignore_added = Vec::new();
-    for pattern in [".claude/", ".rigger/shim/"] {
+    for pattern in [
+        ".claude/",
+        ".rigger/shim/",
+        ".rigger/dash.url",
+        ".rigger/dash.marker",
+    ] {
         if write_gitignore_entries(root, pattern)? {
             gitignore_added.push(pattern.to_string());
         }
@@ -6147,18 +6157,39 @@ fn print_orientation() {
 /// Write a .gitignore entry for the given pattern if it is not already ignored or
 /// tracked, returning whether it APPENDED an entry (`true`) or left `.gitignore`
 /// untouched (`false`). Idempotent: a rerun finds the entry already present and is a
-/// no-op, so setup never pollutes `.gitignore` with duplicates.
+/// no-op, so setup never pollutes `.gitignore` with duplicates. "Already ignored" is
+/// taken broadly - an explicit line OR any broader rule that already covers the path
+/// (e.g. a consumer that ignores the whole `.rigger/` runtime dir already covers
+/// `.rigger/dash.url` and `.rigger/dash.marker`) - so setup never appends a redundant
+/// per-file line for a path a broader rule already ignores.
 fn write_gitignore_entries(root: &Path, pattern: &str) -> Result<bool, Box<dyn std::error::Error>> {
     let gitignore_path = root.join(".gitignore");
     let normalized_pattern = pattern.trim_end_matches('/');
 
-    // Check if already in .gitignore
+    // Already an explicit line in .gitignore: a no-op. This exact-line check is the
+    // idempotency guarantee that holds even OUTSIDE a git repo (a rerun never re-appends
+    // a line it already wrote), independent of `git check-ignore` below.
     let current = std::fs::read_to_string(&gitignore_path).unwrap_or_default();
     if current
         .lines()
         .any(|line| line.trim() == normalized_pattern)
     {
         return Ok(false); // Already in .gitignore
+    }
+
+    // Already ignored by a BROADER rule (e.g. `.rigger/` covering `.rigger/dash.url`):
+    // appending our own per-file line would be a redundant duplicate of coverage, so skip
+    // it. `git check-ignore -q` exits 0 only when the path is ignored; a non-git tree or
+    // any error leaves the exit non-zero and we fall through to append (fail-open, so a
+    // consumer never silently loses an ignore line to a missing/broken git).
+    let already_ignored = Command::new("git")
+        .args(["check-ignore", "-q", normalized_pattern])
+        .current_dir(root)
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false);
+    if already_ignored {
+        return Ok(false);
     }
 
     // Check if the path is tracked in git (it should not be, as .claude/ and .rigger/shim/
@@ -11863,6 +11894,108 @@ mod tests {
             }),
             "a gitignore-only repair must not claim it scaffolded the workflow, agents, or \
              hook: {lines:?}"
+        );
+    }
+
+    /// Spec 46, criterion 1 (CONSUMER GITIGNORE): the always-on dash writes two runtime
+    /// breadcrumbs under `.rigger/` - `.rigger/dash.url` and `.rigger/dash.marker`. Left
+    /// untracked-and-not-ignored in a consumer's repo they get swept into a unit worktree's
+    /// commit by `git add`, then collide with the live dash's rewrites when the conductor
+    /// merges the unit (`git merge` aborts with "untracked working tree files would be
+    /// overwritten"). So `rigger init`/`setup` must append an ignore line for BOTH, exactly
+    /// as it does for the other machine-local installs, and the append must be idempotent -
+    /// a second setup adds no duplicate line.
+    #[test]
+    fn init_project_gitignores_the_dash_runtime_breadcrumbs_idempotently() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // First scaffold on a fresh consumer repo: both dash breadcrumbs are
+        // untracked-and-not-ignored, so setup appends an ignore line for each and reports it.
+        let first = init_project(dir.path()).expect("first init scaffolds the project");
+        assert!(
+            first
+                .gitignore_added
+                .contains(&".rigger/dash.url".to_string())
+                && first
+                    .gitignore_added
+                    .contains(&".rigger/dash.marker".to_string()),
+            "the first init reports appending BOTH dash-artifact ignore patterns, got: {:?}",
+            first.gitignore_added
+        );
+
+        let gitignore = dir.path().join(".gitignore");
+        let content = std::fs::read_to_string(&gitignore).unwrap();
+        assert!(
+            content.lines().any(|l| l.trim() == ".rigger/dash.url"),
+            "the written .gitignore ignores the dash url breadcrumb, got:\n{content}"
+        );
+        assert!(
+            content.lines().any(|l| l.trim() == ".rigger/dash.marker"),
+            "the written .gitignore ignores the dash marker breadcrumb, got:\n{content}"
+        );
+
+        // Idempotent: a second setup finds both already ignored and appends nothing new.
+        let second = init_project(dir.path()).expect("a rerun must succeed");
+        assert!(
+            !second
+                .gitignore_added
+                .contains(&".rigger/dash.url".to_string())
+                && !second
+                    .gitignore_added
+                    .contains(&".rigger/dash.marker".to_string()),
+            "a rerun re-appends no dash-artifact ignore pattern, got: {:?}",
+            second.gitignore_added
+        );
+
+        let after = std::fs::read_to_string(&gitignore).unwrap();
+        assert_eq!(
+            after
+                .lines()
+                .filter(|l| l.trim() == ".rigger/dash.url")
+                .count(),
+            1,
+            "exactly one .rigger/dash.url ignore line - no duplicate accrued, got:\n{after}"
+        );
+        assert_eq!(
+            after
+                .lines()
+                .filter(|l| l.trim() == ".rigger/dash.marker")
+                .count(),
+            1,
+            "exactly one .rigger/dash.marker ignore line - no duplicate accrued, got:\n{after}"
+        );
+    }
+
+    /// Spec 46, criterion 1 (CONSUMER GITIGNORE), the broad-ignore corner: a consumer whose
+    /// repo already ignores the WHOLE `.rigger/` runtime dir already covers both dash
+    /// breadcrumbs, so setup must add no redundant per-file line for them - `git check-ignore`
+    /// sees them already ignored and the append is a no-op. Proves setup never pollutes a
+    /// `.gitignore` that already covers the paths through a broader rule.
+    #[test]
+    fn init_project_adds_no_dash_ignore_line_when_the_whole_rigger_dir_is_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        git_init_quiet(dir.path());
+        // The consumer already ignores the entire runtime dir.
+        std::fs::write(dir.path().join(".gitignore"), ".rigger/\n").unwrap();
+
+        let report = init_project(dir.path()).expect("init must scaffold");
+        assert!(
+            !report
+                .gitignore_added
+                .contains(&".rigger/dash.url".to_string())
+                && !report
+                    .gitignore_added
+                    .contains(&".rigger/dash.marker".to_string()),
+            "a repo already ignoring all of .rigger/ gets no redundant dash line, got: {:?}",
+            report.gitignore_added
+        );
+
+        let content = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+        assert!(
+            !content.lines().any(|l| l.trim() == ".rigger/dash.url")
+                && !content.lines().any(|l| l.trim() == ".rigger/dash.marker"),
+            "no per-file dash ignore line is appended when .rigger/ already covers them, \
+             got:\n{content}"
         );
     }
 
