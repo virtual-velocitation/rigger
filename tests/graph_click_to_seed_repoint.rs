@@ -1,9 +1,10 @@
 //! Periphery (API / integration) tests for spec 43 criterion 5 - the INTERACTIVE half: a run-tree
 //! unit click drives `GET /api/graph?seed=<unit>`, and with the KIND_UNIT node de-noised away a raw
 //! unit-id seed resolves to no node. The route must therefore re-point that click OFF the (absent)
-//! unit node and ONTO the unit's own content - the decisions its agents made (attributed by the
-//! emitting spawn stamped in `meta`) and the findings drawn about it - so the click still lands on a
-//! real, non-empty neighborhood rather than an empty KG panel.
+//! unit node and ONTO the unit's own content - the decisions its agents made and the findings its
+//! reviewers drew, BOTH attributed to the unit by the emitting spawn stamped in `meta` (a reviewer
+//! emits its finding through the same `rigger emit --spawn` path, so the stamp is always present) -
+//! so the click still lands on a real, non-empty neighborhood rather than an empty KG panel.
 //!
 //! These drive the crate's PUBLIC surface as the dash inspector's HTTP client does: `rigger::dash`'s
 //! `route` (the actual `/api/graph` endpoint the click crosses), `repoint_seed`, and `unit_seeds`,
@@ -69,9 +70,10 @@ fn node_ids(body: &serde_json::Value) -> std::collections::BTreeSet<String> {
 
 #[test]
 fn a_de_noised_unit_click_lands_on_a_real_neighborhood_through_the_route() {
-    // A run in production shape: a unit, a decision its implementer emitted - stamped with the
-    // emitting spawn (`u1`'s implementer), exactly as `rigger emit --spawn` records it - governing a
-    // file, and a finding a reviewer drew ABOUT the unit.
+    // A run in production shape: a unit, a decision its implementer emitted and a finding a reviewer
+    // drew ABOUT the unit - BOTH stamped with their emitting spawn (`u1`'s implementer / `u1`'s sdet
+    // lens), exactly as `rigger emit --spawn` records them. The finding carries no `$.unit` field; its
+    // unit is the `meta.spawn` stamp, as in production.
     let run = vec![
         ev(
             1,
@@ -87,8 +89,9 @@ fn a_de_noised_unit_click_lands_on_a_real_neighborhood_through_the_route() {
         ev(
             3,
             "ReviewFinding",
-            serde_json::json!({ "id": "f1", "by": "sdet", "unit": "u1", "summary": "y", "about": ["render.rs"] }),
-        ),
+            serde_json::json!({ "id": "f1", "by": "sdet", "summary": "y", "about": ["render.rs"] }),
+        )
+        .with_meta(META_SPAWN, "u1/lens:sdet#0"),
     ];
 
     let graph = fold_and_prefetch(&run);
@@ -137,15 +140,18 @@ fn a_de_noised_unit_click_lands_on_a_real_neighborhood_through_the_route() {
 
 #[test]
 fn a_unit_click_is_scoped_to_the_clicked_unit_and_never_drags_in_another() {
-    // Two units, each with a decision (attributed by the emitting spawn's meta) and a finding
-    // (attributed by its own `$.unit`). Clicking `uA` must land on ONLY uA's content - never uB's.
+    // Two units, each with a decision and a finding - BOTH attributed to their unit by the emitting
+    // spawn's `meta.spawn` (the production shape: a finding carries no `$.unit` field). Clicking `uA`
+    // must land on ONLY uA's content - never uB's.
     let run = vec![
         ev(1, "DecisionMade", serde_json::json!({ "id": "dA", "summary": "x", "governs": ["a.rs"], "supersedes": "" }))
             .with_meta(META_SPAWN, "uA/implementer#0"),
         ev(2, "DecisionMade", serde_json::json!({ "id": "dB", "summary": "y", "governs": ["b.rs"], "supersedes": "" }))
             .with_meta(META_SPAWN, "uB/implementer#0"),
-        ev(3, "ReviewFinding", serde_json::json!({ "id": "fA", "by": "sdet", "unit": "uA", "summary": "p", "about": ["x.rs"] })),
-        ev(4, "ReviewFinding", serde_json::json!({ "id": "fB", "by": "sdet", "unit": "uB", "summary": "q", "about": ["y.rs"] })),
+        ev(3, "ReviewFinding", serde_json::json!({ "id": "fA", "by": "sdet", "summary": "p", "about": ["x.rs"] }))
+            .with_meta(META_SPAWN, "uA/lens:sdet#0"),
+        ev(4, "ReviewFinding", serde_json::json!({ "id": "fB", "by": "sdet", "summary": "q", "about": ["y.rs"] }))
+            .with_meta(META_SPAWN, "uB/lens:sdet#0"),
     ];
 
     // The public unit_seeds contract: ONLY the named unit's content ids + files, deterministically
@@ -181,7 +187,8 @@ fn repoint_seed_preserves_a_real_node_click_and_falls_back_gracefully() {
     let run = vec![
         ev(1, "DecisionMade", serde_json::json!({ "id": "d1", "summary": "x", "governs": ["combat.rs"], "supersedes": "" }))
             .with_meta(META_SPAWN, "u1/implementer#0"),
-        ev(2, "ReviewFinding", serde_json::json!({ "id": "f1", "by": "sdet", "unit": "u1", "summary": "y", "about": ["render.rs"] })),
+        ev(2, "ReviewFinding", serde_json::json!({ "id": "f1", "by": "sdet", "summary": "y", "about": ["render.rs"] }))
+            .with_meta(META_SPAWN, "u1/lens:sdet#0"),
     ];
     let graph = fold_and_prefetch(&run);
 

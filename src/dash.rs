@@ -1727,22 +1727,27 @@ fn event_seed_ids(e: &Event) -> Vec<String> {
 /// The seed ids for ONE unit's content (spec 43, the run-tree click-to-seed re-point): the
 /// decisions that unit's agents made and the findings drawn about it, plus the files each concerns.
 /// A unit is no longer a graph node, so the run-tree's click - which passes the unit id - must
-/// re-point onto these content nodes (which remain). A `DecisionMade` is attributed to its unit by
-/// the emitting spawn stamped in `meta` (`spawn::unit_of` of the `META_SPAWN` value, exactly the id
-/// `rigger emit --spawn` records); a `ReviewFinding` by its own `$.unit` attribute (the same token
-/// disposition-expiry keys on). Deterministically ordered (a sorted set).
+/// re-point onto these content nodes (which remain). BOTH a `DecisionMade` and a `ReviewFinding` are
+/// attributed to their unit the SAME single way: by the emitting spawn stamped in `meta`
+/// (`spawn::unit_of` of the `META_SPAWN` value, exactly the id `rigger emit --spawn` records - a
+/// reviewer emits its finding through that same path, so the stamp is always present). As production
+/// emits it a finding carries NO `unit` event field; the `$.unit` disposition-expiry keys on is the
+/// finding NODE's attribute the adjudication fold stamps (and the integration fold reads to expire
+/// it), not a field on the raw event. Deterministically ordered (a sorted set).
 pub fn unit_seeds(events: &[Event], unit: &str) -> Vec<String> {
     use crate::contextgraph::{TYPE_DECISION_MADE, TYPE_REVIEW_FINDING};
     let mut seeds: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for e in events {
+        // A decision and a finding are both content the unit's spawns emitted, so both attribute to
+        // the unit by their emitting spawn's `meta.spawn` - one derivation, never a second parallel
+        // one keyed on an event field production does not carry.
         let belongs = match e.type_.as_str() {
-            TYPE_DECISION_MADE => {
+            TYPE_DECISION_MADE | TYPE_REVIEW_FINDING => {
                 e.meta
                     .get(crate::conductor::META_SPAWN)
                     .and_then(|s| crate::spawn::unit_of(s))
                     == Some(unit)
             }
-            TYPE_REVIEW_FINDING => field_str(e, "unit").as_deref() == Some(unit),
             _ => false,
         };
         if belongs {
@@ -4648,9 +4653,10 @@ mod tests {
         use crate::contextgraph::sqlite::Projector;
         use crate::contextgraph::Projection;
 
-        // A run's events in production shape: the unit, a decision its implementer emitted - stamped
-        // with the emitting spawn (`u1`'s implementer), exactly as `rigger emit --spawn` records it -
-        // governing a file, and a finding a reviewer drew ABOUT the unit.
+        // A run's events in production shape: the unit, a decision its implementer emitted and a
+        // finding a reviewer drew ABOUT the unit - BOTH stamped with their emitting spawn (`u1`'s
+        // implementer / `u1`'s sdet lens), exactly as `rigger emit --spawn` records them. The finding
+        // carries no `$.unit` field; its unit is the `meta.spawn` stamp, as in production.
         let run = positioned(vec![
             ev(
                 "UnitStarted",
@@ -4663,8 +4669,9 @@ mod tests {
             .with_meta(crate::conductor::META_SPAWN, "u1/implementer#0"),
             ev(
                 "ReviewFinding",
-                r#"{"id":"f1","by":"sdet","unit":"u1","summary":"y","about":["render.rs"]}"#,
-            ),
+                r#"{"id":"f1","by":"sdet","summary":"y","about":["render.rs"]}"#,
+            )
+            .with_meta(crate::conductor::META_SPAWN, "u1/lens:sdet#0"),
         ]);
 
         // Fold the run and pre-fetch its subgraph EXACTLY as the dash does (graph_seeds -> subgraph
@@ -4722,9 +4729,11 @@ mod tests {
 
     #[test]
     fn unit_seeds_scope_content_to_the_owning_unit() {
-        // A decision is attributed to its unit by the emitting spawn (meta.spawn); a finding by its
-        // own `$.unit`. unit_seeds returns ONLY the named unit's content ids + files (sorted), never
-        // another unit's - so a run-tree click on `uA` never drags in `uB`'s neighborhood.
+        // A decision AND a finding are both attributed to their unit by the emitting spawn
+        // (meta.spawn) - the production shape a reviewer's `rigger emit --spawn` records, which
+        // carries no `$.unit` event field. unit_seeds returns ONLY the named unit's content ids +
+        // files (sorted), never another unit's - so a run-tree click on `uA` never drags in `uB`'s
+        // neighborhood.
         let events = positioned(vec![
             ev(
                 "DecisionMade",
@@ -4738,12 +4747,14 @@ mod tests {
             .with_meta(crate::conductor::META_SPAWN, "uB/implementer#0"),
             ev(
                 "ReviewFinding",
-                r#"{"id":"fA","by":"sdet","unit":"uA","about":["c.rs"]}"#,
-            ),
+                r#"{"id":"fA","by":"sdet","summary":"z","about":["c.rs"]}"#,
+            )
+            .with_meta(crate::conductor::META_SPAWN, "uA/lens:sdet#0"),
             ev(
                 "ReviewFinding",
-                r#"{"id":"fB","by":"sdet","unit":"uB","about":["d.rs"]}"#,
-            ),
+                r#"{"id":"fB","by":"sdet","summary":"z","about":["d.rs"]}"#,
+            )
+            .with_meta(crate::conductor::META_SPAWN, "uB/lens:sdet#0"),
         ]);
         assert_eq!(
             unit_seeds(&events, "uA"),
