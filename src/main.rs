@@ -12265,6 +12265,72 @@ mod tests {
         }
     }
 
+    /// Spec 44, criterion 1 (this unit OWNS the courier-prompt guarantee): the step
+    /// courier must run `rigger step` as ONE FOREGROUND, BLOCKING Bash call - never
+    /// `run_in_background`, never watched via a Monitor / poll loop - because a foreground
+    /// call blocks until the step prints its single JSON line, which is exactly the line to
+    /// relay. And when it must report a failure, the `error` string must be the command's
+    /// ACTUAL stderr or the fixed phrase `step did not complete within my attempts` - NEVER
+    /// an invented placeholder token. This pins the exact defect that surfaced while
+    /// dogfooding the loop: a courier that backgrounded the step, watched it with a Monitor,
+    /// and returned `{"wave":[],"done":false,"error":"PLACEHOLDER_DO_NOT_USE"}` before the
+    /// step had produced anything - a fabricated error that stopped the run after zero waves
+    /// while lying about its own state. Asserted over the EMBEDDED `RIGGER_WORKFLOW` (the
+    /// `include_str!` byte-source `rigger setup` writes and the drift check reads), the same
+    /// structural style spec 39 used for the workflow string, because the cargo gate set
+    /// runs no JS. This unit owns ONLY the courier prompt: it asserts nothing about the
+    /// driver's null-step guard (criterion 2) or the dash detachment (criterion 3).
+    #[test]
+    fn workflow_step_courier_prompt_is_foreground_and_honest() {
+        // Assert over comment-stripped source so the phrases are checked in the actual
+        // courier-prompt string literal, not the file's documentation prose.
+        let code = strip_line_comments(RIGGER_WORKFLOW);
+
+        // 1. FOREGROUND, BLOCKING: the courier runs the step as one blocking Bash call - a
+        //    foreground call blocks until the step prints its single JSON line, which is
+        //    exactly the line the courier relays.
+        assert!(
+            code.contains("FOREGROUND, BLOCKING Bash"),
+            "the step-courier prompt must instruct running `rigger step` as one FOREGROUND, \
+             BLOCKING Bash call (a foreground call blocks until the step prints its JSON line)"
+        );
+
+        // 2. NOT backgrounded, NOT polled: the exact shape the defect ran the step in (a
+        //    `run_in_background` step watched by a Monitor, returning a fabricated error
+        //    before the step produced anything) is explicitly forbidden in the prompt.
+        assert!(
+            code.contains("NOT run_in_background"),
+            "the step-courier prompt must explicitly forbid `run_in_background` (the step must \
+             block in the foreground, not run detached)"
+        );
+        assert!(
+            code.contains("NOT via a Monitor"),
+            "the step-courier prompt must explicitly forbid watching the step via a Monitor / \
+             poll loop (that path fabricated an error before the step produced its JSON)"
+        );
+
+        // 3. HONEST error: when the courier must report a failure, `error` is the ACTUAL
+        //    stderr or the one fixed no-completion phrase - never an invented placeholder.
+        assert!(
+            code.contains("step did not complete within my attempts"),
+            "the courier's `error` must be allowed to carry the fixed no-completion phrase"
+        );
+        assert!(
+            code.contains("NEVER an invented placeholder"),
+            "the step-courier prompt must forbid returning a fabricated placeholder token in \
+             `error` (the error must be real stderr or the fixed no-completion phrase)"
+        );
+
+        // 4. Regression guard on the exact fabricated token the defect returned: it must not
+        //    appear ANYWHERE in the embedded workflow (asserted on the raw source, comments
+        //    included) - a courier that returns it lies that the step failed.
+        assert!(
+            !RIGGER_WORKFLOW.contains("PLACEHOLDER_DO_NOT_USE"),
+            "the fabricated placeholder token `PLACEHOLDER_DO_NOT_USE` must never appear in the \
+             embedded workflow - a courier returning it lies that the step failed after zero waves"
+        );
+    }
+
     /// Spec 19a Unit 3 (done-when item 3): the static `meta.description` is the tagline
     /// the skills list and the `/workflows` header both show, so it must read as a
     /// jargon-free, user-useful line - what the workflow does and when to reach for it -
