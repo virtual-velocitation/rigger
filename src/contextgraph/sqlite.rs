@@ -213,6 +213,42 @@ impl Projector {
         })
     }
 
+    /// Compact the on-disk graph file after a [`prune`], returning the bytes reclaimed (spec 46,
+    /// criterion 3). [`prune`] drops superseded projection ROWS, but SQLite keeps the freed pages
+    /// inside `graph.db` on a freelist for reuse, so the file - and the start-of-step re-fold that
+    /// reads it - stays as large and as slow as before the prune. `VACUUM` rebuilds the database
+    /// without those free pages, then a `TRUNCATE` checkpoint folds the WAL side-file back so the
+    /// MAIN file actually shrinks on disk immediately (not only at the next checkpoint), which is
+    /// what a consumer inspecting the file then sees.
+    ///
+    /// This is the DISK counterpart to `prune`'s ROW reclamation and the SAME graph-mutation
+    /// authority - never a second connection opened elsewhere. It is a pure projection-file
+    /// rebuild: it never touches the event log (the source of truth, which a rebuild re-folds from)
+    /// and never changes a query result, only the file size, so it is safe to run unconditionally
+    /// after every prune. The reclaimed byte count is the drop in `page_count * page_size` across
+    /// the `VACUUM`; a no-op-shaped compaction (nothing was freed) simply reclaims 0 bytes.
+    pub fn compact(&self) -> Result<u64, Error> {
+        let conn = self.conn.lock().unwrap();
+        let page_size: i64 = conn
+            .query_row("PRAGMA page_size", [], |r| r.get(0))
+            .map_err(be)?;
+        // `page_count` counts the freelist pages the prune's deletes freed, so this is the
+        // pre-VACUUM file size; after the VACUUM it is the compacted count.
+        let before: i64 = conn
+            .query_row("PRAGMA page_count", [], |r| r.get(0))
+            .map_err(be)?;
+        conn.execute_batch("VACUUM").map_err(be)?;
+        // Fold the WAL back into the main file so the shrink lands on disk now, not at some later
+        // checkpoint - the reported reclamation must match the file size on disk.
+        conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
+            .map_err(be)?;
+        let after: i64 = conn
+            .query_row("PRAGMA page_count", [], |r| r.get(0))
+            .map_err(be)?;
+        let reclaimed_pages = before.saturating_sub(after).max(0) as u64;
+        Ok(reclaimed_pages * page_size.max(0) as u64)
+    }
+
     /// Re-scope every node and edge tagged `from` to `to`, in ONE transaction, returning the
     /// number of NODES moved. This is the graph analog of [`Store::rename_stream_prefix`] for
     /// the spec-09 identity migration (spec 28 GC5 backward-compat): a single-project deployment
