@@ -1029,12 +1029,27 @@ pub fn cluster_detail(graph: &Graph, key: &str) -> Neighborhood {
 /// empty graph yields an empty neighborhood (never an error), the graceful degradation the spec's
 /// KG-feature-off / empty-graph case requires.
 pub fn neighborhood(graph: &Graph, seed: &str, depth: i64) -> Neighborhood {
-    // Reached-node set (the seed itself is always in it, matching `subgraph`'s CTE seed row), and a
+    neighborhood_of(graph, std::slice::from_ref(&seed.to_string()), seed, depth)
+}
+
+/// The multi-seed core of [`neighborhood`]: the seeded BFS over `seeds` (each seed is initially
+/// reached, so the walk fans out from ALL of them at once), returning the reached nodes and the
+/// tier-tagged edges among them, with `echo_seed` recorded as the response's `seed`. This is the
+/// single traversal authority; the single-seed [`neighborhood`] is the one-element case. The
+/// re-pointed run-tree click (spec 43) uses it to seed from a unit's several decision/finding
+/// content nodes at once - the unit id itself being no longer a node - and still echo the unit id
+/// the client asked for.
+fn neighborhood_of(graph: &Graph, seeds: &[String], echo_seed: &str, depth: i64) -> Neighborhood {
+    // Reached-node set (each seed is always in it, matching `subgraph`'s CTE seed rows), and a
     // BFS frontier of only the nodes newly reached at the previous hop, so `depth` bounds the number
     // of hops exactly as the recursive CTE's `depth < ?` does.
     let mut reached: BTreeSet<String> = BTreeSet::new();
-    reached.insert(seed.to_string());
-    let mut frontier: Vec<String> = vec![seed.to_string()];
+    let mut frontier: Vec<String> = Vec::new();
+    for seed in seeds {
+        if reached.insert(seed.clone()) {
+            frontier.push(seed.clone());
+        }
+    }
     let mut hops = 0;
     while hops < depth && !frontier.is_empty() {
         let mut next: Vec<String> = Vec::new();
@@ -1099,7 +1114,7 @@ pub fn neighborhood(graph: &Graph, seed: &str, depth: i64) -> Neighborhood {
         .collect();
 
     Neighborhood {
-        seed: seed.to_string(),
+        seed: echo_seed.to_string(),
         depth,
         nodes,
         edges,
@@ -1200,19 +1215,23 @@ pub fn path(graph: &Graph, from: &str, to: &str) -> Vec<String> {
 /// the route's error handling uniform with [`state_json`].
 pub fn graph_json(
     graph: &Graph,
-    seed: &str,
+    requested_seed: &str,
+    effective_seeds: &[String],
     depth: i64,
     from: Option<&str>,
     to: Option<&str>,
 ) -> Result<String, serde_json::Error> {
-    let mut n = neighborhood(graph, seed, depth);
+    // `effective_seeds` is the seed the client asked for (a single-element slice) UNLESS the route
+    // re-pointed a run-tree unit click off the (now-absent) unit node onto that unit's content nodes
+    // (spec 43); either way the response echoes `requested_seed`, the id the client selected.
+    let mut n = neighborhood_of(graph, effective_seeds, requested_seed, depth);
     if let (Some(from), Some(to)) = (from, to) {
         n.path = path(graph, from, to);
     }
     // The seed's provenance (spec 30 c7): the events/decisions that produced the selected node,
     // riding the existing response so `explain(<seed>)` needs no new route param. Absent (omitted)
-    // when the seed is not a graph node - graceful, never an error.
-    n.explain = explain(graph, seed);
+    // when the seed is not a graph node (a re-pointed unit id is not) - graceful, never an error.
+    n.explain = explain(graph, requested_seed);
     serde_json::to_string(&n)
 }
 
@@ -1655,39 +1674,112 @@ fn spec_of(unit_id: &str) -> String {
     }
 }
 
-/// The node ids to seed the context subgraph with: every decision and finding the run produced,
-/// plus the files those decisions GOVERN and those findings are ABOUT. De-noise (spec 43): the
-/// graph no longer carries a KIND_UNIT node, so a unit-id seed would land nowhere. The run-tree's
-/// click-to-seed is therefore re-pointed OFF the unit and ONTO the decisions and files that unit
-/// produced (which remain in the graph) - so clicking a unit still lands on a real, non-empty
-/// neighborhood. Seeding by the ids the run actually produced (rather than a blast-radius file
-/// walk) lets the subgraph return their authoritative nodes and the valid SUPERSEDES edges among
-/// them at a shallow depth, independent of whether the run emitted the file edges that connect them.
+/// The node ids to seed the RUN-SCOPED context subgraph the dash pre-fetches on open: every decision
+/// and finding the run produced, plus the files those decisions GOVERN and those findings are ABOUT.
+/// De-noise (spec 43): the graph no longer carries a KIND_UNIT node, so a unit-id seed would land
+/// nowhere; this pre-fetch therefore enumerates the content and file nodes the run actually produced
+/// (which remain in the graph). Seeding by the ids the run actually produced (rather than a
+/// blast-radius file walk) lets the subgraph return their authoritative nodes and the valid
+/// SUPERSEDES edges among them at a shallow depth, independent of whether the run emitted the file
+/// edges that connect them. The per-UNIT click re-point (a run-tree unit click lands on that unit's
+/// content) is the route's job, via [`repoint_seed`] / [`unit_seeds`] over this same pre-fetched
+/// graph, so both seed views share ONE derivation ([`event_seed_ids`]) and never drift.
 pub fn graph_seeds(events: &[Event]) -> Vec<String> {
+    let mut seeds: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for e in events {
+        for id in event_seed_ids(e) {
+            seeds.insert(id);
+        }
+    }
+    seeds.into_iter().collect()
+}
+
+/// The seed ids a single content event contributes to a context subgraph: the content node's own
+/// id (a decision / finding) plus the files it GOVERNS / is ABOUT. De-noise (spec 43): a unit is no
+/// longer a graph node, so a content event contributes its content id and the files it concerns,
+/// never a unit id. The ONE derivation both the run-scoped [`graph_seeds`] pre-fetch and the
+/// unit-scoped [`unit_seeds`] click re-point share, so the two seed views never drift.
+fn event_seed_ids(e: &Event) -> Vec<String> {
+    use crate::contextgraph::{TYPE_DECISION_MADE, TYPE_REVIEW_FINDING};
+    let files_key = match e.type_.as_str() {
+        TYPE_DECISION_MADE => "governs",
+        TYPE_REVIEW_FINDING => "about",
+        _ => return Vec::new(),
+    };
+    let mut ids: Vec<String> = Vec::new();
+    // The content node id (the decision / finding itself) - always a graph node.
+    if let Some(id) = field_str(e, "id") {
+        if !id.is_empty() {
+            ids.push(id);
+        }
+    }
+    // The files it concerns - the code the unit produced. A raw path that never became a canonical
+    // node contributes nothing when a consumer filters to real nodes, so it is harmless; the file
+    // is reached anyway via the content node's GOVERNS / ABOUT edge.
+    for f in field_str_array(e, files_key) {
+        if !f.is_empty() {
+            ids.push(f);
+        }
+    }
+    ids
+}
+
+/// The seed ids for ONE unit's content (spec 43, the run-tree click-to-seed re-point): the
+/// decisions that unit's agents made and the findings drawn about it, plus the files each concerns.
+/// A unit is no longer a graph node, so the run-tree's click - which passes the unit id - must
+/// re-point onto these content nodes (which remain). A `DecisionMade` is attributed to its unit by
+/// the emitting spawn stamped in `meta` (`spawn::unit_of` of the `META_SPAWN` value, exactly the id
+/// `rigger emit --spawn` records); a `ReviewFinding` by its own `$.unit` attribute (the same token
+/// disposition-expiry keys on). Deterministically ordered (a sorted set).
+pub fn unit_seeds(events: &[Event], unit: &str) -> Vec<String> {
     use crate::contextgraph::{TYPE_DECISION_MADE, TYPE_REVIEW_FINDING};
     let mut seeds: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for e in events {
-        let files_key = match e.type_.as_str() {
-            TYPE_DECISION_MADE => "governs",
-            TYPE_REVIEW_FINDING => "about",
-            _ => continue,
-        };
-        // The content node id (the decision / finding itself).
-        if let Some(id) = field_str(e, "id") {
-            if !id.is_empty() {
-                seeds.insert(id);
+        let belongs = match e.type_.as_str() {
+            TYPE_DECISION_MADE => {
+                e.meta
+                    .get(crate::conductor::META_SPAWN)
+                    .and_then(|s| crate::spawn::unit_of(s))
+                    == Some(unit)
             }
-        }
-        // The files it concerns - the code the unit produced, reached now that the unit node is
-        // gone. An unknown/unmatched seed contributes nothing, so a raw path that never became a
-        // node is harmless.
-        for f in field_str_array(e, files_key) {
-            if !f.is_empty() {
-                seeds.insert(f);
+            TYPE_REVIEW_FINDING => field_str(e, "unit").as_deref() == Some(unit),
+            _ => false,
+        };
+        if belongs {
+            for id in event_seed_ids(e) {
+                seeds.insert(id);
             }
         }
     }
     seeds.into_iter().collect()
+}
+
+/// Resolve a `/api/graph` seed to the EFFECTIVE seed set the neighborhood BFS walks (spec 43, the
+/// click-to-seed re-point):
+///
+/// - A seed that IS a node in the pre-fetched `graph` (a content or code node the operator clicked)
+///   is returned unchanged - the spec 30 seeded panel, so a normal node click never regresses.
+/// - A seed that is NOT a node is a run-tree UNIT click (the unit node was de-noised away, spec 43):
+///   re-point it onto that unit's content nodes ([`unit_seeds`]), keeping ONLY the ones that are
+///   real nodes in the graph. Filtering to present nodes is the canonicalization guard
+///   (arch-u43c1-graphseeds-raw-vs-canonical-path): a raw, uncanonicalized file path that never
+///   became a node is dropped rather than seeded best-effort, and its file is still reached through
+///   the content node's GOVERNS / ABOUT edge.
+/// - When that yields nothing (a genuinely unknown seed, no unit content in the graph), fall back to
+///   the seed itself so the neighborhood degrades to the graceful empty the panel already handles.
+pub fn repoint_seed(events: &[Event], graph: &Graph, seed: &str) -> Vec<String> {
+    if graph.nodes.iter().any(|n| n.id == seed) {
+        return vec![seed.to_string()];
+    }
+    let repointed: Vec<String> = unit_seeds(events, seed)
+        .into_iter()
+        .filter(|id| graph.nodes.iter().any(|n| &n.id == id))
+        .collect();
+    if repointed.is_empty() {
+        vec![seed.to_string()]
+    } else {
+        repointed
+    }
 }
 
 /// A generic feed view of one event: position, type, and a bounded, per-type-agnostic
@@ -1982,7 +2074,11 @@ pub fn route(
                         .clamp(0, MAX_GRAPH_DEPTH);
                     let from = query_param(target, "from").map(percent_decode);
                     let to = query_param(target, "to").map(percent_decode);
-                    graph_json(graph, &seed, depth, from.as_deref(), to.as_deref())
+                    // De-noise (spec 43): a run-tree unit click passes a unit id, which is no longer
+                    // a graph node. Re-point it onto that unit's content nodes so the click lands on
+                    // a real neighborhood; a seed that already resolves to a node is unchanged.
+                    let seeds = repoint_seed(events, graph, &seed);
+                    graph_json(graph, &seed, &seeds, depth, from.as_deref(), to.as_deref())
                 }
             };
             match body {
@@ -4537,6 +4633,181 @@ mod tests {
         assert!(
             !g.nodes.iter().any(|n| n.id == "u1"),
             "no KIND_UNIT node exists (the machinery is gone); the seed landed via the decision/file"
+        );
+    }
+
+    #[test]
+    fn the_run_tree_click_to_seed_route_lands_a_unit_on_a_real_neighborhood() {
+        // Spec 43 criterion 5, the INTERACTIVE half (adj-u43c1-click-to-seed): the run-tree renders
+        // a unit node whose data-seed IS the unit id, and clicking it drives
+        // `GET /api/graph?seed=<unit>`. With the KIND_UNIT node de-noised away a raw unit-id seed
+        // resolves to no node, so the ROUTE must re-point it onto that unit's decisions/findings
+        // (its content nodes, which remain in the graph) and return a NON-EMPTY neighborhood - never
+        // the empty panel the raw unit seed would otherwise yield. This drives the ACTUAL route the
+        // click crosses, which the graph_seeds-only tests never touch (adj-u43c1-click-to-seed).
+        use crate::contextgraph::sqlite::Projector;
+        use crate::contextgraph::Projection;
+
+        // A run's events in production shape: the unit, a decision its implementer emitted - stamped
+        // with the emitting spawn (`u1`'s implementer), exactly as `rigger emit --spawn` records it -
+        // governing a file, and a finding a reviewer drew ABOUT the unit.
+        let run = positioned(vec![
+            ev(
+                "UnitStarted",
+                r#"{"unit":"u1","criterion":"c","agent":"impl","needs":[]}"#,
+            ),
+            ev(
+                "DecisionMade",
+                r#"{"id":"d1","summary":"use the shared authority","governs":["combat.rs"],"supersedes":""}"#,
+            )
+            .with_meta(crate::conductor::META_SPAWN, "u1/implementer#0"),
+            ev(
+                "ReviewFinding",
+                r#"{"id":"f1","by":"sdet","unit":"u1","summary":"y","about":["render.rs"]}"#,
+            ),
+        ]);
+
+        // Fold the run and pre-fetch its subgraph EXACTLY as the dash does (graph_seeds -> subgraph
+        // depth 2), so the route sees the same in-memory graph production serves.
+        let p = Projector::open(":memory:", "test").unwrap();
+        for e in &run {
+            p.apply(e).unwrap();
+        }
+        let graph = p.subgraph(&graph_seeds(&run), 2).unwrap();
+        assert!(
+            !graph.nodes.iter().any(|n| n.id == "u1"),
+            "no KIND_UNIT node exists - the click-to-seed must re-point off the (gone) unit node"
+        );
+
+        let r = route(
+            "GET",
+            "/api/graph?seed=u1",
+            &run,
+            &graph,
+            &[],
+            &HashMap::new(),
+            3,
+            "rigger-run",
+            "origin/main",
+        );
+        assert_eq!(r.status, 200, "the KG route answers 200 for a unit click");
+        let body: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
+        let ids: std::collections::BTreeSet<&str> = body["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| n["id"].as_str().unwrap())
+            .collect();
+        assert!(
+            !ids.is_empty(),
+            "the re-pointed unit click lands on a real, non-empty neighborhood, not an empty panel: {body}"
+        );
+        assert!(
+            ids.contains("d1"),
+            "the unit's decision is in the clicked neighborhood: {body}"
+        );
+        assert!(
+            ids.contains("combat.rs"),
+            "the file the unit's decision governs is reached canonically via its GOVERNS edge: {body}"
+        );
+        assert!(
+            ids.contains("f1"),
+            "the unit's finding is in the clicked neighborhood: {body}"
+        );
+        assert!(
+            !ids.contains("u1"),
+            "the unit id itself is never a node; the click landed via the unit's decisions/findings"
+        );
+    }
+
+    #[test]
+    fn unit_seeds_scope_content_to_the_owning_unit() {
+        // A decision is attributed to its unit by the emitting spawn (meta.spawn); a finding by its
+        // own `$.unit`. unit_seeds returns ONLY the named unit's content ids + files (sorted), never
+        // another unit's - so a run-tree click on `uA` never drags in `uB`'s neighborhood.
+        let events = positioned(vec![
+            ev(
+                "DecisionMade",
+                r#"{"id":"dA","summary":"x","governs":["a.rs"]}"#,
+            )
+            .with_meta(crate::conductor::META_SPAWN, "uA/implementer#0"),
+            ev(
+                "DecisionMade",
+                r#"{"id":"dB","summary":"y","governs":["b.rs"]}"#,
+            )
+            .with_meta(crate::conductor::META_SPAWN, "uB/implementer#0"),
+            ev(
+                "ReviewFinding",
+                r#"{"id":"fA","by":"sdet","unit":"uA","about":["c.rs"]}"#,
+            ),
+            ev(
+                "ReviewFinding",
+                r#"{"id":"fB","by":"sdet","unit":"uB","about":["d.rs"]}"#,
+            ),
+        ]);
+        assert_eq!(
+            unit_seeds(&events, "uA"),
+            vec![
+                "a.rs".to_string(),
+                "c.rs".to_string(),
+                "dA".to_string(),
+                "fA".to_string(),
+            ],
+            "uA's seeds are its decision + governed file and its finding + about file, sorted"
+        );
+        let s_b = unit_seeds(&events, "uB");
+        assert!(
+            s_b.contains(&"dB".to_string()) && s_b.contains(&"fB".to_string()),
+            "uB's seeds carry uB's own content"
+        );
+        assert!(
+            !s_b.contains(&"dA".to_string()) && !s_b.contains(&"fA".to_string()),
+            "uB's seeds never include uA's content"
+        );
+        // A decision with no emitting-spawn stamp is attributed to no unit.
+        let unstamped = vec![ev("DecisionMade", r#"{"id":"d0","governs":["x.rs"]}"#)];
+        assert!(
+            unit_seeds(&unstamped, "uA").is_empty(),
+            "a decision with no meta.spawn stamp is attributed to no unit"
+        );
+    }
+
+    #[test]
+    fn repoint_seed_passes_a_known_node_and_re_points_a_unit_id() {
+        // repoint_seed decides ONLY on node membership (it never walks edges), so an edgeless graph
+        // holding just the content nodes is enough to pin its three arms.
+        let mk = |id: &str, kind: &str| Node {
+            id: id.to_string(),
+            kind: kind.to_string(),
+            attrs: BTreeMap::new(),
+        };
+        let graph = Graph {
+            nodes: vec![mk("dA", KIND_DECISION), mk("a.rs", "file")],
+            edges: Vec::new(),
+        };
+        let events = vec![ev(
+            "DecisionMade",
+            r#"{"id":"dA","summary":"x","governs":["a.rs"]}"#,
+        )
+        .with_meta(crate::conductor::META_SPAWN, "uA/implementer#0")];
+
+        // A seed that IS a node is returned unchanged - the spec 30 seeded panel, no regression.
+        assert_eq!(
+            repoint_seed(&events, &graph, "dA"),
+            vec!["dA".to_string()],
+            "a known node seed is passed through untouched"
+        );
+        // A unit id (not a node) re-points onto the unit's content nodes present in the graph.
+        assert_eq!(
+            repoint_seed(&events, &graph, "uA"),
+            vec!["a.rs".to_string(), "dA".to_string()],
+            "a unit-id seed re-points onto the unit's decision and its governed file node"
+        );
+        // A genuinely unknown seed with no unit content falls back to itself (graceful empty).
+        assert_eq!(
+            repoint_seed(&events, &graph, "nope"),
+            vec!["nope".to_string()],
+            "an unknown seed with no unit content degrades to itself, not a re-point"
         );
     }
 
