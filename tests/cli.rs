@@ -7296,6 +7296,64 @@ fn docs_renders_the_skill_and_handbook_with_code_facts_verbatim() {
     assert_eq!(std::fs::read_to_string(&handbook_path).unwrap(), handbook);
 }
 
+/// Spec 46, criterion 2 (the pre-run graph-hygiene guidance ships to CONSUMERS, end to
+/// end): the discipline is not merely present in an in-process render - it must survive the
+/// whole composition path (docs_context -> render -> write) that the real `rigger docs`
+/// binary drives, so it reaches the two consumer-facing files an author commits and ships.
+/// Driving the built binary and reading the WRITTEN skill and handbook proves the section
+/// actually LANDS in what consumers get, and that the shipped text carries the truthful WHY:
+/// graph.db is a PERSISTENT incremental projection (a step never re-folds the whole
+/// history), so across runs it accumulates dead-run rows no live query reads, which `rigger
+/// reset --runs` prunes to reclaim the disk they held. The implementer's in-process
+/// `discipline_carries_graph_hygiene_pre_run_reset` unit test pins the render output; this
+/// periphery layer pins that the write path in the built binary carries it all the way to
+/// the consumer's files - something an in-process render assertion cannot prove.
+#[test]
+fn docs_ships_graph_hygiene_guidance_to_consumers() {
+    let proj = temp_project();
+    let root = proj.path();
+
+    let (stdout, stderr, ok) = run_rigger(root, &["docs"]);
+    assert!(ok, "rigger docs must succeed; stderr: {stderr}");
+    assert!(
+        stdout.contains("skills/using-rigger/SKILL.md") && stdout.contains("using-rigger.md"),
+        "rigger docs must report writing both consumer-facing paths; got: {stdout}"
+    );
+
+    let skill = std::fs::read_to_string(root.join("skills/using-rigger/SKILL.md"))
+        .expect("the skill was rendered to disk");
+    let handbook = std::fs::read_to_string(root.join("docs/handbook/using-rigger.md"))
+        .expect("the handbook chapter was rendered to disk");
+
+    // BOTH consumer-facing outputs, as WRITTEN by the built binary, carry the graph-hygiene
+    // section, name the pre-run command, and frame the truthful WHY (a persistent
+    // incremental projection whose dead-run accumulation `rigger reset --runs` prunes to
+    // reclaim the disk it held) - not a per-step whole-stream re-fold, and not a fold-speed
+    // claim. Both render from the single `discipline_body` authority, so the skill and the
+    // handbook chapter ship the guidance identically.
+    for (label, out) in [("skill", &skill), ("handbook", &handbook)] {
+        assert!(
+            out.contains("## Graph hygiene"),
+            "{label} shipped by `rigger docs` must carry the graph-hygiene section"
+        );
+        assert!(
+            out.contains("rigger reset --runs"),
+            "{label} shipped by `rigger docs` must name `rigger reset --runs` as the pre-run \
+             hygiene step"
+        );
+        assert!(
+            out.contains("persistent projection"),
+            "{label} shipped by `rigger docs` must frame graph.db as a persistent incremental \
+             projection (the corrected WHY, not a per-step whole-stream re-fold)"
+        );
+        assert!(
+            out.contains("reclaims the disk"),
+            "{label} shipped by `rigger docs` must explain reset --runs reclaims the disk the \
+             dead-run rows held (bounded growth, not a fold-speed claim)"
+        );
+    }
+}
+
 /// Spec 20, unit 2 (the drift GATE, end to end): `rigger validate` FAILS LOUDLY when the
 /// committed `using-rigger` skill or the handbook discipline chapter has drifted from a
 /// fresh render, and PASSES when they are in sync - this is what makes the discipline STAY
