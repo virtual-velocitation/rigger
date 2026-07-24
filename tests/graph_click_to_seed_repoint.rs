@@ -226,3 +226,49 @@ fn repoint_seed_preserves_a_real_node_click_and_falls_back_gracefully() {
         "a seed matching neither a node nor a unit's content falls back to itself, never empty"
     );
 }
+
+#[test]
+fn a_finding_is_attributed_only_by_its_emitting_spawn_never_a_stray_unit_field() {
+    // The SINGLE-AUTHORITY boundary the fix established: a ReviewFinding attributes to its unit ONLY
+    // by the emitting spawn stamped in `meta` (`spawn::unit_of`), NEVER by a `$.unit` event field.
+    // Production findings emit through `rigger emit --spawn` and carry NO `unit` field, so an
+    // attribution that keyed on that absent field silently omitted every real finding from a unit's
+    // click. The other tests here prove the happy path (a field-less finding lands via meta.spawn);
+    // this one pins the OTHER direction - a stray `unit` field is not a second, parallel authority.
+    //
+    // `fA` is emitted by uA's sdet lens (its true unit) but ALSO carries a misleading `unit: "uB"`.
+    // Attribution must follow the emitting spawn (uA), never the stray field (uB).
+    let run = vec![
+        ev(1, "DecisionMade", serde_json::json!({ "id": "dA", "summary": "x", "governs": ["a.rs"], "supersedes": "" }))
+            .with_meta(META_SPAWN, "uA/implementer#0"),
+        ev(2, "ReviewFinding", serde_json::json!({ "id": "fA", "by": "sdet", "summary": "s", "about": ["x.rs"], "unit": "uB" }))
+            .with_meta(META_SPAWN, "uA/lens:sdet#0"),
+    ];
+
+    // Public unit_seeds contract: fA belongs to uA (its emitting spawn), regardless of the stray field.
+    assert!(
+        unit_seeds(&run, "uA").contains(&"fA".to_string()),
+        "a finding is attributed to its EMITTING spawn's unit (uA) by meta.spawn: {:?}",
+        unit_seeds(&run, "uA")
+    );
+    // And NEVER to the unit named only by the stray `$.unit` field. If the dead field path resurrected,
+    // fA (and its ABOUT file x.rs) would leak into uB's seeds - so this is the anti-regression pin.
+    let ub_seeds = unit_seeds(&run, "uB");
+    assert!(
+        !ub_seeds.iter().any(|s| s == "fA" || s == "x.rs"),
+        "the stray `unit` event field is not an attribution authority: uB's seeds carry no uA finding: {ub_seeds:?}"
+    );
+
+    // The same single authority observed through the real /api/graph route.
+    let graph = fold_and_prefetch(&run);
+    let ids_ua = node_ids(&get_graph(&run, &graph, "uA"));
+    assert!(
+        ids_ua.contains("fA"),
+        "clicking uA surfaces its own finding fA (attributed by its emitting spawn): {ids_ua:?}"
+    );
+    let ids_ub = node_ids(&get_graph(&run, &graph, "uB"));
+    assert!(
+        !ids_ub.contains("fA") && !ids_ub.contains("x.rs"),
+        "clicking uB never surfaces uA's finding via the stray `unit` field: {ids_ub:?}"
+    );
+}
