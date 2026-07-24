@@ -86,6 +86,47 @@ impl Projector {
         })
     }
 
+    /// The WHOLE live projection for this project: every node plus every currently-valid edge
+    /// (`valid_to IS NULL`), read DIRECTLY (spec 45, criterion 2 - the direct-projection read the
+    /// dedicated `/api/graph` provider consults). Unlike [`Projection::subgraph`] it takes no seed
+    /// and walks no reachability CTE - it returns the full graph, so a whole-graph overview and a
+    /// seeded neighborhood both reach any node the projection holds (the fix for the never-built
+    /// repo whose run-seed set is empty). Read isolation (spec 28, criterion 2): scoped to
+    /// `self.project` exactly like `subgraph`, so on a shared backend it returns only this project's
+    /// nodes and edges. Deterministic by construction (spec 45): the rows are ORDERed so the read
+    /// itself sorts, independent of any downstream fold. Read-only; a fresh/empty graph yields an
+    /// empty [`Graph`], never an error.
+    pub fn whole(&self) -> Result<Graph, Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut nstmt = conn
+            .prepare(
+                "SELECT id, kind, attrs FROM nodes
+                 WHERE project = ?1
+                 ORDER BY id",
+            )
+            .map_err(be)?;
+        let nodes: Vec<Node> = nstmt
+            .query_map(params![self.project], row_to_node)
+            .map_err(be)?
+            .collect::<Result<_, _>>()
+            .map_err(be)?;
+
+        let mut estmt = conn
+            .prepare(
+                "SELECT from_id, to_id, rel, valid_from, source, tier FROM edges
+                 WHERE valid_to IS NULL AND project = ?1
+                 ORDER BY from_id, to_id, rel, valid_from",
+            )
+            .map_err(be)?;
+        let edges: Vec<Edge> = estmt
+            .query_map(params![self.project], row_to_edge)
+            .map_err(be)?
+            .collect::<Result<_, _>>()
+            .map_err(be)?;
+
+        Ok(Graph { nodes, edges })
+    }
+
     /// Prune the given nodes and every edge that touches them from the graph, returning the
     /// number of nodes actually removed (spec 21, unit 2). This is the single graph-mutation
     /// authority `rigger reset --runs` uses to shed dead-run noise: the composition root
@@ -1675,6 +1716,80 @@ mod tests {
                 && e.to == "src/combat.rs::clamp"),
             "a REFERENCES edge ties the file to the referenced symbol; got {:?}",
             g.edges
+        );
+    }
+
+    #[test]
+    fn whole_reads_the_full_projection_excludes_invalidated_edges_and_scopes_by_project() {
+        // Spec 45, criterion 2: `whole()` is the DIRECT read the `/api/graph` provider consults -
+        // the entire live projection, NO seed and NO reachability walk. It must (a) return every
+        // node and every currently-valid edge, (b) EXCLUDE an edge invalidated by a supersede
+        // (`valid_to` set), (c) be scoped to its own project on a shared backend, and (d) sort
+        // deterministically.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.db");
+        let path = path.to_str().unwrap();
+
+        // Project p1: d1 governs a.rs, then d2 supersedes d1 and ALSO governs a.rs (so d1's GOVERNS
+        // edge is invalidated while d2's stays live), plus a code entity in b.rs.
+        let p1 = Projector::open(path, "p1").unwrap();
+        apply_decision(&p1, 1, "d1", "old", &["a.rs"], "");
+        apply_decision(&p1, 2, "d2", "new", &["a.rs"], "d1");
+        apply_code_entity(&p1, 3, "b.rs", "run", "function", 1, "rust");
+
+        // Project p2 on the SAME backend file: its nodes must never leak into p1's whole read.
+        let p2 = Projector::open(path, "p2").unwrap();
+        apply_decision(&p2, 1, "pz", "other-project", &["z.rs"], "");
+
+        let g = p1.whole().unwrap();
+
+        // (a) every p1 node is present - both decisions, the governed file, the code entity and its
+        // file container - WITHOUT any seed.
+        for id in ["d1", "d2", "a.rs", "b.rs", "b.rs::run"] {
+            assert!(
+                g.nodes.iter().any(|n| n.id == id),
+                "whole() returns node {id}, got {:?}",
+                g.nodes
+            );
+        }
+        // (c) p2's nodes are NOT visible through p1's scoped whole read.
+        assert!(
+            !g.nodes.iter().any(|n| n.id == "pz" || n.id == "z.rs"),
+            "whole() is project-scoped: p2 nodes never leak into p1, got {:?}",
+            g.nodes
+        );
+
+        // (a) the live GOVERNS edge (from d2) and the live structural CONTAINS edge are returned.
+        assert!(
+            g.edges
+                .iter()
+                .any(|e| e.from == "d2" && e.to == "a.rs" && e.rel == REL_GOVERNS),
+            "the live GOVERNS edge is returned, got {:?}",
+            g.edges
+        );
+        assert!(
+            g.edges
+                .iter()
+                .any(|e| e.from == "b.rs" && e.to == "b.rs::run" && e.rel == REL_CONTAINS),
+            "the live CONTAINS edge is returned, got {:?}",
+            g.edges
+        );
+        // (b) the supersede-invalidated GOVERNS edge (from d1) is EXCLUDED by the valid_to filter.
+        assert!(
+            !g.edges
+                .iter()
+                .any(|e| e.from == "d1" && e.rel == REL_GOVERNS),
+            "the supersede-invalidated GOVERNS edge is excluded, got {:?}",
+            g.edges
+        );
+
+        // (d) deterministic: nodes come back sorted by id.
+        let ids: Vec<String> = g.nodes.iter().map(|n| n.id.clone()).collect();
+        let mut sorted = ids.clone();
+        sorted.sort();
+        assert_eq!(
+            ids, sorted,
+            "whole() returns nodes sorted by id, got {ids:?}"
         );
     }
 
