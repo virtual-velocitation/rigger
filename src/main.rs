@@ -11379,6 +11379,59 @@ mod tests {
         );
     }
 
+    /// Spec 45 GLOBAL CONSTRAINT (read-only provider, L33-34 / L72-73): the direct-projection
+    /// provider is READ-ONLY, and "the dash still starts before the store exists; an absent graph
+    /// degrades to an empty result, never an error". `dash_read_whole_graph` over an ABSENT graph db
+    /// (the grep-only / never-built repo that has no `.rigger/graph.db`) must return an EMPTY graph
+    /// and MUST NOT materialize the db.
+    ///
+    /// This pins the load-bearing `if !Path::new(graph_db).exists()` guard: `Projector::open` opens
+    /// with the default `OPEN_READWRITE | OPEN_CREATE` and runs `execute_batch(SCHEMA)`, so WITHOUT
+    /// the guard a read would spuriously CREATE the file+schema on a repo that never built one - a
+    /// real, user-facing WRITE that breaks the read-only contract. The file-not-created assertion is
+    /// the guard's teeth: delete the guard and this test reddens.
+    #[test]
+    fn dash_read_whole_graph_on_an_absent_db_is_empty_and_creates_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        // A path that does NOT exist: the never-built repo has no graph projection at all.
+        let graph_path = dir.path().join("graph.db");
+        let graph_db = graph_path.to_str().unwrap();
+        let identity = "reachtest";
+        assert!(
+            !Path::new(graph_db).exists(),
+            "precondition: the never-built repo has no graph db yet"
+        );
+
+        // (a) The read degrades to an EMPTY graph, never an error.
+        let whole = dash_read_whole_graph(graph_db, identity);
+        assert!(
+            whole.nodes.is_empty() && whole.edges.is_empty(),
+            "an absent projection reads as an empty graph, got {whole:?}"
+        );
+
+        // (b) The read is READ-ONLY: it must NOT have materialized the db. Removing the
+        // `if !Path::new(graph_db).exists()` guard makes `Projector::open` CREATE + SCHEMA-write the
+        // file here, reddening this assertion - these are the guard's teeth.
+        assert!(
+            !Path::new(graph_db).exists(),
+            "a read over an absent projection must NOT create {graph_db} (read-only provider)"
+        );
+
+        // The composed provider closure the dash consults on /api/graph (main.rs, the
+        // `move || dash_read_whole_graph(..)` provider) honors the same read-only contract over the
+        // absent path.
+        let provider = || -> contextgraph::Graph { dash_read_whole_graph(graph_db, identity) };
+        let via_provider = provider();
+        assert!(
+            via_provider.nodes.is_empty() && via_provider.edges.is_empty(),
+            "the composed provider over an absent projection is empty, got {via_provider:?}"
+        );
+        assert!(
+            !Path::new(graph_db).exists(),
+            "the composed provider must NOT create the db either (read-only provider)"
+        );
+    }
+
     /// `rigger setup` must provision the per-project JS driver: write the three
     /// embedded runtime files into `.rigger/shim/` with the embedded content. (The
     /// npm-install step is asserted separately so this test does not depend on npm.)
