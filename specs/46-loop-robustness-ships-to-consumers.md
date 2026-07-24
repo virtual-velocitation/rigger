@@ -23,9 +23,9 @@ belongs in the SHIPPED product:
    accumulation and reclaims the disk it held, and that a very stale graph should be pruned this way
    first.
 3. **`rigger reset --runs` must actually reclaim disk.** Today it deletes superseded rows but does not
-   compact the database file, so the on-disk graph stays large and the fold stays slow even after a
-   prune - the documented hygiene command does not fully deliver. It must compact (VACUUM) after
-   reclaiming, so a pruned graph is both fewer rows AND a smaller, faster file.
+   compact the database file, so the on-disk graph stays large even after a prune - the documented
+   hygiene command does not fully deliver. It must compact (VACUUM) after reclaiming, so a pruned
+   graph is both fewer rows AND a smaller, faster file.
 
 ## Design
 

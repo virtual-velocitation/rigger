@@ -378,6 +378,26 @@ mod tests {
                 out.contains("reclaims the disk"),
                 "{label} must explain reset --runs reclaims the disk dead-run rows held"
             );
+            // NEGATIVE regression guard (spec 46 c2). The DISCREDITED fold-speed framing
+            // that rejected this unit's first attempt (graph.db re-folded whole-history each
+            // step, the fold slow in proportion to graph size, a prune speeding it up) must
+            // never re-enter the shipped render: graph.db is a PERSISTENT incremental
+            // projection and a prune reclaims DISK, it does not speed any fold. Pin those
+            // phrases OUT (case-insensitively) so a future edit resurrecting the false
+            // mechanism fails LOUDLY here instead of shipping silently.
+            let lower = out.to_lowercase();
+            for banned in [
+                "re-folded each step",
+                "fold stays slow",
+                "proportional to graph size",
+                "faster fold",
+            ] {
+                assert!(
+                    !lower.contains(banned),
+                    "{label} must NOT resurrect the discredited fold-speed framing \
+                     (found {banned:?}); a prune reclaims disk, it does not speed a fold"
+                );
+            }
         }
     }
 

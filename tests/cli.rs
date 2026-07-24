@@ -7351,6 +7351,25 @@ fn docs_ships_graph_hygiene_guidance_to_consumers() {
             "{label} shipped by `rigger docs` must explain reset --runs reclaims the disk the \
              dead-run rows held (bounded growth, not a fold-speed claim)"
         );
+        // NEGATIVE regression guard (spec 46 c2): the DISCREDITED fold-speed framing that
+        // rejected this unit's first attempt (graph.db re-folded whole-history each step, the
+        // fold slow in proportion to graph size, a prune speeding it up) must never reach the
+        // consumer's files. graph.db is a PERSISTENT incremental projection; a prune reclaims
+        // DISK, it speeds no fold. Pin those phrases OUT (case-insensitively) so a future edit
+        // resurrecting the false mechanism fails LOUDLY here instead of shipping to consumers.
+        let lower = out.to_lowercase();
+        for banned in [
+            "re-folded each step",
+            "fold stays slow",
+            "proportional to graph size",
+            "faster fold",
+        ] {
+            assert!(
+                !lower.contains(banned),
+                "{label} shipped by `rigger docs` must NOT resurrect the discredited fold-speed \
+                 framing (found {banned:?}); a prune reclaims disk, it does not speed a fold"
+            );
+        }
     }
 }
 
