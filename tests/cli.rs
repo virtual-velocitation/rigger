@@ -5473,6 +5473,88 @@ fn setup_output_names_the_blessed_path_dashboard_url_and_headless_twins() {
     );
 }
 
+/// Spec 44, criterion 1 - PERIPHERY (setup -> disk seam): the step-courier guarantee must
+/// survive to the artifact Claude Code actually loads. The implementer's unit test asserts
+/// the foreground/honest prompt over the IN-MEMORY `RIGGER_WORKFLOW` constant, and a separate
+/// unit test asserts the installed file is BYTE-IDENTICAL to that constant - but byte-identity
+/// says nothing about the constant's CONTENT (a regressed prompt would still install
+/// byte-for-byte), and neither drives the real `rigger setup` subcommand end-to-end. This test
+/// closes that boundary: it runs the built binary's `setup` (arg dispatch -> cmd_setup ->
+/// install_workflow -> file write), then reads the on-disk `.claude/workflows/rigger.js` - the
+/// exact file the harness auto-discovers and runs - and pins that its COURIER prompt still
+/// runs `rigger step` as one foreground, blocking call (never backgrounded, never Monitor-
+/// watched) and reports only an honest error, never a fabricated placeholder token.
+#[test]
+fn installed_workflow_courier_prompt_is_foreground_and_honest() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    // Drive the REAL `rigger setup` subcommand (RIGGER_NPM stubs npm so the shim step needs
+    // no network); it writes the native /rigger workflow to disk.
+    let (_out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok, "rigger setup must succeed; stderr:\n{err}");
+
+    // The user-facing artifact: the file Claude Code auto-discovers and runs.
+    let installed = root.join(".claude").join("workflows").join("rigger.js");
+    let workflow = std::fs::read_to_string(&installed).unwrap_or_else(|e| {
+        panic!(
+            "rigger setup must install the workflow at {}; read failed: {e}",
+            installed.display()
+        )
+    });
+
+    // We are asserting on the COURIER agent's prompt specifically - anchor on it so the guard
+    // pins the right agent's instructions, not some other prompt that happens to share a word.
+    assert!(
+        workflow.contains("You are a rigger COURIER"),
+        "the installed workflow must define the step-courier agent prompt"
+    );
+
+    // 1. FOREGROUND, BLOCKING: the courier runs the step as one blocking Bash call - a
+    //    foreground call blocks until the step prints its single JSON line, the exact line the
+    //    courier relays back to the driver.
+    assert!(
+        workflow.contains("FOREGROUND, BLOCKING Bash"),
+        "the installed courier prompt must instruct running `rigger step` as one FOREGROUND, \
+         BLOCKING Bash call; got:\n{workflow}"
+    );
+
+    // 2. NOT backgrounded, NOT polled: the exact shape the defect ran the step in - a
+    //    `run_in_background` step watched by a Monitor, returning a fabricated error before the
+    //    step produced anything - is explicitly forbidden in the on-disk prompt.
+    assert!(
+        workflow.contains("NOT run_in_background"),
+        "the installed courier prompt must explicitly forbid `run_in_background`; got:\n{workflow}"
+    );
+    assert!(
+        workflow.contains("NOT via a Monitor"),
+        "the installed courier prompt must explicitly forbid watching the step via a Monitor / \
+         poll loop; got:\n{workflow}"
+    );
+
+    // 3. HONEST error: when the courier must report a failure, `error` is the ACTUAL stderr or
+    //    the one fixed no-completion phrase - never an invented placeholder token.
+    assert!(
+        workflow.contains("step did not complete within my attempts"),
+        "the installed courier prompt must allow the fixed no-completion phrase in `error`; \
+         got:\n{workflow}"
+    );
+    assert!(
+        workflow.contains("NEVER an invented placeholder"),
+        "the installed courier prompt must forbid a fabricated placeholder token in `error`; \
+         got:\n{workflow}"
+    );
+
+    // 4. Regression guard at the artifact: the exact fabricated token the defect returned must
+    //    not appear ANYWHERE in the installed workflow - a courier that returns it lies that
+    //    the step failed after zero waves.
+    assert!(
+        !workflow.contains("PLACEHOLDER_DO_NOT_USE"),
+        "the fabricated placeholder token `PLACEHOLDER_DO_NOT_USE` must never reach the \
+         installed workflow; got:\n{workflow}"
+    );
+}
+
 /// `rigger result <id> --if-absent` records a died-worker outcome only when the spawn is
 /// still unanswered: on a fresh run stream it writes the result and exits 0, so `rigger
 /// reported <id>` then confirms the spawn is answered. The "records when absent" half of
