@@ -536,6 +536,23 @@ for (;;) {
     stop(`the \`rigger step\` courier agent itself failed: ${e && e.message ? e.message : String(e)}`)
   }
 
+  // Null-step guard. `agent()` can RESOLVE to null - rather than REJECT - when the courier agent
+  // dies on a TERMINAL error (an expired login, an exhausted API quota): it produces no
+  // structured output, so the await above yields null instead of throwing and the try/catch
+  // never fires. Reading `step.error` (or any field) on that null step would crash the driver
+  // with an uncaught null-dereference. Guard it HERE, before the dereference, and route it
+  // through the same throwing `stop()` every anomalous exit uses - a clean, loud, resumable stop
+  // that names the likely cause, instead of an uncaught crash mid-run.
+  if (!step) {
+    stop(
+      'the `rigger step` courier returned no step: agent() resolved to null rather than ' +
+        'rejecting, so the try/catch never fired. The courier agent most likely died on a ' +
+        'TERMINAL error - an expired login or an exhausted API quota - producing no JSON at ' +
+        'all. The run is RESUMABLE: restore the credential/quota and re-run - the conductor ' +
+        'replays the durable results and continues from this frontier.',
+    )
+  }
+
   if (step.error) {
     stop(`\`rigger step\` failed: ${step.error}`)
   }

@@ -12357,6 +12357,76 @@ mod tests {
         );
     }
 
+    /// Spec 44, criterion 2 (this unit OWNS the driver null-step guard): the driver must GUARD
+    /// a null step BEFORE it dereferences `step.error`. `agent()` can RESOLVE to null - rather
+    /// than reject - when the courier agent dies on a TERMINAL error (an expired login, an
+    /// exhausted API quota): it produces no structured output, so the await yields null instead
+    /// of throwing and the surrounding try/catch never fires. Dereferencing `step.error` on that
+    /// null step crashes the driver uncaught - the exact defect that surfaced while dogfooding
+    /// the loop (an uncaught crash instead of a clean, resumable stop). The guard turns it into a
+    /// clean, loud, RESUMABLE stop that names the likely cause. This unit owns ONLY the null-step
+    /// guard: it asserts nothing about the courier prompt (criterion 1) or the dash detachment
+    /// (criterion 3). Asserted structurally over the EMBEDDED `RIGGER_WORKFLOW` (the
+    /// `include_str!` byte-source `rigger setup` writes and the drift check reads), the same
+    /// style spec 39 used for the workflow string, because the cargo gate set runs no JS.
+    #[test]
+    fn workflow_driver_guards_a_null_step_before_dereferencing_it() {
+        // Assert over comment-stripped source so the guard is checked in the actual driver code
+        // and its stop-message string literal, not the file's documentation prose.
+        let code = strip_line_comments(RIGGER_WORKFLOW);
+
+        // 1. The guard EXISTS: the driver tests `!step` (agent() resolved to null) explicitly.
+        assert!(
+            code.contains("if (!step)"),
+            "the driver must guard a null step with `if (!step)` before touching its fields"
+        );
+
+        // 2. The guard PRECEDES the dereference: `if (!step)` must appear BEFORE the first
+        //    `step.error` read, or a null step would still crash on the very dereference the
+        //    guard exists to prevent (presence alone does not prove the guard is reachable in
+        //    time - the wedge-stop ordering test above pins position for the same reason).
+        let guard = code
+            .find("if (!step)")
+            .expect("the driver must guard a null step");
+        let deref = code
+            .find("step.error")
+            .expect("the driver must read step.error after the guard");
+        assert!(
+            guard < deref,
+            "the `if (!step)` guard must precede the `step.error` dereference, or a null step \
+             (agent() resolved to null) would still crash before the guard runs"
+        );
+
+        // 3. The guard stops CLEANLY and LOUDLY: it routes the null step through the throwing
+        //    `stop()` (a controlled workflow failure), never a silent return or an uncaught
+        //    null-dereference crash. The stop call must live between the guard and the deref.
+        assert!(
+            code[guard..deref].contains("stop("),
+            "the null-step guard must stop loudly via `stop(...)` (a clean, controlled failure), \
+             not fall through or crash on the dereference"
+        );
+
+        // 4. The diagnostic names the LIKELY CAUSE (the courier agent died on a terminal API
+        //    error - an expired login / an exhausted quota, so agent() resolved to null) and
+        //    that the run is RESUMABLE - the two things spec 44 requires the message to carry so
+        //    the operator knows why it stopped and that a re-run continues from this frontier.
+        assert!(
+            code.contains("resolved to null"),
+            "the null-step diagnostic must name the cause: agent() RESOLVED TO NULL rather than \
+             rejecting (the courier agent died terminally, producing no JSON)"
+        );
+        assert!(
+            code.contains("expired login") && code.contains("quota"),
+            "the null-step diagnostic must name the likely terminal cause (an expired login or \
+             an exhausted API quota)"
+        );
+        assert!(
+            code.contains("RESUMABLE"),
+            "the null-step diagnostic must tell the operator the run is RESUMABLE (a re-run \
+             continues from this frontier)"
+        );
+    }
+
     /// Spec 19a Unit 3 (done-when item 3): the static `meta.description` is the tagline
     /// the skills list and the `/workflows` header both show, so it must read as a
     /// jargon-free, user-useful line - what the workflow does and when to reach for it -
