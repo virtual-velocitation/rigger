@@ -1507,25 +1507,24 @@ fn select_execution_providers() -> Vec<ExecutionProviderDispatch> {
     ]
 }
 
-/// Read every indexable file under `root` as (repo-relative path, content),
-/// skipping VCS / build / dependency dirs and unreadable (binary) files. The single
-/// source of truth for "what the index covers", shared by the cold build and the
-/// load-time consistency check so the two never disagree about the file set.
+/// Read every indexable file under `root` as (repo-relative path, content), scoped to the
+/// project's own sources and skipping unreadable (binary) files. The single source of truth for
+/// "what the index covers", shared by the cold build and the load-time consistency check so the
+/// two never disagree about the file set.
 ///
-/// The canonicalize + visited-canonical-path cycle guard and the [`SKIP_DIRS`] skip
-/// live in the SHARED [`super::walk_guarded`] skeleton (the same one grep's walk uses),
-/// so the two grounders' traversals can never drift. This walk's ONLY leaf action is to
-/// read each file and, when it decodes as UTF-8 (skipping binary / unreadable files),
-/// push its `(repo-relative path, content)`. It always walks the whole tree (leaf
-/// action returns `Continue`); the shared skeleton's cycle guard makes a symlink loop
-/// terminate. `SKIP_DIRS` denies, among others, `.fastembed_cache` (the ~128 MB
-/// embedding-model cache) so `freshen` never hashes it and a cold build never embeds
-/// its JSON blobs, plus non-code dotdirs (`.github`/`.cargo`/`.claude`).
+/// The scope lives in the SHARED [`super::walk_guarded`] skeleton (the same one grep and the
+/// ingests use), so the traversals can never drift. This walk's ONLY leaf action is to read each
+/// file and, when it decodes as UTF-8 (skipping binary / unreadable files), push its
+/// `(repo-relative path, content)`. It always walks the whole (scoped) tree (leaf action returns
+/// `Continue`). The scope skips hidden dotdirs - among them `.fastembed_cache` (the ~128 MB
+/// embedding-model cache) so `freshen` never hashes it and a cold build never embeds its JSON
+/// blobs, plus the other tooling dotdirs (`.github`/`.cargo`/`.claude`) and `.git`/`.rigger` - and
+/// honors the repository's own `.gitignore`; symlinks are not followed, so a link cycle terminates
+/// and nothing escapes the root.
 fn collect_files(dir: &Path, root: &str, out: &mut Vec<(String, String)>) {
-    let mut visited = std::collections::HashSet::new();
     // The walk always runs to completion (the leaf action never `Break`s), so the
     // `ControlFlow` result is `Continue` and discarded.
-    let _ = super::walk_guarded(dir, &mut visited, &mut |path| {
+    let _ = super::walk_guarded(dir, &mut |path| {
         if let Ok(content) = std::fs::read_to_string(path) {
             let rel = path
                 .strip_prefix(root)
@@ -2695,9 +2694,11 @@ mod tests {
 
     /// FINDING #5 (symlink cycle guard): `collect_files` must terminate on a directory
     /// symlink CYCLE rather than loop forever / blow the stack. We build a real cycle -
-    /// `sub/loop -> ..` (a link back to its own parent) - and assert the walk returns,
+    /// `sub/loop -> root` (a link back to an ancestor) - and assert the walk returns,
     /// visits the real file exactly once, and does not duplicate it by re-entering
-    /// through the link. No model is built, so this stays parallel.
+    /// through the link. Root confinement makes this hold BY CONSTRUCTION: the scoped walk
+    /// never follows a symlink, so the cycle is never traversed. No model is built, so this
+    /// stays parallel.
     #[test]
     fn collect_files_terminates_on_a_symlink_cycle() {
         let dir = tempfile::tempdir().unwrap();
@@ -2706,16 +2707,16 @@ mod tests {
         let sub = root.join("sub");
         std::fs::create_dir(&sub).unwrap();
         std::fs::write(sub.join("nested.rs"), "fn nested_once() {}\n").unwrap();
-        // A directory symlink pointing back up at the root: walking into `sub/loop`
-        // re-enters the whole tree, which without a guard recurses forever.
+        // A directory symlink pointing back up at the root: following `sub/loop` would re-enter
+        // the whole tree and recurse forever. The scoped walk does not follow it.
         std::os::unix::fs::symlink(root, sub.join("loop")).unwrap();
 
-        // The guarded walk must RETURN (a hang here fails the test by timeout) ...
+        // The scoped walk must RETURN (a hang here fails the test by timeout) ...
         let mut out = Vec::new();
         collect_files(root, root.to_str().unwrap(), &mut out);
 
         // ... and visit each real file exactly once, never re-collecting it through the
-        // cycle. The canonical-path visited-set both bounds the recursion and dedupes.
+        // unfollowed link.
         let real_hits = out
             .iter()
             .filter(|(rel, _)| rel.ends_with("real.rs"))

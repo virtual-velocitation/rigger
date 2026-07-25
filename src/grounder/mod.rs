@@ -21,94 +21,74 @@ pub mod symbols;
 #[cfg(feature = "symbols")]
 pub mod design;
 
-use std::collections::HashSet;
 use std::ops::ControlFlow;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-/// The single source of truth for which directories BOTH grounders skip: VCS / build /
-/// dependency dirs plus non-code tooling dotdirs that hold no first-party source.
+/// The ONE scoped directory-walk skeleton EVERY walk shares: grep's `ground` (this module),
+/// turbovec's `collect_files` (the `turbovec` feature), the code-ingest `build_index`, and the
+/// design-ingest `project_batches`. They differ ONLY in the per-file LEAF ACTION they pass as
+/// `on_file` - grep searches lines, turbovec collects `(rel, content)`, the ingests extract
+/// symbols / design intent. Factoring the walk here (always compiled, in `mod.rs`) means the
+/// scope can never drift between them, so ingest and grounding cover exactly the same file set.
 ///
-/// This lives in `mod.rs` (ALWAYS compiled) rather than in the feature-gated
-/// `turbovec.rs`, so grep's `walk()` and turbovec's `collect_files` consume ONE list
-/// and can never drift. This change ADDS the model-cache + tooling-dotdir denies to BOTH
-/// walks: previously both shared the same narrower 5-entry list (`.git`, `.rigger`,
-/// `vendor`, `target`, `node_modules`), so NEITHER denied the ~128 MB `.fastembed_cache`
-/// model blobs - both grep (the `defaults.grounder: grep` fallback) and turbovec would
-/// index them.
+/// The walk is SCOPED to the project's own sources (spec 49, section 3), three ways:
 ///
-/// - `.git` / `vendor` / `target` / `node_modules` - VCS + build + dependency trees.
-/// - `.rigger` - our own event store / grounding index / config, not source.
-/// - `.fastembed_cache` - the ~128 MB embedding-model cache fastembed writes at the
-///   repo root (default, or at `FASTEMBED_CACHE_DIR`); indexing it makes every walk
-///   hash 128 MB and surfaces the cache's JSON blobs as grounding hits.
-/// - `.github` / `.cargo` / `.claude` - non-code dotdirs (CI config, cargo config,
-///   agent config) that pollute the index without grounding value.
-pub(crate) const SKIP_DIRS: &[&str] = &[
-    ".git",
-    ".rigger",
-    ".fastembed_cache",
-    ".github",
-    ".cargo",
-    ".claude",
-    "vendor",
-    "target",
-    "node_modules",
-];
-
-/// Whether a directory named `name` is one BOTH grounders skip (see [`SKIP_DIRS`]).
-pub(crate) fn is_skipped_dir(name: &str) -> bool {
-    SKIP_DIRS.contains(&name)
-}
-
-/// The ONE guarded directory-walk skeleton BOTH grounders share: grep's `walk` (this
-/// module) and turbovec's `collect_files` (the `turbovec` feature). The two used to
-/// each reimplement the identical canonicalize + visited-canonical-path cycle guard +
-/// [`SKIP_DIRS`] check; they now differ ONLY in the per-file LEAF ACTION they pass as
-/// `on_file` - grep searches the file's lines, turbovec collects `(rel_path, content)`.
-/// Factoring the skeleton here (always compiled, in `mod.rs`) means the cycle guard and
-/// the skip-list can never drift between the two walks.
+/// - **The project's own ignore rules.** It honors the repository's committed `.gitignore`
+///   files (root and nested), so whatever the project already declared as not-source - build
+///   outputs, caches, vendored artifacts - is skipped. Only committed `.gitignore` is honored:
+///   the user's GLOBAL gitignore and the per-clone `.git/info/exclude` are DISABLED, so the
+///   scope is a pure function of the tree (the same tree yields a byte-identical graph on any
+///   machine). `require_git(false)` applies those rules even when the tree is not a checked-out
+///   repository (a cold-checkout build), and `parents(false)` confines rule-reading to the root
+///   so a `.gitignore` ABOVE the project never bleeds in.
+/// - **The always-excluded set.** Hidden entries are skipped, which covers the two the spec
+///   names as never-source regardless of any ignore file - the VCS metadata directory `.git`
+///   and rigger's own runtime directory `.rigger` (both dotdirs) - and additionally de-noises
+///   the other tooling dotdirs (`.github`/`.cargo`/`.claude`/`.fastembed_cache`, none of which
+///   is first-party source), replacing the old hardcoded skip-list with the actual declared
+///   rules plus this convention.
+/// - **Root confinement.** Symlinks are NOT followed (`follow_links(false)`), so a link that
+///   escapes the root - or a link cycle - is simply never traversed: the walk can never grow a
+///   cluster for paths outside the canonicalized project, and a cycle cannot form (there is no
+///   visited-set to maintain because there is nothing to loop).
 ///
-/// A directory symlink is descended at most once per canonical target: `visited` holds
-/// the canonicalized path of every directory already entered, so a symlink CYCLE
-/// (`a -> b`, `b -> a`, or a link back to an ancestor) terminates instead of looping
-/// forever / blowing the stack. A target that cannot be canonicalized (a broken link,
-/// a permissions race) falls back to the literal path so a real directory is still read.
+/// Entries are visited in sorted file-name order, so the walk is deterministic; an unreadable
+/// entry (a permissions race, a broken link) is skipped rather than crashing the walk.
 ///
-/// `on_file` returns [`ControlFlow`]: `Break(())` stops the whole walk immediately
-/// (grep uses this to stop once it has collected its `k` hits), `Continue(())` walks on.
-/// The return value propagates up the recursion, so a `Break` unwinds the entire walk.
-pub(crate) fn walk_guarded<F>(
-    dir: &Path,
-    visited: &mut HashSet<PathBuf>,
-    on_file: &mut F,
-) -> ControlFlow<()>
+/// `on_file` receives each regular file (never a directory, never an unfollowed symlink) and
+/// returns [`ControlFlow`]: `Break(())` stops the whole walk immediately (grep uses this to stop
+/// once it has collected its `k` hits), `Continue(())` walks on.
+pub(crate) fn walk_guarded<F>(root: &Path, on_file: &mut F) -> ControlFlow<()>
 where
     F: FnMut(&Path) -> ControlFlow<()>,
 {
-    // Canonicalize this dir and record it BEFORE descending. If canonicalization fails
-    // (permissions, a race) fall back to the literal path so a real dir is still read;
-    // if the canonical path was already visited, a symlink pointed us back into a
-    // subtree we are already walking - stop, or we would loop forever.
-    let canonical = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
-    if !visited.insert(canonical) {
-        return ControlFlow::Continue(());
-    }
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return ControlFlow::Continue(()),
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if path.is_dir() {
-            // Skip the shared VCS / build / dependency / tooling dirs (see `SKIP_DIRS`),
-            // the same set both grounders deny, so the two walks never diverge.
-            if !is_skipped_dir(&name) {
-                walk_guarded(&path, visited, on_file)?;
-            }
-        } else {
-            on_file(&path)?;
+    let walker = ignore::WalkBuilder::new(root)
+        // Skip hidden entries: this is the always-excluded set - the VCS metadata dir `.git` and
+        // rigger's runtime dir `.rigger` (both dotdirs) - plus the other never-source tooling
+        // dotdirs, independent of any ignore file.
+        .hidden(true)
+        // Honor the project's OWN committed ignore rules only, so the scope is a pure function of
+        // the tree (machine-independent, byte-identical rebuilds).
+        .git_ignore(true)
+        .git_global(false)
+        .git_exclude(false)
+        .ignore(false)
+        // Apply committed `.gitignore` even when the tree is not a git checkout (cold build), and
+        // never read ignore files above the root.
+        .require_git(false)
+        .parents(false)
+        // Root confinement: never follow a symlink, so nothing escapes the root and no cycle forms.
+        .follow_links(false)
+        // Deterministic traversal order.
+        .sort_by_file_name(|a, b| a.cmp(b))
+        .build();
+    for dent in walker {
+        // An entry we cannot read (a permissions race, a broken link) is skipped, never a panic.
+        let Ok(entry) = dent else { continue };
+        // Only regular files reach the leaf action: directories are descended by the walker, and
+        // an unfollowed symlink (its `file_type` is the link, not a file) is skipped - confinement.
+        if entry.file_type().is_some_and(|ft| ft.is_file()) {
+            on_file(entry.path())?;
         }
     }
     ControlFlow::Continue(())
@@ -309,14 +289,11 @@ impl Grounder for Grep {
         }
         let needle = query.to_lowercase();
         let mut refs = Vec::new();
-        // Carry a canonical-path visited set so a directory symlink CYCLE (`a -> b`,
-        // `b -> a`, or a link back to an ancestor) terminates instead of looping
-        // forever / blowing the stack. The canonicalize + visited-set cycle guard and the
-        // SKIP_DIRS check live in the SHARED `walk_guarded` skeleton - the same one
-        // turbovec's `collect_files` uses - so the two walks can never drift; this walk's
-        // ONLY leaf action is to search each file's lines, stopping once it has `k` hits.
-        let mut visited = HashSet::new();
-        let _ = walk_guarded(Path::new(&self.root), &mut visited, &mut |path| {
+        // The scope (the project's own ignore rules, the always-excluded dotdirs, and root
+        // confinement) lives in the SHARED `walk_guarded` skeleton - the same one the ingests and
+        // turbovec's `collect_files` use - so no walk can drift from another; this walk's ONLY leaf
+        // action is to search each file's lines, stopping once it has `k` hits.
+        let _ = walk_guarded(Path::new(&self.root), &mut |path| {
             search_file(path, &self.root, &needle, k, &mut refs);
             // Stop the whole walk once we have collected the requested k hits - the
             // early-out that keeps grep from scanning the rest of the tree once full.
@@ -419,21 +396,39 @@ mod tests {
         assert!(empty.precise.is_empty() && empty.safe.is_empty() && !empty.serialize);
     }
 
-    /// The grep grounder's walk must SKIP the shared denied dirs - in particular
-    /// `.fastembed_cache` (the ~128 MB model cache): the documented
-    /// `defaults.grounder: grep` fallback must not index the model blobs. Before the
-    /// shared `SKIP_DIRS` list, grep's walk had a narrower 5-entry skip-list that let
-    /// the cache through. We seed a source file plus a match inside each denied dir and
-    /// assert the grep hits come ONLY from the source file.
+    /// The shared walk (here via the grep grounder, the ungated default) scopes to the project's
+    /// own sources. It skips the ALWAYS-EXCLUDED hidden dotdirs - the VCS metadata `.git`, rigger's
+    /// runtime `.rigger`, and the tooling dotdirs (`.fastembed_cache` the ~128 MB model cache,
+    /// `.github`/`.cargo`/`.claude`) - AND everything the repository's OWN `.gitignore` excludes
+    /// (build outputs, dependency trees), while still finding every in-root source file. We seed a
+    /// source file plus the SAME needle inside each denied dir and assert the hits come ONLY from
+    /// the source file. Ungated: it holds identically in BOTH feature lanes (the walk is ungated).
     #[test]
-    fn grep_walk_skips_the_shared_denied_dirs() {
+    fn grep_walk_scopes_to_the_project_via_gitignore_and_the_always_excluded_dotdirs() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        // A genuine source file whose line MUST be found.
+        // A genuine in-root source file whose line MUST be found.
         std::fs::write(root.join("lib.rs"), "fn find_me() {}\n").unwrap();
-        // A file inside each denied dir containing the SAME needle - it must NOT be
-        // walked. `.fastembed_cache` stands in for the model cache.
-        for denied in SKIP_DIRS {
+        // The project's OWN version-control ignore rules exclude these build / dependency trees.
+        std::fs::write(
+            root.join(".gitignore"),
+            "target/\nnode_modules/\nvendor/\nbuild/\n",
+        )
+        .unwrap();
+        // Two classes of denied dir, each seeded with the SAME needle so any leak surfaces:
+        //  - hidden dotdirs, always excluded regardless of any ignore file (`.git`/`.rigger` are
+        //    the two the spec names; the rest are tooling dotdirs);
+        //  - directories the repository's own `.gitignore` names.
+        let hidden_dotdirs = [
+            ".git",
+            ".rigger",
+            ".fastembed_cache",
+            ".github",
+            ".cargo",
+            ".claude",
+        ];
+        let gitignored = ["target", "node_modules", "vendor", "build"];
+        for denied in hidden_dotdirs.iter().chain(gitignored.iter()) {
             let sub = root.join(denied);
             std::fs::create_dir_all(&sub).unwrap();
             std::fs::write(sub.join("blob.txt"), "fn find_me() {}\n").unwrap();
@@ -451,22 +446,28 @@ mod tests {
         );
         for r in &refs {
             assert!(
-                !SKIP_DIRS.iter().any(|d| r.file.starts_with(d)),
+                hidden_dotdirs
+                    .iter()
+                    .chain(gitignored.iter())
+                    .all(|d| !r.file.starts_with(d)),
                 "grep must not descend into a denied dir; leaked {r:?}"
             );
         }
-        // Exactly the one source file matched, once.
+        // Exactly the one in-root source file matched, once.
         assert_eq!(
             refs.iter().map(|r| r.file.as_str()).collect::<Vec<_>>(),
             vec!["lib.rs"],
-            "only the first-party source file should match; got {refs:?}"
+            "only the first-party in-root source should match; got {refs:?}"
         );
     }
 
     /// The grep grounder's walk must TERMINATE on a directory symlink CYCLE rather than
     /// loop forever / blow the stack. We build a real cycle - `sub/loop -> root` (a link
     /// back to an ancestor) - and assert the walk returns, finds the real match, and
-    /// does not re-enter through the link. A hang here fails the test by timeout.
+    /// does not re-enter through the link. Root confinement makes this hold BY CONSTRUCTION:
+    /// the walk never follows a symlink, so `sub/loop` is simply not traversed and a cycle can
+    /// never form. A hang here (a regression that started following links) fails the test by
+    /// timeout.
     #[test]
     fn grep_walk_terminates_on_a_symlink_cycle() {
         let dir = tempfile::tempdir().unwrap();
@@ -475,8 +476,8 @@ mod tests {
         let sub = root.join("sub");
         std::fs::create_dir(&sub).unwrap();
         std::fs::write(sub.join("nested.rs"), "fn nested_once() {}\n").unwrap();
-        // A directory symlink pointing back up at the root: walking into `sub/loop`
-        // re-enters the whole tree, which without the cycle guard recurses forever.
+        // A directory symlink pointing back up at the root: following `sub/loop` would re-enter
+        // the whole tree and recurse forever. The scoped walk does not follow it.
         std::os::unix::fs::symlink(root, sub.join("loop")).unwrap();
 
         let g = Grep {

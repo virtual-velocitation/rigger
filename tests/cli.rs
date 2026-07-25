@@ -2077,6 +2077,106 @@ fn ingest_project_emits_deterministic_content_keys() {
     );
 }
 
+/// Cross-module scope seam of the shared walk (spec 49, section 3): the ingest walk is scoped to the
+/// project's OWN sources, and because EVERY ingest half rides the ONE shared
+/// `grounder::walk_guarded` skeleton, the SHIPPED `rigger::ingest::ingest_project` authority scopes
+/// BOTH halves at once - the code half (`gc`) AND the design half (`gd`). Proven at the shipped API
+/// edge over a real git repo (the way a live run and a cold `graph build` actually ingest). The
+/// fixture seeds an in-root source carrying BOTH a code entity and inline `// WHY:` rationale (so one
+/// file yields a `gc` and a `gd` key), alongside four never-source locations each seeded with the
+/// SAME shape so a leak surfaces in either half: a directory the repo's OWN committed `.gitignore`
+/// excludes (`build/`); the VCS metadata dir `.git` and rigger's runtime dir `.rigger` (the
+/// always-excluded dotdirs); and a symlink escaping the root (root confinement - the link is never
+/// followed). The DESIGN half is what the implementer's `.rs`-only ingest unit test does not
+/// exercise (its in-root source carries no rationale, so no `gd` batch is produced); driving the
+/// shipped authority proves the shared walk scopes the design half too. A leak from any excluded
+/// path into EITHER half - or a regression that hand-rolled a second, unscoped walk for one
+/// consumer - fails here.
+#[cfg(all(unix, feature = "symbols"))]
+#[test]
+fn ingest_project_scopes_the_walk_to_the_project_across_both_halves() {
+    use std::collections::BTreeSet;
+
+    let dir = temp_project();
+    let root = dir.path();
+    // The symbols grounder persists its index under `.rigger/`, exactly as `graph build`/a run do.
+    std::fs::create_dir_all(root.join(".rigger")).unwrap();
+
+    // (a) The one in-root source the walk MUST ingest, carrying BOTH a code entity (a `gc` batch)
+    // and an inline `// WHY:` rationale (a `gd` batch), so a single file proves both halves.
+    std::fs::write(
+        root.join("keep.rs"),
+        "// WHY: this in-root source is first-party; the scoped walk must ingest it\nfn kept() {}\n",
+    )
+    .unwrap();
+
+    // (b) A build tree the project declares not-source via its OWN committed `.gitignore`.
+    std::fs::write(root.join(".gitignore"), "build/\n").unwrap();
+    // Every excluded location carries the SAME `code + rationale` shape as `keep.rs`, so a leak
+    // would surface as either a `gc/<path>` or a `gd/<path>` key.
+    let decoy = "// WHY: excluded - must never be ingested\nfn decoy() {}\n";
+    for excluded in ["build", ".git", ".rigger"] {
+        std::fs::create_dir_all(root.join(excluded)).unwrap();
+        std::fs::write(root.join(excluded).join("decoy.rs"), decoy).unwrap();
+    }
+
+    // (c) A symlink escaping the root: the file beyond it must never be reached through the link.
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("decoy.rs"), decoy).unwrap();
+    std::os::unix::fs::symlink(outside.path(), root.join("outsider")).unwrap();
+
+    // Drive the SHIPPED ingest authority (the entry `graph build` and the live run share) and
+    // collect the FILE each emitted content key names, split by half.
+    let mut gc_files: BTreeSet<String> = BTreeSet::new();
+    let mut gd_files: BTreeSet<String> = BTreeSet::new();
+    rigger::ingest::ingest_project(root.to_str().unwrap(), |key, _ev| {
+        let (prefix, rest) = key
+            .split_once('/')
+            .unwrap_or_else(|| panic!("key {key:?} must be `<prefix>/<file>@<hash>#<idx>`"));
+        let file = rest.split('@').next().unwrap().to_string();
+        match prefix {
+            "gc" => {
+                gc_files.insert(file);
+            }
+            "gd" => {
+                gd_files.insert(file);
+            }
+            other => panic!("unexpected key prefix {other:?} in {key:?}"),
+        }
+    });
+
+    // Both halves ingested the in-root source: the code half emitted a `gc` key for it ...
+    assert!(
+        gc_files.contains("keep.rs"),
+        "the code half must ingest the in-root source; got gc={gc_files:?}"
+    );
+    // ... and the design half emitted a `gd` key for its `// WHY:` rationale (the half the
+    // implementer's `.rs`-only ingest unit test does not reach).
+    assert!(
+        gd_files.contains("keep.rs"),
+        "the design half must ingest the in-root source's rationale; got gd={gd_files:?}"
+    );
+
+    // No excluded path leaked into EITHER half - not the gitignored build tree, the VCS metadata,
+    // rigger's runtime dir, nor anything reached by escaping the root through the symlink.
+    for file in gc_files.iter().chain(gd_files.iter()) {
+        assert!(
+            !file.starts_with("build/")
+                && !file.starts_with(".git")
+                && !file.starts_with(".rigger")
+                && !file.starts_with("outsider"),
+            "an excluded path leaked into the ingest: {file:?} (gc={gc_files:?}, gd={gd_files:?})"
+        );
+    }
+    // Concretely: across BOTH halves, the walk ingested EXACTLY the one in-root source, nothing else.
+    assert_eq!(
+        &gc_files | &gd_files,
+        BTreeSet::from(["keep.rs".to_string()]),
+        "the scoped walk must ingest only the project's own in-root source; \
+         gc={gc_files:?}, gd={gd_files:?}"
+    );
+}
+
 /// Light-lane contract of the shared ingest authority (spec 45 global constraint): with the
 /// extraction pass off (`--no-default-features`), `rigger::ingest::ingest_project` is a genuine
 /// NO-OP - it emits NOTHING even over a tree that carries real `.rs` source, which is why
