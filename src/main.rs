@@ -1244,6 +1244,22 @@ impl StoreLocation {
     }
 }
 
+/// The [`StoreLocation`] a SERVER-backed project resolves to, anchored at `cwd`. The server
+/// holds ONE remote store, so there is no local `events.db` to walk to: identity binds to the
+/// OWNING root (the main repo root - correct even from a nested worktree, exactly as the sqlite
+/// walk's identity does), and [`resolve_store`] reaches the server by its connection string (the
+/// resolved dir's `events.db` path is ignored for the server backend). This is the ONE
+/// server-location authority every server-backed store access shares - the store-opening couriers
+/// ([`require_store_dir`]) that WRITE and the residue scan's run-liveness read ([`read_run_units`])
+/// that READS - so a server-configured project resolves the SAME store from every path (spec 48,
+/// "one resolution authority"), never a second parallel mapping that could drift.
+fn server_store_location(cwd: &Path) -> StoreLocation {
+    let dir = main_repo_root(cwd)
+        .unwrap_or_else(|| cwd.to_path_buf())
+        .join(RIGGER_DIR);
+    StoreLocation { dir }
+}
+
 /// Resolve the `.rigger` store a store-opening COURIER command (`emit`/`result`/`peers`/
 /// `reported`) must use, REFUSING rather than fabricating a fresh empty store when neither
 /// the current directory nor any ancestor holds one (spec 05, done-when: "store-opening
@@ -1269,12 +1285,10 @@ fn require_store_dir() -> Result<(StoreLocation, StoreSelection), Box<dyn std::e
     // so a courier binds identity to the OWNING root (the main repo root, correct even from a
     // nested worktree, exactly as the sqlite walk's identity does) and lets `resolve_store` reach
     // the server - closing the state-fracture where a worker's bare `rigger result` wrote to local
-    // sqlite while the run lived on the server.
+    // sqlite while the run lived on the server. The same [`server_store_location`] the residue
+    // scan's read resolves through, so write and read agree on the one server store.
     if !sel.is_sqlite() {
-        let dir = main_repo_root(&cwd)
-            .unwrap_or_else(|| cwd.clone())
-            .join(RIGGER_DIR);
-        return Ok((StoreLocation { dir }, sel));
+        return Ok((server_store_location(&cwd), sel));
     }
     let walk = walk_stores_from(&cwd);
     let dir = walk.dir.ok_or_else(|| -> Box<dyn std::error::Error> {
@@ -5730,12 +5744,33 @@ fn leaked_process_advisories(scratch_root: &Path) -> Vec<String> {
 /// (walk UP to the owning store, scope by its identity). No store (a project that never
 /// ran) means no live units, so every scratch worktree and `rigger/u/*` branch reads as
 /// residue.
+///
+/// This reads the DURABLE real run stream, so it resolves WHICH backend through the one
+/// authority ([`store_selection`]) exactly as every other real-run-stream read does
+/// (`dash_read_run`, `canary_stats_lines`, `read_model_drift`): a project configured for the
+/// server backend reads the SERVER's run (spec 48 criterion 1, "a command invoked in a project
+/// configured for the server-backed store resolves that store"), never a stale local sqlite
+/// file. It is NOT local-by-construction like the isolated replay store, so it must not pin
+/// [`StoreSelection::Sqlite`]. Resolution is best-effort - a selection error (only the
+/// server-selected-without-conn case) degrades to sqlite, preserving this scan's contract of
+/// defaulting to "no live units" on any store trouble.
 fn read_run_units(cwd: &Path) -> RunUnits {
-    let Some(dir) = find_store_dir_from(cwd) else {
-        return RunUnits::default();
+    let sel = store_selection(None, None).unwrap_or(StoreSelection::Sqlite);
+    // Resolve the store's OWNING root and identity. For sqlite the durable log is a LOCAL file,
+    // so walk UP to it (as the couriers do); its absence means no run ever happened => no live
+    // units. For the server backend there is no local `events.db` to walk to, so resolve through
+    // the shared [`server_store_location`] (the SAME authority the store-opening couriers'
+    // [`require_store_dir`] server branch uses), binding identity to the main repo root and
+    // letting [`resolve_store`] reach the server.
+    let loc = if sel.is_sqlite() {
+        let Some(dir) = find_store_dir_from(cwd) else {
+            return RunUnits::default();
+        };
+        StoreLocation { dir }
+    } else {
+        server_store_location(cwd)
     };
-    let loc = StoreLocation { dir };
-    let Ok(backend) = resolve_store(&StoreSelection::Sqlite, &loc.file("events.db")) else {
+    let Ok(backend) = resolve_store(&sel, &loc.file("events.db")) else {
         return RunUnits::default();
     };
     let store = Namespaced::new(backend.as_ref(), &loc.identity());

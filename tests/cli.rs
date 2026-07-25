@@ -6047,6 +6047,112 @@ fn validate_scopes_residue_to_the_current_run_flagging_a_prior_runs_abandoned_un
     );
 }
 
+/// Spec 48 criterion 1 (single authority), applied to the `rigger validate` residue scan:
+/// "a command invoked in a project configured for the server-backed store resolves THAT
+/// store." The residue scan reads the CURRENT run's live-unit set to decide which
+/// `rigger-wt-*`/`rigger/u/*` leftovers are LIVE (spared) versus residue (flagged), and that
+/// read (`read_run_units`) walks the DURABLE real run stream - so it must resolve the
+/// configured backend through the one authority, never hardcode local sqlite. This drives the
+/// real binary from OUTSIDE, container-free, and DISCRIMINATES the two backends over the SAME
+/// seeded state:
+///
+///   * a LOCAL sqlite run marks `liveunit` LIVE, and its worktree/branch exist on disk;
+///   * UNCONFIGURED (sqlite default): the scan reads that local run, sees `liveunit` live, and
+///     SPARES its leftovers - the control proving the local run IS read when sqlite is selected;
+///   * SERVER-configured (`KURRENTDB_CONN` set, unreachable): the scan must resolve the SERVER,
+///     NOT the local sqlite - the server holds no such run (and is down), so `liveunit` is not
+///     live and its leftovers are FLAGGED as residue.
+///
+/// A regression that pins `StoreSelection::Sqlite` in `read_run_units` reads the LOCAL run in
+/// BOTH cases, so the server case would wrongly spare `rigger-wt-liveunit` and this test's
+/// server-arm assertion reddens. That pin is the exact anti-pattern spec 48 eradicates - a
+/// command that ignores the configured store - surviving inside the residue scan.
+#[test]
+fn validate_residue_scan_resolves_the_configured_server_not_the_local_sqlite_run() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    git_ok(root, &["add", "-A"]);
+    git_ok(root, &["commit", "-q", "-m", "scaffold"]);
+    seed_store(root);
+
+    // A LOCAL sqlite run whose `liveunit` is in-flight (non-terminal) - the exact shape that,
+    // when READ, spares its leftovers. The whole point is that a server-configured scan must
+    // NOT read this.
+    seed_run_events(
+        root,
+        &[
+            ("RunStarted", r#"{"run":"r1","criteria":["current spec"]}"#),
+            (
+                "UnitStarted",
+                r#"{"id":"liveunit","branch":"rigger/u/liveunit"}"#,
+            ),
+        ],
+    );
+
+    // The unit's deterministic worktree + local branch. Live => spared; not-live => residue.
+    let scratch = root.join("scratchroot");
+    let tmp = scratch.to_str().unwrap();
+    std::fs::create_dir_all(scratch.join("rigger-wt-liveunit")).unwrap();
+    std::fs::write(
+        scratch.join("rigger-wt-liveunit").join("payload.bin"),
+        [0u8; 4096],
+    )
+    .unwrap();
+    git_ok(root, &["branch", "rigger/u/liveunit"]);
+
+    // CONTROL - nothing configured, so the single authority defaults to the LOCAL sqlite log.
+    // The scan reads the seeded run, sees `liveunit` live, and SPARES its leftovers. This proves
+    // the local run genuinely IS read on the sqlite path, so the server-case difference below is
+    // attributable to the store SELECTION, not to some unrelated reason the unit stays unflagged.
+    let (_out, err, ok) = run_rigger_envs(root, &["validate"], &[("RIGGER_TMPDIR", tmp)]);
+    assert!(
+        ok,
+        "validate only warns about residue, still exits 0; stderr:\n{err}"
+    );
+    assert!(
+        !err.contains("rigger-wt-liveunit"),
+        "with sqlite selected, the local run's live unit must be read and its worktree SPARED; \
+         stderr:\n{err}"
+    );
+    assert!(
+        !err.contains("rigger/u/liveunit"),
+        "with sqlite selected, the local run's live branch must be SPARED; stderr:\n{err}"
+    );
+
+    // SERVER-configured via KURRENTDB_CONN (well-formed but unreachable: nothing listens on this
+    // loopback port, so the eager connect is refused fast - we prove WHICH store the scan
+    // resolved, not that a server is up). The residue scan must resolve the SERVER, which holds
+    // no run, so `liveunit` is NOT live and its worktree/branch are FLAGGED. A hardcoded-sqlite
+    // regression reads the LOCAL run here too and would wrongly spare them.
+    let (_out, err, ok) = run_rigger_envs(
+        root,
+        &["validate"],
+        &[
+            ("RIGGER_TMPDIR", tmp),
+            ("KURRENTDB_CONN", "kurrentdb://127.0.0.1:65533?tls=false"),
+        ],
+    );
+    assert!(
+        ok,
+        "validate's residue scan is best-effort: an unreachable configured store degrades to no \
+         live units, it never fails validate; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("rigger-wt-liveunit"),
+        "server-configured: the scan must resolve the SERVER (not the local sqlite run), so the \
+         local run's `liveunit` is NOT seen as live and its worktree is FLAGGED as residue; \
+         stderr:\n{err}"
+    );
+    assert!(
+        err.contains("rigger/u/liveunit"),
+        "server-configured: the local run's branch must likewise be FLAGGED, proving the pinned \
+         sqlite read is gone; stderr:\n{err}"
+    );
+}
+
 /// Spec 05 done-when line 57, clause 2: the empty-repo scaffold path must print a
 /// pointer to the agency-agents collection AND the authoring-agents handbook chapter,
 /// and that pointer must appear ONLY when the default fleet is actually scaffolded -
