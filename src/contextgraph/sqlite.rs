@@ -430,6 +430,34 @@ impl Projection for Projector {
         Ok(())
     }
 
+    /// Fold a whole batch of events in ONE transaction (spec 49's batched-fold cadence): the store's
+    /// transaction cost is paid ONCE for the whole file batch instead of once per event, which is the
+    /// load-bearing fix for a cold `graph build` whose measured throughput was transaction-cadence
+    /// bound. The result is IDENTICAL to folding each event with [`apply`](Projection::apply) in
+    /// order - same per-position idempotency guard (`applied`), same fold - so batching alters
+    /// CADENCE only, never the graph. Atomic: a fold error rolls the whole batch back (the events are
+    /// still durable in the log, and the sink folds best-effort), never a half-applied batch.
+    fn apply_batch(&self, events: &[Event]) -> Result<(), Error> {
+        if events.is_empty() {
+            return Ok(());
+        }
+        let mut guard = self.conn.lock().unwrap();
+        let tx = guard.transaction().map_err(be)?;
+        for e in events {
+            let inserted = tx
+                .execute(
+                    "INSERT OR IGNORE INTO applied (position) VALUES (?1)",
+                    [e.position as i64],
+                )
+                .map_err(be)?;
+            if inserted > 0 {
+                fold(&tx, e, &self.project)?;
+            }
+        }
+        tx.commit().map_err(be)?;
+        Ok(())
+    }
+
     fn subgraph(&self, seed: &[String], depth: i64) -> Result<Graph, Error> {
         let seed_json = serde_json::to_string(seed).map_err(be)?;
         let conn = self.conn.lock().unwrap();
@@ -1402,6 +1430,95 @@ mod tests {
         let g = p.subgraph(&["mod.rs".to_string()], 2).unwrap();
         let governs = g.edges.iter().filter(|e| e.rel == REL_GOVERNS).count();
         assert_eq!(governs, 1, "a replayed event must not double the edge");
+    }
+
+    /// spec 49 criterion 2 (graph side): `apply_batch` folds a WHOLE batch in ONE call to the SAME
+    /// graph that folding each event with `apply` would produce, and stays idempotent per position -
+    /// so the batched-fold cadence changes only the transaction count, never the graph rows.
+    #[test]
+    fn apply_batch_folds_a_batch_equivalently_to_per_event_applies_and_is_idempotent() {
+        let decision = |pos: u64, id: &str, path: &str| -> Event {
+            let payload = serde_json::json!({ "id": id, "summary": "x", "governs": [path], "supersedes": "" });
+            let mut e = Event::new(TYPE_DECISION_MADE, serde_json::to_vec(&payload).unwrap());
+            e.position = pos;
+            e
+        };
+        let batch = vec![
+            decision(1, "d1", "a.rs"),
+            decision(2, "d2", "b.rs"),
+            decision(3, "d3", "c.rs"),
+        ];
+
+        // Reference: fold each event one at a time.
+        let per_event = Projector::open(":memory:", "test").unwrap();
+        for e in &batch {
+            per_event.apply(e).unwrap();
+        }
+
+        // Batched: fold the whole slice in ONE call.
+        let batched = Projector::open(":memory:", "test").unwrap();
+        batched.apply_batch(&batch).unwrap();
+
+        assert_eq!(
+            live_governs(&batched).len(),
+            3,
+            "apply_batch folds all three decisions' GOVERNS edges in one call"
+        );
+        assert_eq!(
+            live_governs(&batched),
+            live_governs(&per_event),
+            "apply_batch yields the SAME graph as folding each event with apply"
+        );
+
+        // Idempotent per position: re-applying the SAME batch at the same positions adds nothing.
+        batched.apply_batch(&batch).unwrap();
+        assert_eq!(
+            live_governs(&batched).len(),
+            3,
+            "re-applying a batch at the same positions must not double any edge"
+        );
+    }
+
+    /// spec 49 criterion 2 (graph side): `apply_batch` is ONE transaction - a fold error partway
+    /// through rolls the WHOLE batch back, so it is never half-applied. This distinguishes the
+    /// single-transaction override from a per-event loop (which would have committed the earlier
+    /// events before the later one failed), pinning the batched cadence itself, not just its result.
+    #[test]
+    fn apply_batch_is_atomic_a_mid_batch_fold_error_rolls_the_whole_batch_back() {
+        // A good decision, then a POISON event: a DecisionMade whose data is not valid JSON, so its
+        // fold errors AFTER the good event has already folded WITHIN the same transaction.
+        let good = {
+            let payload = serde_json::json!({
+                "id": "d1", "summary": "x", "governs": ["a.rs"], "supersedes": ""
+            });
+            let mut e = Event::new(TYPE_DECISION_MADE, serde_json::to_vec(&payload).unwrap());
+            e.position = 1;
+            e
+        };
+        let poison = {
+            let mut e = Event::new(TYPE_DECISION_MADE, b"{ not valid json".to_vec());
+            e.position = 2;
+            e
+        };
+
+        let p = Projector::open(":memory:", "test").unwrap();
+        assert!(
+            p.apply_batch(&[good.clone(), poison]).is_err(),
+            "a fold error must surface from apply_batch"
+        );
+        assert_eq!(
+            live_governs(&p).len(),
+            0,
+            "the good event folded before the poison must be ROLLED BACK with the failed batch"
+        );
+
+        // The `applied` guard was rolled back too, so a retry re-folds the good event cleanly.
+        p.apply(&good).unwrap();
+        assert_eq!(
+            live_governs(&p).len(),
+            1,
+            "after the rollback the good event still folds on its own (its position was not consumed)"
+        );
     }
 
     /// Fold a `DecisionMade` (`id` GOVERNS `path`) from its raw on-log JSON at `pos`, with the

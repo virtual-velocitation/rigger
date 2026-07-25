@@ -2952,28 +2952,38 @@ fn cmd_graph_build(_args: &[String]) -> Res {
         .collect();
 
     // The walk and content key are the shared authority; the cold build's emit SINK appends each
-    // new event to the run stream and folds it into the graph (the code-ingest fold), skipping any
-    // key already seen. There is no run to stamp, so the events carry no run id - matching the
-    // run's own ingest events when no run id is set.
+    // file's WHOLE batch to the run stream in ONE append and folds it into the graph in ONE
+    // transaction (the code-ingest fold), skipping any key already seen. This is spec 49's
+    // batched-fold cadence: the measured cold-build throughput was transaction-cadence bound, so a
+    // per-file batch pays the store's transaction cost ONCE, not once per event. There is no run to
+    // stamp, so the events carry no run id - matching the run's own ingest events when no run id is
+    // set. The batched append-and-fold + position assignment is the SAME shared authority the run's
+    // keyed sink uses ([`rigger::ingest::append_and_fold_batch`]), so a build and a run fold a file's
+    // batch identically.
     let mut appended = 0usize;
-    rigger::ingest::ingest_project(&root, |key, ev| {
-        if !seen.insert(key.to_string()) {
-            return;
-        }
-        let mut folded = ev.clone().with_meta(conductor::META_REPLAY_KEY, key);
-        match store.append(
+    rigger::ingest::ingest_project_batched(&root, |keyed| {
+        // Keep only the not-yet-seen events of this file's batch, stamping each survivor with its
+        // replay key (the same content-keyed dedup a run seeds from the log). A batch already wholly
+        // recorded (an unchanged file on a re-build) survives to nothing and appends nothing.
+        let survivors: Vec<Event> = keyed
+            .iter()
+            .filter(|(key, _)| seen.insert(key.clone()))
+            .map(|(key, ev)| {
+                (*ev)
+                    .clone()
+                    .with_meta(conductor::META_REPLAY_KEY, key.as_str())
+            })
+            .collect();
+        // Fold best-effort, exactly as the run's batched append-and-fold does: a fold failure must
+        // not fail the ingest, which already landed durably in the log.
+        match rigger::ingest::append_and_fold_batch(
+            &store,
+            Some(&graph as &dyn Projection),
             conductor::STREAM,
-            ExpectedRevision::Any,
-            std::slice::from_ref(&folded),
+            &survivors,
         ) {
-            Ok(pos) => {
-                // Fold best-effort, exactly as the run's `append_and_fold` does: a fold failure must
-                // not fail the ingest, which already landed durably in the log.
-                folded.position = pos;
-                let _ = graph.apply(&folded);
-                appended += 1;
-            }
-            Err(e) => eprintln!("graph build: skipping an event that failed to append: {e}"),
+            Ok(_) => appended += survivors.len(),
+            Err(e) => eprintln!("graph build: skipping a batch that failed to append: {e}"),
         }
     });
 

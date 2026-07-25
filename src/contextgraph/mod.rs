@@ -375,6 +375,23 @@ pub trait Projection: Send + Sync {
     /// Fold a single event into the graph, idempotently per global position.
     fn apply(&self, e: &Event) -> Result<(), Error>;
 
+    /// Fold a whole batch of events into the graph in ONE transaction, idempotently per global
+    /// position - the batched analogue of [`apply`](Projection::apply). The result is exactly what
+    /// applying each event in order would produce; the only difference is transaction CADENCE.
+    ///
+    /// The default folds each event through [`apply`](Projection::apply) (one transaction per
+    /// event), so an implementation with no cheaper batch path is unaffected and every `apply`
+    /// still runs. The sqlite [`Projector`](crate::contextgraph::sqlite::Projector) OVERRIDES it to
+    /// open ONE transaction for the whole batch: that is what lets an ingest sink fold a file's
+    /// whole batch at the store's transaction cost of ONE commit instead of one per event (spec 49
+    /// - the measured cold-build throughput was transaction-cadence bound, not parse-bound).
+    fn apply_batch(&self, events: &[Event]) -> Result<(), Error> {
+        for e in events {
+            self.apply(e)?;
+        }
+        Ok(())
+    }
+
     /// The connected subgraph reachable from any seed within depth hops,
     /// following only currently valid edges (the FEED arc / an agent's blast radius).
     fn subgraph(&self, seed: &[String], depth: i64) -> Result<Graph, Error>;

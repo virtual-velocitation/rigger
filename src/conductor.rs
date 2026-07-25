@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 
 use crate::config::{AgentDef, Config, Stage};
 use crate::contextgraph::{self, Graph, Projection};
-use crate::eventstore::{Direction, Event, EventStore, ExpectedRevision};
+use crate::eventstore::{Direction, Event, EventStore};
 use crate::failure::{self, Signal};
 use crate::gate::{self, Gate};
 use crate::grounder::{BlastRadius, Grounder};
@@ -1999,26 +1999,46 @@ impl RunCtx<'_> {
     /// expected-revision handling, the position stamp, and the post-append graph fold
     /// live in ONE place and can never silently diverge (finding
     /// arch-emit-keyed-dup-authority).
-    fn append_and_fold(&self, mut ev: Event) -> Result<u64, Error> {
-        // Stamp the run id on every conductor-emitted event (spec 06, unit 1): the one
-        // chokepoint every emit path routes through, so unit/status/gate-verdict/spec-
-        // defect events are all attributable to their run. Skipped only when the run id
-        // is empty (the pure-helper test context, which appends nothing meaningful).
-        if !self.run_id.is_empty() {
-            ev = ev.with_meta(crate::run::META_RUN_ID, &self.run_id);
+    fn append_and_fold(&self, ev: Event) -> Result<u64, Error> {
+        // A single event is the one-event case of the batched authority, so run-id stamping, the
+        // append, and the graph fold live in exactly ONE place (finding arch-emit-keyed-dup-authority
+        // stays closed - there is no second append+fold path to drift). The returned position is the
+        // appended log position a caller may CITE later (the content-address cache's green-verdict
+        // provenance, spec 12 unit 1); the un-citing emit wrappers discard it.
+        self.append_and_fold_batch(std::slice::from_ref(&ev))
+    }
+
+    /// The conductor's batched event-mutation authority: append a whole slice of already-built
+    /// events to the run stream in ONE append and fold them into the live graph in ONE transaction
+    /// (spec 49's batched-fold cadence - one transaction per file's batch, not per event, since the
+    /// measured cold-build throughput was transaction-cadence bound). Run-id stamping stays the one
+    /// chokepoint here (spec 06, unit 1), and the batched append-and-fold + position assignment is
+    /// the shared [`crate::ingest::append_and_fold_batch`] authority a cold `rigger graph build`
+    /// also uses, so the run and a cold build can never fold a file's batch differently.
+    /// [`append_and_fold`](RunCtx::append_and_fold) is the one-event case; returns the last appended
+    /// position.
+    fn append_and_fold_batch(&self, events: &[Event]) -> Result<u64, Error> {
+        if events.is_empty() {
+            return Ok(0);
         }
-        let pos =
-            self.deps
-                .store
-                .append(STREAM, ExpectedRevision::Any, std::slice::from_ref(&ev))?;
-        if let Some(g) = self.deps.graph {
-            ev.position = pos;
-            let _ = g.apply(&ev);
-        }
-        // Return the appended log position so a caller that must CITE this event later
-        // (the content-address cache's green-verdict provenance, spec 12 unit 1) can
-        // record it; the un-citing emit wrappers discard it.
-        Ok(pos)
+        // Stamp the run id on every event (spec 06, unit 1) - the one chokepoint every emit path
+        // routes through, so unit/status/gate-verdict/spec-defect events are all attributable to
+        // their run. Skipped only when the run id is empty (the pure-helper test context, which
+        // appends nothing meaningful).
+        let stamped: Vec<Event> = if self.run_id.is_empty() {
+            events.to_vec()
+        } else {
+            events
+                .iter()
+                .map(|e| e.clone().with_meta(crate::run::META_RUN_ID, &self.run_id))
+                .collect()
+        };
+        Ok(crate::ingest::append_and_fold_batch(
+            self.deps.store,
+            self.deps.graph,
+            STREAM,
+            &stamped,
+        )?)
     }
 
     /// Emit an event, optionally stamping the acting agent in its metadata (the
@@ -2099,6 +2119,40 @@ impl RunCtx<'_> {
             }
         }
         self.append_and_fold(ev).map(|_| ())
+    }
+
+    /// The batched analogue of [`emit_keyed`](RunCtx::emit_keyed): given a file's WHOLE keyed batch,
+    /// drop the events whose key is already recorded (the replay dedup, UNCHANGED - an already-seen
+    /// key appends nothing), then append the SURVIVORS in ONE transaction and fold them in ONE graph
+    /// transaction via [`append_and_fold_batch`](RunCtx::append_and_fold_batch) (spec 49's per-file
+    /// cadence). Each survivor is rebuilt exactly as `emit_keyed` builds it - a fresh event carrying
+    /// the replay key, its payload round-tripped through the same serialize path - and an event whose
+    /// data is not JSON is skipped exactly as the per-event `from_slice` guard skips it (BEFORE its
+    /// key is recorded), so batching changes transaction CADENCE only, never event content, order, or
+    /// the dedup contract. The dedup lock is held only around the set (released before the append),
+    /// so concurrent units in a wave still append their own keyed events in parallel.
+    ///
+    /// Symbols-gated: its only caller is the code-ingest sink, which the light lane compiles out.
+    #[cfg(feature = "symbols")]
+    fn emit_keyed_batch(&self, keyed: &[(String, &Event)]) -> Result<(), Error> {
+        let survivors: Vec<Event> = {
+            let mut keys = self.replayed_keys.lock().unwrap();
+            keyed
+                .iter()
+                .filter_map(|(key, ev)| {
+                    // The `from_slice` guard runs BEFORE the dedup insert, exactly as the per-event
+                    // sink does (`if let Ok(payload) = from_slice { emit_keyed(..) }`), so a non-JSON
+                    // event neither appends nor records its key.
+                    let payload: Value = serde_json::from_slice(&ev.data).ok()?;
+                    if !keys.insert(key.clone()) {
+                        return None;
+                    }
+                    let data = serde_json::to_vec(&payload).ok()?;
+                    Some(Event::new(&ev.type_, data).with_meta(META_REPLAY_KEY, key.as_str()))
+                })
+                .collect()
+        };
+        self.append_and_fold_batch(&survivors).map(|_| ())
     }
 
     /// The requested model ALIAS an agent is spawned with for `attempt` - the cascade rung
@@ -6453,20 +6507,20 @@ impl RunCtx<'_> {
         }
         let root = self.deps.repo.clone();
         // The walk over the project's per-file extraction batches AND their `<prefix>/<file>@<hash>#<i>`
-        // content key are the shared ingest authority ([`crate::ingest::ingest_project`]) - the SAME
-        // walk and keying a standalone `rigger graph build` uses, so the two can never fork the key an
-        // event is deduped under. The run's emit SINK is its replay-keyed, concurrency-safe
-        // [`emit_keyed`](RunCtx::emit_keyed): each event is appended-and-folded through the single
-        // mutation authority, keyed so a re-ingest of an UNCHANGED file finds every key already
-        // recorded (seeded into `replayed_keys` at run start) and appends nothing, while a CHANGED
-        // file's batch hashes differently - every key differs, so the whole batch, its `fresh` head
-        // included, re-emits and supersedes the file's prior structural edges by 29a's mechanism. The
-        // per-event lock granularity is preserved (the sink calls `emit_keyed` once per event), so a
-        // concurrent unit in the wave still appends its own keyed events in parallel.
-        crate::ingest::ingest_project(&root, |key, ev| {
-            if let Ok(payload) = serde_json::from_slice::<Value>(&ev.data) {
-                let _ = self.emit_keyed(key, &ev.type_, payload);
-            }
+        // content key are the shared ingest authority ([`crate::ingest::ingest_project_batched`]) - the
+        // SAME walk and keying a standalone `rigger graph build` uses, so the two can never fork the
+        // key an event is deduped under. The run's emit SINK is its replay-keyed, concurrency-safe
+        // [`emit_keyed_batch`](RunCtx::emit_keyed_batch): a file's WHOLE batch is appended-and-folded
+        // through the single mutation authority in ONE store transaction and ONE graph transaction
+        // (spec 49's batched-fold cadence, since the measured cold-build throughput was
+        // transaction-cadence bound), keyed so a re-ingest of an UNCHANGED file finds every key
+        // already recorded (seeded into `replayed_keys` at run start) and appends nothing, while a
+        // CHANGED file's batch hashes differently - every key differs, so the whole batch, its `fresh`
+        // head included, re-emits and supersedes the file's prior structural edges by 29a's mechanism.
+        // The dedup lock is held only around the key set (released before the append), so a concurrent
+        // unit in the wave still appends its own keyed events in parallel.
+        crate::ingest::ingest_project_batched(&root, |keyed| {
+            let _ = self.emit_keyed_batch(keyed);
         });
     }
 
@@ -8469,7 +8523,7 @@ mod tests {
     use super::*;
     use crate::config;
     use crate::eventstore::sqlite::Store;
-    use crate::eventstore::Filter;
+    use crate::eventstore::{ExpectedRevision, Filter};
     use crate::gate::ExecRunner;
     use std::path::Path;
 
@@ -12174,6 +12228,161 @@ mod tests {
             g.nodes.iter().any(|n| n.kind == contextgraph::KIND_CODE_ENTITY
                 && n.attrs.get("name").map(String::as_str) == Some("replacement_symbol")),
             "the re-ingest must fold the changed file's new symbol into the graph; graph was:\n{g:#?}"
+        );
+    }
+
+    /// Spec 49 criterion 2 (BATCHED FOLD CADENCE): the run's ingest sink appends each file's WHOLE
+    /// batch in ONE store append and folds it in ONE graph transaction - NOT one append and one
+    /// fold per event. The measured cold-build throughput (69 events/s) was transaction-cadence
+    /// bound, so this is the load-bearing fix: a K-file fixture where every file yields a
+    /// MULTI-EVENT batch (a def plus a reference to it = a `CodeEntityExtracted` AND an
+    /// `EdgeInferred`) must produce one append and one `apply_batch` PER FILE, and never a per-event
+    /// `apply`. This criterion owns the batching only; it does not assert parallelism (criterion 1),
+    /// so it drives the sink at the default width and asserts nothing about worker engagement.
+    #[cfg(feature = "symbols")]
+    #[test]
+    fn the_ingest_sink_appends_and_folds_once_per_file_batch_never_once_per_event() {
+        use std::sync::Mutex as SpyMutex;
+
+        // A store spy: forwards to a real in-memory store but records the SIZE of every append, so
+        // the test can prove the ingest issues ONE append per file batch (not one per event).
+        struct CountingStore<'a> {
+            inner: &'a dyn EventStore,
+            appends: SpyMutex<Vec<usize>>,
+        }
+        impl EventStore for CountingStore<'_> {
+            fn append(
+                &self,
+                stream: &str,
+                expected: ExpectedRevision,
+                events: &[Event],
+            ) -> Result<crate::eventstore::Position, crate::eventstore::Error> {
+                self.appends.lock().unwrap().push(events.len());
+                self.inner.append(stream, expected, events)
+            }
+            fn read_stream(
+                &self,
+                stream: &str,
+                from: crate::eventstore::Revision,
+                dir: Direction,
+            ) -> Result<Vec<Event>, crate::eventstore::Error> {
+                self.inner.read_stream(stream, from, dir)
+            }
+            fn read_all(
+                &self,
+                from: crate::eventstore::Position,
+                dir: Direction,
+                filter: &Filter,
+            ) -> Result<Vec<Event>, crate::eventstore::Error> {
+                self.inner.read_all(from, dir, filter)
+            }
+            fn subscribe_all(
+                &self,
+                from: crate::eventstore::Position,
+                filter: &Filter,
+            ) -> Result<crate::eventstore::Subscription, crate::eventstore::Error> {
+                self.inner.subscribe_all(from, filter)
+            }
+            fn subscribe_stream(
+                &self,
+                stream: &str,
+                from: crate::eventstore::Revision,
+            ) -> Result<crate::eventstore::Subscription, crate::eventstore::Error> {
+                self.inner.subscribe_stream(stream, from)
+            }
+        }
+
+        // A graph spy: counts per-EVENT folds (`apply`) and records the size of every per-BATCH fold
+        // (`apply_batch`), so the test can prove the ingest folds a file's whole batch in ONE
+        // `apply_batch` call and NEVER an `apply` per event.
+        #[derive(Default)]
+        struct CountingGraph {
+            per_event: AtomicU32,
+            batch_folds: SpyMutex<Vec<usize>>,
+        }
+        impl Projection for CountingGraph {
+            fn apply(&self, _e: &Event) -> Result<(), contextgraph::Error> {
+                self.per_event.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+            fn apply_batch(&self, events: &[Event]) -> Result<(), contextgraph::Error> {
+                self.batch_folds.lock().unwrap().push(events.len());
+                Ok(())
+            }
+            fn subgraph(&self, _s: &[String], _d: i64) -> Result<Graph, contextgraph::Error> {
+                Ok(Graph::default())
+            }
+            fn resolve(&self, _m: &str) -> Result<Option<String>, contextgraph::Error> {
+                Ok(None)
+            }
+        }
+
+        // K source files, each a MULTI-EVENT batch: `defN` (a CodeEntityExtracted) and `useN` which
+        // references it (an EdgeInferred). So a file's batch carries >1 event and "one transaction
+        // for the whole batch" is observably different from "one transaction per event".
+        const K: usize = 4;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        for i in 0..K {
+            std::fs::write(
+                root.join(format!("src/m{i}.rs")),
+                format!("pub fn def{i}() {{}}\npub fn use{i}() {{ def{i}(); }}\n"),
+            )
+            .unwrap();
+        }
+        let root_str = root.to_str().unwrap().to_string();
+
+        let inner = Store::open(":memory:").unwrap();
+        let store = CountingStore {
+            inner: &inner,
+            appends: SpyMutex::new(Vec::new()),
+        };
+        let graph = CountingGraph::default();
+        let driver = Stub::new();
+        let grounder = StubGrounder {
+            by_query: HashMap::new(),
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: root_str,
+            grounder: Some(&grounder),
+            graph: Some(&graph),
+            criteria: Vec::new(),
+        };
+        let cfg = Config::default();
+        let ctx = RunCtx::for_test(&cfg, &deps);
+
+        ctx.ingest_project_batches();
+
+        let appends = store.appends.lock().unwrap().clone();
+        let batch_folds = graph.batch_folds.lock().unwrap().clone();
+        let per_event = graph.per_event.load(Ordering::SeqCst);
+
+        // One append per file batch: exactly K appends (each code file is one batch; this pure-source
+        // fixture carries no design docs, so the design half emits nothing).
+        assert_eq!(
+            appends.len(),
+            K,
+            "one append per file batch: {K} files => {K} appends; got sizes {appends:?}"
+        );
+        // Each file's whole batch appended as a UNIT: at least one append carried more than one event
+        // (a def and its reference), so this is not a disguised per-event append of size 1.
+        assert!(
+            appends.iter().any(|&n| n >= 2),
+            "a file's multi-event batch (def + reference) must append as one unit; got {appends:?}"
+        );
+        // The fold cadence matches the append cadence exactly: one `apply_batch` per append, carrying
+        // the SAME events, and NEVER a per-event `apply`.
+        assert_eq!(
+            batch_folds, appends,
+            "each file batch folds in exactly one apply_batch of the same size it appended in"
+        );
+        assert_eq!(
+            per_event, 0,
+            "the batched fold must never fold one event at a time (apply); got {per_event} apply calls"
         );
     }
 
