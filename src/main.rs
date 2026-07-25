@@ -11203,6 +11203,49 @@ mod tests {
         );
     }
 
+    /// Spec 48, criterion 4 - NO TOPOLOGY OPINIONS, the resolver's half. The selection chain is a
+    /// pure conduit for the connection string: whichever rung supplies it - an explicit `--conn`
+    /// flag, the `KURRENTDB_CONN` environment, or the `.rigger/store.conn` secret file - the string
+    /// reaches `StoreSelection::Server` BYTE FOR BYTE. The resolver strips no credential, normalizes
+    /// no TLS parameter, and rewrites no host; the only code that ever interprets the address is the
+    /// adapter's client (proven in `eventstore::kurrentdb`). Exercised with a REMOTE, TLS-secured,
+    /// CREDENTIALED address - nothing a localhost default would produce - through each credential
+    /// rung, asserting the resolved string is identical to the input. Hermetic: a temp `.rigger`
+    /// and threaded environment, so no process-env mutation and deterministic under parallelism.
+    #[test]
+    fn store_selection_preserves_a_credentialed_tls_conn_verbatim() {
+        use std::fs;
+        let tmp = tempfile::tempdir().unwrap();
+        let rigger_dir = tmp.path().join(".rigger");
+        fs::create_dir_all(&rigger_dir).unwrap();
+
+        // A remote host, TLS on, real credentials, a non-default port: every part a topology
+        // opinion (a localhost default, a forced tls=false, a dropped credential) would corrupt.
+        let conn = "kurrentdb://operator:s3cr3t@events.internal.example:2113?tls=true";
+        let expected = StoreSelection::Server(conn.to_string());
+
+        // Rung 1: an explicit --conn flag reaches Server verbatim.
+        assert_eq!(
+            store_selection_at(None, Some(conn), None, &rigger_dir).unwrap(),
+            expected,
+            "a --conn flag reaches the adapter verbatim - the resolver injects no topology opinion"
+        );
+        // Rung 2: the KURRENTDB_CONN environment value reaches Server verbatim.
+        assert_eq!(
+            store_selection_at(None, None, Some(conn.to_string()), &rigger_dir).unwrap(),
+            expected,
+            "the environment connection string reaches the adapter verbatim"
+        );
+        // Rung 3: the .rigger/store.conn secret file reaches Server verbatim (no surrounding
+        // whitespace, so the file rung's line-trim leaves the address itself untouched).
+        fs::write(rigger_dir.join("store.conn"), conn).unwrap();
+        assert_eq!(
+            store_selection_at(None, None, None, &rigger_dir).unwrap(),
+            expected,
+            "the secret-file connection string reaches the adapter verbatim"
+        );
+    }
+
     /// Spec 48, criterion 2 - PRECEDENCE. `store_selection_at` resolves the event-log backend
     /// from the configuration sources in one STRICT order every command shares: an explicit flag
     /// beats the environment beats the local secret file (`.rigger/store.conn`) beats the
