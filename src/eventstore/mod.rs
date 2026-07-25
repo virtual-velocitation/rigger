@@ -290,8 +290,21 @@ pub fn redact_conn(s: &str) -> String {
         let after = scheme_end + "://".len();
         out.push_str(&rest[..after]);
         let tail = &rest[after..];
-        // The authority ends at the first path / query / fragment delimiter (or the end of string).
-        let auth_end = tail.find(['/', '?', '#']).unwrap_or(tail.len());
+        // The authority ends at the first path / query / fragment delimiter OR at the start of the
+        // next URL's `://`, whichever comes first (or the end of string). Bounding at the next
+        // `://` is load-bearing: without it, a message that names two servers back-to-back with no
+        // `/`, `?`, or `#` between them (`...@h1 kurrentdb://u2:p2@h2`, or comma/paren-delimited
+        // `...@h1,kurrentdb://u2:p2@h2`) lets this authority run PAST the current URL and swallow
+        // the next scheme, so the leftover `//user:pass@host` no longer begins with a `scheme://`
+        // and is never re-scanned - leaking the second credential verbatim. Bounding here scrubs
+        // EVERY URL's userinfo whatever the delimiter between URLs, so the single authority holds
+        // for one server named twice (the parse error's double-embed) as well as many named once.
+        let auth_end = tail
+            .find(['/', '?', '#'])
+            .into_iter()
+            .chain(tail.find("://"))
+            .min()
+            .unwrap_or(tail.len());
         let authority = &tail[..auth_end];
         // Userinfo is separated from the host by the LAST `@` inside the authority (a bare `@` never
         // appears in a host, and userinfo cannot contain an unencoded `@`), so anything before it is
