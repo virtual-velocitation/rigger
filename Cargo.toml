@@ -55,6 +55,14 @@ serde = { version = "1", features = ["derive"] }
 regex = "1"
 serde_json = "1"
 serde_yaml = "0.9"
+# The shared project walk (`grounder::walk_guarded`) scopes ingest + grounding to the
+# project's own sources by honoring the repository's OWN version-control ignore rules
+# (spec 49, section 3). This is the canonical, well-tested pure-Rust gitignore engine:
+# no system libraries, so it compiles in BOTH feature lanes (the walk is UNGATED - it
+# serves the light `grep` grounder too). We use only its
+# committed-`.gitignore` matching (global + `.git/info/exclude` disabled) so the scoping
+# is machine-independent and the same tree yields a byte-identical graph. Non-optional.
+ignore = "0.4"
 uuid = { version = "1", features = ["v4"] }
 thiserror = "2"
 # Cross-process advisory file lock (`flock` under the hood) that SERIALIZES `rigger step`

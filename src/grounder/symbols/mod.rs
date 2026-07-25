@@ -54,15 +54,14 @@ use crate::grounder::symbols::model::{Lang, SymbolIndex};
 #[cfg(feature = "symbols")]
 use crate::grounder::walk_guarded;
 #[cfg(feature = "symbols")]
-use std::collections::HashSet;
-#[cfg(feature = "symbols")]
 use std::ops::ControlFlow;
 #[cfg(feature = "symbols")]
 use std::path::Path;
 
-/// Build the whole-project index over `root`: walk the tree with the SHARED skip-dirs + cycle
-/// guard (`walk_guarded`, the same walk grep and turbovec use, so the three never diverge), and
-/// for each file whose extension the registry resolves, extract its symbols under its
+/// Build the whole-project index over `root`: walk the tree with the SHARED scoped walk
+/// (`walk_guarded`, the same walk grep, turbovec, and the ingests use, so they never diverge on
+/// which files count), and for each file whose extension the registry resolves, extract its symbols
+/// under its
 /// normalized relative path. A file whose extension is unregistered is skipped; a file that
 /// cannot be read, or whose parse recovers to no symbols, contributes whatever the tags run
 /// produced and NEVER crashes the walk. `override_lang` forces one language for every file
@@ -70,8 +69,7 @@ use std::path::Path;
 #[cfg(feature = "symbols")]
 pub fn build_index(root: &str, override_lang: Option<Lang>) -> SymbolIndex {
     let mut idx = SymbolIndex::default();
-    let mut visited = HashSet::new();
-    let _ = walk_guarded(Path::new(root), &mut visited, &mut |path| {
+    let _ = walk_guarded(Path::new(root), &mut |path| {
         let rel = path
             .strip_prefix(root)
             .unwrap_or(path)

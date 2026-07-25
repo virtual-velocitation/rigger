@@ -191,4 +191,74 @@ mod tests {
             parallel_stats.batches_emitted
         );
     }
+
+    /// Criterion 4 (the SCOPED WALK): the ingest walk is scoped to the project's own sources. A
+    /// fixture tree with (a) an in-root source file the project keeps, (b) a directory the
+    /// project's OWN `.gitignore` excludes, (c) the VCS metadata directory `.git`, (d) rigger's
+    /// runtime directory `.rigger`, and (e) a symlink escaping the root, must ingest EVERY in-root
+    /// source file and NONE of the excluded paths - so the graph grows no cluster for tooling,
+    /// ignored, or out-of-root paths. This owns the walk scope and root confinement: the scoping
+    /// rides the ONE shared `walk_guarded` authority, so proving it here proves it for every ingest
+    /// half (code and design) that walk drives.
+    #[test]
+    fn ingest_scopes_the_walk_to_the_project_and_never_escapes_the_root() {
+        use std::collections::BTreeSet;
+        let root_dir = tempfile::tempdir().unwrap();
+        let root = root_dir.path();
+        // (a) an in-root source file the walk MUST ingest.
+        std::fs::write(root.join("keep.rs"), "fn kept() {}\n").unwrap();
+        // (b) a build directory the project declares not-source via its OWN version-control
+        // ignore rules (a real `.gitignore` at the root naming `build/`).
+        std::fs::write(root.join(".gitignore"), "build/\n").unwrap();
+        std::fs::create_dir(root.join("build")).unwrap();
+        std::fs::write(root.join("build").join("gen.rs"), "fn generated() {}\n").unwrap();
+        // (c) the VCS metadata directory and (d) rigger's runtime directory - never source.
+        std::fs::create_dir(root.join(".git")).unwrap();
+        std::fs::write(root.join(".git").join("hook.rs"), "fn vcs_internal() {}\n").unwrap();
+        std::fs::create_dir(root.join(".rigger")).unwrap();
+        std::fs::write(
+            root.join(".rigger").join("state.rs"),
+            "fn runtime_state() {}\n",
+        )
+        .unwrap();
+        // (e) a symlink escaping the root: a subdirectory link pointing at an OUTSIDE tree, whose
+        // file must never be reached through the link.
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("escaped.rs"), "fn out_of_root() {}\n").unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.join("outsider")).unwrap();
+
+        // Ingest at width 1 (scope is width-independent) and collect the FILE each emitted content
+        // key names (`<prefix>/<file>@<hash>#<i>`).
+        let mut files: BTreeSet<String> = BTreeSet::new();
+        ingest_project_paced(root.to_str().unwrap(), 1, |key, _ev: &Event| {
+            if let Some((_, rest)) = key.split_once('/') {
+                if let Some(file) = rest.split('@').next() {
+                    files.insert(file.to_string());
+                }
+            }
+        });
+
+        // Every in-root source file is ingested.
+        assert!(
+            files.contains("keep.rs"),
+            "the in-root source file must be ingested; got {files:?}"
+        );
+        // NONE of the excluded paths leak in - not the gitignored build dir, the VCS metadata, the
+        // rigger runtime dir, nor anything reached by escaping the root through the symlink.
+        for f in &files {
+            assert!(
+                !f.starts_with("build/")
+                    && !f.starts_with(".git")
+                    && !f.starts_with(".rigger")
+                    && !f.starts_with("outsider"),
+                "an excluded path leaked into the ingest: {f:?} (all ingested: {files:?})"
+            );
+        }
+        // Concretely: the walk ingests EXACTLY the one in-root source file, nothing else.
+        assert_eq!(
+            files,
+            BTreeSet::from(["keep.rs".to_string()]),
+            "the walk ingests only the project's own in-root source; got {files:?}"
+        );
+    }
 }
