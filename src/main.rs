@@ -182,7 +182,7 @@ enum StoreKind {
 /// positional spec path, and whether to force a fresh run.
 struct RunArgs {
     driver: DriverKind,
-    store: StoreKind,
+    store: Option<StoreKind>,
     conn: Option<String>,
     spec: Option<String>,
     /// `--fresh`: begin a NEW run for the spec's criteria even when the latest run in the
@@ -208,7 +208,7 @@ struct RunArgs {
 /// are rejected (§10).
 fn parse_run_args(args: &[String]) -> Result<RunArgs, Box<dyn std::error::Error>> {
     let mut driver = DriverKind::Cli;
-    let mut store = StoreKind::Sqlite;
+    let mut store = None;
     let mut conn = None;
     let mut spec = None;
     let mut fresh = false;
@@ -241,8 +241,8 @@ fn parse_run_args(args: &[String]) -> Result<RunArgs, Box<dyn std::error::Error>
             "--eventstore" => {
                 i += 1;
                 store = match args.get(i).map(String::as_str) {
-                    Some("sqlite") => StoreKind::Sqlite,
-                    Some("kurrentdb") => StoreKind::KurrentDb,
+                    Some("sqlite") => Some(StoreKind::Sqlite),
+                    Some("kurrentdb") => Some(StoreKind::KurrentDb),
                     other => {
                         return Err(format!(
                             "run: --eventstore expects sqlite|kurrentdb, got {other:?}"
@@ -303,33 +303,111 @@ fn resolve_run_base(argv_base: Option<&str>, env_base: Option<&str>) -> (String,
     }
 }
 
-/// Construct the selected event-store backend as a boxed port (§10). `sqlite` (the
-/// default) opens the embedded file under `.rigger/`; `kurrentdb` is compiled into
-/// every build (spec 47) and reads its connection string from `--conn` or
-/// `KURRENTDB_CONN`, failing with a clear missing-connection error when neither is
-/// set.
-fn open_store(
-    kind: StoreKind,
-    conn: Option<&str>,
-) -> Result<Box<dyn EventStore>, Box<dyn std::error::Error>> {
-    match kind {
-        StoreKind::Sqlite => Ok(Box::new(Store::open(&db_path("events.db"))?)),
-        StoreKind::KurrentDb => open_kurrentdb(conn),
+/// Which event-log backend a command resolves to (§48, "one resolution authority"): the
+/// embedded sqlite default, or the server backend addressed by a connection string. Produced
+/// by [`store_selection`] (which owns the precedence among the configuration sources) and
+/// consumed by [`resolve_store`] (which owns the construction) and the courier locator
+/// [`require_store_dir`] (which needs to know whether a local `events.db` is even required).
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum StoreSelection {
+    /// The embedded sqlite event log. Its store is the file the caller resolves; the isolated
+    /// replay store and the local identity migration are sqlite by construction and pass this.
+    Sqlite,
+    /// The server backend, addressed by this verbatim connection string.
+    Server(String),
+}
+
+impl StoreSelection {
+    /// Whether this selection is the embedded sqlite backend (whose store is a local file).
+    fn is_sqlite(&self) -> bool {
+        matches!(self, StoreSelection::Sqlite)
     }
 }
 
-/// Open the KurrentDB server backend (spec 47: always compiled in). The connection
-/// string comes from `--conn` or the `KURRENTDB_CONN` env var; without either, this
-/// fails with a clear missing-connection error rather than a dead end - the adapter
-/// is present, it just needs a server to point at.
-fn open_kurrentdb(conn: Option<&str>) -> Result<Box<dyn EventStore>, Box<dyn std::error::Error>> {
-    let conn = conn
+/// Open the embedded sqlite event log at `path`. This is the ONE sqlite event-log constructor
+/// (§48, the single authority): [`resolve_store`] boxes it as the port for every command, and
+/// the local identity migration - which needs the concrete [`Store`] for its stream-rename
+/// maintenance - constructs through here too, so the sqlite backend is built at exactly one
+/// call site. The structural test in `tests/store_resolution.rs` pins that.
+fn open_sqlite_store(path: &str) -> Result<Store, Box<dyn std::error::Error>> {
+    Ok(Store::open(path)?)
+}
+
+/// The `KURRENTDB_CONN` connection string from the environment, treating an empty value as
+/// unset so a stray `KURRENTDB_CONN=` never selects the server with no address.
+fn env_conn() -> Option<String> {
+    std::env::var("KURRENTDB_CONN")
+        .ok()
+        .filter(|s| !s.is_empty())
+}
+
+/// Resolve the server connection string from the explicit `--conn` flag or the environment,
+/// erroring clearly (naming both channels) when the server backend is selected with neither.
+/// The precedence criterion widens this error to name the local secret file as the third
+/// channel; unit-1 names the two channels it resolves.
+fn resolve_conn(flag_conn: Option<&str>) -> Result<String, Box<dyn std::error::Error>> {
+    flag_conn
+        .filter(|s| !s.is_empty())
         .map(str::to_string)
-        .or_else(|| std::env::var("KURRENTDB_CONN").ok())
-        .ok_or(
-            "run: --eventstore kurrentdb needs a connection string via --conn <url> or KURRENTDB_CONN",
-        )?;
-    Ok(Box::new(rigger::eventstore::kurrentdb::Store::open(&conn)?))
+        .or_else(env_conn)
+        .ok_or_else(|| {
+            "the server event store is selected but no connection string is set - provide one via --conn <url> or the KURRENTDB_CONN environment variable"
+                .into()
+        })
+}
+
+/// Resolve WHICH event-log backend a command uses, from the available configuration sources
+/// (§48, "one resolution authority"). This is the SINGLE place the selection is decided, so
+/// every command - and every worker's bare `rigger result` - agrees on the store without a
+/// per-command flag. Precedence, highest first:
+///
+///   1. an explicit `--eventstore`/`--conn` flag (`flag_store`/`flag_conn`), kept on `run`;
+///   2. the `KURRENTDB_CONN` environment variable (the full connection string);
+///
+/// with the embedded sqlite store as the default when nothing selects the server. Selecting the
+/// server without a resolvable connection string is a clear error naming the channels.
+///
+/// This is deliberately the MINIMAL chain that lets unit-1 wire every command uniformly and
+/// resolve a server-configured project. The local secret file and the committed project-config
+/// `store:` rungs, the strict full ordering, and the redaction of the connection string in
+/// error/status output land in the units that OWN them (precedence, secrets).
+fn store_selection(
+    flag_store: Option<StoreKind>,
+    flag_conn: Option<&str>,
+) -> Result<StoreSelection, Box<dyn std::error::Error>> {
+    // 1. an explicit flag is the highest-precedence, unambiguous override.
+    match flag_store {
+        Some(StoreKind::KurrentDb) => return Ok(StoreSelection::Server(resolve_conn(flag_conn)?)),
+        Some(StoreKind::Sqlite) => return Ok(StoreSelection::Sqlite),
+        None => {}
+    }
+    // 2. the environment carries the full connection string, so a bare command (no flag) in a
+    //    shell or CI configured for the server resolves it - the wiring that keeps a worker's
+    //    `rigger result` on the same store the run uses, instead of a local sqlite fracture.
+    if let Some(conn) = env_conn() {
+        return Ok(StoreSelection::Server(conn));
+    }
+    // default: the embedded sqlite store (backward compatible - a project that configures
+    // nothing changes in nothing).
+    Ok(StoreSelection::Sqlite)
+}
+
+/// Construct the selected event-log backend as a boxed port (§48, "one resolution authority").
+/// This is the ONLY place a concrete event-log backend is handed to a command: every command
+/// routes its backend through here (the isolated replay store and the local identity migration
+/// pass an explicit [`StoreSelection::Sqlite`], being local by construction), so store selection
+/// is uniform. `sqlite_path` is where the embedded sqlite log lives when sqlite is selected; it
+/// is ignored for the server backend, whose entire address is its connection string.
+fn resolve_store(
+    sel: &StoreSelection,
+    sqlite_path: &str,
+) -> Result<Box<dyn EventStore>, Box<dyn std::error::Error>> {
+    match sel {
+        StoreSelection::Sqlite => Ok(Box::new(open_sqlite_store(sqlite_path)?)),
+        StoreSelection::Server(conn) => {
+            Ok(Box::new(rigger::eventstore::kurrentdb::Store::open(conn)?))
+        }
+    }
 }
 
 /// The project identity that scopes the event streams and context graph (§5.1.1,
@@ -762,7 +840,7 @@ fn migrate_local_identity() -> Res {
     if minted == legacy {
         return Ok(()); // no minted identity distinct from the basename
     }
-    let backend = Store::open(&store_path)?;
+    let backend = open_sqlite_store(&store_path)?;
     let graph = Projector::open(&db_path("graph.db"), &minted)?;
     if let Some(n) = migrate_project_identity(&backend, &minted, &legacy, Some(&graph))? {
         eprintln!(
@@ -1184,8 +1262,20 @@ impl StoreLocation {
 /// conductor reads (see [`StoreLocation::identity`]). The run driver (`run`/`step`/`serve`)
 /// is deliberately NOT routed through here: it legitimately BOOTSTRAPS the store on the
 /// first step of a fresh project.
-fn require_store_dir() -> Result<StoreLocation, Box<dyn std::error::Error>> {
+fn require_store_dir() -> Result<(StoreLocation, StoreSelection), Box<dyn std::error::Error>> {
+    let sel = store_selection(None, None)?;
     let cwd = std::env::current_dir()?;
+    // A server-backed project shares ONE remote store; there is no local `events.db` to walk to,
+    // so a courier binds identity to the OWNING root (the main repo root, correct even from a
+    // nested worktree, exactly as the sqlite walk's identity does) and lets `resolve_store` reach
+    // the server - closing the state-fracture where a worker's bare `rigger result` wrote to local
+    // sqlite while the run lived on the server.
+    if !sel.is_sqlite() {
+        let dir = main_repo_root(&cwd)
+            .unwrap_or_else(|| cwd.clone())
+            .join(RIGGER_DIR);
+        return Ok((StoreLocation { dir }, sel));
+    }
     let walk = walk_stores_from(&cwd);
     let dir = walk.dir.ok_or_else(|| -> Box<dyn std::error::Error> {
         format!(
@@ -1212,7 +1302,7 @@ fn require_store_dir() -> Result<StoreLocation, Box<dyn std::error::Error>> {
             dir.display()
         );
     }
-    Ok(StoreLocation { dir })
+    Ok((StoreLocation { dir }, sel))
 }
 
 /// The path to a database file (`events.db` / `graph.db`) inside a resolved store
@@ -1447,8 +1537,9 @@ fn cmd_step(args: &[String]) -> Res {
     // the history; refuses loudly if both namespaces are populated.
     migrate_local_identity()?;
 
-    let backend = Store::open(&db_path("events.db"))?;
-    let store = Namespaced::new(&backend, &project_identity());
+    let selection = store_selection(None, None)?;
+    let backend = resolve_store(&selection, &db_path("events.db"))?;
+    let store = Namespaced::new(backend.as_ref(), &project_identity());
 
     // The definition hash this step pins / re-checks (spec 13, unit 1): the digest of the
     // on-disk workflow.yml + agent-prompt set. Computed once and used for both the `--fresh`
@@ -1863,7 +1954,7 @@ fn cmd_reported(args: &[String]) -> Res {
     // nothing could have been reported: treat it as unreported (the guard proceeds), the
     // same outcome as `result_of_at`'s absent-db edge, without fabricating a store.
     let reported = match require_store_dir() {
-        Ok(loc) => result_of_at(&loc.file("events.db"), &loc.identity(), id)?,
+        Ok((loc, sel)) => result_of_at(&loc.file("events.db"), &loc.identity(), id, &sel)?,
         Err(_) => None,
     };
     match reported {
@@ -1905,9 +1996,9 @@ fn cmd_prompt(args: &[String]) -> Res {
         [id] => id.as_str(),
         _ => return Err("prompt: expected exactly one spawn id: rigger prompt <id>".into()),
     };
-    let loc = require_store_dir()?;
-    let backend = Store::open(&loc.file("events.db"))?;
-    let store = Namespaced::new(&backend, &loc.identity());
+    let (loc, selection) = require_store_dir()?;
+    let backend = resolve_store(&selection, &loc.file("events.db"))?;
+    let store = Namespaced::new(backend.as_ref(), &loc.identity());
     let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
     match spawn::prompt_for(&events, id).map_err(|e| e.to_string())? {
         Some(p) => {
@@ -1935,12 +2026,13 @@ fn result_of_at(
     path: &str,
     project: &str,
     id: &str,
+    sel: &StoreSelection,
 ) -> Result<Option<spawn::SpawnResult>, Box<dyn std::error::Error>> {
-    if !Path::new(path).exists() {
+    if sel.is_sqlite() && !Path::new(path).exists() {
         return Ok(None);
     }
-    let backend = Store::open(path)?;
-    let store = Namespaced::new(&backend, project);
+    let backend = resolve_store(sel, path)?;
+    let store = Namespaced::new(backend.as_ref(), project);
     let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
     Ok(spawn::result_of(&events, id).map_err(|e| e.to_string())?)
 }
@@ -2223,10 +2315,11 @@ fn run_cli(parsed: &RunArgs) -> Res {
     // Migrate a pre-spec-09 store's legacy-namespace history to the minted identity once,
     // before opening the run backend (spec 09). Local-sqlite only - the migration renames
     // streams in the local `.rigger/events.db`; a shared KurrentDB backend is out of scope.
-    if parsed.store == StoreKind::Sqlite {
+    let selection = store_selection(parsed.store, parsed.conn.as_deref())?;
+    if selection.is_sqlite() {
         migrate_local_identity()?;
     }
-    let backend = open_store(parsed.store, parsed.conn.as_deref())?;
+    let backend = resolve_store(&selection, &db_path("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &project_identity());
     // `--fresh`: begin a NEW run before driving, so the conductor's own `ensure_started`
     // adopts this just-minted boundary instead of the (possibly wedged) latest run. See
@@ -2356,10 +2449,11 @@ fn run_workflow(parsed: &RunArgs) -> Res {
         }
     }
     // One-time spec-09 identity migration before opening the run backend (local-sqlite only).
-    if parsed.store == StoreKind::Sqlite {
+    let selection = store_selection(parsed.store, parsed.conn.as_deref())?;
+    if selection.is_sqlite() {
         migrate_local_identity()?;
     }
-    let backend = open_store(parsed.store, parsed.conn.as_deref())?;
+    let backend = resolve_store(&selection, &db_path("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &project_identity());
     // `--fresh`: begin a NEW run before the conductor thread starts, so its `ensure_started`
     // adopts this boundary rather than the latest (possibly wedged) run.
@@ -2629,8 +2723,9 @@ fn cmd_graph_build(_args: &[String]) -> Res {
     // Bootstrap the store like `run`/`step` do (create-or-open under the cwd's `.rigger/`), NOT the
     // courier `require_store_dir` walk-up that refuses when none exists.
     std::fs::create_dir_all(RIGGER_DIR)?;
-    let backend = Store::open(&db_path("events.db"))?;
-    let store = Namespaced::new(&backend, &project_identity());
+    let selection = store_selection(None, None)?;
+    let backend = resolve_store(&selection, &db_path("events.db"))?;
+    let store = Namespaced::new(backend.as_ref(), &project_identity());
     let graph = Projector::open(&db_path("graph.db"), &project_identity())?;
 
     // The tree to fold: the git top-level, so a build launched from a subdirectory still ingests
@@ -2732,7 +2827,8 @@ fn cmd_stats(args: &[String]) -> Res {
     // then delegate the namespace-scoped read + no-runs decision to `stats_lines`. This
     // wrapper owns only the I/O boundary (which file, which project, and the printing);
     // the read-model edges live in the testable seam below.
-    match stats_lines(&db_path("events.db"), &project_identity(), all)? {
+    let selection = store_selection(None, None)?;
+    match stats_lines(&db_path("events.db"), &project_identity(), all, &selection)? {
         Some(lines) => {
             for line in lines {
                 println!("{line}");
@@ -2767,13 +2863,14 @@ fn stats_lines(
     path: &str,
     project: &str,
     all: bool,
+    sel: &StoreSelection,
 ) -> Result<Option<Vec<String>>, Box<dyn std::error::Error>> {
-    if !Path::new(path).exists() {
+    if sel.is_sqlite() && !Path::new(path).exists() {
         return Ok(None);
     }
 
-    let backend = Store::open(path)?;
-    let store = Namespaced::new(&backend, project);
+    let backend = resolve_store(sel, path)?;
+    let store = Namespaced::new(backend.as_ref(), project);
     // The conductor projects its run state from STREAM read forward from revision 0
     // (inclusive); read the same stream the same way so the metrics fold sees exactly
     // the run the conductor drove, scoped to this project's namespace.
@@ -3025,11 +3122,12 @@ fn canary_stats_lines(
     path: &str,
     project: &str,
 ) -> Result<Option<Vec<String>>, Box<dyn std::error::Error>> {
-    if !Path::new(path).exists() {
+    let sel = store_selection(None, None)?;
+    if sel.is_sqlite() && !Path::new(path).exists() {
         return Ok(None);
     }
-    let backend = Store::open(path)?;
-    let store = Namespaced::new(&backend, project);
+    let backend = resolve_store(&sel, path)?;
+    let store = Namespaced::new(backend.as_ref(), project);
     let events = store.read_stream(canary::STREAM, 0, Direction::Forward)?;
     if events.is_empty() {
         return Ok(None);
@@ -3096,11 +3194,12 @@ fn read_model_drift(
     path: &str,
     project: &str,
 ) -> Result<metrics::ModelDrift, Box<dyn std::error::Error>> {
-    if !Path::new(path).exists() {
+    let sel = store_selection(None, None)?;
+    if sel.is_sqlite() && !Path::new(path).exists() {
         return Ok(metrics::ModelDrift::default());
     }
-    let backend = Store::open(path)?;
-    let store = Namespaced::new(&backend, project);
+    let backend = resolve_store(&sel, path)?;
+    let store = Namespaced::new(backend.as_ref(), project);
     let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
     Ok(metrics::model_drift(&events))
 }
@@ -3216,9 +3315,12 @@ fn cmd_canary(args: &[String]) -> Res {
     std::fs::create_dir_all(RIGGER_DIR)?;
     // Sqlite is the canary's local measurement store; migrate a pre-spec-09 namespace once
     // so the canary stream lands under the same identity `stats --canary` reads.
-    migrate_local_identity()?;
-    let backend = Store::open(&db_path("events.db"))?;
-    let store = Namespaced::new(&backend, &project_identity());
+    let selection = store_selection(None, None)?;
+    if selection.is_sqlite() {
+        migrate_local_identity()?;
+    }
+    let backend = resolve_store(&selection, &db_path("events.db"))?;
+    let store = Namespaced::new(backend.as_ref(), &project_identity());
     let driver = cli::Driver::default();
 
     let report = canary::run_canary(&store, &driver, &cfg, &panel, &corpus)?;
@@ -3254,11 +3356,14 @@ fn cmd_playbooks(args: &[String]) -> Res {
 
     // Migrate a pre-spec-09 namespace once so the lessons stream lands under the same
     // identity the conductor wrote, then READ (never fabricate) this project's run stream.
-    migrate_local_identity()?;
+    let selection = store_selection(None, None)?;
+    if selection.is_sqlite() {
+        migrate_local_identity()?;
+    }
     let db = db_path("events.db");
-    let events = if Path::new(&db).exists() {
-        let backend = Store::open(&db)?;
-        let store = Namespaced::new(&backend, &project_identity());
+    let events = if !selection.is_sqlite() || Path::new(&db).exists() {
+        let backend = resolve_store(&selection, &db)?;
+        let store = Namespaced::new(backend.as_ref(), &project_identity());
         store.read_stream(conductor::STREAM, 0, Direction::Forward)?
     } else {
         Vec::new()
@@ -3327,14 +3432,15 @@ fn cmd_replay(args: &[String]) -> Res {
     // 1. Lift the baseline: read (never write) this project's run stream and slice the
     //    requested run. `metrics::project` folds it into the recorded baseline.
     let db = db_path("events.db");
-    if !Path::new(&db).exists() {
+    let selection = store_selection(None, None)?;
+    if selection.is_sqlite() && !Path::new(&db).exists() {
         return Err(format!(
             "rigger replay: no runs recorded yet for this project (no {db}); run `rigger run` first"
         )
         .into());
     }
-    let backend = Store::open(&db)?;
-    let real = Namespaced::new(&backend, &project_identity());
+    let backend = resolve_store(&selection, &db)?;
+    let real = Namespaced::new(backend.as_ref(), &project_identity());
     let events = real.read_stream(conductor::STREAM, 0, Direction::Forward)?;
     let baseline = baseline_run_slice(&events, &run_id).ok_or_else(|| {
         format!(
@@ -3379,8 +3485,11 @@ fn cmd_replay(args: &[String]) -> Res {
     // WAL-mode sqlite only releases its `.db-wal`/`.db-shm` sidecars on close, so cleaning
     // up while the connection is still open would leak them (adv-u13r-replay-scratch-wal-shm-leak).
     let (candidate_metrics, drive_err) = {
-        let iso_backend = Store::open(replay_db.to_str().unwrap_or_default())?;
-        let iso = Namespaced::new(&iso_backend, "rigger-replay");
+        let iso_backend = resolve_store(
+            &StoreSelection::Sqlite,
+            replay_db.to_str().unwrap_or_default(),
+        )?;
+        let iso = Namespaced::new(iso_backend.as_ref(), "rigger-replay");
         // An offline replay re-fold over an isolated store: no run branch, no PR, so no base
         // to persist (spec 38, criterion 3).
         runscope::start_fresh(&iso, &criteria, &candidate_definition, "")?;
@@ -4165,11 +4274,12 @@ fn dash_read_run(
     events_db: &str,
     identity: &str,
 ) -> Result<Vec<Event>, Box<dyn std::error::Error>> {
-    if !Path::new(events_db).exists() {
+    let sel = store_selection(None, None).unwrap_or(StoreSelection::Sqlite);
+    if sel.is_sqlite() && !Path::new(events_db).exists() {
         return Ok(Vec::new());
     }
-    let backend = Store::open(events_db)?;
-    let store = Namespaced::new(&backend, identity);
+    let backend = resolve_store(&sel, events_db)?;
+    let store = Namespaced::new(backend.as_ref(), identity);
     let all = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
     Ok(runscope::current_run(&all).to_vec())
 }
@@ -4434,9 +4544,9 @@ fn cmd_emit(args: &[String]) -> Res {
     // Resolve the EXISTING store (walk up; refuse if none) rather than fabricating one
     // in the wrong cwd, and scope it by the RESOLVED root's identity (not the cwd's), so
     // a walked-up write lands in the stream the conductor reads - see [`require_store_dir`].
-    let loc = require_store_dir()?;
-    let backend = Store::open(&loc.file("events.db"))?;
-    let store = Namespaced::new(&backend, &loc.identity());
+    let (loc, selection) = require_store_dir()?;
+    let backend = resolve_store(&selection, &loc.file("events.db"))?;
+    let store = Namespaced::new(backend.as_ref(), &loc.identity());
     let graph = Projector::open(&loc.file("graph.db"), &loc.identity())?;
 
     // Same args shape the MCP tool receives, so emit_event - the shared core both
@@ -4486,10 +4596,10 @@ fn cmd_progress(args: &[String]) -> Res {
         return Err("progress: <activity> must be non-empty".into());
     }
 
-    let loc = require_store_dir()?;
+    let (loc, selection) = require_store_dir()?;
     // Resolve the current run READ-ONLY from the run store, only to scope the report.
-    let run_backend = Store::open(&loc.file("events.db"))?;
-    let run_store = Namespaced::new(&run_backend, &loc.identity());
+    let run_backend = resolve_store(&selection, &loc.file("events.db"))?;
+    let run_store = Namespaced::new(run_backend.as_ref(), &loc.identity());
     let events = run_store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
     let run_id = runscope::current_run_id(&events).unwrap_or_default();
     // Append to the SEPARATE progress store - never the run stream.
@@ -4516,12 +4626,12 @@ fn cmd_status(args: &[String]) -> Res {
             other => return Err(format!("status: unknown argument {other:?} (only --json)").into()),
         }
     }
-    let loc = require_store_dir()?;
+    let (loc, selection) = require_store_dir()?;
     let now = std::time::SystemTime::now();
 
     // The current run's slice of the run stream, and its id.
-    let run_backend = Store::open(&loc.file("events.db"))?;
-    let run_store = Namespaced::new(&run_backend, &loc.identity());
+    let run_backend = resolve_store(&selection, &loc.file("events.db"))?;
+    let run_store = Namespaced::new(run_backend.as_ref(), &loc.identity());
     let all = run_store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
     let run_events = runscope::current_run(&all);
     let run_id = runscope::current_run_id(&all).unwrap_or_default();
@@ -4699,9 +4809,9 @@ fn cmd_reset(args: &[String]) -> Res {
         _ => return Err(format!("reset: expected only --runs, got {}", args.join(" ")).into()),
     }
 
-    let loc = require_store_dir()?;
-    let backend = Store::open(&loc.file("events.db"))?;
-    let store = Namespaced::new(&backend, &loc.identity());
+    let (loc, selection) = require_store_dir()?;
+    let backend = resolve_store(&selection, &loc.file("events.db"))?;
+    let store = Namespaced::new(backend.as_ref(), &loc.identity());
     // ONE whole-stream forward read: it feeds BOTH the attribution and the per-index node-id
     // lookup inside `superseded_graph_nodes`, honoring run_attribution's whole-stream contract.
     let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
@@ -4827,9 +4937,9 @@ fn graph_node_id(e: &Event) -> Option<String> {
 fn cmd_peers(args: &[String]) -> Res {
     let files: Vec<String> = args.to_vec();
 
-    let loc = require_store_dir()?;
-    let backend = Store::open(&loc.file("events.db"))?;
-    let store = Namespaced::new(&backend, &loc.identity());
+    let (loc, selection) = require_store_dir()?;
+    let backend = resolve_store(&selection, &loc.file("events.db"))?;
+    let store = Namespaced::new(backend.as_ref(), &loc.identity());
 
     // The side-car replays the whole backlog from position 0; wait until it has
     // drained every event currently in the store before reading, so a one-shot CLI
@@ -5086,9 +5196,9 @@ fn cmd_result(args: &[String]) -> Res {
     // worktree would otherwise record into a fresh dead store (no store) or misfile under
     // the worktree's own namespace (walked-up store) while the real spawn stays parked
     // forever - both fixed here (see [`require_store_dir`] / [`StoreLocation::identity`]).
-    let loc = require_store_dir()?;
-    let backend = Store::open(&loc.file("events.db"))?;
-    let store = Namespaced::new(&backend, &loc.identity());
+    let (loc, selection) = require_store_dir()?;
+    let backend = resolve_store(&selection, &loc.file("events.db"))?;
+    let store = Namespaced::new(backend.as_ref(), &loc.identity());
 
     // One cheap pre-write read of the run stream, to advise (on stderr) about an orphan
     // id or about superseding an existing result BEFORE the append. Advisory only: the
@@ -5625,10 +5735,10 @@ fn read_run_units(cwd: &Path) -> RunUnits {
         return RunUnits::default();
     };
     let loc = StoreLocation { dir };
-    let Ok(backend) = Store::open(&loc.file("events.db")) else {
+    let Ok(backend) = resolve_store(&StoreSelection::Sqlite, &loc.file("events.db")) else {
         return RunUnits::default();
     };
-    let store = Namespaced::new(&backend, &loc.identity());
+    let store = Namespaced::new(backend.as_ref(), &loc.identity());
     match store.read_stream(conductor::STREAM, 0, Direction::Forward) {
         Ok(events) => current_run_units(&events),
         Err(_) => RunUnits::default(),
@@ -7272,11 +7382,12 @@ fn docs_drift_failure(root: &Path) -> Option<String> {
 
 fn cmd_prime() -> Res {
     let path = db_path("events.db");
-    if !Path::new(&path).exists() {
+    let selection = store_selection(None, None)?;
+    if selection.is_sqlite() && !Path::new(&path).exists() {
         println!("# Rigger: no decisions recorded yet (run `rigger run` to start).");
         return Ok(());
     }
-    let store = Store::open(&path)?;
+    let store = resolve_store(&selection, &path)?;
     let events = store.read_all(0, Direction::Backward, &Filter::default())?;
     println!("# Rigger: recent decisions");
     let mut shown = 0;
@@ -10517,10 +10628,13 @@ mod tests {
     }
 
     #[test]
-    fn parse_run_args_defaults_to_cli_sqlite() {
+    fn parse_run_args_defaults_to_cli_and_an_unset_store() {
         let a = parse_run_args(&[]).unwrap();
         assert!(a.driver == DriverKind::Cli);
-        assert!(a.store == StoreKind::Sqlite);
+        // No `--eventstore` flag leaves the store UNSET, so the resolver picks it up from the
+        // configuration chain (env, then default sqlite) - a flagless `run` is not pinned to
+        // sqlite at parse time, which is what lets it honor a server-configured project.
+        assert!(a.store.is_none());
         assert!(a.conn.is_none());
         assert!(a.spec.is_none());
         assert!(!a.fresh, "--fresh is off unless asked");
@@ -10566,7 +10680,7 @@ mod tests {
         ];
         let a = parse_run_args(&args).unwrap();
         assert!(a.driver == DriverKind::Workflow);
-        assert!(a.store == StoreKind::KurrentDb);
+        assert!(a.store == Some(StoreKind::KurrentDb));
         assert_eq!(a.conn.as_deref(), Some("kurrentdb://localhost:2113"));
         assert_eq!(a.spec.as_deref(), Some("spec.md"));
     }
@@ -10807,7 +10921,7 @@ mod tests {
         let prior = std::env::var("KURRENTDB_CONN").ok();
         std::env::remove_var("KURRENTDB_CONN");
 
-        let err = match open_store(StoreKind::KurrentDb, None) {
+        let err = match store_selection(Some(StoreKind::KurrentDb), None) {
             Ok(_) => panic!("kurrentdb without a conn must not open a store"),
             Err(e) => e.to_string(),
         };
@@ -13607,7 +13721,8 @@ mod tests {
         let path = dir.path().join("events.db");
         let path_str = path.to_str().unwrap();
 
-        let out = stats_lines(path_str, "proj-x", false).expect("absent db is not an error");
+        let out = stats_lines(path_str, "proj-x", false, &StoreSelection::Sqlite)
+            .expect("absent db is not an error");
         assert!(out.is_none(), "an absent db must read as no runs (None)");
         assert!(
             !path.exists(),
@@ -13630,8 +13745,8 @@ mod tests {
         seed_run(path_str, "proj-me", &[]);
         assert!(path.exists(), "the db file must exist for this edge");
 
-        let out =
-            stats_lines(path_str, "proj-me", false).expect("empty run stream is not an error");
+        let out = stats_lines(path_str, "proj-me", false, &StoreSelection::Sqlite)
+            .expect("empty run stream is not an error");
         assert!(
             out.is_none(),
             "an existing db with an empty run stream must read as no runs (None)"
@@ -13658,7 +13773,8 @@ mod tests {
         );
 
         // proj-me, reading the same file, sees its OWN (empty) namespace - no runs.
-        let mine = stats_lines(path_str, "proj-me", false).expect("read is not an error");
+        let mine = stats_lines(path_str, "proj-me", false, &StoreSelection::Sqlite)
+            .expect("read is not an error");
         assert!(
             mine.is_none(),
             "stats must be namespace-scoped: another project's run must not leak in"
@@ -13666,7 +13782,8 @@ mod tests {
 
         // Sanity: the other project's run IS visible to it, so the data really is there
         // and the None above is the namespace boundary, not a read failure.
-        let theirs = stats_lines(path_str, "proj-other", false).expect("read is not an error");
+        let theirs = stats_lines(path_str, "proj-other", false, &StoreSelection::Sqlite)
+            .expect("read is not an error");
         assert!(
             theirs.is_some(),
             "the project that owns the run must see its stats"
@@ -13693,7 +13810,7 @@ mod tests {
             ],
         );
 
-        let lines = stats_lines(path_str, "proj-me", false)
+        let lines = stats_lines(path_str, "proj-me", false, &StoreSelection::Sqlite)
             .expect("read is not an error")
             .expect("a populated run must render lines, not None");
         let out = lines.join("\n");
@@ -13722,7 +13839,8 @@ mod tests {
         let path = dir.path().join("events.db");
         let path_str = path.to_str().unwrap();
 
-        let got = result_of_at(path_str, "proj-x", "u/impl#0").expect("absent db is not an error");
+        let got = result_of_at(path_str, "proj-x", "u/impl#0", &StoreSelection::Sqlite)
+            .expect("absent db is not an error");
         assert!(got.is_none(), "an absent db must read as unreported (None)");
         assert!(
             !path.exists(),
@@ -13748,7 +13866,8 @@ mod tests {
                 .unwrap()],
         );
 
-        let got = result_of_at(path_str, "proj-me", "u/impl#0").expect("read is not an error");
+        let got = result_of_at(path_str, "proj-me", "u/impl#0", &StoreSelection::Sqlite)
+            .expect("read is not an error");
         assert!(
             got.is_none(),
             "a spawn with no result of its own must read as unreported (None)"
@@ -13776,7 +13895,7 @@ mod tests {
             ],
         );
 
-        let got = result_of_at(path_str, "proj-me", "u/impl#0")
+        let got = result_of_at(path_str, "proj-me", "u/impl#0", &StoreSelection::Sqlite)
             .expect("read is not an error")
             .expect("a recorded result must read back as Some, not None");
         assert_eq!(got.id, "u/impl#0");
@@ -13806,15 +13925,16 @@ mod tests {
         );
 
         // proj-me, reading the same file, sees its OWN (empty) namespace: still unreported.
-        let mine = result_of_at(path_str, "proj-me", "u/impl#0").expect("read is not an error");
+        let mine = result_of_at(path_str, "proj-me", "u/impl#0", &StoreSelection::Sqlite)
+            .expect("read is not an error");
         assert!(
             mine.is_none(),
             "another project's result must not leak in - the read must be namespace-scoped"
         );
 
         // Sanity: the owner DOES see it, so the None above is the namespace boundary, not a miss.
-        let theirs =
-            result_of_at(path_str, "proj-other", "u/impl#0").expect("read is not an error");
+        let theirs = result_of_at(path_str, "proj-other", "u/impl#0", &StoreSelection::Sqlite)
+            .expect("read is not an error");
         assert!(
             theirs.is_some(),
             "the project that owns the result must see it"
