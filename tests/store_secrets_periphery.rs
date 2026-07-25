@@ -128,6 +128,30 @@ fn redact_conn_scrubs_every_url_when_a_message_names_more_than_one_server() {
     );
 }
 
+/// THE MULTI-URL CONTRACT AT ITS MOST HOSTILE SHAPE: two credentialed URLs run together with NO
+/// whitespace and NO path/query/fragment delimiter between them - a comma abuts the first host
+/// directly against the next `scheme://`. This is exactly the shape a diagnostic that lists servers
+/// (or the parse error's double-embed) can emit, and it defeats any redactor that leans on
+/// whitespace to find URL boundaries: only bounding each authority at the NEXT `://` scrubs both
+/// credentials. It pins the delimiter-free sibling of the whitespace-separated case above, so the
+/// single-authority guarantee is proven independent of what - if anything - separates the URLs.
+#[test]
+fn redact_conn_scrubs_both_urls_when_they_abut_with_no_delimiter_between_them() {
+    let out = redact_conn(
+        "kurrentdb://spy:hunter2@db1.internal:2113,kurrentdb://mole:s3cr3t@db2.internal:2113",
+    );
+    assert_no_credential(&out, "first credential in a delimiter-free two-URL string");
+    assert!(
+        !out.contains("mole") && !out.contains("s3cr3t"),
+        "the second URL's credential must be scrubbed even with no separator before its scheme: {out}"
+    );
+    assert_eq!(
+        out,
+        "kurrentdb://<redacted>@db1.internal:2113,kurrentdb://<redacted>@db2.internal:2113",
+        "each URL's userinfo is replaced by the marker; the comma and both hosts print verbatim"
+    );
+}
+
 /// THE PARSE-ERROR BOUNDARY of the KurrentDB adapter's public `open`. A malformed connection string
 /// carrying a credential is rejected at PARSE - before any runtime or network - and the resulting
 /// `Error::Backend` message embeds the connection string TWICE: once in the diagnostic `open` adds
