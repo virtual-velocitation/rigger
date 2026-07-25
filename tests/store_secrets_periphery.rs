@@ -146,8 +146,7 @@ fn redact_conn_scrubs_both_urls_when_they_abut_with_no_delimiter_between_them() 
         "the second URL's credential must be scrubbed even with no separator before its scheme: {out}"
     );
     assert_eq!(
-        out,
-        "kurrentdb://<redacted>@db1.internal:2113,kurrentdb://<redacted>@db2.internal:2113",
+        out, "kurrentdb://<redacted>@db1.internal:2113,kurrentdb://<redacted>@db2.internal:2113",
         "each URL's userinfo is replaced by the marker; the comma and both hosts print verbatim"
     );
 }
@@ -179,5 +178,60 @@ fn open_with_a_malformed_credentialed_conn_never_leaks_the_credential_it_echoes(
         text.contains("127.0.0.1"),
         "the host must still name which address failed to parse - redaction removes only the \
          userinfo: {text}"
+    );
+}
+
+/// A password with an UNENCODED reserved char (`/`, `?`, or `#`) is malformed per RFC 3986 - those
+/// chars belong percent-encoded - yet real credentials routinely carry them and the raw string is
+/// still handed to the parser verbatim. Such a char sits INSIDE the userinfo, BEFORE the credential's
+/// terminating `@`, so a redactor that ends the authority at the first `/?#` truncates the slice
+/// before the `@` and prints the whole `user:pass` verbatim. Spec 48 is absolute - userinfo NEVER
+/// reaches an output path - and carves out no exception for a malformed conn (its sibling test
+/// `open_with_a_malformed_credentialed_conn...` already treats a malformed credentialed conn as
+/// exactly what redaction must survive), so each of these must scrub the whole credential while the
+/// host still prints.
+#[test]
+fn redact_conn_scrubs_a_userinfo_that_carries_an_unencoded_reserved_char() {
+    for raw in ['#', '/', '?'] {
+        // `spy:s3cr<raw>et` is the credential; the raw char splits the password so neither `spy` nor
+        // the `s3cr...` fragment may survive, and the exact form pins that ONLY the userinfo is gone.
+        let conn = format!("kurrentdb://spy:s3cr{raw}et@db.internal:2113");
+        let out = redact_conn(&conn);
+        assert!(
+            !out.contains("spy") && !out.contains("s3cr"),
+            "a raw {raw:?} inside the password must not stop the scrub before the terminating `@`: {out}"
+        );
+        assert_eq!(
+            out, "kurrentdb://<redacted>@db.internal:2113",
+            "the whole userinfo is replaced by the marker; the host and port still print: {out}"
+        );
+    }
+}
+
+/// THE PARSE-ERROR BOUNDARY with a SPECIAL-CHAR credential. `spy:s3cr#et` carries a raw `#`, so the
+/// connection string is rejected at PARSE (before any runtime or network) and the resulting error
+/// double-embeds the whole string - once in the diagnostic `open` adds and once more in the backend
+/// parser's own re-echo. This is the one-char sibling of the `:notaport` case above (same offline
+/// parse-rejection class), reached on the REAL `kurrentdb::Store::open` path; the credential must
+/// never survive either embed, while the host still names the address that failed to parse.
+#[test]
+fn open_with_a_special_char_credentialed_conn_never_leaks_it() {
+    let text = match rigger::eventstore::kurrentdb::Store::open(
+        "kurrentdb://spy:s3cr#et@db.internal:2113",
+    ) {
+        Ok(_) => panic!("a malformed connection string must not open a store"),
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        !text.contains("spy") && !text.contains("s3cr"),
+        "neither half of a special-char credential may survive the parse-error text: {text}"
+    );
+    assert!(
+        text.contains("<redacted>"),
+        "the credential must be replaced by the deliberate redaction marker, not merely absent: {text}"
+    );
+    assert!(
+        text.contains("db.internal"),
+        "the host must still name which address failed to parse: {text}"
     );
 }

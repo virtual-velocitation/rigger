@@ -279,9 +279,12 @@ const REDACTED: &str = "<redacted>";
 /// so verbatim pass-through to the backend is untouched.
 ///
 /// A string with no URL userinfo returns unchanged. Redaction is confined to the URL AUTHORITY
-/// (between `scheme://` and the first `/`, `?`, or `#`): an `@` in a path or query - not a
-/// credential separator - is left alone, and a userinfo with an embedded `:` (a `user:password`
-/// pair) is scrubbed whole (the host begins at the last `@` of the authority).
+/// (`[userinfo@]host[:port]`, between `scheme://` and the path/query/fragment): an `@` in a path or
+/// query - not a credential separator - is left alone, and a userinfo with an embedded `:` (a
+/// `user:password` pair) is scrubbed whole (the host begins at the last `@` of the authority). A
+/// `/`, `?`, or `#` normally ENDS the authority, but a password may carry one of those chars
+/// unencoded (malformed per RFC 3986, yet handed to the parser verbatim), so such a char BEFORE the
+/// credential's terminating `@` does not stop the scrub - the whole userinfo is still removed.
 pub fn redact_conn(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut rest = s;
@@ -290,22 +293,18 @@ pub fn redact_conn(s: &str) -> String {
         let after = scheme_end + "://".len();
         out.push_str(&rest[..after]);
         let tail = &rest[after..];
-        // The authority ends at the first path / query / fragment delimiter OR at the start of the
-        // next URL's `://`, whichever comes first (or the end of string). Bounding at the next
-        // `://` is load-bearing: without it, a message that names two servers back-to-back with no
-        // `/`, `?`, or `#` between them (`...@h1 kurrentdb://u2:p2@h2`, or comma/paren-delimited
-        // `...@h1,kurrentdb://u2:p2@h2`) lets this authority run PAST the current URL and swallow
-        // the next scheme, so the leftover `//user:pass@host` no longer begins with a `scheme://`
-        // and is never re-scanned - leaking the second credential verbatim. Bounding here scrubs
-        // EVERY URL's userinfo whatever the delimiter between URLs, so the single authority holds
-        // for one server named twice (the parse error's double-embed) as well as many named once.
-        let auth_end = tail
-            .find(['/', '?', '#'])
-            .into_iter()
-            .chain(tail.find("://"))
-            .min()
-            .unwrap_or(tail.len());
-        let authority = &tail[..auth_end];
+        // Bound the current URL at the NEXT `://` so one authority never runs into the following
+        // scheme. This is load-bearing: without it, a message that names two servers back-to-back
+        // with no `/`, `?`, or `#` between them (`...@h1 kurrentdb://u2:p2@h2`, or comma/paren-
+        // delimited `...@h1,kurrentdb://u2:p2@h2`) lets the scan swallow the next scheme, so the
+        // leftover `//user:pass@host` no longer begins with a `scheme://` and is never re-scanned -
+        // leaking the second credential verbatim. Bounding here scrubs EVERY URL's userinfo whatever
+        // the delimiter between URLs (one server named twice - the parse error's double-embed - as
+        // well as many named once).
+        let seg_end = tail.find("://").unwrap_or(tail.len());
+        let seg = &tail[..seg_end];
+        let auth_end = authority_end(seg);
+        let authority = &seg[..auth_end];
         // Userinfo is separated from the host by the LAST `@` inside the authority (a bare `@` never
         // appears in a host, and userinfo cannot contain an unencoded `@`), so anything before it is
         // the credential and is replaced by the marker; the host and beyond print unchanged.
@@ -320,6 +319,66 @@ pub fn redact_conn(s: &str) -> String {
     }
     out.push_str(rest);
     out
+}
+
+/// The byte offset in `seg` (one URL's tail, already bounded so it never reaches the next URL's
+/// `scheme://`) at which the AUTHORITY ends - i.e. where `host[:port]` gives way to the path, query,
+/// or fragment. The authority is `[userinfo@]host[:port]`.
+///
+/// The authority normally ends at the first `/`, `?`, or `#`. The subtlety this function exists for:
+/// a password may carry one of those chars UNENCODED, and such a char sits inside the userinfo,
+/// BEFORE the credential's terminating `@`. Ending the authority at that first delimiter would slice
+/// the credential off before its `@`, so [`redact_conn`]'s `rfind('@')` would find nothing and print
+/// the `user:pass` verbatim - a leak. So when the first delimiter is NOT preceded by a completed
+/// authority, the credential runs on to its terminating `@` and the authority ends only at the first
+/// delimiter AFTER the host.
+///
+/// The genuine-path/query `@` case (an `@` that a caller legitimately put in a path or query, which
+/// must NOT be scrubbed) is told apart by exactly this: it follows a delimiter that DID close a
+/// well-formed `host[:port]`, so that authority already ended and the `@` is post-authority.
+fn authority_end(seg: &str) -> usize {
+    let Some(delim) = seg.find(['/', '?', '#']) else {
+        return seg.len(); // no path/query/fragment: the whole segment is the authority
+    };
+    let head = &seg[..delim];
+    // If the userinfo `@` already precedes the delimiter (the well-formed case), or the text before
+    // the delimiter is a complete `host[:port]` (the delimiter genuinely starts the path/query/
+    // fragment), the authority ends right at the delimiter and any later `@` is post-authority.
+    if head.contains('@') || is_host_port(head) {
+        return delim;
+    }
+    // Otherwise the delimiter is an unencoded reserved char INSIDE the userinfo. The credential runs
+    // on to its terminating `@`; the authority then ends at the first delimiter after the host (the
+    // host carries no `@`, so `rfind('@')` on the returned slice still isolates the whole userinfo).
+    // If there is no such `@`, the pre-delimiter text was not a credential after all - fall back to
+    // the delimiter, leaving the segment untouched.
+    match seg[delim..].find('@') {
+        Some(rel_at) => {
+            let at = delim + rel_at;
+            seg[at..]
+                .find(['/', '?', '#'])
+                .map_or(seg.len(), |rel| at + rel)
+        }
+        None => delim,
+    }
+}
+
+/// True when `s` is a complete URL authority with NO userinfo: a bare `host`, or `host:port` with a
+/// non-empty all-digit port. Used to tell a `/`, `?`, or `#` that genuinely closes the authority
+/// (starting the path/query/fragment) from one buried unencoded inside a credential's password.
+fn is_host_port(s: &str) -> bool {
+    if s.is_empty() {
+        return false;
+    }
+    match s.rsplit_once(':') {
+        // `host:port` - a port must be present and all ASCII digits (a non-numeric "port" like the
+        // `pass` in `user:pass` is what marks this as a credential, not a host).
+        Some((host, port)) => {
+            !host.is_empty() && !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit())
+        }
+        // A bare reg-name / IP host with no port.
+        None => true,
+    }
 }
 
 #[cfg(test)]
