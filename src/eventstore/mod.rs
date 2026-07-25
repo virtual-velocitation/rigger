@@ -261,3 +261,115 @@ pub trait EventStore: Send + Sync {
     /// delivers new ones live.
     fn subscribe_stream(&self, stream: &str, from: Revision) -> Result<Subscription, Error>;
 }
+
+/// The marker that replaces a redacted credential, so a scrubbed connection string reads as
+/// deliberately redacted (a human sees the credentials were removed) rather than silently
+/// mangled or merely absent.
+const REDACTED: &str = "<redacted>";
+
+/// Redact the credential (userinfo) portion of every URL in `s` (§48, secrets discipline). A
+/// connection string is a SECRET wherever it appears: any error, log line, or status output that
+/// would echo it must scrub the `user:password@` that sits between `scheme://` and the host. The
+/// scheme and host still print (they name WHICH server, which is useful in an error), but the
+/// userinfo is replaced by the [`REDACTED`] marker and never reaches an output path.
+///
+/// This is the SINGLE redaction authority: every site that would surface a connection string in
+/// user-facing text passes through here, so a credential can never leak from one forgotten branch.
+/// It operates purely on the message text and never on the connection string handed to the client,
+/// so verbatim pass-through to the backend is untouched.
+///
+/// A string with no URL userinfo returns unchanged. Redaction is confined to the URL AUTHORITY
+/// (between `scheme://` and the first `/`, `?`, or `#`): an `@` in a path or query - not a
+/// credential separator - is left alone, and a userinfo with an embedded `:` (a `user:password`
+/// pair) is scrubbed whole (the host begins at the last `@` of the authority).
+pub fn redact_conn(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(scheme_end) = rest.find("://") {
+        // Everything up to and including the "://" separator prints verbatim (scheme is not secret).
+        let after = scheme_end + "://".len();
+        out.push_str(&rest[..after]);
+        let tail = &rest[after..];
+        // The authority ends at the first path / query / fragment delimiter (or the end of string).
+        let auth_end = tail.find(['/', '?', '#']).unwrap_or(tail.len());
+        let authority = &tail[..auth_end];
+        // Userinfo is separated from the host by the LAST `@` inside the authority (a bare `@` never
+        // appears in a host, and userinfo cannot contain an unencoded `@`), so anything before it is
+        // the credential and is replaced by the marker; the host and beyond print unchanged.
+        match authority.rfind('@') {
+            Some(at) => {
+                out.push_str(REDACTED);
+                out.push_str(&authority[at..]); // includes the '@' and the host
+            }
+            None => out.push_str(authority),
+        }
+        rest = &tail[auth_end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+#[cfg(test)]
+mod redact_tests {
+    use super::redact_conn;
+
+    #[test]
+    fn strips_user_and_password_but_keeps_scheme_host_and_query() {
+        let redacted = redact_conn("kurrentdb://myuser:supersecret@db.internal:2113?tls=true");
+        assert!(
+            !redacted.contains("supersecret") && !redacted.contains("myuser"),
+            "userinfo must never survive redaction: {redacted}"
+        );
+        assert_eq!(
+            redacted, "kurrentdb://<redacted>@db.internal:2113?tls=true",
+            "scheme, host, port, and query print; only the credential is scrubbed"
+        );
+    }
+
+    #[test]
+    fn strips_a_userinfo_with_no_password() {
+        assert_eq!(
+            redact_conn("kurrentdb://alice@db.internal:2113"),
+            "kurrentdb://<redacted>@db.internal:2113"
+        );
+    }
+
+    #[test]
+    fn leaves_a_conn_with_no_userinfo_unchanged() {
+        let conn = "kurrentdb://127.0.0.1:2113?tls=false";
+        assert_eq!(
+            redact_conn(conn),
+            conn,
+            "no credential means nothing to scrub"
+        );
+    }
+
+    #[test]
+    fn an_at_sign_in_the_query_is_not_a_credential() {
+        // The `@` sits in the query, not the authority, so it is NOT a userinfo separator.
+        let conn = "kurrentdb://db.internal:2113?user=a@b";
+        assert_eq!(redact_conn(conn), conn);
+    }
+
+    #[test]
+    fn redacts_a_conn_embedded_in_a_longer_error_message() {
+        let msg = "kurrentdb: connect to kurrentdb://joe:pw@10.0.0.5:2113?tls=false: timed out";
+        let redacted = redact_conn(msg);
+        assert!(
+            !redacted.contains("joe") && !redacted.contains("pw@"),
+            "the credential inside a wrapping message must be scrubbed: {redacted}"
+        );
+        assert!(
+            redacted.contains("10.0.0.5:2113") && redacted.contains("timed out"),
+            "the host and the surrounding message text still print: {redacted}"
+        );
+    }
+
+    #[test]
+    fn plain_text_with_no_url_is_untouched() {
+        assert_eq!(
+            redact_conn("no rigger store found"),
+            "no rigger store found"
+        );
+    }
+}

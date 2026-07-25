@@ -53,10 +53,23 @@ pub struct Store {
 
 impl Store {
     /// Connect to KurrentDB, e.g. "kurrentdb://localhost:2113?tls=false".
+    ///
+    /// The connection string is a SECRET wherever it appears (§48, secrets discipline): every error
+    /// this function can surface names WHICH server it concerns for a useful diagnostic, but the
+    /// message is scrubbed through the single [`redact_conn`](super::redact_conn) authority first, so
+    /// the `user:password@` userinfo NEVER reaches an output path. That guards both the diagnostic we
+    /// add (the redacted address) AND anything the underlying parse error might itself echo of the
+    /// raw string. The string handed to the client is the verbatim `conn_string`, untouched -
+    /// redaction lives on the error path only.
     pub fn open(conn_string: &str) -> Result<Self, Error> {
-        let settings = conn_string
-            .parse()
-            .map_err(|e| Error::Backend(format!("kurrentdb: parse connection string: {e}")))?;
+        // Scrub every message that could echo the connection string through the one redaction
+        // authority, so a credential can never leak from a forgotten branch.
+        let backend = |msg: String| Error::Backend(super::redact_conn(&msg));
+        let settings = conn_string.parse().map_err(|e| {
+            backend(format!(
+                "kurrentdb: parse connection string {conn_string}: {e}"
+            ))
+        })?;
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
@@ -65,14 +78,15 @@ impl Store {
         // inside the runtime context.
         let client = {
             let _guard = rt.enter();
-            Client::new(settings).map_err(|e| Error::Backend(format!("kurrentdb: client: {e}")))?
+            Client::new(settings)
+                .map_err(|e| backend(format!("kurrentdb: client {conn_string}: {e}")))?
         };
         let store = Store { client, rt };
         // Fail fast on an unreachable server (§8): a trivial $all read forces the
         // lazy gRPC channel to connect now, not on the first append.
         store
             .read_all(0, Direction::Forward, &Filter::default())
-            .map_err(|e| Error::Backend(format!("kurrentdb: connect: {e}")))?;
+            .map_err(|e| backend(format!("kurrentdb: connect to {conn_string}: {e}")))?;
         Ok(store)
     }
 }

@@ -359,15 +359,61 @@ fn env_conn() -> Option<String> {
 /// / permission edge §48 explicitly contemplates - would self-report to LOCAL sqlite while the
 /// conductor uses the server, fracturing the run's state across two stores.
 fn store_conn_file(rigger_dir: &Path) -> Result<Option<String>, Box<dyn std::error::Error>> {
-    match std::fs::read_to_string(rigger_dir.join("store.conn")) {
+    let path = rigger_dir.join("store.conn");
+    match std::fs::read_to_string(&path) {
         Ok(body) => {
             let conn = body.trim().to_string();
-            Ok(if conn.is_empty() { None } else { Some(conn) })
+            if conn.is_empty() {
+                return Ok(None);
+            }
+            // A real connection string was read: nudge the operator if the secret file is exposed
+            // to other users (a hygiene warning only - resolution proceeds regardless).
+            warn_if_conn_file_is_exposed(&path);
+            Ok(Some(conn))
         }
         // ABSENT is "no opinion" (fall through); any OTHER IO error is a present-but-unreadable
         // secret file and surfaces LOUDLY - never the silent wrong-store fallback of the old `.ok()`.
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(format!("read store connection file: {e}").into()),
+    }
+}
+
+/// Whether a secret file's Unix `mode` grants READ to group or other - i.e. someone besides the
+/// owner can see the connection-string credential it holds. `0o044` masks the group-read and
+/// other-read bits; a credential file should be owner-only (`0o600`), so any of those bits set
+/// means the secret is exposed. Pure so the threshold is unit-testable without touching the fs.
+#[cfg(unix)]
+fn conn_file_is_group_or_other_readable(mode: u32) -> bool {
+    mode & 0o044 != 0
+}
+
+/// Warn (NEVER fail) when the per-machine secret file is readable by users other than its owner:
+/// it carries the connection string's credential, so a group- or world-readable file exposes that
+/// secret (§48, secrets discipline). This is a hygiene nudge on the ONE secret-file reader
+/// ([`store_conn_file`]) - store resolution proceeds regardless, and the connection string itself is
+/// never printed (only the file path and its mode). Unix-only: the mode bits are a POSIX concept
+/// with no cross-platform equivalent; elsewhere it is a no-op.
+fn warn_if_conn_file_is_exposed(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(path) {
+            let mode = meta.permissions().mode();
+            if conn_file_is_group_or_other_readable(mode) {
+                eprintln!(
+                    "warning: {} is readable by other users (mode {:o}); it holds the store \
+                     connection credential - restrict it to your account (chmod 600 {}) so the \
+                     secret is not exposed",
+                    path.display(),
+                    mode & 0o777,
+                    path.display()
+                );
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
     }
 }
 
@@ -6411,20 +6457,24 @@ fn init_project(root: &Path) -> Result<ScaffoldReport, Box<dyn std::error::Error
         std::fs::write(&settings_path, &merged)?;
     }
 
-    // 4. Write .gitignore entries for machine-local installs and the always-on dash's
-    // runtime breadcrumbs, when they are not already ignored or tracked. `.claude/` and
-    // `.rigger/shim/` are the machine-local installs; `.rigger/dash.url` and
-    // `.rigger/dash.marker` are the dash's discoverability breadcrumbs (spec 39) - left
-    // untracked-and-not-ignored they get swept into a unit worktree's commit by `git add`
-    // and then collide with the live dash's rewrites when the conductor merges the unit
-    // ("untracked working tree files would be overwritten"). Record WHICH patterns were
-    // appended so the summary reports the real gitignore change and nothing it did not do.
+    // 4. Write .gitignore entries for machine-local installs, the always-on dash's runtime
+    // breadcrumbs, and the per-machine store-connection secret file, when they are not already
+    // ignored or tracked. `.claude/` and `.rigger/shim/` are the machine-local installs;
+    // `.rigger/dash.url` and `.rigger/dash.marker` are the dash's discoverability breadcrumbs
+    // (spec 39) - left untracked-and-not-ignored they get swept into a unit worktree's commit by
+    // `git add` and then collide with the live dash's rewrites when the conductor merges the unit
+    // ("untracked working tree files would be overwritten"). `.rigger/store.conn` is the store
+    // resolver's per-machine secret file (spec 48 rung 3): it carries the connection string's
+    // credentials, so it is git-ignored BY CONSTRUCTION - a developer's credentials can never ride
+    // a committed file. Record WHICH patterns were appended so the summary reports the real
+    // gitignore change and nothing it did not do.
     let mut gitignore_added = Vec::new();
     for pattern in [
         ".claude/",
         ".rigger/shim/",
         ".rigger/dash.url",
         ".rigger/dash.marker",
+        ".rigger/store.conn",
     ] {
         if write_gitignore_entries(root, pattern)? {
             gitignore_added.push(pattern.to_string());
@@ -12495,6 +12545,78 @@ mod tests {
             1,
             "exactly one .rigger/dash.marker ignore line - no duplicate accrued, got:\n{after}"
         );
+    }
+
+    /// Spec 48, SECRETS DISCIPLINE: the per-machine connection-string secret file
+    /// `.rigger/store.conn` (store resolver rung 3) carries credentials, so `rigger init`/`setup`
+    /// must git-ignore it BY CONSTRUCTION - the same scaffold mechanism that ignores the dash
+    /// breadcrumbs - so a developer who drops their credentials into it can never commit them, and
+    /// the committed project config never requires a secret. The append is idempotent: a second
+    /// setup adds no duplicate line.
+    #[test]
+    fn init_project_gitignores_the_store_conn_secret_file_idempotently() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // First scaffold on a fresh consumer repo: the secret file is untracked-and-not-ignored, so
+        // setup appends an ignore line for it and reports it.
+        let first = init_project(dir.path()).expect("first init scaffolds the project");
+        assert!(
+            first
+                .gitignore_added
+                .contains(&".rigger/store.conn".to_string()),
+            "the first init reports appending the store.conn secret-file ignore pattern, got: {:?}",
+            first.gitignore_added
+        );
+
+        let gitignore = dir.path().join(".gitignore");
+        let content = std::fs::read_to_string(&gitignore).unwrap();
+        assert!(
+            content.lines().any(|l| l.trim() == ".rigger/store.conn"),
+            "the written .gitignore ignores the store.conn secret file, got:\n{content}"
+        );
+
+        // Idempotent: a second setup finds it already ignored and appends nothing new.
+        let second = init_project(dir.path()).expect("a rerun must succeed");
+        assert!(
+            !second
+                .gitignore_added
+                .contains(&".rigger/store.conn".to_string()),
+            "a rerun re-appends no store.conn ignore pattern, got: {:?}",
+            second.gitignore_added
+        );
+
+        let after = std::fs::read_to_string(&gitignore).unwrap();
+        assert_eq!(
+            after
+                .lines()
+                .filter(|l| l.trim() == ".rigger/store.conn")
+                .count(),
+            1,
+            "exactly one .rigger/store.conn ignore line - no duplicate accrued, got:\n{after}"
+        );
+    }
+
+    /// Spec 48, SECRETS DISCIPLINE (the permission-hygiene rung): the store-connection secret file
+    /// carries a credential, so the resolver flags it when it is readable by users other than its
+    /// owner. Owner-only modes (`0o600` and friends) are clean; any group-read or other-read bit
+    /// exposes the secret and must be flagged. Pins the exact threshold so the nudge neither
+    /// false-positives on a locked-down file nor misses an exposed one.
+    #[cfg(unix)]
+    #[test]
+    fn a_group_or_other_readable_secret_file_mode_is_flagged_owner_only_is_not() {
+        use super::conn_file_is_group_or_other_readable as exposed;
+        // Owner-only: the credential is not exposed.
+        assert!(!exposed(0o600), "0o600 (owner rw) is owner-only");
+        assert!(!exposed(0o700), "0o700 (owner rwx) is owner-only");
+        assert!(!exposed(0o400), "0o400 (owner read) is owner-only");
+        // Any group-read or other-read bit exposes the credential.
+        assert!(exposed(0o640), "0o640 grants group read");
+        assert!(exposed(0o604), "0o604 grants other read");
+        assert!(
+            exposed(0o644),
+            "0o644 (a default umask) grants group+other read"
+        );
+        assert!(exposed(0o444), "0o444 is world-readable");
     }
 
     /// Spec 46, criterion 1 (CONSUMER GITIGNORE), the broad-rule corner: even when a
