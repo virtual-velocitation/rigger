@@ -125,13 +125,225 @@ pub fn ort_was_initialized() -> bool {
     ORT_INITIALIZED.load(std::sync::atomic::Ordering::Acquire)
 }
 
+/// The embedding PORT: the one seam between the grounder's incremental-index machinery
+/// (chunking, the honest content-keyed skip, batched re-embed, persistence) and the
+/// concrete embedding model. `Turbovec` depends on this trait, not on `fastembed`
+/// directly, so the machinery is exercised in tests by a lightweight counting fake
+/// instead of building the multi-hundred-MB ONNX model - which is what lets a test COUNT
+/// model invocations to prove the batching and the zero-embed skip.
+///
+/// Ports-and-adapters: the trait is the port, [`FastEmbedEmbedder`] is the production
+/// adapter over `ort`/`fastembed`, and the test module's counting embedder is the test
+/// adapter. `Send + Sync` so a `Box<dyn Embedder>` can live inside the `Send + Sync`
+/// `Turbovec` the conductor shares across review threads.
+trait Embedder: Send + Sync {
+    /// A STABLE identity for the embedding this model produces, folded into the per-file
+    /// skip key ([`chunk_key`]) so the incremental skip is HONEST: a file is skipped only
+    /// when both its content AND the model that would embed it are unchanged. Two builds
+    /// of the SAME model share this string (a mere binary reinstall re-embeds nothing);
+    /// any change that alters the produced vectors MUST change it (so the stale vectors
+    /// are re-embedded). It is derived from the model's own identity, never from the
+    /// binary's build id, install time, or the index file's mtime.
+    fn identity(&self) -> &str;
+
+    /// Embed ONE batch of chunk texts in a SINGLE model invocation, returning one
+    /// `EMBED_DIM`-dimensional vector per input, in input order. The caller
+    /// ([`Turbovec::embed_locked`]) has already bounded the slice to a safe batch width
+    /// and holds the embed serialization lock, so this runs exactly one `Session::run`.
+    fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, String>;
+}
+
+/// The production [`Embedder`]: the real `fastembed`/`ort` model. Its [`identity`] is the
+/// model's canonical code plus the embedding dimension, so swapping the embedding model
+/// (or its dimension) changes the identity and re-embeds the tree, while rebuilding or
+/// reinstalling the SAME binary does not.
+///
+/// [`identity`]: Embedder::identity
+struct FastEmbedEmbedder {
+    model: TextEmbedding,
+    identity: String,
+}
+
+impl Embedder for FastEmbedEmbedder {
+    fn identity(&self) -> &str {
+        &self.identity
+    }
+
+    fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, String> {
+        // `Some(texts.len())` makes fastembed's internal `par_chunks` yield EXACTLY ONE
+        // batch, hence exactly one `Session::run` - the caller loops chunk-by-chunk under
+        // `embed_mu` so no two runs are ever in flight (concurrent `Session::run` on one
+        // CUDA session corrupts the heap). `.max(1)` guards the empty slice.
+        self.model
+            .embed(texts.to_vec(), Some(texts.len().max(1)))
+            .map_err(|e| format!("turbovec: embed: {e}"))
+    }
+}
+
+/// The embedding model this grounder uses. Named once here so the model choice and the
+/// [`FastEmbedEmbedder::identity`] derived from it can never drift apart.
+const EMBEDDING_MODEL: EmbeddingModel = EmbeddingModel::BGESmallENV15;
+
+/// The identity string persisted (folded into [`chunk_key`]) for the current embedding
+/// model: its canonical model code (via `fastembed`'s `Display`, e.g.
+/// `Xenova/bge-small-en-v1.5`) plus the embedding dimension. Changing the model or the
+/// dimension changes this string, so a store built by a different model re-embeds; a
+/// rebuild/reinstall of the same model keeps it identical, so nothing re-embeds.
+fn fastembed_identity() -> String {
+    format!("{EMBEDDING_MODEL}/dim={EMBED_DIM}")
+}
+
+/// Build the production [`FastEmbedEmbedder`]: construct the real `fastembed`/`ort`
+/// model, serialized process-wide AND machine-wide, and record that `ort` committed its
+/// runtime so the exit-time teardown runs. Extracted from construction so the store
+/// machinery can be built over a test embedder without this heavy path.
+fn build_fastembed_embedder() -> Result<FastEmbedEmbedder, String> {
+    // Serialize model CONSTRUCTION across the whole process. Two concerns fold into
+    // one lock (see CONSTRUCT_MU): (1) `ensure_dylib_path` mutates the `ORT_DYLIB_PATH`
+    // process env var and `ort` lazily READS it when it first loads the runtime, so
+    // the write must not race a concurrent ort env read on another thread; (2) building
+    // two `ort`/CUDA sessions at once corrupts the heap. Holding CONSTRUCT_MU across
+    // BOTH the env write AND `TextEmbedding::try_new` closes both races: at most one
+    // thread is in this block, so no other thread is loading a session (and thus
+    // reading the env) while we write it, and no two sessions are built concurrently.
+    let model = {
+        let _construct = CONSTRUCT_MU.lock().unwrap();
+        // Serialize the CUDA session build ACROSS PROCESSES too. `CONSTRUCT_MU` above
+        // serializes it within THIS process, but building two ort/CUDA sessions
+        // concurrently corrupts the driver heap across SEPARATE processes on one GPU box
+        // as well (the concurrent-`rigger step` deadlock, and any `rigger ground` /
+        // `rigger canary` / second driver that grounds at the same time). A plain mutex
+        // is blind to other processes and the store flock guards store I/O, not the
+        // build - so take a MACHINE-WIDE advisory flock: a concurrent grounder BLOCKS
+        // here instead of racing the GPU. Held only for this block (released before the
+        // store load below), so it never nests with `with_store_lock`, and auto-released
+        // if this process dies mid-build.
+        let _gpu = StoreLock::acquire(&ort_construct_lock_path())?;
+        // Point `ort` (built with `load-dynamic`) at a discovered `libonnxruntime.so`
+        // BEFORE the fastembed/`ort` model below first loads the runtime. `main` also
+        // calls this, but tests and any other caller that constructs the grounder
+        // directly never run `main`, so without this they hit
+        // `libonnxruntime.so: cannot open shared object file` in a clean env (e.g. CI).
+        // `ensure_dylib_path` no-ops when `ORT_DYLIB_PATH` is already set, so an
+        // explicit env choice is never overridden; it is idempotent, so calling it
+        // under the lock on every construction is cheap and correct.
+        //
+        // SAFETY: `ensure_dylib_path` mutates the process env var `ORT_DYLIB_PATH`.
+        // CONSTRUCT_MU is held across this write AND the `TextEmbedding::try_new`
+        // below (where `ort` reads the env on its first session load), and every
+        // other GROUNDER-construction path also holds it - so no OTHER grounder
+        // construction, and thus no ort env read WE INITIATE, can race this write.
+        // The mutex cannot exclude an unrelated `getenv` from a linked C library or
+        // the runtime on some other thread; that residual process-global race is the
+        // reason the fn is `unsafe`, and it is minimized because construction happens
+        // early (in practice under `main`, which itself calls `ensure_dylib_path`
+        // pre-spawn) rather than eliminated by this lock alone.
+        unsafe { crate::ort_runtime::ensure_dylib_path() };
+
+        // Build the model, catching the one failure mode that is NOT a `Result::Err`:
+        // a wholly MISSING runtime dylib. Both `select_execution_providers`'
+        // `is_available()` probe and `TextEmbedding::try_new`'s session load reach
+        // `ort`'s `lib_handle()`, whose `dlopen` is `.unwrap_or_else(|e| panic!(...))`
+        // - so a runtime that cannot be `dlopen`ed (the narrow cleared-cache-after-
+        // install edge) UNWINDS as a raw panic that `try_new`'s `Result` and
+        // `is_available().unwrap_or(false)` both fail to catch. `catch_unwind` turns
+        // that panic into the SAME clean `Err(String)` we return for any other load
+        // failure, degrading gracefully instead of aborting - and, unlike a separate
+        // resolvability probe, it observes EXACTLY the load `ort` actually performs, so
+        // the two can never disagree. `AssertUnwindSafe` because we consume the closure
+        // once and discard everything it borrows on the panic path (nothing is left in a
+        // torn state to observe). `ensure_dylib_path` ran just above, so the load below
+        // targets the path `ort` will use.
+        let build = || {
+            TextEmbedding::try_new(
+                InitOptions::new(EMBEDDING_MODEL)
+                    .with_show_download_progress(false)
+                    .with_execution_providers(select_execution_providers()),
+            )
+            .map_err(|e| format!("turbovec: load model: {e}"))
+        };
+        // Silence ONLY ort's EXPECTED, CAUGHT dylib-load panic for the duration of
+        // this build. `catch_unwind` absorbs the unwind, but the panic HOOK still runs
+        // first and would dump `ort`'s raw `lib_handle()` backtrace
+        // ("thread '..' panicked at .../ort/src/lib.rs: ... cannot open shared object
+        // file") to stderr - alarming noise ahead of the clean, actionable `Err` we
+        // return below. A graceful degrade should read as graceful.
+        //
+        // But a BLANKET no-op hook over this whole multi-second build would also
+        // swallow the diagnostic of any UNRELATED thread that happens to panic in this
+        // window - a real bug's message, silently lost. So instead of muting the hook,
+        // we install a DISCRIMINATING one that FORWARDS every panic to the previous
+        // hook EXCEPT ort's dylib-load panic, which alone it swallows. That panic is
+        // identified by its payload (see `is_ort_dylib_load_panic`): ort's exact
+        // "attempting to load the ONNX Runtime binary" load-failure message - so a
+        // genuine session-init panic from ort keeps its backtrace. Everything else keeps
+        // its diagnostics. We restore the previous hook after the `catch_unwind`.
+        //
+        // SAFETY of touching the process-global hook here: we are inside CONSTRUCT_MU
+        // (held across this whole block), the only lock every grounder construction
+        // takes, so no other grounder build races this swap; and construction runs
+        // early (under `main`, pre-spawn - see `ensure_dylib_path`'s contract), so no
+        // unrelated thread's panic message is plausibly lost in this narrow window.
+        let prev_hook = std::sync::Arc::new(std::panic::take_hook());
+        let hook_prev = std::sync::Arc::clone(&prev_hook);
+        std::panic::set_hook(Box::new(move |info| {
+            // Forward EVERYTHING to the previous hook except ort's own dylib-load
+            // panic (the graceful-degrade path we already handle below). That one, and
+            // only that one, is swallowed so its raw backtrace never reaches stderr.
+            if !is_ort_dylib_load_panic(info) {
+                hook_prev(info);
+            }
+        }));
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(build));
+        // Restore the previous hook. We `take_hook()` first to drop our forwarding
+        // closure (releasing its `Arc` clone), then reinstall the previous hook - it is
+        // recoverable from the `Arc` because this is now its sole strong reference.
+        let _ = std::panic::take_hook();
+        match std::sync::Arc::try_unwrap(prev_hook) {
+            Ok(hook) => std::panic::set_hook(hook),
+            // Unreachable in practice (the forwarding closure that held the other clone
+            // was just dropped by `take_hook`), but if a clone somehow outlived it, fall
+            // back to a forwarding box so the previous hook is still reinstalled.
+            Err(shared) => std::panic::set_hook(Box::new(move |info| shared(info))),
+        }
+        match caught {
+            Ok(result) => result?,
+            Err(_) => {
+                return Err(
+                    "turbovec: the ONNX Runtime shared library (libonnxruntime.so) could not \
+                     be resolved for loading. It is normally downloaded into \
+                     ~/.cache/ort.pyke.io/dfbin/ by the build; if that cache was cleared after \
+                     install, rebuild (`cargo build`) to re-fetch it, set ORT_DYLIB_PATH to a \
+                     valid libonnxruntime.so, or select `defaults.grounder: grep` to run \
+                     without the semantic grounder"
+                        .to_string(),
+                );
+            }
+        }
+    };
+
+    // The model built, which means `ort` loaded its runtime dylib and committed its
+    // process-global environment (`TextEmbedding::try_new` above is the only path that
+    // does so). Record it so `ort_teardown::release_ort_runtime` knows an ORT
+    // environment exists to release before process exit - see `ORT_INITIALIZED`.
+    ORT_INITIALIZED.store(true, std::sync::atomic::Ordering::Release);
+
+    Ok(FastEmbedEmbedder {
+        model,
+        identity: fastembed_identity(),
+    })
+}
+
 /// Turbovec grounds semantically: it embeds the codebase into a quantized vector
 /// index and returns the chunks nearest a query. The index + its id->Ref map are
 /// persisted under `.rigger/grounding/` and loaded on construction when present, so
 /// successive `rigger ground` calls reuse the embeddings instead of rebuilding, and
 /// [`Self::reindex`] updates them per-file incrementally.
 pub struct Turbovec {
-    model: TextEmbedding,
+    /// The embedding model, behind the [`Embedder`] port. Production wires a
+    /// [`FastEmbedEmbedder`] (the real `ort`/`fastembed` model); tests wire a counting
+    /// fake so the incremental-index machinery is provable without the heavy model.
+    embedder: Box<dyn Embedder>,
     root: String,
     store_dir: PathBuf,
     /// The in-memory index+meta, and the single mutation authority over it. EVERY
@@ -140,13 +352,13 @@ pub struct Turbovec {
     /// never re-lock - so two freshens / reindexes can never interleave a diff against
     /// an apply. A `ground`'s search takes the same lock, so it also serializes.
     state: Mutex<State>,
-    /// Serializes every call into `model.embed()` - the one shared `ort` session's
+    /// Serializes every call into the embedder - the one shared `ort` session's
     /// `Session::run`. Concurrent `Session::run` on a single CUDA session corrupts the
     /// heap, so this is the process-wide "at most one embed at a time" authority: query
-    /// embeds (`embed_query`) and content embeds (`index_file_content`) BOTH take it,
-    /// held across the whole `embed` call. It is a separate lock from `state` so a query
-    /// embed (which is not under the state lock) still cannot run concurrently with a
-    /// freshen's content embed.
+    /// embeds (`embed_query`) and content embeds (`index_files`) BOTH take it, held
+    /// across the whole `embed` call. It is a separate lock from `state` so a query embed
+    /// (which is not under the state lock) still cannot run concurrently with a freshen's
+    /// content embed.
     embed_mu: Mutex<()>,
     /// How many times `reload_persisted_locked` has actually run its expensive on-disk
     /// reload (full `IdMapIndex::load` + meta deserialize + consistency scan). The
@@ -334,140 +546,26 @@ impl Turbovec {
     /// Shared construction: build the model (serialized process-wide) then load-or-build
     /// the store. `on_drift` selects whether a loaded-but-drifted store is freshened now
     /// (`new`) or left as-loaded (`new_for_reindex`, which re-embeds only named files).
+    /// The two halves are split so the store machinery ([`Self::from_embedder`]) can be
+    /// exercised over the [`Embedder`] port by a test fake, without building the model.
     fn construct(root: &str, on_drift: OnDrift) -> Result<Self, String> {
-        // Serialize model CONSTRUCTION across the whole process. Two concerns fold into
-        // one lock (see CONSTRUCT_MU): (1) `ensure_dylib_path` mutates the `ORT_DYLIB_PATH`
-        // process env var and `ort` lazily READS it when it first loads the runtime, so
-        // the write must not race a concurrent ort env read on another thread; (2) building
-        // two `ort`/CUDA sessions at once corrupts the heap. Holding CONSTRUCT_MU across
-        // BOTH the env write AND `TextEmbedding::try_new` closes both races: at most one
-        // thread is in this block, so no other thread is loading a session (and thus
-        // reading the env) while we write it, and no two sessions are built concurrently.
-        let model = {
-            let _construct = CONSTRUCT_MU.lock().unwrap();
-            // Serialize the CUDA session build ACROSS PROCESSES too. `CONSTRUCT_MU` above
-            // serializes it within THIS process, but building two ort/CUDA sessions
-            // concurrently corrupts the driver heap across SEPARATE processes on one GPU box
-            // as well (the concurrent-`rigger step` deadlock, and any `rigger ground` /
-            // `rigger canary` / second driver that grounds at the same time). A plain mutex
-            // is blind to other processes and the store flock guards store I/O, not the
-            // build - so take a MACHINE-WIDE advisory flock: a concurrent grounder BLOCKS
-            // here instead of racing the GPU. Held only for this block (released before the
-            // store load below), so it never nests with `with_store_lock`, and auto-released
-            // if this process dies mid-build.
-            let _gpu = StoreLock::acquire(&ort_construct_lock_path())?;
-            // Point `ort` (built with `load-dynamic`) at a discovered `libonnxruntime.so`
-            // BEFORE the fastembed/`ort` model below first loads the runtime. `main` also
-            // calls this, but tests and any other caller that constructs the grounder
-            // directly never run `main`, so without this they hit
-            // `libonnxruntime.so: cannot open shared object file` in a clean env (e.g. CI).
-            // `ensure_dylib_path` no-ops when `ORT_DYLIB_PATH` is already set, so an
-            // explicit env choice is never overridden; it is idempotent, so calling it
-            // under the lock on every construction is cheap and correct.
-            //
-            // SAFETY: `ensure_dylib_path` mutates the process env var `ORT_DYLIB_PATH`.
-            // CONSTRUCT_MU is held across this write AND the `TextEmbedding::try_new`
-            // below (where `ort` reads the env on its first session load), and every
-            // other GROUNDER-construction path also holds it - so no OTHER grounder
-            // construction, and thus no ort env read WE INITIATE, can race this write.
-            // The mutex cannot exclude an unrelated `getenv` from a linked C library or
-            // the runtime on some other thread; that residual process-global race is the
-            // reason the fn is `unsafe`, and it is minimized because construction happens
-            // early (in practice under `main`, which itself calls `ensure_dylib_path`
-            // pre-spawn) rather than eliminated by this lock alone.
-            unsafe { crate::ort_runtime::ensure_dylib_path() };
+        let embedder = build_fastembed_embedder()?;
+        Self::from_embedder(root, Box::new(embedder), on_drift)
+    }
 
-            // Build the model, catching the one failure mode that is NOT a `Result::Err`:
-            // a wholly MISSING runtime dylib. Both `select_execution_providers`'
-            // `is_available()` probe and `TextEmbedding::try_new`'s session load reach
-            // `ort`'s `lib_handle()`, whose `dlopen` is `.unwrap_or_else(|e| panic!(...))`
-            // - so a runtime that cannot be `dlopen`ed (the narrow cleared-cache-after-
-            // install edge) UNWINDS as a raw panic that `try_new`'s `Result` and
-            // `is_available().unwrap_or(false)` both fail to catch. `catch_unwind` turns
-            // that panic into the SAME clean `Err(String)` we return for any other load
-            // failure, degrading gracefully instead of aborting - and, unlike a separate
-            // resolvability probe, it observes EXACTLY the load `ort` actually performs, so
-            // the two can never disagree. `AssertUnwindSafe` because we consume the closure
-            // once and discard everything it borrows on the panic path (nothing is left in a
-            // torn state to observe). `ensure_dylib_path` ran just above, so the load below
-            // targets the path `ort` will use.
-            let build = || {
-                TextEmbedding::try_new(
-                    InitOptions::new(EmbeddingModel::BGESmallENV15)
-                        .with_show_download_progress(false)
-                        .with_execution_providers(select_execution_providers()),
-                )
-                .map_err(|e| format!("turbovec: load model: {e}"))
-            };
-            // Silence ONLY ort's EXPECTED, CAUGHT dylib-load panic for the duration of
-            // this build. `catch_unwind` absorbs the unwind, but the panic HOOK still runs
-            // first and would dump `ort`'s raw `lib_handle()` backtrace
-            // ("thread '..' panicked at .../ort/src/lib.rs: ... cannot open shared object
-            // file") to stderr - alarming noise ahead of the clean, actionable `Err` we
-            // return below. A graceful degrade should read as graceful.
-            //
-            // But a BLANKET no-op hook over this whole multi-second build would also
-            // swallow the diagnostic of any UNRELATED thread that happens to panic in this
-            // window - a real bug's message, silently lost. So instead of muting the hook,
-            // we install a DISCRIMINATING one that FORWARDS every panic to the previous
-            // hook EXCEPT ort's dylib-load panic, which alone it swallows. That panic is
-            // identified by its payload (see `is_ort_dylib_load_panic`): ort's exact
-            // "attempting to load the ONNX Runtime binary" load-failure message - so a
-            // genuine session-init panic from ort keeps its backtrace. Everything else keeps
-            // its diagnostics. We restore the previous hook after the `catch_unwind`.
-            //
-            // SAFETY of touching the process-global hook here: we are inside CONSTRUCT_MU
-            // (held across this whole block), the only lock every grounder construction
-            // takes, so no other grounder build races this swap; and construction runs
-            // early (under `main`, pre-spawn - see `ensure_dylib_path`'s contract), so no
-            // unrelated thread's panic message is plausibly lost in this narrow window.
-            let prev_hook = std::sync::Arc::new(std::panic::take_hook());
-            let hook_prev = std::sync::Arc::clone(&prev_hook);
-            std::panic::set_hook(Box::new(move |info| {
-                // Forward EVERYTHING to the previous hook except ort's own dylib-load
-                // panic (the graceful-degrade path we already handle below). That one, and
-                // only that one, is swallowed so its raw backtrace never reaches stderr.
-                if !is_ort_dylib_load_panic(info) {
-                    hook_prev(info);
-                }
-            }));
-            let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(build));
-            // Restore the previous hook. We `take_hook()` first to drop our forwarding
-            // closure (releasing its `Arc` clone), then reinstall the previous hook - it is
-            // recoverable from the `Arc` because this is now its sole strong reference.
-            let _ = std::panic::take_hook();
-            match std::sync::Arc::try_unwrap(prev_hook) {
-                Ok(hook) => std::panic::set_hook(hook),
-                // Unreachable in practice (the forwarding closure that held the other clone
-                // was just dropped by `take_hook`), but if a clone somehow outlived it, fall
-                // back to a forwarding box so the previous hook is still reinstalled.
-                Err(shared) => std::panic::set_hook(Box::new(move |info| shared(info))),
-            }
-            match caught {
-                Ok(result) => result?,
-                Err(_) => {
-                    return Err(
-                        "turbovec: the ONNX Runtime shared library (libonnxruntime.so) could not \
-                         be resolved for loading. It is normally downloaded into \
-                         ~/.cache/ort.pyke.io/dfbin/ by the build; if that cache was cleared after \
-                         install, rebuild (`cargo build`) to re-fetch it, set ORT_DYLIB_PATH to a \
-                         valid libonnxruntime.so, or select `defaults.grounder: grep` to run \
-                         without the semantic grounder"
-                            .to_string(),
-                    );
-                }
-            }
-        };
-
-        // The model built, which means `ort` loaded its runtime dylib and committed its
-        // process-global environment (`TextEmbedding::try_new` above is the only path that
-        // does so). Record it so `ort_teardown::release_ort_runtime` knows an ORT
-        // environment exists to release before process exit - see `ORT_INITIALIZED`.
-        ORT_INITIALIZED.store(true, std::sync::atomic::Ordering::Release);
-
+    /// Wire a constructed [`Embedder`] into a `Turbovec` and load-or-build the store over
+    /// it. Split out of [`Self::construct`] so tests can inject a counting fake and drive
+    /// the whole incremental-index path (chunk, honest skip, batched re-embed, persist)
+    /// without the multi-hundred-MB model. `on_drift` selects freshen-now vs leave-stale
+    /// for a loaded-but-drifted store, exactly as the model-backed path does.
+    fn from_embedder(
+        root: &str,
+        embedder: Box<dyn Embedder>,
+        on_drift: OnDrift,
+    ) -> Result<Self, String> {
         let store_dir = Path::new(root).join(GROUNDING_DIR);
         let tv = Turbovec {
-            model,
+            embedder,
             root: root.to_string(),
             store_dir,
             state: Mutex::new(State {
@@ -718,15 +816,20 @@ impl Turbovec {
         let mut on_disk = Vec::new();
         collect_files(Path::new(&self.root), &self.root, &mut on_disk);
 
-        // 2. Diff against the persisted per-file hashes (under the held lock).
+        // 2. Diff against the persisted per-file skip keys (under the held lock). The key
+        //    folds the CURRENT model's identity in front of the content (see `chunk_key`),
+        //    so an unchanged file skips only when both its content AND the embedding model
+        //    are unchanged: a binary reinstall (same model) skips every file, while a model
+        //    swap re-embeds them all.
+        let identity = self.embedder.identity();
         let mut changed_or_new: Vec<(String, String)> = Vec::new();
         let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
         for (rel, content) in &on_disk {
             seen.insert(rel.as_str());
             match state.meta.files.get(rel) {
-                // Unchanged: same content hash -> skip (no embed).
-                Some(entry) if entry.hash == hash_content(content) => {}
-                // Changed or new: queue for an incremental re-embed.
+                // Unchanged content AND unchanged model -> skip (no embed).
+                Some(entry) if entry.hash == chunk_key(identity, content) => {}
+                // Changed, new, or embedded by a different model: queue for a re-embed.
                 _ => changed_or_new.push((rel.clone(), content.clone())),
             }
         }
@@ -746,26 +849,35 @@ impl Turbovec {
         }
 
         // 4. Apply the delta, then persist. The caller already holds the store lock, so a
-        //    concurrent reader in another process never sees a half-applied store.
-        //    `drop_file`/`index_file_content` mutate the held `state` directly (they do
-        //    NOT re-lock); the slow embed inside `index_file_content` is serialized on
-        //    `embed_mu`, not `state`, so it never runs concurrently with another embed.
+        //    concurrent reader in another process never sees a half-applied store. Drop the
+        //    deleted files' and the changed files' OLD chunks first (a changed file is
+        //    re-embedded, so its stale chunks go; a new file's drop is a no-op), THEN
+        //    re-embed the whole changed/new set through `index_files` in one BATCHED pass -
+        //    all its chunks across all its files feed the model in `EMBED_BATCH_SIZE`
+        //    batches (one invocation per batch) instead of one small invocation per file.
+        //    `drop_file`/`index_files` mutate the held `state` directly (they do NOT
+        //    re-lock); the embed inside `index_files` is serialized on `embed_mu`, not
+        //    `state`, so it never runs concurrently with another embed.
         for rel in &deleted {
             drop_file(state, rel);
         }
-        for (rel, content) in &changed_or_new {
+        for (rel, _content) in &changed_or_new {
             drop_file(state, rel); // no-op for a brand-new file; clears a changed one's old chunks
-            self.index_file_content(state, rel, content)?;
         }
+        self.index_files(state, &changed_or_new)?;
         // 5. Persist the updated index + metadata once, atomically.
         self.persist_locked(state)
     }
 
-    /// Whether the persisted `meta` still describes the on-disk tree: the same set
-    /// of indexable files, each with an unchanged content hash. A mismatch means
-    /// the tree drifted out from under the store (an edit, add, or delete with no
-    /// process around to `reindex`), so the store cannot be reused verbatim.
+    /// Whether the persisted `meta` still describes the on-disk tree: the same set of
+    /// indexable files, each with an unchanged per-file skip key. The key folds the
+    /// CURRENT model's identity in front of the content (see [`chunk_key`]), so a store
+    /// written by a DIFFERENT embedding model reads as drifted (every key differs) and is
+    /// re-embedded, while a rebuild/reinstall of the SAME model over an unchanged tree
+    /// matches verbatim. A mismatch means the tree (or the model) drifted out from under
+    /// the store, so it cannot be reused as-is.
     fn tree_matches(&self, meta: &Meta) -> bool {
+        let identity = self.embedder.identity();
         let mut on_disk = Vec::new();
         collect_files(Path::new(&self.root), &self.root, &mut on_disk);
         if on_disk.len() != meta.files.len() {
@@ -773,7 +885,7 @@ impl Turbovec {
         }
         for (rel, content) in on_disk {
             match meta.files.get(&rel) {
-                Some(entry) if entry.hash == hash_content(&content) => {}
+                Some(entry) if entry.hash == chunk_key(identity, &content) => {}
                 _ => return false,
             }
         }
@@ -782,7 +894,9 @@ impl Turbovec {
 
     /// Embed the whole tree once into a fresh index + metadata. Used on a cold
     /// start (no store) or when the persisted store is inconsistent. Replaces the
-    /// in-memory state wholesale; the caller persists it.
+    /// in-memory state wholesale; the caller persists it. Routes through the batched
+    /// [`Self::index_files`] authority, so the cold build feeds the model at its batch
+    /// width too - not one small invocation per file.
     fn build_from_tree(&self, state: &mut State) -> Result<(), String> {
         let mut on_disk = Vec::new();
         collect_files(Path::new(&self.root), &self.root, &mut on_disk);
@@ -791,35 +905,103 @@ impl Turbovec {
         state.index = IdMapIndex::new(EMBED_DIM, BIT_WIDTH)
             .map_err(|e| format!("turbovec: new index: {e}"))?;
         state.meta = Meta::default();
-        for (rel, content) in on_disk {
-            self.index_file_content(state, &rel, &content)?;
+        self.index_files(state, &on_disk)
+    }
+
+    /// The ONE embed-and-install authority. Chunk every file in `files`, embed ALL their
+    /// chunks in `EMBED_BATCH_SIZE` batches (ONE model invocation per batch, so the
+    /// accelerator is fed at its width instead of one small invocation per file), and
+    /// install each file's vectors under fresh ids. Every re-embed path - the `freshen`
+    /// drifted set, a `reindex`'s named files, and the cold `build_from_tree` - routes
+    /// through here, so the chunk-embed-install concern lives in exactly one place.
+    ///
+    /// Each file's PRIOR chunks must already have been dropped by the caller (this only
+    /// adds). Files are processed - and their ids allocated - in the given order, so the
+    /// id assignment is byte-identical to a serial per-file walk (determinism: the same
+    /// tree yields the same index entries regardless of the batching).
+    ///
+    /// MEMORY-BOUNDED: chunks accumulate into a pending GROUP that is flushed (embedded +
+    /// installed) as soon as it reaches the batch width, and once more at the end - so at
+    /// most ~one batch of embeddings is held at a time even for a whole-tree cold build,
+    /// while multiple small files still share one batched invocation.
+    fn index_files(&self, state: &mut State, files: &[(String, String)]) -> Result<(), String> {
+        if files.is_empty() {
+            return Ok(());
+        }
+        // Own the identity up front so no borrow of `self.embedder` lives across the
+        // `&mut state` installs below.
+        let identity = self.embedder.identity().to_string();
+        // The pending group: a flat list of chunk texts, plus per-file staging of
+        // (rel, skip key, its refs, the offset of its chunks in the flat list).
+        let mut texts: Vec<String> = Vec::new();
+        let mut group: Vec<(String, u64, Vec<StoredRef>, usize)> = Vec::new();
+        for (rel, content) in files {
+            let (chunk_texts, refs) = chunk_content(rel, content);
+            let hash = chunk_key(&identity, content);
+            let start = texts.len();
+            texts.extend(chunk_texts);
+            group.push((rel.clone(), hash, refs, start));
+            // Flush once the group reaches the accelerator's batch width. A file is never
+            // split across a flush (the check is AFTER the whole file is appended), so a
+            // file's embeddings are always contiguous for its atomic install.
+            if texts.len() >= EMBED_BATCH_SIZE {
+                self.flush_group(state, &mut texts, &mut group)?;
+            }
+        }
+        // Flush the tail (the last, sub-batch-width group; also the whole set when the
+        // drifted set is smaller than one batch - the common freshen case).
+        self.flush_group(state, &mut texts, &mut group)
+    }
+
+    /// Embed one pending group's chunk texts in `EMBED_BATCH_SIZE` model invocations and
+    /// install each file's slice under fresh ids, then clear the group. A single
+    /// `embed_locked` call embeds the whole group (its internal batching yields one
+    /// `Session::run` per `EMBED_BATCH_SIZE` chunks); a group at or under the batch width
+    /// is thus ONE invocation for all its files - the batching the criterion counts.
+    fn flush_group(
+        &self,
+        state: &mut State,
+        texts: &mut Vec<String>,
+        group: &mut Vec<(String, u64, Vec<StoredRef>, usize)>,
+    ) -> Result<(), String> {
+        if group.is_empty() {
+            return Ok(());
+        }
+        let embeddings = self.embed_locked(std::mem::take(texts), Some(EMBED_BATCH_SIZE))?;
+        for (rel, hash, refs, start) in std::mem::take(group) {
+            let end = start + refs.len();
+            self.install_file_chunks(state, &rel, hash, refs, &embeddings[start..end])?;
         }
         Ok(())
     }
 
-    /// Chunk + embed one file's content and insert its vectors under fresh ids,
-    /// recording the file's hash and chunk ids in the metadata. The file's PRIOR
-    /// chunks (if any) must already have been removed by the caller - this only
-    /// adds. Returns without embedding when the file has no non-blank chunks (the
-    /// file is recorded with an empty id set so it still counts toward consistency).
+    /// Install ONE file's pre-embedded chunks under fresh ids, recording its skip key and
+    /// chunk ids in the metadata. A file with no non-blank chunks is recorded with an
+    /// empty id set so it still counts toward consistency; `embeddings` must hold exactly
+    /// one vector per `ref`, in order.
     ///
     /// ATOMIC w.r.t. `state.meta`: the add-to-index happens FIRST, and NOTHING in
-    /// `state.meta` (`refs`, `files`, `next_id`) is touched until that add succeeds.
-    /// The chunk ids are allocated from a LOCAL counter seeded at `state.meta.next_id`
-    /// and the `(id, StoredRef)` pairs + flat floats are accumulated in LOCALS, so if
+    /// `state.meta` (`refs`, `files`, `next_id`) is touched until that add succeeds. The
+    /// chunk ids are allocated from a LOCAL counter seeded at `state.meta.next_id` and the
+    /// `(id, StoredRef)` pairs + flat floats are accumulated in LOCALS, so if
     /// `add_with_ids` returns `Err` we `?` out having mutated NOTHING - no orphan ref
-    /// stranded in `meta.refs` (which no `FileEntry.ids` would list, so `drop_file`
-    /// could never reclaim it), no leaked `next_id`, no partial `FileEntry`. On success
-    /// we commit all three together, mirroring exactly the vectors the index accepted.
-    fn index_file_content(
+    /// stranded in `meta.refs` (which no `FileEntry.ids` would list, so `drop_file` could
+    /// never reclaim it), no leaked `next_id`, no partial `FileEntry`. On success we commit
+    /// all three together, mirroring exactly the vectors the index accepted.
+    fn install_file_chunks(
         &self,
         state: &mut State,
         rel: &str,
-        content: &str,
+        hash: u64,
+        refs: Vec<StoredRef>,
+        embeddings: &[Vec<f32>],
     ) -> Result<(), String> {
-        let (texts, refs) = chunk_content(rel, content);
-        let hash = hash_content(content);
-        if texts.is_empty() {
+        debug_assert_eq!(
+            refs.len(),
+            embeddings.len(),
+            "one embedding per ref is required"
+        );
+        if refs.is_empty() {
             state.meta.files.insert(
                 rel.to_string(),
                 FileEntry {
@@ -829,13 +1011,6 @@ impl Turbovec {
             );
             return Ok(());
         }
-        // Bound the batch so a single GPU forward pass's attention tensor stays small
-        // enough for the CUDA arena (see EMBED_BATCH_SIZE) - an unbounded batch crashed
-        // the GPU embed with a multi-GB single allocation. On CPU this is just more,
-        // smaller batches. Routed through `embed_locked` so this `Session::run` is
-        // serialized against every other embed on the shared ort session.
-        let embeddings = self.embed_locked(texts, Some(EMBED_BATCH_SIZE))?;
-
         // Stage everything in LOCALS, touching NOTHING in `state.meta`. Ids come from a
         // local counter seeded at (but not yet written back to) `state.meta.next_id`, so
         // an add failure below leaves `next_id` - and every other field of `meta` -
@@ -869,6 +1044,20 @@ impl Turbovec {
             .insert(rel.to_string(), FileEntry { hash, ids });
         state.meta.next_id = next_id;
         Ok(())
+    }
+
+    /// Chunk + embed ONE file and install its vectors - a thin convenience over the
+    /// batched [`Self::index_files`] authority (a one-file "batch"), so the single-file
+    /// callers and the per-file atomicity contract read as before while the embed-install
+    /// concern stays implemented once. The file's prior chunks must already be dropped.
+    #[cfg(test)]
+    fn index_file_content(
+        &self,
+        state: &mut State,
+        rel: &str,
+        content: &str,
+    ) -> Result<(), String> {
+        self.index_files(state, &[(rel.to_string(), content.to_string())])
     }
 
     /// Persist the index (`index.tvim`) and the metadata (`meta.json`) ATOMICALLY to
@@ -919,7 +1108,7 @@ impl Turbovec {
         Ok(())
     }
 
-    /// Embed via the one shared `ort` session, serialized on `embed_mu` so at most one
+    /// Embed via the one shared embedder session, serialized on `embed_mu` so at most one
     /// `Session::run` is in flight process-wide. Concurrent `Session::run` on a single
     /// CUDA session corrupts the heap, so EVERY embed - query and content - funnels
     /// through here.
@@ -929,23 +1118,18 @@ impl Turbovec {
         batch: Option<usize>,
     ) -> Result<Vec<Vec<f32>>, String> {
         let _embed = self.embed_mu.lock().unwrap();
-        // fastembed's `embed(texts, Some(n))` rayon-parallelizes ACROSS the n-sized batches
-        // (`texts.par_chunks(n).map(|b| session.run(b))`), firing CONCURRENT `Session::run`
-        // on the single ort/CUDA session - which intermittently corrupts the heap
-        // ("corrupted double-linked list"). `embed_mu` serializes the whole call but NOT
-        // fastembed's internal parallelism, so a multi-batch content embed still races
-        // itself. Chunk here and run each chunk as its OWN one-batch embed
-        // (`Some(chunk.len())` makes `par_chunks` yield exactly one batch -> exactly one
-        // `Session::run`); the loop keeps runs strictly sequential under the lock, never
-        // more than one in flight, with peak memory bounded to a single batch.
+        // Split into bounded batches and run each as its OWN single model invocation
+        // ([`Embedder::embed_batch`] -> exactly one `Session::run`), strictly sequentially
+        // under the lock. This bounds a GPU forward pass's peak memory (see
+        // `EMBED_BATCH_SIZE`) AND keeps at most one `Session::run` in flight -
+        // fastembed's own `embed(texts, Some(n))` would rayon-parallelize ACROSS the
+        // n-sized batches, firing CONCURRENT `Session::run` on the single CUDA session
+        // ("corrupted double-linked list"); the adapter passes `Some(len)` so each of OUR
+        // batches is a single un-parallelized run, and this loop sequences them.
         let batch_size = batch.unwrap_or(EMBED_BATCH_SIZE).max(1);
         let mut out = Vec::with_capacity(texts.len());
         for chunk in texts.chunks(batch_size) {
-            let embs = self
-                .model
-                .embed(chunk.to_vec(), Some(chunk.len()))
-                .map_err(|e| format!("turbovec: embed: {e}"))?;
-            out.extend(embs);
+            out.extend(self.embedder.embed_batch(chunk)?);
         }
         Ok(out)
     }
@@ -1188,10 +1372,12 @@ impl Grounder for Turbovec {
     /// Re-index ONLY the given files after a unit integrates, so the next agent
     /// grounds on the accepted code - an incremental delta, NOT a full rebuild. Under
     /// the store flock it FIRST reloads the persisted base (so a concurrent external
-    /// write is folded in, not clobbered), then for each file: drop its old chunks from
-    /// the index + metadata, re-embed its current content under fresh ids, insert them,
-    /// then persist once. A file that no longer exists on disk is dropped (its chunks
-    /// removed) without re-adding.
+    /// write is folded in, not clobbered), then drops the named files' old chunks and
+    /// re-embeds the ones still on disk through the batched [`Self::index_files`]
+    /// authority (so a multi-file reindex feeds the model at its batch width, and the
+    /// chunk-embed-install concern lives in one place), then persists once. A file that
+    /// no longer exists on disk is dropped (its chunks removed) without re-adding, and no
+    /// named file is embedded more than once.
     fn reindex(&self, src_dir: &str, files: &[String]) {
         if files.is_empty() {
             return;
@@ -1203,32 +1389,40 @@ impl Grounder for Turbovec {
         let mut state = self.state.lock().unwrap();
         let result = self.with_store_lock(|| {
             // Reload the on-disk store into `state` FIRST, under the held flock, so the
-            // per-file drop+re-embed applies to the LATEST persisted base. A long-lived
-            // grounder's in-memory state can be behind disk (another `rigger` process
-            // reindexed while we held our instance); without this reload, persisting our
-            // stale base would clobber that write. Reloading folds it in so only THIS
-            // reindex's named files change and every other on-disk chunk survives.
+            // drop+re-embed applies to the LATEST persisted base. A long-lived grounder's
+            // in-memory state can be behind disk (another `rigger` process reindexed while
+            // we held our instance); without this reload, persisting our stale base would
+            // clobber that write. Reloading folds it in so only THIS reindex's named files
+            // change and every other on-disk chunk survives.
             self.reload_persisted_locked(&mut state)?;
+            // Drop every named file's old chunks FIRST (so a changed file's stale vectors
+            // are gone and a deleted file stays gone), then collect the ones still on disk
+            // and re-embed them ALL in one batched pass. A file named twice is de-duplicated
+            // by the drop (its second drop is a no-op) and only its final content is
+            // embedded, so no named file is double-embedded.
             for f in files {
                 drop_file(&mut state, f);
+            }
+            let mut to_index: Vec<(String, String)> = Vec::new();
+            for f in files {
                 let path = Path::new(src_dir).join(f);
-                // The file still exists: re-embed its current content under new ids. If
-                // it was deleted (or is unreadable), its chunks were already dropped
+                // The file still exists: queue its current content for a re-embed under new
+                // ids. If it was deleted (or is unreadable), its chunks were already dropped
                 // above and there is nothing to re-add.
                 if let Ok(content) = std::fs::read_to_string(&path) {
-                    // PROPAGATE the add error rather than swallowing it. `index_file_content`
-                    // is ATOMIC w.r.t. `state.meta` (it stages the chunk ids + refs in
-                    // locals and commits them only AFTER `index.add_with_ids` succeeds), so
-                    // a failed add leaves `meta` untouched - no orphan ref. Even so, we must
-                    // still `?` out rather than swallow: `drop_file` above already mutated
-                    // `state` in memory (this file's old chunks are gone), so swallowing and
-                    // persisting would durably write that half-applied delta. `?`-ing out
-                    // skips the persist and, via the stamp invalidation below, forces the
-                    // next `freshen` to reload the clean persisted store - consistent with
-                    // `index_file_content` / `freshen`, which already `?` on add.
-                    self.index_file_content(&mut state, f, &content)?;
+                    to_index.push((f.clone(), content));
                 }
             }
+            // PROPAGATE any embed/add error rather than swallowing it. `index_files` is
+            // ATOMIC per file w.r.t. `state.meta` (it stages each file's ids + refs in
+            // locals and commits them only AFTER `index.add_with_ids` succeeds), so a
+            // failed add leaves `meta` untouched - no orphan ref. Even so, we must still
+            // `?` out rather than swallow: the drops above already mutated `state` in
+            // memory (the named files' old chunks are gone), so swallowing and persisting
+            // would durably write that half-applied delta. `?`-ing out skips the persist
+            // and, via the stamp invalidation below, forces the next `freshen` to reload
+            // the clean persisted store.
+            self.index_files(&mut state, &to_index)?;
             self.persist_locked(&mut state)
         });
         // Any failure in the reload/re-embed/persist critical section is surfaced here and
@@ -1358,10 +1552,25 @@ fn chunk_content(rel: &str, content: &str) -> (Vec<String>, Vec<StoredRef>) {
     (texts, refs)
 }
 
+const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+/// One rolling FNV-1a step: fold `bytes` into `hash` and return the updated value.
+/// Seeding from a prior hash lets [`chunk_key`] fold the model identity in front of the
+/// content in a SINGLE rolling hash without a second primitive.
+fn fnv1a(mut hash: u64, bytes: &[u8]) -> u64 {
+    for &byte in bytes {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
+}
+
 /// A stable content hash for staleness detection: same bytes -> same hash, across
 /// processes and machines. Uses a fixed-seed FNV-1a so the value persisted in
 /// `meta.json` compares equal on a later run (unlike `DefaultHasher`, whose seed is
-/// not guaranteed stable across builds).
+/// not guaranteed stable across builds). [`chunk_key`] builds the persisted skip key on
+/// top of this by folding the embedding-model identity in front of the content.
 ///
 /// Collision window: FNV-1a is a NON-cryptographic 64-bit hash used here only as a
 /// change ORACLE ("did this file's bytes change since we indexed it?"). Two DIFFERENT
@@ -1372,14 +1581,33 @@ fn chunk_content(rel: &str, content: &str) -> (Vec<String>, Vec<StoredRef>) {
 /// heals on the next edit, and the odds are negligible for a repo's file count, so a
 /// stronger/wider hash is not worth the cost; left as FNV-1a deliberately.
 fn hash_content(content: &str) -> u64 {
-    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
-    let mut hash = FNV_OFFSET;
-    for byte in content.as_bytes() {
-        hash ^= *byte as u64;
-        hash = hash.wrapping_mul(FNV_PRIME);
-    }
-    hash
+    fnv1a(FNV_OFFSET, content.as_bytes())
+}
+
+/// The persisted per-file SKIP KEY: a stable hash of the embedding-model identity
+/// FOLLOWED by the file's content. Folding the model identity into the key is what makes
+/// the incremental skip HONEST - a file is skipped (not re-embedded) only when BOTH its
+/// content AND the model that would embed it are unchanged:
+///
+/// - A mere binary REINSTALL over an unchanged tree (same model, same bytes) yields the
+///   SAME key for every file, so `freshen` skips them all and embeds ZERO chunks. The key
+///   is a pure function of (model identity, content) - NEVER of the binary's build id,
+///   install time, or the index file's mtime.
+/// - Swapping the embedding MODEL (a different [`Embedder::identity`]) changes the key for
+///   every file, so `freshen` re-embeds the whole tree - the index never keeps stale
+///   vectors the current model never produced.
+///
+/// The identity is folded in FRONT of the content with a NUL separator that cannot
+/// appear in the identity string, so `(identity="a", content="bc")` can never collide
+/// with `(identity="ab", content="c")` - the boundary is unambiguous. It seeds FNV-1a
+/// with the identity and the NUL, then folds in the file's [`hash_content`] - reusing the
+/// one content-hash primitive (and its fixed-seed, stable-across-builds guarantee) rather
+/// than a second content hash. The result is a 64-bit key with FNV-1a's collision
+/// profile in both the identity and the content dimensions.
+fn chunk_key(model_identity: &str, content: &str) -> u64 {
+    let seeded = fnv1a(FNV_OFFSET, model_identity.as_bytes());
+    let separated = fnv1a(seeded, &[0u8]);
+    fnv1a(separated, &hash_content(content).to_le_bytes())
 }
 
 fn first_non_blank(lines: &[&str]) -> String {
@@ -1635,6 +1863,284 @@ mod tests {
     fn content_hash_is_stable_and_distinguishes() {
         assert_eq!(hash_content("hello world"), hash_content("hello world"));
         assert_ne!(hash_content("hello world"), hash_content("hello worlds"));
+    }
+
+    /// The per-file SKIP KEY folds the model identity in: identical (identity, content)
+    /// keys equal (so a same-model reinstall over an unchanged tree skips), a content
+    /// change changes the key (so an edit re-embeds), AND a model-identity change changes
+    /// the key (so a model swap re-embeds). The NUL separator keeps the identity/content
+    /// boundary unambiguous, so a shift of bytes across it is not aliased as unchanged.
+    #[test]
+    fn chunk_key_folds_model_identity_and_content() {
+        // Stable for the same (identity, content).
+        assert_eq!(
+            chunk_key("model-v1", "fn a() {}"),
+            chunk_key("model-v1", "fn a() {}")
+        );
+        // A content change moves the key (an edit is detected).
+        assert_ne!(
+            chunk_key("model-v1", "fn a() {}"),
+            chunk_key("model-v1", "fn b() {}")
+        );
+        // A model-identity change moves the key (a model swap re-embeds).
+        assert_ne!(
+            chunk_key("model-v1", "fn a() {}"),
+            chunk_key("model-v2", "fn a() {}")
+        );
+        // The identity/content boundary is unambiguous: moving a byte across it changes
+        // the key, so ("ab","c") and ("a","bc") never alias.
+        assert_ne!(chunk_key("ab", "c"), chunk_key("a", "bc"));
+    }
+
+    // ---- HONEST EMBED SKIP (spec 49 criterion 3) ----------------------------------
+    //
+    // These tests drive the incremental-index machinery over the [`Embedder`] PORT with
+    // a COUNTING FAKE - no ONNX model is built - so they run fast, in parallel (no
+    // `file_serial`), and can COUNT model invocations to prove (1) the skip is honest
+    // (content + model identity keyed, never binary identity) and (2) the drifted set
+    // re-embeds in BATCHES (one invocation per batch, not one per file/chunk).
+
+    /// A test [`Embedder`] that records how many times its model was invoked
+    /// (`embed_batch` calls) and how many texts it embedded in total, and returns a
+    /// deterministic vector per text so the real index accepts it. Its `identity`
+    /// stands in for the embedding model's identity - two fakes with the SAME identity
+    /// are "the same model rebuilt into a different binary"; a DIFFERENT identity is a
+    /// model swap.
+    struct CountingEmbedder {
+        identity: String,
+        invocations: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        embedded_texts: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    /// A deterministic, non-degenerate `EMBED_DIM`-vector seeded from the text, so the
+    /// quantized index accepts it and identical text always embeds identically.
+    fn deterministic_embedding(text: &str) -> Vec<f32> {
+        let mut h = 0xcbf2_9ce4_8422_2325u64 ^ (text.len() as u64);
+        for b in text.as_bytes() {
+            h ^= *b as u64;
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        (0..EMBED_DIM)
+            .map(|_| {
+                // A plain LCG step per lane keeps the vector varied and stable.
+                h = h
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                ((h >> 33) as f32 / (u32::MAX as f32)) * 2.0 - 1.0
+            })
+            .collect()
+    }
+
+    impl Embedder for CountingEmbedder {
+        fn identity(&self) -> &str {
+            &self.identity
+        }
+        fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, String> {
+            // ONE invocation per call - this is the "model invocation" the batching
+            // criterion counts. A batched caller feeds many texts per call; a per-chunk
+            // or per-file caller makes many calls of few texts each.
+            self.invocations
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.embedded_texts
+                .fetch_add(texts.len(), std::sync::atomic::Ordering::Relaxed);
+            Ok(texts.iter().map(|t| deterministic_embedding(t)).collect())
+        }
+    }
+
+    /// Build a counting embedder plus the shared counters the test reads after the box
+    /// is moved into the `Turbovec`.
+    fn counting_embedder(
+        identity: &str,
+    ) -> (
+        Box<dyn Embedder>,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        let invocations = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let embedded_texts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let embedder = Box::new(CountingEmbedder {
+            identity: identity.to_string(),
+            invocations: std::sync::Arc::clone(&invocations),
+            embedded_texts: std::sync::Arc::clone(&embedded_texts),
+        });
+        (embedder, invocations, embedded_texts)
+    }
+
+    fn load(c: &std::sync::Arc<std::sync::atomic::AtomicUsize>) -> usize {
+        c.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// (1) HONEST SKIP: a freshen over an UNCHANGED tree embeds ZERO chunks even though
+    /// the store was written by a DIFFERENT binary (a fresh embedder instance) - because
+    /// the skip key is content + MODEL identity, never the binary's identity. This is the
+    /// "a reinstall over an unchanged tree embeds zero chunks" guarantee.
+    #[test]
+    fn honest_skip_reinstall_over_unchanged_tree_embeds_zero() {
+        let dir = tiny_repo();
+        let root = dir.path().to_str().unwrap();
+
+        // Binary #1 builds + persists the store (a cold build embeds every file).
+        {
+            let (e, inv, _txt) = counting_embedder("model-v1");
+            let built = Turbovec::from_embedder(root, e, OnDrift::Freshen).unwrap();
+            assert!(load(&inv) > 0, "the cold build must embed the tree");
+            drop(built);
+        }
+
+        // Binary #2: a DIFFERENT process (a fresh embedder instance) with the SAME model
+        // identity re-opens the SAME store over the SAME tree. The store carries no binary
+        // identity - only the model-keyed per-file skip key - so construction LOADS the
+        // matching store and embeds NOTHING.
+        let (e, inv, txt) = counting_embedder("model-v1");
+        let reopened = Turbovec::from_embedder(root, e, OnDrift::Freshen).unwrap();
+        assert_eq!(
+            load(&inv),
+            0,
+            "re-opening an unchanged store with a different binary (same model) must embed \
+             zero chunks - the skip key is content + model identity, never binary identity"
+        );
+
+        // An explicit freshen on the still-unchanged tree also embeds nothing.
+        reopened.freshen().unwrap();
+        assert_eq!(
+            load(&inv),
+            0,
+            "a freshen over an unchanged tree must embed zero chunks"
+        );
+        assert_eq!(
+            load(&txt),
+            0,
+            "no text may be embedded on the honest-skip path"
+        );
+    }
+
+    /// (2) HONEST SKIP folds MODEL IDENTITY: swapping the embedding model (a different
+    /// identity) over the SAME unchanged tree RE-EMBEDS every file - otherwise the index
+    /// would keep stale vectors the new model never produced. This is the half a bare
+    /// content hash cannot express, and the reason the model identity is folded into the
+    /// skip key.
+    #[test]
+    fn honest_skip_model_change_re_embeds_the_whole_tree() {
+        let dir = tiny_repo();
+        let root = dir.path().to_str().unwrap();
+
+        // Build the store with model v1.
+        let total_chunks = {
+            let (e, _inv, txt) = counting_embedder("model-v1");
+            let built = Turbovec::from_embedder(root, e, OnDrift::Freshen).unwrap();
+            let n = load(&txt);
+            drop(built);
+            n
+        };
+        assert!(total_chunks > 0, "the tiny repo must have produced chunks");
+
+        // Re-open the SAME store over the SAME tree but with a DIFFERENT model identity.
+        // Every file's stored skip key was folded with v1; recomputed with v2 it differs,
+        // so construction (OnDrift::Freshen) re-embeds the WHOLE tree.
+        let (e, inv, txt) = counting_embedder("model-v2");
+        let _swapped = Turbovec::from_embedder(root, e, OnDrift::Freshen).unwrap();
+        assert!(
+            load(&inv) > 0,
+            "a model swap over an unchanged tree MUST re-embed - the model identity is \
+             folded into the skip key so stale vectors are never kept"
+        );
+        assert_eq!(
+            load(&txt),
+            total_chunks,
+            "a model swap must re-embed EVERY chunk the tree produces, no more, no less"
+        );
+    }
+
+    /// (3) BATCHED RE-EMBED: when SEVERAL files drift, the whole drifted set embeds in
+    /// ONE batched model invocation (all chunks fit in a single `EMBED_BATCH_SIZE`
+    /// batch), NOT one invocation per file. Under the old per-file loop this was N
+    /// invocations; batching feeds the accelerator at its width.
+    #[test]
+    fn drifted_set_embeds_in_one_batched_invocation_not_per_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        // Several one-chunk files - fewer than EMBED_BATCH_SIZE so a single batch holds
+        // them all.
+        let n_files = 5usize;
+        assert!(n_files <= EMBED_BATCH_SIZE);
+        for i in 0..n_files {
+            std::fs::write(
+                dir.path().join(format!("m{i}.rs")),
+                format!("fn f{i}() {{}}\n"),
+            )
+            .unwrap();
+        }
+
+        let (e, inv, txt) = counting_embedder("model-v1");
+        let tv = Turbovec::from_embedder(root, e, OnDrift::Freshen).unwrap();
+
+        // Reset the counters: measure only the freshen that follows the multi-file edit.
+        inv.store(0, std::sync::atomic::Ordering::Relaxed);
+        txt.store(0, std::sync::atomic::Ordering::Relaxed);
+
+        // Edit ALL files so the whole set drifts at once.
+        for i in 0..n_files {
+            std::fs::write(
+                dir.path().join(format!("m{i}.rs")),
+                format!("fn f{i}() {{}}\nfn g{i}() {{}}\n"),
+            )
+            .unwrap();
+        }
+        tv.freshen().unwrap();
+
+        assert_eq!(
+            load(&txt),
+            n_files,
+            "each of the {n_files} one-chunk files must be re-embedded exactly once"
+        );
+        assert_eq!(
+            load(&inv),
+            1,
+            "the whole drifted set must embed in ONE batched invocation (all {n_files} \
+             chunks in a single batch), not one invocation per file"
+        );
+    }
+
+    /// (4) BATCHED + SCOPED: a freshen after ONE file changes embeds ONLY that file's
+    /// chunks (the honest per-file skip), and does so in a single batched invocation. The
+    /// UNCHANGED file is not re-embedded (its ids are preserved).
+    #[test]
+    fn single_file_change_re_embeds_only_that_file_batched() {
+        let dir = tiny_repo();
+        let root = dir.path().to_str().unwrap();
+        let (e, inv, txt) = counting_embedder("model-v1");
+        let tv = Turbovec::from_embedder(root, e, OnDrift::Freshen).unwrap();
+
+        let combat_ids_before = file_ids(&tv, "combat.rs");
+        assert!(!combat_ids_before.is_empty());
+
+        inv.store(0, std::sync::atomic::Ordering::Relaxed);
+        txt.store(0, std::sync::atomic::Ordering::Relaxed);
+
+        // Change ONLY render.rs (add a second, still-single-chunk function).
+        std::fs::write(
+            dir.path().join("render.rs"),
+            "fn draw_sprite() {}\nfn blit_overlay() {}\n",
+        )
+        .unwrap();
+        tv.freshen().unwrap();
+
+        let render_chunks = file_ids(&tv, "render.rs").len();
+        assert_eq!(
+            load(&txt),
+            render_chunks,
+            "only the changed file's chunks may be embedded"
+        );
+        assert_eq!(
+            load(&inv),
+            1,
+            "the changed file's chunks embed in one batched invocation, not one per chunk"
+        );
+        assert_eq!(
+            file_ids(&tv, "combat.rs"),
+            combat_ids_before,
+            "the unchanged file must NOT be re-embedded - its chunk ids are preserved"
+        );
     }
 
     /// The chunk ids a file currently owns in the index, read from the metadata.
