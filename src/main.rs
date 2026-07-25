@@ -341,55 +341,154 @@ fn env_conn() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// Resolve the server connection string from the explicit `--conn` flag or the environment,
-/// erroring clearly (naming both channels) when the server backend is selected with neither.
-/// The precedence criterion widens this error to name the local secret file as the third
-/// channel; unit-1 names the two channels it resolves.
-fn resolve_conn(flag_conn: Option<&str>) -> Result<String, Box<dyn std::error::Error>> {
+/// The connection string from the per-machine secret file `<rigger_dir>/store.conn` (§48 rung 3),
+/// treating an absent file OR a blank one as unset (so a stray empty file never selects a server
+/// with no address). One line: the full connection string, credentials included - the gitignored
+/// developer-box fallback for a machine where exporting the env var every shell is friction. This
+/// is the READ that positions the secret file in the precedence chain (between the environment and
+/// the committed config); the SECRETS criterion layers the `.gitignore` pattern, the
+/// world-readable-permission warning, and connection-string redaction ONTO this one reader rather
+/// than adding a second parallel one.
+fn store_conn_file(rigger_dir: &Path) -> Option<String> {
+    std::fs::read_to_string(rigger_dir.join("store.conn"))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// The `.rigger` directory whose committed config (`workflow.yml`) and per-machine secret file
+/// (`store.conn`) the store resolver reads for the lower-precedence rungs (§48 rungs 3-4). Anchored
+/// at the OWNING repo root (`main_repo_root`, whose `git-common-dir` resolves the main checkout even
+/// from a nested git worktree), so a courier's `rigger result` reads the SAME secret file and config
+/// the conductor does - the gitignored `store.conn` lives only in the main checkout, never in a
+/// linked worktree, so a cwd-anchored read would miss it and fracture the store selection. Falls
+/// back to the cwd's `.rigger` outside any git context.
+fn config_rigger_dir() -> PathBuf {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    main_repo_root(&cwd).unwrap_or(cwd).join(RIGGER_DIR)
+}
+
+/// Interpret the committed config's `store.backend` (§48 rung 4): an empty value is "no opinion"
+/// (the resolver falls through to the next rung, the default), `sqlite` / `kurrentdb` select a
+/// backend, and anything else is a clear configuration error naming the accepted values - never a
+/// silent fallback that would hide a typo behind today's default.
+fn store_backend_kind(
+    cfg: &config::StoreConfig,
+) -> Result<Option<StoreKind>, Box<dyn std::error::Error>> {
+    match cfg.backend.trim() {
+        "" => Ok(None),
+        "sqlite" => Ok(Some(StoreKind::Sqlite)),
+        "kurrentdb" => Ok(Some(StoreKind::KurrentDb)),
+        other => Err(format!(
+            "the project config's store.backend is {other:?}; only \"sqlite\" or \"kurrentdb\" \
+             are valid"
+        )
+        .into()),
+    }
+}
+
+/// Resolve the server connection string from the available credential sources, in precedence order:
+/// the explicit `--conn` flag, then the `KURRENTDB_CONN` environment value, then the per-machine
+/// `.rigger/store.conn` secret file. When the server backend is selected with NONE of them, the
+/// error names ALL THREE channels (§48 criterion 2) so the fix is unambiguous. `env_conn` is the
+/// already-resolved environment value (empty is treated as unset).
+fn resolve_conn(
+    flag_conn: Option<&str>,
+    env_conn: Option<&str>,
+    rigger_dir: &Path,
+) -> Result<String, Box<dyn std::error::Error>> {
     flag_conn
         .filter(|s| !s.is_empty())
         .map(str::to_string)
-        .or_else(env_conn)
+        .or_else(|| env_conn.filter(|s| !s.is_empty()).map(str::to_string))
+        .or_else(|| store_conn_file(rigger_dir))
         .ok_or_else(|| {
-            "the server event store is selected but no connection string is set - provide one via --conn <url> or the KURRENTDB_CONN environment variable"
+            "the server event store is selected but no connection string is set - provide one via \
+             --conn <url>, the KURRENTDB_CONN environment variable, or the .rigger/store.conn \
+             secret file"
                 .into()
         })
 }
 
-/// Resolve WHICH event-log backend a command uses, from the available configuration sources
-/// (§48, "one resolution authority"). This is the SINGLE place the selection is decided, so
-/// every command - and every worker's bare `rigger result` - agrees on the store without a
-/// per-command flag. Precedence, highest first:
+/// Resolve WHICH event-log backend a command uses (§48, "one resolution authority") - the PURE
+/// core of the single selection authority, over an explicit `.rigger` directory and an explicit
+/// environment value so the full precedence is testable with temp dirs and no process-env
+/// mutation. The public [`store_selection`] wraps this with the real environment and the owning
+/// repo's `.rigger`. Precedence, highest first (§48 criterion 2, "resolution order"):
 ///
-///   1. an explicit `--eventstore`/`--conn` flag (`flag_store`/`flag_conn`), kept on `run`;
-///   2. the `KURRENTDB_CONN` environment variable (the full connection string);
+///   1. an explicit `--eventstore`/`--conn` flag (`flag_store` / `flag_conn`), kept on `run`;
+///   2. the `KURRENTDB_CONN` environment value (`env_conn`, the full connection string);
+///   3. the local secret file `<rigger_dir>/store.conn` (the gitignored per-machine credential);
+///   4. the committed project config's `store:` selection (the CHOICE pinned in the repo, with an
+///      optional non-secret host/port URL - credentials never ride the committed file);
+///   5. the embedded sqlite store as the default when nothing selects otherwise (so a project that
+///      configures nothing behaves exactly as today - the backward-compatibility bar).
 ///
-/// with the embedded sqlite store as the default when nothing selects the server. Selecting the
-/// server without a resolvable connection string is a clear error naming the channels.
-///
-/// This is deliberately the MINIMAL chain that lets unit-1 wire every command uniformly and
-/// resolve a server-configured project. The local secret file and the committed project-config
-/// `store:` rungs, the strict full ordering, and the redaction of the connection string in
-/// error/status output land in the units that OWN them (precedence, secrets).
-fn store_selection(
+/// Selecting the server (by any rung) without a resolvable connection string is a clear error
+/// naming all three credential channels ([`resolve_conn`]).
+fn store_selection_at(
     flag_store: Option<StoreKind>,
     flag_conn: Option<&str>,
+    env_conn: Option<String>,
+    rigger_dir: &Path,
 ) -> Result<StoreSelection, Box<dyn std::error::Error>> {
+    // The environment value, normalized (an empty `KURRENTDB_CONN=` is unset, never a server with
+    // no address). Threaded on to `resolve_conn` so the flag rung's fallback order stays uniform.
+    let env = env_conn.as_deref().filter(|s| !s.is_empty());
     // 1. an explicit flag is the highest-precedence, unambiguous override.
     match flag_store {
-        Some(StoreKind::KurrentDb) => return Ok(StoreSelection::Server(resolve_conn(flag_conn)?)),
+        Some(StoreKind::KurrentDb) => {
+            return Ok(StoreSelection::Server(resolve_conn(
+                flag_conn, env, rigger_dir,
+            )?))
+        }
         Some(StoreKind::Sqlite) => return Ok(StoreSelection::Sqlite),
         None => {}
     }
     // 2. the environment carries the full connection string, so a bare command (no flag) in a
     //    shell or CI configured for the server resolves it - the wiring that keeps a worker's
     //    `rigger result` on the same store the run uses, instead of a local sqlite fracture.
-    if let Some(conn) = env_conn() {
+    if let Some(conn) = env {
+        return Ok(StoreSelection::Server(conn.to_string()));
+    }
+    // 3. the per-machine gitignored secret file: a developer box that pins the shared server
+    //    without exporting the env var every shell.
+    if let Some(conn) = store_conn_file(rigger_dir) {
         return Ok(StoreSelection::Server(conn));
     }
-    // default: the embedded sqlite store (backward compatible - a project that configures
-    // nothing changes in nothing).
+    // 4. the committed project config: the CHOICE the team pins in the repo. Its optional
+    //    non-secret URL is the address; absent, the address must come from a credential source -
+    //    all of which rungs 1-3 already found empty, so `resolve_conn` names all three.
+    let cfg = config::read_store_config(rigger_dir)?;
+    match store_backend_kind(&cfg)? {
+        Some(StoreKind::KurrentDb) => {
+            let conn = if cfg.url.trim().is_empty() {
+                resolve_conn(None, env, rigger_dir)?
+            } else {
+                cfg.url.trim().to_string()
+            };
+            return Ok(StoreSelection::Server(conn));
+        }
+        Some(StoreKind::Sqlite) => return Ok(StoreSelection::Sqlite),
+        None => {}
+    }
+    // 5. the default: the embedded sqlite store (backward compatible - a project that configures
+    //    nothing changes in nothing).
     Ok(StoreSelection::Sqlite)
+}
+
+/// Resolve WHICH event-log backend a command uses, from the real environment and the owning repo's
+/// `.rigger` (§48, "one resolution authority"). This is the SINGLE place the selection is decided,
+/// so every command - and every worker's bare `rigger result` - agrees on the store without a
+/// per-command flag. The precedence and its error surface live in the pure [`store_selection_at`];
+/// this wrapper supplies the two ambient inputs (the `KURRENTDB_CONN` environment value and the
+/// resolved `.rigger` directory).
+fn store_selection(
+    flag_store: Option<StoreKind>,
+    flag_conn: Option<&str>,
+) -> Result<StoreSelection, Box<dyn std::error::Error>> {
+    let rigger_dir = config_rigger_dir();
+    store_selection_at(flag_store, flag_conn, env_conn(), &rigger_dir)
 }
 
 /// Construct the selected event-log backend as a boxed port (§48, "one resolution authority").
@@ -10950,20 +11049,18 @@ mod tests {
     /// feature lanes (default and `--no-default-features`).
     #[test]
     fn kurrentdb_is_always_available_and_needs_a_conn() {
-        // Guard against a KURRENTDB_CONN leaking in from the environment: with a
-        // connection string present, `open` takes the eager-connect path instead of
-        // the missing-conn guard this test asserts on.
-        let prior = std::env::var("KURRENTDB_CONN").ok();
-        std::env::remove_var("KURRENTDB_CONN");
+        // Resolve over an EMPTY `.rigger` with no credential source anywhere - no flag conn, no
+        // environment (threaded as `None`), no secret file - so the flag-selected server has
+        // nothing to resolve and hits the missing-connection-string guard. Hermetic: independent
+        // of both the ambient repo's config and the process environment.
+        let tmp = tempfile::tempdir().unwrap();
+        let rigger_dir = tmp.path().join(".rigger");
+        std::fs::create_dir_all(&rigger_dir).unwrap();
 
-        let err = match store_selection(Some(StoreKind::KurrentDb), None) {
-            Ok(_) => panic!("kurrentdb without a conn must not open a store"),
+        let err = match store_selection_at(Some(StoreKind::KurrentDb), None, None, &rigger_dir) {
+            Ok(_) => panic!("kurrentdb without a conn must not select a store"),
             Err(e) => e.to_string(),
         };
-
-        if let Some(v) = prior {
-            std::env::set_var("KURRENTDB_CONN", v);
-        }
 
         // The real adapter's missing-conn guard names the --conn / KURRENTDB_CONN
         // channel - reaching it proves the adapter is compiled in.
@@ -10977,6 +11074,146 @@ mod tests {
         assert!(
             !err.contains("feature"),
             "the adapter is always compiled in, so no missing-feature error can occur; got: {err}"
+        );
+    }
+
+    /// Spec 48, criterion 2 - PRECEDENCE. `store_selection_at` resolves the event-log backend
+    /// from the configuration sources in one STRICT order every command shares: an explicit flag
+    /// beats the environment beats the local secret file (`.rigger/store.conn`) beats the
+    /// committed project config (`store:` in `workflow.yml`) beats the embedded-sqlite default.
+    /// Proven here over the PURE core - a temp `.rigger` for the two file-backed rungs and the
+    /// environment threaded as a value, so no process-env mutation is needed and the ordering is
+    /// deterministic under parallel test execution. Each source carries a DISTINCT value, so the
+    /// value the result carries names the winning rung unambiguously.
+    #[test]
+    fn store_selection_precedence_flag_env_secret_file_config_then_default() {
+        use std::fs;
+        let tmp = tempfile::tempdir().unwrap();
+        let rigger_dir = tmp.path().join(".rigger");
+        fs::create_dir_all(&rigger_dir).unwrap();
+
+        // (Re)write the two file-backed rungs; `None` removes the file so the rung is absent.
+        let write_secret = |conn: Option<&str>| match conn {
+            Some(c) => fs::write(rigger_dir.join("store.conn"), c).unwrap(),
+            None => {
+                let _ = fs::remove_file(rigger_dir.join("store.conn"));
+            }
+        };
+        let write_config = |body: Option<&str>| match body {
+            Some(b) => fs::write(rigger_dir.join("workflow.yml"), b).unwrap(),
+            None => {
+                let _ = fs::remove_file(rigger_dir.join("workflow.yml"));
+            }
+        };
+        let sel = |flag_store, flag_conn: Option<&str>, env: Option<&str>| {
+            store_selection_at(flag_store, flag_conn, env.map(String::from), &rigger_dir)
+        };
+        let server = |host: &str| StoreSelection::Server(host.to_string());
+
+        // The two lower file-backed sources present together, each a DISTINCT address.
+        write_secret(Some("kurrentdb://secret-file:2113?tls=false"));
+        write_config(Some(
+            "store:\n  backend: kurrentdb\n  url: \"kurrentdb://config-host:2113?tls=false\"\n",
+        ));
+
+        // 1. The explicit flag wins over env, the secret file, and the config.
+        assert_eq!(
+            sel(
+                Some(StoreKind::KurrentDb),
+                Some("kurrentdb://flag-host:2113?tls=false"),
+                Some("kurrentdb://env-host:2113?tls=false"),
+            )
+            .unwrap(),
+            server("kurrentdb://flag-host:2113?tls=false"),
+            "an explicit --conn flag is the highest-precedence source"
+        );
+        // A flag selecting sqlite also wins outright, even with a server env/secret/config live.
+        assert_eq!(
+            sel(
+                Some(StoreKind::Sqlite),
+                None,
+                Some("kurrentdb://env-host:2113?tls=false"),
+            )
+            .unwrap(),
+            StoreSelection::Sqlite,
+            "--eventstore sqlite beats every lower source"
+        );
+
+        // 2. No flag: the environment beats the secret file and the config.
+        assert_eq!(
+            sel(None, None, Some("kurrentdb://env-host:2113?tls=false")).unwrap(),
+            server("kurrentdb://env-host:2113?tls=false"),
+            "KURRENTDB_CONN beats the secret file and the committed config"
+        );
+        // An empty environment value is treated as unset (never selects a server with no address).
+        assert_eq!(
+            sel(None, None, Some("")).unwrap(),
+            server("kurrentdb://secret-file:2113?tls=false"),
+            "an empty env value is unset, so the secret file wins beneath it"
+        );
+
+        // 3. No flag, no env: the local secret file beats the config.
+        assert_eq!(
+            sel(None, None, None).unwrap(),
+            server("kurrentdb://secret-file:2113?tls=false"),
+            ".rigger/store.conn beats the committed config"
+        );
+
+        // 4. No flag, no env, no secret file: the committed config's non-secret URL is used.
+        write_secret(None);
+        assert_eq!(
+            sel(None, None, None).unwrap(),
+            server("kurrentdb://config-host:2113?tls=false"),
+            "the committed store: config beats the default"
+        );
+        // A config pinning sqlite explicitly resolves the embedded store.
+        write_config(Some("store:\n  backend: sqlite\n"));
+        assert_eq!(
+            sel(None, None, None).unwrap(),
+            StoreSelection::Sqlite,
+            "store: sqlite in the config selects the embedded backend"
+        );
+
+        // 5. Nothing configured anywhere: the embedded-sqlite default (backward compatible).
+        write_config(None);
+        assert_eq!(
+            sel(None, None, None).unwrap(),
+            StoreSelection::Sqlite,
+            "no source configured resolves the sqlite default"
+        );
+        // A workflow.yml with no `store:` key is also "no opinion" -> the default.
+        write_config(Some("name: demo\n"));
+        assert_eq!(
+            sel(None, None, None).unwrap(),
+            StoreSelection::Sqlite,
+            "a config without a store: key defaults to sqlite"
+        );
+
+        // The three-source error: the server is selected (config pins kurrentdb) with NO url and
+        // no credential source anywhere - the error must name ALL THREE credential channels.
+        write_config(Some("store:\n  backend: kurrentdb\n"));
+        let err = sel(None, None, None).unwrap_err().to_string();
+        assert!(
+            err.contains("--conn") && err.contains("KURRENTDB_CONN") && err.contains("store.conn"),
+            "a config-selected server with no resolvable conn must name all three credential \
+             sources; got: {err}"
+        );
+        // And the same three-source error when the flag selects the server with nothing to resolve.
+        let err = sel(Some(StoreKind::KurrentDb), None, None)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("--conn") && err.contains("KURRENTDB_CONN") && err.contains("store.conn"),
+            "--eventstore kurrentdb with no conn must name all three credential sources; got: {err}"
+        );
+
+        // An unknown backend in the committed config is a clear configuration error, not a silent
+        // fallback to the default.
+        write_config(Some("store:\n  backend: bogus\n"));
+        let err = sel(None, None, None).unwrap_err().to_string();
+        assert!(
+            err.contains("bogus") && err.contains("sqlite") && err.contains("kurrentdb"),
+            "an unknown store.backend must be rejected naming the valid values; got: {err}"
         );
     }
 

@@ -1,0 +1,205 @@
+//! Spec 48, criterion 2 - PRECEDENCE, driven through the BUILT `rigger` binary.
+//!
+//! `src/main.rs`'s unit test `store_selection_precedence_flag_env_secret_file_config_then_default`
+//! proves the total order exhaustively over the pure core (including server-vs-server ordering by
+//! exact address). This file is the periphery layer that proves the two NEW file-backed rungs the
+//! precedence criterion adds - the local secret file `.rigger/store.conn` and the committed project
+//! config's `store:` selection - are genuinely WIRED into the shipped binary a worker's bare
+//! self-report runs in, and that they sit at the right place in the order relative to the higher
+//! rungs.
+//!
+//! It needs no server. Selection is observed at the sqlite-vs-server boundary, which the shipped
+//! binary makes externally visible without one:
+//!
+//!   * a SERVER selection reaches the kurrentdb backend, whose eager connect to an unreachable
+//!     address fails fast - the process exits non-zero with `kurrentdb` on stderr and never
+//!     fabricates a local `.rigger/events.db`;
+//!   * a SQLITE selection takes the local walk-up, which on a never-initialized project refuses
+//!     with `no rigger store found` and never mentions `kurrentdb`.
+//!
+//! Each case runs unconditionally, so the two new rungs and their ordering are regression-locked
+//! on every machine. Redaction of the connection string, the `.gitignore` pattern, and verbatim
+//! pass-through are owned by their own criteria and are not asserted here.
+
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+
+use tempfile::TempDir;
+
+/// The compiled `rigger` binary under test (Cargo sets this for integration tests).
+fn rigger_bin() -> &'static str {
+    env!("CARGO_BIN_EXE_rigger")
+}
+
+/// An unreachable but well-formed server address: nothing listens on this loopback port, so the
+/// eager connect (fail-fast) is refused immediately. We prove WHICH backend the authority selected,
+/// not that a server is up.
+const UNREACHABLE: &str = "kurrentdb://127.0.0.1:65533?tls=false";
+
+/// A throwaway project: its own git repo (so identity - and the owning-root anchor the store
+/// resolver uses for the config and secret file - resolve exactly as a real project's do), with an
+/// empty `.rigger/` and no event log yet.
+fn empty_project() -> TempDir {
+    let dir = tempfile::tempdir().expect("create temp project");
+    let _ = Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(dir.path())
+        .status();
+    std::fs::create_dir_all(dir.path().join(".rigger")).expect("create .rigger");
+    dir
+}
+
+/// The path where the embedded sqlite EVENT LOG would live for a project rooted at `root`. The
+/// precedence rungs must never fabricate this when a server is selected.
+fn local_event_log(root: &Path) -> PathBuf {
+    root.join(".rigger").join("events.db")
+}
+
+/// Write `<root>/.rigger/store.conn` (rung 3, the per-machine secret file).
+fn write_store_conn(root: &Path, conn: &str) {
+    std::fs::write(root.join(".rigger").join("store.conn"), conn).expect("write store.conn");
+}
+
+/// Write `<root>/.rigger/workflow.yml` pinning `store:` (rung 4, the committed project config).
+fn write_store_config(root: &Path, body: &str) {
+    std::fs::write(root.join(".rigger").join("workflow.yml"), body).expect("write workflow.yml");
+}
+
+/// Run `rigger result <id> --error <msg>` in `root` with NO `--eventstore` flag and NO
+/// `KURRENTDB_CONN` in the environment - the exact bare-courier surface a worker's self-report
+/// uses, so the store is resolved purely from the file-backed rungs under test. `RIGGER_NO_DASH`
+/// keeps the run's dashboard from starting under test.
+fn run_bare_courier(root: &Path) -> Output {
+    Command::new(rigger_bin())
+        .args(["result", "u/impl#0", "--error", "a self-report"])
+        .current_dir(root)
+        .env("RIGGER_NO_DASH", "1")
+        .env_remove("KURRENTDB_CONN")
+        .output()
+        .expect("spawn rigger result")
+}
+
+/// Run the same bare courier but WITH `KURRENTDB_CONN` set (rung 2), to prove the environment
+/// out-ranks a lower file-backed rung.
+fn run_courier_with_env(root: &Path, conn: &str) -> Output {
+    Command::new(rigger_bin())
+        .args(["result", "u/impl#0", "--error", "a self-report"])
+        .current_dir(root)
+        .env("RIGGER_NO_DASH", "1")
+        .env("KURRENTDB_CONN", conn)
+        .output()
+        .expect("spawn rigger result")
+}
+
+/// Assert the courier resolved the SERVER backend: it failed inside the kurrentdb adapter (the
+/// eager connect to the unreachable address) and fabricated no local sqlite event log.
+fn assert_selected_server(out: &Output, root: &Path, why: &str) {
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "{why}: an unreachable server must fail, never silently succeed against a local fallback; \
+         stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("kurrentdb"),
+        "{why}: the courier must fail INSIDE the server backend, proving it resolved the server; \
+         stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("no rigger store found"),
+        "{why}: a server selection must not fall back to the local sqlite walk-up; stderr:\n{stderr}"
+    );
+    assert!(
+        !local_event_log(root).exists(),
+        "{why}: a server selection must NOT fabricate a local .rigger/events.db"
+    );
+}
+
+/// Assert the courier resolved the SQLITE backend: it took the local walk-up, which on a
+/// never-initialized project refuses without reaching for any server.
+fn assert_selected_sqlite(out: &Output, root: &Path, why: &str) {
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "{why}: a courier with no initialized local store must fail, not fabricate one; \
+         stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("no rigger store found") && !stderr.contains("kurrentdb"),
+        "{why}: a sqlite selection must resolve the LOCAL log (surfacing as a local-store error), \
+         never a server connect; stderr:\n{stderr}"
+    );
+    assert!(
+        !local_event_log(root).exists(),
+        "{why}: the refuse-to-fabricate guard must leave no local events.db behind"
+    );
+}
+
+#[test]
+fn the_committed_store_config_selects_the_server_over_the_default() {
+    // Rung 4 wired + rung 4 beats rung 5: the committed config alone pins the server (with its
+    // non-secret URL), no env, no flag, no secret file -> the bare courier resolves the server.
+    let project = empty_project();
+    let root = project.path();
+    write_store_config(
+        root,
+        &format!("store:\n  backend: kurrentdb\n  url: \"{UNREACHABLE}\"\n"),
+    );
+    let out = run_bare_courier(root);
+    assert_selected_server(&out, root, "committed store: config selects the server");
+}
+
+#[test]
+fn a_committed_sqlite_store_config_resolves_the_local_log() {
+    // Rung 4 can also pin sqlite explicitly: the bare courier takes the local walk-up.
+    let project = empty_project();
+    let root = project.path();
+    write_store_config(root, "store:\n  backend: sqlite\n");
+    let out = run_bare_courier(root);
+    assert_selected_sqlite(&out, root, "committed store: sqlite resolves the local log");
+}
+
+#[test]
+fn the_secret_file_selects_the_server_and_beats_the_committed_config() {
+    // Rung 3 wired + rung 3 beats rung 4: the secret file names the server while the committed
+    // config pins sqlite; the secret file must win, so the courier resolves the server.
+    let project = empty_project();
+    let root = project.path();
+    write_store_conn(root, UNREACHABLE);
+    write_store_config(root, "store:\n  backend: sqlite\n");
+    let out = run_bare_courier(root);
+    assert_selected_server(
+        &out,
+        root,
+        ".rigger/store.conn beats the committed store: config",
+    );
+}
+
+#[test]
+fn the_environment_beats_the_committed_config() {
+    // Rung 2 beats rung 4: KURRENTDB_CONN names the server while the committed config pins sqlite;
+    // the environment must win, so the courier resolves the server.
+    let project = empty_project();
+    let root = project.path();
+    write_store_config(root, "store:\n  backend: sqlite\n");
+    let out = run_courier_with_env(root, UNREACHABLE);
+    assert_selected_server(
+        &out,
+        root,
+        "KURRENTDB_CONN beats the committed store: config",
+    );
+}
+
+#[test]
+fn nothing_configured_resolves_the_local_default() {
+    // Rung 5: no flag, no env, no secret file, no committed store: - the backward-compatible
+    // embedded-sqlite default.
+    let project = empty_project();
+    let root = project.path();
+    let out = run_bare_courier(root);
+    assert_selected_sqlite(
+        &out,
+        root,
+        "no source configured resolves the sqlite default",
+    );
+}
