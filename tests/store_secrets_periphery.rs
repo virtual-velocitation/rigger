@@ -235,3 +235,22 @@ fn open_with_a_special_char_credentialed_conn_never_leaks_it() {
         "the host must still name which address failed to parse: {text}"
     );
 }
+
+/// THE COEXISTENCE EDGE: ONE url that carries a REAL credential AND a benign `@` later in its path
+/// AND another in its query. The existing cases each isolate ONE side - a credential with no stray
+/// `@` (the basic scrub), or a bare `@` in a path/query with no credential (the path-`@` case and
+/// the in-crate query-`@` case). This pins the two together, where an off-by-one in the authority
+/// boundary is most likely to bite: `redact_conn` must scrub the ONE userinfo `@` (up to the host)
+/// yet leave BOTH post-authority `@`s untouched. A redactor that scanned to the LAST `@` would eat
+/// the host and the `a@` path segment (losing the address); one that stopped scrubbing on seeing a
+/// later `@` would leak the credential. Neither may happen.
+#[test]
+fn redact_conn_scrubs_the_credential_but_keeps_a_benign_at_sign_later_in_the_same_url() {
+    let out = redact_conn("kurrentdb://spy:hunter2@db.internal:2113/streams/a@b?ref=c@d&tls=true");
+    assert_no_credential(&out, "credential coexisting with benign later `@`s");
+    assert_eq!(
+        out, "kurrentdb://<redacted>@db.internal:2113/streams/a@b?ref=c@d&tls=true",
+        "only the userinfo before the host `@` is scrubbed; the host, the path `a@b`, and the \
+         query `c@d` all print verbatim"
+    );
+}
