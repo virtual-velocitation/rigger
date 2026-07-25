@@ -289,3 +289,130 @@ fn a_courier_in_a_project_configured_for_the_server_resolves_the_server_store() 
         std::panic::resume_unwind(e);
     }
 }
+
+#[test]
+fn a_server_courier_in_a_nested_worktree_files_under_the_owning_root_identity() {
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::{Direction, EventStore};
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let Some((container, conn)) = start_kurrentdb(&rt) else {
+        return; // no container runtime: gracefully skipped
+    };
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // A main repo with one commit (so `git worktree add` has a base), configured for the
+        // server-backed store purely by the KURRENTDB_CONN environment - no per-command flag.
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        let git = |args: &[&str]| {
+            let ok = Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            assert!(ok, "git {args:?} must succeed");
+        };
+        git(&["init", "-q"]);
+        git(&[
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "base",
+        ]);
+
+        // A git-LINKED worktree nested under the repo (the deterministic scratch-root shape a run
+        // spawns its units into). Its own `git rev-parse --show-toplevel` is the WORKTREE path, so
+        // an identity anchored at the process cwd would misfile the write under
+        // `proj-<worktree>-run`; the single server-location authority must instead bind to the
+        // OWNING root via `main_repo_root` (whose `git-common-dir` resolves to the main repo).
+        let nested = root.join(".rigger").join("tmp").join("rigger-wt-nested");
+        std::fs::create_dir_all(nested.parent().unwrap()).unwrap();
+        let ok = Command::new("git")
+            .args(["worktree", "add", "-q", nested.to_str().unwrap()])
+            .current_dir(root)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        assert!(ok, "git worktree add (nested) must succeed");
+
+        // A bare courier - `rigger emit`, no `--eventstore` flag - run FROM the nested worktree,
+        // the exact surface a spawned worker's self-report uses inside its unit worktree.
+        let out = Command::new(rigger_bin())
+            .args([
+                "emit",
+                "DecisionMade",
+                r#"{"id":"d-nested-wt","summary":"filed under the owning root","governs":["src/lib.rs"],"supersedes":""}"#,
+            ])
+            .current_dir(&nested)
+            .env("KURRENTDB_CONN", &conn)
+            .env("RIGGER_NO_DASH", "1")
+            .output()
+            .expect("spawn rigger emit from the nested worktree");
+        assert!(
+            out.status.success(),
+            "rigger emit from a nested worktree must succeed against the server: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        // No local sqlite event log is fabricated in EITHER the root or the worktree - the log is
+        // the server's.
+        assert!(
+            !root.join(".rigger").join("events.db").exists(),
+            "a server-configured courier must not create a local events.db at the owning root"
+        );
+        assert!(
+            !nested.join(".rigger").join("events.db").exists(),
+            "a server-configured courier must not create a local events.db in the worktree"
+        );
+
+        let backend = open_server(&conn);
+
+        // The event landed in the OWNING ROOT's run stream - the identity the conductor reads.
+        let root_id = run_stream_identity(root);
+        let root_store = Namespaced::new(&backend, &root_id);
+        let root_events = root_store
+            .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
+            .expect("read the owning root's run stream from the server");
+        assert!(
+            root_events
+                .iter()
+                .any(|e| String::from_utf8_lossy(&e.data).contains("d-nested-wt")),
+            "a nested-worktree courier's DecisionMade must land under the OWNING ROOT identity \
+             {root_id:?} (proving the server location binds to `main_repo_root`, not the cwd); \
+             found {} event(s)",
+            root_events.len()
+        );
+
+        // And NOT under the worktree's own git identity - the exact `proj-<worktree>-run` misfile a
+        // regression to the cwd (`cwd.join(RIGGER_DIR)` instead of `main_repo_root(cwd)`) produces.
+        let wt_id = run_stream_identity(&nested);
+        assert_ne!(
+            wt_id, root_id,
+            "the nested worktree must resolve a DISTINCT git top-level identity, else this test \
+             cannot discriminate the owning-root binding from the cwd"
+        );
+        let wt_store = Namespaced::new(&backend, &wt_id);
+        let wt_events = wt_store
+            .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
+            .unwrap_or_default();
+        assert!(
+            !wt_events
+                .iter()
+                .any(|e| String::from_utf8_lossy(&e.data).contains("d-nested-wt")),
+            "the courier must NOT misfile under the worktree identity {wt_id:?} - landing there is \
+             the `proj-<worktree>-run` state-fracture the owning-root binding closes"
+        );
+    }));
+
+    let _ = rt.block_on(container.rm());
+    if let Err(e) = result {
+        std::panic::resume_unwind(e);
+    }
+}

@@ -18,6 +18,21 @@
 //!   * an empty `KURRENTDB_CONN=` is treated as unset, so a stray empty value never selects a
 //!     server with no address.
 //!
+//! The cases above drive the WRITE surface (a courier's self-report). The single authority must
+//! govern the READ surface just as uniformly, and there the wiring hides a second regression: a
+//! read command that reports on the log short-circuits to an "empty log" sentinel when the LOCAL
+//! sqlite file is absent (a never-run project), guarded by `sel.is_sqlite() && !events.db exists`.
+//! The `sel.is_sqlite()` qualifier is load-bearing: for a server selection the local file is
+//! ALWAYS absent, so dropping it would make every server-backed read short-circuit to that
+//! sentinel - silently reporting an empty log against a live server. This file also pins that
+//! qualifier, driving read commands (`prime`, `stats`) both ways over the SAME never-run project:
+//!
+//!   * UNCONFIGURED (sqlite default): the guard fires, the command prints its no-data sentinel
+//!     and exits 0 - the control proving the sentinel path IS taken on the sqlite arm;
+//!   * SERVER-configured (`KURRENTDB_CONN` set, unreachable): `sel.is_sqlite()` is false, so the
+//!     command resolves the SERVER through the one authority and the eager connect fails - it
+//!     errors inside the server backend and NEVER prints the local-absent sentinel.
+//!
 //! Every case runs unconditionally, so the single-authority wiring is regression-locked on every
 //! machine, container runtime or not. These cases are the periphery of the same criterion: the
 //! secret channel, the full precedence, verbatim pass-through, and the projection boundary are
@@ -160,5 +175,118 @@ fn an_empty_kurrentdb_conn_is_treated_as_unset_not_a_server_with_no_address() {
     assert!(
         !local_event_log(root).exists(),
         "an empty-conn courier resolves local sqlite and fabricates nothing: {stderr}"
+    );
+}
+
+/// Run a READ-only command (`args`, e.g. `["prime"]`) in `root`, driving the built binary
+/// exactly as an operator would. `conn` sets `KURRENTDB_CONN` (`None` removes it so the case is
+/// truly unset regardless of the ambient environment); `RIGGER_NO_DASH` keeps the run's dashboard
+/// from starting under test.
+fn run_read(root: &Path, args: &[&str], conn: Option<&str>) -> Output {
+    let mut cmd = Command::new(rigger_bin());
+    cmd.args(args)
+        .current_dir(root)
+        .env("RIGGER_NO_DASH", "1")
+        .env_remove("KURRENTDB_CONN");
+    if let Some(c) = conn {
+        cmd.env("KURRENTDB_CONN", c);
+    }
+    cmd.output().expect("spawn rigger read command")
+}
+
+/// The single-authority discrimination for a READ command whose empty-log path is guarded by the
+/// absent-local-db sentinel `sel.is_sqlite() && !events.db exists`. Drive `args` two ways over the
+/// SAME never-run project (no local event log) and prove the store SELECTION - not the local
+/// file's absence - decides the outcome:
+///
+///   * UNCONFIGURED (sqlite default): the guard fires, the command prints `sentinel` and exits 0.
+///     This CONTROL proves the sentinel path is genuinely taken on the sqlite arm, so the server
+///     difference below is attributable to the store SELECTION and nothing else.
+///   * SERVER-configured (`KURRENTDB_CONN` set, unreachable): `sel.is_sqlite()` is false so the
+///     guard must NOT fire; the command resolves the SERVER through the one authority and the
+///     eager connect fails - so it errors inside the server backend and NEVER prints `sentinel`.
+///
+/// A regression dropping the `sel.is_sqlite()` qualifier reverts to pre-48 behavior: the server
+/// case short-circuits to the empty sentinel and exits 0, silently reporting an empty log against
+/// a configured server. The server-arm assertions below redden exactly then.
+fn a_read_command_resolves_the_configured_store_not_the_local_absent_sentinel(
+    args: &[&str],
+    sentinel: &str,
+) {
+    let cmdline = args.join(" ");
+
+    // CONTROL: nothing configured -> the single authority defaults to the LOCAL sqlite log, whose
+    // file is absent on a never-run project, so the guard fires and the command reports empty.
+    let project = empty_project();
+    let root = project.path();
+    let out = run_read(root, args, None);
+    let ctrl_stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "unconfigured `rigger {cmdline}` on a never-run project must print its no-data sentinel \
+         and exit 0; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        ctrl_stdout.contains(sentinel),
+        "unconfigured `rigger {cmdline}` must print its local no-data sentinel {sentinel:?} - the \
+         control proving the sqlite arm takes the absent-db guard; stdout:\n{ctrl_stdout}"
+    );
+    assert!(
+        !local_event_log(root).exists(),
+        "a read command must never fabricate a local events.db (control arm)"
+    );
+
+    // SERVER-configured, unreachable (nothing listens on this loopback port, so the eager connect
+    // is refused fast): the single authority selects the server, the guard must NOT fire, and the
+    // read resolves - and fails inside - the SERVER backend, never the local-absent sentinel.
+    let project = empty_project();
+    let root = project.path();
+    let out = run_read(root, args, Some("kurrentdb://127.0.0.1:65533?tls=false"));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "a server-configured `rigger {cmdline}` must resolve the SERVER (unreachable) and FAIL, \
+         never short-circuit to the local-absent sentinel and exit 0; stdout:\n{stdout}\n\
+         stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("kurrentdb"),
+        "a server-configured `rigger {cmdline}` must fail INSIDE the server backend (proving it \
+         resolved the server the single authority selected, not the local sqlite log); \
+         stderr:\n{stderr}"
+    );
+    assert!(
+        !stdout.contains(sentinel) && !stderr.contains(sentinel),
+        "a server-configured `rigger {cmdline}` must NOT emit the local-absent sentinel \
+         {sentinel:?} - doing so is the dropped-`is_sqlite()` regression reporting an empty log \
+         against a live server; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        !local_event_log(root).exists(),
+        "a server-configured read must not fabricate a local events.db either"
+    );
+}
+
+#[test]
+fn prime_resolves_the_configured_server_never_the_local_absent_sentinel() {
+    // `rigger prime` (cmd_prime) guards `selection.is_sqlite() && !events.db exists` before its
+    // `read_all`, printing "no decisions recorded yet" on the sqlite arm.
+    a_read_command_resolves_the_configured_store_not_the_local_absent_sentinel(
+        &["prime"],
+        "no decisions recorded yet",
+    );
+}
+
+#[test]
+fn stats_resolves_the_configured_server_never_the_local_absent_sentinel() {
+    // `rigger stats` (cmd_stats -> stats_lines) guards `sel.is_sqlite() && !events.db exists`
+    // before its namespace-scoped run-stream read, printing "no runs recorded yet" on the sqlite
+    // arm. A second command through a distinct code path (the `stats_lines` helper, not cmd_prime's
+    // inline guard) so the sentinel class is proven, not a single site.
+    a_read_command_resolves_the_configured_store_not_the_local_absent_sentinel(
+        &["stats"],
+        "no runs recorded yet",
     );
 }
