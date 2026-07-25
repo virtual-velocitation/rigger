@@ -416,7 +416,9 @@ fn resolve_conn(
 /// mutation. The public [`store_selection`] wraps this with the real environment and the owning
 /// repo's `.rigger`. Precedence, highest first (§48 criterion 2, "resolution order"):
 ///
-///   1. an explicit `--eventstore`/`--conn` flag (`flag_store` / `flag_conn`), kept on `run`;
+///   1. an explicit `--eventstore`/`--conn` flag (`flag_store` / `flag_conn`), kept on `run`. A
+///      non-empty `--conn` alone SELECTS the server addressed by it (a bare `--conn` is never
+///      dropped to a lower rung); `--eventstore sqlite` wins outright even against a `--conn`;
 ///   2. the `KURRENTDB_CONN` environment value (`env_conn`, the full connection string);
 ///   3. the local secret file `<rigger_dir>/store.conn` (the gitignored per-machine credential);
 ///   4. the committed project config's `store:` selection (the CHOICE pinned in the repo, with an
@@ -435,15 +437,26 @@ fn store_selection_at(
     // The environment value, normalized (an empty `KURRENTDB_CONN=` is unset, never a server with
     // no address). Threaded on to `resolve_conn` so the flag rung's fallback order stays uniform.
     let env = env_conn.as_deref().filter(|s| !s.is_empty());
+    // A non-empty `--conn` flag, normalized (a stray `--conn ''` is unset, never a server with no
+    // address). It SELECTS the server on its own (below), so it is normalized once here.
+    let flag = flag_conn.filter(|s| !s.is_empty());
     // 1. an explicit flag is the highest-precedence, unambiguous override.
     match flag_store {
         Some(StoreKind::KurrentDb) => {
-            return Ok(StoreSelection::Server(resolve_conn(
-                flag_conn, env, rigger_dir,
-            )?))
+            return Ok(StoreSelection::Server(resolve_conn(flag, env, rigger_dir)?))
         }
+        // `--eventstore sqlite` wins OUTRIGHT: the named backend is the unambiguous override, so it
+        // beats even a `--conn` present alongside it (contradictory flags resolve to the backend).
         Some(StoreKind::Sqlite) => return Ok(StoreSelection::Sqlite),
-        None => {}
+        // No `--eventstore`, but a bare `--conn <url>` SELECTS the server addressed verbatim by it
+        // (§48 rung 1; d-u2-conn-flag-selects-server). A non-empty `--conn` is a first-class
+        // highest-precedence source - dropping it to a lower rung was the store-fracture footgun
+        // (`rigger run --conn kurrentdb://prod <spec>` silently resolving LOCAL sqlite).
+        None => {
+            if let Some(conn) = flag {
+                return Ok(StoreSelection::Server(conn.to_string()));
+            }
+        }
     }
     // 2. the environment carries the full connection string, so a bare command (no flag) in a
     //    shell or CI configured for the server resolves it - the wiring that keeps a worker's
@@ -463,7 +476,11 @@ fn store_selection_at(
     match store_backend_kind(&cfg)? {
         Some(StoreKind::KurrentDb) => {
             let conn = if cfg.url.trim().is_empty() {
-                resolve_conn(None, env, rigger_dir)?
+                // No committed url: the address comes from a credential source. Thread the real
+                // `--conn` flag in (not `None`) so the SELECTED store and the credential that OPENS
+                // it can never drift - a non-empty flag already returned at rung 1, so this honours
+                // it defensively for any future path that reaches rung 4 with a flag live.
+                resolve_conn(flag, env, rigger_dir)?
             } else {
                 cfg.url.trim().to_string()
             };
@@ -11138,6 +11155,45 @@ mod tests {
             StoreSelection::Sqlite,
             "--eventstore sqlite beats every lower source"
         );
+        // A BARE --conn (flag_store=None) SELECTS the server addressed verbatim by it: a non-empty
+        // --conn is a first-class highest-precedence source, never silently dropped to a lower rung
+        // (the store-fracture footgun spec 48 motivates against - d-u2-conn-flag-selects-server).
+        assert_eq!(
+            sel(None, Some("kurrentdb://bare-conn:2113?tls=false"), None).unwrap(),
+            server("kurrentdb://bare-conn:2113?tls=false"),
+            "a bare --conn selects the server, beating the secret file and config beneath it"
+        );
+        // The bare --conn outranks the environment too (it is rung 1; KURRENTDB_CONN is rung 2).
+        assert_eq!(
+            sel(
+                None,
+                Some("kurrentdb://bare-conn:2113?tls=false"),
+                Some("kurrentdb://env-host:2113?tls=false"),
+            )
+            .unwrap(),
+            server("kurrentdb://bare-conn:2113?tls=false"),
+            "a bare --conn outranks KURRENTDB_CONN"
+        );
+        // An explicit --eventstore sqlite still wins OUTRIGHT over a --conn: the flag-store is the
+        // unambiguous backend override, so contradictory flags resolve to sqlite, never the server.
+        assert_eq!(
+            sel(
+                Some(StoreKind::Sqlite),
+                Some("kurrentdb://bare-conn:2113?tls=false"),
+                None,
+            )
+            .unwrap(),
+            StoreSelection::Sqlite,
+            "--eventstore sqlite wins outright even with a --conn present"
+        );
+        // An EMPTY --conn is not a selection: it is unset, so the rungs beneath decide (here the
+        // secret file), exactly as an absent flag would - a stray `--conn ''` never selects a
+        // server with no address.
+        assert_eq!(
+            sel(None, Some(""), None).unwrap(),
+            server("kurrentdb://secret-file:2113?tls=false"),
+            "an empty --conn is unset, so the secret file wins beneath it"
+        );
 
         // 2. No flag: the environment beats the secret file and the config.
         assert_eq!(
@@ -11192,6 +11248,15 @@ mod tests {
         // The three-source error: the server is selected (config pins kurrentdb) with NO url and
         // no credential source anywhere - the error must name ALL THREE credential channels.
         write_config(Some("store:\n  backend: kurrentdb\n"));
+        // The TWIN of the rung-1 drop (config-kurrentdb-with-no-url + a CLI --conn): the config
+        // selects the server but carries no url, and the CLI --conn is the credential that resolves
+        // it. The --conn is NEVER dropped here either - the exact input that previously fell through
+        // to the sqlite default now resolves the server verbatim from the flag.
+        assert_eq!(
+            sel(None, Some("kurrentdb://flag-conn:2113?tls=false"), None).unwrap(),
+            server("kurrentdb://flag-conn:2113?tls=false"),
+            "a config-selected server with no url takes the --conn credential, never drops it"
+        );
         let err = sel(None, None, None).unwrap_err().to_string();
         assert!(
             err.contains("--conn") && err.contains("KURRENTDB_CONN") && err.contains("store.conn"),

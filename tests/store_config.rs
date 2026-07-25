@@ -7,8 +7,9 @@
 //! proves the OTHER edge of the same seam - the public reader's OWN contract, which the
 //! binary-driving file exercises only transitively and never asserts on directly:
 //!
-//!   * an ABSENT (or unreadable) workflow.yml is "no opinion" - the default, never an error, so a
-//!     project that pins nothing keeps today's behavior (the backward-compatibility bar);
+//!   * an ABSENT workflow.yml is "no opinion" - the default, never an error, so a project that
+//!     pins nothing keeps today's behavior (the backward-compatibility bar); a PRESENT-but-
+//!     unreadable file instead surfaces LOUDLY, never the same silent default an absent file gives;
 //!   * a present `store:` block deserializes to its exact backend and non-secret url;
 //!   * a legacy workflow.yml with NO `store:` key still reads as the default, so adding the field
 //!     and its reader breaks no existing config;
@@ -121,6 +122,26 @@ fn a_malformed_workflow_surfaces_a_parse_error_not_a_silent_default() {
     assert!(
         msg.contains("parse store config"),
         "the parse failure must name itself as a store-config parse error; got: {msg}"
+    );
+}
+
+#[test]
+fn a_present_but_unreadable_workflow_surfaces_loudly_not_a_silent_default() {
+    // A workflow.yml that is PRESENT but cannot be read (here a directory stands where the file
+    // should be - an IO error distinct from NotFound) must surface LOUDLY, never collapse into the
+    // same "no opinion" default an ABSENT file returns. Otherwise a bare courier on a
+    // server-configured project whose owning-root config is unreadable would silently resolve local
+    // sqlite and misfile its self-report off the store the conductor reads (the spec-05 wrong-store
+    // fracture). The reader's own doc promises "never a silent wrong-store fallback"; this pins it.
+    let (_tmp, dir) = rigger_dir();
+    std::fs::create_dir(dir.join("workflow.yml")).expect("place a directory where the file goes");
+    let err = read_store_config(&dir).expect_err(
+        "a present-but-unreadable workflow.yml must be a loud error, not a silent default",
+    );
+    let msg = err.to_string();
+    assert!(
+        msg.contains("read store config"),
+        "the failure must name itself as a store-config read error; got: {msg}"
     );
 }
 

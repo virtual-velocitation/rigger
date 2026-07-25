@@ -774,7 +774,9 @@ fn load_workflow(path: &Path) -> Result<Workflow, Error> {
 /// key through a throwaway struct, ignoring the rest of the workflow (stages, gates, agents), so a
 /// bare courier's store resolution never depends on - or fails on - a workflow concern the courier
 /// has no need for. A syntactically malformed workflow.yml still surfaces as a clear parse error
-/// (the same class `load_workflow` reports), never a silent wrong-store fallback.
+/// (the same class `load_workflow` reports), and a PRESENT-but-unreadable file (a permission or IO
+/// fault, distinct from a genuinely absent one) surfaces LOUDLY too - never a silent wrong-store
+/// fallback that would misfile a bare courier's self-report off the store the conductor reads.
 ///
 /// Anchored at the `.rigger` directory (not the project root) so the store resolver, which already
 /// resolves that directory once at the owning repo root, passes it straight through.
@@ -782,8 +784,13 @@ pub fn read_store_config(rigger_dir: &Path) -> Result<StoreConfig, Error> {
     let path = rigger_dir.join("workflow.yml");
     let body = match std::fs::read_to_string(&path) {
         Ok(b) => b,
-        // Absent config (or unreadable): the project pins nothing, so "no opinion".
-        Err(_) => return Ok(StoreConfig::default()),
+        // An ABSENT file is "no opinion" - the project pins nothing, so the resolver falls through
+        // to its next rung (the default). Any OTHER IO error (a PRESENT-but-unreadable file: a
+        // permission or IO fault) surfaces LOUDLY, never collapsing into the same default an absent
+        // file returns - a silent wrong-store fallback off an unreadable config is the exact
+        // fracture this rung guards against.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(StoreConfig::default()),
+        Err(e) => return Err(err(format!("read store config: {e}"))),
     };
     #[derive(Deserialize)]
     struct Probe {
