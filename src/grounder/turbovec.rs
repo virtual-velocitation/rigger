@@ -3367,3 +3367,138 @@ mod periphery {
         );
     }
 }
+
+/// PERIPHERY - the `reindex` CALLER CONTRACT at the public [`Grounder`] surface: naming a
+/// file more than once in a single `reindex` is OBSERVABLY IDENTICAL to naming it once.
+///
+/// `Grounder::reindex` is the cross-module seam that `rigger reindex <files>` (main.rs),
+/// the conductor's post-integrate reindex, and the hybrid grounder all drive; its stated
+/// contract is that the ingest OUTPUT is byte-identical to naming the file once, because
+/// [`Turbovec::index_files`] is a per-caller-deduped install authority - a rel named twice
+/// with no drop between the two installs orphans the first run's vectors. The implementer's
+/// inside-out unit test proves the de-dup by inspecting private store state (orphan refs,
+/// next_id); this layer proves the SAME contract from OUTSIDE, through ONLY the public
+/// `reindex` + `ground` surface: two grounders over byte-identical trees that differ solely
+/// in whether the file is named once or twice must ground identically, and the duplicated
+/// file must surface EXACTLY once. A regression to the un-deduped double-install leaves a
+/// second, identically-embedded orphan vector that surfaces the file twice and diverges the
+/// two grounders - the boundary bug this guards (the cause of the recorded reindex REJECT).
+///
+/// Fake-embedder-driven (deterministic vectors, no ONNX model), so it stays in the fast,
+/// always-run lane. The counting fake lives in the sibling `mod tests` and is deliberately
+/// not shared - the periphery layer stands on its own fixture.
+#[cfg(test)]
+mod periphery_reindex {
+    use super::*;
+
+    /// A deterministic fake [`Embedder`]: identical text always embeds to the identical,
+    /// non-degenerate `EMBED_DIM` vector, so two byte-identical trees build byte-identical
+    /// indices and ANY divergence in their public grounding is caused only by the reindex
+    /// arg shape under test - never by embedding noise. It builds no model.
+    struct StableEmbedder;
+
+    impl Embedder for StableEmbedder {
+        fn identity(&self) -> &str {
+            "periphery-reindex-stable-embedder"
+        }
+        fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, String> {
+            Ok(texts.iter().map(|t| stable_vec(t)).collect())
+        }
+    }
+
+    /// A deterministic, non-degenerate `EMBED_DIM`-vector seeded from the text (an FNV seed
+    /// then an LCG per lane), so the quantized index accepts it and identical text always
+    /// embeds identically across the two grounders under comparison.
+    fn stable_vec(text: &str) -> Vec<f32> {
+        let mut h = 0xcbf2_9ce4_8422_2325u64 ^ (text.len() as u64);
+        for b in text.as_bytes() {
+            h ^= *b as u64;
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        (0..EMBED_DIM)
+            .map(|_| {
+                h = h
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                ((h >> 33) as f32 / (u32::MAX as f32)) * 2.0 - 1.0
+            })
+            .collect()
+    }
+
+    /// The projection through which a `ground` CALLER observes a result: [`Ref`] carries no
+    /// `PartialEq`, and the id/vector bookkeeping the de-dup bug corrupts is invisible at
+    /// this surface, so an EQUAL (file, line, snippet) projection means the two reindex
+    /// shapes are interchangeable to every consumer of `ground`.
+    fn grounding(tv: &Turbovec, query: &str, k: usize) -> Vec<(String, u32, String)> {
+        tv.ground(query, k)
+            .into_iter()
+            .map(|r| (r.file, r.line, r.text))
+            .collect()
+    }
+
+    /// A two-file tree: a distinctive single-chunk term so a query can target exactly one
+    /// file, plus a second file so the grounding has more than one candidate to (mis)order.
+    fn two_file_tree() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("dup.rs"),
+            "fn teleport_across_the_void() {}\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("other.rs"), "fn draw_the_hud() {}\n").unwrap();
+        dir
+    }
+
+    #[test]
+    fn reindex_naming_a_file_twice_grounds_identically_to_naming_it_once() {
+        // Two byte-identical trees + the same deterministic model => two byte-identical
+        // cold-built indices. They then differ in exactly ONE thing: how many times dup.rs
+        // is named in the reindex that follows.
+        let once_dir = two_file_tree();
+        let twice_dir = two_file_tree();
+        let once_root = once_dir.path().to_str().unwrap();
+        let twice_root = twice_dir.path().to_str().unwrap();
+
+        // Construct exactly as `rigger reindex` does (new_for_reindex == LeaveStale): load or
+        // cold-build the store, leaving whole-tree drift for the caller's named reindex.
+        let once =
+            Turbovec::from_embedder(once_root, Box::new(StableEmbedder), OnDrift::LeaveStale)
+                .unwrap();
+        let twice =
+            Turbovec::from_embedder(twice_root, Box::new(StableEmbedder), OnDrift::LeaveStale)
+                .unwrap();
+
+        // The ONLY difference: `twice` names dup.rs TWICE in one reindex - the
+        // `rigger reindex dup.rs dup.rs` shape the fix must make idempotent.
+        once.reindex(once_root, &["dup.rs".to_string()]);
+        twice.reindex(twice_root, &["dup.rs".to_string(), "dup.rs".to_string()]);
+
+        // (a) EQUIVALENCE at the public surface: for every query the grounding projection is
+        // identical. A duplicated install would leave `twice` holding a second,
+        // identically-embedded orphan vector for dup.rs (surfacing it twice / reshuffling the
+        // ranking) and diverge from `once`. Byte-identical projections prove naming twice ==
+        // naming once to every `ground` caller. (The embedder is deterministic but not
+        // semantic, so the ranking itself is arbitrary - only its EQUALITY across the two
+        // grounders is load-bearing here.)
+        for query in ["teleport across the void", "draw the hud", "fn"] {
+            assert_eq!(
+                grounding(&once, query, 5),
+                grounding(&twice, query, 5),
+                "reindex naming dup.rs twice must ground identically to naming it once \
+                 (query {query:?})"
+            );
+        }
+
+        // (b) EXACTLY ONCE: with only two files in the tree and k past that, `ground` returns
+        // every chunk, so dup.rs appears once iff it owns exactly one install. The un-deduped
+        // path installed it twice, putting a duplicate/orphan vector in the index that would
+        // surface dup.rs a second time - the direct regression guard.
+        let hits = twice.ground("fn teleport_across_the_void() {}", 5);
+        let dup_hits = hits.iter().filter(|r| r.file == "dup.rs").count();
+        assert_eq!(
+            dup_hits, 1,
+            "dup.rs surfaced {dup_hits} times after being named twice - a duplicate/orphan \
+             vector is in the index"
+        );
+    }
+}
