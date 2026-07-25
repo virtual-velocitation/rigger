@@ -14,8 +14,51 @@
 //! lane has nothing to ingest - a no-op that emits nothing, exactly as the run's ingest is a
 //! no-op there.
 
-#[cfg(feature = "symbols")]
-use crate::eventstore::Event;
+use crate::contextgraph::Projection;
+use crate::eventstore::{Event, EventStore, ExpectedRevision, Position};
+
+/// Append a whole batch of events to `stream` in ONE store append and fold them into `graph` in ONE
+/// transaction (via [`Projection::apply_batch`]) - the batched-fold cadence spec 49 needs: one store
+/// transaction per file's batch, not one per event (the measured cold-build throughput was
+/// transaction-cadence bound, not parse-bound). Each event is stamped with its global position
+/// before it folds: a single append lands the batch at CONSECUTIVE positions ending at the returned
+/// last position, so event `i` of an `n`-event batch sits at `last - (n - 1) + i`. The fold is
+/// best-effort - a fold failure never fails the append, which already landed durably in the log,
+/// exactly as the run's per-event `append_and_fold` folds best-effort. Returns the last appended
+/// position (`0` for an empty batch, which appends nothing).
+///
+/// This is the ONE batched append-and-fold authority both ingest sinks share - the run's keyed emit
+/// and a cold `rigger graph build` - so the batching can never diverge between them. It lives here
+/// beside the walk-and-key authority rather than inside either sink, and it is deliberately NOT
+/// `symbols`-gated: it only moves events through the store and graph ports, which both feature lanes
+/// compile, so the run's single-event mutation path can route its one-event case through it in
+/// either lane.
+pub fn append_and_fold_batch(
+    store: &dyn EventStore,
+    graph: Option<&dyn Projection>,
+    stream: &str,
+    events: &[Event],
+) -> Result<Position, crate::eventstore::Error> {
+    if events.is_empty() {
+        return Ok(0);
+    }
+    let last = store.append(stream, ExpectedRevision::Any, events)?;
+    if let Some(g) = graph {
+        let n = events.len() as Position;
+        let base = last + 1 - n;
+        let positioned: Vec<Event> = events
+            .iter()
+            .enumerate()
+            .map(|(i, e)| {
+                let mut e = e.clone();
+                e.position = base + i as Position;
+                e
+            })
+            .collect();
+        let _ = g.apply_batch(&positioned);
+    }
+    Ok(last)
+}
 
 /// What a walk did, reported back to the caller. `batches_emitted` counts the file batches the walk
 /// handed to `emit` (code and design). `workers_engaged` is how many parse-worker threads actually
@@ -45,18 +88,69 @@ pub fn ingest_project(root: &str, emit: impl FnMut(&str, &Event)) -> IngestStats
     ingest_project_paced(root, crate::parallel::default_workers(), emit)
 }
 
-/// [`ingest_project`] at a chosen parse width. The code half (spec 29a) parses/lowers its files
-/// across up to `workers` threads yet EMITS them in the index's sorted file-path order, so the event
-/// sequence a caller's sink observes is byte-identical to a serial walk's regardless of scheduling
-/// (the rebuild-byte-identical discipline). `workers <= 1` runs the lowering inline: it IS the serial
-/// walk a wider walk is proven byte-identical against - the same code path, not a hand-rolled twin.
-/// The design half (spec 29b) stays serial; its walk lives in `design/events.rs`, whose scoping a
-/// separate unit owns, so parallelizing it here would fork that file.
+/// [`ingest_project`] at a chosen parse width, emitting one event at a time. The code half (spec
+/// 29a) parses/lowers its files across up to `workers` threads yet EMITS them in the index's sorted
+/// file-path order, so the event sequence a caller's sink observes is byte-identical to a serial
+/// walk's regardless of scheduling (the rebuild-byte-identical discipline). `workers <= 1` runs the
+/// lowering inline: it IS the serial walk a wider walk is proven byte-identical against - the same
+/// code path, not a hand-rolled twin. The design half (spec 29b) stays serial; its walk lives in
+/// `design/events.rs`, whose scoping a separate unit owns, so parallelizing it here would fork that
+/// file.
+///
+/// This is the per-EVENT view of the one walk: it FLATTENS each file's keyed batch into one
+/// `emit(key, event)` per event, in `#i` order, so it is a thin adapter over
+/// [`ingest_project_batched_paced`] - not a second walk. A sink that appends and folds a file's
+/// whole batch as a UNIT (the batched-fold cadence, spec 49) uses the batched entry instead.
 #[cfg(feature = "symbols")]
 pub fn ingest_project_paced(
     root: &str,
     workers: usize,
     mut emit: impl FnMut(&str, &Event),
+) -> IngestStats {
+    walk_batches(root, workers, |keyed| {
+        for (key, ev) in keyed {
+            emit(key, ev);
+        }
+    })
+}
+
+/// [`ingest_project`] handing a sink each file's WHOLE keyed batch at once (the whole file's events,
+/// each paired with its `<prefix>/<file>@<hash>#<i>` content key, in `#i` order) rather than one
+/// event at a time. A sink appends the file's batch in ONE store append and folds it in ONE graph
+/// transaction (via [`append_and_fold_batch`]) - the batched-fold cadence spec 49 needs, since the
+/// measured cold-build throughput was transaction-cadence bound. Same default parse width as
+/// [`ingest_project`]; the per-event walk is this same core flattened.
+#[cfg(feature = "symbols")]
+pub fn ingest_project_batched(
+    root: &str,
+    on_batch: impl FnMut(&[(String, &Event)]),
+) -> IngestStats {
+    ingest_project_batched_paced(root, crate::parallel::default_workers(), on_batch)
+}
+
+/// [`ingest_project_batched`] at a chosen parse width - the batched analogue of
+/// [`ingest_project_paced`]. Parse width changes only the code half's parallelism (criterion 1),
+/// never the batching: the same files still emit as the same per-file batches, in sorted file-path
+/// order.
+#[cfg(feature = "symbols")]
+pub fn ingest_project_batched_paced(
+    root: &str,
+    workers: usize,
+    on_batch: impl FnMut(&[(String, &Event)]),
+) -> IngestStats {
+    walk_batches(root, workers, on_batch)
+}
+
+/// The ONE walk both public views share: parse/lower the project at `root` and hand each file's
+/// WHOLE keyed batch to `on_batch`, in sorted file-path order (the code half first, then the design
+/// half), each batch in `#i` order. The per-event [`ingest_project_paced`] and the per-batch
+/// [`ingest_project_batched_paced`] are both thin views over this, so there is no forked walk to
+/// drift - the emit order is defined once, here.
+#[cfg(feature = "symbols")]
+fn walk_batches(
+    root: &str,
+    workers: usize,
+    mut on_batch: impl FnMut(&[(String, &Event)]),
 ) -> IngestStats {
     let mut batches_emitted = 0usize;
     // The code half (spec 29a): parallel parse feeds this ordered emit. Reuses the `symbols`
@@ -64,13 +158,14 @@ pub fn ingest_project_paced(
     // what the grounder already built - not a second whole-tree parse.
     let (code_batches, workers_engaged) =
         crate::grounder::symbols::events::project_batches_paced(root, workers);
-    for (file, batch) in code_batches {
-        emit_batch("gc", &file, &batch, &mut emit);
+    for (file, batch) in &code_batches {
+        key_batch("gc", file, batch, &mut on_batch);
         batches_emitted += 1;
     }
     // The design half (spec 29b): the project's design docs and inline source rationale, serial.
-    for (file, batch) in crate::grounder::design::events::project_batches(root) {
-        emit_batch("gd", &file, &batch, &mut emit);
+    let design_batches = crate::grounder::design::events::project_batches(root);
+    for (file, batch) in &design_batches {
+        key_batch("gd", file, batch, &mut on_batch);
         batches_emitted += 1;
     }
     IngestStats {
@@ -79,22 +174,29 @@ pub fn ingest_project_paced(
     }
 }
 
-/// Key one file's batch under `<prefix>/<file>@<hash>#<i>` and hand each event to `emit`. `hash`
-/// fingerprints the WHOLE batch's bytes with the SAME line-ending-normalized content primitive the
-/// symbols reindex freshening keys on (reused, not a fresh copy, so the change-detection key is one
-/// content-identity authority), so every event of a file shares one `<hash>`. The batch bytes are
-/// JSON the emit pass just serialized, so they are valid UTF-8.
+/// Key one file's batch under `<prefix>/<file>@<hash>#<i>` and hand the WHOLE keyed batch to
+/// `on_batch` at once. `hash` fingerprints the WHOLE batch's bytes with the SAME line-ending-
+/// normalized content primitive the symbols reindex freshening keys on (reused, not a fresh copy, so
+/// the change-detection key is one content-identity authority), so every event of a file shares one
+/// `<hash>`. The batch bytes are JSON the emit pass just serialized, so they are valid UTF-8.
 #[cfg(feature = "symbols")]
-fn emit_batch(prefix: &str, file: &str, batch: &[Event], emit: &mut impl FnMut(&str, &Event)) {
+fn key_batch(
+    prefix: &str,
+    file: &str,
+    batch: &[Event],
+    on_batch: &mut impl FnMut(&[(String, &Event)]),
+) {
     let concat: String = batch
         .iter()
         .filter_map(|e| std::str::from_utf8(&e.data).ok())
         .collect();
     let hash = crate::grounder::symbols::store::content_hash(&concat);
-    for (i, ev) in batch.iter().enumerate() {
-        let key = format!("{prefix}/{file}@{hash}#{i}");
-        emit(&key, ev);
-    }
+    let keyed: Vec<(String, &Event)> = batch
+        .iter()
+        .enumerate()
+        .map(|(i, ev)| (format!("{prefix}/{file}@{hash}#{i}"), ev))
+        .collect();
+    on_batch(&keyed);
 }
 
 /// The light lane compiles no extraction pass, so there is nothing to walk - a no-op that emits
@@ -102,6 +204,16 @@ fn emit_batch(prefix: &str, file: &str, batch: &[Event], emit: &mut impl FnMut(&
 /// an error, exactly as the run's ingest is a no-op here.
 #[cfg(not(feature = "symbols"))]
 pub fn ingest_project(_root: &str, _emit: impl FnMut(&str, &crate::eventstore::Event)) {}
+
+/// The light lane's batched entry: no extraction pass, so nothing to walk - a no-op that hands the
+/// sink no batches. Mirrors the light-lane [`ingest_project`], so a cold `graph build` degrades to
+/// an empty graph in either lane (the batched append-and-fold kernel above stays compiled in both).
+#[cfg(not(feature = "symbols"))]
+pub fn ingest_project_batched(
+    _root: &str,
+    _on_batch: impl FnMut(&[(String, &crate::eventstore::Event)]),
+) {
+}
 
 #[cfg(all(test, feature = "symbols"))]
 mod tests {
