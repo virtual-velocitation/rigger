@@ -576,6 +576,25 @@ impl Stage {
     }
 }
 
+/// The event-store SELECTION a project's committed config pins (§48 rung 4, the project-config
+/// precedence rung). The CHOICE rides the repo so every member - and every worker's bare `rigger
+/// result` - resolves the same store with no flags, while CREDENTIALS stay OUT of the committed
+/// file (they ride the flag, the environment, or the gitignored `.rigger/store.conn` secret file,
+/// all higher-precedence rungs). `backend` is `sqlite` (the default, and an empty value, both mean
+/// "no opinion" so a project that pins nothing keeps today's behavior) or `kurrentdb`; `url` is the
+/// OPTIONAL non-secret address (host/port only) for the server backend.
+///
+/// Deliberately its own small type, not a bare string, so the non-secret address rides alongside
+/// the choice in the one committed place; the connection string is never required here, so no
+/// secret can leak into a committed file.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+pub struct StoreConfig {
+    #[serde(default)]
+    pub backend: String,
+    #[serde(default)]
+    pub url: String,
+}
+
 /// Workflow is the declarative loop: a DAG of stages, a gate library, and defaults.
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct Workflow {
@@ -583,6 +602,11 @@ pub struct Workflow {
     pub name: String,
     #[serde(default)]
     pub defaults: Defaults,
+    /// The event-store selection this project's committed config pins (§48 rung 4). Absent (the
+    /// common case) is "no opinion" - the resolver falls through to its default. Credentials never
+    /// ride this committed file; only the CHOICE and an optional non-secret host/port URL do.
+    #[serde(default)]
+    pub store: StoreConfig,
     #[serde(default)]
     pub gates: BTreeMap<String, Gate>,
     #[serde(default)]
@@ -741,6 +765,41 @@ fn load_workflow(path: &Path) -> Result<Workflow, Error> {
         }
     }
     Ok(wf)
+}
+
+/// Read ONLY the `store:` selection from `<rigger_dir>/workflow.yml` (§48 rung 4), tolerating an
+/// absent file - a project that pins nothing - by returning the default ([`StoreConfig::default`],
+/// "no opinion", so the store resolver falls through to its next rung). This is the LIGHTWEIGHT
+/// probe the store resolver's project-config rung uses: it deliberately parses only the `store:`
+/// key through a throwaway struct, ignoring the rest of the workflow (stages, gates, agents), so a
+/// bare courier's store resolution never depends on - or fails on - a workflow concern the courier
+/// has no need for. A syntactically malformed workflow.yml still surfaces as a clear parse error
+/// (the same class `load_workflow` reports), and a PRESENT-but-unreadable file (a permission or IO
+/// fault, distinct from a genuinely absent one) surfaces LOUDLY too - never a silent wrong-store
+/// fallback that would misfile a bare courier's self-report off the store the conductor reads.
+///
+/// Anchored at the `.rigger` directory (not the project root) so the store resolver, which already
+/// resolves that directory once at the owning repo root, passes it straight through.
+pub fn read_store_config(rigger_dir: &Path) -> Result<StoreConfig, Error> {
+    let path = rigger_dir.join("workflow.yml");
+    let body = match std::fs::read_to_string(&path) {
+        Ok(b) => b,
+        // An ABSENT file is "no opinion" - the project pins nothing, so the resolver falls through
+        // to its next rung (the default). Any OTHER IO error (a PRESENT-but-unreadable file: a
+        // permission or IO fault) surfaces LOUDLY, never collapsing into the same default an absent
+        // file returns - a silent wrong-store fallback off an unreadable config is the exact
+        // fracture this rung guards against.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(StoreConfig::default()),
+        Err(e) => return Err(err(format!("read store config: {e}"))),
+    };
+    #[derive(Deserialize)]
+    struct Probe {
+        #[serde(default)]
+        store: StoreConfig,
+    }
+    let probe: Probe =
+        serde_yaml::from_str(&body).map_err(|e| err(format!("parse store config: {e}")))?;
+    Ok(probe.store)
 }
 
 impl Config {
