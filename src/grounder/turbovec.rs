@@ -3033,3 +3033,105 @@ mod tests {
         }
     }
 }
+
+/// Periphery (contract) layer for the "honest embed skip" seam.
+///
+/// The inside-out unit tests prove the skip MACHINERY by injecting a fake [`Embedder`]
+/// with a hand-chosen identity ("model-v1"/"model-v2"), so they establish that a file is
+/// skipped only when both its content AND the reported model identity are unchanged -
+/// GIVEN an honest identity. What a fake can never establish is whether the SHIPPED
+/// adapter's identity is itself honest: `impl Embedder for FastEmbedEmbedder` derives its
+/// identity from [`fastembed_identity`], and only a real value flowing through the real
+/// [`chunk_key`] can prove the skip is honest in production. This module covers exactly
+/// that production half of the [`Embedder`] port - the part the fake severs. It builds no
+/// model (the identity and the key are pure functions of the model constants and content),
+/// so it stays in the fast, always-run lane rather than the serialized model-test lane.
+#[cfg(test)]
+mod periphery {
+    use super::*;
+
+    /// HONESTY, first half - "a mere binary reinstall re-embeds nothing". The production
+    /// identity must be DETERMINISTIC, a pure function of the fixed model constants and
+    /// nothing that varies between two builds of the same model (build id, install time,
+    /// index mtime, a path). Two evaluations must be byte-identical; otherwise a rebuild
+    /// would silently re-key every file and re-embed the whole tree despite an unchanged
+    /// model - a dishonest, expensive skip failure.
+    #[test]
+    fn production_identity_is_stable_across_reinstalls() {
+        assert_eq!(
+            fastembed_identity(),
+            fastembed_identity(),
+            "the production identity must be deterministic so a reinstall of the same model \
+             re-embeds nothing"
+        );
+        // A non-empty identity is required, or the key's identity dimension collapses and the
+        // fold degenerates to a content-only key.
+        assert!(
+            !fastembed_identity().is_empty(),
+            "the production identity must be non-empty"
+        );
+    }
+
+    /// HONESTY, second half - "any change that alters the produced vectors re-embeds". The
+    /// two determinants of the vectors this grounder stores are WHICH embedding model and
+    /// its DIMENSION, so the identity must fold BOTH. If it dropped the model name, swapping
+    /// to a differently-producing model would keep stale vectors; if it dropped the
+    /// dimension, a re-dimensioned model would too. Encoding both is what makes a model or
+    /// dimension change re-embed the tree instead of serving vectors the current model never
+    /// produced.
+    #[test]
+    fn production_identity_folds_model_and_dimension() {
+        let id = fastembed_identity();
+        assert!(
+            id.contains(&EMBEDDING_MODEL.to_string()),
+            "identity {id:?} must name the embedding model so a model swap re-embeds"
+        );
+        assert!(
+            id.contains(&EMBED_DIM.to_string()),
+            "identity {id:?} must carry the embedding dimension so a dimension change re-embeds"
+        );
+    }
+
+    /// The INTEGRATION the fake severs: the SHIPPED identity, fed into the REAL
+    /// [`chunk_key`], yields an honest skip. Same model + unchanged content collides (the
+    /// skip is reached); a different model's identity, or a real edit, diverges (re-embed).
+    /// The inside-out test drives `chunk_key` with arbitrary strings; this pins that the
+    /// production [`fastembed_identity`] actually partitions the key space by model, so the
+    /// two halves above are not merely internally consistent but wired to the key the
+    /// grounder truly persists and compares.
+    #[test]
+    fn production_identity_binds_the_honest_skip_key() {
+        let content = "fn render_frame(scene: &Scene) {}\n";
+        let prod = fastembed_identity();
+
+        // Same model + same content -> one key -> the file's stored hash matches and the
+        // embed is skipped.
+        assert_eq!(
+            chunk_key(&prod, content),
+            chunk_key(&prod, content),
+            "same model + unchanged content must key identically so the honest skip is reached"
+        );
+
+        // A DIFFERENT model's identity over the SAME content -> a different key -> a model
+        // swap re-embeds rather than serving vectors this model never produced.
+        let other_model = format!("some-other-embedder/dim={EMBED_DIM}");
+        assert_ne!(
+            other_model, prod,
+            "the fixture's foreign identity must differ from the production one"
+        );
+        assert_ne!(
+            chunk_key(&prod, content),
+            chunk_key(&other_model, content),
+            "the production identity must distinguish this model's keys from another model's"
+        );
+
+        // A real edit under the SAME production model -> a different key -> the file
+        // re-embeds instead of keeping a stale vector.
+        let edited = "fn render_frame(scene: &Scene) { scene.draw(); }\n";
+        assert_ne!(
+            chunk_key(&prod, content),
+            chunk_key(&prod, edited),
+            "a content change under the same model must re-key so a stale vector is never kept"
+        );
+    }
+}
