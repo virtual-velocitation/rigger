@@ -17,6 +17,11 @@
 //!   * a SQLITE selection takes the local walk-up, which on a never-initialized project refuses
 //!     with `no rigger store found` and never mentions `kurrentdb`.
 //!
+//! It also pins the secret rung's sentinel split: a PRESENT-but-unreadable `.rigger/store.conn`
+//! (distinct from an ABSENT one, which is "no opinion") surfaces LOUDLY at the secret-file rung and
+//! never collapses into the silent sqlite fallback an absent file gives - the wrong-store fracture
+//! guard the config rung already carries, mirrored here for its sibling.
+//!
 //! Each case runs unconditionally, so the two new rungs and their ordering are regression-locked
 //! on every machine. Redaction of the connection string, the `.gitignore` pattern, and verbatim
 //! pass-through are owned by their own criteria and are not asserted here.
@@ -58,6 +63,15 @@ fn local_event_log(root: &Path) -> PathBuf {
 /// Write `<root>/.rigger/store.conn` (rung 3, the per-machine secret file).
 fn write_store_conn(root: &Path, conn: &str) {
     std::fs::write(root.join(".rigger").join("store.conn"), conn).expect("write store.conn");
+}
+
+/// Place a DIRECTORY where `<root>/.rigger/store.conn` should be a file, so reading it as the secret
+/// file yields an IO error DISTINCT from NotFound - the present-but-unreadable class. This mirrors
+/// the config rung's parity test exactly and is more portable than `chmod 000`, which a test running
+/// as root would bypass (root reads any file), silently defeating the guard under test.
+fn make_store_conn_unreadable(root: &Path) {
+    std::fs::create_dir(root.join(".rigger").join("store.conn"))
+        .expect("place a directory where store.conn goes");
 }
 
 /// Write `<root>/.rigger/workflow.yml` pinning `store:` (rung 4, the committed project config).
@@ -187,6 +201,44 @@ fn the_environment_beats_the_committed_config() {
         &out,
         root,
         "KURRENTDB_CONN beats the committed store: config",
+    );
+}
+
+#[test]
+fn a_present_but_unreadable_store_conn_surfaces_loudly_not_a_silent_sqlite_fallback() {
+    // Rung 3, the sentinel-inversion guard: a `.rigger/store.conn` that is PRESENT but cannot be
+    // read (here a directory stands where the file goes - an IO error distinct from NotFound) must
+    // surface LOUDLY, never collapse into the same silent sqlite default an ABSENT file returns.
+    // Otherwise a bare courier on a server-pinning box whose secret file is unreadable (a
+    // different-user / permission edge the design explicitly contemplates) would silently self-
+    // report to LOCAL sqlite while the conductor uses the server - the run's state fractures across
+    // two stores (the spec-05 wrong-store fracture). This is the secret-file sibling of the config
+    // rung's `a_present_but_unreadable_workflow...` test (d-u2-conn-file-unreadable-loud); it pins
+    // that the file-backed secret rung distinguishes absent (no opinion) from unreadable (loud), the
+    // same NotFound-vs-other split `read_store_config` makes one rung down.
+    let project = empty_project();
+    let root = project.path();
+    make_store_conn_unreadable(root);
+    let out = run_bare_courier(root);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "an unreadable store.conn must fail loudly, never silently resolve a fallback; \
+         stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("store connection file"),
+        "the failure must name itself as a store-connection-file read error, proving it surfaced at \
+         the secret-file rung rather than a downstream store miss; stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("no rigger store found"),
+        "an unreadable secret file must NOT fall through to the local sqlite walk-up - that silent \
+         wrong-store fallback is the exact fracture this rung guards; stderr:\n{stderr}"
+    );
+    assert!(
+        !local_event_log(root).exists(),
+        "a loud read failure must leave no fabricated local .rigger/events.db behind"
     );
 }
 

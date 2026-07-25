@@ -342,18 +342,33 @@ fn env_conn() -> Option<String> {
 }
 
 /// The connection string from the per-machine secret file `<rigger_dir>/store.conn` (§48 rung 3),
-/// treating an absent file OR a blank one as unset (so a stray empty file never selects a server
-/// with no address). One line: the full connection string, credentials included - the gitignored
-/// developer-box fallback for a machine where exporting the env var every shell is friction. This
-/// is the READ that positions the secret file in the precedence chain (between the environment and
-/// the committed config); the SECRETS criterion layers the `.gitignore` pattern, the
+/// treating an ABSENT file (or a blank one) as unset - `Ok(None)`, "no opinion", so the resolver
+/// falls through to the next rung. One line: the full connection string, credentials included - the
+/// gitignored developer-box fallback for a machine where exporting the env var every shell is
+/// friction. This is the READ that positions the secret file in the precedence chain (between the
+/// environment and the committed config); the SECRETS criterion layers the `.gitignore` pattern, the
 /// world-readable-permission warning, and connection-string redaction ONTO this one reader rather
 /// than adding a second parallel one.
-fn store_conn_file(rigger_dir: &Path) -> Option<String> {
-    std::fs::read_to_string(rigger_dir.join("store.conn"))
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+///
+/// A PRESENT-but-unreadable file (a permission or IO fault, distinct from a genuinely absent one)
+/// surfaces LOUDLY as an error, never collapsing into the same `None` an absent file returns - the
+/// exact NotFound-vs-other split [`config::read_store_config`] makes one rung down
+/// (d-u2-config-unreadable-loud / d-u2-conn-file-unreadable-loud). Swallowing it (the old
+/// `read_to_string(...).ok()`) let an unreadable secret file fall silently through to the sqlite
+/// default: a courier on a server-pinning box whose `store.conn` it cannot read - the different-user
+/// / permission edge §48 explicitly contemplates - would self-report to LOCAL sqlite while the
+/// conductor uses the server, fracturing the run's state across two stores.
+fn store_conn_file(rigger_dir: &Path) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    match std::fs::read_to_string(rigger_dir.join("store.conn")) {
+        Ok(body) => {
+            let conn = body.trim().to_string();
+            Ok(if conn.is_empty() { None } else { Some(conn) })
+        }
+        // ABSENT is "no opinion" (fall through); any OTHER IO error is a present-but-unreadable
+        // secret file and surfaces LOUDLY - never the silent wrong-store fallback of the old `.ok()`.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("read store connection file: {e}").into()),
+    }
 }
 
 /// The `.rigger` directory whose committed config (`workflow.yml`) and per-machine secret file
@@ -397,17 +412,24 @@ fn resolve_conn(
     env_conn: Option<&str>,
     rigger_dir: &Path,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    flag_conn
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .or_else(|| env_conn.filter(|s| !s.is_empty()).map(str::to_string))
-        .or_else(|| store_conn_file(rigger_dir))
-        .ok_or_else(|| {
-            "the server event store is selected but no connection string is set - provide one via \
-             --conn <url>, the KURRENTDB_CONN environment variable, or the .rigger/store.conn \
-             secret file"
-                .into()
-        })
+    if let Some(conn) = flag_conn.filter(|s| !s.is_empty()) {
+        return Ok(conn.to_string());
+    }
+    if let Some(conn) = env_conn.filter(|s| !s.is_empty()) {
+        return Ok(conn.to_string());
+    }
+    // The secret file, distinguishing absent (fall through to the error below) from
+    // present-but-unreadable (a LOUD read error, propagated with `?` - never swallowed into the
+    // "no connection string" case, which would misdiagnose an unreadable file as a missing one).
+    if let Some(conn) = store_conn_file(rigger_dir)? {
+        return Ok(conn);
+    }
+    Err(
+        "the server event store is selected but no connection string is set - provide one via \
+         --conn <url>, the KURRENTDB_CONN environment variable, or the .rigger/store.conn \
+         secret file"
+            .into(),
+    )
 }
 
 /// Resolve WHICH event-log backend a command uses (§48, "one resolution authority") - the PURE
@@ -465,8 +487,10 @@ fn store_selection_at(
         return Ok(StoreSelection::Server(conn.to_string()));
     }
     // 3. the per-machine gitignored secret file: a developer box that pins the shared server
-    //    without exporting the env var every shell.
-    if let Some(conn) = store_conn_file(rigger_dir) {
+    //    without exporting the env var every shell. An absent file is "no opinion" (fall through);
+    //    a present-but-unreadable one surfaces LOUDLY here (`?`), never a silent drop to the sqlite
+    //    default that would fracture a server-pinned run's store (d-u2-conn-file-unreadable-loud).
+    if let Some(conn) = store_conn_file(rigger_dir)? {
         return Ok(StoreSelection::Server(conn));
     }
     // 4. the committed project config: the CHOICE the team pins in the repo. Its optional
