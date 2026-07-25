@@ -34,7 +34,7 @@
 //!    explicit reindex was missed - and on an unchanged tree `freshen` is a cheap
 //!    hash-walk no-op (no embedding, no persist).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::OpenOptionsExt;
@@ -1395,16 +1395,27 @@ impl Grounder for Turbovec {
             // clobber that write. Reloading folds it in so only THIS reindex's named files
             // change and every other on-disk chunk survives.
             self.reload_persisted_locked(&mut state)?;
+            // De-duplicate the named files up front, preserving first-occurrence order, so a
+            // file named twice is dropped, re-embedded, and installed EXACTLY ONCE. The drop
+            // below is idempotent (a second drop of the same rel is a no-op), but
+            // `index_files` is NOT: two `(rel, content)` entries would install `rel` twice
+            // with NO drop between the two installs, and the second install overwrites
+            // `meta.files[rel]` with its own fresh id-run - ORPHANING the first run's vectors
+            // (they stay in the index AND in `meta.refs`, but no `FileEntry.ids` lists them,
+            // so `drop_file` can never reclaim them) and inflating `next_id`. `index_files`'
+            // contract is that each rel's prior chunks are already dropped by the caller, so a
+            // duplicated rel violates it; deduping HERE keeps the ingest OUTPUT byte-identical
+            // to naming the file once.
+            let mut seen = HashSet::new();
+            let files: Vec<&String> = files.iter().filter(|f| seen.insert(f.as_str())).collect();
             // Drop every named file's old chunks FIRST (so a changed file's stale vectors
             // are gone and a deleted file stays gone), then collect the ones still on disk
-            // and re-embed them ALL in one batched pass. A file named twice is de-duplicated
-            // by the drop (its second drop is a no-op) and only its final content is
-            // embedded, so no named file is double-embedded.
-            for f in files {
+            // and re-embed them ALL in one batched pass.
+            for &f in &files {
                 drop_file(&mut state, f);
             }
             let mut to_index: Vec<(String, String)> = Vec::new();
-            for f in files {
+            for &f in &files {
                 let path = Path::new(src_dir).join(f);
                 // The file still exists: queue its current content for a re-embed under new
                 // ids. If it was deleted (or is unreadable), its chunks were already dropped
@@ -2140,6 +2151,227 @@ mod tests {
             file_ids(&tv, "combat.rs"),
             combat_ids_before,
             "the unchanged file must NOT be re-embedded - its chunk ids are preserved"
+        );
+    }
+
+    /// (5) DUPLICATE-ARG REINDEX is idempotent: naming the SAME file twice in ONE
+    /// `reindex` call embeds and installs it EXACTLY ONCE. A repeated arg must never
+    /// leave an ORPHAN vector (a `meta.refs` id no `FileEntry` claims - the class of
+    /// corruption a drop-all-then-install-all pass invites, since the drop is idempotent
+    /// but the install is not), never inflate `next_id`, and never surface the file
+    /// twice in a search. The ingest OUTPUT is a pure function of the tree, not of how
+    /// many times the file was named.
+    #[test]
+    fn reindex_duplicate_arg_installs_the_file_exactly_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        // A distinctive term so a search can look for exactly this file's content.
+        std::fs::write(
+            dir.path().join("dup.rs"),
+            "fn teleport_across_the_void() {}\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("other.rs"), "fn draw_the_hud() {}\n").unwrap();
+
+        let (e, _inv, _txt) = counting_embedder("model-v1");
+        let tv = Turbovec::from_embedder(root, e, OnDrift::Freshen).unwrap();
+
+        // dup.rs is a single-chunk file; capture its chunk count and next_id right before
+        // the duplicated reindex so we can prove the second mention added NOTHING.
+        let dup_chunks = file_ids(&tv, "dup.rs").len() as u64;
+        assert_eq!(dup_chunks, 1, "the fixture file must be exactly one chunk");
+        let next_id_before = next_id(&tv);
+
+        // Name dup.rs TWICE in one reindex. Under the pre-fix drop-all-then-install-all
+        // path this dropped it once but installed it twice with no drop between the
+        // installs, orphaning the first install's ids and doubling next_id's advance.
+        tv.reindex(root, &["dup.rs".to_string(), "dup.rs".to_string()]);
+
+        // (a) NO ORPHAN REFS: every id in `meta.refs` is claimed by exactly one
+        // `FileEntry`, and the index / refs / claimed-id cardinalities all agree. The
+        // orphan check is the decisive one - the pre-fix store passed the weaker
+        // index.len() == refs.len() check because the orphans sat in BOTH.
+        {
+            let state = tv.state.lock().unwrap();
+            let mut claimed: Vec<u64> = state
+                .meta
+                .files
+                .values()
+                .flat_map(|entry| entry.ids.iter().copied())
+                .collect();
+            let claimed_set: HashSet<u64> = claimed.iter().copied().collect();
+            for &id in state.meta.refs.keys() {
+                assert!(
+                    claimed_set.contains(&id),
+                    "meta.ref id {id} is ORPHANED - claimed by no FileEntry (double-install leak)"
+                );
+            }
+            // No id is claimed by two files (the duplicated install would have listed the
+            // same rel's ids twice were the entry not overwritten wholesale).
+            claimed.sort_unstable();
+            let claimed_len = claimed.len();
+            claimed.dedup();
+            assert_eq!(
+                claimed_len,
+                claimed.len(),
+                "an id is claimed by more than one FileEntry"
+            );
+            // Every vector has a ref and every ref is a claimed vector - no stranding.
+            assert_eq!(
+                state.index.len(),
+                state.meta.refs.len(),
+                "index vector count and ref count diverged"
+            );
+            assert_eq!(
+                state.meta.refs.len(),
+                claimed.len(),
+                "a ref exists that no FileEntry claims"
+            );
+        }
+
+        // (b) next_id ADVANCED BY ONE FILE, NOT TWO: the reindex dropped dup.rs and
+        // re-added it once, so the id high-water mark rose by exactly its chunk count.
+        assert_eq!(
+            next_id(&tv),
+            next_id_before + dup_chunks,
+            "the duplicated arg inflated next_id - the file was installed more than once"
+        );
+        // dup.rs still owns exactly its chunk count of ids (one live install).
+        assert_eq!(
+            file_ids(&tv, "dup.rs").len() as u64,
+            dup_chunks,
+            "dup.rs must own exactly one install's worth of ids"
+        );
+
+        // (c) NO DUPLICATE SEARCH HITS: grounding for dup.rs's exact content returns it
+        // at most once. With an orphan vector (identical content -> identical embedding)
+        // the pre-fix store would surface dup.rs twice among the top hits.
+        let hits = tv.ground("fn teleport_across_the_void() {}", 5);
+        let dup_hits = hits.iter().filter(|r| r.file == "dup.rs").count();
+        assert!(
+            dup_hits <= 1,
+            "dup.rs surfaced {dup_hits} times - a duplicate/orphan vector is in the index"
+        );
+    }
+
+    /// (6) BATCH-BOUNDARY DETERMINISM: a set of MORE than `EMBED_BATCH_SIZE` chunks
+    /// routed through `index_files` (a) fires MORE THAN ONE model invocation - the
+    /// pending group flushes at the batch width AND again for the tail, so the
+    /// accelerator is fed across a real flush boundary, not in one oversized call - and
+    /// (b) assigns every file's chunk ids BYTE-IDENTICALLY to a serial per-file walk
+    /// (installing one file at a time). This proves `flush_group`'s `start..end` slice
+    /// arithmetic is correct ACROSS multiple groups, including for multi-chunk files at a
+    /// group's edge: batching changes the invocation CADENCE, never the index CONTENT or
+    /// the id ORDER.
+    #[test]
+    fn index_files_batches_across_the_flush_boundary_with_serial_identical_ids() {
+        // Content producing EXACTLY `chunks` chunks: (chunks-1)*CHUNK_LINES + 1 non-blank
+        // lines span that many 40-line slices, each uniquely named so none trims empty.
+        fn content_with_chunks(tag: &str, chunks: usize) -> String {
+            let n = (chunks - 1) * CHUNK_LINES + 1;
+            (0..n).map(|j| format!("fn {tag}_{j}() {{}}\n")).collect()
+        }
+
+        // A mixed set whose FIRST group fills to EXACTLY the batch width (32) so its flush
+        // is one clean invocation, then a tail group of 8. Multi-chunk files sit at the
+        // group's trailing edge (f30, width 2) and the next group's leading edge (f31,
+        // width 3), so the `start..end` slicing is exercised with width > 1 in BOTH groups
+        // and across the boundary. Total: 30 + 2 + 3 + 5 = 40 chunks in 37 files.
+        let mut files: Vec<(String, String)> = Vec::new();
+        for i in 0..30 {
+            files.push((
+                format!("f{i:02}.rs"),
+                content_with_chunks(&format!("a{i}"), 1),
+            ));
+        }
+        files.push(("f30.rs".to_string(), content_with_chunks("b", 2)));
+        files.push(("f31.rs".to_string(), content_with_chunks("c", 3)));
+        for i in 32..37 {
+            files.push((
+                format!("f{i:02}.rs"),
+                content_with_chunks(&format!("d{i}"), 1),
+            ));
+        }
+        let total_chunks: usize = 40;
+        assert!(
+            total_chunks > EMBED_BATCH_SIZE,
+            "the set must exceed one batch to force a flush boundary"
+        );
+
+        // BATCHED path: one empty store, install the whole set through `index_files` in
+        // one call, counting model invocations.
+        let empty_a = tempfile::tempdir().unwrap();
+        let (eb, inv_b, _txt_b) = counting_embedder("model-v1");
+        let batched =
+            Turbovec::from_embedder(empty_a.path().to_str().unwrap(), eb, OnDrift::Freshen)
+                .unwrap();
+        inv_b.store(0, std::sync::atomic::Ordering::Relaxed);
+        {
+            let mut state = batched.state.lock().unwrap();
+            batched.index_files(&mut state, &files).unwrap();
+        }
+
+        // (a) The flush boundary was crossed: the group flushed at width 32 (one
+        // invocation) and the 8-chunk tail flushed once more - exactly two invocations.
+        // Since every flushed group is <= the batch width, invocation count equals the
+        // number of `flush_group` calls, so 2 proves TWO groups were embedded (a single
+        // oversized call would be one group; a per-file loop would be 37).
+        let invocations = load(&inv_b);
+        assert!(
+            invocations > 1,
+            "a >batch-width set must fire more than one model invocation (was {invocations})"
+        );
+        assert_eq!(
+            invocations, 2,
+            "the set must embed as two batched groups (width-32 flush + 8-chunk tail), \
+             not one oversized call and not one call per file (was {invocations})"
+        );
+
+        // SERIAL path: a second empty store, install the SAME files ONE AT A TIME (each a
+        // single-file batch) in the SAME order - the per-file walk the ids must match.
+        let empty_b = tempfile::tempdir().unwrap();
+        let (es, _inv_s, _txt_s) = counting_embedder("model-v1");
+        let serial =
+            Turbovec::from_embedder(empty_b.path().to_str().unwrap(), es, OnDrift::Freshen)
+                .unwrap();
+        {
+            let mut state = serial.state.lock().unwrap();
+            for (rel, content) in &files {
+                serial.index_file_content(&mut state, rel, content).unwrap();
+            }
+        }
+
+        // (b) BYTE-IDENTICAL id assignment: every file owns the SAME ids under the batched
+        // walk as under the serial walk, next_id lands at the same high-water mark, and
+        // the index holds the same vector count. Batching moved the cadence, not a byte.
+        let ids_of = |tv: &Turbovec| -> std::collections::BTreeMap<String, Vec<u64>> {
+            let state = tv.state.lock().unwrap();
+            state
+                .meta
+                .files
+                .iter()
+                .map(|(rel, entry)| (rel.clone(), entry.ids.clone()))
+                .collect()
+        };
+        assert_eq!(
+            ids_of(&batched),
+            ids_of(&serial),
+            "batched id assignment diverged from the serial per-file walk"
+        );
+        assert_eq!(
+            next_id(&batched),
+            next_id(&serial),
+            "batched next_id diverged from the serial walk"
+        );
+        assert_eq!(
+            next_id(&batched),
+            total_chunks as u64,
+            "next_id must equal the total chunk count (0..40)"
+        );
+        assert_eq!(
+            batched.state.lock().unwrap().index.len(),
+            serial.state.lock().unwrap().index.len(),
+            "batched index vector count diverged from the serial walk"
         );
     }
 
