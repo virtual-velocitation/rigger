@@ -6153,6 +6153,94 @@ fn validate_residue_scan_resolves_the_configured_server_not_the_local_sqlite_run
     );
 }
 
+/// Spec 48 "one resolution authority" loud-selection + spec 19c loud-failure-surfacing, applied to
+/// the `rigger validate` residue scan on the different-user / permission edge §48 explicitly
+/// contemplates: an unreadable `.rigger/store.conn` (a server-pinning box whose per-machine secret
+/// file the invoking user cannot read) makes the ONE store-selection authority return an ERROR, not
+/// a selection. The residue scan reads the CURRENT run's live-unit set THROUGH that authority
+/// (`read_run_units`), so a genuine selection FAILURE off a PRESENT source must SURFACE loudly - it
+/// must NOT silently degrade to the local sqlite default, which (finding zero live units) would
+/// misreport every LIVE `rigger-wt-*` worktree and `rigger/u/*` branch as removable residue: a
+/// destructive misdiagnosis on the exact edge §48 guards and `store_conn_file`'s own doc calls out.
+///
+/// This drives the OBSERVER path (`rigger validate`) end to end - the coverage the courier `?`-path
+/// SDET periphery tests never reach - and DISCRIMINATES the fix from the silent-degrade regression:
+///
+///   * a regression that keeps `store_selection(None, None).unwrap_or(StoreSelection::Sqlite)` reads
+///     the empty local sqlite, sees zero live units, FLAGS the on-disk `rigger-wt-liveunit` /
+///     `rigger/u/liveunit` as residue, and exits 0 with no store-connection error - silent
+///     wrong-store, the exact class `adj-u2r-precedence-reject` gated on the courier path;
+///   * the fix propagates the selection error, so validate FAILS loudly naming the store-connection
+///     read failure and never emits the false residue advisory.
+///
+/// The unreadable file is a DIRECTORY where `store.conn` goes (an IO error distinct from NotFound),
+/// mirroring the SDET periphery's portable sentinel - more portable than `chmod 000`, which a test
+/// running as root would bypass (root reads any file), silently defeating the guard under test.
+#[test]
+fn validate_residue_scan_surfaces_an_unreadable_store_conn_never_misreporting_live_worktrees() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    git_ok(root, &["add", "-A"]);
+    git_ok(root, &["commit", "-q", "-m", "scaffold"]);
+    // An empty LOCAL sqlite store: the store a silent degrade would wrongly read (zero live units),
+    // so the regression path FLAGS the live leftovers below as residue.
+    seed_store(root);
+
+    // A LIVE unit's on-disk leftovers: its deterministic scratch worktree and its `rigger/u/*`
+    // branch. On a server-pinned box these are LIVE (the run lives on the server the unreadable
+    // secret file names); they must never be misreported as removable residue because the scan
+    // silently fell back to an empty local store.
+    let scratch = root.join("scratchroot");
+    let tmp = scratch.to_str().unwrap();
+    std::fs::create_dir_all(scratch.join("rigger-wt-liveunit")).unwrap();
+    std::fs::write(
+        scratch.join("rigger-wt-liveunit").join("payload.bin"),
+        [0u8; 4096],
+    )
+    .unwrap();
+    git_ok(root, &["branch", "rigger/u/liveunit"]);
+
+    // Make `.rigger/store.conn` PRESENT but UNREADABLE (a directory where the file goes): the
+    // per-machine secret file this user cannot read. The store-selection authority now returns an
+    // ERROR at the secret-file rung, not a selection - with no `--eventstore`, no `--conn`, and no
+    // `KURRENTDB_CONN`, this rung is the one that decides.
+    std::fs::create_dir(root.join(".rigger").join("store.conn"))
+        .expect("place a directory where store.conn goes");
+
+    let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("RIGGER_TMPDIR", tmp)]);
+
+    // 1. The selection error SURFACES: validate FAILS loudly (not the silent exit-0 degrade), and
+    //    names the store-connection read failure - the loud-failure contract (spec 19c).
+    assert!(
+        !ok,
+        "an unreadable store.conn must make validate's residue scan FAIL loudly, never silently \
+         degrade to the local sqlite default; stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert!(
+        err.contains("store connection file"),
+        "the failure must name the store-connection-file read error, proving the residue scan \
+         surfaced the selection error rather than swallowing it into a wrong-store read; \
+         stderr:\n{err}"
+    );
+
+    // 2. It NEVER misreports the LIVE unit's worktree/branch as residue: having aborted on the
+    //    unreadable source, it must not have scanned an empty local store and flagged the live
+    //    leftovers as removable - the destructive misdiagnosis this guards.
+    assert!(
+        !err.contains("rigger-wt-liveunit"),
+        "a live worktree must NOT be flagged as residue off a silently-degraded empty local store; \
+         stderr:\n{err}"
+    );
+    assert!(
+        !err.contains("rigger/u/liveunit"),
+        "a live branch must NOT be flagged as residue off a silently-degraded empty local store; \
+         stderr:\n{err}"
+    );
+}
+
 /// Spec 05 done-when line 57, clause 2: the empty-repo scaffold path must print a
 /// pointer to the agency-agents collection AND the authoring-agents handbook chapter,
 /// and that pointer must appear ONLY when the default fleet is actually scaffolded -

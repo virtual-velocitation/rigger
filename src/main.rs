@@ -4428,7 +4428,14 @@ fn dash_read_run(
     events_db: &str,
     identity: &str,
 ) -> Result<Vec<Event>, Box<dyn std::error::Error>> {
-    let sel = store_selection(None, None).unwrap_or(StoreSelection::Sqlite);
+    // Resolve WHICH backend through the one authority, and SURFACE a genuine selection failure
+    // (an unreadable `.rigger/store.conn`, an unreadable/malformed `workflow.yml`, an invalid
+    // `store.backend`) with `?` - matching every other real-run-stream read (`canary_stats_lines`,
+    // `read_model_drift`, `read_run_units`). Swallowing it into a silent local-sqlite default would
+    // read the WRONG store on a server-pinned box whose secret file this user cannot read (the
+    // different-user / permission edge §48 contemplates), so the dashboard read reports an empty run
+    // against a live server (d-u2rr-observer-selection-loud, spec-19c loud-failure-surfacing).
+    let sel = store_selection(None, None)?;
     if sel.is_sqlite() && !Path::new(events_db).exists() {
         return Ok(Vec::new());
     }
@@ -5530,7 +5537,12 @@ fn cmd_validate(args: &[String]) -> Res {
     // orphaned build caches, shadow stores, and dead `rigger/u/*` branches - with sizes -
     // so residue is seen before a disk fills. Warnings only; validate NEVER fails or
     // deletes anything (cleanup stays with the step-start sweep).
-    for advisory in residue_advisories(root, &cfg) {
+    // A genuine store-SELECTION failure here (unreadable `.rigger/store.conn`, malformed
+    // `workflow.yml`, invalid `store.backend`) SURFACES loudly - `?` fails validate - rather than
+    // degrading to a wrong-store read that would misreport live worktrees/branches as residue
+    // (d-u2rr-observer-selection-loud). The residue FINDINGS themselves stay warning-only below;
+    // this only makes an inability to even resolve the run store loud, never silent.
+    for advisory in residue_advisories(root, &cfg)? {
         eprintln!("{advisory}");
     }
     // Model-drift advisory (spec 13b, unit 1): warn when a tier's resolved model id
@@ -5812,7 +5824,10 @@ impl ResidueReport {
 /// [`scan_residue`]. Anchored at `root`'s owning store so the scanned scratch root is the
 /// SAME `<repo>/.rigger/tmp` the run uses; the path is resolved WITHOUT creating it, so
 /// validate stays read-only.
-fn residue_advisories(root: &Path, cfg: &config::Config) -> Vec<String> {
+fn residue_advisories(
+    root: &Path,
+    cfg: &config::Config,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| root.to_path_buf());
     // The repo whose `<repo>/.rigger/tmp` the run uses: the store's OWNING root when a
     // store exists (walking up as the couriers do), else the cwd's git top-level, else the
@@ -5832,7 +5847,13 @@ fn residue_advisories(root: &Path, cfg: &config::Config) -> Vec<String> {
         &repo,
         &cfg.workflow.defaults.workdir,
     ));
-    let run_units = read_run_units(&cwd);
+    // A genuine store-SELECTION failure (unreadable secret file / malformed config / invalid
+    // backend) SURFACES here rather than silently reading the wrong store - which, folding zero live
+    // units, would misreport every LIVE `rigger/u/*` worktree/branch as removable residue
+    // (d-u2rr-observer-selection-loud). The benign no-run/no-store and store-access-miss cases still
+    // yield an empty live set inside `read_run_units`, so an unconfigured or never-run project scans
+    // cleanly.
+    let run_units = read_run_units(&cwd)?;
     let slugs = live_slugs(&run_units.live_branches);
     let local_branches = local_unit_branches(&cwd);
     let report = scan_residue(
@@ -5849,7 +5870,7 @@ fn residue_advisories(root: &Path, cfg: &config::Config) -> Vec<String> {
     // scan - so a process left holding a now-deleted (or soon-to-be-removed) scratch dir is
     // visible even when no teardown is running.
     advisories.extend(leaked_process_advisories(&scratch));
-    advisories
+    Ok(advisories)
 }
 
 /// The warning-only `rigger validate` advisories (spec 23, unit 2) naming every process still
@@ -5891,11 +5912,21 @@ fn leaked_process_advisories(scratch_root: &Path) -> Vec<String> {
 /// server backend reads the SERVER's run (spec 48 criterion 1, "a command invoked in a project
 /// configured for the server-backed store resolves that store"), never a stale local sqlite
 /// file. It is NOT local-by-construction like the isolated replay store, so it must not pin
-/// [`StoreSelection::Sqlite`]. Resolution is best-effort - a selection error (only the
-/// server-selected-without-conn case) degrades to sqlite, preserving this scan's contract of
-/// defaulting to "no live units" on any store trouble.
-fn read_run_units(cwd: &Path) -> RunUnits {
-    let sel = store_selection(None, None).unwrap_or(StoreSelection::Sqlite);
+/// [`StoreSelection::Sqlite`].
+///
+/// A genuine selection FAILURE off a PRESENT source - an unreadable `.rigger/store.conn`, an
+/// unreadable/malformed `workflow.yml`, an invalid `store.backend`, or the server selected with no
+/// resolvable connection string - SURFACES as an `Err` here (propagated with `?`), never a silent
+/// degrade to the local sqlite default: reading the wrong (empty local) store would fold zero live
+/// units and misreport every LIVE `rigger/u/<slug>` worktree/branch as residue (via
+/// [`residue_advisories`], spec 06 line 60) - the exact silent-wrong-store fracture spec 48's one
+/// resolution authority and spec 19c's loud-failure-surfacing forbid (d-u2rr-observer-selection-loud).
+/// Only the BENIGN "no run ever happened / nothing selected" cases degrade to `Ok(RunUnits::default())`
+/// (no live units): a sqlite selection whose local store was never created, and a store that resolves
+/// but cannot be opened or read (e.g. an unreachable configured server) - a store-ACCESS miss, distinct
+/// from a selection FAILURE.
+fn read_run_units(cwd: &Path) -> Result<RunUnits, Box<dyn std::error::Error>> {
+    let sel = store_selection(None, None)?;
     // Resolve the store's OWNING root and identity. For sqlite the durable log is a LOCAL file,
     // so walk UP to it (as the couriers do); its absence means no run ever happened => no live
     // units. For the server backend there is no local `events.db` to walk to, so resolve through
@@ -5904,19 +5935,23 @@ fn read_run_units(cwd: &Path) -> RunUnits {
     // letting [`resolve_store`] reach the server.
     let loc = if sel.is_sqlite() {
         let Some(dir) = find_store_dir_from(cwd) else {
-            return RunUnits::default();
+            return Ok(RunUnits::default());
         };
         StoreLocation { dir }
     } else {
         server_store_location(cwd)
     };
+    // A store-ACCESS miss (an unreachable configured server, a corrupt local log) degrades to no
+    // live units - best-effort, distinct from the selection FAILURE surfaced above: the store WAS
+    // resolved, it just cannot be reached, so the residue scan stays warning-only rather than
+    // failing validate on a transient outage.
     let Ok(backend) = resolve_store(&sel, &loc.file("events.db")) else {
-        return RunUnits::default();
+        return Ok(RunUnits::default());
     };
     let store = Namespaced::new(backend.as_ref(), &loc.identity());
     match store.read_stream(conductor::STREAM, 0, Direction::Forward) {
-        Ok(events) => current_run_units(&events),
-        Err(_) => RunUnits::default(),
+        Ok(events) => Ok(current_run_units(&events)),
+        Err(_) => Ok(RunUnits::default()),
     }
 }
 
