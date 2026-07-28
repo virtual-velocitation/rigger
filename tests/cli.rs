@@ -3268,6 +3268,91 @@ fn run_registers_a_credential_free_shared_instance() {
     }
 }
 
+/// Spec 50, criterion 2 on the THIRD registration path - the in-process SERVED conductor
+/// (`rigger serve` / `rigger run --driver workflow`, i.e. `run_workflow`) - plus the SECRETS
+/// invariant on its Server arm. `run_workflow` drives the whole run in-process on a background
+/// thread while it serves the MCP bridge, so - exactly like `run_cli` and unlike the stepwise
+/// loop - it must register its instance at its OWN call site. That call site is DISTINCT from the
+/// two the sibling tests cover (`cmd_step`, `run_cli`): a regression that dropped
+/// `register_run_instance` from `run_workflow` alone (keeping it in `run_cli`) stays green in
+/// `run_registers_a_credential_free_shared_instance` yet finds ZERO entries here. This closes the
+/// "wire ALL THREE paths" seam, the last of which no other test drives.
+///
+/// Drives `rigger run --driver workflow` against a well-formed but UNREACHABLE server URL whose
+/// userinfo AND query hide a credential. `run_workflow` registers BEFORE it opens the store, so the
+/// registration side effect fires and THEN the eager connect is refused fast (nothing listens on
+/// this loopback port) - the run returns the store-open error before ever reaching its MCP serve
+/// loop, so the invocation terminates without a live server. The registry is redirected into a temp
+/// `XDG_STATE_HOME` and read back through the dash's own reader: exactly one Shared entry, its
+/// endpoint the bare `scheme://host:port`, with NO credential fragment anywhere on disk.
+#[test]
+fn run_driver_workflow_registers_a_credential_free_shared_instance() {
+    use rigger::registry;
+
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+
+    // Redirect the machine-global state dir into a temp home (never the operator's ~/.local/state).
+    let state = tempfile::tempdir().unwrap();
+    let xdg = state.path().to_str().unwrap();
+
+    // A credential in the userinfo, plus a query, on an unreachable loopback port so the eager
+    // connect is refused fast. A distinct port from the sibling test's, purely for readability
+    // (both merely connect to a dead port, so they could never collide).
+    let conn = "kurrentdb://admin:hunter2@127.0.0.1:65532?tls=false";
+    let (_out, err, ok) = run_rigger_envs(
+        root,
+        &[
+            "run", "--driver", "workflow", "--base", "HEAD", "--conn", conn,
+        ],
+        &[("XDG_STATE_HOME", xdg)],
+    );
+    // The served path fails at store-open (the server is unreachable) - expected. The assertion is
+    // on the registration side effect that fired BEFORE that failure, and on stderr never leaking
+    // the credential (the store-open error redacts the conn through the same single authority).
+    assert!(
+        !ok,
+        "the unreachable server makes the served run fail at store-open (expected); stderr: {err}"
+    );
+    assert!(
+        !err.contains("admin") && !err.contains("hunter2"),
+        "the store-open error must redact the credential, never echo it; stderr: {err}"
+    );
+
+    // The dash's own reader returns exactly this instance (a fresh heartbeat, so nothing prunes).
+    let regdir = registry::instances_dir(state.path());
+    let live = registry::read_live(&regdir, registry::now_ms(), registry::DEFAULT_IDLE_MS);
+    assert_eq!(
+        live.len(),
+        1,
+        "the served path (`rigger run --driver workflow`) registers its instance too, at its own \
+         call site distinct from `rigger step` and plain `rigger run`; got {live:?}"
+    );
+    let inst = &live[0];
+    assert!(inst.heartbeat_ms > 0, "a live heartbeat is stamped");
+
+    // The Server arm persisted the CREDENTIAL-FREE endpoint: scheme + host:port only, no userinfo,
+    // no query - the single redaction authority (`eventstore::endpoint_label`) ran over the conn.
+    match &inst.store {
+        registry::StoreIdentity::Shared { endpoint } => assert_eq!(
+            endpoint, "kurrentdb://127.0.0.1:65532",
+            "the shared store identity is the bare scheme://host:port"
+        ),
+        other => panic!("a --conn served run registers a Shared store identity; got {other:?}"),
+    }
+
+    // The secrets invariant, end to end: NO credential or query fragment reaches the on-disk entry.
+    let entry = regdir.join(format!("{}.json", inst.id()));
+    let body = std::fs::read_to_string(&entry).unwrap();
+    for secret in ["admin", "hunter2", "tls=false"] {
+        assert!(
+            !body.contains(secret),
+            "no credential/query fragment ({secret:?}) may reach the registry entry; got {body}"
+        );
+    }
+}
+
 /// A single-unit workflow whose ONLY gate always FAILS (`bad: false`) with a remediation
 /// bound of ONE (`defaults.max_retries: 1`), so the unit ESCALATES on its first failed gate
 /// (`safety::remediate(0, 1)` escalates immediately). Repo-less and offline: the `nop`
