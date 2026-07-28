@@ -50,6 +50,18 @@ const DASH_MARKER_FILE: &str = "dash.marker";
 /// `rigger step` never spawns a real dashboard process.
 const DASH_DISABLE_ENV: &str = "RIGGER_NO_DASH";
 
+/// Env override for the PORT the step-path always-on dashboard binds. Absent (the production
+/// default) resolves to [`dash::DEFAULT_PORT`] with NO free-port search, so the singleton's
+/// stable fixed-address contract (spec 50, criterion 4) is unchanged. It exists for the case the
+/// fixed address otherwise makes untestable and unusable: a machine where a rigger dash already
+/// holds the default (the self-hosting dev box always does) or a non-rigger process owns 7420 -
+/// there the ensure path needs the same port seam the manual `rigger dash --port` already has.
+/// The crate's own step-path dash integration tests set it to an ephemeral loopback port so they
+/// exercise the ensure path WITHOUT fighting a real machine dash on the fixed default, exactly as
+/// the direct-`rigger dash` singleton test injects `free_loopback_port`. A malformed value falls
+/// back to the default (a bad knob never breaks a run's observability).
+const DASH_PORT_ENV: &str = "RIGGER_DASH_PORT";
+
 /// Env override (milliseconds) for the self-reap watcher's poll interval (spec 39, criterion 3),
 /// and its production default. The crate's own integration test sets the env small so the
 /// detached dash's self-reap is observable within the test, without changing the shipped cadence.
@@ -4282,7 +4294,15 @@ fn spawn_run_dashboard_detached() -> std::io::Result<dash::DashMarker> {
     // search, so the address never drifts. If a dash is already serving it, the spawned `rigger
     // dash` recognizes the singleton and exits 0 without binding a second (criterion 1's
     // `bind_singleton`), so this is safe even when a concurrent run races to start one.
-    let port = dash::DEFAULT_PORT;
+    //
+    // The default is overridable via [`DASH_PORT_ENV`] for exactly the case the fixed address
+    // otherwise makes untestable and unusable: a machine where a rigger dash already holds the
+    // default (the self-hosting dev box always does), or where a non-rigger process owns 7420.
+    // Unset (the production default) resolves to [`dash::DEFAULT_PORT`] with NO free-port search,
+    // so the singleton's stable-address contract is unchanged; the ensure path just gains the same
+    // port seam the manual `rigger dash --port` already has, which lets the step-path dash tests
+    // inject an ephemeral port and never fight a real machine dash.
+    let port = dash_ensure_port();
     let exe = std::env::current_exe()?;
     let mut cmd = Command::new(exe);
     cmd.arg("dash")
@@ -4318,6 +4338,24 @@ fn spawn_run_dashboard_detached() -> std::io::Result<dash::DashMarker> {
 /// `config_dash_enabled` from the already-loaded workflow.
 fn dash_ensure_suppressed(env_disabled: bool, config_dash_enabled: bool) -> bool {
     env_disabled || !config_dash_enabled
+}
+
+/// The port the step-path always-on dashboard binds: [`DASH_PORT_ENV`] when set to a valid
+/// `u16`, else [`dash::DEFAULT_PORT`]. The real caller resolves the raw value from the process
+/// environment; the resolution itself is [`dash_ensure_port_from`], pure over that resolved input
+/// so both the override and the fixed-default fallback are provable without mutating the process
+/// environment (the same "pure over resolved inputs" discipline as [`dash_ensure_suppressed`]).
+fn dash_ensure_port() -> u16 {
+    dash_ensure_port_from(std::env::var(DASH_PORT_ENV).ok().as_deref())
+}
+
+/// Resolve the step-path ensure port from an already-read [`DASH_PORT_ENV`] value: a valid `u16`
+/// overrides, anything else (absent, empty, or malformed) falls back to [`dash::DEFAULT_PORT`] -
+/// so production (env unset) gets the fixed default with no free-port search, and a bad knob never
+/// breaks a run's observability.
+fn dash_ensure_port_from(raw: Option<&str>) -> u16 {
+    raw.and_then(|v| v.trim().parse().ok())
+        .unwrap_or(dash::DEFAULT_PORT)
 }
 
 /// Ensure the machine-level SINGLETON dashboard is up for the step drive path (spec 39,
@@ -8511,6 +8549,42 @@ mod tests {
             dash_ensure_suppressed(true, false),
             "both opt-outs set stays suppressed"
         );
+    }
+
+    /// Spec 50, criterion 4 (stable fixed address): the step-path ensure port resolves to the
+    /// FIXED [`dash::DEFAULT_PORT`] when the override env is unset - production's no-free-port-search
+    /// singleton contract - and only a VALID `u16` override relocates it; an empty or malformed
+    /// value degrades to the default so a bad knob never breaks a run's observability. Pure over the
+    /// already-read env value so both branches are provable without mutating the process
+    /// environment (the same discipline as `dash_ensure_suppressed`).
+    #[test]
+    fn dash_ensure_port_defaults_to_the_fixed_address_and_only_a_valid_override_relocates_it() {
+        // Unset: the fixed default, with no free-port search - the production singleton address.
+        assert_eq!(
+            dash_ensure_port_from(None),
+            dash::DEFAULT_PORT,
+            "an unset override binds the fixed DEFAULT_PORT (the stable singleton address)"
+        );
+        // A valid u16 relocates it (the seam the step-path dash tests use to inject an ephemeral
+        // port and never fight a real machine dash on the fixed default).
+        assert_eq!(
+            dash_ensure_port_from(Some("54321")),
+            54321,
+            "a valid u16 override relocates the ensure port"
+        );
+        assert_eq!(
+            dash_ensure_port_from(Some("  8080  ")),
+            8080,
+            "surrounding whitespace is trimmed before parsing"
+        );
+        // Absent-shaped or malformed values degrade to the default, never a panic or a break.
+        for bad in ["", "   ", "not-a-port", "70000", "-1", "80.5"] {
+            assert_eq!(
+                dash_ensure_port_from(Some(bad)),
+                dash::DEFAULT_PORT,
+                "a malformed override ({bad:?}) falls back to the fixed default"
+            );
+        }
     }
 
     /// spec 24, crit 1: `compose_precommit` is the PURE, filesystem-free composer for the

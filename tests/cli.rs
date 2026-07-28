@@ -9807,9 +9807,17 @@ fn reap_pid(pid: u32) {
 
 /// Run `rigger step` in `root` with the always-on step dash ENABLED - the RIGGER_NO_DASH
 /// opt-out explicitly REMOVED from the environment (so an ambient opt-out in CI cannot mask the
-/// behavior under test) - returning (stdout, stderr). Used only by the spec-39 idempotent-start
-/// test, which reaps any dash it starts.
-fn run_step_dash_enabled(root: &Path) -> (String, String) {
+/// behavior under test) - returning (stdout, stderr). Used by the spec-39/50 step-path dash
+/// tests, which reap any dash they start.
+///
+/// The dash's ensure port is pinned to `dash_port` via `RIGGER_DASH_PORT` (the same seam the
+/// production singleton resolves through, defaulting to `dash::DEFAULT_PORT`). Passing an ephemeral
+/// `free_loopback_port` here is what keeps these tests HERMETIC: they exercise the real ensure path
+/// WITHOUT binding the machine-fixed default, so they never fight a genuine always-on dash already
+/// serving 7420 on the self-hosting box - exactly as the direct-`rigger dash` singleton test injects
+/// an ephemeral port. Two calls with the SAME `dash_port` model the same run's successive steps
+/// (they must find the one dash the first step started); distinct ports model independent runs.
+fn run_step_dash_enabled(root: &Path, dash_port: u16) -> (String, String) {
     let out = Command::new(rigger_bin())
         .args(["step"])
         .current_dir(root)
@@ -9817,6 +9825,9 @@ fn run_step_dash_enabled(root: &Path) -> (String, String) {
         // tree so this step registers under `root/rigger`, never the operator's real
         // ~/.local/state/rigger/instances.
         .env("XDG_STATE_HOME", root)
+        // Pin the ensure port to the test's own ephemeral loopback port so the step-path dash never
+        // binds the machine-fixed default and never collides with a real always-on dash on 7420.
+        .env("RIGGER_DASH_PORT", dash_port.to_string())
         .env_remove("RIGGER_NO_DASH")
         .output()
         .expect("failed to spawn the rigger binary");
@@ -9837,24 +9848,25 @@ fn run_step_dash_enabled(root: &Path) -> (String, String) {
 /// The started dash is a real, long-lived process, so this test REAPS it by pid BEFORE its
 /// idempotency assertions - a failed assertion never leaks a dashboard (the reap discipline the
 /// `rigger serve` dash tests already follow).
-// Serialized on `dash_default_port` with the other two step-path dash tests
-// (`a_step_started_dash_is_detached_and_outlives_its_step_process` and
-// `a_real_rigger_step_session_detaches_the_dash_from_the_step_command_process_group`): each spawns
-// a real `rigger step` whose always-on dash binds the FIXED `dash::DEFAULT_PORT` DIRECTLY - the
-// singleton retarget (spec 50, criterion 4) starts it at the default address with no free-port
-// search. Two of them running in parallel both target that one port; the singleton bind lets only
-// one serve while the other exits 0, so its marker would point at a port THIS test's dash does not
-// own - a nondeterministic RED. The direct-`rigger dash` tests are immune because they pass an
-// ephemeral `free_loopback_port`, so only these three need the key.
+// Hermetic against a real machine dash: each of the three step-path dash tests spawns a real
+// `rigger step` whose always-on ensure binds the singleton's default address (spec 50, criterion 4)
+// - which, on the self-hosting box, a genuine always-on dash already holds on the fixed 7420. Each
+// test therefore pins the ensure port to its OWN ephemeral `free_loopback_port` via `RIGGER_DASH_PORT`
+// (the same seam production resolves through, defaulting to `dash::DEFAULT_PORT`), so it exercises the
+// real ensure path WITHOUT fighting that machine dash - exactly as the direct-`rigger dash` singleton
+// test injects an ephemeral port. Distinct private ports per test mean they no longer share any port,
+// so no `serial` key is needed (the same reason the direct-`rigger dash` port tests need none).
 #[test]
-#[serial_test::serial(dash_default_port)]
 fn step_auto_starts_one_persistent_dash_and_a_second_step_starts_none() {
     let proj = temp_git_project_with_commit();
     let root = proj.path();
     write_two_stage_workflow(root);
+    // This run's ephemeral singleton port: BOTH steps below share it (they model one run's
+    // successive steps, which must find the one dash the first started), and it is never 7420.
+    let dash_port = free_loopback_port();
 
     // First step: no dash is recorded, so it must start one and record its marker.
-    let (out1, err1) = run_step_dash_enabled(root);
+    let (out1, err1) = run_step_dash_enabled(root, dash_port);
     assert!(
         out1.contains(r#""wave":"#),
         "the first step must run to completion (a printed wave), reaching the dash-start seam; \
@@ -9878,7 +9890,7 @@ fn step_auto_starts_one_persistent_dash_and_a_second_step_starts_none() {
     }
 
     // Second step of the SAME run: it must find the live marker and start NO second dash.
-    let (_out2, err2) = run_step_dash_enabled(root);
+    let (_out2, err2) = run_step_dash_enabled(root, dash_port);
     let marker2 = read_dash_marker(root);
 
     // Reap every dash this test could have started BEFORE asserting, so a failed assertion
@@ -9943,10 +9955,12 @@ fn step_honors_the_rigger_no_dash_opt_out() {
 /// DOES start one with NO opt-out, so this absence is the config opt-out at work, not a dead path.
 /// The run still REGISTERS its instance (criterion 2) under the redirected state dir - "the run
 /// proceeds normally" - so the opt-out drops only the dash, never the run.
-// Serialized on `dash_default_port`: were the config opt-out to regress, the step would bind the
-// fixed `dash::DEFAULT_PORT`, so it must not race the other step-path dash tests for that port.
+// Hermetic against a real machine dash: were the config opt-out to regress, the ensure would bind
+// a dash - but the ensure port is pinned to this test's own ephemeral `free_loopback_port` (never
+// the fixed 7420 a genuine always-on dash holds on the self-hosting box), so even the regression
+// path binds a private port and the `no marker` assertion still catches it. No `serial` key is
+// needed: the test no longer touches the shared default port on any path.
 #[test]
-#[serial_test::serial(dash_default_port)]
 fn step_honors_the_config_dash_off_opt_out() {
     let proj = temp_git_project_with_commit();
     let root = proj.path();
@@ -9955,11 +9969,13 @@ fn step_honors_the_config_dash_off_opt_out() {
     append_line(&root.join(".rigger").join("workflow.yml"), "dash: off");
 
     // RIGGER_NO_DASH REMOVED so ONLY `dash: off` can suppress the dash; the state dir is redirected
-    // so the run's registration lands in the test's own tree, never the operator's real one.
+    // so the run's registration lands in the test's own tree, never the operator's real one; and the
+    // ensure port is pinned to an ephemeral loopback port so a regression never binds the fixed 7420.
     let out = Command::new(rigger_bin())
         .args(["step"])
         .current_dir(root)
         .env("XDG_STATE_HOME", root)
+        .env("RIGGER_DASH_PORT", free_loopback_port().to_string())
         .env_remove("RIGGER_NO_DASH")
         .output()
         .expect("failed to spawn the rigger binary");
@@ -10011,7 +10027,7 @@ fn step_honors_the_config_dash_off_opt_out() {
 /// documented bare `dash: off` / `dash: on` and the quoted `false`/`no`/`true`/`OFF`/` off `
 /// synonyms (case- and whitespace-insensitive) resolve as the opt-out spec names. This is the
 /// config-side contract that the CLI test `step_honors_the_config_dash_off_opt_out` then proves
-/// end-to-end at the binary; no port is bound here, so it needs no `dash_default_port` serial guard.
+/// end-to-end at the binary; this side is pure `config::load`, binds no port, and spawns no process.
 #[test]
 fn config_load_dash_enabled_is_the_public_opt_out_contract_and_back_compat() {
     // The SAME full, valid project the real loader accepts that `rigger step` drives: an agents dir
@@ -10088,18 +10104,20 @@ fn config_load_dash_enabled_is_the_public_opt_out_contract_and_back_compat() {
 /// the ORIGINAL dash lives and serves across step-process boundaries, and never that a second
 /// step started no second dash. It reaps every dash it could have started BEFORE any assertion,
 /// so a failed assertion never leaks a dashboard.
-// Serialized on `dash_default_port`: shares the one fixed `dash::DEFAULT_PORT` with the other
-// step-path dash tests, so it must not run concurrently with them (see
-// `step_auto_starts_one_persistent_dash_and_a_second_step_starts_none` for the full rationale).
+// Hermetic against a real machine dash: pins the ensure port to its own ephemeral
+// `free_loopback_port` (never the fixed 7420 a genuine always-on dash holds on the self-hosting
+// box), so it exercises the real detached-dash persistence path without fighting that machine dash
+// (see `step_auto_starts_one_persistent_dash_and_a_second_step_starts_none` for the full rationale).
 #[test]
-#[serial_test::serial(dash_default_port)]
 fn a_step_started_dash_is_detached_and_outlives_its_step_process() {
     let proj = temp_git_project_with_commit();
     let root = proj.path();
     write_two_stage_workflow(root);
+    // Both steps of this one run share the same ephemeral singleton port (never 7420).
+    let dash_port = free_loopback_port();
 
     // A first, now-EXITED step process starts the detached dash and records its (port, pid).
-    let (out1, err1) = run_step_dash_enabled(root);
+    let (out1, err1) = run_step_dash_enabled(root, dash_port);
     assert!(
         out1.contains(r#""wave":"#),
         "the first step must run to completion (a printed wave), reaching the dash-start seam; \
@@ -10120,7 +10138,7 @@ fn a_step_started_dash_is_detached_and_outlives_its_step_process() {
     // persist ACROSS this step boundary as the very same live process (persistence, NOT
     // idempotency: we assert the ORIGINAL pid still lives and serves, never that no second dash
     // was started - that no-op is criterion 1's).
-    let (out2, _err2) = run_step_dash_enabled(root);
+    let (out2, _err2) = run_step_dash_enabled(root, dash_port);
     // Reap defensively any dash a (buggy) second start could have spawned, without asserting on
     // it - keeping this test off criterion 1's idempotency ground while never leaking a dash.
     if let Some((_, pid2)) = read_dash_marker(root) {
@@ -10711,11 +10729,11 @@ fn proc_pgid_of(pid: u32) -> u32 {
 /// The dash is a real, long-lived detached process; this test reaps it by pid BEFORE its
 /// assertions, so a failed assertion never leaks a dashboard.
 #[cfg(target_os = "linux")]
-// Serialized on `dash_default_port`: shares the one fixed `dash::DEFAULT_PORT` with the other
-// step-path dash tests, so it must not run concurrently with them (see
+// Hermetic against a real machine dash: pins the ensure port to its own ephemeral
+// `free_loopback_port` (never the fixed 7420 a genuine always-on dash holds on the self-hosting
+// box), so it exercises the real session-detachment path without fighting that machine dash (see
 // `step_auto_starts_one_persistent_dash_and_a_second_step_starts_none` for the full rationale).
 #[test]
-#[serial_test::serial(dash_default_port)]
 fn a_real_rigger_step_session_detaches_the_dash_from_the_step_command_process_group() {
     use std::os::unix::process::CommandExt;
     use std::process::Stdio;
@@ -10734,6 +10752,9 @@ fn a_real_rigger_step_session_detaches_the_dash_from_the_step_command_process_gr
         // tree so this step registers under `root/rigger`, never the operator's real
         // ~/.local/state/rigger/instances.
         .env("XDG_STATE_HOME", root)
+        // Pin the ensure port to an ephemeral loopback port so this step-path dash never binds the
+        // machine-fixed default and never collides with a real always-on dash on 7420.
+        .env("RIGGER_DASH_PORT", free_loopback_port().to_string())
         .env_remove("RIGGER_NO_DASH")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
