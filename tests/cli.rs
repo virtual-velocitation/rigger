@@ -10780,3 +10780,273 @@ fn a_concurrent_cold_race_yields_exactly_one_binder_never_two() {
          atomic); got {bound}. results: {results:?}"
     );
 }
+
+/// Spec 50, criterion 1, the RECOGNITION CONTRACT through the BUILT binary: every `rigger dash`
+/// response carries the `X-Rigger-Dash` header whose NAME is the public `dash::DASH_HEADER`
+/// constant the singleton probe looks for. That header IS the mechanism by which a second
+/// invocation's `dash_serving_on` probe recognizes an already-serving dash and defers cleanly -
+/// the sibling singleton test proves the deferral only by CONSEQUENCE. Asserting the header
+/// DIRECTLY on a real response localizes a regression: a dropped or renamed header would
+/// otherwise surface only as a confusing "the second invocation refused to defer" failure
+/// elsewhere. The header rides the root page every dash already serves, so the dash stays
+/// read-only and gains no endpoint. The dash is a real, long-lived process; it is reaped BEFORE
+/// the assertion so a failed assertion never leaks a dashboard.
+#[test]
+fn every_dash_response_carries_the_rigger_dash_recognition_header() {
+    use std::io::{Read, Write};
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    let proj = temp_project();
+    let root = proj.path();
+    let port = free_loopback_port();
+    let url = format!("http://127.0.0.1:{port}/");
+
+    let mut dash = Command::new(rigger_bin())
+        .args(["dash", "--port", &port.to_string()])
+        .current_dir(root)
+        .env_remove("RIGGER_NO_DASH")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn `rigger dash`");
+
+    // Wait until the dash genuinely serves its page (the body helper polls the startup window).
+    if !matches!(http_get(&url), Some(body) if body.contains("rigger dash")) {
+        let _ = dash.kill();
+        let _ = dash.wait();
+        panic!("`rigger dash` never served its page at {url}");
+    }
+
+    // A raw GET that keeps the RESPONSE HEAD (`http_get` strips it): read the status line +
+    // headers so the recognition header can be asserted directly.
+    let hostport = format!("127.0.0.1:{port}");
+    let head = {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let mut stream = loop {
+            match std::net::TcpStream::connect(&hostport) {
+                Ok(s) => break s,
+                Err(_) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(50))
+                }
+                Err(_) => {
+                    let _ = dash.kill();
+                    let _ = dash.wait();
+                    panic!("could not connect to the serving dash at {url}");
+                }
+            }
+        };
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+        if stream
+            .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .is_err()
+        {
+            let _ = dash.kill();
+            let _ = dash.wait();
+            panic!("could not write the probe request to the serving dash at {url}");
+        }
+        let mut resp = String::new();
+        let _ = stream.read_to_string(&mut resp);
+        // Keep only the head (status line + headers) up to the blank end-of-headers line.
+        let end = resp.find("\r\n\r\n").unwrap_or(resp.len());
+        resp[..end].to_string()
+    };
+
+    // Reap the dash (the ONLY serving process) BEFORE asserting so a failure never leaks it.
+    let _ = dash.kill();
+    let _ = dash.wait();
+
+    // The recognition contract: a header line whose NAME (case-insensitively) is the public
+    // `DASH_HEADER` constant. Line-anchored - the same discipline `dash_serving_on` uses - so the
+    // marker cannot be satisfied by the same text appearing inside another header's value.
+    let needle = format!("{}:", rigger::dash::DASH_HEADER).to_ascii_lowercase();
+    let carries = head
+        .lines()
+        .any(|line| line.to_ascii_lowercase().starts_with(&needle));
+    assert!(
+        carries,
+        "every dash response must carry the `{}` recognition header the singleton probe looks \
+         for; response head was:\n{head}",
+        rigger::dash::DASH_HEADER
+    );
+}
+
+/// Spec 50, criterion 1, the singleton probe's BOUNDEDNESS end-to-end through the BUILT binary:
+/// when the fixed address is squatted by a HOSTILE holder that ACCEPTS the probe connection and
+/// then DRIBBLES bytes forever - one byte slower than any per-read timeout, NEVER a newline -
+/// `rigger dash` must still terminate on a HARD bound and surface the address-in-use conflict,
+/// never hang. The `dash.rs` unit test proves `dash_serving_on` itself is bounded in-process;
+/// only driving the whole binary proves the FULL `cmd_dash -> bind_singleton -> dash_serving_on`
+/// chain stays bounded in the shipped path - the outside-in view the single-process unit test is
+/// structurally blind to. It guards exactly the boundary the whole-head-read bound hardens: a
+/// regression to a per-read-only timeout would reset forever on the dribble and spin, so this
+/// test's bounded `try_wait` deadline turns that regression into a LOUD caught hang, never a
+/// silent wedge. The sibling non-dash-holder test drives a SILENT holder (bounded by the read
+/// timeout); this drives an ACTIVE dribbler (bounded only by the overall head-read deadline).
+#[test]
+fn the_dash_singleton_probe_stays_bounded_against_a_dribbling_holder() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    let proj = temp_project();
+    let root = proj.path();
+
+    // Bind the port and hold it for the whole run, so `rigger dash`'s bind is a genuine conflict.
+    let holder = TcpListener::bind(("127.0.0.1", 0)).expect("bind a hostile dribbling holder");
+    let port = holder.local_addr().unwrap().port();
+
+    // A worker that ACCEPTS the one singleton-probe connection (bounded so it never blocks
+    // forever) and then dribbles a single byte every 120ms with NO newline - defeating any
+    // per-read-only timeout so ONLY a bound on the TOTAL head-read can stop the probe. It never
+    // sends the recognition header, so it must be treated as a conflict, never a serving dash.
+    let dribbler = std::thread::spawn(move || {
+        holder
+            .set_nonblocking(true)
+            .expect("make the holder non-blocking");
+        let accept_deadline = Instant::now() + Duration::from_secs(20);
+        let sock = loop {
+            match holder.accept() {
+                Ok((s, _)) => break Some(s),
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    if Instant::now() >= accept_deadline {
+                        break None;
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Err(_) => break None,
+            }
+        };
+        if let Some(mut s) = sock {
+            let _ = s.set_nonblocking(false);
+            // Drain whatever the probe wrote (best-effort) so a full receive buffer never stalls
+            // it, then dribble until the probe gives up (its bounded read returns and it drops the
+            // stream, so the next write fails).
+            let _ = s.set_read_timeout(Some(Duration::from_millis(50)));
+            let mut scratch = [0u8; 256];
+            let _ = s.read(&mut scratch);
+            while s.write_all(b"X").is_ok() && s.flush().is_ok() {
+                std::thread::sleep(Duration::from_millis(120));
+            }
+        }
+        // `holder` drops here, releasing the port - only after the probe has already concluded.
+    });
+
+    let mut dash = Command::new(rigger_bin())
+        .args(["dash", "--port", &port.to_string()])
+        .current_dir(root)
+        .env_remove("RIGGER_NO_DASH")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn `rigger dash` against a dribbling holder");
+
+    // A bounded probe exits in ~1s; poll `try_wait` on a deadline comfortably above that so a
+    // regression to an UNBOUNDED head-read (spinning on the dribble) is caught LOUD as a hang.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let exited = loop {
+        match dash.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
+            Ok(None) => break None,
+            Err(_) => break None,
+        }
+    };
+
+    let mut out = String::new();
+    if let Some(mut so) = dash.stdout.take() {
+        let _ = so.read_to_string(&mut out);
+    }
+    let mut err = String::new();
+    if let Some(mut se) = dash.stderr.take() {
+        let _ = se.read_to_string(&mut err);
+    }
+
+    // Reap a hung dash (if any) BEFORE asserting, then let the dribbler wind down.
+    if exited.is_none() {
+        let _ = dash.kill();
+        let _ = dash.wait();
+    }
+    let _ = dribbler.join();
+
+    let status = exited.unwrap_or_else(|| {
+        panic!(
+            "`rigger dash` never exited within the deadline against a dribbling holder - the \
+             singleton probe's head-read must be time-bounded, never spin on a slow byte dribble; \
+             stdout: {out:?} stderr: {err:?}"
+        )
+    });
+    assert!(
+        !status.success(),
+        "a dribbling non-dash holder must be a genuine conflict (non-zero exit), never a serving \
+         singleton to defer to; stdout: {out:?} stderr: {err:?}"
+    );
+    assert!(
+        err.to_lowercase().contains("in use"),
+        "the conflict must surface as an address-in-use error on stderr; stdout: {out:?} \
+         stderr: {err:?}"
+    );
+    assert!(
+        !out.contains("already serving"),
+        "a dribbling non-dash holder must NOT be mistaken for an already-serving dash (no false \
+         singleton defer); stdout: {out:?} stderr: {err:?}"
+    );
+}
+
+/// Spec 50, criterion 1, the public `dash_serving_on` two-sided CONTRACT, driven by name from the
+/// integration crate (as the sibling tests drive `bind_singleton`): it returns TRUE for a REAL
+/// serving `rigger dash` (recognized by its `X-Rigger-Dash` header) and FALSE for an unrelated
+/// process that merely holds the port and never answers. This is the precise input/output edge of
+/// the probe that the singleton short-circuit hinges on (a real dash defers, a non-dash
+/// conflicts), stated directly rather than only by consequence of the CLI behavior tests. The real
+/// dash is reaped BEFORE the assertion so a failure never leaks a dashboard.
+#[test]
+fn dash_serving_on_recognizes_a_real_dash_and_rejects_a_non_dash_holder() {
+    use rigger::dash::dash_serving_on;
+    use std::net::TcpListener;
+    use std::process::Stdio;
+
+    // Case 1 - a REAL serving `rigger dash`: `dash_serving_on` must recognize it (TRUE).
+    let proj = temp_project();
+    let root = proj.path();
+    let dash_port = free_loopback_port();
+    let url = format!("http://127.0.0.1:{dash_port}/");
+    let mut dash = Command::new(rigger_bin())
+        .args(["dash", "--port", &dash_port.to_string()])
+        .current_dir(root)
+        .env_remove("RIGGER_NO_DASH")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn a serving `rigger dash`");
+    if !matches!(http_get(&url), Some(body) if body.contains("rigger dash")) {
+        let _ = dash.kill();
+        let _ = dash.wait();
+        panic!("the serving `rigger dash` never came up at {url}");
+    }
+    let recognized_real = dash_serving_on(dash_port);
+
+    // Case 2 - a NON-dash holder that never answers the probe: `dash_serving_on` must reject it
+    // (FALSE), bounded by its own read timeouts (the silent-holder half of the boundedness the
+    // dribble test drives). Keeping the listener in scope holds the port for the whole probe.
+    let non_dash = TcpListener::bind(("127.0.0.1", 0)).expect("bind a non-dash holder");
+    let non_dash_port = non_dash.local_addr().unwrap().port();
+    let recognized_non_dash = dash_serving_on(non_dash_port);
+
+    // Reap the serving dash BEFORE asserting so a failure never leaks a dashboard.
+    let _ = dash.kill();
+    let _ = dash.wait();
+    drop(non_dash);
+
+    assert!(
+        recognized_real,
+        "dash_serving_on must recognize a REAL serving `rigger dash` by its `{}` header",
+        rigger::dash::DASH_HEADER
+    );
+    assert!(
+        !recognized_non_dash,
+        "dash_serving_on must NOT recognize a non-dash holder that never sends the recognition \
+         header - only a genuine dash earns the singleton defer"
+    );
+}
