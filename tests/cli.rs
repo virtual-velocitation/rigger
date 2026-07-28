@@ -3125,6 +3125,70 @@ fn step_prints_a_disjoint_two_spawn_wave_then_reports_done() {
     );
 }
 
+/// Spec 50, criterion 2 (the REGISTRY lifecycle): `rigger step` REGISTERS this instance in the
+/// machine-global state directory - the project root plus a CREDENTIAL-FREE store identity, with a
+/// live heartbeat - so a machine-level dash can DISCOVER it without a coordination protocol. The
+/// state dir is redirected into a temp `XDG_STATE_HOME` so the test never touches the real
+/// `~/.local/state`; the entry is read back through the `rigger::registry` reader (the same reader
+/// the dash uses) to assert the local store identity, a live heartbeat, and no credential on disk.
+/// A second step refreshes the SAME entry in place - the registry never piles up duplicates.
+#[test]
+fn step_registers_the_instance_in_the_machine_global_registry() {
+    use rigger::registry;
+
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+
+    // Redirect the machine-global state dir into a temp home, so the registry lands under the
+    // test's own tree instead of the operator's real ~/.local/state.
+    let state = tempfile::tempdir().unwrap();
+    let xdg = state.path().to_str().unwrap();
+
+    let (_out, err, ok) = run_rigger_envs(root, &["step"], &[("XDG_STATE_HOME", xdg)]);
+    assert!(ok, "step must succeed; stderr: {err}");
+
+    // The dash's own reader returns exactly this instance (a fresh heartbeat, so nothing prunes).
+    let regdir = registry::instances_dir(state.path());
+    let live = registry::read_live(&regdir, registry::now_ms(), registry::DEFAULT_IDLE_MS);
+    assert_eq!(
+        live.len(),
+        1,
+        "exactly one instance is registered; got {live:?}"
+    );
+    let inst = &live[0];
+
+    // The registered store identity is the LOCAL sqlite log - credential-free by construction.
+    match &inst.store {
+        registry::StoreIdentity::Local { path } => assert!(
+            path.ends_with(".rigger/events.db"),
+            "the local store identity is the project's events.db; got {path}"
+        ),
+        other => panic!("a local run registers a Local store identity; got {other:?}"),
+    }
+    assert!(!inst.root.is_empty(), "the project root is recorded");
+    assert!(inst.heartbeat_ms > 0, "a live heartbeat is stamped");
+
+    // The on-disk entry carries NO connection string at all (the secrets-discipline invariant for
+    // a local run), and its file name is the deterministic id.
+    let entry = regdir.join(format!("{}.json", inst.id()));
+    let body = std::fs::read_to_string(&entry).unwrap();
+    assert!(
+        !body.contains("://"),
+        "a local registry entry holds no connection credential; got {body}"
+    );
+
+    // A second step refreshes the SAME entry rather than accumulating a duplicate.
+    let (_o, err2, ok2) = run_rigger_envs(root, &["step"], &[("XDG_STATE_HOME", xdg)]);
+    assert!(ok2, "the second step must succeed; stderr: {err2}");
+    let again = registry::read_live(&regdir, registry::now_ms(), registry::DEFAULT_IDLE_MS);
+    assert_eq!(
+        again.len(),
+        1,
+        "a re-step refreshes one entry in place; got {again:?}"
+    );
+}
+
 /// A single-unit workflow whose ONLY gate always FAILS (`bad: false`) with a remediation
 /// bound of ONE (`defaults.max_retries: 1`), so the unit ESCALATES on its first failed gate
 /// (`safety::remediate(0, 1)` escalates immediately). Repo-less and offline: the `nop`

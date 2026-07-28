@@ -596,6 +596,54 @@ fn resolve_store(
     }
 }
 
+/// The CREDENTIAL-FREE store identity for the machine-global instance registry (spec 50),
+/// derived from the run's resolved [`StoreSelection`]: the local sqlite path (local by
+/// construction, no credential) or the shared server's `scheme://host:port` with any
+/// `user:password@` userinfo and any `?query` stripped by the registry's redaction authority.
+/// The credential the shared store OPENS with never reaches the registry - the dash re-resolves
+/// it through the store-resolution authority exactly as every command does.
+fn registry_store_identity(sel: &StoreSelection, root: &Path) -> rigger::registry::StoreIdentity {
+    match sel {
+        StoreSelection::Sqlite => rigger::registry::StoreIdentity::Local {
+            path: root
+                .join(RIGGER_DIR)
+                .join("events.db")
+                .to_string_lossy()
+                .into_owned(),
+        },
+        StoreSelection::Server(conn) => rigger::registry::StoreIdentity::Shared {
+            endpoint: rigger::registry::shared_endpoint(conn),
+        },
+    }
+}
+
+/// Register (or refresh) THIS invocation's instance in the machine-global discovery registry
+/// (spec 50, criterion 2): the project root, the credential-free store identity, and a fresh
+/// heartbeat, keyed so a re-registration refreshes one entry in place. Called on every `rigger
+/// step` - the single "starts or advances a run" hook, so the first step registers the instance
+/// and each later step keeps its heartbeat live. BEST-EFFORT and warn-only: the registry is
+/// discovery metadata whose loss is harmless (live instances repopulate it), so a homeless
+/// environment or a write error degrades to no registration and NEVER fails the run.
+fn register_run_instance(repo: &str, selection: &StoreSelection) {
+    let Some(dir) = rigger::registry::default_dir() else {
+        return; // homeless environment (no state dir): degrade to no registration
+    };
+    let root = if repo.is_empty() {
+        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+    } else {
+        PathBuf::from(repo)
+    };
+    let inst = rigger::registry::Instance {
+        project: project_identity(),
+        root: root.to_string_lossy().into_owned(),
+        store: registry_store_identity(selection, &root),
+        heartbeat_ms: rigger::registry::now_ms(),
+    };
+    if let Err(e) = rigger::registry::write(&dir, &inst) {
+        eprintln!("rigger: instance registry write skipped ({e}); discovery is unaffected");
+    }
+}
+
 /// The project identity that scopes the event streams and context graph (§5.1.1,
 /// R9): the basename of the git repo top-level, falling back to the current
 /// directory's name, falling back to "rigger". Never empty.
@@ -1738,6 +1786,10 @@ fn cmd_step(args: &[String]) -> Res {
     migrate_local_identity()?;
 
     let selection = store_selection(None, None)?;
+    // Register this instance in the machine-global discovery registry (spec 50, criterion 2):
+    // every step "advances a run", so this is the single hook that keeps a live instance's
+    // heartbeat fresh. Best-effort and warn-only - it never blocks the step.
+    register_run_instance(&repo, &selection);
     let backend = resolve_store(&selection, &db_path("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &project_identity());
 
