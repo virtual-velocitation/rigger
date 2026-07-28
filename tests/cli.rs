@@ -10386,6 +10386,125 @@ fn a_dash_without_reap_on_idle_never_self_reaps_on_a_quiet_machine() {
     );
 }
 
+/// Spec 50, criterion 5 - the HOMELESS-ENVIRONMENT guard through the BUILT binary: a
+/// `rigger dash --reap-on-idle` in an environment with NO resolvable state home (neither
+/// `XDG_STATE_HOME` nor `HOME`) has no machine-global instance registry to poll, so the
+/// `reap_on_idle.then(registry::default_dir).flatten()` seam yields `None`, starts NO watcher, and
+/// the singleton simply SERVES - it never self-reaps. This is the distinct boundary the `.flatten()`
+/// guard adds, and it is the one input none of the criterion tests drive: the flag-gate test proves
+/// flag-ABSENT, while every serve/reap/survive test runs with a redirected `XDG_STATE_HOME` (a
+/// resolvable home), so only THIS test covers flag-PRESENT-but-HOMELESS. A regression that dropped
+/// the `.flatten()` (unwrapping the `None` dir) or fell back to a bogus registry dir would either
+/// crash the dash or reap it against an empty registry - both caught here, because the tiny poll and
+/// 1s window would drive a real watcher to reap almost immediately, so the ABSENCE of a reap is a
+/// strong signal the homeless seam gated the watcher off rather than merely a long window.
+#[test]
+fn a_reap_on_idle_singleton_in_a_homeless_environment_serves_without_a_watcher() {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    // A real repo the dash can serve, created by THIS test (which HAS a home); only the DASH
+    // subprocess is made homeless below, so `registry::default_dir` resolves to `None` inside it
+    // while the served project is a normal, well-formed run root.
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
+
+    let port = free_loopback_port();
+    // `--reap-on-idle` IS set, but BOTH state-home variables are removed, so the dash's
+    // `state_home()` - and thus `default_dir()` - returns `None`: no registry, no watcher. The fast
+    // poll and 1s window mean that IF a watcher had started against ANY (necessarily empty) registry
+    // it would self-reap within ~1s, so the ABSENCE of a reap is a strong signal the homeless seam
+    // gated the watcher off, not that the window was simply too long.
+    let mut child = Command::new(rigger_bin())
+        .args(["dash", "--port", &port.to_string(), "--reap-on-idle"])
+        .current_dir(root)
+        .env_remove("XDG_STATE_HOME")
+        .env_remove("HOME")
+        .env("RIGGER_DASH_REAP_POLL_MS", "100")
+        .env("RIGGER_DASH_REAP_STALE_SECS", "1")
+        .env_remove("RIGGER_NO_DASH")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn `rigger dash --reap-on-idle`");
+    let mut out = child.stdout.take().expect("dash stdout is piped");
+
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 1];
+        let n = out.read(&mut buf).unwrap_or(0);
+        let _ = tx.send(n);
+    });
+
+    // It genuinely SERVES its read-only page: this proves the homeless startup did not crash (a
+    // crash would EOF stdout and masquerade as a reap below). Reap on failure so nothing leaks.
+    if !matches!(http_get(&format!("http://127.0.0.1:{port}/")), Some(body) if body.contains("rigger dash"))
+    {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("the homeless `rigger dash --reap-on-idle` never served its page");
+    }
+
+    // Well past many poll intervals and the 1s window, the dash must STILL be up: with no state home
+    // resolvable, `.flatten()` yielded `None` and no watcher was ever started. A read here is a
+    // self-reap the homeless guard exists to prevent (an unwrapped `None`, or a bogus-dir fallback
+    // reaping against an empty registry), and it fails LOUD.
+    let reaped = rx.recv_timeout(Duration::from_secs(2));
+    let still_serving = reaped.is_err();
+    // Nothing owns this dash in the test (in production its parent's `ReapedChild` would), so reap
+    // it here regardless of outcome.
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(
+        still_serving,
+        "a `rigger dash --reap-on-idle` in a homeless environment (no XDG_STATE_HOME, no HOME) \
+         self-reaped - with no resolvable state home there is no registry to poll, so the \
+         `.flatten()` seam must start NO watcher and the singleton must simply serve"
+    );
+}
+
+/// Spec 50, criterion 5 - the PUBLIC contract of the new decision function at the CRATE BOUNDARY.
+/// `dash::should_reap_singleton` is the exported domain core the singleton's watcher polls; the
+/// dash.rs unit test proves it white-box (inside the module), and the integration tests above drive
+/// it end-to-end through the built binary. This pins its contract at the PUBLIC `rigger::dash`
+/// boundary an EXTERNAL caller sees - that the function is exported and its truth table holds -
+/// independent of any watcher wiring: reap IFF a live instance has EVER been seen AND none remains,
+/// so a positive live count never reaps and a not-yet-seen (startup) empty registry keeps serving.
+#[test]
+fn should_reap_singleton_public_contract_holds_at_the_crate_boundary() {
+    use rigger::dash::should_reap_singleton;
+
+    // Startup guard: no live instance has EVER been seen yet, so keep serving regardless of the
+    // current count - a just-ensured singleton must not reap before its ensuring run registers.
+    assert!(
+        !should_reap_singleton(0, false),
+        "a never-seen empty registry must keep serving (the startup-race guard)"
+    );
+    assert!(
+        !should_reap_singleton(1, false),
+        "a positive live count never reaps, whatever the seen flag"
+    );
+
+    // A live instance keeps the singleton serving once one has been seen (this project's run or any
+    // other's - a positive count means at least one run needs the dash).
+    assert!(
+        !should_reap_singleton(1, true),
+        "one live instance keeps the singleton serving"
+    );
+    assert!(
+        !should_reap_singleton(5, true),
+        "several live instances keep the singleton serving"
+    );
+
+    // Machine idle: at least one live instance was seen and none remains live -> reap.
+    assert!(
+        should_reap_singleton(0, true),
+        "seen-then-empty is a genuinely quiet machine: the singleton reaps"
+    );
+}
+
 // --- Spec 44, criterion 3: the always-on step dash is SESSION-DETACHED from the `rigger step`
 // command's PROCESS GROUP. Spec 39 criterion 2 (above) proves the dash outlives the step PROCESS
 // (it holds no `ReapedChild` guard); THIS criterion owns the distinct failure spec 44 fixes: when
