@@ -4804,11 +4804,38 @@ impl RunCtx<'_> {
                 // keys on to exclude a sibling's approve.
                 self.emit_meta(t, v, &[(contextgraph::META_ACTOR, role), (META_SPAWN, &id)])
             };
-            let result = self
-                .deps
-                .driver
-                .spawn(agent_def, prompt, &opts, &emit)
-                .map_err(|e| Error(format!("stage {:?} {tier} {agent_id:?}: {}", st.name, e.0)))?;
+            let result = match self.deps.driver.spawn(agent_def, prompt, &opts, &emit) {
+                Ok(result) => result,
+                Err(e) => {
+                    // REVIEWER ERROR RE-PARK (spec 51, criterion 1): a REVIEW-stage spawn whose
+                    // RECORDED result is a plain ERROR - an externally-killed reviewer (quota
+                    // exhaustion, a crash) whose error the death courier (or the operator) recorded
+                    // on its id - is an INFRASTRUCTURE fault, NOT a verdict. An error is not a
+                    // verdict: review must COMPLETE. So the conductor does NOT adopt the error as
+                    // the review outcome and does NOT fail the step; it charges the unit no attempt
+                    // (the work was never judged) and RE-PARKS a FRESH attempt of the SAME review by
+                    // looping to the next `spawn_retry_id`. That id is unrecorded, so the replay
+                    // driver parks it and the next `rigger step` returns it in the wave; a completed
+                    // real verdict then folds through the NORMAL adjudication path below. This is
+                    // bounded by `REVIEWER_RESPAWN_BOUND` exactly like the degenerate loop, so a
+                    // persistently-erroring review spawn escalates through the halt below rather
+                    // than re-parking forever (spec 51, criterion 2 owns that bound).
+                    //
+                    // A driver PARK (the replay frontier) or a BUDGET refusal unwinds the unit
+                    // cleanly and PROPAGATES unchanged (its marker survives the `format!` wrapping,
+                    // so `is_parked`/`is_budget_refused` still recognize it upstream). And the LIVE
+                    // drivers (cli / workflow) never RECORD a spawn result, so `review_spawn_errored`
+                    // is false there and a genuine in-process review failure still propagates to
+                    // remediation exactly as before - only a REPLAYED recorded error re-parks.
+                    if !is_parked(&e) && !is_budget_refused(&e) && self.review_spawn_errored(&id)? {
+                        continue;
+                    }
+                    return Err(Error(format!(
+                        "stage {:?} {tier} {agent_id:?}: {}",
+                        st.name, e.0
+                    )));
+                }
+            };
             // A substantive result folds into the review; a degenerate one loops to respawn
             // the SAME reviewer under the next retry id.
             if !self.reviewer_result_is_degenerate(
@@ -4899,6 +4926,38 @@ impl RunCtx<'_> {
                     .ok()
                     .is_some_and(|v| emitted_verdict_approves(&v))
         }))
+    }
+
+    /// Whether the review spawn `id` has a RECORDED result that is a plain ERROR (spec 51,
+    /// criterion 1: REVIEWER ERROR RE-PARK) - the signal that an externally-killed reviewer
+    /// (quota exhaustion, a crash) had an error result recorded on its id by the death courier
+    /// or the operator. An error is NOT a verdict: review must COMPLETE, so on this signal
+    /// [`run_reviewer`](RunCtx::run_reviewer) treats the result as an INFRASTRUCTURE fault on
+    /// that spawn and RE-PARKS a FRESH attempt of the SAME review (the next
+    /// [`spawn_retry_id`]) rather than adopting the error as the review outcome and failing the
+    /// step - charging the unit NO remediation attempt, because the work was never judged.
+    ///
+    /// A LIVENESS fault ([`SpawnResult::is_liveness_fault`](spawn::SpawnResult::is_liveness_fault))
+    /// is EXCLUDED: a hung review agent has its OWN re-park-then-loud-halt path (the replay
+    /// driver re-parks its id and `rigger step` surfaces it via `liveness::hung_spawns`), so it
+    /// must never ALSO be silently re-driven here. A non-error (substantive) result is likewise
+    /// excluded - it is a real verdict that folds normally.
+    ///
+    /// Scoped to the CURRENT run (like every execution-replay lookup, spec 06 unit 1), so a
+    /// prior run's recorded review error never re-parks a fresh run's same-id review spawn. On
+    /// the LIVE drivers (cli / workflow) no spawn result is ever recorded, so this is always
+    /// `false` there and a genuine in-process review failure still propagates to remediation
+    /// unchanged - only a REPLAYED recorded error re-parks.
+    fn review_spawn_errored(&self, id: &str) -> Result<bool, Error> {
+        let all = self
+            .deps
+            .store
+            .read_stream(STREAM, 0, Direction::Forward)
+            .map_err(|e| Error(e.to_string()))?;
+        let events = crate::run::current_run(&all);
+        Ok(spawn::result_of(events, id)
+            .map_err(|e| Error(e.to_string()))?
+            .is_some_and(|res| res.is_error() && !res.is_liveness_fault()))
     }
 
     /// Whether a reviewer spawn's `result` is DEGENERATE (Gap 18) - an infrastructure
@@ -14172,6 +14231,117 @@ mod tests {
         );
         // The implementer ran exactly once - no remediation re-implement.
         assert_eq!(driver.spawn_count("worker"), 1);
+    }
+
+    #[test]
+    fn a_review_stage_error_result_re_parks_a_fresh_attempt_no_charge_then_a_real_verdict_folds() {
+        // Spec 51, criterion 1 (REVIEWER ERROR RE-PARK): a REVIEW-stage spawn whose RECORDED
+        // result is an ERROR (an externally-killed reviewer - quota exhaustion, a crash - whose
+        // error the death courier recorded on its id) is an INFRASTRUCTURE fault, NOT a verdict.
+        // The next `rigger step` must NOT adopt the error as the review outcome and must NOT fail
+        // the step; it charges the unit no attempt (the work was never judged) and RE-PARKS a
+        // FRESH attempt of the SAME review in the returned wave. A completed REAL verdict on the
+        // re-parked spawn then flows into the NORMAL adjudication path. Driven under the PRODUCTION
+        // stepwise/replay driver (each `replay_step` is one `rigger step`), so the classification
+        // is exercised exactly as a live run replays a recorded review error.
+        let store = Store::open(":memory:").unwrap();
+        let cfg = degenerate_reviewer_cfg();
+        let replay_step = |store: &Store| {
+            let driver = crate::driver::replay::ReplayDriver::new(store);
+            let deps = Deps {
+                store,
+                driver: &driver,
+                gates: &ExecRunner,
+                repo: String::new(),
+                grounder: None,
+                graph: None,
+                criteria: Vec::new(),
+            };
+            // The whole point: a recorded review error is a CLEAN re-park, never a run failure.
+            run(&cfg, &deps).expect("a review-error re-park is a clean unwind, never a run failure")
+        };
+
+        let impl0 = spawn_id("u", ROLE_IMPLEMENTER, 0);
+        let lens0 = spawn_id("u", &lens_role("sdet"), 0);
+        let adj0 = spawn_id("u", ROLE_ADJUDICATOR, 0);
+        let adj_retry1 = spawn_retry_id("u", ROLE_ADJUDICATOR, 0, 1);
+
+        // Step 1: the implementer parks; record its success.
+        replay_step(&store);
+        crate::spawn::record_result(&store, &crate::spawn::SpawnResult::ok(&impl0, "the diff"))
+            .unwrap();
+
+        // Step 2: the review LENS parks; record a substantive lens review.
+        replay_step(&store);
+        assert!(
+            crate::spawn::is_recorded(
+                &store.read_stream(STREAM, 0, Direction::Forward).unwrap(),
+                &lens0
+            ),
+            "the review lens parked"
+        );
+        crate::spawn::record_result(
+            &store,
+            &crate::spawn::SpawnResult::ok(&lens0, "lens: no blocker"),
+        )
+        .unwrap();
+
+        // Step 3: the ADJUDICATOR parks; the death courier records an ERROR on it (a reviewer
+        // killed mid-run: usage-limit exhaustion).
+        replay_step(&store);
+        assert!(
+            crate::spawn::is_recorded(
+                &store.read_stream(STREAM, 0, Direction::Forward).unwrap(),
+                &adj0
+            ),
+            "the adjudicator parked"
+        );
+        crate::spawn::record_result(
+            &store,
+            &crate::spawn::SpawnResult::failed(&adj0, "agent killed mid-run: usage limit reached"),
+        )
+        .unwrap();
+
+        // Step 4: the errored adjudicator RE-PARKS a fresh attempt (~retry1) instead of failing the
+        // step - and charges the unit NO attempt (no UnitFailed / UnitEscalated), because an error
+        // is not a verdict.
+        replay_step(&store);
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(
+            crate::spawn::is_recorded(&events, &adj_retry1),
+            "the errored review re-parks a FRESH ~retry1 attempt in the wave"
+        );
+        assert!(
+            !events.iter().any(|e| e.type_ == ledger::TYPE_UNIT_FAILED),
+            "an errored review is an infra fault - the unit is charged no remediation attempt"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.type_ == ledger::TYPE_UNIT_ESCALATED),
+            "an errored review never escalates the unit"
+        );
+        assert!(
+            !has_status(&events, "reviewed"),
+            "an errored review is not a verdict - no `reviewed` status is emitted yet"
+        );
+
+        // A COMPLETED real verdict on the re-parked spawn flows into the NORMAL adjudication path.
+        crate::spawn::record_result(
+            &store,
+            &crate::spawn::SpawnResult::ok(&adj_retry1, r#"{"verdict":"approve"}"#),
+        )
+        .unwrap();
+        replay_step(&store);
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(
+            has_status(&events, "reviewed"),
+            "the real verdict on the re-parked spawn folds through the normal adjudication path"
+        );
+        assert!(
+            !events.iter().any(|e| e.type_ == ledger::TYPE_UNIT_FAILED),
+            "recovery still charges the unit no attempt"
+        );
     }
 
     #[test]
