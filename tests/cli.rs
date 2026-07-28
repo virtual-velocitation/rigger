@@ -6862,6 +6862,104 @@ fn installed_workflow_courier_prompt_is_foreground_and_honest() {
     );
 }
 
+/// Spec 51, criterion 3 - PERIPHERY (setup -> disk seam for THIS unit's amendment): the
+/// courier's auto-background WAIT rule must survive to the artifact Claude Code actually loads.
+/// The implementer's unit test asserts the amendment over the IN-MEMORY `RIGGER_WORKFLOW`
+/// constant (comment-stripped), and a sibling unit test asserts the installed file is
+/// BYTE-IDENTICAL to that constant - but byte-identity says nothing about the constant's CONTENT
+/// (a regressed prompt would still install byte-for-byte), and neither drives the real `rigger
+/// setup` subcommand end-to-end. This test closes THAT boundary for the new rule: it runs the
+/// built binary's `setup` (arg dispatch -> cmd_setup -> install_workflow -> file write), then
+/// reads the on-disk `.claude/workflows/rigger.js` - the exact file the harness auto-discovers -
+/// and pins that the courier prompt carries the ONE sanctioned exception spec 51 grants: when the
+/// DRIVING HARNESS (not the courier) auto-backgrounds the foreground step because it outran the
+/// foreground cap, the courier WAITS on that background task's output file for the step's JSON
+/// line and returns it verbatim, falls back to the re-run rule if it cannot, and NEVER returns a
+/// placeholder. It is scoped to this unit: it asserts nothing about the reviewer-error re-park or
+/// the worktree self-heal / sweep-ordering. Complements
+/// `installed_workflow_courier_prompt_is_foreground_and_honest`, which pins the unchanged
+/// foreground/honest half of the SAME on-disk courier prompt.
+#[test]
+fn installed_workflow_courier_waits_on_an_auto_backgrounded_step() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    // Drive the REAL `rigger setup` subcommand (RIGGER_NPM stubs npm so the shim step needs no
+    // network); it writes the native /rigger workflow to disk.
+    let (_out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok, "rigger setup must succeed; stderr:\n{err}");
+
+    // The user-facing artifact: the file Claude Code auto-discovers and runs.
+    let installed = root.join(".claude").join("workflows").join("rigger.js");
+    let workflow = std::fs::read_to_string(&installed).unwrap_or_else(|e| {
+        panic!(
+            "rigger setup must install the workflow at {}; read failed: {e}",
+            installed.display()
+        )
+    });
+
+    // Anchor on the COURIER agent's prompt so the guard pins the right agent's instructions.
+    assert!(
+        workflow.contains("You are a rigger COURIER"),
+        "the installed workflow must define the step-courier agent prompt"
+    );
+
+    // 1. The exception is scoped to a HARNESS-initiated conversion, not a courier choice: the
+    //    on-disk prompt names it a sanctioned exception where the harness turns the foreground
+    //    call into a background task the courier did not choose - so a courier reading the
+    //    artifact cannot use it to justify backgrounding the step itself.
+    assert!(
+        workflow.contains("sanctioned")
+            && workflow.contains("background task")
+            && workflow.contains("did not choose"),
+        "the installed courier prompt must scope the wait to a HARNESS-initiated conversion of \
+         the foreground call into a background task the courier did not choose; got:\n{workflow}"
+    );
+
+    // 2. The SANCTIONED WAIT reached the artifact: on that path the courier polls the background
+    //    task's OUTPUT FILE for the step's single JSON line and returns it verbatim - the exact
+    //    wait spec 51 grants a courier otherwise forbidden from monitors and unable to wait.
+    assert!(
+        workflow.contains("output file")
+            && workflow.contains("polling")
+            && workflow.contains("verbatim"),
+        "the installed courier prompt must instruct WAITING by polling the auto-backgrounded \
+         step's OUTPUT FILE for the JSON line and returning it verbatim; got:\n{workflow}"
+    );
+
+    // 3. FALL BACK to the existing re-run rule when the JSON still cannot be obtained: the step's
+    //    gate results are recorded durably, so a re-run resumes past finished work - the on-disk
+    //    prompt must route to that rule, never to a fabricated result.
+    assert!(
+        workflow.contains("re-run") && workflow.contains("resumes past"),
+        "the installed courier prompt must fall back to re-running the FOREGROUND step (a re-run \
+         resumes past durably recorded work) when the JSON cannot be obtained; got:\n{workflow}"
+    );
+
+    // 4. The PLACEHOLDER PROHIBITION still holds on THIS path in the artifact - returning a
+    //    sentinel / placeholder for an auto-backgrounded step is exactly the defect spec 51
+    //    closes - and the fabricated token from the original defect never reaches the file.
+    assert!(
+        workflow.contains("return a placeholder"),
+        "the installed courier prompt must keep forbidding a placeholder on the auto-background \
+         path; got:\n{workflow}"
+    );
+    assert!(
+        !workflow.contains("PLACEHOLDER_DO_NOT_USE"),
+        "the fabricated placeholder token must never reach the installed workflow; got:\n{workflow}"
+    );
+
+    // 5. The amendment ADDS an exception; it does not relax the default. The unchanged
+    //    foreground/honest rule (owned by the sibling test) still stands in the SAME artifact,
+    //    so the auto-background wait cannot be read as a general license to background the step.
+    assert!(
+        workflow.contains("FOREGROUND, BLOCKING Bash")
+            && workflow.contains("NOT run_in_background"),
+        "the installed courier prompt must keep the normal FOREGROUND, BLOCKING rule that forbids \
+         the courier from backgrounding the step itself; got:\n{workflow}"
+    );
+}
+
 /// Spec 46, criterion 1 - PERIPHERY (setup -> gitignore-on-disk seam): the always-on dash
 /// writes two runtime breadcrumbs under `.rigger/` - `.rigger/dash.url` and
 /// `.rigger/dash.marker`. Left untracked-and-not-ignored in a consumer's repo they get swept
