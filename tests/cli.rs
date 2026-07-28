@@ -10569,3 +10569,214 @@ fn dash_is_a_fixed_address_singleton_a_second_invocation_reports_and_exits_clean
          stdout: {out:?} stderr: {err:?}"
     );
 }
+
+/// Spec 50, criterion 1, the CONFLICT branch through the BUILT binary: when the dash's requested
+/// address is held by an UNRELATED (non-dash) process, `rigger dash --port <held>` must FAIL
+/// LOUD - it surfaces the address-in-use conflict and exits NON-ZERO, the deliberate opposite of
+/// the retired free-port search. It must NEVER drift to another port and NEVER mistake the holder
+/// for a serving singleton (no "already serving" defer): only a genuine rigger dash, recognized
+/// by its `X-Rigger-Dash` header, earns the clean exit-0 defer the sibling singleton test covers.
+/// This is the negative half of the fixed-address policy - the address in, or a loud conflict,
+/// never a silent drift - which the singleton (success) test cannot reach. Bounded so a
+/// regression that DID drift-and-serve fails LOUD (a caught hang) instead of wedging the suite.
+#[test]
+fn dash_on_a_port_held_by_a_non_dash_process_fails_loud_and_never_drifts() {
+    use std::io::Read;
+    use std::net::TcpListener;
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    let proj = temp_project();
+    let root = proj.path();
+
+    // Hold the port with a plain listener that is NOT a dash and answers no probe - any unrelated
+    // process squatting the address. Keeping the bound listener in scope holds the port for the
+    // whole `rigger dash` run; the singleton probe connects into its backlog, reads nothing, and
+    // times out - so the holder is correctly NOT recognized as a dash.
+    let holder = TcpListener::bind(("127.0.0.1", 0)).expect("bind a non-dash holder");
+    let port = holder.local_addr().unwrap().port();
+
+    let mut dash = Command::new(rigger_bin())
+        .args(["dash", "--port", &port.to_string()])
+        .current_dir(root)
+        .env_remove("RIGGER_NO_DASH")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn `rigger dash` against a held port");
+
+    // The conflict path exits immediately; poll `try_wait` on a bounded deadline so a regression
+    // that drifted to a free port and entered the serve loop is caught LOUD (as a hang past the
+    // deadline) rather than blocking the whole suite forever.
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let exited = loop {
+        match dash.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
+            Ok(None) => break None,
+            Err(_) => break None,
+        }
+    };
+
+    let mut out = String::new();
+    if let Some(mut so) = dash.stdout.take() {
+        let _ = so.read_to_string(&mut out);
+    }
+    let mut err = String::new();
+    if let Some(mut se) = dash.stderr.take() {
+        let _ = se.read_to_string(&mut err);
+    }
+
+    if exited.is_none() {
+        let _ = dash.kill();
+        let _ = dash.wait();
+        panic!(
+            "`rigger dash` never exited on a conflicting port - a non-dash holder must be a LOUD \
+             conflict, never a drift-and-serve; stdout: {out:?} stderr: {err:?}"
+        );
+    }
+    let status = exited.unwrap();
+
+    assert!(
+        !status.success(),
+        "`rigger dash` on a port held by a non-dash process must FAIL (non-zero), never drift or \
+         defer; stdout: {out:?} stderr: {err:?}"
+    );
+    assert!(
+        err.to_lowercase().contains("in use"),
+        "the conflict must surface as an address-in-use error on stderr; stdout: {out:?} \
+         stderr: {err:?}"
+    );
+    assert!(
+        !out.contains("serving on") && !out.contains("already serving"),
+        "a non-dash holder must NOT be reported as a serving/already-serving dash (no false \
+         singleton defer, no drift to another port); stdout: {out:?} stderr: {err:?}"
+    );
+
+    drop(holder);
+}
+
+/// Spec 50, criterion 1, the SINGLETON under CONCURRENCY: with one genuine `rigger dash` already
+/// serving the fixed address, MANY claimants racing that SAME address at once must EACH defer
+/// cleanly - `bind_singleton` returns `AlreadyServing` for every one of them, never a second
+/// `Bound` and never a spurious conflict error. The unit and CLI tests each serialize a SINGLE
+/// claimant behind a fully-served winner; only racing N claimants simultaneously proves the
+/// singleton holds under the real contention it exists to resolve (a manual `rigger dash` while
+/// the step path is also ensuring one, or two runs starting together). Driving the public
+/// `bind_singleton` API from the integration crate against a real serving process is the
+/// outside-in view the in-crate single-threaded unit tests are structurally blind to.
+#[test]
+fn many_claimants_racing_a_live_serving_singleton_all_defer_cleanly() {
+    use rigger::dash::{bind_singleton, SingletonBind};
+    use std::net::SocketAddr;
+    use std::process::Stdio;
+    use std::sync::{Arc, Barrier};
+
+    let proj = temp_project();
+    let root = proj.path();
+    let port = free_loopback_port();
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let url = format!("http://127.0.0.1:{port}/");
+
+    // The WINNER: a real, serving `rigger dash` process holding the address.
+    let mut winner = Command::new(rigger_bin())
+        .args(["dash", "--port", &port.to_string()])
+        .current_dir(root)
+        .env_remove("RIGGER_NO_DASH")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn the serving `rigger dash`");
+
+    if !matches!(http_get(&url), Some(body) if body.contains("rigger dash")) {
+        let _ = winner.kill();
+        let _ = winner.wait();
+        panic!("the serving `rigger dash` never came up at {url}");
+    }
+
+    // N claimants race the SAME address concurrently; a start barrier maximizes the overlap so
+    // they genuinely contend rather than run one-after-another.
+    let n = 8usize;
+    let barrier = Arc::new(Barrier::new(n));
+    let mut handles = Vec::with_capacity(n);
+    for _ in 0..n {
+        let b = barrier.clone();
+        handles.push(std::thread::spawn(move || {
+            b.wait();
+            bind_singleton(addr)
+        }));
+    }
+    let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+
+    // Reap the winner (the only serving process) BEFORE asserting so a failure never leaks a dash.
+    let _ = winner.kill();
+    let _ = winner.wait();
+
+    for (i, r) in results.iter().enumerate() {
+        match r {
+            Ok(SingletonBind::AlreadyServing(reported)) => assert_eq!(
+                *reported, addr,
+                "claimant {i} must defer to the fixed address the singleton serves, not a drifted one"
+            ),
+            other => panic!(
+                "claimant {i} racing a live serving singleton must defer (AlreadyServing), never \
+                 bind a second port or error; got {other:?}"
+            ),
+        }
+    }
+}
+
+/// Spec 50, criterion 1, the ATOMIC single-winner guarantee: when MANY claimants race the SAME
+/// (initially free) address at once, EXACTLY ONE binds it and NO OTHER ever becomes a second
+/// `Bound` - the singleton is atomic, not a check-then-bind two racers could both pass. Because
+/// `bind_singleton` never searches upward, a loser never drifts to a different port; it either
+/// recognizes an already-serving dash or surfaces the conflict, but it is NEVER a second holder
+/// of the address. This is the cold-race complement to the live-serving defer test, and the
+/// concurrency dimension the serialized unit tests cannot reach. Every result is collected before
+/// any is dropped, so the winner holds the address for the whole race.
+#[test]
+fn a_concurrent_cold_race_yields_exactly_one_binder_never_two() {
+    use rigger::dash::{bind_singleton, SingletonBind};
+    use std::net::SocketAddr;
+    use std::sync::{Arc, Barrier};
+
+    let port = free_loopback_port();
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+
+    let n = 8usize;
+    let barrier = Arc::new(Barrier::new(n));
+    let mut handles = Vec::with_capacity(n);
+    for _ in 0..n {
+        let b = barrier.clone();
+        handles.push(std::thread::spawn(move || {
+            b.wait();
+            bind_singleton(addr)
+        }));
+    }
+    // Collect ALL results first (keeping every `Bound` listener alive) so the winner holds the
+    // address for the whole race - no result is dropped until the count below is settled.
+    let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+
+    let mut bound = 0usize;
+    for r in &results {
+        match r {
+            Ok(SingletonBind::Bound(listener)) => {
+                bound += 1;
+                assert_eq!(
+                    listener.local_addr().unwrap().port(),
+                    port,
+                    "the single winner must bind the EXACT raced address, never a drifted one"
+                );
+            }
+            // A loser: it either recognized a serving dash or saw the raw conflict. Both are valid
+            // loser outcomes; the one thing forbidden - a second `Bound`, or a `Bound` on a
+            // drifted port - is caught by the count below and the port assertion above.
+            Ok(SingletonBind::AlreadyServing(_)) | Err(_) => {}
+        }
+    }
+    assert_eq!(
+        bound, 1,
+        "a concurrent race for one free address must produce EXACTLY ONE binder (the singleton is \
+         atomic); got {bound}. results: {results:?}"
+    );
+}
