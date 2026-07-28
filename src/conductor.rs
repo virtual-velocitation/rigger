@@ -14345,6 +14345,140 @@ mod tests {
     }
 
     #[test]
+    fn a_review_spawn_that_errors_on_every_re_parked_attempt_escalates_through_the_bound() {
+        // Spec 51, criterion 2 (ESCALATION BOUND): the reviewer-error RE-PARK (criterion 1) is
+        // BOUNDED - it can never re-park forever. When the SAME review spawn's RECORDED result is a
+        // plain ERROR on its ORIGINAL spawn AND on every re-parked `~retry{n}` attempt up to
+        // [`REVIEWER_RESPAWN_BOUND`], the conductor does NOT keep minting a fresh review spawn: it
+        // escalates through the SAME bounded path the degenerate-output loop uses, halting the run
+        // LOUDLY (naming the dead reviewer) rather than looping. Like that degenerate halt it is an
+        // INFRASTRUCTURE fault - the unit is charged NO attempt (no `UnitFailed`/`UnitEscalated`),
+        // because the work was never judged. Driven under the PRODUCTION stepwise/replay driver
+        // (each `replay_step` is one `rigger step`), so the bound is exercised exactly as a live run
+        // replays a CHAIN of recorded review errors - the multi-error path criterion 1's
+        // single-error re-park test cannot reach. This criterion OWNS the bound; it does NOT own the
+        // re-park (criterion 1).
+        let store = Store::open(":memory:").unwrap();
+        let cfg = degenerate_reviewer_cfg();
+        let replay_step = |store: &Store| -> Result<(), Error> {
+            let driver = crate::driver::replay::ReplayDriver::new(store);
+            let deps = Deps {
+                store,
+                driver: &driver,
+                gates: &ExecRunner,
+                repo: String::new(),
+                grounder: None,
+                graph: None,
+                criteria: Vec::new(),
+            };
+            run(&cfg, &deps).map(|_| ())
+        };
+
+        let impl0 = spawn_id("u", ROLE_IMPLEMENTER, 0);
+        let lens0 = spawn_id("u", &lens_role("sdet"), 0);
+        // The adjudicator's ORIGINAL spawn plus its bounded respawns: at most `1 +
+        // REVIEWER_RESPAWN_BOUND` attempts before the bound trips. All of them will error.
+        let adj_attempts: Vec<String> = (0..=REVIEWER_RESPAWN_BOUND)
+            .map(|retry| spawn_retry_id("u", ROLE_ADJUDICATOR, 0, retry))
+            .collect();
+        // The FOURTH attempt (one past the bound): it must NEVER be parked - the bound holds.
+        let adj_past_bound = spawn_retry_id("u", ROLE_ADJUDICATOR, 0, REVIEWER_RESPAWN_BOUND + 1);
+
+        // Step 1: the implementer parks; record its success.
+        replay_step(&store).expect("the implementer step is a clean unwind");
+        crate::spawn::record_result(&store, &crate::spawn::SpawnResult::ok(&impl0, "the diff"))
+            .unwrap();
+
+        // Step 2: the review LENS parks; record a substantive lens review so only the ADJUDICATOR
+        // exercises the errored-re-park bound under test.
+        replay_step(&store).expect("the lens step is a clean unwind");
+        crate::spawn::record_result(
+            &store,
+            &crate::spawn::SpawnResult::ok(&lens0, "lens: no blocker"),
+        )
+        .unwrap();
+
+        // Steps 3..=(3 + REVIEWER_RESPAWN_BOUND): the adjudicator's original spawn and each
+        // re-parked `~retry{n}` attempt parks in turn; the death courier records a PLAIN ERROR (a
+        // reviewer killed mid-run: usage-limit exhaustion) on each, re-parking the NEXT attempt.
+        // EVERY re-park is a clean unwind (never a run failure) right up to the bound.
+        for id in &adj_attempts {
+            replay_step(&store)
+                .expect("each errored re-park within the bound is a clean unwind, never a failure");
+            let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            assert!(
+                crate::spawn::is_recorded(&events, id),
+                "the adjudicator attempt {id} parked before the bound tripped"
+            );
+            crate::spawn::record_result(
+                &store,
+                &crate::spawn::SpawnResult::failed(id, "agent killed mid-run: usage limit reached"),
+            )
+            .unwrap();
+        }
+
+        // The NEXT step EXHAUSTS the bound: the original plus all REVIEWER_RESPAWN_BOUND respawns
+        // have each errored, so the conductor does NOT re-park a further attempt - it escalates
+        // through the bounded path, halting the run LOUDLY instead of re-parking forever.
+        let err = match replay_step(&store) {
+            Ok(()) => panic!(
+                "a review spawn that errors on every attempt up to the bound must HALT the run, \
+                 not re-park a further attempt forever"
+            ),
+            Err(e) => e,
+        };
+        // The bounded halt NAMES the dead reviewer (its agent id, the tier, and the unit) so the
+        // operator sees WHICH spawn is failing - the same loud surface the degenerate bound uses.
+        assert!(
+            err.0.contains("\"judge\"") && err.0.contains("adjudicator") && err.0.contains("\"u\""),
+            "the bounded escalation must name the dead reviewer, its tier, and the unit: {}",
+            err.0
+        );
+        // The internal recognition marker is stripped before the halt reaches the operator.
+        assert!(
+            !err.0.contains(DEGENERATE_MARKER),
+            "the operator-facing halt must not carry the internal sentinel marker: {:?}",
+            err.0
+        );
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        // THE BOUND HOLDS: no attempt PAST the bound is ever parked. A missing `SpawnRequested` for
+        // the fourth id proves the re-park did not loop forever - it stopped at exactly `1 +
+        // REVIEWER_RESPAWN_BOUND` spawns and escalated instead.
+        assert!(
+            !crate::spawn::is_recorded(&events, &adj_past_bound),
+            "the bound holds: the attempt past REVIEWER_RESPAWN_BOUND ({adj_past_bound}) is never parked"
+        );
+        // The unit was charged NO attempt: like the degenerate halt, a persistently-erroring
+        // reviewer is the operator's infrastructure problem, NOT code for remediation.
+        assert!(
+            !events.iter().any(|e| e.type_ == ledger::TYPE_UNIT_FAILED),
+            "a bounded reviewer-error escalation must not charge the unit an attempt (no UnitFailed)"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.type_ == ledger::TYPE_UNIT_ESCALATED),
+            "a bounded reviewer-error escalation is not a code defect for remediation (no UnitEscalated)"
+        );
+        // And it emits NO per-unit lesson - routing the halt through run_wave's dedicated
+        // degenerate arm keeps the operator's broken reviewer from being misattributed to the unit
+        // under review as a LESSON_LEARNED.
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.type_ == contextgraph::TYPE_LESSON_LEARNED),
+            "a bounded reviewer-error escalation must emit no per-unit lesson (no misattribution)"
+        );
+        // The `reviewed` status is NEVER emitted: an error is not a verdict, and an exhausted bound
+        // is a halt, not an approval or a rejection - review integrity is preserved.
+        assert!(
+            !has_status(&events, "reviewed"),
+            "an all-errored, bound-exhausted review never yields a verdict (no `reviewed` status)"
+        );
+    }
+
+    #[test]
     fn a_gating_spawn_that_emits_an_approve_verdict_but_returns_no_verdict_line_hard_errors_with_the_result_channel_fix(
     ) {
         // Spec 18, unit 3: the runtime verdict-channel mismatch backstop. A gating
