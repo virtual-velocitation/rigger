@@ -105,6 +105,12 @@ fn run_with_flags(root: &Path, extra: &[&str]) -> Output {
     Command::new(rigger_bin())
         .args(&args)
         .current_dir(root)
+        // `rigger run` registers this instance in the machine-global registry under XDG_STATE_HOME
+        // (spec 50, criterion 2) BEFORE the eager connect fails. Redirect that state dir into the
+        // test's own temp project so the registration lands under `root/rigger`, never the
+        // operator's real ~/.local/state/rigger/instances (a `--conn` run here would otherwise seed
+        // a live phantom shared instance a running dash discovers).
+        .env("XDG_STATE_HOME", root)
         .env("RIGGER_NO_DASH", "1")
         .env_remove("KURRENTDB_CONN")
         .output()

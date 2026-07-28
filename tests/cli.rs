@@ -150,6 +150,15 @@ fn run_rigger_envs(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> (String,
     // process that would outlive the test. Set before the caller's envs so a test could still
     // override it.
     cmd.env("RIGGER_NO_DASH", "1");
+    // The step/run/serve paths register this instance in the machine-global registry under
+    // XDG_STATE_HOME (spec 50, criterion 2). Default it to a per-invocation temp dir so the
+    // many tests that drive those paths never seed a phantom into the operator's real
+    // ~/.local/state/rigger/instances - a live discovery entry, rooted at a since-deleted test
+    // tempdir, that a running dash would otherwise pick up. Bound to `state` so the dir lives
+    // until after the command runs; set before the caller's envs so the registry tests that pass
+    // an explicit XDG_STATE_HOME (to read the registry back) still override it.
+    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME for the rigger run");
+    cmd.env("XDG_STATE_HOME", state.path());
     for (k, v) in envs {
         cmd.env(k, v);
     }
@@ -4885,6 +4894,11 @@ fn run_eventstore_kurrentdb_reaches_the_adapter_not_a_missing_feature_dead_end()
     let out = Command::new(rigger_bin())
         .args(["run", "--base", "HEAD", "--eventstore", "kurrentdb"])
         .current_dir(root)
+        // Redirect the machine-global registry (spec 50, criterion 2) into the test's own temp
+        // tree so any registration side effect lands under `root/rigger`, never the operator's
+        // real ~/.local/state/rigger/instances. Every direct spawn of a registering command
+        // (run/serve/step) that cannot go through the sandboxed `run_rigger_envs` sets this.
+        .env("XDG_STATE_HOME", root)
         .env("RIGGER_NO_DASH", "1")
         .env_remove("KURRENTDB_CONN")
         .output()
@@ -8319,6 +8333,10 @@ fn a_run_driver_auto_starts_a_reachable_dash_with_a_url_shown_in_status() {
     let mut child = Command::new(rigger_bin())
         .args(["serve", "--base", "HEAD"])
         .current_dir(root)
+        // Redirect the machine-global registry (spec 50, criterion 2) into the test's own temp
+        // tree so this served run registers under `root/rigger`, never the operator's real
+        // ~/.local/state/rigger/instances.
+        .env("XDG_STATE_HOME", root)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped()) // the MCP transport; piped so it never floods the test output
         .stderr(Stdio::piped())
@@ -9767,6 +9785,10 @@ fn run_step_dash_enabled(root: &Path) -> (String, String) {
     let out = Command::new(rigger_bin())
         .args(["step"])
         .current_dir(root)
+        // Redirect the machine-global registry (spec 50, criterion 2) into the test's own temp
+        // tree so this step registers under `root/rigger`, never the operator's real
+        // ~/.local/state/rigger/instances.
+        .env("XDG_STATE_HOME", root)
         .env_remove("RIGGER_NO_DASH")
         .output()
         .expect("failed to spawn the rigger binary");
@@ -10654,6 +10676,10 @@ fn a_real_rigger_step_session_detaches_the_dash_from_the_step_command_process_gr
     let mut step = Command::new(rigger_bin())
         .args(["step"])
         .current_dir(root)
+        // Redirect the machine-global registry (spec 50, criterion 2) into the test's own temp
+        // tree so this step registers under `root/rigger`, never the operator's real
+        // ~/.local/state/rigger/instances.
+        .env("XDG_STATE_HOME", root)
         .env_remove("RIGGER_NO_DASH")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
