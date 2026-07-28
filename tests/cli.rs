@@ -9970,6 +9970,74 @@ fn step_honors_the_config_dash_off_opt_out() {
     );
 }
 
+/// Spec 50, criterion 4 (opt-out) - the CONTRACT and BACK-COMPAT of the config opt-out at the
+/// PUBLIC config-load boundary. The step-path opt-out reads `Workflow::dash_enabled()` off the
+/// workflow the binary loads through the public `rigger::config::load`; this drives that REAL load
+/// path - parse AND validate a FULL, valid `workflow.yml` on disk (agents + stages + defaults), the
+/// exact fixture `rigger step` loads - rather than a bare `serde_yaml::from_str` of a one-key
+/// document. It therefore guards the whole outside-in surface an in-crate unit test cannot reach.
+/// First, the new `dash` key is PUBLIC and honored end-to-end through `config::load`. Second,
+/// BACK-COMPAT: a pre-existing `workflow.yml` that says nothing about the dash still loads and keeps
+/// the always-on promise (`dash_enabled()` true), so old configs are never broken. Third, the
+/// `dash` field composes inside a complete, VALIDATED workflow, not a one-key document. The
+/// documented bare `dash: off` / `dash: on` and the quoted `false`/`no`/`true`/`OFF`/` off `
+/// synonyms (case- and whitespace-insensitive) resolve as the opt-out spec names. This is the
+/// config-side contract that the CLI test `step_honors_the_config_dash_off_opt_out` then proves
+/// end-to-end at the binary; no port is bound here, so it needs no `dash_default_port` serial guard.
+#[test]
+fn config_load_dash_enabled_is_the_public_opt_out_contract_and_back_compat() {
+    // The SAME full, valid project the real loader accepts that `rigger step` drives: an agents dir
+    // plus a two-stage `workflow.yml`, so this exercises the exact production `config::load` path.
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
+    let dir = root.to_str().expect("utf-8 project path");
+    let wf_path = root.join(".rigger").join("workflow.yml");
+
+    // BACK-COMPAT: the fixture's `workflow.yml` says NOTHING about the dash - exactly as every
+    // config authored before this key did. It still loads AND keeps the always-on promise.
+    write_two_stage_workflow(root);
+    let cfg = rigger::config::load(dir).expect("a workflow that omits `dash` still loads");
+    assert!(
+        cfg.workflow.dash_enabled(),
+        "an omitted `dash` key keeps the always-on dash ON (back-compat)"
+    );
+
+    // Every opt-out value resolves the dash OFF through the real load path. Each case rewrites the
+    // fixture fresh (never appending a SECOND `dash:` onto a prior one), so the result is
+    // order-insensitive and no duplicate-key parse error can mask a regression. `dash: off` is the
+    // BARE documented form; the rest are quoted to pin the case- and whitespace-insensitive match.
+    let off_forms: &[&str] = &[
+        "dash: off",
+        r#"dash: "OFF""#,
+        r#"dash: " off ""#,
+        r#"dash: "Off""#,
+        r#"dash: "false""#,
+        r#"dash: "no""#,
+    ];
+    for form in off_forms {
+        write_two_stage_workflow(root);
+        append_line(&wf_path, form);
+        let cfg = rigger::config::load(dir).expect("a workflow with `dash` set still loads");
+        assert!(
+            !cfg.workflow.dash_enabled(),
+            "`{form}` must resolve the opt-out OFF through config::load"
+        );
+    }
+
+    // A truthy / empty value keeps the always-on dash ON through the same path. `dash: on` is the
+    // BARE documented truthy counterpart to `dash: off`; `true` and the empty string are quoted.
+    let on_forms: &[&str] = &["dash: on", r#"dash: "true""#, r#"dash: """#];
+    for form in on_forms {
+        write_two_stage_workflow(root);
+        append_line(&wf_path, form);
+        let cfg = rigger::config::load(dir).expect("a workflow with `dash` set still loads");
+        assert!(
+            cfg.workflow.dash_enabled(),
+            "`{form}` keeps the always-on dash ON through config::load"
+        );
+    }
+}
+
 // --- Spec 39, criterion 2: the step-started dash is DETACHED - it persists across the run's
 // many short-lived `step` processes. Criterion 1 (above) owns start-once idempotency; THIS
 // criterion owns PERSISTENCE: the dash a `step` starts is still serving after that step process
