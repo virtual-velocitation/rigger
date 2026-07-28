@@ -14,6 +14,7 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -34,7 +35,8 @@ pub enum StoreIdentity {
     /// `.rigger/events.db`). Local by construction, so it holds no credential.
     Local { path: String },
     /// A shared server backend addressed by this credential-free endpoint (`scheme://host:port`,
-    /// with any `user:password@` userinfo and any `?query` stripped - see [`shared_endpoint`]).
+    /// with any `user:password@` userinfo and any `?query` stripped by the crate's single
+    /// redaction authority - [`crate::eventstore::endpoint_label`] - before it is ever persisted).
     Shared { endpoint: String },
 }
 
@@ -91,31 +93,6 @@ fn fnv1a_64(bytes: &[u8]) -> u64 {
     h
 }
 
-/// Reduce a server connection string to a CREDENTIAL-FREE endpoint safe to persist and print:
-/// keep the scheme and `host[:port]`, DROP any `user:password@` userinfo AND any trailing
-/// `?query`/`#fragment` (a connection string can hide the credential in either). So
-/// `kurrentdb://admin:secret@db.example:2113?tls=true` reduces to `kurrentdb://db.example:2113`.
-/// Pure, so the "the registry never holds a credential" invariant is unit-tested without a store.
-pub fn shared_endpoint(conn: &str) -> String {
-    let conn = conn.trim();
-    // Split off the scheme, preserving it in the output (it names the backend).
-    let (scheme, rest) = match conn.find("://") {
-        Some(i) => (&conn[..i + 3], &conn[i + 3..]),
-        None => ("", conn),
-    };
-    // The authority ends at the first '/', '?', or '#'; everything after (path, query, fragment)
-    // is dropped - a query string is a common place to smuggle a credential (`?password=...`).
-    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-    let authority = &rest[..authority_end];
-    // Drop any "userinfo@" prefix (`user`, or `user:password`) - the credential. The host has no
-    // '@', so the LAST '@' is the userinfo boundary.
-    let host_port = match authority.rfind('@') {
-        Some(i) => &authority[i + 1..],
-        None => authority,
-    };
-    format!("{scheme}{host_port}")
-}
-
 /// The machine-global state directory that roots the instance registry, honoring the platform
 /// convention with a first-class override: `$XDG_STATE_HOME` when set, else `$HOME/.local/state`
 /// (the freedesktop base-directory default). Returns `None` only in a truly homeless environment
@@ -161,18 +138,34 @@ pub fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// A per-writer nonce that makes every temp file name unique WITHIN this process. Combined with the
+/// process id (unique ACROSS processes), it guarantees two concurrent writers of the SAME entry id
+/// never share a temp path. See [`write`] for why that matters.
+static TMP_NONCE: AtomicU64 = AtomicU64::new(0);
+
 /// Write (or refresh) `inst`'s entry in the registry directory `dir`, creating the directory if
-/// needed. The file name is `inst.id()`, so a re-registration of the same project+store
+/// needed. The final file name is `inst.id()`, so a re-registration of the same project+store
 /// OVERWRITES its own entry - refreshing the heartbeat in place rather than accumulating
 /// duplicates. Returns the entry path. The write is atomic (write-temp-then-rename) so a
 /// concurrent reader never observes a half-written entry.
+///
+/// The temp file name is PER-WRITER unique (`.{id}.{pid}.{nonce}.tmp`), not the shared `.{id}.tmp`:
+/// two writers of the SAME id can now run concurrently - a run driver's periodic heartbeat thread
+/// (§50) overlapping a `rigger step`, or two `rigger` invocations for one project+store - and a
+/// shared temp path would let one writer's `rename` fire while the other's `write` was mid-flight,
+/// so the second `rename` would hit a temp its peer already moved away (`ENOENT`) and fail the
+/// write. A unique temp per writer removes the shared name they could race on; both renames target
+/// the same final path, which is itself an atomic last-writer-wins swap. A reader only ever reads
+/// `*.json`, so the `.tmp` files are invisible to it (and a crashed writer's leftover temp likewise).
 pub fn write(dir: &Path, inst: &Instance) -> io::Result<PathBuf> {
     std::fs::create_dir_all(dir)?;
     let body = serde_json::to_vec_pretty(inst)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     let id = inst.id();
     let path = dir.join(format!("{id}.json"));
-    let tmp = dir.join(format!(".{id}.tmp"));
+    let pid = std::process::id();
+    let nonce = TMP_NONCE.fetch_add(1, Ordering::Relaxed);
+    let tmp = dir.join(format!(".{id}.{pid}.{nonce}.tmp"));
     std::fs::write(&tmp, &body)?;
     std::fs::rename(&tmp, &path)?;
     Ok(path)
@@ -323,35 +316,17 @@ mod tests {
     }
 
     #[test]
-    fn shared_endpoint_strips_userinfo_and_query_credentials() {
-        assert_eq!(
-            shared_endpoint("kurrentdb://admin:secret@db.example:2113?tls=true"),
-            "kurrentdb://db.example:2113",
-            "userinfo AND query are stripped, scheme+host:port kept"
-        );
-        assert_eq!(
-            shared_endpoint("esdb+discover://user@cluster.internal:2113"),
-            "esdb+discover://cluster.internal:2113",
-            "a bare user (no password) is still stripped"
-        );
-        assert_eq!(
-            shared_endpoint("kurrentdb://db.example:2113"),
-            "kurrentdb://db.example:2113",
-            "an already-credential-free endpoint is unchanged"
-        );
-        assert_eq!(
-            shared_endpoint("kurrentdb://host:2113/stream?user=u&password=p"),
-            "kurrentdb://host:2113",
-            "a credential smuggled after the path is dropped with the path"
-        );
-    }
-
-    #[test]
     fn a_shared_entry_persists_no_credential() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = instances_dir(tmp.path());
-        // Register with the credential-free endpoint the wiring derives via shared_endpoint.
-        let endpoint = shared_endpoint("kurrentdb://admin:hunter2@db.example:2113?tls=true");
+        // The wiring derives the entry's endpoint through the crate's SINGLE redaction authority
+        // (`eventstore::endpoint_label`), never a registry-local parser; assert end-to-end that the
+        // value it hands `write` - and thus what lands on disk - carries no credential, even for a
+        // malformed conn whose password hides an unencoded delimiter before its `@` (the leak GROUND
+        // 1 closed: a naive parse would have persisted the `admin:hun` head).
+        let endpoint = crate::eventstore::endpoint_label(
+            "kurrentdb://admin:hun/ter2@db.example:2113?tls=true",
+        );
         let inst = Instance {
             project: "proj".to_string(),
             root: "/home/dev/proj".to_string(),
@@ -361,8 +336,8 @@ mod tests {
         let path = write(&dir, &inst).unwrap();
         let on_disk = std::fs::read_to_string(&path).unwrap();
         assert!(
-            !on_disk.contains("hunter2") && !on_disk.contains("admin"),
-            "no credential is ever written to the registry entry: {on_disk}"
+            !on_disk.contains("hunter2") && !on_disk.contains("hun") && !on_disk.contains("admin"),
+            "no credential fragment is ever written to the registry entry: {on_disk}"
         );
         assert!(
             on_disk.contains("db.example:2113"),

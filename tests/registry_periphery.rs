@@ -239,3 +239,69 @@ fn read_live_skips_corrupt_and_foreign_entries_without_failing() {
     let again = registry::read_live(&dir, now, DEFAULT_IDLE_MS);
     assert_eq!(again.len(), 1, "a re-read is stable: {again:?}");
 }
+
+/// CONCURRENCY: the periodic heartbeat a run driver now holds (§50) can write the SAME entry id
+/// concurrently with another `rigger` for the same project+store, so `write` must tolerate many
+/// concurrent same-id writers. With a SHARED temp path (`.{id}.tmp`) one writer's `rename` could
+/// fire while another's `write` was still in flight, so the second `rename` would hit a temp its
+/// peer had already moved away (`ENOENT`) and the write would FAIL - or two interleaved writes to
+/// one temp would leave the renamed final file corrupt. The per-writer-unique temp
+/// (`.{id}.{pid}.{nonce}.tmp`) removes the shared name they could race on. This races many writers
+/// of ONE instance and asserts EVERY write succeeds and the reader always sees exactly one valid,
+/// parseable entry - never a failed write, a corrupt final file, or a missing one.
+#[test]
+fn concurrent_same_id_writers_never_clobber_each_others_temp() {
+    use std::sync::Arc;
+
+    let home = tempfile::tempdir().unwrap();
+    let dir = Arc::new(registry::instances_dir(home.path()));
+
+    // One entry id (same project+root+store), written by many threads at once. Each write stamps
+    // its own heartbeat, so whichever write wins the last-writer-wins swap, the final file is a
+    // valid entry.
+    let writers: u64 = 16;
+    let iterations: u64 = 40;
+    let mut handles = Vec::new();
+    for w in 0..writers {
+        let dir = Arc::clone(&dir);
+        handles.push(std::thread::spawn(move || {
+            for i in 0..iterations {
+                let inst = local_instance(
+                    "proj",
+                    "/home/dev/proj",
+                    "/home/dev/proj/.rigger/events.db",
+                    LIVE_NOW + w * iterations + i,
+                );
+                // The core assertion: NO concurrent same-id write fails (the shared-temp ENOENT
+                // race is gone). On the old shared `.{id}.tmp` this `expect` trips under contention.
+                registry::write(&dir, &inst).expect("a concurrent same-id write must not fail");
+            }
+        }));
+    }
+    for h in handles {
+        h.join().unwrap();
+    }
+
+    // `now` sits just past the highest heartbeat any writer stamped, so the (last-writer-wins) entry
+    // is within the idle window and never pruned as stale.
+    let now = LIVE_NOW + writers * iterations;
+    let live = registry::read_live(&dir, now, DEFAULT_IDLE_MS);
+    assert_eq!(
+        live.len(),
+        1,
+        "concurrent same-id writers collapse to exactly one valid entry; got {live:?}"
+    );
+    assert_eq!(live[0].root, "/home/dev/proj");
+
+    // No leftover temp masquerades as an entry, and no partial final file exists: exactly one
+    // `.json` entry file is on disk after the race (the reader keys on the `.json` extension).
+    let jsons = std::fs::read_dir(&*dir)
+        .unwrap()
+        .flatten()
+        .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("json"))
+        .count();
+    assert_eq!(
+        jsons, 1,
+        "exactly one .json entry file exists after the race"
+    );
+}
