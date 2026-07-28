@@ -10469,3 +10469,103 @@ fn a_real_rigger_step_session_detaches_the_dash_from_the_step_command_process_gr
          would carry the step command's pgid here"
     );
 }
+
+/// Spec 50, criterion 1 end-to-end, through the BUILT binary: `rigger dash` binds a FIXED
+/// address and is a SINGLETON. The first invocation binds the (here ephemeral, standing in for
+/// the fixed default) address and serves it; a SECOND invocation on that SAME address while the
+/// first is still serving does NOT bind a second port and does NOT enter a serve loop - it
+/// recognizes the already-serving dash (by the `X-Rigger-Dash` header it probes), reports the
+/// EXISTING address, and exits 0. The `dash.rs` unit tests prove `bind_singleton`'s branch
+/// decisions in-process; only driving the real binary proves the wiring across two separate
+/// `rigger dash` processes: the header recognition over the real socket and the clean exit-0
+/// report instead of an `Address already in use` failure.
+///
+/// The first dash is a real, long-lived process; this test REAPS it before its assertions so a
+/// failed assertion never leaks a dashboard.
+#[test]
+fn dash_is_a_fixed_address_singleton_a_second_invocation_reports_and_exits_clean() {
+    use std::io::Read;
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    // A repo-less/empty-store dir is enough: `rigger dash` serves an absent store as an empty
+    // run. An ephemeral port stands in for the fixed default so the test never fights a real dash.
+    let proj = temp_project();
+    let root = proj.path();
+    let port = free_loopback_port();
+    let url = format!("http://127.0.0.1:{port}/");
+
+    // FIRST dash: bind the address and wait until it genuinely serves its page.
+    let mut first = Command::new(rigger_bin())
+        .args(["dash", "--port", &port.to_string()])
+        .current_dir(root)
+        .env_remove("RIGGER_NO_DASH")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn the first `rigger dash`");
+
+    if !matches!(http_get(&url), Some(body) if body.contains("rigger dash")) {
+        let _ = first.kill();
+        let _ = first.wait();
+        panic!("the first `rigger dash` never served its page at {url}");
+    }
+
+    // SECOND invocation on the SAME address: it must NOT enter a serve loop (so it exits on its
+    // own) and must NOT bind a second port. It reports the existing address and exits 0. Poll
+    // `try_wait` on a bounded deadline so a regression that DID enter the serve loop fails LOUD
+    // (a hang caught by the deadline) rather than hanging the whole suite.
+    let mut second = Command::new(rigger_bin())
+        .args(["dash", "--port", &port.to_string()])
+        .current_dir(root)
+        .env_remove("RIGGER_NO_DASH")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the second `rigger dash`");
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let exited = loop {
+        match second.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
+            Ok(None) => break None,
+            Err(_) => break None,
+        }
+    };
+
+    // Collect the second invocation's output (its pipes are at EOF once it has exited).
+    let mut out = String::new();
+    if let Some(mut so) = second.stdout.take() {
+        let _ = so.read_to_string(&mut out);
+    }
+    let mut err = String::new();
+    if let Some(mut se) = second.stderr.take() {
+        let _ = se.read_to_string(&mut err);
+    }
+
+    // Reap the first (still the ONLY serving process) and, if the second hung, kill it too -
+    // BEFORE any assertion, so a failure never leaks a dashboard.
+    let _ = first.kill();
+    let _ = first.wait();
+    if exited.is_none() {
+        let _ = second.kill();
+        let _ = second.wait();
+        panic!(
+            "the second `rigger dash` never exited within the deadline - a singleton invocation \
+             must recognize the serving dash and NOT enter a serve loop"
+        );
+    }
+    let status = exited.unwrap();
+
+    assert!(
+        status.success(),
+        "the second `rigger dash` must exit 0 (the singleton is the point), not fail on a port \
+         conflict; stdout: {out:?} stderr: {err:?}"
+    );
+    assert!(
+        out.contains(&format!("127.0.0.1:{port}")),
+        "the second `rigger dash` must report the EXISTING address ({url}) it found serving; \
+         stdout: {out:?} stderr: {err:?}"
+    );
+}

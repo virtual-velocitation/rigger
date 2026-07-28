@@ -4314,36 +4314,53 @@ fn cmd_dash(args: &[String]) -> Res {
             Ok(())
         }
         None => {
-            // Self-reap on run-idle (spec 39, criterion 3): the detached step-path dash is
-            // started with `--reap-on-idle`, so a background thread polls the run's own liveness
-            // and exits this process once the run is complete or its heartbeat has gone stale -
-            // leaving no orphaned dash after a completed OR crashed run, driven by the run's
-            // liveness and NOT by any `step` process exiting. Read-only: the watcher only reads
-            // the store. The guard-bound `rigger run` / `run_workflow` dash omits the flag and
-            // keeps its `ReapedChild` reaping instead.
-            if let Some((events_db, identity, scratch_root)) = reap_inputs {
-                let poll = dash_reap_poll();
-                let stale_after = dash_reap_stale();
-                std::thread::spawn(move || {
-                    watch_and_self_reap_on_idle(
-                        events_db,
-                        identity,
-                        scratch_root,
-                        poll,
-                        stale_after,
-                    )
-                });
-            }
+            // Fixed address + singleton (spec 50, criterion 1): bind the RESOLVED address
+            // DIRECTLY - no free-port search. If a rigger dash is already serving that address,
+            // report it and exit 0 (never a second dash, never a drifted port); a non-dash
+            // holder is a genuine conflict the bind error surfaces (resolve it with `--port`).
             let addr = SocketAddr::from(([127, 0, 0, 1], port));
-            dash::serve(
-                addr,
-                provider,
-                graph_provider,
-                max_retries,
-                RUN_BRANCH,
-                &release_base,
-            )?;
-            Ok(())
+            match dash::bind_singleton(addr)? {
+                dash::SingletonBind::AlreadyServing(existing) => {
+                    // The singleton is the point: a second invocation reports the ONE known
+                    // address and exits cleanly instead of starting a rival dash.
+                    println!("rigger dash: already serving on http://{existing}/");
+                    Ok(())
+                }
+                dash::SingletonBind::Bound(listener) => {
+                    // Self-reap on run-idle (spec 39, criterion 3): the detached step-path dash
+                    // is started with `--reap-on-idle`, so a background thread polls the run's
+                    // own liveness and exits this process once the run is complete or its
+                    // heartbeat has gone stale - leaving no orphaned dash after a completed OR
+                    // crashed run, driven by the run's liveness and NOT by any `step` process
+                    // exiting. Read-only: the watcher only reads the store. The guard-bound
+                    // `rigger run` / `run_workflow` dash omits the flag and keeps its
+                    // `ReapedChild` reaping instead. Started ONLY on the branch that actually
+                    // binds and serves - a short-circuited singleton invocation serves nothing
+                    // and starts no watcher.
+                    if let Some((events_db, identity, scratch_root)) = reap_inputs {
+                        let poll = dash_reap_poll();
+                        let stale_after = dash_reap_stale();
+                        std::thread::spawn(move || {
+                            watch_and_self_reap_on_idle(
+                                events_db,
+                                identity,
+                                scratch_root,
+                                poll,
+                                stale_after,
+                            )
+                        });
+                    }
+                    dash::serve_on(
+                        listener,
+                        provider,
+                        graph_provider,
+                        max_retries,
+                        RUN_BRANCH,
+                        &release_base,
+                    )?;
+                    Ok(())
+                }
+            }
         }
     }
 }

@@ -67,6 +67,91 @@ pub fn free_port_from(start: u16) -> io::Result<u16> {
     ))
 }
 
+/// The HTTP response header every dash response carries (spec 50, criterion 1). A second
+/// `rigger dash` invocation probes an already-bound port for this header to recognize an
+/// already-serving SINGLETON and short-circuit - reporting the existing address instead of
+/// binding a second one. Its PRESENCE is the signal; the value (the crate version) is
+/// informational only. Adding the header keeps the dash read-only and introduces no new
+/// endpoint - the recognition rides the root page every dash already serves.
+pub const DASH_HEADER: &str = "X-Rigger-Dash";
+
+/// Whether a rigger dash is ALREADY serving on loopback `port` (spec 50, criterion 1). Drives
+/// one `GET /` and returns `true` only when the response carries the [`DASH_HEADER`] response
+/// header, so an unrelated process that merely holds the port is NEVER mistaken for a dash. Any
+/// connect / write / read failure, or a header-less response, returns `false`. Bounded by short
+/// timeouts so a dead, slow, or silent holder cannot stall the caller. `std`-only, so it is
+/// identical on the default and `--no-default-features` lanes.
+pub fn dash_serving_on(port: u16) -> bool {
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(500)) else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
+    if stream
+        .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .is_err()
+    {
+        return false;
+    }
+    // Read only the response head (status line + headers). Match the header name
+    // case-insensitively and cap the line count so a chatty or hostile holder cannot make this
+    // loop unbounded.
+    let mut reader = BufReader::new(stream);
+    let needle = format!("{DASH_HEADER}:").to_ascii_lowercase();
+    for _ in 0..256 {
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(0) => return false, // connection closed before the header block ended
+            Ok(_) => {
+                if line == "\r\n" || line == "\n" {
+                    return false; // end of headers, the dash header was never seen
+                }
+                if line.to_ascii_lowercase().starts_with(&needle) {
+                    return true;
+                }
+            }
+            Err(_) => return false, // a slow/reset holder times out here
+        }
+    }
+    false
+}
+
+/// The outcome of binding the dash's fixed address as a SINGLETON (spec 50, criterion 1).
+#[derive(Debug)]
+pub enum SingletonBind {
+    /// The address was free; serve on this freshly-bound listener.
+    Bound(TcpListener),
+    /// A rigger dash is ALREADY serving this address, so the caller reports it and exits 0
+    /// instead of binding a second one (the singleton is the point).
+    AlreadyServing(SocketAddr),
+}
+
+/// Bind the dash's fixed `addr` as a SINGLETON (spec 50, criterion 1): bind it DIRECTLY, with
+/// NO free-port search. When the port is already held:
+///   * by another rigger dash (recognized via [`dash_serving_on`]) -> [`SingletonBind::AlreadyServing`],
+///     so the caller reports the existing address and exits cleanly rather than starting a second
+///     dash (the second invocation is a no-op that never binds a second port);
+///   * by an UNRELATED process -> the `AddrInUse` error propagates - a genuine conflict the
+///     operator resolves with an explicit `--port`, never a silent drift to another port.
+///
+/// This is the one place the fixed-address policy lives: the address in / the address out, or a
+/// loud conflict; it never searches upward the way [`free_port_from`] does. `std`-only, so it
+/// holds identically on the default and `--no-default-features` lanes.
+pub fn bind_singleton(addr: SocketAddr) -> io::Result<SingletonBind> {
+    match TcpListener::bind(addr) {
+        Ok(listener) => Ok(SingletonBind::Bound(listener)),
+        Err(e) if e.kind() == io::ErrorKind::AddrInUse => {
+            if dash_serving_on(addr.port()) {
+                Ok(SingletonBind::AlreadyServing(addr))
+            } else {
+                Err(e)
+            }
+        }
+        Err(e) => Err(e),
+    }
+}
+
 /// The per-project record of the run dashboard currently serving a project: the loopback
 /// PORT it bound and the PID of its process. The step drive path writes it when it starts a
 /// dash and reads it before starting one, so at most one run dashboard serves a project at a
@@ -1981,15 +2066,19 @@ impl Response {
     }
 
     /// Write this response as HTTP/1.1 with `Connection: close`, so a bare client knows
-    /// the body ends at the connection close (no keep-alive bookkeeping).
+    /// the body ends at the connection close (no keep-alive bookkeeping). Every response
+    /// carries the [`DASH_HEADER`] marker so a second `rigger dash` invocation can recognize
+    /// an already-serving singleton on the port (spec 50, criterion 1).
     fn write_to(&self, w: &mut impl Write) -> io::Result<()> {
         let header = format!(
             "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n\
-             Cache-Control: no-store\r\nConnection: close\r\n\r\n",
+             {}: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
             self.status,
             self.reason(),
             self.content_type,
             self.body.len(),
+            DASH_HEADER,
+            env!("CARGO_PKG_VERSION"),
         );
         w.write_all(header.as_bytes())?;
         w.write_all(&self.body)?;
@@ -2172,6 +2261,36 @@ where
     G: Fn() -> Graph,
 {
     let listener = TcpListener::bind(addr)?;
+    serve_on(
+        listener,
+        provider,
+        graph_provider,
+        configured_max_retries,
+        run_branch,
+        base,
+    )
+}
+
+/// Serve the dash on an ALREADY-BOUND `listener` - the singleton-aware entrypoint (spec 50,
+/// criterion 1). `cmd_dash` binds the fixed address itself via [`bind_singleton`] (so the
+/// AddrInUse that decides the singleton short-circuit is seen BEFORE this accept loop), then
+/// hands the bound listener here. [`serve`] is the thin wrapper that binds `addr` and delegates,
+/// preserving its existing bind-internally contract for callers that pass an address.
+///
+/// Identical serving semantics to [`serve`]: one connection at a time over the same
+/// cadence-split providers, re-reading fresh projection inputs each request.
+pub fn serve_on<F, G>(
+    listener: TcpListener,
+    provider: F,
+    graph_provider: G,
+    configured_max_retries: u32,
+    run_branch: &str,
+    base: &str,
+) -> io::Result<()>
+where
+    F: Fn() -> Result<DashInputs, String>,
+    G: Fn() -> Graph,
+{
     let bound = listener.local_addr()?;
     eprintln!("rigger dash: serving on http://{bound}/ (read-only; Ctrl-C to stop)");
     for stream in listener.incoming() {
@@ -2596,6 +2715,119 @@ mod tests {
             "a busy start port is skipped for the next free one; got {next} for start {taken}"
         );
         drop(held);
+    }
+
+    /// Spec 50, criterion 1 (fixed address, no free-port search): `bind_singleton` binds the
+    /// EXACT requested address when it is free, and NEVER drifts to another port when the port
+    /// is held by an UNRELATED (non-dash) process - that is a genuine conflict surfaced as an
+    /// `AddrInUse` error, the deliberate opposite of `free_port_from`'s search-upward behavior.
+    #[test]
+    fn bind_singleton_binds_the_exact_port_and_never_searches() {
+        // A free ephemeral port (learn it, release it): `bind_singleton` returns `Bound` on
+        // exactly that address, never a drifted one.
+        let free = TcpListener::bind(("127.0.0.1", 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let addr = SocketAddr::from(([127, 0, 0, 1], free));
+        match bind_singleton(addr) {
+            Ok(SingletonBind::Bound(listener)) => assert_eq!(
+                listener.local_addr().unwrap().port(),
+                free,
+                "bind_singleton must bind the EXACT requested port, never drift to another"
+            ),
+            other => panic!("a free port must yield Bound on that exact port, got {other:?}"),
+        }
+
+        // A port HELD by an unrelated listener that never emits the dash header: a genuine
+        // conflict -> AddrInUse, never a silent drift and never a false AlreadyServing.
+        let held = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let held_addr = SocketAddr::from(([127, 0, 0, 1], held.local_addr().unwrap().port()));
+        match bind_singleton(held_addr) {
+            Err(e) => assert_eq!(
+                e.kind(),
+                io::ErrorKind::AddrInUse,
+                "a non-dash holder is a genuine conflict surfaced as AddrInUse, got {e:?}"
+            ),
+            Ok(other) => panic!("a non-dash holder must be a genuine conflict, not {other:?}"),
+        }
+        drop(held);
+    }
+
+    /// Spec 50, criterion 1 (singleton): when a rigger dash is ALREADY serving the address,
+    /// `bind_singleton` short-circuits to `AlreadyServing(addr)` - recognizing it by the
+    /// [`DASH_HEADER`] response header - instead of binding a second port. This is the behavior
+    /// a second `rigger dash` invocation relies on to report the existing address and exit clean.
+    #[test]
+    fn bind_singleton_short_circuits_on_an_already_serving_rigger_dash() {
+        use std::time::Instant;
+
+        // Bring a REAL dash up on an ephemeral port and wait until it answers as a dash.
+        let port = TcpListener::bind(("127.0.0.1", 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let addr = SocketAddr::from(([127, 0, 0, 1], port));
+        let provider = || -> Result<DashInputs, String> {
+            Ok((Vec::new(), Graph::default(), Vec::new(), HashMap::new()))
+        };
+        let graph_provider = Graph::default;
+        std::thread::spawn(move || {
+            let _ = serve(
+                addr,
+                provider,
+                graph_provider,
+                3,
+                "rigger-run",
+                "origin/main",
+            );
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !dash_serving_on(port) {
+            assert!(
+                Instant::now() < deadline,
+                "the dash never came up on port {port} within the deadline"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        // The port is now held by a genuine rigger dash: bind_singleton must NOT bind a second
+        // one - it reports the existing address.
+        match bind_singleton(addr) {
+            Ok(SingletonBind::AlreadyServing(reported)) => assert_eq!(
+                reported, addr,
+                "the reported address must be the fixed address the singleton already serves"
+            ),
+            other => {
+                panic!("an already-serving rigger dash must short-circuit to AlreadyServing, got {other:?}")
+            }
+        }
+    }
+
+    /// Spec 50, criterion 1: `dash_serving_on` recognizes ONLY a rigger dash (by its
+    /// [`DASH_HEADER`]). A raw listener that answers WITHOUT that header is not mistaken for a
+    /// dash, so a genuine conflict with an unrelated process is never swallowed as a false
+    /// singleton short-circuit.
+    #[test]
+    fn dash_serving_on_is_false_for_a_non_dash_listener() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for mut s in listener.incoming().flatten() {
+                // A well-formed HTTP reply that carries NO dash header - any unrelated
+                // process holding the port.
+                let _ = s.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi",
+                );
+            }
+        });
+        assert!(
+            !dash_serving_on(port),
+            "a non-dash listener must not be recognized as a rigger dash"
+        );
     }
 
     /// Spec 19b c2 (responsive redesign): the page BODY must never scroll horizontally at
