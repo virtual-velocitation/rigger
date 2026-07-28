@@ -9915,6 +9915,70 @@ fn step_auto_starts_one_persistent_dash_and_a_second_step_starts_none() {
     );
 }
 
+/// Spec 50, criterion 4 (stable fixed address) end-to-end at the BUILT binary: the
+/// `RIGGER_DASH_PORT` seam the step-path ensure resolves through actually reaches the bind. The
+/// pure unit test `dash_ensure_port_defaults_to_the_fixed_address_and_only_a_valid_override_relocates_it`
+/// proves the RESOLUTION table (an unset override binds `dash::DEFAULT_PORT`; a valid `u16`
+/// relocates it); only driving a real `rigger step` proves the WIRING - that the resolved port
+/// reaches `spawn_run_dashboard_detached`'s actual bind. A step under `RIGGER_DASH_PORT=<port>`
+/// must start its detached dash at EXACTLY that port: the recorded `.rigger/dash.marker` names it
+/// AND a live process is genuinely serving there.
+///
+/// This is the periphery assertion the other step-path dash tests deliberately do NOT make: they
+/// pass the override only to stay hermetic and then read back whatever port the marker names, so a
+/// regression that IGNORED the env and always bound `dash::DEFAULT_PORT` would still pass them on a
+/// clean machine (none assert the recorded port equals the injected one) and surface only as
+/// flakiness on a box where 7420 is already held. Asserting marker-port == injected-port closes
+/// that gap. The complementary unset -> `dash::DEFAULT_PORT` fallback is left to the pure unit test
+/// on purpose: asserting it end-to-end is exactly the fixed-7420 machine-dash fight this unit
+/// removed, so re-introducing it here would re-introduce the flakiness.
+///
+/// The started dash is a real, long-lived detached process, so this test REAPS it by pid BEFORE
+/// its assertions - a failed assertion never leaks a dashboard.
+// Hermetic against a real machine dash: pins the ensure port to its OWN ephemeral
+// `free_loopback_port` (never the fixed 7420 a genuine always-on dash holds on the self-hosting
+// box), so it drives the real ensure/bind path without fighting that machine dash - the same
+// reason the other step-path dash tests need no `serial` key.
+#[test]
+fn step_dash_binds_exactly_the_rigger_dash_port_override() {
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
+    write_two_stage_workflow(root);
+    // The override the real binary must honor at the bind: an ephemeral loopback port, never 7420.
+    let dash_port = free_loopback_port();
+
+    let (out, err) = run_step_dash_enabled(root, dash_port);
+    assert!(
+        out.contains(r#""wave":"#),
+        "the step must run to completion (a printed wave), reaching the dash-start seam; \
+         stdout: {out:?} stderr: {err:?}"
+    );
+    let (marker_port, pid) = read_dash_marker(root).unwrap_or_else(|| {
+        panic!("the step must record a dash marker at .rigger/dash.marker; stderr:\n{err}")
+    });
+
+    // Prove a GENUINE process bound exactly the injected port, not merely that the marker names it:
+    // an HTTP GET of that port's loopback URL returns the read-only page. Capture the result BEFORE
+    // reaping so the assertion never depends on the child still being alive.
+    let url = format!("http://127.0.0.1:{dash_port}/");
+    let served_at_override = matches!(http_get(&url), Some(body) if body.contains("rigger dash"));
+
+    // Reap the real detached dash BEFORE any assertion, so a failed assertion never leaks it.
+    reap_pid(pid);
+
+    assert_eq!(
+        marker_port, dash_port,
+        "`rigger step` under RIGGER_DASH_PORT={dash_port} must bind its step-path dash at EXACTLY \
+         that port and record it in .rigger/dash.marker (proving the override reaches the real \
+         bind, not the fixed dash::DEFAULT_PORT); the marker instead recorded {marker_port}"
+    );
+    assert!(
+        served_at_override,
+        "a real detached dash must be genuinely serving at the injected RIGGER_DASH_PORT={dash_port} \
+         - the override must reach the actual bind, not just the recorded marker value"
+    );
+}
+
 /// Spec 39, criterion 1: the RIGGER_NO_DASH opt-out is honored by the BUILT binary on the step
 /// path - a step run under it reaches and passes the dash-start seam (it prints its wave) yet
 /// records NO `.rigger/dash.marker`, so a short-lived CI run or the crate's own integration
