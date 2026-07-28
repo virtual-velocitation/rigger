@@ -280,77 +280,39 @@ pub fn dash_start_needed(
     }
 }
 
-/// The self-reap decision for the step-path PERSISTENT dashboard (spec 39, criterion 3):
-/// given a snapshot of the run it serves, returns `true` iff the dash should REAP ITSELF now -
-/// the run is complete or its liveness has gone stale - so a completed or crashed run leaves no
-/// orphaned dash. This is the domain core the detached dash's watcher polls; the watcher owns
-/// only the I/O (reading the store, scanning the heartbeat markers, sleeping, and exiting on
-/// `true`), so the DECISION is provable here without a real dashboard process or a real run.
+/// The self-reap decision for the machine-level SINGLETON dashboard (spec 50, criterion 5):
+/// given the count of registered instances currently LIVE and whether the watcher has EVER
+/// observed a live instance, returns `true` iff the singleton should REAP ITSELF now - so a quiet
+/// machine leaves no orphaned dash. This is the domain core the detached dash's watcher polls; the
+/// watcher owns only the I/O (reading the machine-global instance registry, sleeping, and exiting
+/// on `true`), so the DECISION is provable here without a real dashboard process or a real run.
 ///
-/// The trigger is LIVENESS, never the pure `done` flag alone: between two `rigger step`
-/// processes the log's [`spawn::step_result`] `done` is transiently `true` (the last wave is
-/// answered but the conductor has not parked the next one yet), so a continuously-polling
-/// watcher that reaped on `done` would kill a live run's dash in an inter-step gap. The run's
-/// HEARTBEAT - the freshest liveness-marker mtime, which stays fresh while any worker is alive
-/// and only goes absent/stale once the run stops - distinguishes a truly idle run from one merely
-/// between steps FOR A BOUNDED RUN. But an UNBOUNDED run (the default scaffold sets no
-/// `max_wall_clock`) writes NO liveness marker at all, so its heartbeat is PERMANENTLY `None`; the
-/// heartbeat alone cannot then tell a genuinely-complete run from one transiently terminal between
-/// waves. So the `None` arm is additionally gated on a UNIT-LEVEL fixpoint, `run_settled`, which
-/// only the conductor's integration pass produces - never a bare inter-wave frontier snapshot.
+/// This RETARGETS spec 39's per-run trigger ("my run went idle") at the singleton ("NOTHING has
+/// been registered or alive for the idle window"). The dash is no longer a per-run, per-project
+/// process watching its OWN run's liveness markers: it is one machine-level process that serves
+/// every registered instance and outlives any single run, so its liveness signal is the discovery
+/// [`crate::registry`] - not one run's `agent-live` heartbeat. `live_instances` is the length of
+/// [`crate::registry::read_live`], which already applies the idle window (an instance counts as
+/// live only while its heartbeat is fresher than the window; a reader prunes the rest), so "no live
+/// instance" means EVERY registered instance's heartbeat has aged past the idle window and none was
+/// refreshed within it.
 ///
-/// - `run_started`: the run has produced at least one event (a non-empty current-run slice).
-///   Guards a just-started dash on an empty store from reaping before its run has begun - an
-///   empty log is vacuously `done`, so without this a fresh dash would reap on its first poll.
-/// - `run_terminal`: the run reached a SPAWN-level terminal fixpoint (`terminal_and_no_live_worker`
-///   in the binary): every parked spawn answered, no hung spawn, no manual-review pause. This is
-///   TRANSIENTLY true in every inter-wave gap (the wave answered, the next not parked yet).
-/// - `run_settled`: the run reached a UNIT-level fixpoint - it has at least one unit and EVERY unit
-///   is terminal (integrated or escalated). A unit becomes terminal ONLY through the conductor's
-///   integration pass (which runs inside `rigger step`), never merely because a worker reported its
-///   result, so `run_settled` is FALSE in the transient inter-wave window where results are in but
-///   not yet integrated, and false while any later-wave unit is still pending. It is the
-///   will-not-advance signal that distinguishes genuine completion from a transiently-terminal
-///   snapshot when there is no heartbeat to consult (the unbounded run), and it stays correct for a
-///   bounded run too (whose markers the final teardown reclaims, so it also lands on the `None` arm).
-/// - `heartbeat_age`: the freshest per-spawn liveness-marker age across the WHOLE run's markers
-///   (not just the unanswered wave), or `None` when none is recorded - a run not yet heartbeating,
-///   an unbounded run that never heartbeats, or a completed run whose `agent-live` markers the
-///   terminal teardown reclaimed.
-/// - `stale_after`: the heartbeat-staleness bound; a heartbeat older than this means the run's
-///   liveness has gone stale (a crashed or wedged run that never reached a clean fixpoint).
-///
-/// The two reap arms:
-/// - `None` heartbeat: reap only when the run has STARTED, is spawn-level TERMINAL, and is
-///   unit-level SETTLED - genuine completion (or an escalation-halt), where every unit reached a
-///   terminal state and, for a bounded run, the final step's teardown reclaimed the markers. A
-///   `None` heartbeat that is terminal but NOT settled is either a run still coming up (a wave
-///   parked whose workers have not touched a marker yet) OR an unbounded run merely between waves
-///   (results reported, integration not yet run) - both must keep serving.
-/// - `Some(age)` heartbeat: reap once `age > stale_after`. A fresh heartbeat (small age) means a
-///   worker is alive - even when the log reads terminal in an inter-step gap - so the dash keeps
-///   serving; a stale heartbeat means the run's liveness died, whether it reached a clean
-///   fixpoint (markers not yet reclaimed) or wedged, so the dash reaps.
-pub fn should_reap_on_idle(
-    run_started: bool,
-    run_terminal: bool,
-    run_settled: bool,
-    heartbeat_age: Option<Duration>,
-    stale_after: Duration,
-) -> bool {
-    match heartbeat_age {
-        // No heartbeat recorded: reap only when the run has STARTED, the log confirms a spawn-level
-        // terminal fixpoint, AND every unit is terminal (the unit-level fixpoint the conductor's
-        // integration pass produces). Requiring `run_settled` here is what keeps an UNBOUNDED run's
-        // dash serving through inter-wave gaps: with no heartbeat, `run_terminal` alone is
-        // transiently true between waves, so without the settled gate the dash would self-reap
-        // mid-run. A `None` heartbeat that is terminal-but-not-settled is a run still coming up or
-        // merely between waves - keep serving.
-        None => run_started && run_terminal && run_settled,
-        // A heartbeat is recorded: reap once it has gone stale. A fresh heartbeat means a worker
-        // is alive (a live run, even between steps when the log reads terminal), so keep serving.
-        Some(age) => age > stale_after,
-    }
+/// - `live_instances`: how many registered instances are currently live (heartbeat within the idle
+///   window). Greater than zero means at least one run - on THIS project or any other, local or a
+///   shared store - is alive and needs the dash, so it keeps serving. This is what lets the
+///   singleton SURVIVE one project's run ending while another's is still live: that other instance
+///   keeps the count positive.
+/// - `ever_seen_live`: whether the watcher has observed a live instance on any prior poll. This is
+///   the startup-race guard, the direct analogue of spec 39's `run_started`: a singleton the step
+///   path just ensured reads zero live instances until its ensuring run writes its registry entry,
+///   and it must NOT reap on those first empty polls before the entry lands. Once any live instance
+///   has been seen, a return to zero is genuine machine idle and reaps. The safe direction on
+///   uncertainty (never yet seen a live instance) is to keep serving.
+pub fn should_reap_singleton(live_instances: usize, ever_seen_live: bool) -> bool {
+    // Reap only once the watcher has seen a live instance AND none remains live: a quiet machine.
+    // A positive count never reaps (a live run - any project's - keeps the singleton serving), and
+    // an empty registry that has never yet held a live instance keeps serving (the startup guard).
+    ever_seen_live && live_instances == 0
 }
 
 /// What the dash's data provider yields per request: the run's events, its context subgraph,
@@ -5687,77 +5649,43 @@ mod tests {
     }
 
     #[test]
-    fn should_reap_on_idle_reaps_on_completion_or_stale_liveness_but_never_on_a_live_or_starting_run(
-    ) {
-        let stale = Duration::from_secs(900);
-        let fresh = Some(Duration::from_secs(5));
-        let gone_stale = Some(Duration::from_secs(1_000));
+    fn should_reap_singleton_reaps_only_when_no_registered_instance_is_live() {
+        // Spec 50, criterion 5: the machine-level singleton reaps itself ONLY when nothing is
+        // registered-and-alive - and never before it has seen its first live instance (the
+        // startup-race guard, the direct analogue of spec 39's `run_started`).
 
-        // A run that has not started yet (empty log is vacuously terminal): a just-spawned dash
-        // must KEEP serving, never reap on its first poll.
+        // Startup: the ensuring run has not yet written its registry entry, so the watcher reads
+        // ZERO live instances on its first polls. It must NOT reap before that entry lands.
         assert!(
-            !should_reap_on_idle(false, true, false, None, stale),
-            "a not-yet-started run's dash must not reap"
-        );
-
-        // A started run mid-flight, wave parked but no worker has touched a marker yet
-        // (heartbeat None, not terminal): the dash is coming up on a live run - keep serving.
-        assert!(
-            !should_reap_on_idle(true, false, false, None, stale),
-            "a starting run (parked wave, no heartbeat yet) must not reap"
+            !should_reap_singleton(0, false),
+            "a just-ensured singleton that has not yet seen any live instance must not reap"
         );
 
-        // THE GATING CASE (unbounded run, between waves): started + spawn-level terminal + NO
-        // heartbeat, but NOT unit-level settled (a wave's results are in yet the conductor has not
-        // integrated them, or later-wave units are still pending). An unbounded run has NO marker
-        // to consult, so a reap keyed on `terminal` alone would exit the dash MID-RUN here. The
-        // `run_settled` gate is what keeps it serving until the run genuinely completes.
+        // A live instance is registered (this project's run, or any other's): keep serving.
         assert!(
-            !should_reap_on_idle(true, true, false, None, stale),
-            "an unbounded run that is only transiently terminal between waves (not settled) must \
-             not reap - this is the mid-run reap the settled gate prevents"
+            !should_reap_singleton(1, true),
+            "one live registered instance keeps the singleton serving"
+        );
+        // The multi-instance headline: one project's run ending while ANOTHER's is still live
+        // leaves the count > 0, so the singleton survives.
+        assert!(
+            !should_reap_singleton(2, true),
+            "several live instances keep the singleton serving"
         );
 
-        // A live run with a FRESH heartbeat, even when the log reads terminal in an inter-step
-        // gap (the next wave is not parked yet): a worker touched a marker seconds ago, so the
-        // run is between steps, NOT idle - keep serving. This is the inter-step false-positive
-        // the done-flag alone would trip.
+        // Every registered instance's heartbeat has aged past the idle window (so `read_live`
+        // pruned them all) and the watcher HAS seen a live instance before: a quiet machine ->
+        // reap.
         assert!(
-            !should_reap_on_idle(true, true, false, fresh, stale),
-            "a fresh heartbeat means a live run between steps - must not reap"
-        );
-        assert!(
-            !should_reap_on_idle(true, false, false, fresh, stale),
-            "a fresh heartbeat on a non-terminal run must not reap"
+            should_reap_singleton(0, true),
+            "no live instance, after at least one was seen, reaps the singleton"
         );
 
-        // Normal completion: the run is started + spawn-terminal + unit-settled (every unit
-        // integrated) and its `agent-live` markers were reclaimed by the final step's teardown
-        // (heartbeat None) -> reap. This is genuine completion for both bounded (markers reclaimed)
-        // and unbounded (never had markers) runs.
+        // A count > 0 that was never marked seen cannot occur in the watcher (a non-empty read
+        // flips the flag first), but the decision stays safe: a positive count never reaps.
         assert!(
-            should_reap_on_idle(true, true, true, None, stale),
-            "a completed run (every unit terminal) whose heartbeat is None must reap"
-        );
-
-        // A crashed / wedged run that never reached a clean fixpoint but whose heartbeat has
-        // gone stale (no worker touched a marker within the bound) -> reap, the backstop. The
-        // `Some(age)` arm is independent of `run_settled`: a stale heartbeat is itself the
-        // liveness-died signal.
-        assert!(
-            should_reap_on_idle(true, false, false, gone_stale, stale),
-            "a non-terminal run whose heartbeat went stale must reap (crashed-run backstop)"
-        );
-        // A terminal run whose markers were not reclaimed but have aged past the bound -> reap.
-        assert!(
-            should_reap_on_idle(true, true, false, gone_stale, stale),
-            "a terminal run whose stale heartbeat markers linger must still reap"
-        );
-
-        // Exactly-at-the-bound is NOT yet stale (strictly greater): still serving.
-        assert!(
-            !should_reap_on_idle(true, false, false, Some(stale), stale),
-            "a heartbeat exactly at the bound is not yet stale"
+            !should_reap_singleton(1, false),
+            "a positive live count never reaps regardless of the seen flag"
         );
     }
 }
