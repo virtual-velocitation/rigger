@@ -8302,6 +8302,34 @@ fn http_get(url: &str) -> Option<String> {
     Some(resp[body_start..].to_string())
 }
 
+/// A minimal HTTP GET of an arbitrary `path` (e.g. `/api/instances`, `/api/state?instance=<id>`)
+/// on a loopback dash at `port`, returning the whole response (status line + headers + body) so a
+/// caller can assert BOTH the `200` status and the body content. Retries the connect on the same
+/// bounded startup deadline as [`http_get`], so a request during the dash's bind window is retried,
+/// never a false failure. `None` only when the dash never came up within the deadline.
+fn http_get_path(port: u16, path: &str) -> Option<String> {
+    use std::io::{Read, Write};
+    use std::time::{Duration, Instant};
+    let hostport = format!("127.0.0.1:{port}");
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut stream = loop {
+        match std::net::TcpStream::connect(&hostport) {
+            Ok(stream) => break stream,
+            Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
+            Err(_) => return None,
+        }
+    };
+    stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
+    write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nHost: {hostport}\r\nConnection: close\r\n\r\n"
+    )
+    .ok()?;
+    let mut resp = String::new();
+    stream.read_to_string(&mut resp).ok()?;
+    Some(resp)
+}
+
 /// Spec 19b, unit 1 (always-on dash + discoverability): whenever a driver has a run in
 /// flight, a `rigger dash` is auto-started serving that run - with NO opt-in flag - its URL
 /// printed at run start and shown in `rigger status`. Driven through the WORKFLOW driver
@@ -10821,6 +10849,182 @@ fn dash_is_a_fixed_address_singleton_a_second_invocation_reports_and_exits_clean
         out.contains(&format!("127.0.0.1:{port}")),
         "the second `rigger dash` must report the EXISTING address ({url}) it found serving; \
          stdout: {out:?} stderr: {err:?}"
+    );
+}
+
+/// Spec 50, criterion 3 end-to-end, through the BUILT binary: the dash's LANDING view lists every
+/// registered instance, and selecting one ATTACHES the run + knowledge-graph views to THAT
+/// instance's stores, read-only, through per-request store opens - including an instance with no
+/// active run (its graph still serves; its run view degrades to an empty state, never an error).
+///
+/// Two independent projects register into ONE shared machine-global registry (this criterion
+/// CONSUMES the registry criterion 2 owns, so the test writes the entries directly through the
+/// registry API rather than driving a run): instance A has an ACTIVE run (a distinctive unit
+/// `u-alpha`) and a graph node (`src/alpha.rs`); instance B has NO active run - only a graph node
+/// (`src/beta.rs`) folded with an empty run stream. A third, NEUTRAL project is the dash's own cwd,
+/// so its default (no-selector) state is empty - proving that what `?instance=` serves comes from
+/// the SELECTED instance's stores, not the dash's own project. The dash is a real, long-lived
+/// process the test REAPS before its assertions so a failure never leaks a dashboard.
+#[test]
+fn dash_landing_lists_instances_and_attach_serves_each_instance_store() {
+    use rigger::registry;
+    use std::process::Stdio;
+
+    // One shared registry both instances register into and the dash discovers.
+    let state = tempfile::tempdir().unwrap();
+    let xdg = state.path().to_str().unwrap();
+    let regdir = registry::instances_dir(state.path());
+
+    // Instance A: an ACTIVE run (RunStarted + a distinctive unit) plus a knowledge-graph node.
+    let a = temp_git_project_with_commit();
+    let a_root = a.path();
+    seed_run_events(
+        a_root,
+        &[
+            ("RunStarted", r#"{"run_id":"run-a","specs":["s"]}"#),
+            (
+                "UnitStarted",
+                r#"{"id":"u-alpha","spec_criterion":"alpha work"}"#,
+            ),
+        ],
+    );
+    // `rigger emit` appends the decision AND folds it into A's graph.db (src/alpha.rs node + edge).
+    let (_o, e, ok) = run_rigger(
+        a_root,
+        &[
+            "emit",
+            "DecisionMade",
+            r#"{"id":"d-alpha","summary":"alpha decision","governs":["src/alpha.rs"]}"#,
+        ],
+    );
+    assert!(ok, "seeding instance A's graph must succeed; stderr: {e}");
+
+    // Instance B: NO active run - a graph node folded over an empty run stream (no RunStarted). Its
+    // run view must degrade to empty; its graph must still serve.
+    let b = temp_git_project_with_commit();
+    let b_root = b.path();
+    seed_store(b_root);
+    // B governs a file under a DISTINCT top-level dir (`docs/`) so its clustered graph overview is
+    // told apart from A's (`src/`) - the whole-graph overview folds nodes by module directory.
+    let (_o, e, ok) = run_rigger(
+        b_root,
+        &[
+            "emit",
+            "DecisionMade",
+            r#"{"id":"d-beta","summary":"beta decision","governs":["docs/beta.md"]}"#,
+        ],
+    );
+    assert!(ok, "seeding instance B's graph must succeed; stderr: {e}");
+
+    // Register both instances directly (criterion 3 consumes the registry; it does not own writes).
+    let entry = |root: &Path| registry::Instance {
+        project: run_stream_identity(root),
+        root: root.to_string_lossy().into_owned(),
+        store: registry::StoreIdentity::Local {
+            path: root
+                .join(".rigger")
+                .join("events.db")
+                .to_string_lossy()
+                .into_owned(),
+        },
+        heartbeat_ms: registry::now_ms(),
+    };
+    let a_inst = entry(a_root);
+    let b_inst = entry(b_root);
+    registry::write(&regdir, &a_inst).unwrap();
+    registry::write(&regdir, &b_inst).unwrap();
+    let a_id = a_inst.id();
+    let b_id = b_inst.id();
+
+    // The dash runs in a NEUTRAL project so its own default state is empty - the contrast that
+    // proves attach reads the SELECTED store, not the dash's cwd.
+    let neutral = temp_project();
+    let port = free_loopback_port();
+    let mut dash = Command::new(rigger_bin())
+        .args(["dash", "--port", &port.to_string()])
+        .current_dir(neutral.path())
+        .env("XDG_STATE_HOME", xdg)
+        .env_remove("RIGGER_NO_DASH")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn `rigger dash`");
+
+    // Drive every read, then REAP the dash before asserting so a failure never leaks a process.
+    let landing = http_get_path(port, "/api/instances");
+    let default_state = http_get_path(port, "/api/state");
+    let a_state = http_get_path(port, &format!("/api/state?instance={a_id}"));
+    let b_state = http_get_path(port, &format!("/api/state?instance={b_id}"));
+    let a_graph = http_get_path(port, &format!("/api/graph?instance={a_id}"));
+    let b_graph = http_get_path(port, &format!("/api/graph?instance={b_id}"));
+    let _ = dash.kill();
+    let _ = dash.wait();
+
+    let landing = landing.expect("the dash never served /api/instances");
+    let default_state = default_state.expect("the dash never served /api/state");
+    let a_state = a_state.expect("the dash never served A's attached state");
+    let b_state = b_state.expect("the dash never served B's attached state");
+    let a_graph = a_graph.expect("the dash never served A's attached graph");
+    let b_graph = b_graph.expect("the dash never served B's attached graph");
+
+    // Clause 1 - the LANDING lists BOTH registered instances, each with its selectable id.
+    assert!(
+        landing.contains("HTTP/1.1 200"),
+        "the landing endpoint answers 200: {landing}"
+    );
+    for (project, id) in [
+        (run_stream_identity(a_root), &a_id),
+        (run_stream_identity(b_root), &b_id),
+    ] {
+        assert!(
+            landing.contains(&project) && landing.contains(id.as_str()),
+            "the landing must list instance {project} with its attach id {id}; got: {landing}"
+        );
+    }
+
+    // The dash's OWN default (no selector) state is empty - it has neither A's nor B's content.
+    assert!(
+        default_state.contains("HTTP/1.1 200") && !default_state.contains("u-alpha"),
+        "the neutral-cwd dash's default state carries no attached instance's run: {default_state}"
+    );
+
+    // Clause 2 - selecting A serves A's RUN (its unit) and A's GRAPH (its `src/` cluster), read-only.
+    assert!(
+        a_state.contains("HTTP/1.1 200") && a_state.contains("u-alpha"),
+        "attaching to A must serve A's own run (unit u-alpha): {a_state}"
+    );
+    assert!(
+        a_graph.contains("HTTP/1.1 200") && a_graph.contains("\"key\":\"src\""),
+        "attaching to A must serve A's own knowledge graph (a `src/` cluster): {a_graph}"
+    );
+    // And attach is genuinely per-instance: A's views carry NONE of B's content.
+    assert!(
+        !a_state.contains("d-beta") && !a_graph.contains("\"key\":\"docs\""),
+        "A's attached views must not bleed B's content: state={a_state} graph={a_graph}"
+    );
+
+    // Clause 3 - an instance with NO active run: its graph still serves (its `docs/` cluster), and
+    // its run view degrades to an EMPTY state (no u-alpha, no error), never a 500.
+    assert!(
+        b_graph.contains("HTTP/1.1 200") && b_graph.contains("\"key\":\"docs\""),
+        "attaching to B (no active run) must still serve its knowledge graph: {b_graph}"
+    );
+    assert!(
+        !b_graph.contains("\"key\":\"src\""),
+        "B's attached graph must be B's own, not A's `src/` cluster: {b_graph}"
+    );
+    assert!(
+        b_state.contains("HTTP/1.1 200")
+            && !b_state.contains("HTTP/1.1 500")
+            && !b_state.contains("u-alpha"),
+        "attaching to B must degrade its empty run to an empty state, never an error: {b_state}"
+    );
+    // The empty-run view is genuinely empty (no units), proving the empty-state degrade: the
+    // `run.units` array serializes empty (`"units":[]`) when no `UnitStarted` was folded.
+    let b_body = b_state.split("\r\n\r\n").nth(1).unwrap_or("");
+    assert!(
+        b_body.contains("\"units\":[]"),
+        "B has no active run, so its attached run view has no units: {b_body}"
     );
 }
 

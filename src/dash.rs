@@ -359,6 +359,65 @@ pub fn should_reap_on_idle(
 /// callers, and the tests.
 pub type DashInputs = (Vec<Event>, Graph, Vec<Event>, HashMap<String, u64>);
 
+/// One row of the dash's LANDING view (spec 50, criterion 3): a registered rigger instance the
+/// operator can ATTACH to. It is the presentation projection of a [`crate::registry::Instance`],
+/// carrying only what the page needs to label and select it - and CREDENTIAL-FREE by
+/// construction, because the registry entry it is built from is already redacted (the shared
+/// endpoint passed through [`crate::eventstore::endpoint_label`] at registration, never a raw
+/// connection string). The `id` is the OPAQUE selector the client echoes back on
+/// `?instance=<id>` to attach the run/graph views to this instance's stores.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct InstanceView {
+    /// The registry entry's stable id - the token the client puts on `?instance=` to attach.
+    pub id: String,
+    /// The project's stream-namespace identity, shown as the instance's name.
+    pub project: String,
+    /// The project root on disk, so two same-named projects are still told apart.
+    pub root: String,
+    /// `local` (an embedded sqlite log) or `shared` (a server backend) - drives the label/icon.
+    pub kind: String,
+    /// The CREDENTIAL-FREE store label: the local sqlite path, or the bare `scheme://host:port`
+    /// of a shared endpoint. Taken verbatim from the already-redacted registry entry.
+    pub store: String,
+    /// Whole seconds since this instance last heartbeat (0 when the stamp is in the future under
+    /// clock skew) - the page shows it as freshness / sorts the live ones first.
+    pub age_secs: u64,
+}
+
+/// Project the live registry entries into the landing view's rows (spec 50, criterion 3), sorted
+/// deterministically (by project, then root) because [`crate::registry::read_live`] returns entries
+/// in an unspecified filesystem order. Pure and credential-free: every field is copied from the
+/// already-redacted [`crate::registry::Instance`], so no connection secret can reach the view.
+pub fn instance_views(instances: &[crate::registry::Instance], now_ms: u64) -> Vec<InstanceView> {
+    use crate::registry::StoreIdentity;
+    let mut views: Vec<InstanceView> = instances
+        .iter()
+        .map(|i| {
+            let (kind, store) = match &i.store {
+                StoreIdentity::Local { path } => ("local", path.clone()),
+                StoreIdentity::Shared { endpoint } => ("shared", endpoint.clone()),
+            };
+            InstanceView {
+                id: i.id(),
+                project: i.project.clone(),
+                root: i.root.clone(),
+                kind: kind.to_string(),
+                store,
+                age_secs: now_ms.saturating_sub(i.heartbeat_ms) / 1000,
+            }
+        })
+        .collect();
+    views.sort_by(|a, b| a.project.cmp(&b.project).then_with(|| a.root.cmp(&b.root)));
+    views
+}
+
+/// The `/api/instances` body (spec 50, criterion 3): the landing list of registered instances as
+/// a JSON array of [`InstanceView`]. A tiny hand-built wrapper so the endpoint has no extra DTO,
+/// mirroring [`events_json`].
+pub fn instances_json(instances: &[InstanceView]) -> String {
+    serde_json::json!({ "instances": instances }).to_string()
+}
+
 // ---------------------------------------------------------------------------
 // View DTOs. These live HERE, not on the projection types: adding `Serialize` to
 // `metrics::Metrics` / `ledger::RunState` / `contextgraph::Graph` would make the dash a
@@ -2158,6 +2217,7 @@ pub fn route(
     configured_max_retries: u32,
     run_branch: &str,
     base: &str,
+    instances: &[InstanceView],
 ) -> Response {
     if method != "GET" {
         return Response::text(
@@ -2169,6 +2229,11 @@ pub fn route(
     let path = target.split('?').next().unwrap_or(target);
     match path {
         "/" | "/index.html" => Response::html(200, live_page()),
+        // The LANDING list (spec 50, criterion 3): every registered rigger instance the operator
+        // can attach to, read from the machine-global registry by the server's `instances`
+        // provider. A registry projection, independent of any single instance's store - so it
+        // serves even before this dash's own run has created a store.
+        "/api/instances" => Response::json(200, instances_json(instances)),
         "/api/state" => {
             match state_json(
                 events,
@@ -2304,23 +2369,26 @@ fn parse_request_line(line: &str) -> Option<(String, String)> {
 /// async runtime. Only the `/api/*` paths consult a provider; the static page and the
 /// method/not-found guards need no store read, so the page still serves before a run has
 /// created the store.
-pub fn serve<F, G>(
+pub fn serve<F, G, H>(
     addr: SocketAddr,
     provider: F,
     graph_provider: G,
+    instances_provider: H,
     configured_max_retries: u32,
     run_branch: &str,
     base: &str,
 ) -> io::Result<()>
 where
-    F: Fn() -> Result<DashInputs, String>,
-    G: Fn() -> Graph,
+    F: Fn(Option<&str>) -> Result<DashInputs, String>,
+    G: Fn(Option<&str>) -> Graph,
+    H: Fn() -> Vec<InstanceView>,
 {
     let listener = TcpListener::bind(addr)?;
     serve_on(
         listener,
         provider,
         graph_provider,
+        instances_provider,
         configured_max_retries,
         run_branch,
         base,
@@ -2335,17 +2403,25 @@ where
 ///
 /// Identical serving semantics to [`serve`]: one connection at a time over the same
 /// cadence-split providers, re-reading fresh projection inputs each request.
-pub fn serve_on<F, G>(
+///
+/// The ATTACH flow (spec 50, criterion 3) rides the SAME per-request providers: a request
+/// carrying `?instance=<id>` is served against THAT registered instance's stores (the
+/// providers open them read-only per request); an absent selector keeps serving the dash's own
+/// local project (backward compatible). The `instances_provider` reads the machine-global
+/// registry for the `/api/instances` landing list.
+pub fn serve_on<F, G, H>(
     listener: TcpListener,
     provider: F,
     graph_provider: G,
+    instances_provider: H,
     configured_max_retries: u32,
     run_branch: &str,
     base: &str,
 ) -> io::Result<()>
 where
-    F: Fn() -> Result<DashInputs, String>,
-    G: Fn() -> Graph,
+    F: Fn(Option<&str>) -> Result<DashInputs, String>,
+    G: Fn(Option<&str>) -> Graph,
+    H: Fn() -> Vec<InstanceView>,
 {
     let bound = listener.local_addr()?;
     eprintln!("rigger dash: serving on http://{bound}/ (read-only; Ctrl-C to stop)");
@@ -2356,6 +2432,7 @@ where
                     s,
                     &provider,
                     &graph_provider,
+                    &instances_provider,
                     configured_max_retries,
                     run_branch,
                     base,
@@ -2377,17 +2454,24 @@ where
 /// cheap run-scoped inputs from `provider`, but a `/api/graph` request additionally opens
 /// the whole-graph projection through `graph_provider` (consulted HERE and nowhere else),
 /// so the state poll never rides a whole-graph read.
-fn handle_conn<F, G>(
+///
+/// Which STORE the run/graph providers read is chosen HERE from the request's `?instance=<id>`
+/// selector (spec 50, criterion 3): present, they open that registered instance's stores;
+/// absent, the dash's own local project. `/api/instances` is served from the separate
+/// `instances_provider` (the registry landing) and needs no store read at all.
+fn handle_conn<F, G, H>(
     stream: TcpStream,
     provider: &F,
     graph_provider: &G,
+    instances_provider: &H,
     configured_max_retries: u32,
     run_branch: &str,
     base: &str,
 ) -> io::Result<()>
 where
-    F: Fn() -> Result<DashInputs, String>,
-    G: Fn() -> Graph,
+    F: Fn(Option<&str>) -> Result<DashInputs, String>,
+    G: Fn(Option<&str>) -> Graph,
+    H: Fn() -> Vec<InstanceView>,
 {
     // Bound how long a slow or broken client can hold the single serving slot.
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
@@ -2411,17 +2495,37 @@ where
     let response = match parse_request_line(request_line.trim_end()) {
         None => Response::text(400, "bad request"),
         Some((method, target)) => {
-            let needs_data = method == "GET" && target.starts_with("/api/");
-            if needs_data {
-                match provider() {
+            let path = target.split('?').next().unwrap_or(&target);
+            // The selected instance to ATTACH to (spec 50, criterion 3), decoded like a seed id
+            // (the id is opaque). Absent/empty means the dash's own local project. Threaded to the
+            // store providers so a per-request open lands on the right instance's stores.
+            let instance = query_param(&target, "instance").map(percent_decode);
+            let instance = instance.as_deref().filter(|s| !s.is_empty());
+            if method == "GET" && path == "/api/instances" {
+                // The LANDING list is a registry projection - no per-instance store read.
+                let instances = instances_provider();
+                route(
+                    &method,
+                    &target,
+                    &[],
+                    &Graph::default(),
+                    &[],
+                    &HashMap::new(),
+                    configured_max_retries,
+                    run_branch,
+                    base,
+                    &instances,
+                )
+            } else if method == "GET" && target.starts_with("/api/") {
+                match provider(instance) {
                     Ok((events, polled_graph, progress, liveness)) => {
                         // The whole-graph views (only `/api/graph`) read the projection through
                         // the SEPARATE lazy provider, opened HERE and never on the state poll;
                         // every other `/api/*` path keeps the cheap run-seeded graph the polled
-                        // provider yields (spec 45, criterion 1).
-                        let path = target.split('?').next().unwrap_or(&target);
+                        // provider yields (spec 45, criterion 1). Both open the SELECTED instance's
+                        // store (spec 50, criterion 3).
                         let graph = if path == "/api/graph" {
-                            graph_provider()
+                            graph_provider(instance)
                         } else {
                             polled_graph
                         };
@@ -2435,6 +2539,7 @@ where
                             configured_max_retries,
                             run_branch,
                             base,
+                            &[],
                         )
                     }
                     Err(e) => Response::text(500, &format!("dash: reading the store failed: {e}")),
@@ -2451,6 +2556,7 @@ where
                     configured_max_retries,
                     run_branch,
                     base,
+                    &[],
                 )
             }
         }
@@ -2642,6 +2748,114 @@ mod tests {
         ])
     }
 
+    fn local_instance(project: &str, root: &str, hb: u64) -> crate::registry::Instance {
+        crate::registry::Instance {
+            project: project.to_string(),
+            root: root.to_string(),
+            store: crate::registry::StoreIdentity::Local {
+                path: format!("{root}/.rigger/events.db"),
+            },
+            heartbeat_ms: hb,
+        }
+    }
+
+    /// The landing projection (spec 50 c3): registry entries become sorted, credential-free
+    /// [`InstanceView`] rows. Order is deterministic (by project then root) regardless of the
+    /// registry's filesystem order, the `id` round-trips the registry entry's stable id (so the
+    /// client can echo it back on `?instance=`), and a shared endpoint is carried VERBATIM from
+    /// the already-redacted registry - the view never re-derives a label from a raw connection.
+    #[test]
+    fn instance_views_project_a_sorted_credential_free_landing() {
+        let shared = crate::registry::Instance {
+            project: "alpha".to_string(),
+            root: "/home/dev/alpha".to_string(),
+            // Already redacted at registration - the view must carry exactly this, no credential.
+            store: crate::registry::StoreIdentity::Shared {
+                endpoint: "kurrentdb://db.example:2113".to_string(),
+            },
+            heartbeat_ms: 4_000,
+        };
+        // Registry order is unspecified; hand them in reverse of the expected sort.
+        let insts = vec![
+            local_instance("beta", "/home/dev/beta", 5_000),
+            shared.clone(),
+        ];
+        let views = instance_views(&insts, 9_000);
+
+        assert_eq!(
+            views.iter().map(|v| v.project.as_str()).collect::<Vec<_>>(),
+            vec!["alpha", "beta"],
+            "the landing is sorted by project, not by the registry's filesystem order"
+        );
+        let a = &views[0];
+        assert_eq!(
+            a.id,
+            shared.id(),
+            "the id round-trips the registry entry id"
+        );
+        assert_eq!(a.kind, "shared");
+        assert_eq!(
+            a.store, "kurrentdb://db.example:2113",
+            "the shared endpoint is carried verbatim from the redacted registry entry"
+        );
+        assert_eq!(a.age_secs, 5, "age is (now - heartbeat) in whole seconds");
+        let b = &views[1];
+        assert_eq!(b.kind, "local");
+        assert!(
+            b.store.ends_with("/.rigger/events.db"),
+            "a local instance labels with its sqlite path: {}",
+            b.store
+        );
+
+        // Not one field of the serialized landing carries a credential fragment.
+        let body = instances_json(&views);
+        for secret in ["password", "admin", "hunter2", "user:"] {
+            assert!(
+                !body.contains(secret),
+                "landing must be credential-free: {body}"
+            );
+        }
+    }
+
+    /// `/api/instances` (spec 50 c3): the landing route renders the supplied instance list as a
+    /// JSON array the page reads to populate its instance picker. It is a GET-only read like every
+    /// other `/api/*` path, and needs no run/graph inputs (they are empty here) - the landing is a
+    /// registry projection, independent of any single instance's store.
+    #[test]
+    fn api_instances_route_renders_the_landing_list() {
+        let views = instance_views(
+            &[
+                local_instance("alpha", "/home/dev/alpha", 1_000),
+                local_instance("beta", "/home/dev/beta", 1_000),
+            ],
+            1_000,
+        );
+        let r = route(
+            "GET",
+            "/api/instances",
+            &[],
+            &Graph::default(),
+            &[],
+            &HashMap::new(),
+            3,
+            "rigger-run",
+            "origin/main",
+            &views,
+        );
+        assert_eq!(r.status, 200);
+        assert_eq!(r.content_type, "application/json");
+        let body = String::from_utf8(r.body).unwrap();
+        assert!(body.contains("\"instances\""), "wraps the list: {body}");
+        assert!(
+            body.contains("alpha") && body.contains("beta"),
+            "lists every registered instance: {body}"
+        );
+        assert!(
+            body.contains(&views[0].id),
+            "carries the attach selector id: {body}"
+        );
+    }
+
     #[test]
     fn root_serves_the_embedded_page_with_the_placeholder_resolved() {
         let r = route(
@@ -2654,6 +2868,7 @@ mod tests {
             3,
             "rigger-run",
             "origin/main",
+            &[],
         );
         assert_eq!(r.status, 200);
         assert_eq!(r.content_type, "text/html; charset=utf-8");
@@ -2826,15 +3041,17 @@ mod tests {
             .unwrap()
             .port();
         let addr = SocketAddr::from(([127, 0, 0, 1], port));
-        let provider = || -> Result<DashInputs, String> {
+        let provider = |_instance: Option<&str>| -> Result<DashInputs, String> {
             Ok((Vec::new(), Graph::default(), Vec::new(), HashMap::new()))
         };
-        let graph_provider = Graph::default;
+        let graph_provider = |_instance: Option<&str>| Graph::default();
+        let instances_provider = Vec::new;
         std::thread::spawn(move || {
             let _ = serve(
                 addr,
                 provider,
                 graph_provider,
+                instances_provider,
                 3,
                 "rigger-run",
                 "origin/main",
@@ -3235,6 +3452,7 @@ mod tests {
             3,
             "rigger-run",
             "origin/main",
+            &[],
         );
         assert_eq!(r.status, 200);
         assert_eq!(r.content_type, "application/json");
@@ -3580,6 +3798,7 @@ mod tests {
                     3,
                     "rigger-run",
                     "origin/main",
+                    &[],
                 );
                 assert_eq!(
                     r.status, 405,
@@ -3601,6 +3820,7 @@ mod tests {
             3,
             "rigger-run",
             "origin/main",
+            &[],
         );
         assert_eq!(r.status, 404);
     }
@@ -4150,6 +4370,7 @@ mod tests {
             3,
             "rigger-run",
             "origin/main",
+            &[],
         );
         assert_eq!(r.status, 200, "the KG route answers 200");
         assert_eq!(r.content_type, "application/json", "self-contained JSON");
@@ -4237,6 +4458,7 @@ mod tests {
             3,
             "rigger-run",
             "origin/main",
+            &[],
         );
         assert_eq!(r.status, 200);
         let body: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
@@ -4274,6 +4496,7 @@ mod tests {
                 3,
                 "rigger-run",
                 "origin/main",
+                &[],
             );
             assert_eq!(r.status, 200, "{label}: never a 500/404");
             assert_eq!(r.content_type, "application/json", "{label}");
@@ -4303,6 +4526,7 @@ mod tests {
                 3,
                 "rigger-run",
                 "origin/main",
+                &[],
             );
             assert_eq!(
                 r.status, 405,
@@ -4369,6 +4593,7 @@ mod tests {
                 3,
                 "rigger-run",
                 "origin/main",
+                &[],
             );
             assert_eq!(r.status, 200, "{target} answers 200");
             assert_eq!(r.content_type, "application/json", "{target} is JSON");
@@ -4485,6 +4710,7 @@ mod tests {
                 3,
                 "rigger-run",
                 "origin/main",
+                &[],
             );
             // A well-formed response, never the 500 projection-error path: the panel gets JSON.
             assert_eq!(
@@ -4739,6 +4965,7 @@ mod tests {
             3,
             "rigger-run",
             "origin/main",
+            &[],
         );
         assert_eq!(r.status, 200);
         let body: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
@@ -4776,6 +5003,7 @@ mod tests {
             3,
             "rigger-run",
             "origin/main",
+            &[],
         );
         assert_eq!(r2.status, 200);
         let body2: serde_json::Value = serde_json::from_slice(&r2.body).unwrap();
@@ -4922,6 +5150,7 @@ mod tests {
             3,
             "rigger-run",
             "origin/main",
+            &[],
         );
         assert_eq!(r.status, 200);
         let body: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
@@ -4967,6 +5196,7 @@ mod tests {
             3,
             "rigger-run",
             "origin/main",
+            &[],
         );
         let body2: serde_json::Value = serde_json::from_slice(&r2.body).unwrap();
         assert!(
@@ -5111,6 +5341,7 @@ mod tests {
             3,
             "rigger-run",
             "origin/main",
+            &[],
         );
         assert_eq!(r.status, 200, "the KG route answers 200 for a unit click");
         let body: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
@@ -5390,7 +5621,7 @@ mod tests {
 
         // The same shape of read cmd_dash's provider performs (store -> run events).
         let db_for_provider = db_str.clone();
-        let provider = move || -> Result<DashInputs, String> {
+        let provider = move |_instance: Option<&str>| -> Result<DashInputs, String> {
             let backend = Store::open(&db_for_provider).map_err(|e| e.to_string())?;
             let store = Namespaced::new(&backend, "proj-dash");
             let events = store
@@ -5401,13 +5632,15 @@ mod tests {
 
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let addr = listener.local_addr().unwrap();
-        let graph_provider = Graph::default;
+        let graph_provider = |_instance: Option<&str>| Graph::default();
+        let instances_provider = Vec::new;
         let server = std::thread::spawn(move || {
             let (conn, _) = listener.accept().unwrap();
             handle_conn(
                 conn,
                 &provider,
                 &graph_provider,
+                &instances_provider,
                 3,
                 "rigger-run",
                 "origin/main",
@@ -5443,11 +5676,14 @@ mod tests {
         use std::io::{Read, Write};
         use std::net::{TcpListener, TcpStream};
 
-        let provider = || -> Result<DashInputs, String> {
+        let provider = |_instance: Option<&str>| -> Result<DashInputs, String> {
             panic!("a non-GET request must never read the store");
         };
-        let graph_provider = || -> Graph {
+        let graph_provider = |_instance: Option<&str>| -> Graph {
             panic!("a non-GET request must never open the graph projection");
+        };
+        let instances_provider = || -> Vec<InstanceView> {
+            panic!("a non-GET request must never read the instance registry");
         };
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let addr = listener.local_addr().unwrap();
@@ -5457,6 +5693,7 @@ mod tests {
                 conn,
                 &provider,
                 &graph_provider,
+                &instances_provider,
                 3,
                 "rigger-run",
                 "origin/main",
@@ -5496,7 +5733,7 @@ mod tests {
         // The polled provider: the cheap run-scoped inputs `/api/state` and `/api/events` ride.
         // Its graph slot is the run-seeded slice (here empty); it is what the decisions/findings
         // panel reads, and it must be the ONLY graph the state poll touches.
-        let provider = || -> Result<DashInputs, String> {
+        let provider = |_instance: Option<&str>| -> Result<DashInputs, String> {
             Ok((Vec::new(), Graph::default(), Vec::new(), HashMap::new()))
         };
 
@@ -5505,7 +5742,7 @@ mod tests {
         // count proves it was opened ONLY on that request.
         let hits = Arc::new(AtomicUsize::new(0));
         let hits_for_provider = Arc::clone(&hits);
-        let graph_provider = move || -> Graph {
+        let graph_provider = move |_instance: Option<&str>| -> Graph {
             hits_for_provider.fetch_add(1, Ordering::SeqCst);
             Graph {
                 nodes: vec![Node {
@@ -5517,6 +5754,7 @@ mod tests {
             }
         };
 
+        let instances_provider = Vec::new;
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let addr = listener.local_addr().unwrap();
         // A bounded accept loop (three requests) so the server thread joins deterministically.
@@ -5527,6 +5765,7 @@ mod tests {
                     conn,
                     &provider,
                     &graph_provider,
+                    &instances_provider,
                     3,
                     "rigger-run",
                     "origin/main",

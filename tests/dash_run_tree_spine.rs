@@ -168,7 +168,7 @@ fn run_tree_spine_crosses_the_http_state_boundary() {
 
     // The provider `serve` re-reads per request. `Fn`, `Send`, `'static`: it owns and clones the
     // seeded inputs, exactly the shape `cmd_dash`'s store-reading provider yields.
-    let provider = move || -> Result<DashInputs, String> {
+    let provider = move |_instance: Option<&str>| -> Result<DashInputs, String> {
         Ok((
             events.clone(),
             Graph::default(),
@@ -187,13 +187,17 @@ fn run_tree_spine_crosses_the_http_state_boundary() {
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     // The lazy `/api/graph` provider (spec 45, criterion 1): this test drives the state poll, which
     // never consults it, so an empty graph provider satisfies `serve`'s `Fn() -> Graph` bound.
-    let graph_provider = Graph::default;
+    let graph_provider = |_instance: Option<&str>| Graph::default();
+    // The landing provider (spec 50, criterion 3): this test drives the state poll, not
+    // `/api/instances`, so an empty registry list satisfies `serve`'s `Fn() -> Vec<InstanceView>`.
+    let instances_provider = Vec::new;
     // A detached server thread: `serve` loops until the process ends; we drive one request.
     std::thread::spawn(move || {
         let _ = dash::serve(
             addr,
             provider,
             graph_provider,
+            instances_provider,
             3,
             "rigger-run",
             "origin/main",

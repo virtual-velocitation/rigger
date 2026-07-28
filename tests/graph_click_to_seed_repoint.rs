@@ -53,6 +53,7 @@ fn get_graph(run: &[Event], graph: &Graph, seed: &str) -> serde_json::Value {
         3,
         "rigger-run",
         "origin/main",
+        &[],
     );
     assert_eq!(r.status, 200, "the KG route answers 200 for a click");
     serde_json::from_slice(&r.body).unwrap()

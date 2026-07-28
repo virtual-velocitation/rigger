@@ -4419,27 +4419,77 @@ fn cmd_dash(args: &[String]) -> Res {
     // still starts before the store exists, and an absent/empty graph degrades to an empty result,
     // never an error. Its own clones of the db path + identity, captured before the polled
     // `provider` below moves the originals.
+    // The machine-global instance registry (spec 50), for the landing list AND the ATTACH
+    // resolver (criterion 3). `None` in a homeless environment: the landing is then empty and no
+    // `?instance=` selector can resolve, but the dash still serves its own local project.
+    let registry_dir = rigger::registry::default_dir();
+
     let graph_provider = {
         let graph_db = graph_db.clone();
         let identity = identity.clone();
-        move || -> contextgraph::Graph { dash_read_whole_graph(&graph_db, &identity) }
+        let registry_dir = registry_dir.clone();
+        // The selected instance (spec 50, criterion 3) chooses WHICH store's whole graph is read:
+        // the dash's own project by default, an attached instance's LOCAL graph projection when
+        // one is selected, or an empty graph for a since-gone selector - never an error.
+        move |instance: Option<&str>| -> contextgraph::Graph {
+            match dash_resolve_attach(instance, registry_dir.as_deref()) {
+                DashAttach::Local => dash_read_whole_graph(&graph_db, &identity),
+                DashAttach::Instance(inst) => dash_attach_graph(&inst),
+                DashAttach::Empty => contextgraph::Graph::default(),
+            }
+        }
     };
 
     // Fresh projection inputs on every request. Reading (not holding an open handle) is
-    // what lets the dash start before the store exists and pick the run up once it does.
-    let provider = move || -> Result<dash::DashInputs, String> {
-        let events = dash_read_run(&events_db, &identity).map_err(|e| e.to_string())?;
-        let graph = dash_read_graph(&graph_db, &identity, &events);
-        let run_id = runscope::current_run_id(&events).unwrap_or_default();
-        let progress = dash_read_progress(&progress_db, &identity, &run_id);
-        let liveness = dash_read_liveness(&events, &scratch_root, &run_id);
-        Ok((events, graph, progress, liveness))
+    // what lets the dash start before the store exists and pick the run up once it does. The
+    // selected instance (spec 50, criterion 3) chooses WHICH store is opened per request: the
+    // dash's own project by default, an attached instance's stores when one is selected, or an
+    // empty state for a since-gone selector (an empty store renders empty, never an error).
+    let provider = {
+        let registry_dir = registry_dir.clone();
+        move |instance: Option<&str>| -> Result<dash::DashInputs, String> {
+            match dash_resolve_attach(instance, registry_dir.as_deref()) {
+                DashAttach::Local => {
+                    let events = dash_read_run(&events_db, &identity).map_err(|e| e.to_string())?;
+                    let graph = dash_read_graph(&graph_db, &identity, &events);
+                    let run_id = runscope::current_run_id(&events).unwrap_or_default();
+                    let progress = dash_read_progress(&progress_db, &identity, &run_id);
+                    let liveness = dash_read_liveness(&events, &scratch_root, &run_id);
+                    Ok((events, graph, progress, liveness))
+                }
+                DashAttach::Instance(inst) => Ok(dash_attach_inputs(&inst)),
+                DashAttach::Empty => Ok((
+                    Vec::new(),
+                    contextgraph::Graph::default(),
+                    Vec::new(),
+                    std::collections::HashMap::new(),
+                )),
+            }
+        }
+    };
+
+    // The LANDING provider (spec 50, criterion 3): the machine-global registry projected into the
+    // credential-free instance list, freshly read (and stale-pruned) on each `/api/instances` poll.
+    let instances_provider = {
+        let registry_dir = registry_dir.clone();
+        move || -> Vec<dash::InstanceView> {
+            match registry_dir.as_deref() {
+                Some(dir) => {
+                    let now = rigger::registry::now_ms();
+                    let live =
+                        rigger::registry::read_live(dir, now, rigger::registry::DEFAULT_IDLE_MS);
+                    dash::instance_views(&live, now)
+                }
+                None => Vec::new(),
+            }
+        }
     };
 
     match export {
         Some(path) => {
+            // An exported snapshot is always of the dash's own local project (no attach selector).
             let (events, graph, progress, liveness) =
-                provider().map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+                provider(None).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
             let html = dash::render_export(
                 &events,
                 &graph,
@@ -4494,6 +4544,7 @@ fn cmd_dash(args: &[String]) -> Res {
                         listener,
                         provider,
                         graph_provider,
+                        instances_provider,
                         max_retries,
                         RUN_BRANCH,
                         &release_base,
@@ -4745,6 +4796,115 @@ fn dash_read_liveness(
     }
     ages
 }
+
+/// Which registered instance a dash request ATTACHES to (spec 50, criterion 3), resolved from the
+/// request's `?instance=<id>` selector against the machine-global registry.
+enum DashAttach {
+    /// No instance selected: serve the dash's OWN local project (backward compatible - today's
+    /// single-project dash).
+    Local,
+    /// Serve this registered instance's stores, read-only.
+    Instance(rigger::registry::Instance),
+    /// An instance was requested but is unknown or has aged out of the registry: serve an EMPTY
+    /// state - never the local default (a since-gone selection must not silently show the local
+    /// run) and never an error (an empty store renders an empty state, spec 50).
+    Empty,
+}
+
+/// Resolve which instance a dash request attaches to (spec 50, criterion 3). An absent/empty
+/// selector keeps the dash on its own local project; a selector names a registry entry by its
+/// stable id, resolved through a fresh [`rigger::registry::read_live`] (which also prunes stale
+/// entries) so a per-request open always lands on a currently-live instance. An unresolvable
+/// selector (homeless environment, unknown id, or a pruned-stale entry) degrades to [`DashAttach::Empty`].
+fn dash_resolve_attach(instance: Option<&str>, dir: Option<&Path>) -> DashAttach {
+    let Some(id) = instance.filter(|s| !s.is_empty()) else {
+        return DashAttach::Local;
+    };
+    let Some(dir) = dir else {
+        return DashAttach::Empty;
+    };
+    let live = rigger::registry::read_live(
+        dir,
+        rigger::registry::now_ms(),
+        rigger::registry::DEFAULT_IDLE_MS,
+    );
+    match live.into_iter().find(|i| i.id() == id) {
+        Some(inst) => DashAttach::Instance(inst),
+        None => DashAttach::Empty,
+    }
+}
+
+/// A registered instance's `.rigger` directory, where its LOCAL knowledge-graph and progress
+/// projections live regardless of whether its EVENT store is local sqlite or a shared server (the
+/// KG is built locally per project - spec 50: "the knowledge-graph views open that instance's
+/// local graph projection").
+fn instance_rigger_dir(inst: &rigger::registry::Instance) -> PathBuf {
+    Path::new(&inst.root).join(RIGGER_DIR)
+}
+
+/// Read a registered instance's current-run events, read-only (spec 50, criterion 3). A Local
+/// instance is opened directly as sqlite at its registered log path; a Shared instance resolves
+/// its connection through the store-resolution authority at the instance's OWN `.rigger` (the same
+/// config that lets a worker report to that shared store lets the dash read it), read under the
+/// instance's namespace identity. Best-effort: an absent, unreachable, or unreadable store degrades
+/// to an empty run - "an empty store renders an empty state, never an error" - because the selected
+/// instance is discovery metadata, not a source of truth.
+fn dash_attach_run(inst: &rigger::registry::Instance) -> Vec<Event> {
+    let read = || -> Result<Vec<Event>, Box<dyn std::error::Error>> {
+        let all = match &inst.store {
+            rigger::registry::StoreIdentity::Local { path } => {
+                if !Path::new(path).exists() {
+                    return Ok(Vec::new());
+                }
+                let backend = open_sqlite_store(path)?;
+                let store = Namespaced::new(&backend, &inst.project);
+                store.read_stream(conductor::STREAM, 0, Direction::Forward)?
+            }
+            rigger::registry::StoreIdentity::Shared { .. } => {
+                let rigger_dir = instance_rigger_dir(inst);
+                let sel = store_selection_at(None, None, env_conn(), &rigger_dir)?;
+                let events_db = rigger_dir.join("events.db");
+                let backend = resolve_store(&sel, &events_db.to_string_lossy())?;
+                let store = Namespaced::new(backend.as_ref(), &inst.project);
+                store.read_stream(conductor::STREAM, 0, Direction::Forward)?
+            }
+        };
+        Ok(runscope::current_run(&all).to_vec())
+    };
+    read().unwrap_or_default()
+}
+
+/// The cheap per-request inputs for an ATTACHED instance (spec 50, criterion 3): its run events,
+/// the run-seeded context subgraph, and this-run progress - all from that instance's stores, read
+/// read-only. The graph and progress are ALWAYS the instance's LOCAL projections under its
+/// `.rigger`; only the event store may be remote. Liveness ages are the LOCAL run's scratch, which
+/// a possibly-remote instance has none of reachable here, so its per-agent ages are simply absent.
+fn dash_attach_inputs(inst: &rigger::registry::Instance) -> dash::DashInputs {
+    let events = dash_attach_run(inst);
+    let rigger_dir = instance_rigger_dir(inst);
+    let graph_db = rigger_dir.join("graph.db").to_string_lossy().into_owned();
+    let progress_db = rigger_dir
+        .join("progress.db")
+        .to_string_lossy()
+        .into_owned();
+    let graph = dash_read_graph(&graph_db, &inst.project, &events);
+    let run_id = runscope::current_run_id(&events).unwrap_or_default();
+    let progress = dash_read_progress(&progress_db, &inst.project, &run_id);
+    (events, graph, progress, std::collections::HashMap::new())
+}
+
+/// The WHOLE knowledge-graph projection for an ATTACHED instance (spec 50, criterion 3), the
+/// `/api/graph` view's lazy read: that instance's LOCAL `graph.db` under its `.rigger`, read
+/// directly ([`dash_read_whole_graph`]) so it reaches any node the projection holds even when the
+/// run seeded none. Best-effort/empty-degrade like the local read.
+fn dash_attach_graph(inst: &rigger::registry::Instance) -> contextgraph::Graph {
+    let graph_db = instance_rigger_dir(inst)
+        .join("graph.db")
+        .to_string_lossy()
+        .into_owned();
+    dash_read_whole_graph(&graph_db, &inst.project)
+}
+
 /// `rigger ground "<query>" [<k>]` - run the project's configured grounder (the
 /// same one the `run`/`serve` paths build from `defaults.grounder` via
 /// [`select_grounder`]) over the repo and print up to `k` (default 8) relevant
@@ -12166,6 +12326,7 @@ mod tests {
             3,
             "rigger-run",
             "main",
+            &[],
         );
         assert_eq!(resp.status, 200);
         let body = String::from_utf8(resp.body).unwrap();
@@ -12191,6 +12352,7 @@ mod tests {
             3,
             "rigger-run",
             "main",
+            &[],
         );
         assert_eq!(resp2.status, 200);
         let body2 = String::from_utf8(resp2.body).unwrap();
