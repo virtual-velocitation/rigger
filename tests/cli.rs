@@ -2892,6 +2892,81 @@ fn main_exit_path_is_honestly_documented() {
     );
 }
 
+/// Spec 51, criterion 5 (SWEEP-BEFORE-ADD ORDERING): within one `rigger step`, no worktree ADD
+/// begins until the terminal-worktree SWEEP has completed, and both worktree mutations happen
+/// UNDER the step's serialization (the step lock). This pins the lifecycle SEAM where `cmd_step`'s
+/// terminal sweep hands off to the conductor - the first code on the step path that adds a unit
+/// worktree - so a crash mid-either can never leave a half-removed `.git/worktrees` admin entry
+/// that a later `git worktree add` trips over (the permanent wedge spec 51 hardens), and a future
+/// edit cannot silently reorder the sweep after an add or lift either mutation out from under the
+/// one-step-at-a-time lock.
+///
+/// It is a SOURCE-TEXT assertion, not a behavior test: the terminal sweep
+/// (`worktree::sweep_terminal`) is called only from `cmd_step` in the BINARY (`main.rs`), whose
+/// step-lifecycle body is not reachable through the crate API, and the "add" side is deep inside
+/// `conductor::run` (`stage_worktree` / `review_only_worktree` -> `Worktree::create`). So we assert
+/// on the file's bytes - the convention the sibling `main_exit_path_is_honestly_documented` fixture
+/// uses - at a bar a no-op cannot pass: the three load-bearing calls exist in `cmd_step` and appear
+/// in the order lock -> sweep -> add.
+#[test]
+fn worktree_sweep_completes_before_any_add_within_one_step() {
+    let src = main_rs_source();
+
+    // Isolate cmd_step's body (its declaration up to the next top-level `fn`) so the ordering
+    // assertions stay pointed at the step lifecycle and are immune to the OTHER
+    // `conductor::run(&cfg, &deps)` call sites elsewhere in main.rs (`cmd_run` and the workflow
+    // entry), which are not the stepwise seam under test.
+    let step_at = src
+        .find("fn cmd_step(args: &[String]) -> Res {")
+        .expect("main.rs must still define cmd_step, the `rigger step` lifecycle");
+    let step_end = src[step_at..]
+        .find("\nfn ")
+        .map(|off| step_at + off)
+        .expect("cmd_step must be followed by another top-level fn");
+    let cmd_step = &src[step_at..step_end];
+
+    // The three load-bearing worktree-lifecycle anchors, by BYTE OFFSET within cmd_step:
+    //   (1) the step lock - the serialization that makes "one step at a time" hold, so the sweep
+    //       and the add can never interleave with another step's worktree mutations;
+    //   (2) the terminal-worktree sweep (`worktree::sweep_terminal`) - the REMOVE half;
+    //   (3) the conductor run - the first code on the step path that ADDS a unit worktree.
+    let lock_at = cmd_step
+        .find("acquire_step_lock()")
+        .expect("cmd_step must acquire the step lock (the worktree-mutation serialization)");
+    let sweep_at = cmd_step
+        .find("worktree::sweep_terminal(")
+        .expect("cmd_step must sweep the terminal worktrees before driving the conductor");
+    let add_at = cmd_step
+        .find("conductor::run(&cfg, &deps)")
+        .expect("cmd_step must drive the conductor, which adds the unit worktrees");
+
+    // The sweep is the ONLY terminal sweep on the step path: a second, out-of-order sweep must not
+    // be introducible without this pin noticing.
+    assert_eq!(
+        cmd_step.matches("worktree::sweep_terminal(").count(),
+        1,
+        "cmd_step must call the terminal sweep exactly once, at the lifecycle seam"
+    );
+
+    // SERIALIZATION: both mutations happen AFTER the step lock is taken, so no worktree sweep or
+    // add runs outside the one-step-at-a-time guard.
+    assert!(
+        lock_at < sweep_at && lock_at < add_at,
+        "the terminal sweep and the conductor's worktree adds must both run UNDER the step lock \
+         (acquired first), so worktree mutations are serialized one step at a time"
+    );
+
+    // ORDERING: the sweep completes before the conductor begins adding worktrees - the whole of
+    // criterion 5. Were the conductor driven first (or the sweep moved below it), a terminal
+    // worktree's removal would race the next unit's add on the shared `.git/worktrees` admin area,
+    // which is exactly the corruption spec 51 forbids.
+    assert!(
+        sweep_at < add_at,
+        "the terminal-worktree sweep must complete BEFORE the conductor adds any unit worktree; \
+         found the conductor run at offset {add_at} before the sweep at {sweep_at} within cmd_step"
+    );
+}
+
 /// The `workflows/rigger.js` native-driver source, read at test time from the crate manifest
 /// dir. The driver is embedded into the binary via `include_str!` (not reachable through the
 /// crate API) and runs only under the workflow harness (top-level await, the injected
