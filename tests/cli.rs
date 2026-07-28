@@ -8302,6 +8302,34 @@ fn http_get(url: &str) -> Option<String> {
     Some(resp[body_start..].to_string())
 }
 
+/// A minimal HTTP GET of an arbitrary `path` (e.g. `/api/instances`, `/api/state?instance=<id>`)
+/// on a loopback dash at `port`, returning the whole response (status line + headers + body) so a
+/// caller can assert BOTH the `200` status and the body content. Retries the connect on the same
+/// bounded startup deadline as [`http_get`], so a request during the dash's bind window is retried,
+/// never a false failure. `None` only when the dash never came up within the deadline.
+fn http_get_path(port: u16, path: &str) -> Option<String> {
+    use std::io::{Read, Write};
+    use std::time::{Duration, Instant};
+    let hostport = format!("127.0.0.1:{port}");
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut stream = loop {
+        match std::net::TcpStream::connect(&hostport) {
+            Ok(stream) => break stream,
+            Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
+            Err(_) => return None,
+        }
+    };
+    stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
+    write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nHost: {hostport}\r\nConnection: close\r\n\r\n"
+    )
+    .ok()?;
+    let mut resp = String::new();
+    stream.read_to_string(&mut resp).ok()?;
+    Some(resp)
+}
+
 /// Spec 19b, unit 1 (always-on dash + discoverability): whenever a driver has a run in
 /// flight, a `rigger dash` is auto-started serving that run - with NO opt-in flag - its URL
 /// printed at run start and shown in `rigger status`. Driven through the WORKFLOW driver
@@ -10847,6 +10875,606 @@ fn dash_is_a_fixed_address_singleton_a_second_invocation_reports_and_exits_clean
         out.contains(&format!("127.0.0.1:{port}")),
         "the second `rigger dash` must report the EXISTING address ({url}) it found serving; \
          stdout: {out:?} stderr: {err:?}"
+    );
+}
+
+/// Spec 50, criterion 3 end-to-end, through the BUILT binary: the dash's LANDING view lists every
+/// registered instance, and selecting one ATTACHES the run + knowledge-graph views to THAT
+/// instance's stores, read-only, through per-request store opens - including an instance with no
+/// active run (its graph still serves; its run view degrades to an empty state, never an error).
+///
+/// Two independent projects register into ONE shared machine-global registry (this criterion
+/// CONSUMES the registry criterion 2 owns, so the test writes the entries directly through the
+/// registry API rather than driving a run): instance A has an ACTIVE run (a distinctive unit
+/// `u-alpha`) and a graph node (`src/alpha.rs`); instance B has NO active run - only a graph node
+/// (`src/beta.rs`) folded with an empty run stream. A third, NEUTRAL project is the dash's own cwd,
+/// so its default (no-selector) state is empty - proving that what `?instance=` serves comes from
+/// the SELECTED instance's stores, not the dash's own project. The dash is a real, long-lived
+/// process the test REAPS before its assertions so a failure never leaks a dashboard.
+#[test]
+fn dash_landing_lists_instances_and_attach_serves_each_instance_store() {
+    use rigger::registry;
+    use std::process::Stdio;
+
+    // One shared registry both instances register into and the dash discovers.
+    let state = tempfile::tempdir().unwrap();
+    let xdg = state.path().to_str().unwrap();
+    let regdir = registry::instances_dir(state.path());
+
+    // Instance A: an ACTIVE run (RunStarted + a distinctive unit) plus a knowledge-graph node.
+    let a = temp_git_project_with_commit();
+    let a_root = a.path();
+    seed_run_events(
+        a_root,
+        &[
+            ("RunStarted", r#"{"run_id":"run-a","specs":["s"]}"#),
+            (
+                "UnitStarted",
+                r#"{"id":"u-alpha","spec_criterion":"alpha work"}"#,
+            ),
+        ],
+    );
+    // `rigger emit` appends the decision AND folds it into A's graph.db (src/alpha.rs node + edge).
+    let (_o, e, ok) = run_rigger(
+        a_root,
+        &[
+            "emit",
+            "DecisionMade",
+            r#"{"id":"d-alpha","summary":"alpha decision","governs":["src/alpha.rs"]}"#,
+        ],
+    );
+    assert!(ok, "seeding instance A's graph must succeed; stderr: {e}");
+
+    // Instance B: NO active run - a graph node folded over an empty run stream (no RunStarted). Its
+    // run view must degrade to empty; its graph must still serve.
+    let b = temp_git_project_with_commit();
+    let b_root = b.path();
+    seed_store(b_root);
+    // B governs a file under a DISTINCT top-level dir (`docs/`) so its clustered graph overview is
+    // told apart from A's (`src/`) - the whole-graph overview folds nodes by module directory.
+    let (_o, e, ok) = run_rigger(
+        b_root,
+        &[
+            "emit",
+            "DecisionMade",
+            r#"{"id":"d-beta","summary":"beta decision","governs":["docs/beta.md"]}"#,
+        ],
+    );
+    assert!(ok, "seeding instance B's graph must succeed; stderr: {e}");
+
+    // Register both instances directly (criterion 3 consumes the registry; it does not own writes).
+    let entry = |root: &Path| registry::Instance {
+        project: run_stream_identity(root),
+        root: root.to_string_lossy().into_owned(),
+        store: registry::StoreIdentity::Local {
+            path: root
+                .join(".rigger")
+                .join("events.db")
+                .to_string_lossy()
+                .into_owned(),
+        },
+        heartbeat_ms: registry::now_ms(),
+    };
+    let a_inst = entry(a_root);
+    let b_inst = entry(b_root);
+    registry::write(&regdir, &a_inst).unwrap();
+    registry::write(&regdir, &b_inst).unwrap();
+    let a_id = a_inst.id();
+    let b_id = b_inst.id();
+
+    // The dash runs in a NEUTRAL project so its own default state is empty - the contrast that
+    // proves attach reads the SELECTED store, not the dash's cwd.
+    let neutral = temp_project();
+    let port = free_loopback_port();
+    let mut dash = Command::new(rigger_bin())
+        .args(["dash", "--port", &port.to_string()])
+        .current_dir(neutral.path())
+        .env("XDG_STATE_HOME", xdg)
+        .env_remove("RIGGER_NO_DASH")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn `rigger dash`");
+
+    // Drive every read, then REAP the dash before asserting so a failure never leaks a process.
+    let landing = http_get_path(port, "/api/instances");
+    let default_state = http_get_path(port, "/api/state");
+    let a_state = http_get_path(port, &format!("/api/state?instance={a_id}"));
+    let b_state = http_get_path(port, &format!("/api/state?instance={b_id}"));
+    let a_graph = http_get_path(port, &format!("/api/graph?instance={a_id}"));
+    let b_graph = http_get_path(port, &format!("/api/graph?instance={b_id}"));
+    let _ = dash.kill();
+    let _ = dash.wait();
+
+    let landing = landing.expect("the dash never served /api/instances");
+    let default_state = default_state.expect("the dash never served /api/state");
+    let a_state = a_state.expect("the dash never served A's attached state");
+    let b_state = b_state.expect("the dash never served B's attached state");
+    let a_graph = a_graph.expect("the dash never served A's attached graph");
+    let b_graph = b_graph.expect("the dash never served B's attached graph");
+
+    // Clause 1 - the LANDING lists BOTH registered instances, each with its selectable id.
+    assert!(
+        landing.contains("HTTP/1.1 200"),
+        "the landing endpoint answers 200: {landing}"
+    );
+    for (project, id) in [
+        (run_stream_identity(a_root), &a_id),
+        (run_stream_identity(b_root), &b_id),
+    ] {
+        assert!(
+            landing.contains(&project) && landing.contains(id.as_str()),
+            "the landing must list instance {project} with its attach id {id}; got: {landing}"
+        );
+    }
+
+    // The dash's OWN default (no selector) state is empty - it has neither A's nor B's content.
+    assert!(
+        default_state.contains("HTTP/1.1 200") && !default_state.contains("u-alpha"),
+        "the neutral-cwd dash's default state carries no attached instance's run: {default_state}"
+    );
+
+    // Clause 2 - selecting A serves A's RUN (its unit) and A's GRAPH (its `src/` cluster), read-only.
+    assert!(
+        a_state.contains("HTTP/1.1 200") && a_state.contains("u-alpha"),
+        "attaching to A must serve A's own run (unit u-alpha): {a_state}"
+    );
+    assert!(
+        a_graph.contains("HTTP/1.1 200") && a_graph.contains("\"key\":\"src\""),
+        "attaching to A must serve A's own knowledge graph (a `src/` cluster): {a_graph}"
+    );
+    // And attach is genuinely per-instance: A's views carry NONE of B's content.
+    assert!(
+        !a_state.contains("d-beta") && !a_graph.contains("\"key\":\"docs\""),
+        "A's attached views must not bleed B's content: state={a_state} graph={a_graph}"
+    );
+
+    // Clause 3 - an instance with NO active run: its graph still serves (its `docs/` cluster), and
+    // its run view degrades to an EMPTY state (no u-alpha, no error), never a 500.
+    assert!(
+        b_graph.contains("HTTP/1.1 200") && b_graph.contains("\"key\":\"docs\""),
+        "attaching to B (no active run) must still serve its knowledge graph: {b_graph}"
+    );
+    assert!(
+        !b_graph.contains("\"key\":\"src\""),
+        "B's attached graph must be B's own, not A's `src/` cluster: {b_graph}"
+    );
+    assert!(
+        b_state.contains("HTTP/1.1 200")
+            && !b_state.contains("HTTP/1.1 500")
+            && !b_state.contains("u-alpha"),
+        "attaching to B must degrade its empty run to an empty state, never an error: {b_state}"
+    );
+    // The empty-run view is genuinely empty (no units), proving the empty-state degrade: the
+    // `run.units` array serializes empty (`"units":[]`) when no `UnitStarted` was folded.
+    let b_body = b_state.split("\r\n\r\n").nth(1).unwrap_or("");
+    assert!(
+        b_body.contains("\"units\":[]"),
+        "B has no active run, so its attached run view has no units: {b_body}"
+    );
+}
+
+/// Spec 50, criterion 3, the ATTACH RESOLVER's SAFETY branch through the BUILT binary: an
+/// UNKNOWN or since-gone `?instance=<id>` selector must degrade to an EMPTY state - NEVER the
+/// dash's OWN local run, and never a 500. This is the boundary the happy-path landing test cannot
+/// reach: its neutral-cwd dash has no local run, so an unknown selector returning empty is
+/// indistinguishable from returning the (already empty) local project. Here the dash HAS a
+/// distinctive local run AND a registered live instance also has one, so an unknown selector that
+/// returns empty is provably neither - it did not silently fall back to the local project (the
+/// bug this guards: a since-gone selection quietly showing the operator's own run under a stale
+/// bookmark) and did not attach to some other instance.
+///
+/// Three-way contrast, all through per-request store opens on ONE long-lived dash process (reaped
+/// before the assertions so a failure never leaks a dashboard): with no selector the dash serves
+/// its OWN local run (`u-ownrun`, backward compatible); `?instance=<live id>` serves that
+/// instance's run (`u-gamma`) and NOT the local run; and `?instance=<bogus>` serves an EMPTY run
+/// (a 200 with `"units":[]`, never a 500) that is neither the local run nor the instance's.
+#[test]
+fn dash_attach_unknown_or_since_gone_instance_serves_empty_not_the_local_run() {
+    use rigger::registry;
+    use std::process::Stdio;
+
+    // One sandboxed registry both the dash and the registered instance share. Sandboxing
+    // `XDG_STATE_HOME` is mandatory: without it the dash reads/writes the operator's REAL
+    // machine-global registry, and the test pollutes production state.
+    let state = tempfile::tempdir().unwrap();
+    let xdg = state.path().to_str().unwrap();
+    let regdir = registry::instances_dir(state.path());
+
+    // The dash's OWN project, with a distinctive LOCAL run so the no-selector default is non-empty
+    // - the contrast that makes "unknown selector did NOT show the local run" meaningful.
+    let own = temp_git_project_with_commit();
+    let own_root = own.path();
+    seed_run_events(
+        own_root,
+        &[
+            ("RunStarted", r#"{"run_id":"run-own","specs":["s"]}"#),
+            (
+                "UnitStarted",
+                r#"{"id":"u-ownrun","spec_criterion":"the dash's own local run"}"#,
+            ),
+        ],
+    );
+
+    // A registered LIVE instance with its OWN distinctive run, so a KNOWN selector genuinely
+    // attaches away from the local project (sanity that the resolver's live arm still works).
+    let gamma = temp_git_project_with_commit();
+    let gamma_root = gamma.path();
+    seed_run_events(
+        gamma_root,
+        &[
+            ("RunStarted", r#"{"run_id":"run-gamma","specs":["s"]}"#),
+            (
+                "UnitStarted",
+                r#"{"id":"u-gamma","spec_criterion":"the registered instance's run"}"#,
+            ),
+        ],
+    );
+    let gamma_inst = registry::Instance {
+        project: run_stream_identity(gamma_root),
+        root: gamma_root.to_string_lossy().into_owned(),
+        store: registry::StoreIdentity::Local {
+            path: gamma_root
+                .join(".rigger")
+                .join("events.db")
+                .to_string_lossy()
+                .into_owned(),
+        },
+        heartbeat_ms: registry::now_ms(),
+    };
+    registry::write(&regdir, &gamma_inst).unwrap();
+    let gamma_id = gamma_inst.id();
+
+    // The dash serves its OWN project (cwd = own_root); the registry it discovers is the sandbox.
+    let port = free_loopback_port();
+    let mut dash = Command::new(rigger_bin())
+        .args(["dash", "--port", &port.to_string()])
+        .current_dir(own_root)
+        .env("XDG_STATE_HOME", xdg)
+        .env_remove("RIGGER_NO_DASH")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn `rigger dash`");
+
+    let default_state = http_get_path(port, "/api/state");
+    let gamma_state = http_get_path(port, &format!("/api/state?instance={gamma_id}"));
+    // A selector that never named a registry entry - the since-gone / stale-bookmark case.
+    let bogus_state = http_get_path(port, "/api/state?instance=this-id-was-never-registered");
+    let _ = dash.kill();
+    let _ = dash.wait();
+
+    let default_state = default_state.expect("the dash never served /api/state");
+    let gamma_state = gamma_state.expect("the dash never served the attached state");
+    let bogus_state = bogus_state.expect("the dash never served the unknown-selector state");
+
+    // No selector -> the dash's OWN local run (backward compatible).
+    assert!(
+        default_state.contains("HTTP/1.1 200") && default_state.contains("u-ownrun"),
+        "with no selector the dash serves its own local run: {default_state}"
+    );
+
+    // A KNOWN selector attaches to THAT instance's run, and away from the local project.
+    assert!(
+        gamma_state.contains("HTTP/1.1 200")
+            && gamma_state.contains("u-gamma")
+            && !gamma_state.contains("u-ownrun"),
+        "a known selector serves the instance's run, not the dash's local one: {gamma_state}"
+    );
+
+    // The SAFETY boundary: an unknown / since-gone selector degrades to an EMPTY run - it is
+    // NEITHER the dash's local run NOR the registered instance's, and it is a 200 with no units,
+    // never a 500 and never a silent fall-back to the local project.
+    assert!(
+        bogus_state.contains("HTTP/1.1 200") && !bogus_state.contains("HTTP/1.1 500"),
+        "an unknown selector degrades to an empty state, never an error: {bogus_state}"
+    );
+    assert!(
+        !bogus_state.contains("u-ownrun"),
+        "an unknown selector must NOT silently show the dash's own local run: {bogus_state}"
+    );
+    assert!(
+        !bogus_state.contains("u-gamma"),
+        "an unknown selector must not leak an unrelated instance's run: {bogus_state}"
+    );
+    let bogus_body = bogus_state.split("\r\n\r\n").nth(1).unwrap_or("");
+    assert!(
+        bogus_body.contains("\"units\":[]"),
+        "the unknown-selector run view is genuinely empty (no units): {bogus_body}"
+    );
+}
+
+/// Spec 50, criterion 3, the STALE-PRUNE reaching the periphery AND the landing's WIRE CONTRACT,
+/// through the BUILT binary. `registry::read_live` prunes any entry whose heartbeat has gone stale
+/// past the idle window, and BOTH the `/api/instances` landing provider and the attach resolver
+/// consume it - so a stale (dead) instance must not appear in the landing, and selecting a stale
+/// id must degrade to empty. The happy-path test registers only fresh entries, so neither the
+/// prune nor the exact serialized field names the page's JS reads are exercised here.
+///
+/// A LIVE instance (fresh heartbeat) and a STALE one (heartbeat well past `DEFAULT_IDLE_MS`) are
+/// registered into one sandboxed registry. On the built dash, `/api/instances` lists the LIVE
+/// instance and NOT the stale one (pruned by the read) and carries every one of the six
+/// `InstanceView` wire keys the landing page reads; and `?instance=<stale id>` degrades to an
+/// empty run (the stale entry was pruned before resolve).
+#[test]
+fn dash_landing_prunes_stale_instances_and_pins_the_wire_contract() {
+    use rigger::registry;
+    use std::process::Stdio;
+
+    let state = tempfile::tempdir().unwrap();
+    let xdg = state.path().to_str().unwrap();
+    let regdir = registry::instances_dir(state.path());
+
+    let now = registry::now_ms();
+    let live_root = temp_git_project_with_commit();
+    let stale_root = temp_git_project_with_commit();
+    let mk = |root: &Path, hb: u64| registry::Instance {
+        project: run_stream_identity(root),
+        root: root.to_string_lossy().into_owned(),
+        store: registry::StoreIdentity::Local {
+            path: root
+                .join(".rigger")
+                .join("events.db")
+                .to_string_lossy()
+                .into_owned(),
+        },
+        heartbeat_ms: hb,
+    };
+    // Live: heartbeat now. Stale: a full idle window plus a minute in the past, so `is_stale`
+    // is unambiguously true regardless of the small drift between this stamp and the dash's read.
+    let live_inst = mk(live_root.path(), now);
+    let stale_inst = mk(stale_root.path(), now - registry::DEFAULT_IDLE_MS - 60_000);
+    registry::write(&regdir, &live_inst).unwrap();
+    registry::write(&regdir, &stale_inst).unwrap();
+    let live_project = run_stream_identity(live_root.path());
+    let stale_project = run_stream_identity(stale_root.path());
+    let live_id = live_inst.id();
+    let stale_id = stale_inst.id();
+
+    let neutral = temp_project();
+    let port = free_loopback_port();
+    let mut dash = Command::new(rigger_bin())
+        .args(["dash", "--port", &port.to_string()])
+        .current_dir(neutral.path())
+        .env("XDG_STATE_HOME", xdg)
+        .env_remove("RIGGER_NO_DASH")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn `rigger dash`");
+
+    let landing = http_get_path(port, "/api/instances");
+    let stale_state = http_get_path(port, &format!("/api/state?instance={stale_id}"));
+    let _ = dash.kill();
+    let _ = dash.wait();
+
+    let landing = landing.expect("the dash never served /api/instances");
+    let stale_state = stale_state.expect("the dash never served the stale-selector state");
+
+    assert!(
+        landing.contains("HTTP/1.1 200"),
+        "the landing endpoint answers 200: {landing}"
+    );
+    // The LIVE instance is listed with its attach id; the STALE one is pruned, absent from both
+    // the landing's project labels and its selectable ids.
+    assert!(
+        landing.contains(&live_project) && landing.contains(live_id.as_str()),
+        "the landing lists the live instance {live_project} with its attach id: {landing}"
+    );
+    assert!(
+        !landing.contains(&stale_project) && !landing.contains(stale_id.as_str()),
+        "a stale instance is pruned from the landing, never shown as attachable: {landing}"
+    );
+
+    // The WIRE CONTRACT: the landing body carries every field name the page's JS reads to label
+    // and select a row. A rename would silently break the picker; pin all six here.
+    let landing_body = landing.split("\r\n\r\n").nth(1).unwrap_or("");
+    for key in [
+        "\"instances\"",
+        "\"id\"",
+        "\"project\"",
+        "\"root\"",
+        "\"kind\"",
+        "\"store\"",
+        "\"age_secs\"",
+    ] {
+        assert!(
+            landing_body.contains(key),
+            "the landing wire contract must carry {key}: {landing_body}"
+        );
+    }
+
+    // Selecting the stale id resolves against the pruned registry, so it degrades to an empty run
+    // (a 200 with no units), never the stale instance's content and never a 500.
+    assert!(
+        stale_state.contains("HTTP/1.1 200") && !stale_state.contains("HTTP/1.1 500"),
+        "a stale selector degrades to an empty state, never an error: {stale_state}"
+    );
+    let stale_body = stale_state.split("\r\n\r\n").nth(1).unwrap_or("");
+    assert!(
+        stale_body.contains("\"units\":[]"),
+        "the stale-selector run view is genuinely empty (no units): {stale_body}"
+    );
+}
+
+/// Spec 50, criterion 3, the READ-ONLY GLOBAL CONSTRAINT through the BUILT binary: attaching to a
+/// SHARED instance whose own `.rigger` no longer resolves a server (a SQLITE DEGRADE) must NOT
+/// create a store file under that instance's project. A dash attach is a read-only projection, and
+/// `Store::open` CREATES `events.db` AND its schema - so the Shared arm must guard existence exactly
+/// like the Local arm rather than open-creating a phantom store under a foreign root
+/// (adv-u50c3-shared-attach-creates-phantom-store). This is the CREATION angle - the testable, and
+/// gating, sibling of the env-precedence finding: the Shared arm resolves through the ATTACHED
+/// instance's own config with NO ambient environment, so the dash process's `KURRENTDB_CONN` can
+/// neither redirect a foreign read nor (its write-path sibling) open-create a store here.
+///
+/// The instance's `.rigger` exists (as it does for any real instance) but carries no store config
+/// and no `events.db`, so its own resolution degrades to the sqlite default; the dash runs with
+/// `KURRENTDB_CONN` REMOVED so the pre-fix Shared arm's `env_conn()` rung is also empty and it
+/// reaches the exact `Store::open` that wrote the phantom file. After one attach GET, the file must
+/// still be absent.
+#[test]
+fn dash_attach_to_shared_instance_never_creates_a_store_under_its_root() {
+    use rigger::registry;
+    use std::process::Stdio;
+
+    let state = tempfile::tempdir().unwrap();
+    let xdg = state.path().to_str().unwrap();
+    let regdir = registry::instances_dir(state.path());
+
+    // A SHARED-registered instance whose `.rigger` exists (the registry/graph live there for any
+    // real instance) but carries NO store config (`store.conn`/`workflow.yml`) and NO `events.db`,
+    // so its OWN store resolution degrades to the sqlite default.
+    let shared_root = temp_git_project_with_commit();
+    let rigger_dir = shared_root.path().join(".rigger");
+    std::fs::create_dir_all(&rigger_dir).unwrap();
+    let events_db = rigger_dir.join("events.db");
+    assert!(
+        !events_db.exists(),
+        "precondition: the shared instance starts with no events.db"
+    );
+
+    let inst = registry::Instance {
+        project: run_stream_identity(shared_root.path()),
+        root: shared_root.path().to_string_lossy().into_owned(),
+        store: registry::StoreIdentity::Shared {
+            endpoint: "kurrentdb://localhost:2113".to_string(),
+        },
+        heartbeat_ms: registry::now_ms(),
+    };
+    registry::write(&regdir, &inst).unwrap();
+    let id = inst.id();
+
+    let neutral = temp_project();
+    let port = free_loopback_port();
+    let mut dash = Command::new(rigger_bin())
+        .args(["dash", "--port", &port.to_string()])
+        .current_dir(neutral.path())
+        .env("XDG_STATE_HOME", xdg)
+        // No ambient server address: the Shared arm degrades to sqlite (rung 5) and MUST hit the
+        // existence guard - never resolve the dash's own `KURRENTDB_CONN` for a foreign instance.
+        .env_remove("KURRENTDB_CONN")
+        .env_remove("RIGGER_NO_DASH")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn `rigger dash`");
+
+    let attached = http_get_path(port, &format!("/api/state?instance={id}"));
+    let _ = dash.kill();
+    let _ = dash.wait();
+
+    let attached = attached.expect("the dash never served the shared-attached state");
+    // The attach degrades to an EMPTY run - a 200, never a 500 - because the store is absent.
+    assert!(
+        attached.contains("HTTP/1.1 200") && !attached.contains("HTTP/1.1 500"),
+        "attaching to a store-less shared instance degrades to an empty state, never an error: {attached}"
+    );
+    let body = attached.split("\r\n\r\n").nth(1).unwrap_or("");
+    assert!(
+        body.contains("\"units\":[]"),
+        "the shared-attach run view is genuinely empty (no units): {body}"
+    );
+    // THE CONSTRAINT: a read-only attach created NO store file under the instance's root. The
+    // pre-fix Shared arm called `Store::open` on the sqlite degrade, writing this phantom events.db.
+    assert!(
+        !events_db.exists(),
+        "a read-only dash attach must never create a store under a foreign project, but {} was created",
+        events_db.display()
+    );
+}
+
+/// Spec 50, criterion 3, the ENV-PRECEDENCE branch of the Shared attach arm through the BUILT
+/// binary (adv-u50c3-uphold-sdet-env-precedence): the dash process's OWN `KURRENTDB_CONN`
+/// addresses a DIFFERENT project's store, so when it attaches to a registered SHARED instance the
+/// ATTACHED instance's own `.rigger` config - never the dash's ambient environment - is
+/// authoritative for the read. The Shared arm proves this by resolving through
+/// `store_selection_at(None, ..)`: passing `None` for env instead of `env_conn()`, so the dash's
+/// `KURRENTDB_CONN` can NOT win the precedence and redirect the foreign read to the wrong store.
+///
+/// The sibling no-phantom-store test cannot reach THIS boundary: it REMOVES `KURRENTDB_CONN`, so a
+/// regression that swapped `None` back to `env_conn()` would stay green there (an empty env resolves
+/// to the same sqlite degrade). Here the env is SET and the instance's own store is POPULATED, so
+/// the two behaviors DIVERGE observably: the correct `None` path reads the instance's own sqlite
+/// (its distinctive run shows through), while an `env_conn()` regression would resolve the dash's
+/// `KURRENTDB_CONN` server, fail to reach it, and degrade to an EMPTY run - the instance's own run
+/// would vanish. Asserting the instance's own unit shows through is therefore RED exactly on the
+/// env-redirect regression and GREEN on the shipped env-agnostic read.
+#[test]
+fn dash_attach_to_shared_instance_reads_its_own_store_not_the_dash_process_kurrentdb_conn() {
+    use rigger::registry;
+    use std::process::Stdio;
+
+    let state = tempfile::tempdir().unwrap();
+    let xdg = state.path().to_str().unwrap();
+    let regdir = registry::instances_dir(state.path());
+
+    // A SHARED-registered instance whose `.rigger` carries NO store config (so its OWN resolution
+    // degrades to the sqlite default) but DOES have a POPULATED `events.db` - a distinctive run
+    // (unit `u-envprec`) seeded into its own local sqlite exactly as the compiled binary reads it
+    // back. This is the Shared-arm Sqlite DEGRADE with real content to read.
+    let shared_root = temp_git_project_with_commit();
+    seed_run_events(
+        shared_root.path(),
+        &[
+            ("RunStarted", r#"{"run_id":"run-envprec","specs":["s"]}"#),
+            (
+                "UnitStarted",
+                r#"{"id":"u-envprec","spec_criterion":"env precedence work"}"#,
+            ),
+        ],
+    );
+
+    let inst = registry::Instance {
+        project: run_stream_identity(shared_root.path()),
+        root: shared_root.path().to_string_lossy().into_owned(),
+        store: registry::StoreIdentity::Shared {
+            endpoint: "kurrentdb://localhost:2113".to_string(),
+        },
+        heartbeat_ms: registry::now_ms(),
+    };
+    registry::write(&regdir, &inst).unwrap();
+    let id = inst.id();
+
+    // The dash process's OWN ambient server address - a well-formed but UNREACHABLE endpoint (a
+    // free loopback port nothing listens on, so a connection is refused fast). If the Shared arm
+    // wrongly resolved THIS `env_conn()` for the foreign instance it would select the server, fail
+    // to reach it, and the attached run would come back empty. The shipped arm ignores it.
+    let dead_port = free_loopback_port();
+    let dead_conn = format!("kurrentdb://127.0.0.1:{dead_port}");
+
+    let neutral = temp_project();
+    let port = free_loopback_port();
+    let mut dash = Command::new(rigger_bin())
+        .args(["dash", "--port", &port.to_string()])
+        .current_dir(neutral.path())
+        .env("XDG_STATE_HOME", xdg)
+        // The dash process HOLDS a `KURRENTDB_CONN`, pointed at a store that is NOT this instance's.
+        // The attach must ignore it and read the instance's OWN sqlite (rungs 3-5 at the instance's
+        // `.rigger`), never let the dash env (rung 2) redirect the foreign read.
+        .env("KURRENTDB_CONN", &dead_conn)
+        .env_remove("RIGGER_NO_DASH")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn `rigger dash`");
+
+    let attached = http_get_path(port, &format!("/api/state?instance={id}"));
+    let _ = dash.kill();
+    let _ = dash.wait();
+
+    let attached = attached.expect("the dash never served the shared-attached state");
+    // A 200 (never a 500): the read is best-effort and the instance's own sqlite is present.
+    assert!(
+        attached.contains("HTTP/1.1 200") && !attached.contains("HTTP/1.1 500"),
+        "attaching to the shared instance answers 200 from its own store: {attached}"
+    );
+    // THE CONSTRAINT: the attach served the ATTACHED INSTANCE's OWN run (unit `u-envprec`), proving
+    // the read went through the instance's `.rigger` and the dash process's `KURRENTDB_CONN` did NOT
+    // redirect it. A regression to `env_conn()` would resolve the dead server and serve an empty run.
+    assert!(
+        attached.contains("u-envprec"),
+        "the shared attach must read the instance's OWN store (its run unit u-envprec), never the \
+         dash process's KURRENTDB_CONN: {attached}"
     );
 }
 

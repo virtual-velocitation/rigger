@@ -258,7 +258,7 @@ fn try_fetch_whole_served(graph_db: &str, identity: &str, path: &str) -> Option<
     let graph_provider = {
         let db = graph_db.to_string();
         let id = identity.to_string();
-        move || -> Graph {
+        move |_instance: Option<&str>| -> Graph {
             match Projector::open(&db, &id) {
                 Ok(p) => p.whole().unwrap_or_default(),
                 Err(_) => Graph::default(),
@@ -268,15 +268,17 @@ fn try_fetch_whole_served(graph_db: &str, identity: &str, path: &str) -> Option<
     // The polled STATE provider: a never-built repo has no run content, so its run-seeded graph is
     // empty. This is the other half of the provider split - `/api/graph` must still reach the whole
     // projection even though the state poll's graph is `Graph::default`.
-    let provider = move || -> Result<DashInputs, String> {
+    let provider = move |_instance: Option<&str>| -> Result<DashInputs, String> {
         Ok((Vec::new(), Graph::default(), Vec::new(), HashMap::new()))
     };
+    let instances_provider = Vec::new;
 
     std::thread::spawn(move || {
         let _ = dash::serve(
             addr,
             provider,
             graph_provider,
+            instances_provider,
             3,
             "rigger-run",
             "origin/main",

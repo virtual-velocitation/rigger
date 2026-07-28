@@ -49,10 +49,11 @@ fn try_fetch_served_root_page() -> Option<String> {
     // The root page never reads the provider; a trivial empty-inputs provider satisfies `serve`'s
     // `Fn() -> Result<DashInputs, String>` bound, and an empty graph provider its `Fn() -> Graph`
     // bound (spec 45, criterion 1: the lazy `/api/graph` provider, never consulted for the page).
-    let provider = || -> Result<DashInputs, String> {
+    let provider = |_instance: Option<&str>| -> Result<DashInputs, String> {
         Ok((Vec::new(), Graph::default(), Vec::new(), HashMap::new()))
     };
-    let graph_provider = Graph::default;
+    let graph_provider = |_instance: Option<&str>| Graph::default();
+    let instances_provider = Vec::new;
 
     // A detached server thread: `serve` loops until the process ends; we drive one request. If its
     // internal bind lost the race (EADDRINUSE), the thread returns at once and nobody answers here.
@@ -61,6 +62,7 @@ fn try_fetch_served_root_page() -> Option<String> {
             addr,
             provider,
             graph_provider,
+            instances_provider,
             3,
             "rigger-run",
             "origin/main",

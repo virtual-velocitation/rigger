@@ -34,6 +34,24 @@
   .release code { background: var(--panel); border: 1px solid var(--line);
     border-radius: 4px; padding: 1px 5px; }
   .release code.pr { display: inline-block; margin-top: 4px; color: var(--accent); }
+  /* LANDING strip (spec 50 c3): the instance picker. One row of selectable chips; the chip list
+     scrolls INSIDE its own container (overflow-x: auto) so any number of instances stays one row
+     and never widens the page. */
+  .landing { display: flex; align-items: center; gap: 10px; padding: 8px 20px;
+    border-bottom: 1px solid var(--line); }
+  .landing-label { flex: 0 0 auto; color: var(--muted); font-size: 12px; letter-spacing: 0.04em; }
+  .instances { flex: 1 1 auto; min-width: 0; display: flex; gap: 8px; overflow-x: auto; }
+  .inst { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+    background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 999px;
+    padding: 3px 10px; font: inherit; font-size: 12px; white-space: nowrap; }
+  .inst:hover { border-color: var(--accent); }
+  .inst.active { border-color: var(--accent); background: rgba(110, 168, 254, 0.14); color: var(--accent); }
+  .inst-name { font-weight: 600; }
+  .inst-kind { text-transform: uppercase; font-size: 10px; letter-spacing: 0.06em; }
+  .inst-kind.k-shared { color: var(--warn); }
+  .inst-kind.k-local { color: var(--ok); }
+  .inst-age { color: var(--muted); }
+  header .attached { color: var(--accent); margin-left: 8px; }
   /* The content shell: a width-reflowing grid with NO fixed max-width cap, so it fills the
      whole viewport (as many columns as fit) and collapses to one column when narrow - no dead
      space at wide widths, no page-level horizontal scroll. auto-fit packs the view sections into
@@ -231,6 +249,15 @@
   <span class="meta" id="mode"></span>
   <span class="meta" id="clock"></span>
 </header>
+<!-- LANDING view (spec 50 c3): ONE dash, any instance. The strip lists every registered rigger
+     instance on this machine; selecting one attaches the run and graph views to THAT instance's
+     stores. The rows are rendered client-side from GET /api/instances and the selection threads
+     ?instance=<id> into the store polls - so an operator sees and switches between every project
+     from one place, instead of a dash per project. -->
+<nav id="landing" class="landing" aria-label="registered instances">
+  <span class="landing-label">instances</span>
+  <div class="instances" id="instances"></div>
+</nav>
 <div id="release" class="release" hidden></div>
 <main>
   <section class="view" id="kg">
@@ -330,6 +357,38 @@ const LIVE = EMBEDDED_STATE === null;
 // is keyed by the stable decision id (mirrored onto each <details> as data-did), so every render
 // re-opens what the operator opened. The poll is untouched; the decisions render participates in it.
 const expandedDecisions = new Set();
+
+// ATTACH SELECTOR (spec 50 c3): which registered instance the run/graph views are showing. The
+// source of truth is the page's OWN `?instance=` query param, so a selection is shareable, survives
+// a reload, and is exactly the selector the server reads. Empty means the dash's OWN local project
+// (backward compatible - today's single-project dash). Read defensively: a non-browser realm (the
+// page-script test harness) has no `location`/`URLSearchParams`, so it degrades to "" instead of
+// throwing at load and taking the whole script down with it.
+let selectedInstance = (function () {
+  try { return new URLSearchParams(location.search).get("instance") || ""; }
+  catch (_) { return ""; }
+})();
+// The last-fetched landing list, kept so re-marking the active chip on select and the attach label
+// need no re-fetch.
+let lastInstances = [];
+
+// Thread the attached instance onto a store-reading API path so every run/graph poll (/api/state,
+// /api/events, /api/graph) lands on the SELECTED instance's stores (spec 50 c3). /api/instances is a
+// registry projection and is NEVER threaded - it lists every instance regardless of the selection.
+function apiUrl(path) {
+  if (!selectedInstance) return path;
+  const sep = path.includes("?") ? "&" : "?";
+  return path + sep + "instance=" + encodeURIComponent(selectedInstance);
+}
+
+// A badge for the mode line naming the attached instance, so it is always clear WHICH project the
+// run/graph views show (empty for the dash's own local project).
+function attachLabel() {
+  if (!selectedInstance) return "";
+  const inst = lastInstances.find(i => i.id === selectedInstance);
+  return ' <span class="attached">attached: '
+    + esc(inst ? (inst.project || inst.root) : selectedInstance) + '</span>';
+}
 
 function esc(s) {
   return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({
@@ -641,7 +700,7 @@ async function seedGraph(seed) {
     return;
   }
   try {
-    const g = await (await fetch("/api/graph?seed=" + encodeURIComponent(seed) + "&depth=2",
+    const g = await (await fetch(apiUrl("/api/graph?seed=" + encodeURIComponent(seed) + "&depth=2"),
       { cache: "no-store" })).json();
     renderGraph(g);
   } catch (e) {
@@ -658,8 +717,8 @@ async function pathTo(target) {
   if (!kgSeed || kgSeed === target) { seedGraph(target); return; }
   if (!LIVE) { seedGraph(target); return; }
   try {
-    const g = await (await fetch("/api/graph?seed=" + encodeURIComponent(kgSeed) + "&depth=2"
-      + "&from=" + encodeURIComponent(kgSeed) + "&to=" + encodeURIComponent(target),
+    const g = await (await fetch(apiUrl("/api/graph?seed=" + encodeURIComponent(kgSeed) + "&depth=2"
+      + "&from=" + encodeURIComponent(kgSeed) + "&to=" + encodeURIComponent(target)),
       { cache: "no-store" })).json();
     renderGraph(g);
   } catch (e) {
@@ -975,7 +1034,7 @@ async function loadKgOverview() {
     return;
   }
   try {
-    const ov = await (await fetch("/api/graph", { cache: "no-store" })).json();
+    const ov = await (await fetch(apiUrl("/api/graph"), { cache: "no-store" })).json();
     renderKgOverview(ov);
   } catch (e) {
     el("kgpanel").innerHTML = '<div class="empty">the knowledge graph is unavailable</div>';
@@ -992,7 +1051,7 @@ async function drillCluster(key) {
     return;
   }
   try {
-    const nb = await (await fetch("/api/graph?cluster=" + encodeURIComponent(key), { cache: "no-store" })).json();
+    const nb = await (await fetch(apiUrl("/api/graph?cluster=" + encodeURIComponent(key)), { cache: "no-store" })).json();
     renderKgDrill(nb);
   } catch (e) {
     el("kgpanel").innerHTML = '<div class="empty">the cluster is unavailable</div>';
@@ -1034,28 +1093,103 @@ function wireSelectToSeed() {
       if (kgLast) renderGraph(kgLast);
     }
   });
+  // The LANDING picker (spec 50 c3): ONE delegated click on the stable instances strip, so selecting
+  // a chip attaches the run/graph views to that instance and survives the renderInstances innerHTML
+  // swaps that destroy the individual chips.
+  el("instances").addEventListener("click", ev => {
+    const chip = ev.target.closest("[data-instance]");
+    if (chip) selectInstance(chip.dataset.instance);
+  });
 }
 
-async function poll() {
+// Draw the LANDING list (spec 50 c3): one selectable chip per registered instance, plus a "this dash"
+// chip to detach back to the dash's own local project, with the active one marked. Each chip consumes
+// the six wire keys - id (the attach selector on data-instance), project (the label), kind (a
+// local/shared tag), store + root (the hover title), and age_secs (freshness) - so selecting a chip
+// serves THAT instance's run and graph views.
+function renderInstances(instances) {
+  const local = '<button type="button" class="inst' + (selectedInstance ? '' : ' active')
+    + '" data-instance="" title="the dash\'s own local project">'
+    + '<span class="inst-name">this dash</span></button>';
+  const chips = (instances || []).map(i => {
+    const active = i.id === selectedInstance ? ' active' : '';
+    const age = i.age_secs === 0 ? 'live' : (i.age_secs + 's');
+    return '<button type="button" class="inst' + active + '" data-instance="' + esc(i.id) + '"'
+      + ' title="' + esc(i.root + ' - ' + i.store) + '">'
+      + '<span class="inst-name">' + esc(i.project) + '</span>'
+      + '<span class="inst-kind k-' + esc(i.kind) + '">' + esc(i.kind) + '</span>'
+      + '<span class="inst-age">' + esc(age) + '</span>'
+      + '</button>';
+  }).join("");
+  el("instances").innerHTML = local + chips;
+}
+
+// Load and render the landing list from the registry projection at GET /api/instances (NEVER threaded
+// with ?instance= - it lists all of them). Best-effort: a failed fetch keeps the last-rendered list.
+async function loadInstances() {
+  if (!LIVE) return;
   try {
-    const s = await (await fetch("/api/state", { cache: "no-store" })).json();
-    // Tail the event feed incrementally through the second endpoint.
+    const body = await (await fetch("/api/instances", { cache: "no-store" })).json();
+    lastInstances = body.instances || [];
+    renderInstances(lastInstances);
+  } catch (_) { /* keep the last-rendered list */ }
+}
+
+// SELECT an instance to attach to (or "" for the dash's own local project). The choice is recorded on
+// the page URL (shareable, survives reload - the same ?instance= the server reads), then the run and
+// graph views switch to it IMMEDIATELY. These direct calls do NOT reschedule the poll, so the single
+// self-rescheduling poll loop is never doubled.
+function selectInstance(id) {
+  const next = id || "";
+  if (next === selectedInstance) return;
+  selectedInstance = next;
+  // Record the choice on the page URL so it is shareable and survives reload. Guarded: a non-browser
+  // realm (the page-script test harness) has no `location`/`URL`/`history`, so the selection still
+  // takes effect (state + views) without the URL breadcrumb rather than throwing.
+  try {
+    const url = new URL(location.href);
+    if (selectedInstance) url.searchParams.set("instance", selectedInstance);
+    else url.searchParams.delete("instance");
+    history.replaceState(null, "", url);
+  } catch (_) { /* no browser URL/history in this realm */ }
+  renderInstances(lastInstances);
+  refreshRun();
+  loadKgOverview();
+}
+
+// Fetch and render ONE run snapshot from the ATTACHED instance's stores (or the local project when
+// none is selected). It does NOT reschedule - `poll` owns the loop and `selectInstance` calls this
+// for an immediate switch, so the single poll loop can never be doubled.
+async function refreshRun() {
+  try {
+    const s = await (await fetch(apiUrl("/api/state"), { cache: "no-store" })).json();
+    // Tail the event feed incrementally through the second endpoint (also attached).
     try {
-      const ev = await (await fetch("/api/events?since=0", { cache: "no-store" })).json();
+      const ev = await (await fetch(apiUrl("/api/events?since=0"), { cache: "no-store" })).json();
       s.events = ev.events || [];
     } catch (_) { /* feed is best-effort */ }
     render(s);
-    el("mode").innerHTML = '<span class="live">live</span>';
+    el("mode").innerHTML = '<span class="live">live</span>' + attachLabel();
   } catch (e) {
-    el("mode").innerHTML = '<span class="stale">disconnected</span>';
-  } finally {
-    if (LIVE) setTimeout(poll, POLL_MS);
+    el("mode").innerHTML = '<span class="stale">disconnected</span>' + attachLabel();
   }
 }
 
-// Attach the select-to-seed / drill / back listeners once, on the stable containers, before the first
-// render/poll so an exploration click works from the first painted panel.
+async function poll() {
+  await refreshRun();
+  // Refresh the landing list each tick so instances that come and go (and their freshness ages)
+  // stay current; best-effort, and it never throws (loadInstances swallows its own errors).
+  await loadInstances();
+  if (LIVE) setTimeout(poll, POLL_MS);
+}
+
+// Attach the select-to-seed / drill / back / instance-select listeners once, on the stable containers,
+// before the first render/poll so an exploration or attach click works from the first painted panel.
 wireSelectToSeed();
+
+// Paint the landing strip immediately (the "this dash" chip, plus any prior list) so the picker is
+// present before the first /api/instances fetch lands; the live poll then fills in the instances.
+renderInstances(lastInstances);
 
 // The drag PAN handlers live on `window`, installed ONCE, so a drag that leaves the svg still tracks
 // (mousedown binds per render on the fresh svg in bindKgView; move/up track globally until release).

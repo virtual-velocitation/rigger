@@ -115,16 +115,18 @@ fn try_fetch_served(path: &str, graph: Graph) -> Option<String> {
     // yields; the polled provider still carries a run-seeded slice for the state poll (unused here).
     let graph_provider = {
         let graph = graph.clone();
-        move || -> Graph { graph.clone() }
+        move |_instance: Option<&str>| -> Graph { graph.clone() }
     };
-    let provider = move || -> Result<DashInputs, String> {
+    let provider = move |_instance: Option<&str>| -> Result<DashInputs, String> {
         Ok((Vec::new(), graph.clone(), Vec::new(), HashMap::new()))
     };
+    let instances_provider = Vec::new;
     std::thread::spawn(move || {
         let _ = dash::serve(
             addr,
             provider,
             graph_provider,
+            instances_provider,
             3,
             "rigger-run",
             "origin/main",
@@ -1650,7 +1652,7 @@ fn the_served_graph_route_reads_the_lazy_provider_only_and_never_on_the_state_po
         // The polled provider: the cheap run-scoped inputs the state poll / events feed ride. Its
         // graph slot is a DECOY (`polled-neighbor`) the `/api/graph` route must NOT read.
         let polled_graph = build("polled-neighbor");
-        let provider = move || -> Result<DashInputs, String> {
+        let provider = move |_instance: Option<&str>| -> Result<DashInputs, String> {
             Ok((Vec::new(), polled_graph.clone(), Vec::new(), HashMap::new()))
         };
 
@@ -1659,16 +1661,18 @@ fn the_served_graph_route_reads_the_lazy_provider_only_and_never_on_the_state_po
         let lazy_graph = build("lazy-neighbor");
         let hits = Arc::new(AtomicUsize::new(0));
         let hits_for_provider = Arc::clone(&hits);
-        let graph_provider = move || -> Graph {
+        let graph_provider = move |_instance: Option<&str>| -> Graph {
             hits_for_provider.fetch_add(1, Ordering::SeqCst);
             lazy_graph.clone()
         };
+        let instances_provider = Vec::new;
 
         std::thread::spawn(move || {
             let _ = dash::serve(
                 addr,
                 provider,
                 graph_provider,
+                instances_provider,
                 3,
                 "rigger-run",
                 "origin/main",
