@@ -11271,6 +11271,92 @@ fn dash_landing_prunes_stale_instances_and_pins_the_wire_contract() {
     );
 }
 
+/// Spec 50, criterion 3, the READ-ONLY GLOBAL CONSTRAINT through the BUILT binary: attaching to a
+/// SHARED instance whose own `.rigger` no longer resolves a server (a SQLITE DEGRADE) must NOT
+/// create a store file under that instance's project. A dash attach is a read-only projection, and
+/// `Store::open` CREATES `events.db` AND its schema - so the Shared arm must guard existence exactly
+/// like the Local arm rather than open-creating a phantom store under a foreign root
+/// (adv-u50c3-shared-attach-creates-phantom-store). This is the CREATION angle - the testable, and
+/// gating, sibling of the env-precedence finding: the Shared arm resolves through the ATTACHED
+/// instance's own config with NO ambient environment, so the dash process's `KURRENTDB_CONN` can
+/// neither redirect a foreign read nor (its write-path sibling) open-create a store here.
+///
+/// The instance's `.rigger` exists (as it does for any real instance) but carries no store config
+/// and no `events.db`, so its own resolution degrades to the sqlite default; the dash runs with
+/// `KURRENTDB_CONN` REMOVED so the pre-fix Shared arm's `env_conn()` rung is also empty and it
+/// reaches the exact `Store::open` that wrote the phantom file. After one attach GET, the file must
+/// still be absent.
+#[test]
+fn dash_attach_to_shared_instance_never_creates_a_store_under_its_root() {
+    use rigger::registry;
+    use std::process::Stdio;
+
+    let state = tempfile::tempdir().unwrap();
+    let xdg = state.path().to_str().unwrap();
+    let regdir = registry::instances_dir(state.path());
+
+    // A SHARED-registered instance whose `.rigger` exists (the registry/graph live there for any
+    // real instance) but carries NO store config (`store.conn`/`workflow.yml`) and NO `events.db`,
+    // so its OWN store resolution degrades to the sqlite default.
+    let shared_root = temp_git_project_with_commit();
+    let rigger_dir = shared_root.path().join(".rigger");
+    std::fs::create_dir_all(&rigger_dir).unwrap();
+    let events_db = rigger_dir.join("events.db");
+    assert!(
+        !events_db.exists(),
+        "precondition: the shared instance starts with no events.db"
+    );
+
+    let inst = registry::Instance {
+        project: run_stream_identity(shared_root.path()),
+        root: shared_root.path().to_string_lossy().into_owned(),
+        store: registry::StoreIdentity::Shared {
+            endpoint: "kurrentdb://localhost:2113".to_string(),
+        },
+        heartbeat_ms: registry::now_ms(),
+    };
+    registry::write(&regdir, &inst).unwrap();
+    let id = inst.id();
+
+    let neutral = temp_project();
+    let port = free_loopback_port();
+    let mut dash = Command::new(rigger_bin())
+        .args(["dash", "--port", &port.to_string()])
+        .current_dir(neutral.path())
+        .env("XDG_STATE_HOME", xdg)
+        // No ambient server address: the Shared arm degrades to sqlite (rung 5) and MUST hit the
+        // existence guard - never resolve the dash's own `KURRENTDB_CONN` for a foreign instance.
+        .env_remove("KURRENTDB_CONN")
+        .env_remove("RIGGER_NO_DASH")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn `rigger dash`");
+
+    let attached = http_get_path(port, &format!("/api/state?instance={id}"));
+    let _ = dash.kill();
+    let _ = dash.wait();
+
+    let attached = attached.expect("the dash never served the shared-attached state");
+    // The attach degrades to an EMPTY run - a 200, never a 500 - because the store is absent.
+    assert!(
+        attached.contains("HTTP/1.1 200") && !attached.contains("HTTP/1.1 500"),
+        "attaching to a store-less shared instance degrades to an empty state, never an error: {attached}"
+    );
+    let body = attached.split("\r\n\r\n").nth(1).unwrap_or("");
+    assert!(
+        body.contains("\"units\":[]"),
+        "the shared-attach run view is genuinely empty (no units): {body}"
+    );
+    // THE CONSTRAINT: a read-only attach created NO store file under the instance's root. The
+    // pre-fix Shared arm called `Store::open` on the sqlite degrade, writing this phantom events.db.
+    assert!(
+        !events_db.exists(),
+        "a read-only dash attach must never create a store under a foreign project, but {} was created",
+        events_db.display()
+    );
+}
+
 /// Spec 50, criterion 1, the CONFLICT branch through the BUILT binary: when the dash's requested
 /// address is held by an UNRELATED (non-dash) process, `rigger dash --port <held>` must FAIL
 /// LOUD - it surfaces the address-in-use conflict and exits NON-ZERO, the deliberate opposite of

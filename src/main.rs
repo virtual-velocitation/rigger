@@ -4849,24 +4849,57 @@ fn instance_rigger_dir(inst: &rigger::registry::Instance) -> PathBuf {
 /// instance's namespace identity. Best-effort: an absent, unreachable, or unreadable store degrades
 /// to an empty run - "an empty store renders an empty state, never an error" - because the selected
 /// instance is discovery metadata, not a source of truth.
+///
+/// Read an instance's `run` stream from an embedded sqlite event log at `path`, READ-ONLY: an
+/// ABSENT file degrades to an empty run (`Ok(Vec::new())`) rather than opening it, because
+/// [`open_sqlite_store`] -> [`Store::open`] CREATES the file AND its schema, and a dash attach is a
+/// read-only projection that MUST NEVER write a store under a foreign project (spec 50, the
+/// read-only global constraint). This is the ONE read-only sqlite attach reader: the Local arm and
+/// the Shared arm's Sqlite-degrade BOTH route through it, so the existence guard lives in exactly
+/// one place and no attach path can open-create a phantom `events.db`.
+fn dash_read_sqlite_stream_readonly(
+    path: &str,
+    project: &str,
+) -> Result<Vec<Event>, Box<dyn std::error::Error>> {
+    if !Path::new(path).exists() {
+        return Ok(Vec::new());
+    }
+    let backend = open_sqlite_store(path)?;
+    let store = Namespaced::new(&backend, project);
+    Ok(store.read_stream(conductor::STREAM, 0, Direction::Forward)?)
+}
+
 fn dash_attach_run(inst: &rigger::registry::Instance) -> Vec<Event> {
     let read = || -> Result<Vec<Event>, Box<dyn std::error::Error>> {
         let all = match &inst.store {
             rigger::registry::StoreIdentity::Local { path } => {
-                if !Path::new(path).exists() {
-                    return Ok(Vec::new());
-                }
-                let backend = open_sqlite_store(path)?;
-                let store = Namespaced::new(&backend, &inst.project);
-                store.read_stream(conductor::STREAM, 0, Direction::Forward)?
+                dash_read_sqlite_stream_readonly(path, &inst.project)?
             }
             rigger::registry::StoreIdentity::Shared { .. } => {
                 let rigger_dir = instance_rigger_dir(inst);
-                let sel = store_selection_at(None, None, env_conn(), &rigger_dir)?;
+                // Resolve through the ATTACHED instance's OWN `.rigger` with NO ambient environment
+                // (`None`, never `env_conn()`): the dash process's own `KURRENTDB_CONN` addresses a
+                // DIFFERENT project's store, so letting it win (§48 rung 2) would attach the wrong
+                // store. The instance's own secret file / committed choice (rungs 3-4) is the
+                // authority for reading THAT instance (adv-u50c3-uphold-sdet-env-precedence).
+                let sel = store_selection_at(None, None, None, &rigger_dir)?;
                 let events_db = rigger_dir.join("events.db");
-                let backend = resolve_store(&sel, &events_db.to_string_lossy())?;
-                let store = Namespaced::new(backend.as_ref(), &inst.project);
-                store.read_stream(conductor::STREAM, 0, Direction::Forward)?
+                let events_db_path = events_db.to_string_lossy();
+                match sel {
+                    // The instance registered as Shared but its own config no longer resolves a
+                    // server (its secret file / config is gone): a Sqlite DEGRADE. Guard existence
+                    // EXACTLY like the Local arm - a read-only attach must NEVER open-create the
+                    // store, so an absent `events.db` renders an empty run, never a phantom store
+                    // file written under a foreign project (adv-u50c3-shared-attach-creates-phantom-store).
+                    StoreSelection::Sqlite => {
+                        dash_read_sqlite_stream_readonly(&events_db_path, &inst.project)?
+                    }
+                    StoreSelection::Server(_) => {
+                        let backend = resolve_store(&sel, &events_db_path)?;
+                        let store = Namespaced::new(backend.as_ref(), &inst.project);
+                        store.read_stream(conductor::STREAM, 0, Direction::Forward)?
+                    }
+                }
             }
         };
         Ok(runscope::current_run(&all).to_vec())

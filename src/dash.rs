@@ -2817,6 +2817,21 @@ mod tests {
         }
     }
 
+    /// The landing's freshness clock never goes negative (spec 50 c3): under clock skew an instance's
+    /// heartbeat stamp can be AHEAD of the reader's `now`, and `age_secs` is a `saturating_sub`, so it
+    /// FLOORS at 0 (the "live" sentinel the page renders) rather than underflowing. The sorted-landing
+    /// test only exercises PAST heartbeats; this pins the future-heartbeat edge.
+    #[test]
+    fn instance_view_age_floors_at_zero_for_a_future_heartbeat() {
+        // heartbeat_ms strictly AFTER now (now=1_000ms, heartbeat=9_000ms - 8s in the future).
+        let insts = vec![local_instance("alpha", "/home/dev/alpha", 9_000)];
+        let views = instance_views(&insts, 1_000);
+        assert_eq!(
+            views[0].age_secs, 0,
+            "a future heartbeat floors age at 0 (saturating_sub), never an underflow"
+        );
+    }
+
     /// `/api/instances` (spec 50 c3): the landing route renders the supplied instance list as a
     /// JSON array the page reads to populate its instance picker. It is a GET-only read like every
     /// other `/api/*` path, and needs no run/graph inputs (they are empty here) - the landing is a
@@ -3239,6 +3254,54 @@ mod tests {
         assert!(
             page.contains("overflow-wrap: anywhere"),
             "decision/finding text must wrap (overflow-wrap: anywhere), not scroll horizontally"
+        );
+    }
+
+    /// Spec 50 c3, the LANDING VIEW's operator-facing WIRING - the criterion-3 deliverable the
+    /// backend endpoint/resolver only ENABLE. The done-when is "the dash's landing view LISTS
+    /// registered instances, and SELECTING one serves THAT instance's run and graph views," so the
+    /// served page must actually CONSUME the registry: fetch GET `/api/instances`, render the list,
+    /// and thread the selected `?instance=<id>` into its store-reading polls. The cli wire-contract
+    /// test pins the JSON the endpoint SHIPS; this pins that the page is not left un-wired (the exact
+    /// regression that shipped criterion 3 with a complete backend but a dead-ended UI). Structural
+    /// string-pins on the live page's JS, mirroring the sibling one-screen/layout page tests.
+    #[test]
+    fn the_landing_view_lists_instances_and_threads_the_attach_selector() {
+        let page = live_page();
+
+        // The page FETCHES the landing list from the registry projection, and renders it into a
+        // container, tracking which instance is selected.
+        assert!(
+            page.contains("fetch(\"/api/instances\""),
+            "the page must fetch the landing list from /api/instances"
+        );
+        assert!(
+            page.contains("id=\"instances\"") && page.contains("selectedInstance"),
+            "the page must render the instances list into a container and track the selection"
+        );
+        assert!(
+            page.contains("function renderInstances") && page.contains("data-instance"),
+            "the page must render selectable instance rows (data-instance carries the attach id)"
+        );
+
+        // It THREADS the selected instance into the STORE-READING polls via the apiUrl helper (which
+        // appends `instance=<id>`), so selecting an instance switches the run and graph views to it.
+        assert!(
+            page.contains("function apiUrl") && page.contains("instance=\" + encodeURIComponent"),
+            "the page must thread ?instance=<id> onto its store-reading API calls"
+        );
+        assert!(
+            page.contains("apiUrl(\"/api/state\")")
+                && page.contains("apiUrl(\"/api/events")
+                && page.contains("apiUrl(\"/api/graph"),
+            "each store-reading poll (state/events/graph) must go through apiUrl (attach-threaded)"
+        );
+
+        // The registry landing itself is NEVER threaded - it lists every instance regardless of the
+        // current selection (a threaded /api/instances would only ever show the attached one).
+        assert!(
+            !page.contains("apiUrl(\"/api/instances"),
+            "the /api/instances landing list must not be threaded with the attach selector"
         );
     }
 
