@@ -150,6 +150,15 @@ fn run_rigger_envs(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> (String,
     // process that would outlive the test. Set before the caller's envs so a test could still
     // override it.
     cmd.env("RIGGER_NO_DASH", "1");
+    // The step/run/serve paths register this instance in the machine-global registry under
+    // XDG_STATE_HOME (spec 50, criterion 2). Default it to a per-invocation temp dir so the
+    // many tests that drive those paths never seed a phantom into the operator's real
+    // ~/.local/state/rigger/instances - a live discovery entry, rooted at a since-deleted test
+    // tempdir, that a running dash would otherwise pick up. Bound to `state` so the dir lives
+    // until after the command runs; set before the caller's envs so the registry tests that pass
+    // an explicit XDG_STATE_HOME (to read the registry back) still override it.
+    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME for the rigger run");
+    cmd.env("XDG_STATE_HOME", state.path());
     for (k, v) in envs {
         cmd.env(k, v);
     }
@@ -3125,6 +3134,234 @@ fn step_prints_a_disjoint_two_spawn_wave_then_reports_done() {
     );
 }
 
+/// Spec 50, criterion 2 (the REGISTRY lifecycle): `rigger step` REGISTERS this instance in the
+/// machine-global state directory - the project root plus a CREDENTIAL-FREE store identity, with a
+/// live heartbeat - so a machine-level dash can DISCOVER it without a coordination protocol. The
+/// state dir is redirected into a temp `XDG_STATE_HOME` so the test never touches the real
+/// `~/.local/state`; the entry is read back through the `rigger::registry` reader (the same reader
+/// the dash uses) to assert the local store identity, a live heartbeat, and no credential on disk.
+/// A second step refreshes the SAME entry in place - the registry never piles up duplicates.
+#[test]
+fn step_registers_the_instance_in_the_machine_global_registry() {
+    use rigger::registry;
+
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+
+    // Redirect the machine-global state dir into a temp home, so the registry lands under the
+    // test's own tree instead of the operator's real ~/.local/state.
+    let state = tempfile::tempdir().unwrap();
+    let xdg = state.path().to_str().unwrap();
+
+    let (_out, err, ok) = run_rigger_envs(root, &["step"], &[("XDG_STATE_HOME", xdg)]);
+    assert!(ok, "step must succeed; stderr: {err}");
+
+    // The dash's own reader returns exactly this instance (a fresh heartbeat, so nothing prunes).
+    let regdir = registry::instances_dir(state.path());
+    let live = registry::read_live(&regdir, registry::now_ms(), registry::DEFAULT_IDLE_MS);
+    assert_eq!(
+        live.len(),
+        1,
+        "exactly one instance is registered; got {live:?}"
+    );
+    let inst = &live[0];
+
+    // The registered store identity is the LOCAL sqlite log - credential-free by construction.
+    match &inst.store {
+        registry::StoreIdentity::Local { path } => assert!(
+            path.ends_with(".rigger/events.db"),
+            "the local store identity is the project's events.db; got {path}"
+        ),
+        other => panic!("a local run registers a Local store identity; got {other:?}"),
+    }
+    assert!(!inst.root.is_empty(), "the project root is recorded");
+    assert!(inst.heartbeat_ms > 0, "a live heartbeat is stamped");
+
+    // The on-disk entry carries NO connection string at all (the secrets-discipline invariant for
+    // a local run), and its file name is the deterministic id.
+    let entry = regdir.join(format!("{}.json", inst.id()));
+    let body = std::fs::read_to_string(&entry).unwrap();
+    assert!(
+        !body.contains("://"),
+        "a local registry entry holds no connection credential; got {body}"
+    );
+
+    // A second step refreshes the SAME entry rather than accumulating a duplicate.
+    let (_o, err2, ok2) = run_rigger_envs(root, &["step"], &[("XDG_STATE_HOME", xdg)]);
+    assert!(ok2, "the second step must succeed; stderr: {err2}");
+    let again = registry::read_live(&regdir, registry::now_ms(), registry::DEFAULT_IDLE_MS);
+    assert_eq!(
+        again.len(),
+        1,
+        "a re-step refreshes one entry in place; got {again:?}"
+    );
+}
+
+/// Spec 50, criterion 2 on the IN-PROCESS run drivers + the SECRETS invariant on the SERVER arm: a
+/// native `rigger run` drives the WHOLE run in-process (a single `conductor::run`), NOT through the
+/// stepwise loop, so it must register its instance at its OWN call site (`run_cli`) - a missing call
+/// here is an independent boundary bug the `rigger step` test cannot catch. And when the run reports
+/// to a SHARED server, the persisted store identity must be CREDENTIAL-FREE: the exact end-to-end
+/// Server-arm coverage the module unit tests cannot give (they never drive the binary's wiring).
+///
+/// Drives `rigger run` against a well-formed but UNREACHABLE server URL whose userinfo AND query
+/// hide a credential (nothing listens on this loopback port, so the eager connect is refused fast).
+/// `--base HEAD` resolves in the committed repo, so the run clears its base/anchor gates and reaches
+/// the register + store-open seam; it then FAILS at connect - AFTER `run_cli` has registered. The
+/// registry is redirected into a temp `XDG_STATE_HOME` and read back through the dash's own reader:
+/// exactly one Shared entry, its endpoint the bare `scheme://host:port`, with NO credential fragment
+/// anywhere on disk. A regression that registered only from `rigger step` finds zero entries here; a
+/// regression that persisted the raw connection string finds `admin`/`hunter2` on disk.
+#[test]
+fn run_registers_a_credential_free_shared_instance() {
+    use rigger::registry;
+
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+
+    // Redirect the machine-global state dir into a temp home (never the operator's ~/.local/state).
+    let state = tempfile::tempdir().unwrap();
+    let xdg = state.path().to_str().unwrap();
+
+    // A credential in the userinfo, plus a query, on an unreachable loopback port so the eager
+    // connect is refused fast (the port pattern the crate's own tests use for "nothing listens").
+    let conn = "kurrentdb://admin:hunter2@127.0.0.1:65533?tls=false";
+    let (_out, err, ok) = run_rigger_envs(
+        root,
+        &["run", "--base", "HEAD", "--conn", conn],
+        &[("XDG_STATE_HOME", xdg)],
+    );
+    // The run itself fails at store-open (the server is unreachable) - expected. The assertion is on
+    // the registration side effect that fired BEFORE that failure, and on stderr never leaking the
+    // credential (the store-open error redacts the conn through the same single authority).
+    assert!(
+        !ok,
+        "the unreachable server makes the run fail at store-open (expected); stderr: {err}"
+    );
+    assert!(
+        !err.contains("admin") && !err.contains("hunter2"),
+        "the store-open error must redact the credential, never echo it; stderr: {err}"
+    );
+
+    // The dash's own reader returns exactly this instance (a fresh heartbeat, so nothing prunes).
+    let regdir = registry::instances_dir(state.path());
+    let live = registry::read_live(&regdir, registry::now_ms(), registry::DEFAULT_IDLE_MS);
+    assert_eq!(
+        live.len(),
+        1,
+        "a native `rigger run` registers its instance too (not only `rigger step`); got {live:?}"
+    );
+    let inst = &live[0];
+    assert!(inst.heartbeat_ms > 0, "a live heartbeat is stamped");
+
+    // The Server arm persisted the CREDENTIAL-FREE endpoint: scheme + host:port only, no userinfo,
+    // no query - the single redaction authority (`eventstore::endpoint_label`) ran over the conn.
+    match &inst.store {
+        registry::StoreIdentity::Shared { endpoint } => assert_eq!(
+            endpoint, "kurrentdb://127.0.0.1:65533",
+            "the shared store identity is the bare scheme://host:port"
+        ),
+        other => panic!("a --conn run registers a Shared store identity; got {other:?}"),
+    }
+
+    // The secrets invariant, end to end: NO credential or query fragment reaches the on-disk entry.
+    let entry = regdir.join(format!("{}.json", inst.id()));
+    let body = std::fs::read_to_string(&entry).unwrap();
+    for secret in ["admin", "hunter2", "tls=false"] {
+        assert!(
+            !body.contains(secret),
+            "no credential/query fragment ({secret:?}) may reach the registry entry; got {body}"
+        );
+    }
+}
+
+/// Spec 50, criterion 2 on the THIRD registration path - the in-process SERVED conductor
+/// (`rigger serve` / `rigger run --driver workflow`, i.e. `run_workflow`) - plus the SECRETS
+/// invariant on its Server arm. `run_workflow` drives the whole run in-process on a background
+/// thread while it serves the MCP bridge, so - exactly like `run_cli` and unlike the stepwise
+/// loop - it must register its instance at its OWN call site. That call site is DISTINCT from the
+/// two the sibling tests cover (`cmd_step`, `run_cli`): a regression that dropped
+/// `register_run_instance` from `run_workflow` alone (keeping it in `run_cli`) stays green in
+/// `run_registers_a_credential_free_shared_instance` yet finds ZERO entries here. This closes the
+/// "wire ALL THREE paths" seam, the last of which no other test drives.
+///
+/// Drives `rigger run --driver workflow` against a well-formed but UNREACHABLE server URL whose
+/// userinfo AND query hide a credential. `run_workflow` registers BEFORE it opens the store, so the
+/// registration side effect fires and THEN the eager connect is refused fast (nothing listens on
+/// this loopback port) - the run returns the store-open error before ever reaching its MCP serve
+/// loop, so the invocation terminates without a live server. The registry is redirected into a temp
+/// `XDG_STATE_HOME` and read back through the dash's own reader: exactly one Shared entry, its
+/// endpoint the bare `scheme://host:port`, with NO credential fragment anywhere on disk.
+#[test]
+fn run_driver_workflow_registers_a_credential_free_shared_instance() {
+    use rigger::registry;
+
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_two_stage_workflow(root);
+
+    // Redirect the machine-global state dir into a temp home (never the operator's ~/.local/state).
+    let state = tempfile::tempdir().unwrap();
+    let xdg = state.path().to_str().unwrap();
+
+    // A credential in the userinfo, plus a query, on an unreachable loopback port so the eager
+    // connect is refused fast. A distinct port from the sibling test's, purely for readability
+    // (both merely connect to a dead port, so they could never collide).
+    let conn = "kurrentdb://admin:hunter2@127.0.0.1:65532?tls=false";
+    let (_out, err, ok) = run_rigger_envs(
+        root,
+        &[
+            "run", "--driver", "workflow", "--base", "HEAD", "--conn", conn,
+        ],
+        &[("XDG_STATE_HOME", xdg)],
+    );
+    // The served path fails at store-open (the server is unreachable) - expected. The assertion is
+    // on the registration side effect that fired BEFORE that failure, and on stderr never leaking
+    // the credential (the store-open error redacts the conn through the same single authority).
+    assert!(
+        !ok,
+        "the unreachable server makes the served run fail at store-open (expected); stderr: {err}"
+    );
+    assert!(
+        !err.contains("admin") && !err.contains("hunter2"),
+        "the store-open error must redact the credential, never echo it; stderr: {err}"
+    );
+
+    // The dash's own reader returns exactly this instance (a fresh heartbeat, so nothing prunes).
+    let regdir = registry::instances_dir(state.path());
+    let live = registry::read_live(&regdir, registry::now_ms(), registry::DEFAULT_IDLE_MS);
+    assert_eq!(
+        live.len(),
+        1,
+        "the served path (`rigger run --driver workflow`) registers its instance too, at its own \
+         call site distinct from `rigger step` and plain `rigger run`; got {live:?}"
+    );
+    let inst = &live[0];
+    assert!(inst.heartbeat_ms > 0, "a live heartbeat is stamped");
+
+    // The Server arm persisted the CREDENTIAL-FREE endpoint: scheme + host:port only, no userinfo,
+    // no query - the single redaction authority (`eventstore::endpoint_label`) ran over the conn.
+    match &inst.store {
+        registry::StoreIdentity::Shared { endpoint } => assert_eq!(
+            endpoint, "kurrentdb://127.0.0.1:65532",
+            "the shared store identity is the bare scheme://host:port"
+        ),
+        other => panic!("a --conn served run registers a Shared store identity; got {other:?}"),
+    }
+
+    // The secrets invariant, end to end: NO credential or query fragment reaches the on-disk entry.
+    let entry = regdir.join(format!("{}.json", inst.id()));
+    let body = std::fs::read_to_string(&entry).unwrap();
+    for secret in ["admin", "hunter2", "tls=false"] {
+        assert!(
+            !body.contains(secret),
+            "no credential/query fragment ({secret:?}) may reach the registry entry; got {body}"
+        );
+    }
+}
+
 /// A single-unit workflow whose ONLY gate always FAILS (`bad: false`) with a remediation
 /// bound of ONE (`defaults.max_retries: 1`), so the unit ESCALATES on its first failed gate
 /// (`safety::remediate(0, 1)` escalates immediately). Repo-less and offline: the `nop`
@@ -4657,6 +4894,11 @@ fn run_eventstore_kurrentdb_reaches_the_adapter_not_a_missing_feature_dead_end()
     let out = Command::new(rigger_bin())
         .args(["run", "--base", "HEAD", "--eventstore", "kurrentdb"])
         .current_dir(root)
+        // Redirect the machine-global registry (spec 50, criterion 2) into the test's own temp
+        // tree so any registration side effect lands under `root/rigger`, never the operator's
+        // real ~/.local/state/rigger/instances. Every direct spawn of a registering command
+        // (run/serve/step) that cannot go through the sandboxed `run_rigger_envs` sets this.
+        .env("XDG_STATE_HOME", root)
         .env("RIGGER_NO_DASH", "1")
         .env_remove("KURRENTDB_CONN")
         .output()
@@ -8091,6 +8333,10 @@ fn a_run_driver_auto_starts_a_reachable_dash_with_a_url_shown_in_status() {
     let mut child = Command::new(rigger_bin())
         .args(["serve", "--base", "HEAD"])
         .current_dir(root)
+        // Redirect the machine-global registry (spec 50, criterion 2) into the test's own temp
+        // tree so this served run registers under `root/rigger`, never the operator's real
+        // ~/.local/state/rigger/instances.
+        .env("XDG_STATE_HOME", root)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped()) // the MCP transport; piped so it never floods the test output
         .stderr(Stdio::piped())
@@ -9539,6 +9785,10 @@ fn run_step_dash_enabled(root: &Path) -> (String, String) {
     let out = Command::new(rigger_bin())
         .args(["step"])
         .current_dir(root)
+        // Redirect the machine-global registry (spec 50, criterion 2) into the test's own temp
+        // tree so this step registers under `root/rigger`, never the operator's real
+        // ~/.local/state/rigger/instances.
+        .env("XDG_STATE_HOME", root)
         .env_remove("RIGGER_NO_DASH")
         .output()
         .expect("failed to spawn the rigger binary");
@@ -10426,6 +10676,10 @@ fn a_real_rigger_step_session_detaches_the_dash_from_the_step_command_process_gr
     let mut step = Command::new(rigger_bin())
         .args(["step"])
         .current_dir(root)
+        // Redirect the machine-global registry (spec 50, criterion 2) into the test's own temp
+        // tree so this step registers under `root/rigger`, never the operator's real
+        // ~/.local/state/rigger/instances.
+        .env("XDG_STATE_HOME", root)
         .env_remove("RIGGER_NO_DASH")
         .stdin(Stdio::null())
         .stdout(Stdio::null())

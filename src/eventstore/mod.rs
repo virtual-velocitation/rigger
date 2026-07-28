@@ -381,6 +381,125 @@ fn is_host_port(s: &str) -> bool {
     }
 }
 
+/// Reduce a connection string to a CREDENTIAL-FREE endpoint label safe to PERSIST and print: keep
+/// the scheme and `host[:port]`, DROP any `[userinfo@]` credential AND any `/path`, `?query`, or
+/// `#fragment` (a connection string can smuggle a credential in the userinfo OR the query). So
+/// `kurrentdb://admin:secret@db.example:2113?tls=true` reduces to `kurrentdb://db.example:2113`.
+///
+/// This is the discovery-metadata sibling of [`redact_conn`] and shares its ONE hardened authority
+/// parse ([`authority_end`]/[`is_host_port`]) - it is NOT a second redaction authority. Where
+/// [`redact_conn`] masks the userinfo IN PLACE for a human-facing message (keeping the host and the
+/// query), `endpoint_label` STRIPS the userinfo (and the query/path/fragment) entirely, for a value
+/// that is written to disk (the instance registry's credential-free store identity, §50).
+///
+/// Routing through [`authority_end`] is load-bearing for the secrets invariant: a password may carry
+/// an unencoded `/`, `?`, or `#` BEFORE its terminating `@` (malformed per RFC 3986, yet handed to
+/// the parser verbatim). A naive parse that ends the authority at that first delimiter would slice
+/// the credential off before its `@`, so `rfind('@')` would find nothing and the `user:pass` head
+/// would land in the persisted label - a leak. The shared parse runs the credential on to its
+/// terminating `@` instead, so `kurrentdb://user:pa/ss@host:2113` reduces to `kurrentdb://host:2113`,
+/// never `kurrentdb://user:pa`. Pure, so the "the registry never holds a credential" invariant is
+/// unit-tested with no store.
+pub fn endpoint_label(conn: &str) -> String {
+    let conn = conn.trim();
+    // Split off the scheme, preserving it in the output (it names the backend). A conn with no
+    // `scheme://` is treated as a bare authority so a malformed `user:pass@host` is still scrubbed.
+    let (scheme, tail) = match conn.find("://") {
+        Some(i) => (&conn[..i + "://".len()], &conn[i + "://".len()..]),
+        None => ("", conn),
+    };
+    // The AUTHORITY, bounded by the shared hardened parse (which keeps a credential's unencoded
+    // delimiter on the credential side of its terminating `@`), then with any `[userinfo@]` dropped:
+    // the host begins at the LAST `@` of the authority (userinfo cannot contain an unencoded `@`).
+    let authority = &tail[..authority_end(tail)];
+    let host_port = match authority.rfind('@') {
+        Some(at) => &authority[at + 1..],
+        None => authority,
+    };
+    format!("{scheme}{host_port}")
+}
+
+#[cfg(test)]
+mod endpoint_label_tests {
+    use super::endpoint_label;
+
+    #[test]
+    fn strips_userinfo_and_query_keeps_scheme_host_port() {
+        assert_eq!(
+            endpoint_label("kurrentdb://admin:secret@db.example:2113?tls=true"),
+            "kurrentdb://db.example:2113",
+            "userinfo AND query are stripped; only scheme+host:port survives"
+        );
+    }
+
+    #[test]
+    fn strips_a_bare_user_with_no_password() {
+        assert_eq!(
+            endpoint_label("esdb+discover://user@cluster.internal:2113"),
+            "esdb+discover://cluster.internal:2113"
+        );
+    }
+
+    #[test]
+    fn an_already_credential_free_endpoint_is_unchanged() {
+        assert_eq!(
+            endpoint_label("kurrentdb://db.example:2113"),
+            "kurrentdb://db.example:2113"
+        );
+    }
+
+    #[test]
+    fn a_credential_smuggled_after_the_path_is_dropped_with_the_path() {
+        assert_eq!(
+            endpoint_label("kurrentdb://host:2113/stream?user=u&password=p"),
+            "kurrentdb://host:2113",
+            "a `?user=&password=` query is dropped with the path"
+        );
+    }
+
+    /// The GROUND-1 regression: a password carrying an unencoded delimiter BEFORE its terminating
+    /// `@`. A naive parse ends the authority at the first `/`, so the `@` (and thus the host) is
+    /// lost and the `user:pa` HEAD of the credential is what gets persisted - a leak. The shared
+    /// hardened `authority_end` runs the credential on to its `@`, so the persisted label is the
+    /// pure host and NO credential fragment survives.
+    #[test]
+    fn a_delimiter_inside_the_userinfo_never_leaks_the_credential_head() {
+        assert_eq!(
+            endpoint_label("kurrentdb://user:pa/ss@host:2113"),
+            "kurrentdb://host:2113",
+            "an unencoded `/` inside the password must not slice the authority before the `@`"
+        );
+        assert_eq!(
+            endpoint_label("kurrentdb://user:pa?ss@host:2113"),
+            "kurrentdb://host:2113",
+            "an unencoded `?` inside the password is handled the same way"
+        );
+        // A no-scheme, malformed conn that still hides a credential is scrubbed to the bare host.
+        assert_eq!(
+            endpoint_label("user:pa/ss@host:2113"),
+            "host:2113",
+            "no scheme is no excuse to leak: a bare `user:pass@host` is still stripped"
+        );
+    }
+
+    /// The persisted label must NEVER contain a credential fragment, whatever the (malformed) shape.
+    #[test]
+    fn no_credential_fragment_ever_survives() {
+        for conn in [
+            "kurrentdb://admin:hunter2@db.example:2113?tls=true",
+            "kurrentdb://admin:hun/ter2@db.example:2113",
+            "esdb+discover://admin@cluster.internal:2113",
+            "kurrentdb://host:2113/s?user=admin&password=hunter2",
+        ] {
+            let label = endpoint_label(conn);
+            assert!(
+                !label.contains("admin") && !label.contains("hunter2") && !label.contains("hun"),
+                "no credential fragment may reach the persisted label for {conn:?}; got {label}"
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod redact_tests {
     use super::redact_conn;

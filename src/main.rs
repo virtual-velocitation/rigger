@@ -596,6 +596,128 @@ fn resolve_store(
     }
 }
 
+/// The CREDENTIAL-FREE store identity for the machine-global instance registry (spec 50),
+/// derived from the run's resolved [`StoreSelection`]: the local sqlite path (local by
+/// construction, no credential) or the shared server's `scheme://host:port` with any
+/// `user:password@` userinfo and any `?query` stripped by the crate's SINGLE redaction authority
+/// ([`rigger::eventstore::endpoint_label`], which shares `redact_conn`'s hardened authority parse -
+/// not a second, weaker parser). The credential the shared store OPENS with never reaches the
+/// registry - the dash re-resolves it through the store-resolution authority exactly as every
+/// command does.
+fn registry_store_identity(sel: &StoreSelection, root: &Path) -> rigger::registry::StoreIdentity {
+    match sel {
+        StoreSelection::Sqlite => rigger::registry::StoreIdentity::Local {
+            path: root
+                .join(RIGGER_DIR)
+                .join("events.db")
+                .to_string_lossy()
+                .into_owned(),
+        },
+        StoreSelection::Server(conn) => rigger::registry::StoreIdentity::Shared {
+            endpoint: rigger::eventstore::endpoint_label(conn),
+        },
+    }
+}
+
+/// How often a held [`RunRegistration`] refreshes its heartbeat: a THIRD of the registry's idle
+/// window ([`rigger::registry::DEFAULT_IDLE_MS`]), so a live in-process run is re-stamped at least
+/// three times before a reader would consider its entry stale - comfortably inside the window even
+/// under scheduling jitter or one very long in-process gate.
+fn registry_heartbeat_interval() -> std::time::Duration {
+    std::time::Duration::from_millis(rigger::registry::DEFAULT_IDLE_MS / 3)
+}
+
+/// A LIVE registration in the machine-global discovery registry (spec 50), held for as long as the
+/// run it represents is in flight. Its initial entry is written synchronously by
+/// [`register_run_instance`]; while this guard is held a background thread REFRESHES the heartbeat
+/// every [`registry_heartbeat_interval`], and dropping it (the run scope ends, on success OR error)
+/// signals that thread to stop and joins it. The periodic refresh is what keeps a run driven WHOLLY
+/// in-process (`rigger run`/`serve` - a single `conductor::run` call that can drive for hours, or a
+/// `rigger step` whose one gate runs longer than the idle window) from aging out of discovery
+/// MID-RUN: a one-shot register alone would let a reader prune the live entry after the window.
+struct RunRegistration {
+    /// Dropping this disconnects the channel, so the heartbeat thread's `recv_timeout` returns at
+    /// once (never waiting out a full interval) and the join below completes promptly.
+    tx: Option<std::sync::mpsc::Sender<()>>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl RunRegistration {
+    /// An inert guard that holds no thread - the homeless/unwritable degrade path, so the caller
+    /// binds one uniform type whether or not a registry entry was actually written.
+    fn inert() -> Self {
+        RunRegistration {
+            tx: None,
+            handle: None,
+        }
+    }
+}
+
+impl Drop for RunRegistration {
+    fn drop(&mut self) {
+        // Disconnect first so the sleeping heartbeat thread wakes immediately, THEN reap it. Both
+        // are best-effort: a poisoned/panicked thread never blocks the run's teardown.
+        drop(self.tx.take());
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+    }
+}
+
+/// Register THIS invocation's instance in the machine-global discovery registry (spec 50, criterion
+/// 2): the project root, the credential-free store identity, and a fresh heartbeat, keyed so a
+/// re-registration refreshes one entry in place. This is the SINGLE registration writer - every run
+/// entry point (`rigger step`, and the in-process `rigger run`/`serve`/`workflow` drivers) requests
+/// through it, so the machine-global registry sees every invocation that starts or advances a run,
+/// not just the stepwise loop path.
+///
+/// Returns a [`RunRegistration`] the CALLER MUST HOLD for the life of the run (`let _reg = ...;`):
+/// the initial entry is written here, synchronously, and the returned guard's background thread
+/// keeps its heartbeat fresh until the guard drops. BEST-EFFORT and warn-only throughout: the
+/// registry is discovery metadata whose loss is harmless (live instances repopulate it), so a
+/// homeless environment or a write error degrades to an inert guard and NEVER fails the run.
+#[must_use = "hold the RunRegistration for the life of the run so its heartbeat stays fresh"]
+fn register_run_instance(repo: &str, selection: &StoreSelection) -> RunRegistration {
+    let Some(dir) = rigger::registry::default_dir() else {
+        return RunRegistration::inert(); // homeless environment: degrade to no registration
+    };
+    let root = if repo.is_empty() {
+        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+    } else {
+        PathBuf::from(repo)
+    };
+    let inst = rigger::registry::Instance {
+        project: project_identity(),
+        root: root.to_string_lossy().into_owned(),
+        store: registry_store_identity(selection, &root),
+        heartbeat_ms: rigger::registry::now_ms(),
+    };
+    // The initial, synchronous registration. On failure, degrade to an inert guard rather than
+    // spawn a heartbeat thread that could only fail the same way.
+    if let Err(e) = rigger::registry::write(&dir, &inst) {
+        eprintln!("rigger: instance registry write skipped ({e}); discovery is unaffected");
+        return RunRegistration::inert();
+    }
+    // The heartbeat thread re-stamps `inst` every interval until the guard drops. `recv_timeout`
+    // makes the sleep interruptible: each `Timeout` refreshes the entry; a `Disconnected` (the guard
+    // dropped) ends the `while let` at once, so teardown never waits out a full interval.
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    let interval = registry_heartbeat_interval();
+    let handle = std::thread::spawn(move || {
+        while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = rx.recv_timeout(interval) {
+            let refreshed = rigger::registry::Instance {
+                heartbeat_ms: rigger::registry::now_ms(),
+                ..inst.clone()
+            };
+            let _ = rigger::registry::write(&dir, &refreshed); // best-effort refresh
+        }
+    });
+    RunRegistration {
+        tx: Some(tx),
+        handle: Some(handle),
+    }
+}
+
 /// The project identity that scopes the event streams and context graph (§5.1.1,
 /// R9): the basename of the git repo top-level, falling back to the current
 /// directory's name, falling back to "rigger". Never empty.
@@ -1738,6 +1860,11 @@ fn cmd_step(args: &[String]) -> Res {
     migrate_local_identity()?;
 
     let selection = store_selection(None, None)?;
+    // Register this instance in the machine-global discovery registry (spec 50, criterion 2):
+    // every step "advances a run". Held (`_registration`) for the whole step so its heartbeat
+    // thread keeps the entry fresh even if THIS step's in-process gate runs longer than the idle
+    // window; dropped when the step returns. Best-effort and warn-only - it never blocks the step.
+    let _registration = register_run_instance(&repo, &selection);
     let backend = resolve_store(&selection, &db_path("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &project_identity());
 
@@ -2519,6 +2646,13 @@ fn run_cli(parsed: &RunArgs) -> Res {
     if selection.is_sqlite() {
         migrate_local_identity()?;
     }
+    // Register this instance in the machine-global discovery registry (spec 50, criterion 2).
+    // `rigger run` drives the WHOLE run in-process through a single `conductor::run` below, so the
+    // held guard's heartbeat thread (not a one-shot register) is what keeps the entry from aging out
+    // of discovery mid-run; it is dropped when `run_cli` returns. Best-effort - it never blocks the
+    // run. Registered here, off the same resolved `selection` `rigger step` uses, so a native
+    // `rigger run` is as discoverable as the stepwise loop path.
+    let _registration = register_run_instance(&repo, &selection);
     let backend = resolve_store(&selection, &db_path("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &project_identity());
     // `--fresh`: begin a NEW run before driving, so the conductor's own `ensure_started`
@@ -2653,6 +2787,12 @@ fn run_workflow(parsed: &RunArgs) -> Res {
     if selection.is_sqlite() {
         migrate_local_identity()?;
     }
+    // Register this instance in the machine-global discovery registry (spec 50, criterion 2). Like
+    // `rigger run`, the served conductor drives the whole run in-process (on the background thread
+    // in the scope below), so the held guard's heartbeat thread keeps the entry live for the whole
+    // MCP session; it is dropped when `run_workflow` returns. `repo` was resolved in a scoped block
+    // above, so read it once more here for the registration root. Best-effort - it never blocks.
+    let _registration = register_run_instance(&git_repo(), &selection);
     let backend = resolve_store(&selection, &db_path("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &project_identity());
     // `--fresh`: begin a NEW run before the conductor thread starts, so its `ensure_started`

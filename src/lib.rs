@@ -44,6 +44,10 @@ pub mod parallel;
 pub mod playbooks;
 pub mod progress;
 pub mod reap;
+/// Machine-global instance registry (spec 50): credential-free discovery metadata so a single
+/// machine-level dash can find every local project's runs (and any configured shared store)
+/// without a coordination protocol. Discovery only - never a source of truth, never a credential.
+pub mod registry;
 pub mod run;
 pub mod safety;
 pub mod sidecar;
