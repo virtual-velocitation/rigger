@@ -11357,6 +11357,101 @@ fn dash_attach_to_shared_instance_never_creates_a_store_under_its_root() {
     );
 }
 
+/// Spec 50, criterion 3, the ENV-PRECEDENCE branch of the Shared attach arm through the BUILT
+/// binary (adv-u50c3-uphold-sdet-env-precedence): the dash process's OWN `KURRENTDB_CONN`
+/// addresses a DIFFERENT project's store, so when it attaches to a registered SHARED instance the
+/// ATTACHED instance's own `.rigger` config - never the dash's ambient environment - is
+/// authoritative for the read. The Shared arm proves this by resolving through
+/// `store_selection_at(None, ..)`: passing `None` for env instead of `env_conn()`, so the dash's
+/// `KURRENTDB_CONN` can NOT win the precedence and redirect the foreign read to the wrong store.
+///
+/// The sibling no-phantom-store test cannot reach THIS boundary: it REMOVES `KURRENTDB_CONN`, so a
+/// regression that swapped `None` back to `env_conn()` would stay green there (an empty env resolves
+/// to the same sqlite degrade). Here the env is SET and the instance's own store is POPULATED, so
+/// the two behaviors DIVERGE observably: the correct `None` path reads the instance's own sqlite
+/// (its distinctive run shows through), while an `env_conn()` regression would resolve the dash's
+/// `KURRENTDB_CONN` server, fail to reach it, and degrade to an EMPTY run - the instance's own run
+/// would vanish. Asserting the instance's own unit shows through is therefore RED exactly on the
+/// env-redirect regression and GREEN on the shipped env-agnostic read.
+#[test]
+fn dash_attach_to_shared_instance_reads_its_own_store_not_the_dash_process_kurrentdb_conn() {
+    use rigger::registry;
+    use std::process::Stdio;
+
+    let state = tempfile::tempdir().unwrap();
+    let xdg = state.path().to_str().unwrap();
+    let regdir = registry::instances_dir(state.path());
+
+    // A SHARED-registered instance whose `.rigger` carries NO store config (so its OWN resolution
+    // degrades to the sqlite default) but DOES have a POPULATED `events.db` - a distinctive run
+    // (unit `u-envprec`) seeded into its own local sqlite exactly as the compiled binary reads it
+    // back. This is the Shared-arm Sqlite DEGRADE with real content to read.
+    let shared_root = temp_git_project_with_commit();
+    seed_run_events(
+        shared_root.path(),
+        &[
+            ("RunStarted", r#"{"run_id":"run-envprec","specs":["s"]}"#),
+            (
+                "UnitStarted",
+                r#"{"id":"u-envprec","spec_criterion":"env precedence work"}"#,
+            ),
+        ],
+    );
+
+    let inst = registry::Instance {
+        project: run_stream_identity(shared_root.path()),
+        root: shared_root.path().to_string_lossy().into_owned(),
+        store: registry::StoreIdentity::Shared {
+            endpoint: "kurrentdb://localhost:2113".to_string(),
+        },
+        heartbeat_ms: registry::now_ms(),
+    };
+    registry::write(&regdir, &inst).unwrap();
+    let id = inst.id();
+
+    // The dash process's OWN ambient server address - a well-formed but UNREACHABLE endpoint (a
+    // free loopback port nothing listens on, so a connection is refused fast). If the Shared arm
+    // wrongly resolved THIS `env_conn()` for the foreign instance it would select the server, fail
+    // to reach it, and the attached run would come back empty. The shipped arm ignores it.
+    let dead_port = free_loopback_port();
+    let dead_conn = format!("kurrentdb://127.0.0.1:{dead_port}");
+
+    let neutral = temp_project();
+    let port = free_loopback_port();
+    let mut dash = Command::new(rigger_bin())
+        .args(["dash", "--port", &port.to_string()])
+        .current_dir(neutral.path())
+        .env("XDG_STATE_HOME", xdg)
+        // The dash process HOLDS a `KURRENTDB_CONN`, pointed at a store that is NOT this instance's.
+        // The attach must ignore it and read the instance's OWN sqlite (rungs 3-5 at the instance's
+        // `.rigger`), never let the dash env (rung 2) redirect the foreign read.
+        .env("KURRENTDB_CONN", &dead_conn)
+        .env_remove("RIGGER_NO_DASH")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn `rigger dash`");
+
+    let attached = http_get_path(port, &format!("/api/state?instance={id}"));
+    let _ = dash.kill();
+    let _ = dash.wait();
+
+    let attached = attached.expect("the dash never served the shared-attached state");
+    // A 200 (never a 500): the read is best-effort and the instance's own sqlite is present.
+    assert!(
+        attached.contains("HTTP/1.1 200") && !attached.contains("HTTP/1.1 500"),
+        "attaching to the shared instance answers 200 from its own store: {attached}"
+    );
+    // THE CONSTRAINT: the attach served the ATTACHED INSTANCE's OWN run (unit `u-envprec`), proving
+    // the read went through the instance's `.rigger` and the dash process's `KURRENTDB_CONN` did NOT
+    // redirect it. A regression to `env_conn()` would resolve the dead server and serve an empty run.
+    assert!(
+        attached.contains("u-envprec"),
+        "the shared attach must read the instance's OWN store (its run unit u-envprec), never the \
+         dash process's KURRENTDB_CONN: {attached}"
+    );
+}
+
 /// Spec 50, criterion 1, the CONFLICT branch through the BUILT binary: when the dash's requested
 /// address is held by an UNRELATED (non-dash) process, `rigger dash --port <held>` must FAIL
 /// LOUD - it surfaces the address-in-use conflict and exits NON-ZERO, the deliberate opposite of
