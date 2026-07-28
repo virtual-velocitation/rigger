@@ -13932,6 +13932,108 @@ mod tests {
         );
     }
 
+    /// Isolate the STEP-courier prompt (the agent that runs `rigger step` and relays the wave)
+    /// from the surrounding driver source, so a structural assertion pins the RIGHT agent's
+    /// instructions and not some other prompt that shares a word. The prompt is the template
+    /// string that opens with `Advance the run one frontier` and runs up to the `{ phase: 'Plan'`
+    /// options object that closes the `agent(...)` call. Asserted over comment-stripped source so
+    /// the phrases are checked in the actual prompt literal, not the file's documentation prose.
+    fn step_courier_prompt(code: &str) -> &str {
+        let at = code
+            .find("Advance the run one frontier")
+            .expect("the driver must still define the step-courier prompt");
+        let end = code[at..]
+            .find("{ phase: 'Plan'")
+            .map(|off| at + off)
+            .expect("the step-courier prompt must close with the `{ phase: 'Plan' }` options");
+        &code[at..end]
+    }
+
+    /// Spec 51, criterion 3 (this unit OWNS the courier amendment): the step courier keeps its
+    /// foreground-blocking rule and its placeholder prohibition, and gains the ONE sanctioned
+    /// exception - if the DRIVING HARNESS (not the courier) converts the running foreground step
+    /// into a BACKGROUND task because it outran the harness's foreground cap, the courier must
+    /// NOT return a placeholder sentinel (the defect the re-park/wait work fixes): it WAITS on
+    /// that background task's OUTPUT FILE until it holds the step's single JSON line and returns
+    /// that line verbatim - polling the output file is the sanctioned wait here - or, if the JSON
+    /// still cannot be obtained, falls back to the existing re-run rule (recorded gate results let
+    /// a re-run resume past finished work). This pins the exact gap spec 51 closes: a courier
+    /// forbidden from monitors and unable to wait returned a placeholder for an auto-backgrounded
+    /// step, stopping the driver. Asserted structurally over the EMBEDDED `RIGGER_WORKFLOW` (the
+    /// `include_str!` byte-source `rigger setup` writes and the drift check reads), the same
+    /// convention spec 44's courier tests use because the cargo gate set runs no JS. This unit
+    /// owns ONLY the courier amendment: it asserts nothing about the reviewer-error re-park
+    /// (criteria 1/2) or the worktree self-heal / sweep-ordering (criteria 4/5).
+    #[test]
+    fn workflow_step_courier_waits_on_an_auto_backgrounded_step() {
+        let code = strip_line_comments(RIGGER_WORKFLOW);
+        let prompt = step_courier_prompt(&code);
+
+        // 1. The NORMAL-case foreground rule is UNCHANGED: the courier still runs the step as one
+        //    foreground, blocking Bash call (the amendment adds an exception, it does not relax
+        //    the default that a foreground call blocks until the step prints its JSON line).
+        assert!(
+            prompt.contains("FOREGROUND, BLOCKING Bash"),
+            "the amended step-courier prompt must keep the FOREGROUND, BLOCKING rule for the \
+             normal case; got:\n{prompt}"
+        );
+        assert!(
+            prompt.contains("NOT run_in_background"),
+            "the amended prompt must keep forbidding the courier from backgrounding the step \
+             itself; got:\n{prompt}"
+        );
+
+        // 2. The exception is scoped to a HARNESS-INITIATED backgrounding, not a courier choice:
+        //    the prompt states the driving harness may convert the foreground call into a
+        //    background task on its own (it outran the foreground cap), a conversion the courier
+        //    did not choose - so a courier reading this cannot use it to justify backgrounding.
+        assert!(
+            prompt.contains("harness")
+                && prompt.contains("background task")
+                && prompt.contains("did not choose"),
+            "the amendment must scope the wait to a HARNESS-initiated conversion of the foreground \
+             call into a background task (a conversion the courier did not choose), not a courier \
+             decision to background the step; got:\n{prompt}"
+        );
+
+        // 3. The SANCTIONED WAIT: on that path the courier waits on the background task's OUTPUT
+        //    FILE, polling it until it holds the step's single JSON line, and returns that line
+        //    verbatim - the exact sanctioned exception spec 51 grants (a courier otherwise
+        //    forbidden from monitors and unable to wait).
+        assert!(
+            prompt.contains("output file")
+                && prompt.contains("poll")
+                && prompt.contains("sanctioned")
+                && prompt.contains("verbatim"),
+            "the amendment must instruct the courier to WAIT by polling the auto-backgrounded \
+             step's OUTPUT FILE for the single JSON line and return it verbatim (the sanctioned \
+             wait); got:\n{prompt}"
+        );
+
+        // 4. FALL BACK to the existing re-run rule when the JSON still cannot be obtained: the
+        //    step's gate results are recorded durably, so a re-run resumes past finished work -
+        //    the amendment must route to that rule, never to a fabricated result.
+        assert!(
+            prompt.contains("re-run") && prompt.contains("resume"),
+            "if the JSON cannot be obtained from the background task's output, the amendment must \
+             fall back to re-running the step (a re-run resumes past durably recorded work), not \
+             fabricate a result; got:\n{prompt}"
+        );
+
+        // 5. The PLACEHOLDER PROHIBITION still holds ON THIS PATH: returning a sentinel or
+        //    placeholder for an auto-backgrounded step is exactly the defect spec 51 closes, so
+        //    the amended prompt must keep forbidding it (never a fabricated wave / error token).
+        assert!(
+            prompt.contains("placeholder"),
+            "the amendment must keep the placeholder prohibition on the auto-background path (a \
+             sentinel / placeholder remains forbidden); got:\n{prompt}"
+        );
+        assert!(
+            !RIGGER_WORKFLOW.contains("PLACEHOLDER_DO_NOT_USE"),
+            "the fabricated placeholder token must never appear in the embedded workflow"
+        );
+    }
+
     /// Spec 44, criterion 2 (this unit OWNS the driver null-step guard): the driver must GUARD
     /// a null step BEFORE it dereferences `step.error`. `agent()` can RESOLVE to null - rather
     /// than reject - when the courier agent dies on a TERMINAL error (an expired login, an
