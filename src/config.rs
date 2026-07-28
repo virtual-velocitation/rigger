@@ -607,6 +607,17 @@ pub struct Workflow {
     /// ride this committed file; only the CHOICE and an optional non-secret host/port URL do.
     #[serde(default)]
     pub store: StoreConfig,
+    /// The always-on dashboard opt-out (spec 50, criterion 4). The step path ENSURES the
+    /// machine-level singleton dash is up on every run unless this opts out: the documented
+    /// `dash: off` (or the `false`/`no` synonyms, matched case- and whitespace-insensitively)
+    /// suppresses the ensure entirely, so a headless or CI run proceeds with NO dash and NO
+    /// port bind. Empty (the default) / `on` / any other value keeps the always-on promise, so
+    /// a workflow that says nothing about the dash still gets one. Resolved through the single
+    /// authority [`dash_enabled`](Self::dash_enabled). Modeled as a `String` (like `grounder`,
+    /// `autonomy`, `partition`) rather than a `bool` so the documented `dash: off` parses (this
+    /// deserializer treats `off` as a plain scalar, not a boolean).
+    #[serde(default)]
+    pub dash: String,
     #[serde(default)]
     pub gates: BTreeMap<String, Gate>,
     #[serde(default)]
@@ -614,6 +625,20 @@ pub struct Workflow {
 }
 
 impl Workflow {
+    /// Whether the always-on dash auto-ensure is enabled for this workflow (spec 50, criterion
+    /// 4) - the SINGLE resolution authority the step-path opt-out reads. ON unless the workflow
+    /// explicitly opts out: `off` (the documented form) or its `false`/`no` synonyms, matched
+    /// case- and whitespace-insensitively, resolve to OFF; an unset/empty `dash` and every other
+    /// value resolve to ON, so a workflow that says nothing about the dash keeps the always-on
+    /// promise. Living here (not inlined at the call site) keeps the on-by-default rule in one
+    /// place and cannot drift between callers.
+    pub fn dash_enabled(&self) -> bool {
+        !matches!(
+            self.dash.trim().to_ascii_lowercase().as_str(),
+            "off" | "false" | "no"
+        )
+    }
+
     /// Build the runtime failure taxonomy this workflow classifies failures through
     /// (spec 10, unit 2). When `defaults.failure_rules` is authored, it is the ordered,
     /// first-match-wins rule set (each rule's `output_regex` compiled and `class`
@@ -2670,6 +2695,37 @@ class: product\n";
         )
         .validate()
         .is_ok());
+    }
+
+    /// Spec 50, criterion 4 (opt-out): the always-on dash auto-ensure is ON unless a workflow
+    /// explicitly opts out. An omitted `dash` key keeps it ON (the always-on promise for a
+    /// workflow that says nothing); the documented `dash: off` - and its `false`/`no` synonyms,
+    /// case- and whitespace-insensitive - suppress it; `on`/`true`/empty keep it ON. This is the
+    /// single config-side resolution the step-path opt-out reads, so it is proven here directly.
+    #[test]
+    fn dash_enabled_is_on_by_default_and_off_only_on_an_explicit_opt_out() {
+        // An omitted `dash` key keeps the always-on dash (a workflow that says nothing gets one).
+        let wf: Workflow = serde_yaml::from_str("name: x\n").unwrap();
+        assert!(
+            wf.dash_enabled(),
+            "an omitted `dash` key leaves the always-on dash ON"
+        );
+        // The documented bare `dash: off` opts out - the exact syntax the spec names.
+        let off: Workflow = serde_yaml::from_str("dash: off\n").unwrap();
+        assert!(
+            !off.dash_enabled(),
+            "the documented `dash: off` suppresses the ensure"
+        );
+        // Case- and whitespace-insensitive, and the `false`/`no` synonyms also opt out.
+        for v in ["OFF", " off ", "Off", "false", "no"] {
+            let w: Workflow = serde_yaml::from_str(&format!("dash: \"{v}\"\n")).unwrap();
+            assert!(!w.dash_enabled(), "`dash: {v:?}` must opt out");
+        }
+        // `on` / `true` / an empty value keep the always-on dash ON.
+        for v in ["on", "true", ""] {
+            let w: Workflow = serde_yaml::from_str(&format!("dash: \"{v}\"\n")).unwrap();
+            assert!(w.dash_enabled(), "`dash: {v:?}` keeps the dash ON");
+        }
     }
 
     #[test]

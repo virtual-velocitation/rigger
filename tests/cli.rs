@@ -9812,11 +9812,12 @@ fn run_step_dash_enabled(root: &Path) -> (String, String) {
 // Serialized on `dash_default_port` with the other two step-path dash tests
 // (`a_step_started_dash_is_detached_and_outlives_its_step_process` and
 // `a_real_rigger_step_session_detaches_the_dash_from_the_step_command_process_group`): each spawns
-// a real `rigger step` whose always-on dash binds the FIXED `dash::DEFAULT_PORT`, because the step
-// path picks its own port via `free_port_from` with no override. Two of them running in parallel
-// both see that one port free and race to bind it; the loser's dash exits unbound and its marker
-// points at a port nothing serves, a nondeterministic RED. The direct-`rigger dash` tests are
-// immune because they pass an ephemeral `free_loopback_port`, so only these three need the key.
+// a real `rigger step` whose always-on dash binds the FIXED `dash::DEFAULT_PORT` DIRECTLY - the
+// singleton retarget (spec 50, criterion 4) starts it at the default address with no free-port
+// search. Two of them running in parallel both target that one port; the singleton bind lets only
+// one serve while the other exits 0, so its marker would point at a port THIS test's dash does not
+// own - a nondeterministic RED. The direct-`rigger dash` tests are immune because they pass an
+// ephemeral `free_loopback_port`, so only these three need the key.
 #[test]
 #[serial_test::serial(dash_default_port)]
 fn step_auto_starts_one_persistent_dash_and_a_second_step_starts_none() {
@@ -9901,6 +9902,71 @@ fn step_honors_the_rigger_no_dash_opt_out() {
     assert!(
         !err.contains("serving this run"),
         "under RIGGER_NO_DASH the step announces no dash; stderr:\n{err}"
+    );
+}
+
+/// Spec 50, criterion 4 (opt-out): the CONFIG opt-out `dash: off` in workflow.yml suppresses the
+/// always-on ensure exactly like the env opt-out - a step under it runs to completion (prints its
+/// wave) yet binds NO dash and records NO `.rigger/dash.marker`, so a headless/CI run configured
+/// `dash: off` proceeds with no dash and no port bind. The env opt-out is REMOVED here so the
+/// config key is the ONLY thing suppressing the dash; the companion
+/// `step_honors_the_rigger_no_dash_opt_out` proves the ENV path, and
+/// `step_auto_starts_one_persistent_dash_and_a_second_step_starts_none` proves the SAME step path
+/// DOES start one with NO opt-out, so this absence is the config opt-out at work, not a dead path.
+/// The run still REGISTERS its instance (criterion 2) under the redirected state dir - "the run
+/// proceeds normally" - so the opt-out drops only the dash, never the run.
+// Serialized on `dash_default_port`: were the config opt-out to regress, the step would bind the
+// fixed `dash::DEFAULT_PORT`, so it must not race the other step-path dash tests for that port.
+#[test]
+#[serial_test::serial(dash_default_port)]
+fn step_honors_the_config_dash_off_opt_out() {
+    let proj = temp_git_project_with_commit();
+    let root = proj.path();
+    write_two_stage_workflow(root);
+    // Opt out via the config key alone: append `dash: off` at the top level of workflow.yml.
+    append_line(&root.join(".rigger").join("workflow.yml"), "dash: off");
+
+    // RIGGER_NO_DASH REMOVED so ONLY `dash: off` can suppress the dash; the state dir is redirected
+    // so the run's registration lands in the test's own tree, never the operator's real one.
+    let out = Command::new(rigger_bin())
+        .args(["step"])
+        .current_dir(root)
+        .env("XDG_STATE_HOME", root)
+        .env_remove("RIGGER_NO_DASH")
+        .output()
+        .expect("failed to spawn the rigger binary");
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+
+    // If the opt-out regressed, a real dash started at the fixed port and recorded a marker: reap
+    // it BEFORE asserting so a failing assertion never leaks a dashboard.
+    if let Some((_, pid)) = read_dash_marker(root) {
+        reap_pid(pid);
+    }
+
+    assert!(
+        stdout.contains(r#""wave":"#),
+        "the step runs to completion (a printed wave) with `dash: off`; stdout: {stdout:?} \
+         stderr: {stderr:?}"
+    );
+    assert!(
+        !root.join(".rigger").join("dash.marker").exists(),
+        "under `dash: off` the step must record NO dash marker (no dash was started); one was written"
+    );
+    assert!(
+        !stderr.contains("serving this run"),
+        "under `dash: off` the step announces no dash; stderr:\n{stderr}"
+    );
+    // The run still proceeded normally: it registered its instance (criterion 2) even with the
+    // dash opted out, proving the opt-out drops only the dash, not the run.
+    let instances = root.join("rigger").join("instances");
+    let registered = std::fs::read_dir(&instances)
+        .map(|d| d.flatten().next().is_some())
+        .unwrap_or(false);
+    assert!(
+        registered,
+        "with `dash: off` the run still registers its instance under {}; none found",
+        instances.display()
     );
 }
 
