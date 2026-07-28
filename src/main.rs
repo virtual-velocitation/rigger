@@ -2000,16 +2000,18 @@ fn cmd_step(args: &[String]) -> Res {
         }
     }
 
-    // Always-on dash on the native step path (spec 39, criterion 1): start a PERSISTENT run
-    // dashboard for this project if none is already serving, so the loop the driver actually
-    // advances through many short-lived `rigger step` invocations is never invisible. The
-    // first step of a run starts it; the per-project marker check makes every later step a
-    // no-op (never a second dash or a port fight). Started DETACHED so it survives across the
-    // run's many step processes, and best-effort so a start failure only warns - the run
-    // proceeds headless, exactly as the guard-bound `start_run_dashboard` degrades. Placed
-    // just before the conductor advances the frontier so the dash is serving while this
-    // step's gates and spawns are in flight.
-    ensure_run_dashboard();
+    // Always-on dash on the native step path, retargeted at the machine SINGLETON (spec 39,
+    // criterion 1; spec 50, criterion 4): ENSURE the one machine-level dash at the fixed default
+    // address is up, so the loop the driver advances through many short-lived `rigger step`
+    // invocations is never invisible. The first step of a run starts it at `dash::DEFAULT_PORT`
+    // (never a drifting port); every later step finds it serving and starts none (never a second
+    // dash). Started DETACHED so it survives across the run's many step processes, and best-effort
+    // so a start failure only warns - the run proceeds headless. Suppressed entirely by the
+    // opt-out (`RIGGER_NO_DASH` OR `dash: off`): a headless/CI run then binds no port at all. The
+    // config opt-out is read off the already-loaded `cfg`, not re-loaded. Placed just before the
+    // conductor advances the frontier so the dash is serving while this step's gates and spawns
+    // are in flight.
+    ensure_run_dashboard(cfg.workflow.dash_enabled());
 
     let driver = ReplayDriver::new(&store);
     let deps = Deps {
@@ -4276,7 +4278,11 @@ fn detach_process_group(_cmd: &mut Command) {}
 /// must hold no inherited descriptor. The dash's own startup errors are therefore silent -
 /// acceptable for a best-effort, self-contained observability process whose logs nothing reads.
 fn spawn_run_dashboard_detached() -> std::io::Result<dash::DashMarker> {
-    let port = dash::free_port_from(dash::DEFAULT_PORT)?;
+    // The machine singleton binds the FIXED default address (spec 50, criterion 4) - no free-port
+    // search, so the address never drifts. If a dash is already serving it, the spawned `rigger
+    // dash` recognizes the singleton and exits 0 without binding a second (criterion 1's
+    // `bind_singleton`), so this is safe even when a concurrent run races to start one.
+    let port = dash::DEFAULT_PORT;
     let exe = std::env::current_exe()?;
     let mut cmd = Command::new(exe);
     cmd.arg("dash")
@@ -4303,21 +4309,43 @@ fn spawn_run_dashboard_detached() -> std::io::Result<dash::DashMarker> {
     Ok(dash::DashMarker { port, pid })
 }
 
-/// Start a persistent run dashboard for the step drive path if none is already serving this
-/// project (spec 39, criterion 1). The always-on promise of spec 19b, wired onto the native
-/// step path: the first `step` of a run starts a dashboard, later steps find its marker and
-/// start none. Best-effort and headless-degrading: a failed start only warns (the run
-/// continues headless), and the [`DASH_DISABLE_ENV`] opt-out skips the start entirely for a
-/// headless CI or the crate's own integration tests. The started dash is DETACHED so it
-/// survives across the run's many short-lived `step` processes.
-fn ensure_run_dashboard() {
-    if std::env::var_os(DASH_DISABLE_ENV).is_some() {
+/// Whether the always-on dash auto-ensure is SUPPRESSED for this run (spec 50, criterion 4) -
+/// the single opt-out authority. It is suppressed by EITHER opt-out: the environment disable
+/// ([`DASH_DISABLE_ENV`] set to any value, `env_disabled`) OR the config opt-out (`dash: off`,
+/// surfaced here as `config_dash_enabled == false`). Pure over its two resolved inputs so both
+/// opt-out paths - and the fact that either alone suffices - are provable without mutating the
+/// process environment or cwd; the real caller resolves `env_disabled` from the environment and
+/// `config_dash_enabled` from the already-loaded workflow.
+fn dash_ensure_suppressed(env_disabled: bool, config_dash_enabled: bool) -> bool {
+    env_disabled || !config_dash_enabled
+}
+
+/// Ensure the machine-level SINGLETON dashboard is up for the step drive path (spec 39,
+/// criterion 1; spec 50, criterion 4), unless opted out. The always-on promise retargeted at the
+/// singleton: the first `step` of a run starts the one dash at the FIXED [`dash::DEFAULT_PORT`]
+/// (never a drifting port); every later step finds it serving and starts none (never a second
+/// dash). `config_dash_enabled` is the workflow's resolved [`config::Workflow::dash_enabled`],
+/// passed in from the already-loaded config so this never re-reads it.
+///
+/// OPT-OUT (criterion 4): the ensure is skipped entirely when EITHER the [`DASH_DISABLE_ENV`]
+/// environment disable OR the config `dash: off` is set (resolved through
+/// [`dash_ensure_suppressed`]) - a headless or CI run then binds NO port at all and proceeds
+/// normally. Best-effort and headless-degrading otherwise: a failed start only warns. The started
+/// dash is DETACHED so it survives across the run's many short-lived `step` processes.
+fn ensure_run_dashboard(config_dash_enabled: bool) {
+    let env_disabled = std::env::var_os(DASH_DISABLE_ENV).is_some();
+    if dash_ensure_suppressed(env_disabled, config_dash_enabled) {
         return;
     }
     let marker_path = std::path::PathBuf::from(db_path(DASH_MARKER_FILE));
     match ensure_run_dashboard_at(
         &marker_path,
-        |m| dash::pid_is_alive(m.pid),
+        // Singleton-aware short-circuit (spec 50, criterion 4): a marker suppresses a fresh start
+        // only when a dash is actually SERVING its recorded port - a probe, not a bare pid-liveness
+        // check - so a marker left by a self-reaped or pid-recycled dash never masks a stopped
+        // singleton, and a singleton a PRIOR run (or another project's step) left serving the fixed
+        // address is reused rather than re-spawned.
+        |m| dash::dash_serving_on(m.port),
         spawn_run_dashboard_detached,
     ) {
         DashStart::Started(port) => {
@@ -4325,7 +4353,8 @@ fn ensure_run_dashboard() {
             // transport; in the step driver stdout carries only the `{wave,done}` JSON.
             eprintln!("rigger dash: serving this run at http://127.0.0.1:{port}/");
         }
-        // A prior step already started it - the idempotent no-op, nothing to announce.
+        // A dash is already serving the singleton address - the idempotent no-op, nothing to
+        // announce (this run started it earlier, a prior run left it up, or another project did).
         DashStart::AlreadyServing(_) => {}
         DashStart::Failed => {
             eprintln!("rigger: could not auto-start the dashboard; the run continues headless");
@@ -8260,6 +8289,34 @@ mod tests {
             dash::DashMarker::read(&marker_path),
             None,
             "a failed start records no marker"
+        );
+    }
+
+    /// Spec 50, criterion 4 (opt-out): the always-on ensure is suppressed by EITHER opt-out - the
+    /// environment disable OR the config `dash: off` (surfaced as `config_dash_enabled == false`) -
+    /// and only proceeds when NEITHER is set. Pins that the two opt-out paths are independent (each
+    /// alone suffices) and that a run with no opt-out still ensures the dash.
+    #[test]
+    fn dash_ensure_is_suppressed_by_either_opt_out_and_proceeds_when_neither_is_set() {
+        // Neither opt-out: the ensure proceeds (the always-on default).
+        assert!(
+            !dash_ensure_suppressed(false, true),
+            "with no env disable and the config dash ON, the ensure proceeds"
+        );
+        // The ENV opt-out alone suppresses it (even with the config dash ON).
+        assert!(
+            dash_ensure_suppressed(true, true),
+            "RIGGER_NO_DASH alone suppresses the ensure"
+        );
+        // The CONFIG opt-out alone suppresses it (even with no env disable).
+        assert!(
+            dash_ensure_suppressed(false, false),
+            "`dash: off` alone suppresses the ensure"
+        );
+        // Both set: still suppressed.
+        assert!(
+            dash_ensure_suppressed(true, false),
+            "both opt-outs set stays suppressed"
         );
     }
 
