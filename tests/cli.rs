@@ -5345,6 +5345,239 @@ fn a_step_driven_run_yields_nonempty_gate_and_review_sections_in_stats() {
     );
 }
 
+/// Spec 51, criterion 1 (REVIEWER ERROR RE-PARK) at the BINARY boundary: a REVIEW-stage
+/// spawn whose RECORDED result is a PLAIN error - NOT a liveness fault - (an externally-killed
+/// reviewer: quota exhaustion, a crash, whose error the death courier recorded on its id via
+/// `rigger result <id> --error`) is an INFRASTRUCTURE fault, not a verdict. An error is not a
+/// verdict: review must COMPLETE. So the next `rigger step` must NOT adopt the error as the
+/// review outcome and must NOT halt; it charges the unit NO attempt (the work was never judged)
+/// and RE-PARKS a FRESH attempt of the SAME review (`~retry1`) in the printed wave. A completed
+/// REAL verdict on the re-parked spawn then folds through the NORMAL adjudication path to
+/// `reviewed`. Driven end to end through the built binary (`rigger step` / `rigger result`) -
+/// the SEAM the implementer's in-process ReplayDriver unit test cannot reach: this proves the
+/// re-park is observable at the true external boundary, and (with its liveness-fault sibling
+/// below) that ONLY a plain recorded error re-parks.
+#[test]
+fn a_plain_error_on_a_review_spawn_re_parks_a_fresh_attempt_then_a_real_verdict_folds() {
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Direction, EventStore};
+
+    let dir = temp_repoless_project();
+    let root = dir.path();
+    write_gated_reviewed_workflow(root);
+
+    // Read the run stream exactly as production does, to assert the unit was charged no attempt.
+    let read_run_stream = || -> Vec<rigger::eventstore::Event> {
+        let backend =
+            Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
+        let store = Namespaced::new(&backend, &run_stream_identity(root));
+        store
+            .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
+            .unwrap()
+    };
+
+    // Step 1: the implementer parks; drain it with a real success through the courier CLI.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the first step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"solo/implementer#0""#) && out.contains(r#""done":false"#),
+        "step 1 parks the implementer; got: {out:?}"
+    );
+    let (_o, err, ok) = run_rigger(
+        root,
+        &["result", "solo/implementer#0", "implemented the unit"],
+    );
+    assert!(
+        ok,
+        "recording the implementer result must succeed; stderr: {err}"
+    );
+
+    // Step 2: the implementer replays, the unit gates green, and the review parks the
+    // ADJUDICATOR (this workflow's only review-tier spawn).
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the second step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"solo/adjudicator#0""#) && out.contains(r#""done":false"#),
+        "step 2 gates the unit and parks the adjudicator; got: {out:?}"
+    );
+
+    // The death courier records a PLAIN error on the adjudicator (a reviewer killed mid-run:
+    // usage-limit exhaustion) via `rigger result <id> --error` with NO liveness meta - the exact
+    // signal `review_spawn_errored` keys on: a recorded error that is NOT a liveness fault.
+    let (_o, err, ok) = run_rigger(
+        root,
+        &[
+            "result",
+            "solo/adjudicator#0",
+            "agent killed mid-run: usage limit reached",
+            "--error",
+        ],
+    );
+    assert!(
+        ok,
+        "recording the reviewer's plain error must succeed; stderr: {err}"
+    );
+
+    // Step 3: the errored adjudicator RE-PARKS a FRESH `~retry1` attempt instead of halting or
+    // adopting the error as a verdict - and charges the unit NO attempt.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the re-park step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""id":"solo/adjudicator#0~retry1""#),
+        "an errored review re-parks a FRESH ~retry1 attempt in the wave; got: {out:?}"
+    );
+    assert!(
+        !out.contains(r#""halted":"#),
+        "a plain review error is an infra fault, not a halt: review must COMPLETE; got: {out:?}"
+    );
+    let events = read_run_stream();
+    assert!(
+        !events
+            .iter()
+            .any(|e| e.type_ == rigger::ledger::TYPE_UNIT_FAILED),
+        "an errored review charges the unit no remediation attempt (no UnitFailed)"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| e.type_ == rigger::ledger::TYPE_UNIT_ESCALATED),
+        "an errored review never escalates the unit (no UnitEscalated)"
+    );
+
+    // A COMPLETED real verdict on the re-parked spawn folds through the NORMAL adjudication path.
+    let (_o, err, ok) = run_rigger(
+        root,
+        &[
+            "result",
+            "solo/adjudicator#0~retry1",
+            r#"{"verdict":"approve"}"#,
+        ],
+    );
+    assert!(
+        ok,
+        "recording the re-parked adjudicator's approve must succeed; stderr: {err}"
+    );
+
+    // Step 4: everything replays to a fixpoint - the re-parked approve resolves the review, the
+    // unit reaches `reviewed`, and (on_pass: none) the run converges. Still no attempt charged.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the fold-through step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""wave":[]"#)
+            && out.contains(r#""done":true"#)
+            && !out.contains(r#""halted":"#),
+        "the real verdict on the re-parked spawn folds to a clean fixpoint; got: {out:?}"
+    );
+    let events = read_run_stream();
+    assert!(
+        events
+            .iter()
+            .any(|e| e.type_ == rigger::ledger::TYPE_UNIT_STATUS
+                && String::from_utf8_lossy(&e.data).contains("reviewed")),
+        "the re-parked real verdict folds through to a `reviewed` unit status"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| e.type_ == rigger::ledger::TYPE_UNIT_FAILED),
+        "recovery still charges the unit no remediation attempt"
+    );
+
+    // `rigger stats` confirms the review-verdict section folded exactly the re-parked approve
+    // (1 approved) - the errored first attempt contributed no verdict, as an infra fault should.
+    let (stats, err, ok) = run_rigger(root, &["stats"]);
+    assert!(
+        ok,
+        "stats over the recovered run must succeed; stderr: {err}"
+    );
+    let review_line = stats
+        .lines()
+        .find(|l| l.contains("review"))
+        .unwrap_or_else(|| panic!("the review section must appear; got:\n{stats}"));
+    assert!(
+        review_line.contains("1 approved"),
+        "the review section records exactly the re-parked adjudicator's approve; got line: {review_line:?}"
+    );
+}
+
+/// Spec 51, criterion 1's EXCLUSION at the binary boundary: a REVIEW-stage spawn whose recorded
+/// result is a LIVENESS fault (a HUNG reviewer - `rigger result <id> --error --meta
+/// '{"liveness_class":"infra"}'`, the shape the driver/sweep records for a stalled agent) is NOT
+/// re-parked by the reviewer-error path. A hung reviewer has its OWN re-park-then-loud-halt path
+/// (the replay driver re-parks its id; `rigger step` surfaces it via `hung_spawns`), so the
+/// criterion-1 re-park must never ALSO swallow it. This proves the `!is_liveness_fault()`
+/// exclusion (and the `is_parked` short-circuit that precedes the re-park branch) holds for a
+/// review-tier spawn: a hung adjudicator HALTS LOUDLY, it does not silently re-park a fresh
+/// `~retry1`. Only a PLAIN recorded error re-parks (its sibling above); a liveness fault stays a
+/// loud halt - the two together prove the re-park is scoped to exactly the plain-error signal.
+#[test]
+fn a_liveness_fault_on_a_review_spawn_halts_instead_of_re_parking() {
+    let dir = temp_repoless_project();
+    let root = dir.path();
+    write_gated_reviewed_workflow(root);
+
+    // Steps 1-2: drive the unit through its implementer to park the ADJUDICATOR review spawn.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(
+        ok && out.contains(r#""id":"solo/implementer#0""#),
+        "step 1 parks the implementer; stderr: {err}; got: {out:?}"
+    );
+    let (_o, err, ok) = run_rigger(
+        root,
+        &["result", "solo/implementer#0", "implemented the unit"],
+    );
+    assert!(
+        ok,
+        "recording the implementer result must succeed; stderr: {err}"
+    );
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(
+        ok && out.contains(r#""id":"solo/adjudicator#0""#),
+        "step 2 parks the adjudicator; stderr: {err}; got: {out:?}"
+    );
+
+    // The adjudicator HANGS: the driver/sweep records a LIVENESS fault on its id (infra), NOT a
+    // plain error - exactly the shape `step_surfaces_a_hung_unbounded_spawn...` records for a
+    // stalled agent. This is the case the criterion-1 re-park path must EXCLUDE.
+    let (_o, err, ok) = run_rigger(
+        root,
+        &[
+            "result",
+            "solo/adjudicator#0",
+            "reviewer solo/adjudicator#0 hung: heartbeat marker went stale past its bound",
+            "--error",
+            "--meta",
+            r#"{"liveness_class":"infra"}"#,
+        ],
+    );
+    assert!(
+        ok,
+        "recording the reviewer's liveness fault must succeed; stderr: {err}"
+    );
+
+    // Step 3: `rigger step` HALTS LOUDLY on the hung reviewer - it is NOT re-parked as a fresh
+    // `~retry1` attempt. The halt names the spawn, states infra, and charges no attempt.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(
+        ok,
+        "a liveness-halted step still prints its result and exits 0; stderr: {err}"
+    );
+    assert!(
+        out.contains(r#""halted":"#) && out.contains("solo/adjudicator#0"),
+        "a hung reviewer surfaces as a loud halt naming it; got: {out:?}"
+    );
+    assert!(
+        out.contains("infra") && out.contains("no remediation attempt"),
+        "the halt states infra classification and no-attempt-charged; got: {out:?}"
+    );
+    assert!(
+        !out.contains("~retry1"),
+        "a liveness fault is EXCLUDED from the criterion-1 re-park: no fresh ~retry1 review \
+         attempt is parked for a hung reviewer; got: {out:?}"
+    );
+}
+
 /// Spec 18, unit 3 done-when (line 43) driven END TO END on the PRODUCTION native driver
 /// (`rigger step` / ReplayDriver) through the REAL courier CLI - `cmd_step` and the
 /// `rigger emit --spawn <id>` stamping path, not a pre-stamped store seed. A gating
