@@ -82,11 +82,12 @@ pub const DASH_HEADER: &str = "X-Rigger-Dash";
 /// timeouts so a dead, slow, or silent holder cannot stall the caller. `std`-only, so it is
 /// identical on the default and `--no-default-features` lanes.
 pub fn dash_serving_on(port: u16) -> bool {
+    use std::io::Read;
+
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(500)) else {
         return false;
     };
-    let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
     let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
     if stream
         .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
@@ -94,27 +95,82 @@ pub fn dash_serving_on(port: u16) -> bool {
     {
         return false;
     }
-    // Read only the response head (status line + headers). Match the header name
-    // case-insensitively and cap the line count so a chatty or hostile holder cannot make this
-    // loop unbounded.
-    let mut reader = BufReader::new(stream);
+    // Read only the response head (status line + headers), bounded THREE independent ways so a
+    // dead, slow, or hostile holder can NEVER stall the caller:
+    //   * an overall wall-clock DEADLINE across the whole head - the per-read timeout is reset to
+    //     the REMAINING budget each iteration. This is the load-bearing bound: a holder that
+    //     dribbles bytes just under a fixed per-read timeout while NEVER sending a newline would
+    //     reset a per-read-only timeout forever and never complete a line, so only a bound on the
+    //     TOTAL read defeats it;
+    //   * a TOTAL byte cap - a real HTTP header block is small, so an endless within-a-line dribble
+    //     is bounded in volume (memory) even inside the deadline;
+    //   * the blank end-of-headers line - once the header block is fully read WITHOUT the marker,
+    //     stop rather than keep reading a body, so a genuine non-dash conflict fails fast.
+    // Matching stays line-anchored and case-insensitive: only a line that STARTS with the header
+    // name counts, so the marker cannot be spoofed by the same text inside another header's value.
     let needle = format!("{DASH_HEADER}:").to_ascii_lowercase();
-    for _ in 0..256 {
-        let mut line = String::new();
-        match reader.read_line(&mut line) {
-            Ok(0) => return false, // connection closed before the header block ended
-            Ok(_) => {
-                if line == "\r\n" || line == "\n" {
-                    return false; // end of headers, the dash header was never seen
-                }
-                if line.to_ascii_lowercase().starts_with(&needle) {
+    let deadline = std::time::Instant::now() + Duration::from_millis(750);
+    const MAX_HEAD_BYTES: usize = 8 * 1024;
+    let mut head: Vec<u8> = Vec::with_capacity(512);
+    let mut buf = [0u8; 512];
+    loop {
+        let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) else {
+            return false; // overall deadline elapsed
+        };
+        if remaining.is_zero() || stream.set_read_timeout(Some(remaining)).is_err() {
+            return false;
+        }
+        match stream.read(&mut buf) {
+            // Closed before / at the end of the head: decide on exactly what arrived.
+            Ok(0) => return head_has_header_line(&head, needle.as_bytes()),
+            Ok(n) => {
+                head.extend_from_slice(&buf[..n]);
+                if head_has_header_line(&head, needle.as_bytes()) {
                     return true;
                 }
+                if head.len() >= MAX_HEAD_BYTES || head_block_ended(&head) {
+                    return false; // head too large, or the headers ended without the marker
+                }
             }
-            Err(_) => return false, // a slow/reset holder times out here
+            Err(_) => return false, // a slow/silent holder times out here, or the peer reset
         }
     }
-    false
+}
+
+/// Whether any LINE of the HTTP response head in `head` BEGINS with `needle_lower` - the
+/// lowercased header-name prefix (e.g. `x-rigger-dash:`). The match is case-insensitive and
+/// ANCHORED to a line start (byte 0, or just after a `\n`), so the marker is recognized only as a
+/// header NAME and can never be spoofed by the same text appearing inside another header's value.
+fn head_has_header_line(head: &[u8], needle_lower: &[u8]) -> bool {
+    if needle_lower.is_empty() {
+        return false;
+    }
+    let mut start = 0usize;
+    loop {
+        let line = &head[start..];
+        if line.len() >= needle_lower.len()
+            && line[..needle_lower.len()]
+                .iter()
+                .zip(needle_lower)
+                .all(|(b, n)| b.to_ascii_lowercase() == *n)
+        {
+            return true;
+        }
+        match line.iter().position(|&b| b == b'\n') {
+            Some(rel) => start += rel + 1,
+            None => return false,
+        }
+        if start >= head.len() {
+            return false;
+        }
+    }
+}
+
+/// Whether the HTTP header block in `head` has ENDED - a blank line (`\r\n\r\n`, or a bare `\n\n`)
+/// separating the headers from the body. Once seen, no further header can appear, so the probe can
+/// stop instead of draining a body.
+fn head_block_ended(head: &[u8]) -> bool {
+    head.windows(4).any(|w| w == b"\r\n\r\n") || head.windows(2).any(|w| w == b"\n\n")
 }
 
 /// The outcome of binding the dash's fixed address as a SINGLETON (spec 50, criterion 1).
@@ -2828,6 +2884,99 @@ mod tests {
             !dash_serving_on(port),
             "a non-dash listener must not be recognized as a rigger dash"
         );
+    }
+
+    /// Spec 50, criterion 1 + spec 19c (a hang always surfaces loud, never a stall): `dash_serving_on`
+    /// must be bounded in WALL CLOCK against a holder that DRIBBLES bytes - one byte slower than any
+    /// per-read timeout while NEVER sending a newline. A probe that bounds only each `read()` (so every
+    /// byte resets the timeout) and caps only LINES would spin forever here: `read_line` never returns
+    /// (no `\n`) so the line cap never fires. The probe carries an OVERALL deadline and a total-byte
+    /// cap, so it returns `false` within a hard bound. The probe runs on a worker thread guarded by a
+    /// `recv_timeout`, so a regression to the unbounded loop fails LOUD (the recv times out) instead of
+    /// hanging the whole suite.
+    #[test]
+    fn dash_serving_on_is_bounded_against_a_byte_dribbling_holder() {
+        use std::sync::mpsc;
+        use std::time::Instant;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for mut s in listener.incoming().flatten() {
+                // A plausible status-line start, then an endless newline-less dribble: one byte
+                // every 100ms, faster than any single per-read timeout expires but never a `\n`.
+                if s.write_all(b"HTTP/1.1 200 OK\r\nX-Filler: ").is_err() {
+                    continue;
+                }
+                let _ = s.flush();
+                loop {
+                    if s.write_all(b"a").is_err() || s.flush().is_err() {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+        });
+
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let start = Instant::now();
+            let served = dash_serving_on(port);
+            let _ = tx.send((served, start.elapsed()));
+        });
+        match rx.recv_timeout(Duration::from_secs(2)) {
+            Ok((served, elapsed)) => {
+                assert!(
+                    !served,
+                    "a dribbling non-dash holder must never be recognized as a rigger dash"
+                );
+                assert!(
+                    elapsed < Duration::from_secs(2),
+                    "dash_serving_on must be bounded against a dribbler; it took {elapsed:?}"
+                );
+            }
+            Err(_) => panic!(
+                "dash_serving_on HUNG against a byte-dribbling holder - it never returned within 2s \
+                 (the per-read-only timeout never bounds a newline-less dribble)"
+            ),
+        }
+    }
+
+    /// Spec 50, criterion 1 (cold-race loser): when two dashes bind the fixed address at once, the
+    /// winner binds and the LOSER hits `AddrInUse`. Even when the loser probes during the winner's
+    /// bind-THEN-accept window (the port is bound but the winner has not entered its accept loop yet),
+    /// the probe's read budget spans that short window, so the loser resolves to a clean
+    /// `AlreadyServing` - never the loud `AddrInUse` a genuine unrelated-process conflict raises.
+    #[test]
+    fn bind_singleton_cold_race_loser_resolves_across_the_accept_window() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let addr = SocketAddr::from(([127, 0, 0, 1], port));
+        // WINNER: holds the fixed port but only begins accepting/answering after a short delay -
+        // the bind-then-accept window a just-bound dash has before its serve loop runs. It then
+        // answers as a real dash would, carrying the DASH_HEADER marker.
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            for mut s in listener.incoming().flatten() {
+                let _ = s.write_all(
+                    format!("HTTP/1.1 200 OK\r\n{DASH_HEADER}: probe\r\nConnection: close\r\n\r\n")
+                        .as_bytes(),
+                );
+            }
+        });
+        // LOSER: bind_singleton hits AddrInUse (the winner holds the port) and probes. The probe's
+        // read budget (well over the 100ms window) sees the header once the winner starts serving,
+        // so the loser resolves cleanly rather than surfacing a spurious AddrInUse.
+        match bind_singleton(addr) {
+            Ok(SingletonBind::AlreadyServing(reported)) => assert_eq!(
+                reported, addr,
+                "a cold-race loser must resolve to the exact address the winner already serves"
+            ),
+            other => panic!(
+                "a cold-race loser probing inside the winner's accept window must be AlreadyServing, \
+                 not {other:?}"
+            ),
+        }
     }
 
     /// Spec 19b c2 (responsive redesign): the page BODY must never scroll horizontally at
