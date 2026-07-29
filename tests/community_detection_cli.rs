@@ -408,3 +408,49 @@ fn a_malformed_resolution_or_unknown_argument_fails_loudly() {
         String::from_utf8_lossy(&unknown.stderr)
     );
 }
+
+#[test]
+fn re_running_a_grain_reproduces_the_byte_identical_live_layer() {
+    // Determinism THROUGH THE BINARY, observed on the MATERIALIZED layer: running `graph
+    // communities` twice on the same store re-detects, supersedes the grain's prior memberships,
+    // and re-folds - and the live community layer read back over the public projection is identical
+    // to the first pass's (same `KIND_COMMUNITY` node ids, same `IN_COMMUNITY` edges). This guards
+    // the detect -> supersede -> fold seam's end-to-end determinism as it lands in the store, which
+    // neither the supersession test (which checks only duplicate-freedom + the OTHER grain's
+    // survival) nor the library-level byte-identical-events test (which never drives the binary or
+    // the fold) asserts. A re-run that produced a different-but-duplicate-free assignment, or a
+    // supersession that left the re-materialized layer in a different shape, reddens here.
+    let dir = project();
+    let root = dir.path();
+    seed_coupling(root);
+
+    assert!(
+        communities(root, &[]).status.success(),
+        "the first pass records the default grain"
+    );
+    let (comms1, edges1) = community_layer(root);
+    assert!(
+        !comms1.is_empty() && !edges1.is_empty(),
+        "the first pass materialized a non-empty live community layer (else the guard is vacuous): \
+         {} node(s), {} edge(s)",
+        comms1.len(),
+        edges1.len()
+    );
+
+    // Re-run the SAME grain over the SAME store: re-detect, supersede this grain's prior
+    // memberships, re-fold. A deterministic pass reproduces the exact live layer byte for byte.
+    assert!(
+        communities(root, &[]).status.success(),
+        "re-running the default grain succeeds"
+    );
+    let (comms2, edges2) = community_layer(root);
+
+    assert_eq!(
+        comms1, comms2,
+        "re-running the same grain reproduces the identical community nodes"
+    );
+    assert_eq!(
+        edges1, edges2,
+        "re-running the same grain reproduces the identical IN_COMMUNITY membership edges"
+    );
+}
