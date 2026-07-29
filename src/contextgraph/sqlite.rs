@@ -3005,6 +3005,193 @@ mod tests {
     }
 
     #[test]
+    fn a_concept_rerun_supersedes_only_its_grain_through_the_real_derivation_pipeline() {
+        // Spec 54 RE-RUN SUPERSESSION (this unit OWNS the concept lifecycle claim; the community
+        // sibling `a_fresh_rerun_supersedes_only_its_own_resolution_grain` proves the mirror over
+        // hand-built CommunityAssigned events). Unlike that sibling - and unlike the c1 fold-periphery
+        // tests that hand-build events - this drives the REAL concepts pipeline end to end
+        // (`intent_layer` -> `derive` -> `events` -> fold) over a CHANGED intent layer at the SAME
+        // resolution, so the concept arm's edge-retire is LOAD-BEARING: a member MOVES from
+        // concept/1/1 to concept/1/0, and only the retire keeps it from ending with two live r=1
+        // memberships.
+        //
+        // Mutation teeth (d-u54c4-teeth-mutation-proven): neutralize the concept arm's
+        // `if c.fresh { UPDATE edges SET valid_to ... }` (e.g. its WHERE -> `WHERE 1=0`) and this
+        // reddens for the RIGHT reason - the mover then shows TWO live r=1 memberships
+        // [concept/1/0, concept/1/1] and no retired concept/1/1 row. This unit's diff is test-only;
+        // production stays byte-identical.
+        use crate::concepts::{derive, events, intent_layer, Derivation};
+
+        // Two DISJOINT intent regions, each a design doc SPECIFYING its own files. Region A's doc has
+        // the lexicographically-smallest id, so it is `concept/1/0`; region B's doc is `concept/1/1`
+        // (groups are numbered by ascending representative). `b2_in_a` rewires ONE file (`src/b2.rs`)
+        // from region B's doc onto region A's doc - how the mover crosses grains at the SAME
+        // resolution: a genuine re-derivation, not a relabelled event.
+        fn two_region_intent(b2_in_a: bool) -> Graph {
+            let doc = |id: &str, title: &str| {
+                let mut attrs = BTreeMap::new();
+                attrs.insert("title".to_string(), title.to_string());
+                Node {
+                    id: id.to_string(),
+                    kind: KIND_DESIGN_DOC.to_string(),
+                    attrs,
+                }
+            };
+            let file = |id: &str| Node {
+                id: id.to_string(),
+                kind: KIND_FILE.to_string(),
+                attrs: BTreeMap::new(),
+            };
+            let spec = |from: &str, to: &str| Edge {
+                from: from.to_string(),
+                to: to.to_string(),
+                rel: REL_SPECIFIES.to_string(),
+                valid_from: 0,
+                valid_to: None,
+                source: 0,
+                tier: TIER_EXTRACTED.to_string(),
+            };
+            let nodes = vec![
+                doc("docs/a.md", "Region A"),
+                doc("docs/b.md", "Region B"),
+                file("src/a1.rs"),
+                file("src/a2.rs"),
+                file("src/b1.rs"),
+                file("src/b2.rs"),
+            ];
+            let mut edges = vec![
+                spec("docs/a.md", "src/a1.rs"),
+                spec("docs/a.md", "src/a2.rs"),
+                spec("docs/b.md", "src/b1.rs"),
+            ];
+            // The mover: originally region B's doc specifies it; after the change region A's doc does.
+            edges.push(spec(
+                if b2_in_a { "docs/a.md" } else { "docs/b.md" },
+                "src/b2.rs",
+            ));
+            Graph { nodes, edges }
+        }
+
+        // Stamp a pass's events with unique ascending positions (fold idempotency is per-position) and
+        // ONE increasing valid_from per pass, so the re-run's retire stamps a valid_to that strictly
+        // post-dates the edges it retires (a clean bi-temporal order, not merely a non-null marker).
+        fn stamped(evs: Vec<Event>, base_pos: u64, secs: u64) -> Vec<Event> {
+            evs.into_iter()
+                .enumerate()
+                .map(|(i, mut e)| {
+                    e.position = base_pos + i as u64;
+                    e.valid_from = UNIX_EPOCH + std::time::Duration::from_secs(secs);
+                    e
+                })
+                .collect()
+        }
+
+        let membership =
+            |d: &Derivation| -> BTreeMap<String, String> { d.members.iter().cloned().collect() };
+
+        // Original r=1 derivation: the mover starts in concept/1/1 (region B).
+        let g1 = two_region_intent(false);
+        let d1 = derive(&g1, &intent_layer(&g1), 1.0);
+        let m1 = membership(&d1);
+        assert_eq!(
+            m1["docs/a.md"], "concept/1/0",
+            "region A's doc is concept/1/0"
+        );
+        assert_eq!(
+            m1["docs/b.md"], "concept/1/1",
+            "region B's doc is concept/1/1"
+        );
+        assert_eq!(
+            m1["src/b2.rs"], "concept/1/1",
+            "the mover starts in concept/1/1"
+        );
+
+        // A coexisting r=2 grain over the SAME original layer - the isolation control.
+        let d2 = derive(&g1, &intent_layer(&g1), 2.0);
+        assert!(
+            !events(&d2).is_empty(),
+            "the r=2 grain is non-empty, so its events fire"
+        );
+
+        let p = Projector::open(":memory:", "test").unwrap();
+        p.apply_batch(&stamped(events(&d1), 1, 1_000)).unwrap();
+        p.apply_batch(&stamped(events(&d2), 1_000, 2_000)).unwrap();
+
+        // The r=2 grain's REALIZES edges, read RAW (retired rows included) across its member nodes.
+        let r2_realizes = |p: &Projector| -> Vec<(String, String, Option<i64>)> {
+            let mut rows: Vec<(String, String, Option<i64>)> = d2
+                .members
+                .iter()
+                .map(|(node, _)| node.clone())
+                .collect::<BTreeSet<String>>()
+                .into_iter()
+                .flat_map(|node| {
+                    edges_from(p, &node)
+                        .into_iter()
+                        .filter(|(to, rel, _)| rel == REL_REALIZES && to.starts_with("concept/2/"))
+                        .map(move |(to, _rel, vt)| (node.clone(), to, vt))
+                })
+                .collect();
+            rows.sort();
+            rows
+        };
+        let r2_before = r2_realizes(&p);
+        assert!(
+            !r2_before.is_empty(),
+            "precondition: the r=2 grain folded live REALIZES edges"
+        );
+
+        // Re-derive r=1 over the CHANGED layer (the fresh boundary): the mover crosses to concept/1/0.
+        let g2 = two_region_intent(true);
+        let d1b = derive(&g2, &intent_layer(&g2), 1.0);
+        let m1b = membership(&d1b);
+        assert_eq!(
+            m1b["src/b2.rs"], "concept/1/0",
+            "after the change the mover derives into concept/1/0"
+        );
+        p.apply_batch(&stamped(events(&d1b), 2_000, 3_000)).unwrap();
+
+        // === RE-RUN SUPERSESSION, asserted on the mover via the edges_from RAW read ===
+        let mover: Vec<(String, Option<i64>)> = edges_from(&p, "src/b2.rs")
+            .into_iter()
+            .filter(|(_to, rel, _)| rel == REL_REALIZES)
+            .map(|(to, _rel, vt)| (to, vt))
+            .collect();
+
+        // The prior concept/1/1 membership is RETIRED (valid_to set) - kept in the table, not deleted.
+        assert!(
+            mover
+                .iter()
+                .any(|(to, vt)| to == "concept/1/1" && vt.is_some()),
+            "the mover's prior concept/1/1 membership is retired (valid_to set), not deleted; got {mover:?}"
+        );
+        assert!(
+            !mover
+                .iter()
+                .any(|(to, vt)| to == "concept/1/1" && vt.is_none()),
+            "no live concept/1/1 membership survives for the mover; got {mover:?}"
+        );
+        // Exactly ONE live r=1 membership remains: the new concept/1/0 grain.
+        let live_r1: Vec<&String> = mover
+            .iter()
+            .filter(|(to, vt)| to.starts_with("concept/1/") && vt.is_none())
+            .map(|(to, _)| to)
+            .collect();
+        assert_eq!(
+            live_r1,
+            vec![&"concept/1/0".to_string()],
+            "the re-run leaves the mover exactly one live r=1 membership, the new concept/1/0; got {mover:?}"
+        );
+
+        // Isolation: the coexisting r=2 grain is byte-identical - untouched by the r=1 re-run.
+        let r2_after = r2_realizes(&p);
+        assert_eq!(
+            r2_after, r2_before,
+            "the resolution-2.0 grain stays byte-identical across a resolution-1.0 re-run"
+        );
+    }
+
+    #[test]
     fn code_extraction_events_fold_into_a_file_container_entities_and_structural_edges() {
         // Criterion 1: a source file's extraction EMITS CodeEntityExtracted (one per definition)
         // and EdgeInferred (one per reference); the ALWAYS-compiled fold turns them into a file
