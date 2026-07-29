@@ -3483,6 +3483,201 @@ mod tests {
     }
 
     #[test]
+    fn calls_down_follows_a_single_candidate_hop_but_marks_a_multi_candidate_one_a_sorted_frontier()
+    {
+        // Spec 52 criterion 2 - the CONSERVATIVE RESOLUTION policy, hardened past c1's coverage
+        // (adj-u52cdw-c2-scope-reconcile). One seed reaches BOTH kinds of cross-file hop, so a single
+        // walk proves the boundary the policy turns on:
+        //   - a SINGLE-definition callee IS followed - resolved through its bare placeholder onto the
+        //     real definition, and the walk DESCENDS past it (its own callee is reached one layer
+        //     deeper);
+        //   - a MULTI-definition callee becomes a marked FRONTIER carrying its SORTED candidate ids
+        //     and is NOT descended (honest by construction - the view may be INCOMPLETE but never
+        //     confidently wrong; the human re-seeds on a chosen candidate).
+        // The candidate-sort assertion has TEETH the c1 periphery test lacks: that test folds a name's
+        // two definitions a.rs-then-b.rs, so their natural row order already EQUALS the sorted order
+        // and the sort is unproven (sdet-u52cdw-frontier-sort-vacuous). Here `dup`'s b.rs definition
+        // is folded BEFORE its a.rs one, so the natural (rowid) row order is [b, a]; only the
+        // `ORDER BY id` in `definitions_with_suffix` yields the asserted [a, b] - drop the sort and
+        // this assertion fails.
+        let p = Projector::open(":memory:", "test").unwrap();
+
+        // Definitions, folded before the calls so every cross-file reference tiers INFERRED (a
+        // definition already exists), placing it at/above the default floor.
+        apply_batch_def(&p, 1, "src/caller.rs", "entry", 1, true); // the seed
+        apply_batch_def(&p, 2, "src/solo.rs", "solo", 1, true); // the SINGLE-candidate callee
+        apply_batch_def(&p, 3, "src/sink.rs", "sink", 1, true); // solo's own callee (proves descent)
+                                                                // `dup` is defined in TWO files - fold b.rs BEFORE a.rs so the pre-sort (rowid) order is
+                                                                // [b, a] and only `ORDER BY id` re-sorts it to [a, b].
+        apply_batch_def(&p, 4, "src/b.rs", "dup", 1, true);
+        apply_batch_def(&p, 5, "src/b.rs", "only_via_b", 2, false);
+        apply_batch_def(&p, 6, "src/a.rs", "dup", 1, true);
+        apply_batch_def(&p, 7, "src/a.rs", "only_via_a", 2, false);
+
+        // Calls: entry -> solo (single-candidate cross-file) and entry -> dup (multi-candidate);
+        // solo -> sink (so the followed single-candidate hop has somewhere to descend); and each
+        // `dup` candidate calls a distinct sentinel that is reachable ONLY by descending that
+        // candidate.
+        apply_batch_ref_caller(&p, 8, "src/caller.rs", "solo", "entry");
+        apply_batch_ref_caller(&p, 9, "src/caller.rs", "dup", "entry");
+        apply_batch_ref_caller(&p, 10, "src/solo.rs", "sink", "solo");
+        apply_batch_ref_caller(&p, 11, "src/a.rs", "only_via_a", "dup");
+        apply_batch_ref_caller(&p, 12, "src/b.rs", "only_via_b", "dup");
+
+        let cg = p
+            .calls(
+                &["src/caller.rs::entry".to_string()],
+                Direction::Down,
+                5,
+                TIER_INFERRED,
+            )
+            .unwrap();
+
+        let node_ids = |cg: &CallGraph| -> Vec<String> {
+            let mut v: Vec<String> = cg.nodes.iter().map(|n| n.node.id.clone()).collect();
+            v.sort();
+            v
+        };
+        let node = |id: &str| cg.nodes.iter().find(|n| n.node.id == id);
+
+        // SINGLE-candidate: `solo` IS followed - resolved onto its real definition (not the bare
+        // caller-namespace placeholder), at layer 1, carrying NO frontier marker.
+        let solo = node("src/solo.rs::solo")
+            .expect("the single-candidate callee is followed onto its def");
+        assert_eq!(
+            solo.layer, 1,
+            "the followed single-candidate callee is one hop from the seed"
+        );
+        assert!(
+            solo.frontier.is_none(),
+            "a single-candidate hop is fully resolved - not a frontier"
+        );
+        assert!(
+            node("src/caller.rs::solo").is_none(),
+            "the bare cross-file placeholder is resolved away, not returned; nodes were {:?}",
+            node_ids(&cg),
+        );
+        // ...and the walk DESCENDS past it: solo's own callee is reached at layer 2, so the
+        // single-candidate hop was followed THROUGH, not merely landed on.
+        let sink =
+            node("src/sink.rs::sink").expect("the walk descends past the followed single hop");
+        assert_eq!(
+            sink.layer, 2,
+            "solo's callee is two hops from the seed - the single-candidate hop was traversed"
+        );
+
+        // MULTI-candidate: `dup` is a marked FRONTIER on the bare placeholder, carrying its SORTED
+        // candidate ids. TEETH: b.rs was folded before a.rs, so a missing `ORDER BY id` would return
+        // [b, a]; only the real sort yields [a, b].
+        let dup = node("src/caller.rs::dup")
+            .expect("the multi-candidate callee is returned as a frontier node");
+        assert_eq!(dup.layer, 1, "the frontier callee is one hop from the seed");
+        assert_eq!(
+            dup.frontier,
+            Some(vec![
+                "src/a.rs::dup".to_string(),
+                "src/b.rs::dup".to_string()
+            ]),
+            "the frontier carries its candidate ids SORTED by id - even though b.rs was folded first",
+        );
+
+        // The multi-candidate hop is the ONLY frontier; the single-candidate hop did not become one.
+        assert_eq!(
+            cg.nodes.iter().filter(|n| n.frontier.is_some()).count(),
+            1,
+            "exactly one node is a frontier - the multi-candidate hop, not the single one",
+        );
+
+        // NOT DESCENDED: neither candidate definition, nor anything reachable ONLY through a
+        // candidate, appears - the walk stopped at the frontier and never guessed.
+        for hidden in [
+            "src/a.rs::dup",
+            "src/b.rs::dup",
+            "src/a.rs::only_via_a",
+            "src/b.rs::only_via_b",
+        ] {
+            assert!(
+                node(hidden).is_none(),
+                "{hidden} lies beyond the un-descended frontier and must not be reached; nodes were {:?}",
+                node_ids(&cg),
+            );
+        }
+
+        // Exactly the seed, the followed single-candidate chain, and the marked frontier placeholder.
+        assert_eq!(
+            node_ids(&cg),
+            vec![
+                "src/caller.rs::dup".to_string(),
+                "src/caller.rs::entry".to_string(),
+                "src/sink.rs::sink".to_string(),
+                "src/solo.rs::solo".to_string(),
+            ],
+            "the reached set is the seed + the followed single-candidate chain + the marked frontier",
+        );
+    }
+
+    #[test]
+    fn calls_down_leaves_a_zero_candidate_cross_file_callee_a_terminal_leaf_not_a_frontier() {
+        // Spec 52 criterion 2 - the ZERO-candidate branch of the resolution policy
+        // (adj-u52cdw-c2-scope-reconcile). A bare cross-file callee whose name is defined NOWHERE the
+        // graph knows resolves to ZERO candidates: `resolve_down_hop` returns the bare placeholder id
+        // itself with NO frontier - it is a terminal LEAF, categorically distinct from a
+        // multi-candidate frontier (there is nothing to fan out to). Such a call tiers `ambiguous`,
+        // so the floor is lowered to reach it; the point proved here is the resolution OUTCOME (a
+        // bare leaf, `frontier` None), not the floor itself.
+        let p = Projector::open(":memory:", "test").unwrap();
+        apply_batch_def(&p, 1, "src/caller.rs", "entry", 1, true);
+        // `ghost` is defined in no file the graph knows - the CALLS edge tiers ambiguous and, once
+        // followed, resolves to zero candidates.
+        apply_batch_ref_caller(&p, 2, "src/caller.rs", "ghost", "entry");
+
+        let cg = p
+            .calls(
+                &["src/caller.rs::entry".to_string()],
+                Direction::Down,
+                5,
+                TIER_AMBIGUOUS,
+            )
+            .unwrap();
+
+        let ghost = cg
+            .nodes
+            .iter()
+            .find(|n| n.node.id == "src/caller.rs::ghost")
+            .expect("the zero-candidate callee is reached on the bare placeholder itself");
+        assert_eq!(
+            ghost.layer, 1,
+            "the unresolved callee sits one hop from the seed"
+        );
+        assert!(
+            ghost.frontier.is_none(),
+            "a ZERO-candidate resolution is a terminal leaf, NOT a frontier (nothing to fan out to)",
+        );
+        // It is a genuine LEAF: nothing descends from the bare placeholder.
+        assert!(
+            !cg.edges
+                .iter()
+                .any(|e| e.edge.from == "src/caller.rs::ghost"),
+            "no edge leaves the zero-candidate leaf; edges were {:?}",
+            cg.edges
+                .iter()
+                .map(|e| (e.edge.from.clone(), e.edge.to.clone()))
+                .collect::<Vec<_>>(),
+        );
+        // Exactly the seed and its one terminal leaf - the walk neither errored nor guessed.
+        let mut ids: Vec<String> = cg.nodes.iter().map(|n| n.node.id.clone()).collect();
+        ids.sort();
+        assert_eq!(
+            ids,
+            vec![
+                "src/caller.rs::entry".to_string(),
+                "src/caller.rs::ghost".to_string()
+            ],
+            "the walk resolves the unknown callee to a bare terminal leaf, nothing more",
+        );
+    }
+
+    #[test]
     fn a_blast_radius_computed_event_folds_to_nothing_idempotently() {
         // spec 16 unit 3: BlastRadiusComputed is PURE AUDIT - the projector matches no fold arm
         // for it (it falls to the `_ => {}` sink), so it adds NO node and NO edge, and re-applying
