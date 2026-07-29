@@ -17,8 +17,9 @@
 //!  - the TIER FLOOR: an ambiguous-tier call is EXCLUDED at the default (inferred) floor and
 //!    INCLUDED only when the caller lowers the floor to `ambiguous` (the public `tier_floor` param);
 //!  - the DEPTH clamp: the public `depth` bounds the layers the walk returns;
-//!  - the `Direction::Up` arm: until the up-walk unit lands it is an honest EMPTY view, never a
-//!    wrong or half answer;
+//!  - the `Direction::Up` arm (spec 52 criterion 3, now landed): over the SAME real call, UP resolves
+//!    the caller back onto the seed's definition through its bare cross-file placeholder (the reverse
+//!    name-match), where DOWN reaches the callee - the two directions are genuine mirror walks;
 //!  - the DEGENERATE edges: a missing seed, and a seed with no calls, each degrade to an empty /
 //!    seed-only view rather than erroring;
 //!  - PROJECT SCOPING: a walk scoped to one project never surfaces another project's `CALLS` edges
@@ -322,20 +323,23 @@ fn the_depth_bound_clamps_the_layers_the_walk_returns() {
 }
 
 #[test]
-fn the_up_direction_is_an_honest_empty_view_until_the_up_walk_unit_lands() {
-    // Spec 52: this unit owns the DOWN walk only; the UP (call-sites) direction is a sibling unit.
-    // Until it lands the Projector answers `Direction::Up` with an EMPTY view rather than a wrong or
-    // half answer. The control below proves the graph really does hold a walkable call, so the empty
-    // UP result is the DIRECTION arm - not an empty graph.
+fn the_up_direction_mirrors_the_down_walk_resolving_the_caller_through_its_bare_placeholder() {
+    // Spec 52 criterion 3 (now landed), over the library's PUBLIC surface: UP is the genuine mirror
+    // of DOWN. `b.rs::caller` calls `callee`, which is DEFINED in `a.rs` - a CROSS-FILE call whose
+    // edge lands on the bare `b.rs::callee` placeholder in the caller's own file namespace. DOWN from
+    // the caller resolves that placeholder FORWARD onto the definition; UP from the definition
+    // resolves it in REVERSE back onto the caller (the reverse name-match). A naive reverse walk that
+    // only matched the literal edge target would connect neither direction across the file boundary.
     let p = Projector::open(":memory:", "test").unwrap();
     apply_def(&p, 1, "src/a.rs", "callee", 1, true);
-    apply_def(&p, 2, "src/a.rs", "caller", 2, false);
-    apply_call(&p, 3, "src/a.rs", "callee", "caller");
+    apply_def(&p, 2, "src/b.rs", "caller", 1, true);
+    apply_call(&p, 3, "src/b.rs", "callee", "caller");
 
-    // Control: DOWN from the caller really does reach the callee.
+    // Control / DOWN: from the caller the walk resolves the bare cross-file placeholder forward onto
+    // the real definition `a.rs::callee`.
     let down = p
         .calls(
-            &["src/a.rs::caller".to_string()],
+            &["src/b.rs::caller".to_string()],
             Direction::Down,
             5,
             TIER_INFERRED,
@@ -343,11 +347,13 @@ fn the_up_direction_is_an_honest_empty_view_until_the_up_walk_unit_lands() {
         .unwrap();
     assert!(
         down.nodes.iter().any(|n| n.node.id == "src/a.rs::callee"),
-        "control: the DOWN walk reaches the callee, so a real call exists; nodes were {:?}",
+        "the DOWN walk resolves the cross-file callee onto its definition; nodes were {:?}",
         node_ids(&down),
     );
 
-    // UP over that same real call is an empty view in this unit.
+    // UP: over that SAME real call, from the definition the walk resolves the caller back through the
+    // bare `b.rs::callee` placeholder - the mirror of DOWN. The caller sits at layer 1; the bare
+    // placeholder is resolved away; the edge keeps the real CALLS direction (caller -> callee).
     let up = p
         .calls(
             &["src/a.rs::callee".to_string()],
@@ -356,11 +362,29 @@ fn the_up_direction_is_an_honest_empty_view_until_the_up_walk_unit_lands() {
             TIER_INFERRED,
         )
         .unwrap();
-    assert!(
-        up.nodes.is_empty() && up.edges.is_empty(),
-        "the UP direction is an empty view until its unit lands; got nodes {:?} edges {:?}",
+    let caller = up
+        .nodes
+        .iter()
+        .find(|n| n.node.id == "src/b.rs::caller")
+        .expect("the UP walk resolves the cross-file caller through its bare placeholder");
+    assert_eq!(
+        caller.layer,
+        1,
+        "the caller is one hop up from the seed definition; nodes were {:?}",
         node_ids(&up),
+    );
+    assert!(
+        !up.nodes.iter().any(|n| n.node.id == "src/b.rs::callee"),
+        "the bare cross-file placeholder is resolved away, not returned; nodes were {:?}",
+        node_ids(&up),
+    );
+    assert_eq!(
         edge_pairs(&up),
+        vec![(
+            "src/b.rs::caller".to_string(),
+            "src/a.rs::callee".to_string()
+        )],
+        "the caller edge lands on the seed definition, in the real CALLS direction",
     );
 }
 

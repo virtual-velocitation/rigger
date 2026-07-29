@@ -203,10 +203,17 @@ pub struct CallEdge {
 /// from the seed by following `CALLS` edges in one [`Direction`], deduped under cycles. A `Down`
 /// walk is the execution path; an `Up` walk is the call sites. Shaped like a [`Graph`] but with
 /// per-node `layer`/`frontier` and per-edge `back` metadata the neighborhood view does not carry.
+///
+/// `referenced_not_called` is the UP direction's flat, NON-traversed sidecar (empty for `Down`): the
+/// FILE nodes that reference the seed's name at file level (a `REFERENCES` edge to the name) but
+/// carry NO caller-attributed `CALLS` edge to it from within the file - the imports / uses a
+/// "who-uses-this" reader cares about, which the layered caller DAG (functions that CALL the seed)
+/// deliberately does not include. Sorted by id, deterministic across polls.
 #[derive(Clone, Debug, Default)]
 pub struct CallGraph {
     pub nodes: Vec<CallNode>,
     pub edges: Vec<CallEdge>,
+    pub referenced_not_called: Vec<Node>,
 }
 
 // Event type discriminators carried in Event.type_.
