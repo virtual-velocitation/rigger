@@ -10,15 +10,15 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction};
 
 use super::{
     CallEdge, CallGraph, CallNode, Direction, Edge, Error, Graph, Node, Projection,
-    KIND_ARCH_DECISION, KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_DECISION,
-    KIND_DESIGN_DOC, KIND_FILE, KIND_FINDING, KIND_HANDBOOK_RULE, KIND_LESSON, KIND_RATIONALE,
-    REL_ABOUT, REL_CALLS, REL_CONSTRAINS, REL_CONTAINS, REL_DOC_REFERENCES, REL_EXPLAINS,
-    REL_GOVERNS, REL_IN_COMMUNITY, REL_RAISED, REL_REFERENCES, REL_SPECIFIES, REL_SUPERSEDES,
-    TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED, TYPE_ALIAS_DEFINED, TYPE_ALIAS_UNRESOLVED,
-    TYPE_CODE_ENTITY_EXTRACTED, TYPE_COMMUNITY_ASSIGNED, TYPE_DECISION_MADE,
-    TYPE_DOC_CONCEPT_EXTRACTED, TYPE_DOC_LINK_EXTRACTED, TYPE_EDGE_INFERRED, TYPE_FILE_TOUCHED,
-    TYPE_GATE_VERDICT, TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED,
-    TYPE_UNIT_STARTED,
+    KIND_ARCH_DECISION, KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT,
+    KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, KIND_FINDING, KIND_HANDBOOK_RULE, KIND_LESSON,
+    KIND_RATIONALE, REL_ABOUT, REL_CALLS, REL_CONSTRAINS, REL_CONTAINS, REL_DOC_REFERENCES,
+    REL_EXPLAINS, REL_GOVERNS, REL_IN_COMMUNITY, REL_RAISED, REL_REALIZES, REL_REFERENCES,
+    REL_SPECIFIES, REL_SUPERSEDES, TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED,
+    TYPE_ALIAS_DEFINED, TYPE_ALIAS_UNRESOLVED, TYPE_CODE_ENTITY_EXTRACTED, TYPE_COMMUNITY_ASSIGNED,
+    TYPE_CONCEPT_DERIVED, TYPE_CONCEPT_REALIZED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED,
+    TYPE_DOC_LINK_EXTRACTED, TYPE_EDGE_INFERRED, TYPE_FILE_TOUCHED, TYPE_GATE_VERDICT,
+    TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
 };
 use crate::eventstore::{Event, Position};
 use crate::spawn::{SpawnResult, TYPE_SPAWN_RESULT};
@@ -1469,6 +1469,96 @@ fn fold(tx: &Transaction, e: &Event, project: &str) -> Result<(), Error> {
                 params![attrs, c.community, project],
             )
             .map_err(be)?;
+        }
+        TYPE_CONCEPT_DERIVED => {
+            // Spec 54 (the CONCEPTS lens): one concept the offline intent-derivation pass emitted.
+            // Fold it into a KIND_CONCEPT super-node carrying the pass-computed label, so the derived
+            // grouping lives in the event-sourced projection (never computed at request time) and the
+            // `lens=concepts` view is a pure read over it. ALWAYS compiled, mirroring the 53
+            // CommunityAssigned arm: the light lane folds a concept log with the derivation pass
+            // absent. Project-scoped like every arm (spec 28).
+            let c: super::ConceptDerived = serde_json::from_slice(&e.data).map_err(be)?;
+            // The resolution grain is the f64's canonical string (the emit contract: the concept id's
+            // grain segment equals this), so the `fresh` reset and the stored attr agree.
+            let res = format!("{}", c.resolution);
+            // Re-run supersession (rides `fresh` on the pass's FIRST event, mirroring the community
+            // arm): retire (set `valid_to` on, never delete) every LIVE REALIZES edge of THIS
+            // resolution grain, then drop the grain's now-orphan concept nodes, BEFORE folding the new
+            // pass - so a re-run at a resolution REPLACES that grain's grouping rather than accreting,
+            // and leaves every OTHER grain's memberships live (scoped by the exact `concept/<res>/` id
+            // prefix, a substr equality, never a LIKE/GLOB whose wildcards a value could carry). A
+            // no-op on the first-ever pass. The pass emits all its ConceptDerived events before any
+            // ConceptRealized, so this boundary fires once, at the head, before this pass's grouping
+            // folds. An EMPTY re-run never reaches here (an empty derivation records no events, so no
+            // `fresh` event fires): the KEEP-LAST-GOOD policy documented on `concepts::events`.
+            if c.fresh {
+                let prefix = format!("concept/{res}/");
+                tx.execute(
+                    "UPDATE edges SET valid_to = ?1
+                     WHERE valid_to IS NULL AND project = ?4 AND rel = ?3
+                       AND substr(to_id, 1, length(?2)) = ?2",
+                    params![at, prefix, REL_REALIZES, project],
+                )
+                .map_err(be)?;
+                // Node-side supersession (the completeness half, mirroring the community arm): the
+                // edge retire above leaves every concept super-node of THIS grain with no live member,
+                // so a re-run that DROPS or EMPTIES a concept would strand its KIND_CONCEPT node - a
+                // ghost bucket `whole()` still surfaces with ZERO live members and a STALE label. Drop
+                // every now-memberless concept node OF THIS GRAIN; this pass's own ConceptDerived
+                // events immediately re-`ensure` exactly the concepts its NEW grouping uses, leaving
+                // only the dropped/emptied concepts gone. Scoped by the SAME `concept/<res>/` id prefix
+                // and by KIND_CONCEPT, with a `NOT EXISTS(live member)` guard, so it never touches
+                // another grain's nodes. A rebuild replays the same events in the same order and
+                // re-derives the identical node set.
+                tx.execute(
+                    "DELETE FROM nodes
+                      WHERE kind = ?2 AND project = ?3
+                        AND substr(id, 1, length(?1)) = ?1
+                        AND NOT EXISTS (
+                            SELECT 1 FROM edges e
+                             WHERE e.to_id = nodes.id AND e.rel = ?4
+                               AND e.valid_to IS NULL AND e.project = ?3
+                        )",
+                    params![prefix, KIND_CONCEPT, project, REL_REALIZES],
+                )
+                .map_err(be)?;
+            }
+            // The concept super-node, carrying its pass-computed label + provenance attrs. Unlike the
+            // community arm (which recomputes a label from the folded members), the label is KNOWN
+            // upfront - it rides on the event - so a single `ensure_node` with the attrs suffices; the
+            // attrs blob is a sorted-key BTreeMap render (byte-stable across folds and rebuilds).
+            ensure_node(
+                tx,
+                &c.concept,
+                KIND_CONCEPT,
+                &[
+                    ("resolution", res.as_str()),
+                    ("hash", c.hash.as_str()),
+                    ("label", c.label.as_str()),
+                ],
+                project,
+            )?;
+        }
+        TYPE_CONCEPT_REALIZED => {
+            // Spec 54: one concept membership the offline intent-derivation pass emitted. Fold it into
+            // a live `<node> --REALIZES--> <concept>` edge, a DERIVED grouping (TIER_INFERRED - one
+            // confidence step below the explicit intent edges the derivation runs over). The concept
+            // super-node already exists (its ConceptDerived folded earlier in the pass); ensure it
+            // defensively (a bare ensure is idempotent and first-writer-wins keeps the Derived label
+            // attrs) so the edge never dangles if the events are replayed out of the pass's order.
+            // Upsert-live like every fold (spec 40). ALWAYS compiled, mirroring the community arm.
+            let r: super::ConceptRealized = serde_json::from_slice(&e.data).map_err(be)?;
+            ensure_node(tx, &r.concept, KIND_CONCEPT, &[], project)?;
+            add_edge(
+                tx,
+                &r.node,
+                &r.concept,
+                REL_REALIZES,
+                at,
+                e.position,
+                project,
+                TIER_INFERRED,
+            )?;
         }
         _ => {}
     }

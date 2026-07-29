@@ -12,6 +12,7 @@ use std::process::{Command, Stdio};
 use rigger::blocker;
 use rigger::canary;
 use rigger::community;
+use rigger::concepts;
 use rigger::conductor::{self, Deps};
 use rigger::config;
 use rigger::contextgraph::{self, sqlite::Projector, Projection};
@@ -1346,6 +1347,8 @@ rigger graph build          fold the project's source into the graph from a cold
 checkout (no run required)\n  \
 rigger graph communities    derive the code lens's coupling communities offline and\n                              \
 [--resolution <r>]          record them as events (deterministic; default r=1.0)\n  \
+rigger graph concepts       derive the concepts lens's intent-layer grouping offline\n                              \
+[--resolution <r>]          and record them as events (deterministic; default r=1.0)\n  \
 rigger stats                print the run's operator metrics: first-pass yield,\n                              \
 per-gate remediation counts, escalation rate, and\n                              \
 review approve/reject counts. --canary reports the\n                              \
@@ -3031,6 +3034,11 @@ fn cmd_graph(args: &[String]) -> Res {
     if args.first().map(String::as_str) == Some("communities") {
         return cmd_graph_communities(&args[1..]);
     }
+    // `rigger graph concepts` is the OFFLINE intent-derivation pass (spec 54): derive the concepts
+    // lens's grouping over the already-folded intent layer and record them as events.
+    if args.first().map(String::as_str) == Some("concepts") {
+        return cmd_graph_concepts(&args[1..]);
+    }
     let mut around = String::new();
     let mut depth: i64 = 2;
     let mut i = 0;
@@ -3229,6 +3237,85 @@ fn cmd_graph_communities(args: &[String]) -> Res {
         assignment.num_communities,
         if assignment.num_communities == 1 { "y" } else { "ies" },
         coupling.len(),
+        resolution,
+        events.len(),
+        db_path("graph.db")
+    );
+    Ok(())
+}
+
+/// `rigger graph concepts [--resolution <r>]` - the OFFLINE, DETERMINISTIC intent-derivation pass
+/// (spec 54, the CONCEPTS lens). It reads the project's already-folded INTENT layer (the live
+/// `SPECIFIES` / `CONSTRAINS` / `GOVERNS` / `explains` / `references` edges among design docs,
+/// handbook rules, specs, rationale, and the code they attach to), runs the SAME deterministic
+/// community detection the code lens ships over it at the given `--resolution` grain (default
+/// [`concepts::DEFAULT_RESOLUTION`]), and RECORDS the result as `ConceptDerived` / `ConceptRealized`
+/// events - so the derived grouping is event-sourced (the `REALIZES` membership edges are a
+/// rebuildable fold of the log), never computed at request time. Re-running at a resolution with a
+/// NON-empty result supersedes only that grain's prior grouping (the fold's `fresh` boundary), so
+/// distinct grains coexist and the lens reads one live set per grain.
+///
+/// Store lifecycle mirrors `graph communities` (the composition root, not the courier walk-up): it
+/// CREATES the store under the cwd's `.rigger/` when absent, then reads the WHOLE projection and
+/// appends-and-folds the pass's events in ONE batch. The derivation is always-compiled and reads only
+/// folded edges, so this runs identically in both feature lanes; a graph with no intent edges derives
+/// nothing and records nothing (exit 0, never an error). Because an empty result records NO events, an
+/// empty re-run is KEEP-LAST-GOOD: it does NOT clear a grain's prior grouping - the last NON-empty
+/// pass at that resolution stays live (see `concepts::events`).
+fn cmd_graph_concepts(args: &[String]) -> Res {
+    let mut resolution = concepts::DEFAULT_RESOLUTION;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--resolution" => {
+                i += 1;
+                let raw = args.get(i).cloned().unwrap_or_default();
+                resolution = raw.parse::<f64>().map_err(|_| {
+                    format!("graph concepts: --resolution expects a number, got {raw:?}")
+                })?;
+                if !(resolution.is_finite() && resolution > 0.0) {
+                    return Err(format!(
+                        "graph concepts: --resolution must be a positive finite number, got {resolution}"
+                    )
+                    .into());
+                }
+            }
+            other => {
+                return Err(format!("graph concepts: unknown argument {other:?}").into());
+            }
+        }
+        i += 1;
+    }
+
+    // Bootstrap the store like `graph communities` does (create-or-open under the cwd's `.rigger/`).
+    std::fs::create_dir_all(RIGGER_DIR)?;
+    let selection = store_selection(None, None)?;
+    let backend = resolve_store(&selection, &db_path("events.db"))?;
+    let store = Namespaced::new(backend.as_ref(), &project_identity());
+    let graph = Projector::open(&db_path("graph.db"), &project_identity())?;
+
+    // Read the WHOLE live projection and derive concepts over its intent layer. `whole()` is the same
+    // direct, project-scoped, sorted read the dash's `/api/graph` provider consults.
+    let whole = graph.whole()?;
+    let layer = concepts::intent_layer(&whole);
+    let derivation = concepts::derive(&whole, &layer, resolution);
+    let events = concepts::events(&derivation);
+
+    // Append the pass's events in ONE store append and fold them in ONE transaction (the shared
+    // batched append-and-fold authority). The `fresh` head supersedes this grain's prior grouping;
+    // the rest re-add, so a re-run REPLACES this resolution's concept set.
+    rigger::ingest::append_and_fold_batch(
+        &store,
+        Some(&graph as &dyn Projection),
+        conductor::STREAM,
+        &events,
+    )?;
+
+    println!(
+        "graph concepts: derived {} concept{} over {} intent-linked node(s) at resolution {} ({} event(s) recorded into {})",
+        derivation.num_concepts,
+        if derivation.num_concepts == 1 { "" } else { "s" },
+        layer.len(),
         resolution,
         events.len(),
         db_path("graph.db")

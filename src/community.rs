@@ -154,18 +154,39 @@ impl Coupling {
             id.to_string()
         };
 
-        // Accumulate undirected pair weights over CANONICAL endpoints in a BTreeMap so the edge
+        // Feed the CANONICAL endpoints of every surviving coupling edge to the shared assembly,
+        // which collapses each unordered pair to one undirected weighted edge (multiplicity), drops
+        // self-loops, and sorts the node vector - so the code lens and the concepts lens build their
+        // input layer through ONE assembly, and the canonical hash string is identical by
+        // construction. Self-loops (a same-file reference onto its own caller, or a bare placeholder
+        // that resolved back onto its file-mate) are dropped inside `from_edges`.
+        let edges = g.edges.iter().filter_map(|e| {
+            let coupling = e.rel == REL_CALLS || e.rel == REL_REFERENCES || e.rel == REL_CONTAINS;
+            if !coupling || e.tier == TIER_AMBIGUOUS {
+                return None;
+            }
+            Some((canon(&e.from), canon(&e.to)))
+        });
+        Coupling::from_edges(edges)
+    }
+
+    /// Assemble an undirected, weighted graph from a stream of edge OCCURRENCES - the ONE builder
+    /// BOTH lenses run their detection over. Each `(from, to)` is one edge occurrence; occurrences of
+    /// the same unordered pair accumulate into that pair's weight (multiplicity), a self-loop
+    /// (`from == to`) is dropped, and every pair is canonicalized (`from <= to`) so `a -> b` and
+    /// `b -> a` collapse to one edge. The resulting node vector is SORTED and unique (a node's index
+    /// IS its id rank), the adjacency is index-sorted, and the canonical rendering (`from\tto\tweight`
+    /// per pair, in sorted pair order) is byte-stable - so the pass hash the detection takes over it
+    /// is deterministic across runs and machines. The code lens's [`Coupling::from_graph`] feeds it
+    /// canonicalized coupling endpoints; the concepts lens feeds it intent-edge endpoints - the
+    /// detection, the numbering, and the determinism are then IDENTICAL over either layer.
+    pub fn from_edges<I: IntoIterator<Item = (String, String)>>(edges: I) -> Self {
+        // Accumulate undirected pair weights over the (canonical) endpoints in a BTreeMap so the edge
         // iteration order - and thus the canonical hash string and every downstream float sum - is
         // deterministic.
         let mut pair_w: BTreeMap<(String, String), f64> = BTreeMap::new();
-        for e in &g.edges {
-            let coupling = e.rel == REL_CALLS || e.rel == REL_REFERENCES || e.rel == REL_CONTAINS;
-            if !coupling || e.tier == TIER_AMBIGUOUS {
-                continue;
-            }
-            let (from, to) = (canon(&e.from), canon(&e.to));
-            // Drop self-loops AFTER resolution (a same-file reference onto its own caller, or a bare
-            // placeholder that resolved back onto its file-mate).
+        for (from, to) in edges {
+            // Drop self-loops.
             if from == to {
                 continue;
             }
@@ -223,6 +244,19 @@ impl Coupling {
         self.nodes.len()
     }
 
+    /// The sorted, unique node ids participating in the graph. `nodes()[i]` aligns with the
+    /// `group_of[i]` a [`partition`] returns, so a caller maps each node to its derived group.
+    pub fn nodes(&self) -> &[String] {
+        &self.nodes
+    }
+
+    /// The weighted degree per node, aligned to [`Coupling::nodes`]: the total incident edge weight,
+    /// i.e. the node's degree WITHIN this layer. The concepts lens reads it to pick a concept's
+    /// most-central (highest intent-degree) member for the deterministic label.
+    pub fn degrees(&self) -> &[f64] {
+        &self.deg
+    }
+
     /// Whether the coupling graph has no nodes (no coupling edges anywhere) - detection yields no
     /// assignment and the pass records nothing.
     pub fn is_empty(&self) -> bool {
@@ -246,31 +280,67 @@ pub struct Assignment {
     pub num_communities: usize,
 }
 
+/// The lens-agnostic RESULT of the shared detection: each node's 0-indexed GROUP number (aligned to
+/// the coupling graph's sorted node vector - `group_of[i]` is the group of `coupling.nodes()[i]`),
+/// the pass's content `hash`, and the count of distinct groups. Both lenses run [`partition`] and
+/// format the group number into their own id space (`community/<res>/<n>` for the code lens,
+/// `concept/<res>/<n>` for the concepts lens) - the detection, the numbering, and the determinism
+/// live here ONCE, never forked per lens.
+pub struct Grouping {
+    /// The pass's content hash (FNV-1a of the canonical edge set plus the resolution).
+    pub hash: String,
+    /// The group number `[0, num_groups)` of each node, aligned to [`Coupling::nodes`].
+    pub group_of: Vec<usize>,
+    /// How many distinct groups the detection produced.
+    pub num_groups: usize,
+}
+
 /// Run deterministic modularity-based community detection over `coupling` at `resolution`, returning
-/// a connected [`Assignment`]. The result is a pure function of the input: two calls on the same
-/// coupling graph at the same resolution return equal assignments, and every community is internally
-/// connected. An empty coupling graph yields an empty assignment.
-pub fn detect(coupling: &Coupling, resolution: f64) -> Assignment {
+/// a lens-agnostic [`Grouping`]: each node's group number (numbered by ascending representative), the
+/// pass hash, and the group count. A pure function of the input: two calls on the same coupling graph
+/// at the same resolution return equal groupings, every group is internally CONNECTED, and the
+/// numbering is byte-stable across runs and machines. The code lens ([`detect`]) and the concepts
+/// lens both call this, so the SAME detection groups either input layer. An empty coupling graph
+/// yields an empty grouping.
+pub fn partition(coupling: &Coupling, resolution: f64) -> Grouping {
     let res_str = format!("{resolution}");
     // The pass hash covers the canonical edge set AND the resolution, so distinct grains hash apart.
     let hash = fnv1a_hex(&format!("{}\n{res_str}", coupling.canon));
 
     let moved = local_moving(coupling, resolution);
     let refined = refine_connected(coupling, &moved);
-    let community_ids = number_communities(coupling, &refined, &res_str);
+    let group_of = number_groups(coupling, &refined);
+    let num_groups = group_of.iter().copied().collect::<BTreeSet<_>>().len();
+    Grouping {
+        hash,
+        group_of,
+        num_groups,
+    }
+}
 
+/// Run detection over `coupling` at `resolution` and format each node's group into the CODE lens's
+/// `community/<resolution>/<n>` id space, returning a connected [`Assignment`]. A thin adapter over
+/// the shared [`partition`]: two calls on the same coupling graph at the same resolution return equal
+/// assignments, and every community is internally connected. An empty coupling graph yields an empty
+/// assignment.
+pub fn detect(coupling: &Coupling, resolution: f64) -> Assignment {
+    let res_str = format!("{resolution}");
+    let g = partition(coupling, resolution);
     let members: Vec<(String, String)> = coupling
         .nodes
         .iter()
         .cloned()
-        .zip(community_ids.iter().cloned())
+        .zip(
+            g.group_of
+                .iter()
+                .map(|n| format!("community/{res_str}/{n}")),
+        )
         .collect();
-    let num_communities = community_ids.iter().collect::<BTreeSet<_>>().len();
     Assignment {
         resolution,
-        hash,
+        hash: g.hash,
         members,
-        num_communities,
+        num_communities: g.num_groups,
     }
 }
 
@@ -434,11 +504,12 @@ fn refine_connected(c: &Coupling, comm: &[usize]) -> Vec<usize> {
     refined
 }
 
-/// Assign the final `community/<res>/<n>` id to every node, numbering communities by ASCENDING
-/// representative (their lexicographically-smallest member id, i.e. smallest member index). So
-/// `community/<res>/0` always holds the lexicographically-smallest node overall - a byte-stable
-/// numbering independent of the intermediate labels the two phases produced.
-fn number_communities(c: &Coupling, refined: &[usize], res_str: &str) -> Vec<String> {
+/// Assign each node its final GROUP NUMBER, numbering groups by ASCENDING representative (their
+/// lexicographically-smallest member id, i.e. smallest member index). So group `0` always holds the
+/// lexicographically-smallest node overall - a byte-stable numbering independent of the intermediate
+/// labels the two phases produced. The caller formats the number into its own lens id space
+/// (`community/<res>/<n>` or `concept/<res>/<n>`).
+fn number_groups(c: &Coupling, refined: &[usize]) -> Vec<usize> {
     let n = c.len();
     // Smallest member index per refined label (== lexicographically-smallest id, nodes being sorted).
     let mut rep: BTreeMap<usize, usize> = BTreeMap::new();
@@ -458,10 +529,7 @@ fn number_communities(c: &Coupling, refined: &[usize], res_str: &str) -> Vec<Str
     for (n_idx, (_mi, label)) in order.into_iter().enumerate() {
         label_to_n.insert(label, n_idx);
     }
-    refined
-        .iter()
-        .map(|label| format!("community/{res_str}/{}", label_to_n[label]))
-        .collect()
+    refined.iter().map(|label| label_to_n[label]).collect()
 }
 
 #[cfg(test)]

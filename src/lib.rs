@@ -12,6 +12,7 @@ pub mod canary;
 /// directory, and records the result as `CommunityAssigned` events the always-compiled fold turns
 /// into `IN_COMMUNITY` membership edges. Always compiled and proven in both feature lanes.
 pub mod community;
+pub mod concepts;
 pub mod conductor;
 pub mod config;
 pub mod contextgraph;

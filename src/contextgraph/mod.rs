@@ -65,6 +65,17 @@ pub const KIND_RATIONALE: &str = "rationale";
 /// over an already-projected grouping. Always compiled, so the light lane folds it with the
 /// detection pass absent, mirroring the 29a `KIND_CODE_ENTITY` split.
 pub const KIND_COMMUNITY: &str = "community";
+/// A concept node (spec 54, the CONCEPTS lens): a derived IDEA the project is about - "the knowledge
+/// graph", "review adjudication" - a connected region of the INTENT layer (design docs, handbook
+/// rules, specs, rationale) plus the code that layer governs/specifies/constrains/explains, grouped
+/// by the offline, deterministic derivation. Concepts cannot be read off ids or directories; they
+/// span both. Its id is `concept/<resolution>/<n>` (so distinct resolution grains coexist as distinct
+/// concepts); its attrs carry the `resolution`, the pass's content `hash`, and a deterministic
+/// `label` (the title of its most-central document member). Folded from a `ConceptDerived` event,
+/// never computed at request time, so the `lens=concepts` view is a pure read over an
+/// already-projected grouping. Always compiled, so the light lane folds it with the derivation pass
+/// absent, mirroring the 53 `KIND_COMMUNITY` split.
+pub const KIND_CONCEPT: &str = "concept";
 
 // Edge relationships.
 pub const REL_DECIDED: &str = "DECIDED";
@@ -124,6 +135,16 @@ pub const REL_DOC_REFERENCES: &str = "references";
 /// `lens=code` view buckets each member by its one live community. Folded at [`TIER_INFERRED`] - a
 /// derived grouping, one confidence step below the explicit structural edges it is detected over.
 pub const REL_IN_COMMUNITY: &str = "IN_COMMUNITY";
+/// A node REALIZES a derived concept (spec 54): the membership edge from a member node (a design-doc,
+/// handbook-rule, spec, rationale, or the code entity / file the intent layer attaches to) to its
+/// [`KIND_CONCEPT`] super-node, folded from a `ConceptRealized` event. Direction: the concept is
+/// realized BY its members (`<member> --REALIZES--> <concept>`), recorded in ONE direction
+/// consistently so the projection queries it uniformly. Every node carries at most ONE live
+/// membership per resolution grain (a re-run at a resolution supersedes that grain's prior
+/// memberships; other grains stay live), so the `lens=concepts` view buckets each member by its one
+/// live concept. Folded at [`TIER_INFERRED`] - a derived grouping, one confidence step below the
+/// explicit intent edges it is detected over, mirroring the 53 `IN_COMMUNITY` split.
+pub const REL_REALIZES: &str = "REALIZES";
 
 // Edge confidence tiers (spec 29a, addendum 6.2). Every folded edge carries one, the
 // `precise`/`safe` split of the two-view blast radius made a first-class edge attribute. The
@@ -272,6 +293,19 @@ pub const TYPE_DOC_LINK_EXTRACTED: &str = "DocLinkExtracted";
 /// super-node plus a live `IN_COMMUNITY` membership edge. Always compiled, so the light lane folds a
 /// community log with the detection pass absent, mirroring the 29a `CodeEntityExtracted` split.
 pub const TYPE_COMMUNITY_ASSIGNED: &str = "CommunityAssigned";
+/// One concept the offline intent-derivation pass emits (spec 54): the pass records one
+/// `ConceptDerived` per derived concept, and the always-compiled fold turns it into a
+/// [`KIND_CONCEPT`] super-node carrying the pass-computed `label`. Always compiled, so the light lane
+/// folds a concept log with the derivation pass absent - the node kind and this arm live outside the
+/// feature that gates derivation, mirroring the 53 `CommunityAssigned` split. The FIRST event of a
+/// pass carries `fresh`, the supersession boundary the fold retires the grain's prior membership on.
+pub const TYPE_CONCEPT_DERIVED: &str = "ConceptDerived";
+/// One concept membership the offline intent-derivation pass emits (spec 54): the pass records one
+/// `ConceptRealized` per member, and the always-compiled fold turns it into a live
+/// `<member> --REALIZES--> <concept>` edge. Always compiled, so the light lane folds a concept log
+/// with the derivation pass absent - the relation and this arm live outside the feature that gates
+/// derivation, mirroring the 53 `CommunityAssigned` split.
+pub const TYPE_CONCEPT_REALIZED: &str = "ConceptRealized";
 
 #[derive(Deserialize)]
 struct DecisionMade {
@@ -473,6 +507,66 @@ pub(crate) struct CommunityAssigned {
     /// non-boundary.
     #[serde(default, skip_serializing_if = "is_false")]
     pub fresh: bool,
+}
+
+/// The `ConceptDerived` payload (spec 54): one concept the offline intent-derivation pass emits. Like
+/// the 53 `CommunityAssigned` payload it is the ONE serialization contract shared by both sides of
+/// the log - the feature-gated derivation pass (`concepts`) constructs and serializes it, and this
+/// always-compiled fold deserializes it - so the field names can never drift between emitter and
+/// folder. The fold projects it into a [`KIND_CONCEPT`] super-node carrying the pass-computed
+/// `label`. Unlike the community fold (which computes a label from the folded members), a concept's
+/// label rides on the event because it comes from the INTENT layer (a document title), which the pass
+/// reads once and pins here - so nothing waits on a model and a rebuild re-derives it byte-identically
+/// from the recorded events.
+#[derive(Serialize, Deserialize)]
+pub(crate) struct ConceptDerived {
+    /// The concept id: `concept/<resolution>/<n>`. Encodes the resolution grain, so distinct grains
+    /// coexist as distinct concepts and the `fresh` reset scopes itself to one grain by the
+    /// `concept/<resolution>/` prefix.
+    pub concept: String,
+    /// The concept's deterministic label: the title of its most-central document member (highest
+    /// intent-degree, ties lexicographic), or its most-central member's label if it has no document
+    /// member. Folded onto the concept node's `label` attr.
+    #[serde(default)]
+    pub label: String,
+    /// The resolution grain this pass ran at (default 1.0). Folded onto the concept node's
+    /// `resolution` attr so the `lens=concepts` view can select a grain.
+    #[serde(default)]
+    pub resolution: f64,
+    /// The pass's content hash (a deterministic digest of the input intent layer + resolution).
+    /// Folded onto the concept node's `hash` attr, so a consumer can tell which pass produced a
+    /// grouping without re-running the derivation.
+    #[serde(default)]
+    pub hash: String,
+    /// Set `true` on the FIRST event of a pass (mirrors [`CommunityAssigned::fresh`]). It marks the
+    /// pass boundary: the fold SUPERSEDES (sets `valid_to` on, never deletes) every live `REALIZES`
+    /// edge of THIS resolution grain and drops the grain's now-orphan concept nodes before folding
+    /// this pass's concepts, so a re-run at a resolution REPLACES that grain's grouping rather than
+    /// accreting - and leaves every OTHER resolution grain's memberships live. On the first-ever pass
+    /// it supersedes nothing. Rides the event and defaults `false`, so a pre-field log folds as
+    /// non-boundary.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub fresh: bool,
+}
+
+/// The `ConceptRealized` payload (spec 54): one concept membership the offline intent-derivation pass
+/// emits. The ONE serialization contract shared by both sides of the log - the pass constructs it,
+/// this always-compiled fold deserializes it - so the field names can never drift. The fold projects
+/// it into a live `<node> --REALIZES--> <concept>` edge at [`TIER_INFERRED`].
+#[derive(Serialize, Deserialize)]
+pub(crate) struct ConceptRealized {
+    /// The member node id joining the concept: a design-doc / handbook-rule / spec / rationale node,
+    /// or the code entity (`<file>::<name>`) / file the intent layer attaches to.
+    pub node: String,
+    /// The concept id this member realizes: `concept/<resolution>/<n>`.
+    pub concept: String,
+    /// The resolution grain this pass ran at (default 1.0), carried so a consumer reading the event
+    /// stream can attribute the membership to its grain without joining to the concept node.
+    #[serde(default)]
+    pub resolution: f64,
+    /// The pass's content hash, carried for provenance symmetry with [`ConceptDerived`].
+    #[serde(default)]
+    pub hash: String,
 }
 
 #[derive(Debug, thiserror::Error)]
