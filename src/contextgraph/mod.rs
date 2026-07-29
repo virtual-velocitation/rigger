@@ -163,6 +163,52 @@ pub struct Graph {
     pub edges: Vec<Edge>,
 }
 
+/// The direction of a directed `CALLS` traversal (spec 52). `Down` follows CALLEES - the
+/// EXECUTION PATH, "what does this call, transitively"; `Up` follows CALLERS - the CALL SITES,
+/// "who calls this". A [`Projection::calls`] walk is depth-bounded and layered in exactly one
+/// direction, over the caller-attributed `CALLS` edges (spec 37) the undirected
+/// [`subgraph`](Projection::subgraph) can only reach neighbor-wise.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Direction {
+    /// Callees: the transitive execution path out of the seed.
+    Down,
+    /// Callers: the transitive call sites into the seed.
+    Up,
+}
+
+/// One node in a [`CallGraph`] (spec 52): the underlying graph [`Node`] plus its traversal
+/// metadata. `layer` is the node's hop distance from the seed (the seed is layer 0), which the
+/// left-to-right renderer maps to an x position. `frontier`, when `Some`, marks a multi-candidate
+/// cross-file hop the walk did NOT descend, carrying its SORTED candidate definition ids - the
+/// human re-seeds on one to continue, so the view stays honest (it may be INCOMPLETE but is never
+/// confidently wrong). `None` is a fully-resolved node the walk reached normally.
+#[derive(Clone, Debug)]
+pub struct CallNode {
+    pub node: Node,
+    pub layer: i64,
+    pub frontier: Option<Vec<String>>,
+}
+
+/// One edge in a [`CallGraph`] (spec 52): the underlying graph [`Edge`] plus `back`, set when the
+/// edge points at a node whose layer is NOT deeper than the edge's source - a recursion / mutual
+/// call the walk marks rather than following a second time (reached nodes dedup into a DAG, so a
+/// cycle terminates instead of duplicating).
+#[derive(Clone, Debug)]
+pub struct CallEdge {
+    pub edge: Edge,
+    pub back: bool,
+}
+
+/// The result of a directed `CALLS` traversal (spec 52): a layered DAG of code entities reachable
+/// from the seed by following `CALLS` edges in one [`Direction`], deduped under cycles. A `Down`
+/// walk is the execution path; an `Up` walk is the call sites. Shaped like a [`Graph`] but with
+/// per-node `layer`/`frontier` and per-edge `back` metadata the neighborhood view does not carry.
+#[derive(Clone, Debug, Default)]
+pub struct CallGraph {
+    pub nodes: Vec<CallNode>,
+    pub edges: Vec<CallEdge>,
+}
+
 // Event type discriminators carried in Event.type_.
 pub const TYPE_DECISION_MADE: &str = "DecisionMade";
 pub const TYPE_FILE_TOUCHED: &str = "FileTouched";
@@ -395,6 +441,32 @@ pub trait Projection: Send + Sync {
     /// The connected subgraph reachable from any seed within depth hops,
     /// following only currently valid edges (the FEED arc / an agent's blast radius).
     fn subgraph(&self, seed: &[String], depth: i64) -> Result<Graph, Error>;
+
+    /// A directed, depth-bounded traversal over the caller-attributed `CALLS` edges (spec 52),
+    /// beside the undirected [`subgraph`](Projection::subgraph). `direction` picks callees
+    /// ([`Direction::Down`] - the execution path) or callers ([`Direction::Up`] - the call sites);
+    /// `depth` clamps the hop distance; `tier_floor` is the LOWEST edge confidence tier the walk
+    /// follows - [`TIER_INFERRED`] (the default the route passes) excludes the unresolved
+    /// [`TIER_AMBIGUOUS`] tier, and passing [`TIER_AMBIGUOUS`] opts it in. A cross-file hop that
+    /// lands on a BARE placeholder node resolves by the shared name-suffix to its definition(s):
+    /// a hop with EXACTLY ONE definition is auto-followed, a multi-definition hop becomes a marked
+    /// frontier the walk does NOT descend (honest by construction). Reached nodes dedup into a
+    /// layered DAG; a recursion edge is marked ([`CallEdge::back`]) rather than duplicated.
+    ///
+    /// The default returns an empty [`CallGraph`], so a projection with no directed-walk support (a
+    /// test double, or a not-yet-overriding adapter) degrades to an empty view rather than erroring.
+    /// The sqlite [`Projector`](crate::contextgraph::sqlite::Projector) OVERRIDES it with the real
+    /// walk. Read-only over the projection; an empty graph or a seed with no calls yields an empty
+    /// [`CallGraph`], never an error.
+    fn calls(
+        &self,
+        _seed: &[String],
+        _direction: Direction,
+        _depth: i64,
+        _tier_floor: &str,
+    ) -> Result<CallGraph, Error> {
+        Ok(CallGraph::default())
+    }
 
     /// Map a mention to a canonical node id, falling back to a direct id match.
     fn resolve(&self, mention: &str) -> Result<Option<String>, Error>;

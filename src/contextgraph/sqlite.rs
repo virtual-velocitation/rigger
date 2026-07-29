@@ -2,21 +2,22 @@
 //! node and edge tables in a local SQLite file and answers Subgraph and Resolve.
 //! A single connection behind a mutex serializes the read-then-write of apply.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 
 use super::{
-    Edge, Error, Graph, Node, Projection, KIND_ARCH_DECISION, KIND_ARTIFACT, KIND_CODE_ENTITY,
-    KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, KIND_FINDING, KIND_HANDBOOK_RULE, KIND_LESSON,
-    KIND_RATIONALE, REL_ABOUT, REL_CALLS, REL_CONSTRAINS, REL_CONTAINS, REL_DOC_REFERENCES,
-    REL_EXPLAINS, REL_GOVERNS, REL_RAISED, REL_REFERENCES, REL_SPECIFIES, REL_SUPERSEDES,
-    TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED, TYPE_ALIAS_DEFINED, TYPE_ALIAS_UNRESOLVED,
-    TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED,
-    TYPE_DOC_LINK_EXTRACTED, TYPE_EDGE_INFERRED, TYPE_FILE_TOUCHED, TYPE_GATE_VERDICT,
-    TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
+    CallEdge, CallGraph, CallNode, Direction, Edge, Error, Graph, Node, Projection,
+    KIND_ARCH_DECISION, KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE,
+    KIND_FINDING, KIND_HANDBOOK_RULE, KIND_LESSON, KIND_RATIONALE, REL_ABOUT, REL_CALLS,
+    REL_CONSTRAINS, REL_CONTAINS, REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_RAISED,
+    REL_REFERENCES, REL_SPECIFIES, REL_SUPERSEDES, TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED,
+    TYPE_ALIAS_DEFINED, TYPE_ALIAS_UNRESOLVED, TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE,
+    TYPE_DOC_CONCEPT_EXTRACTED, TYPE_DOC_LINK_EXTRACTED, TYPE_EDGE_INFERRED, TYPE_FILE_TOUCHED,
+    TYPE_GATE_VERDICT, TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED,
+    TYPE_UNIT_STARTED,
 };
 use crate::eventstore::{Event, Position};
 use crate::spawn::{SpawnResult, TYPE_SPAWN_RESULT};
@@ -291,6 +292,149 @@ impl Projector {
         tx.commit().map_err(be)?;
         Ok(moved)
     }
+
+    /// The DOWN direction of [`Projection::calls`] (spec 52 criterion 1): the execution path out of
+    /// the seed. A breadth-first walk by LAYER over the live, caller-attributed `CALLS` edges
+    /// (spec 37), following callees transitively. It answers "what does this call" as a directed,
+    /// layered DAG - the thing the undirected [`subgraph`](Projection::subgraph) cannot, because a
+    /// naive forward walk stops at the first file boundary where a cross-file call points at a BARE
+    /// placeholder node (the definition lives in another file's namespace).
+    ///
+    /// - **Layers.** The seed is layer 0; each callee reached for the FIRST time takes its
+    ///   discoverer's layer + 1. BFS visits shallowest-first, so a node's recorded layer is its
+    ///   minimum hop distance from the seed, stable across polls.
+    /// - **Cross-file resolution.** A `CALLS` edge whose callee target is BARE (no `name` attr - the
+    ///   definition is in another file) is resolved by the pinned name-suffix expression over
+    ///   code-entity DEFINITION nodes: EXACTLY ONE definition auto-continues (the edge is redirected
+    ///   onto the real definition); MORE THAN ONE becomes a marked frontier ([`CallNode::frontier`]
+    ///   carrying the SORTED candidate ids) the walk does NOT descend - honest by construction, the
+    ///   human re-seeds on a chosen candidate; ZERO leaves the bare node a terminal leaf. A same-file
+    ///   callee already lands on its real definition, so it needs no resolution.
+    /// - **Cycles / dedup.** Reached nodes dedup (a node is expanded at most once), so recursion and
+    ///   mutual calls TERMINATE into a DAG instead of looping. An edge whose target layer is NOT
+    ///   deeper than its source is marked a BACK edge ([`CallEdge::back`]) rather than duplicated.
+    /// - **Tier floor.** An edge is followed only when its confidence tier is at or above
+    ///   `tier_floor`; the default (an empty / unrecognized value or [`TIER_INFERRED`]) is the
+    ///   resolvable floor that excludes [`TIER_AMBIGUOUS`], and passing [`TIER_AMBIGUOUS`] opts the
+    ///   unresolved tier in.
+    /// - **Determinism / isolation.** Neighbor and candidate reads are `ORDER BY` sorted and the
+    ///   result nodes/edges are sorted (by layer then id, and by endpoints), so the same graph and
+    ///   seed yield a byte-identical [`CallGraph`] across polls. Every read is scoped to
+    ///   `self.project` exactly like [`subgraph`](Projection::subgraph). A missing seed, or a seed
+    ///   with no calls, yields an empty view - never an error.
+    fn calls_down(
+        &self,
+        seed: &[String],
+        depth: i64,
+        tier_floor: &str,
+    ) -> Result<CallGraph, Error> {
+        let conn = self.conn.lock().unwrap();
+        let floor = tier_floor_rank(tier_floor);
+
+        // `layer_of` records each REACHED node's min hop distance from the seed (its final layer);
+        // it also serves as the visited set, so a node is expanded at most once - recursion and
+        // mutual calls dedup into a DAG. `frontier_of` holds, for a multi-candidate hop the walk
+        // did NOT descend, its sorted candidate ids.
+        let mut layer_of: BTreeMap<String, i64> = BTreeMap::new();
+        let mut frontier_of: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let mut call_edges: Vec<CallEdge> = Vec::new();
+        let mut queue: VecDeque<(String, i64)> = VecDeque::new();
+
+        // The seed sits at layer 0. Only ids that EXIST as nodes in this project are seeded (a
+        // missing seed yields an empty view); deduped and ordered so the walk is deterministic.
+        let mut seeds: Vec<String> = seed.to_vec();
+        seeds.sort();
+        seeds.dedup();
+        for s in seeds {
+            if layer_of.contains_key(&s) {
+                continue;
+            }
+            if node_row(&conn, &s, &self.project)?.is_some() {
+                layer_of.insert(s.clone(), 0);
+                queue.push_back((s, 0));
+            }
+        }
+
+        // Breadth-first by layer: dequeuing shallowest-first makes each node's recorded layer its
+        // MINIMUM hop distance, and bounds the walk to `depth` hops.
+        while let Some((cur, cur_layer)) = queue.pop_front() {
+            if cur_layer >= depth {
+                continue; // depth clamp: do not expand a node at the bound
+            }
+            for (raw_to, tier, valid_from, source) in calls_out(&conn, &cur, &self.project)? {
+                if tier_rank(&tier) < floor {
+                    continue; // below the confidence floor: not a followed edge
+                }
+                // Resolve the callee: a same-file definition lands directly; a bare cross-file
+                // placeholder resolves by its name-suffix to the definition(s) sharing the name.
+                let (target, frontier) = resolve_down_hop(&conn, &raw_to, &self.project)?;
+                let newly = !layer_of.contains_key(&target);
+                let target_layer = if newly {
+                    cur_layer + 1
+                } else {
+                    layer_of[&target]
+                };
+                if newly {
+                    layer_of.insert(target.clone(), target_layer);
+                    match &frontier {
+                        // A frontier is marked but NEVER descended - the human re-seeds on a chosen
+                        // candidate, so the walk never guesses which definition a name resolves to.
+                        Some(cands) => {
+                            frontier_of.insert(target.clone(), cands.clone());
+                        }
+                        None => queue.push_back((target.clone(), target_layer)),
+                    }
+                }
+                // A recursion / mutual-call edge points at a node no deeper than its source: mark it
+                // a BACK edge rather than following the target a second time (the DAG already holds
+                // it).
+                let back = target_layer <= cur_layer;
+                call_edges.push(CallEdge {
+                    edge: Edge {
+                        from: cur.clone(),
+                        to: target.clone(),
+                        rel: REL_CALLS.to_string(),
+                        valid_from,
+                        valid_to: None,
+                        source,
+                        tier,
+                    },
+                    back,
+                });
+            }
+        }
+
+        // Materialize the reached nodes (fetch kind/attrs) with their layer and any frontier
+        // marker, ordered by (layer, id); sort the edges by endpoints. Deterministic by
+        // construction, so the same graph and seed yield a byte-identical result across polls.
+        let mut nodes: Vec<CallNode> = Vec::with_capacity(layer_of.len());
+        for (id, layer) in &layer_of {
+            if let Some(node) = node_row(&conn, id, &self.project)? {
+                nodes.push(CallNode {
+                    node,
+                    layer: *layer,
+                    frontier: frontier_of.get(id).cloned(),
+                });
+            }
+        }
+        nodes.sort_by(|a, b| {
+            a.layer
+                .cmp(&b.layer)
+                .then_with(|| a.node.id.cmp(&b.node.id))
+        });
+        call_edges.sort_by(|a, b| {
+            a.edge
+                .from
+                .cmp(&b.edge.from)
+                .then_with(|| a.edge.to.cmp(&b.edge.to))
+                .then_with(|| a.edge.rel.cmp(&b.edge.rel))
+        });
+
+        Ok(CallGraph {
+            nodes,
+            edges: call_edges,
+        })
+    }
 }
 
 /// Additive backward-compat migration (spec 28, criterion 1). A graph.db created before the
@@ -523,6 +667,24 @@ impl Projection for Projector {
             .map_err(be)?;
 
         Ok(Graph { nodes, edges })
+    }
+
+    /// Directed `CALLS` traversal (spec 52): dispatch on direction. `Down` (callees - the execution
+    /// path) runs the real layered walk; `Up` (callers - the call sites) is owned by the
+    /// `u52-calls-up-walk` unit (spec 52 criterion 3) and, until it lands, is an empty view rather
+    /// than a wrong or half answer. Read isolation and clamping match [`subgraph`]: the walk stays
+    /// scoped to `self.project` and bounded by `depth`.
+    fn calls(
+        &self,
+        seed: &[String],
+        direction: Direction,
+        depth: i64,
+        tier_floor: &str,
+    ) -> Result<CallGraph, Error> {
+        match direction {
+            Direction::Down => self.calls_down(seed, depth, tier_floor),
+            Direction::Up => Ok(CallGraph::default()),
+        }
     }
 
     fn resolve(&self, mention: &str) -> Result<Option<String>, Error> {
@@ -1119,6 +1281,157 @@ fn resolve_in_tx(tx: &Transaction, mention: &str) -> String {
 /// same-file reference's target, so a reference to a locally-defined name lands on its definition.
 fn code_entity_id(file: &str, name: &str) -> String {
     format!("{file}::{name}")
+}
+
+/// The entity-name suffix of a `<file>::<name>` id (spec 52): everything after the FIRST `::`. A
+/// file path never contains `::`, so this is exactly the callee/definition name - the twin of the
+/// SQL `substr(id, instr(id, '::') + 2)` the name-suffix expression index is built on. An id with
+/// no `::` (never a code-entity id) is returned whole.
+fn name_suffix(id: &str) -> &str {
+    match id.find("::") {
+        Some(i) => &id[i + 2..],
+        None => id,
+    }
+}
+
+/// The confidence rank of an EDGE tier (spec 52 / 29a addendum 6.2): `extracted` (2, the precise
+/// seed) > `inferred` (1, a derived cross-file link) > `ambiguous` (0, grep-visible-only). A
+/// directed walk follows an edge only when its rank is at or above the floor.
+fn tier_rank(tier: &str) -> u8 {
+    match tier {
+        TIER_EXTRACTED => 2,
+        TIER_INFERRED => 1,
+        _ => 0,
+    }
+}
+
+/// The confidence rank of a requested tier FLOOR (spec 52). Unlike [`tier_rank`], an empty or
+/// unrecognized value defaults to the resolvable floor (rank 1 = `inferred`): a directed walk
+/// defaults to `extracted` + `inferred` and EXCLUDES the unresolved `ambiguous` tier, and a caller
+/// opts the ambiguous tier in per-request by passing [`TIER_AMBIGUOUS`].
+fn tier_floor_rank(tier: &str) -> u8 {
+    match tier {
+        TIER_EXTRACTED => 2,
+        TIER_AMBIGUOUS => 0,
+        _ => 1,
+    }
+}
+
+/// Fetch a node's `(id, kind, attrs)` scoped to `project`, or `None` when it does not exist there
+/// (spec 52). Read isolation matches [`Projection::subgraph`]: a same-id row in another project is
+/// never returned. Used to seed the directed walk on real nodes only and to materialize each
+/// reached node's kind/attrs for the result.
+fn node_row(conn: &Connection, id: &str, project: &str) -> Result<Option<Node>, Error> {
+    conn.query_row(
+        "SELECT id, kind, attrs FROM nodes WHERE id = ?1 AND project = ?2",
+        params![id, project],
+        row_to_node,
+    )
+    .optional()
+    .map_err(be)
+}
+
+/// Whether the node `id` carries a `name` attr in `project` (spec 52) - i.e. it is a code-entity
+/// DEFINITION, not a bare cross-file placeholder the reference fold created attr-less. This is how
+/// a directed hop tells a same-file callee (which already lands on its definition) from a bare
+/// cross-file callee (which must be resolved by name-suffix).
+fn node_has_name(conn: &Connection, id: &str, project: &str) -> Result<bool, Error> {
+    let found = conn
+        .query_row(
+            "SELECT 1 FROM nodes
+              WHERE id = ?1 AND project = ?2 AND json_extract(attrs, '$.name') IS NOT NULL",
+            params![id, project],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(be)?;
+    Ok(found.is_some())
+}
+
+/// The code-entity DEFINITION nodes whose entity-name equals `suffix`, in `project`, sorted by id
+/// (spec 52 - the conservative cross-file resolution's candidate set). Phrased with the PINNED
+/// `substr(id, instr(id, '::') + 2)` expression so it seeks the `idx_nodes_name_suffix` expression
+/// index rather than scanning; filtered to real definitions (a `name` attr present), so a bare
+/// placeholder sharing the name is never itself a candidate.
+fn definitions_with_suffix(
+    conn: &Connection,
+    suffix: &str,
+    project: &str,
+) -> Result<Vec<String>, Error> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id FROM nodes
+              WHERE substr(id, instr(id, '::') + 2) = ?1
+                AND kind = ?2
+                AND json_extract(attrs, '$.name') IS NOT NULL
+                AND project = ?3
+              ORDER BY id",
+        )
+        .map_err(be)?;
+    let ids = stmt
+        .query_map(params![suffix, KIND_CODE_ENTITY, project], |r| {
+            r.get::<_, String>(0)
+        })
+        .map_err(be)?
+        .collect::<Result<_, _>>()
+        .map_err(be)?;
+    Ok(ids)
+}
+
+/// The live, caller-attributed `CALLS` edges OUT of `from_id` in `project`, as
+/// `(to_id, tier, valid_from, source)`, sorted by callee (spec 52). Carries the exact
+/// `rel = CALLS AND valid_to IS NULL` shape the partial `idx_edges_live_rel_from` index serves, so
+/// each hop's forward scan seeks rather than scans. The ordering makes the walk deterministic.
+fn calls_out(
+    conn: &Connection,
+    from_id: &str,
+    project: &str,
+) -> Result<Vec<(String, String, i64, Position)>, Error> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT to_id, tier, valid_from, source FROM edges
+              WHERE from_id = ?1 AND rel = ?2 AND valid_to IS NULL AND project = ?3
+              ORDER BY to_id",
+        )
+        .map_err(be)?;
+    let rows = stmt
+        .query_map(params![from_id, REL_CALLS, project], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, i64>(3)? as Position,
+            ))
+        })
+        .map_err(be)?
+        .collect::<Result<_, _>>()
+        .map_err(be)?;
+    Ok(rows)
+}
+
+/// Resolve one DOWN hop's callee target (spec 52 criterion 1). Returns the id the edge should land
+/// on and, when the hop is a multi-candidate frontier, its SORTED candidate ids:
+///
+/// - a SAME-FILE callee already carries a `name` attr (it is its own definition) -> land on it,
+///   no frontier;
+/// - a BARE cross-file placeholder resolves by name-suffix over the DEFINITION nodes: EXACTLY ONE
+///   definition auto-continues (the edge is redirected onto the real definition, no frontier);
+///   MORE THAN ONE is a marked frontier (the placeholder id, carrying the sorted candidates) the
+///   caller does NOT descend; ZERO leaves the placeholder a terminal leaf (no descent target).
+fn resolve_down_hop(
+    conn: &Connection,
+    raw_to: &str,
+    project: &str,
+) -> Result<(String, Option<Vec<String>>), Error> {
+    if node_has_name(conn, raw_to, project)? {
+        return Ok((raw_to.to_string(), None));
+    }
+    let cands = definitions_with_suffix(conn, name_suffix(raw_to), project)?;
+    match cands.len() {
+        1 => Ok((cands.into_iter().next().unwrap(), None)),
+        0 => Ok((raw_to.to_string(), None)),
+        _ => Ok((raw_to.to_string(), Some(cands))),
+    }
 }
 
 /// The confidence tier for a REFERENCES edge (spec 29a criterion 2, addendum 6.2). Derived from how
@@ -3023,6 +3336,149 @@ mod tests {
         assert_eq!(
             refs_post.tier, TIER_INFERRED,
             "the REFERENCES twin also upgraded (baseline the CALLS edge must match); got {refs_post:?}"
+        );
+    }
+
+    #[test]
+    fn calls_down_walks_the_execution_path_as_a_layered_deduped_dag_with_a_back_edge() {
+        // Spec 52 criterion 1: the DOWN traversal. From a seed with a SAME-FILE callee and a
+        // SINGLE-CANDIDATE cross-file callee, `calls(Down)` returns the transitive DAG with correct
+        // per-node LAYERS, DEDUPED nodes under a cycle, and the recursive edge marked as a BACK
+        // edge. A cross-file hop resolves THROUGH its bare placeholder to the real definition and
+        // continues; nothing is a frontier (every hop here is single-candidate).
+        let p = Projector::open(":memory:", "test").unwrap();
+        let a = "src/a.rs";
+        let b = "src/b.rs";
+
+        // Definitions first (so the cross-file references fold INFERRED, not AMBIGUOUS): a.rs
+        // defines `main` and `helper`; b.rs defines `work`.
+        apply_batch_def(&p, 1, a, "main", 1, true);
+        apply_batch_def(&p, 2, a, "helper", 5, false);
+        apply_batch_def(&p, 3, b, "work", 1, true);
+        // Calls: main -> helper (same-file), main -> work (single-candidate cross-file), and
+        // work -> main (cross-file, closing a CYCLE back onto the seed).
+        apply_batch_ref_caller(&p, 4, a, "helper", "main");
+        apply_batch_ref_caller(&p, 5, a, "work", "main");
+        apply_batch_ref_caller(&p, 6, b, "main", "work");
+
+        let node_ids = |cg: &CallGraph| -> Vec<String> {
+            let mut v: Vec<String> = cg.nodes.iter().map(|n| n.node.id.clone()).collect();
+            v.sort();
+            v
+        };
+        let edge_pairs = |cg: &CallGraph| -> Vec<(String, String)> {
+            let mut v: Vec<(String, String)> = cg
+                .edges
+                .iter()
+                .map(|e| (e.edge.from.clone(), e.edge.to.clone()))
+                .collect();
+            v.sort();
+            v
+        };
+
+        let cg = p
+            .calls(
+                &["src/a.rs::main".to_string()],
+                Direction::Down,
+                5,
+                TIER_INFERRED,
+            )
+            .unwrap();
+
+        // LAYERS: the seed at 0; both its callees at 1; the cross-file callee resolved to its real
+        // definition b.rs::work (NOT the bare a.rs::work placeholder). The cycle back onto main
+        // DEDUPS - main appears EXACTLY ONCE, still at layer 0.
+        let layer = |id: &str| -> Option<i64> {
+            cg.nodes.iter().find(|n| n.node.id == id).map(|n| n.layer)
+        };
+        assert_eq!(
+            layer("src/a.rs::main"),
+            Some(0),
+            "the seed is layer 0; nodes were {:?}",
+            node_ids(&cg)
+        );
+        assert_eq!(
+            layer("src/a.rs::helper"),
+            Some(1),
+            "the same-file callee is layer 1; nodes were {:?}",
+            node_ids(&cg)
+        );
+        assert_eq!(
+            layer("src/b.rs::work"),
+            Some(1),
+            "the cross-file callee resolved to its definition at layer 1; nodes were {:?}",
+            node_ids(&cg)
+        );
+        assert_eq!(
+            cg.nodes
+                .iter()
+                .filter(|n| n.node.id == "src/a.rs::main")
+                .count(),
+            1,
+            "the recursion dedups: main appears exactly once (a DAG, not a loop); nodes were {:?}",
+            node_ids(&cg)
+        );
+        // The walk resolved THROUGH the bare cross-file placeholders - they are not in the answer.
+        for bare in ["src/a.rs::work", "src/b.rs::main"] {
+            assert!(
+                !cg.nodes.iter().any(|n| n.node.id == bare),
+                "the bare cross-file placeholder {bare} is resolved away, not returned; nodes were {:?}",
+                node_ids(&cg)
+            );
+        }
+        assert_eq!(
+            node_ids(&cg),
+            vec!["src/a.rs::helper", "src/a.rs::main", "src/b.rs::work"],
+            "exactly the seed plus its two resolved callees"
+        );
+
+        // No FRONTIER: every hop is single-candidate, so no node is a marked frontier.
+        assert!(
+            cg.nodes.iter().all(|n| n.frontier.is_none()),
+            "single-candidate hops carry no frontier marker; nodes were {:?}",
+            cg.nodes
+                .iter()
+                .map(|n| (n.node.id.clone(), n.frontier.clone()))
+                .collect::<Vec<_>>()
+        );
+
+        // EDGES: two forward tree edges (back=false) and the recursion edge work -> main (back=true).
+        let back_of = |from: &str, to: &str| -> Option<bool> {
+            cg.edges
+                .iter()
+                .find(|e| e.edge.from == from && e.edge.to == to)
+                .map(|e| e.back)
+        };
+        assert_eq!(
+            back_of("src/a.rs::main", "src/a.rs::helper"),
+            Some(false),
+            "the same-file forward edge is not a back edge; edges were {:?}",
+            edge_pairs(&cg)
+        );
+        assert_eq!(
+            back_of("src/a.rs::main", "src/b.rs::work"),
+            Some(false),
+            "the resolved cross-file forward edge lands on the definition, not a back edge; edges were {:?}",
+            edge_pairs(&cg)
+        );
+        assert_eq!(
+            back_of("src/b.rs::work", "src/a.rs::main"),
+            Some(true),
+            "the recursion edge closing the cycle onto the seed is marked BACK; edges were {:?}",
+            edge_pairs(&cg)
+        );
+        assert_eq!(
+            edge_pairs(&cg),
+            vec![
+                ("src/a.rs::main".to_string(), "src/a.rs::helper".to_string()),
+                ("src/a.rs::main".to_string(), "src/b.rs::work".to_string()),
+                ("src/b.rs::work".to_string(), "src/a.rs::main".to_string()),
+            ],
+            "exactly the three resolved CALLS edges"
+        );
+        assert!(
+            cg.edges.iter().all(|e| e.edge.rel == REL_CALLS),
+            "every traversed edge is a CALLS edge"
         );
     }
 
