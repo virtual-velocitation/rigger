@@ -56,6 +56,15 @@ pub const KIND_HANDBOOK_RULE: &str = "handbook-rule";
 /// its id is `<file>#L<line>` (the comment's source site), so a later criterion can link it to the
 /// entity it explains.
 pub const KIND_RATIONALE: &str = "rationale";
+/// A coupling-community node (spec 53): a derived subsystem - a set of code entities and files that
+/// call and reference each other densely, regardless of directory - grouped by the offline,
+/// deterministic community-detection pass. Its id is `community/<resolution>/<n>` (so distinct
+/// resolution grains coexist as distinct communities); its attrs carry the `resolution`, the pass's
+/// content `hash`, and a deterministic `label` (its highest-degree member's label). Folded from a
+/// `CommunityAssigned` event, never computed at request time, so the `lens=code` view is a pure read
+/// over an already-projected grouping. Always compiled, so the light lane folds it with the
+/// detection pass absent, mirroring the 29a `KIND_CODE_ENTITY` split.
+pub const KIND_COMMUNITY: &str = "community";
 
 // Edge relationships.
 pub const REL_DECIDED: &str = "DECIDED";
@@ -108,6 +117,13 @@ pub const REL_EXPLAINS: &str = "explains";
 /// upper-case [`REL_REFERENCES`] code-symbol structural edge (spec 29a) - two relations, two id
 /// spaces, never conflated.
 pub const REL_DOC_REFERENCES: &str = "references";
+/// A code node is `IN_COMMUNITY` a derived coupling community (spec 53): the membership edge from a
+/// code entity / file node to its [`KIND_COMMUNITY`] super-node, folded from a `CommunityAssigned`
+/// event. Every node carries at most ONE live membership per resolution grain (a re-run at a
+/// resolution supersedes that grain's prior memberships; other grains stay live), so the
+/// `lens=code` view buckets each member by its one live community. Folded at [`TIER_INFERRED`] - a
+/// derived grouping, one confidence step below the explicit structural edges it is detected over.
+pub const REL_IN_COMMUNITY: &str = "IN_COMMUNITY";
 
 // Edge confidence tiers (spec 29a, addendum 6.2). Every folded edge carries one, the
 // `precise`/`safe` split of the two-view blast radius made a first-class edge attribute. The
@@ -251,6 +267,11 @@ pub const TYPE_DOC_CONCEPT_EXTRACTED: &str = "DocConceptExtracted";
 /// with the extraction pass absent - the fold arm and the edge relations live outside the feature
 /// that gates the extraction, mirroring the 29a `EdgeInferred` split.
 pub const TYPE_DOC_LINK_EXTRACTED: &str = "DocLinkExtracted";
+/// One community membership the offline detection pass emits (spec 53): the pass records one
+/// `CommunityAssigned` per member node, and the always-compiled fold turns it into a `KIND_COMMUNITY`
+/// super-node plus a live `IN_COMMUNITY` membership edge. Always compiled, so the light lane folds a
+/// community log with the detection pass absent, mirroring the 29a `CodeEntityExtracted` split.
+pub const TYPE_COMMUNITY_ASSIGNED: &str = "CommunityAssigned";
 
 #[derive(Deserialize)]
 struct DecisionMade {
@@ -416,6 +437,42 @@ pub(crate) struct DocLinkExtracted {
     /// [`REL_GOVERNS`] / [`REL_EXPLAINS`] / [`REL_DOC_REFERENCES`]. The emit only ever produces
     /// these five; a payload carrying any other relation folds nothing.
     pub rel: String,
+}
+
+/// The `CommunityAssigned` payload (spec 53): one membership the offline community-detection pass
+/// emits. Like the 29a/29b payloads it is the ONE serialization contract shared by both sides of the
+/// log - the feature-gated detection pass (a later unit) constructs and serializes it, and this
+/// always-compiled fold deserializes it - so the field names can never drift between emitter and
+/// folder. The fold projects it into a [`KIND_COMMUNITY`] node plus a live
+/// `<node> --IN_COMMUNITY--> <community>` edge; the community node's deterministic `label` is
+/// computed BY the fold (the highest-degree live member), so nothing waits on a model and a rebuild
+/// re-derives it byte-identically.
+#[derive(Serialize, Deserialize)]
+pub(crate) struct CommunityAssigned {
+    /// The member node id being assigned: an existing code-entity (`<file>::<name>`) or file node.
+    pub node: String,
+    /// The community id this member joins: `community/<resolution>/<n>`. Encodes the resolution
+    /// grain, so distinct grains coexist as distinct communities and the `fresh` reset can scope
+    /// itself to one grain by the `community/<resolution>/` prefix.
+    pub community: String,
+    /// The resolution grain this pass ran at (default 1.0). Folded onto the community node's
+    /// `resolution` attr so the `lens=code` view can select a grain.
+    #[serde(default)]
+    pub resolution: f64,
+    /// The pass's content hash (a deterministic digest of the input coupling graph + resolution).
+    /// Folded onto the community node's `hash` attr, so a consumer can tell which pass produced a
+    /// grouping without re-running detection.
+    #[serde(default)]
+    pub hash: String,
+    /// Set `true` on the FIRST event of a pass (mirrors [`CodeEntityExtracted::fresh`]). It marks
+    /// the pass boundary: the fold SUPERSEDES (sets `valid_to` on, never deletes) every live
+    /// `IN_COMMUNITY` edge of THIS resolution grain before folding this pass's memberships, so a
+    /// re-run at a resolution REPLACES that grain's assignment set rather than accreting - and
+    /// leaves every OTHER resolution grain's memberships live. On the first-ever pass it supersedes
+    /// nothing. Rides the existing event and defaults `false`, so a pre-field log folds as
+    /// non-boundary.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub fresh: bool,
 }
 
 #[derive(Debug, thiserror::Error)]

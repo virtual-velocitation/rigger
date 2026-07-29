@@ -10,11 +10,12 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction};
 
 use super::{
     CallEdge, CallGraph, CallNode, Direction, Edge, Error, Graph, Node, Projection,
-    KIND_ARCH_DECISION, KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE,
-    KIND_FINDING, KIND_HANDBOOK_RULE, KIND_LESSON, KIND_RATIONALE, REL_ABOUT, REL_CALLS,
-    REL_CONSTRAINS, REL_CONTAINS, REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_RAISED,
-    REL_REFERENCES, REL_SPECIFIES, REL_SUPERSEDES, TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED,
-    TYPE_ALIAS_DEFINED, TYPE_ALIAS_UNRESOLVED, TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE,
+    KIND_ARCH_DECISION, KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_DECISION,
+    KIND_DESIGN_DOC, KIND_FILE, KIND_FINDING, KIND_HANDBOOK_RULE, KIND_LESSON, KIND_RATIONALE,
+    REL_ABOUT, REL_CALLS, REL_CONSTRAINS, REL_CONTAINS, REL_DOC_REFERENCES, REL_EXPLAINS,
+    REL_GOVERNS, REL_IN_COMMUNITY, REL_RAISED, REL_REFERENCES, REL_SPECIFIES, REL_SUPERSEDES,
+    TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED, TYPE_ALIAS_DEFINED, TYPE_ALIAS_UNRESOLVED,
+    TYPE_CODE_ENTITY_EXTRACTED, TYPE_COMMUNITY_ASSIGNED, TYPE_DECISION_MADE,
     TYPE_DOC_CONCEPT_EXTRACTED, TYPE_DOC_LINK_EXTRACTED, TYPE_EDGE_INFERRED, TYPE_FILE_TOUCHED,
     TYPE_GATE_VERDICT, TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED,
     TYPE_UNIT_STARTED,
@@ -1341,6 +1342,104 @@ fn fold(tx: &Transaction, e: &Event, project: &str) -> Result<(), Error> {
                 project,
             )?;
         }
+        TYPE_COMMUNITY_ASSIGNED => {
+            // Spec 53 criterion 3 (the EVENT-SOURCED FOLD): one membership the offline
+            // community-detection pass emitted. Fold it into a KIND_COMMUNITY super-node plus a live
+            // `<node> --IN_COMMUNITY--> <community>` edge, so the derived coupling grouping lives in
+            // the event-sourced projection (never computed at request time) and the `lens=code` view
+            // is a pure read over it. ALWAYS compiled: the light lane folds a community log with the
+            // detection pass absent, which is why the node kind, the relation, and this arm live
+            // outside the feature that gates detection - mirroring the 29a CodeEntityExtracted arm.
+            // Project-scoped like every arm (spec 28).
+            let c: super::CommunityAssigned = serde_json::from_slice(&e.data).map_err(be)?;
+            // The resolution grain is the f64's canonical string (the emit contract: the community
+            // id's grain segment equals this), so the `fresh` reset and the stored attr agree.
+            let res = format!("{}", c.resolution);
+            // Re-run supersession (rides `fresh` on the pass's FIRST event, mirroring
+            // supersede_file_edges): retire (set `valid_to` on, never delete) every LIVE
+            // IN_COMMUNITY edge of THIS resolution grain BEFORE folding the new pass, so a re-run at
+            // a resolution REPLACES that grain's assignment set rather than accreting - and leaves
+            // every OTHER grain's memberships live (scoped by the exact `community/<res>/` id prefix,
+            // a substr equality, never a LIKE/GLOB whose wildcards a value could carry). A no-op on
+            // the first-ever pass (no prior memberships). This is the fold-side supersession the
+            // grain criterion relies on; the criterion 3 recording discipline owns the mechanism.
+            if c.fresh {
+                let prefix = format!("community/{res}/");
+                tx.execute(
+                    "UPDATE edges SET valid_to = ?1
+                     WHERE valid_to IS NULL AND project = ?4 AND rel = ?3
+                       AND substr(to_id, 1, length(?2)) = ?2",
+                    params![at, prefix, REL_IN_COMMUNITY, project],
+                )
+                .map_err(be)?;
+            }
+            // The community super-node (first-writer-wins kind; its attrs are set below once the
+            // deterministic label is computed). A bare ensure keeps any attrs an earlier member of
+            // the same community already wrote until this fold overwrites them with the recomputed
+            // label over the now-larger live membership.
+            ensure_node(tx, &c.community, KIND_COMMUNITY, &[], project)?;
+            // The membership edge, a DERIVED grouping (TIER_INFERRED - one confidence step below the
+            // explicit structural edges detection runs over). Upsert-live like every fold (spec 40).
+            add_edge(
+                tx,
+                &c.node,
+                &c.community,
+                REL_IN_COMMUNITY,
+                at,
+                e.position,
+                project,
+                TIER_INFERRED,
+            )?;
+            // Deterministic label: the community node's label is its highest-degree LIVE member's
+            // label (its `name` attr, else its id), ties broken to the lexicographically-smallest
+            // label - the dominant-kind tie-break discipline the overview uses. Degree is the count
+            // of live structural edges (CALLS / REFERENCES / CONTAINS - the coupling layer detection
+            // runs over) incident to the member, project-scoped. Recomputed over the community's
+            // CURRENT live members on every fold, so after the pass's last member folds the label is
+            // correct over the whole membership; and because it reads only the folded graph (which,
+            // for a rebuild, is byte-identical at every step), a rebuild re-derives the SAME label -
+            // nothing waits on a model. `max`/`min` are order-independent, keeping the derivation a
+            // pure function of the log.
+            let label: Option<String> = tx
+                .query_row(
+                    "SELECT COALESCE(json_extract(n.attrs, '$.name'), n.id) AS lbl
+                       FROM edges m
+                       JOIN nodes n ON n.id = m.from_id AND n.project = ?2
+                      WHERE m.to_id = ?1 AND m.rel = ?3 AND m.valid_to IS NULL AND m.project = ?2
+                      ORDER BY (
+                          SELECT COUNT(*) FROM edges d
+                           WHERE d.project = ?2 AND d.valid_to IS NULL
+                             AND d.rel IN (?4, ?5, ?6)
+                             AND (d.from_id = m.from_id OR d.to_id = m.from_id)
+                      ) DESC, lbl ASC
+                      LIMIT 1",
+                    params![
+                        c.community,
+                        project,
+                        REL_IN_COMMUNITY,
+                        REL_CALLS,
+                        REL_REFERENCES,
+                        REL_CONTAINS
+                    ],
+                    |r| r.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(be)?;
+            // Write the community node's attrs in one deterministic blob (serde_json sorts keys, so
+            // the stored json is byte-stable across folds and rebuilds). All values are strings, the
+            // shape Node.attrs (a String map) and the direct-read providers expect.
+            let attrs = serde_json::json!({
+                "resolution": res,
+                "hash": c.hash,
+                "label": label.unwrap_or_default(),
+            })
+            .to_string();
+            tx.execute(
+                "UPDATE nodes SET attrs = ?1 WHERE id = ?2 AND project = ?3",
+                params![attrs, c.community, project],
+            )
+            .map_err(be)?;
+        }
         _ => {}
     }
     Ok(())
@@ -2489,6 +2588,300 @@ mod tests {
         let mut e = Event::new(TYPE_EDGE_INFERRED, serde_json::to_vec(&payload).unwrap());
         e.position = pos;
         p.apply(&e).unwrap();
+    }
+
+    /// A caller-attributed reference (spec 37): folds a `<file>::<caller> --CALLS--> <file>::<name>`
+    /// edge alongside the file-level REFERENCES edge, so the community fixture builds real
+    /// structural coupling the deterministic label is computed over.
+    fn apply_ref_caller(p: &Projector, pos: u64, file: &str, name: &str, caller: &str) {
+        let payload =
+            serde_json::json!({ "file": file, "name": name, "lang": "rust", "caller": caller });
+        let mut e = Event::new(TYPE_EDGE_INFERRED, serde_json::to_vec(&payload).unwrap());
+        e.position = pos;
+        p.apply(&e).unwrap();
+    }
+
+    /// Construct and fold one `CommunityAssigned` event by hand (no detection-pass dependency), so
+    /// the fold is proven in BOTH feature lanes exactly like the code-ingest fold tests.
+    fn apply_community(
+        p: &Projector,
+        pos: u64,
+        node: &str,
+        community: &str,
+        resolution: f64,
+        hash: &str,
+        fresh: bool,
+    ) {
+        let payload = serde_json::json!({
+            "node": node, "community": community,
+            "resolution": resolution, "hash": hash, "fresh": fresh,
+        });
+        let mut e = Event::new(
+            TYPE_COMMUNITY_ASSIGNED,
+            serde_json::to_vec(&payload).unwrap(),
+        );
+        e.position = pos;
+        p.apply(&e).unwrap();
+    }
+
+    /// Fold the canonical spec-53 community fixture: a coupling graph whose `apply_damage` hub is
+    /// the clear highest-degree member, then a resolution-1.0 detection pass grouping members ACROSS
+    /// directory lines (`src/combat`, `src/net`) into `community/1/0` and an equal-degree pair into
+    /// `community/1/1` (its label decided by the lexicographic tie-break). Shared by the fold and
+    /// the rebuild tests so they re-derive from the SAME log.
+    fn seed_community_fixture(p: &Projector) {
+        // Coupling graph (definitions).
+        apply_code_entity(
+            p,
+            1,
+            "src/combat/hit.rs",
+            "apply_damage",
+            "function",
+            10,
+            "rust",
+        );
+        apply_code_entity(p, 2, "src/combat/hit.rs", "clamp", "function", 30, "rust");
+        apply_code_entity(p, 3, "src/net/socket.rs", "send", "function", 5, "rust");
+        apply_code_entity(p, 4, "src/util.rs", "alpha", "function", 1, "rust");
+        apply_code_entity(p, 5, "src/util.rs", "zeta", "function", 2, "rust");
+        // `apply_damage` calls three symbols, making it the highest-degree hub (1 CONTAINS + 3
+        // CALLS = degree 4); `clamp` reaches degree 3 (CONTAINS + the CALLS + the REFERENCES twin);
+        // `send` stays at degree 1 (its CONTAINS only).
+        apply_ref_caller(p, 6, "src/combat/hit.rs", "clamp", "apply_damage");
+        apply_ref_caller(p, 7, "src/combat/hit.rs", "min", "apply_damage");
+        apply_ref_caller(p, 8, "src/combat/hit.rs", "max", "apply_damage");
+        // Detection pass at resolution 1.0. The FIRST event carries `fresh` (the pass boundary).
+        apply_community(
+            p,
+            9,
+            "src/combat/hit.rs::apply_damage",
+            "community/1/0",
+            1.0,
+            "h-alpha",
+            true,
+        );
+        apply_community(
+            p,
+            10,
+            "src/combat/hit.rs::clamp",
+            "community/1/0",
+            1.0,
+            "h-alpha",
+            false,
+        );
+        apply_community(
+            p,
+            11,
+            "src/net/socket.rs::send",
+            "community/1/0",
+            1.0,
+            "h-alpha",
+            false,
+        );
+        apply_community(
+            p,
+            12,
+            "src/util.rs::alpha",
+            "community/1/1",
+            1.0,
+            "h-alpha",
+            false,
+        );
+        apply_community(
+            p,
+            13,
+            "src/util.rs::zeta",
+            "community/1/1",
+            1.0,
+            "h-alpha",
+            false,
+        );
+    }
+
+    /// A deterministic snapshot of the whole community layer: every KIND_COMMUNITY node (id, kind,
+    /// attrs json) and every LIVE IN_COMMUNITY edge (from, to), each sorted. Two folds of the same
+    /// log must produce byte-identical snapshots (the rebuildable-projection invariant).
+    fn community_snapshot(p: &Projector) -> Vec<String> {
+        let conn = p.conn.lock().unwrap();
+        let mut rows: Vec<String> = Vec::new();
+        let mut nstmt = conn
+            .prepare(
+                "SELECT id, kind, COALESCE(attrs, '') FROM nodes
+                 WHERE kind = ?1 AND project = ?2 ORDER BY id",
+            )
+            .unwrap();
+        rows.extend(
+            nstmt
+                .query_map(params![KIND_COMMUNITY, p.project], |r| {
+                    Ok(format!(
+                        "node\t{}\t{}\t{}",
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?
+                    ))
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap(),
+        );
+        let mut estmt = conn
+            .prepare(
+                "SELECT from_id, to_id FROM edges
+                 WHERE rel = ?1 AND valid_to IS NULL AND project = ?2
+                 ORDER BY from_id, to_id",
+            )
+            .unwrap();
+        rows.extend(
+            estmt
+                .query_map(params![REL_IN_COMMUNITY, p.project], |r| {
+                    Ok(format!(
+                        "edge\t{}\t{}",
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?
+                    ))
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap(),
+        );
+        rows
+    }
+
+    #[test]
+    fn community_assigned_events_fold_to_a_community_node_with_live_membership_and_a_deterministic_label(
+    ) {
+        // Spec 53 criterion 3 (the EVENT-SOURCED FOLD): each CommunityAssigned event folds into a
+        // live `<member> --IN_COMMUNITY--> <community>` edge PLUS the KIND_COMMUNITY super-node,
+        // whose deterministic LABEL is its highest-degree member's label (ties broken to the
+        // lexicographically-smallest). Built by hand (no detection dependency) so the fold is proven
+        // in BOTH feature lanes. Owns the recording discipline; it does NOT own detection
+        // (criterion 1) - the assignments are given.
+        let p = Projector::open(":memory:", "test").unwrap();
+        seed_community_fixture(&p);
+
+        let g = p.whole().unwrap();
+
+        // The community super-node folded, tagged KIND_COMMUNITY, carrying its resolution grain, the
+        // pass hash, and a deterministic label - its highest-degree member (`apply_damage`, degree
+        // 4), grouped ACROSS the src/combat and src/net directory lines.
+        let comm = g
+            .nodes
+            .iter()
+            .find(|n| n.id == "community/1/0")
+            .expect("community super-node folded from CommunityAssigned");
+        assert_eq!(comm.kind, KIND_COMMUNITY);
+        assert_eq!(comm.attrs.get("resolution").map(String::as_str), Some("1"));
+        assert_eq!(comm.attrs.get("hash").map(String::as_str), Some("h-alpha"));
+        assert_eq!(
+            comm.attrs.get("label").map(String::as_str),
+            Some("apply_damage"),
+            "the community label is its highest-degree member's label; got {:?}",
+            comm.attrs
+        );
+
+        // Every member carries a LIVE membership edge to its community - across directories.
+        for m in [
+            "src/combat/hit.rs::apply_damage",
+            "src/combat/hit.rs::clamp",
+            "src/net/socket.rs::send",
+        ] {
+            assert!(
+                g.edges.iter().any(|e| e.rel == REL_IN_COMMUNITY
+                    && e.from == m
+                    && e.to == "community/1/0"
+                    && e.valid_to.is_none()),
+                "a live IN_COMMUNITY edge ties member {m} to community/1/0; got {:?}",
+                g.edges
+            );
+        }
+
+        // A member with NO structural degree beyond its own container still folds; and the
+        // equal-degree pair's community label resolves by the lexicographic tie-break.
+        let comm1 = g
+            .nodes
+            .iter()
+            .find(|n| n.id == "community/1/1")
+            .expect("second community super-node folded");
+        assert_eq!(
+            comm1.attrs.get("label").map(String::as_str),
+            Some("alpha"),
+            "equal-degree members break the label tie to the lexicographically-smallest label; got {:?}",
+            comm1.attrs
+        );
+    }
+
+    #[test]
+    fn a_rebuild_reproduces_byte_identical_community_rows_from_the_log() {
+        // Spec 53 criterion 3: the community layer is a rebuildable projection of the log. Folding
+        // the SAME log into a FRESH projection re-derives byte-identical community nodes (id, kind,
+        // AND attrs - including the computed label) and live membership edges, so a full rebuild
+        // reproduces the derivation without re-running detection.
+        let p1 = Projector::open(":memory:", "test").unwrap();
+        seed_community_fixture(&p1);
+        let p2 = Projector::open(":memory:", "test").unwrap();
+        seed_community_fixture(&p2);
+
+        let s1 = community_snapshot(&p1);
+        let s2 = community_snapshot(&p2);
+        assert!(
+            s1.iter().any(|r| r.starts_with("node\t"))
+                && s1.iter().any(|r| r.starts_with("edge\t")),
+            "precondition: the fixture folded community nodes and membership edges; got {s1:?}"
+        );
+        assert_eq!(
+            s1, s2,
+            "a rebuild from the same log re-derives byte-identical community rows"
+        );
+    }
+
+    #[test]
+    fn a_fresh_rerun_supersedes_only_its_own_resolution_grain() {
+        // Spec 53 criterion 3 (the fold's supersession mechanism; criterion 2 owns the grain
+        // semantics): a re-run's `fresh` boundary retires ONLY the re-run resolution's prior
+        // memberships, leaving a DIFFERENT resolution grain's memberships live and coexisting.
+        let p = Projector::open(":memory:", "test").unwrap();
+        apply_code_entity(&p, 1, "a.rs", "x", "function", 1, "rust");
+        apply_code_entity(&p, 2, "b.rs", "y", "function", 1, "rust");
+        // Resolution-1.0 pass: x, y in community/1/0.
+        apply_community(&p, 3, "a.rs::x", "community/1/0", 1.0, "h1", true);
+        apply_community(&p, 4, "b.rs::y", "community/1/0", 1.0, "h1", false);
+        // Resolution-2.0 pass (a DIFFERENT grain): x in community/2/0.
+        apply_community(&p, 5, "a.rs::x", "community/2/0", 2.0, "h2", true);
+        // Re-run resolution 1.0 (fresh): x moves to community/1/1.
+        apply_community(&p, 6, "a.rs::x", "community/1/1", 1.0, "h1b", true);
+        apply_community(&p, 7, "b.rs::y", "community/1/1", 1.0, "h1b", false);
+
+        let x_memberships: Vec<(String, Option<i64>)> = edges_from(&p, "a.rs::x")
+            .into_iter()
+            .filter(|(_to, rel, _vt)| rel == REL_IN_COMMUNITY)
+            .map(|(to, _rel, vt)| (to, vt))
+            .collect();
+
+        // The prior resolution-1.0 membership is superseded (valid_to set), never deleted.
+        assert!(
+            x_memberships
+                .iter()
+                .any(|(to, vt)| to == "community/1/0" && vt.is_some()),
+            "the re-run supersedes x's prior community/1/0 membership (valid_to set); got {x_memberships:?}"
+        );
+        // Exactly ONE live resolution-1.0 membership remains: the new community/1/1 assignment.
+        let live_res1: Vec<&String> = x_memberships
+            .iter()
+            .filter(|(to, vt)| to.starts_with("community/1/") && vt.is_none())
+            .map(|(to, _)| to)
+            .collect();
+        assert_eq!(
+            live_res1,
+            vec![&"community/1/1".to_string()],
+            "the re-run leaves exactly one live resolution-1.0 membership, the new grain; got {x_memberships:?}"
+        );
+        // The resolution-2.0 grain is UNTOUCHED by the resolution-1.0 re-run - it stays live.
+        assert!(
+            x_memberships
+                .iter()
+                .any(|(to, vt)| to == "community/2/0" && vt.is_none()),
+            "the resolution-2.0 membership stays live across a resolution-1.0 re-run; got {x_memberships:?}"
+        );
     }
 
     #[test]
