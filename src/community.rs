@@ -866,4 +866,172 @@ mod tests {
             "an empty assignment records no event"
         );
     }
+
+    /// Build a coupling `Graph` from WEIGHTED undirected edges `(from, to, weight)`, emitted as
+    /// `weight` parallel `CALLS` edges at the extracted tier (the coupling layer weights each pair by
+    /// edge multiplicity, so a weight-`w` edge is `w` collapsed calls). Node ids carry no `::`, so
+    /// they are non-resolving by construction and the coupling topology is exactly the weighted edges
+    /// given. Nodes sort lexicographically, so a node's coupling index is its id's rank.
+    fn weighted_graph(edges: &[(&'static str, &'static str, usize)]) -> Graph {
+        let mut tuples: Vec<(&str, &str, &str, &str)> = Vec::new();
+        for &(a, b, w) in edges {
+            for _ in 0..w {
+                tuples.push((a, b, REL_CALLS, TIER_EXTRACTED));
+            }
+        }
+        graph(&tuples)
+    }
+
+    /// How many connected components the nodes carrying local-moving `label` split into, over the
+    /// coupling graph's edges (a label with `>= 2` is an INTERNALLY DISCONNECTED community - the
+    /// defect the refinement phase must repair).
+    fn components_of_label(c: &Coupling, moved: &[usize], label: usize) -> usize {
+        let members: Vec<usize> = (0..c.len()).filter(|&i| moved[i] == label).collect();
+        let mset: BTreeSet<usize> = members.iter().copied().collect();
+        let mut seen: BTreeSet<usize> = BTreeSet::new();
+        let mut comps = 0;
+        for &s in &members {
+            if !seen.insert(s) {
+                continue;
+            }
+            comps += 1;
+            let mut stack = vec![s];
+            while let Some(u) = stack.pop() {
+                for &(v, _w) in &c.adj[u] {
+                    if mset.contains(&v) && seen.insert(v) {
+                        stack.push(v);
+                    }
+                }
+            }
+        }
+        comps
+    }
+
+    #[test]
+    fn refinement_reconnects_a_community_local_moving_left_disconnected() {
+        // Criterion 1's connectedness PROOF, driven end-to-end through `detect`. This weighted
+        // fixture is deliberately one where local moving ALONE strands an internally-disconnected
+        // community, so the refinement phase is LOAD-BEARING here, not a no-op: if the
+        // `refine_connected` call is removed from `detect`, the connectedness assertion below reddens.
+        //
+        // Shape: a dense hub {n0,n1,n3,n6,n9} (heavy n6-n9, n0-n6, n3-n6 edges) with two edge-disjoint
+        // peripheral pairs {n2,n10} and {n4,n8} hanging off it, plus an unrelated pair {n5,n7}. At
+        // r=0.6 local moving transiently lumps the two peripheral pairs into ONE community and then
+        // consolidates the hub away, leaving {n2,n10,n4,n8} in a single community with NO edge between
+        // the {n2,n10} and {n4,n8} halves - internally disconnected. Refinement splits it into its two
+        // connected components. (Unweighted graphs up to 7 nodes provably cannot exhibit this, so the
+        // fixture is weighted, which is faithful to the real multiplicity-weighted coupling layer.)
+        let g = weighted_graph(&[
+            ("n0", "n1", 1),
+            ("n0", "n2", 1),
+            ("n0", "n4", 2),
+            ("n0", "n6", 3),
+            ("n0", "n9", 1),
+            ("n1", "n3", 2),
+            ("n2", "n6", 1),
+            ("n2", "n10", 1),
+            ("n3", "n6", 3),
+            ("n4", "n8", 1),
+            ("n5", "n7", 1),
+            ("n6", "n9", 4),
+        ]);
+        let c = Coupling::from_graph(&g);
+        let res = 0.6;
+
+        // Local moving alone leaves at least one community internally DISCONNECTED (>= 2 components):
+        // this is what makes the fixture guard the refinement phase rather than pass vacuously.
+        let moved = local_moving(&c, res);
+        let labels: BTreeSet<usize> = moved.iter().copied().collect();
+        let disconnected: Vec<usize> = labels
+            .iter()
+            .copied()
+            .filter(|&l| components_of_label(&c, &moved, l) >= 2)
+            .collect();
+        assert!(
+            !disconnected.is_empty(),
+            "fixture must leave local moving with an internally-disconnected community \
+             (else the refinement phase is untested here); moved={moved:?}"
+        );
+
+        // `detect` runs the refinement, so EVERY output community is internally connected. Removing
+        // the `refine_connected` call in `detect` makes this fail.
+        let a = detect(&c, res);
+        assert_internally_connected(&g, &a);
+
+        // Pin the split: the two edge-disjoint halves land in DIFFERENT communities (proof the
+        // disconnected community was actually split, not merely renamed), and the deterministic
+        // numbering is stable.
+        let m = assignment_map(&a);
+        assert_eq!(
+            a.num_communities, 4,
+            "hub + two split halves + the unrelated pair"
+        );
+        assert_ne!(
+            m["n2"], m["n4"],
+            "refinement splits the internally-disconnected community into its two halves"
+        );
+        assert_eq!(
+            m["n2"], m["n10"],
+            "the {{n2,n10}} half stays one connected community"
+        );
+        assert_eq!(
+            m["n4"], m["n8"],
+            "the {{n4,n8}} half stays one connected community"
+        );
+        for x in ["n1", "n3", "n6", "n9"] {
+            assert_eq!(m["n0"], m[x], "the dense hub stays one community");
+        }
+        assert_eq!(m["n5"], m["n7"], "the unrelated pair is its own community");
+        // Deterministic numbering by ascending lexicographically-smallest member.
+        assert_eq!(m["n0"], "community/0.6/0");
+        assert_eq!(m["n2"], "community/0.6/1");
+        assert_eq!(m["n4"], "community/0.6/2");
+        assert_eq!(m["n5"], "community/0.6/3");
+    }
+
+    #[test]
+    fn a_squeezed_bridge_node_takes_a_fresh_singleton_community() {
+        // Determinism coverage for the local-moving "isolate to a FRESH singleton" arm: when a node
+        // leaves a still-populated community to stand alone, it must take a brand-new label (not reuse
+        // its old, still-occupied one). No dense-clique fixture ever isolates a node, so this arm was
+        // reachable but untested; a bookkeeping regression there (wrong index, or a missed
+        // `improved = true`) would otherwise pass the whole suite.
+        //
+        // Shape: a 6-node tree. n0 is a small hub with leaves {n4,n5}; n1 bridges n0's cluster to the
+        // {n2,n3} pair (n0-n1, n1-n3, n2-n3). At r=2 the degree penalty is steep enough that n1 is
+        // worth keeping in NEITHER neighbour, so it abandons its community and isolates into a fresh
+        // singleton - reaching the arm.
+        let g = weighted_graph(&[
+            ("n0", "n1", 1),
+            ("n0", "n4", 1),
+            ("n0", "n5", 1),
+            ("n1", "n3", 1),
+            ("n2", "n3", 1),
+        ]);
+        let c = Coupling::from_graph(&g);
+        let res = 2.0;
+
+        // The fresh-singleton arm is the ONLY place a label at or beyond the initial `n` singletons is
+        // minted, so a fresh label in the local-moving result proves the arm fired.
+        let moved = local_moving(&c, res);
+        assert!(
+            moved.iter().copied().max().unwrap_or(0) >= c.len(),
+            "a node must isolate into a FRESH singleton label (the untested arm); moved={moved:?}"
+        );
+
+        // Pin the resulting assignment end-to-end through `detect` (this closes the branch): n1 alone,
+        // its former neighbours split into the hub {n0,n4,n5} and the pair {n2,n3}.
+        let a = detect(&c, res);
+        let m = assignment_map(&a);
+        assert_eq!(a.num_communities, 3);
+        assert_eq!(m["n1"], "community/2/1", "the squeezed bridge stands alone");
+        assert_eq!(m["n0"], "community/2/0");
+        assert_eq!(m["n4"], "community/2/0");
+        assert_eq!(m["n5"], "community/2/0");
+        assert_eq!(m["n2"], "community/2/2");
+        assert_eq!(m["n3"], "community/2/2");
+        // The isolated node's community is a genuine singleton (internally connected trivially), and
+        // every community stays internally connected.
+        assert_internally_connected(&g, &a);
+    }
 }
