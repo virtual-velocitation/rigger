@@ -230,6 +230,13 @@
   .kgtoolbar b { color: var(--ink); }
   .kgback { color: var(--accent); text-decoration: none; cursor: pointer; }
   .kgback:hover { text-decoration: underline; }
+  /* The overview LENS selector (spec 53 c4): pick the bucket key - `files` (directory/kind, the
+     default) or `code` (coupling communities); the resolution input is visible only under `code`. */
+  .kglens { color: var(--muted); text-decoration: none; cursor: pointer; padding: 0 3px; }
+  .kglens:hover { text-decoration: underline; }
+  .kglens.active { color: var(--ink); font-weight: 600; }
+  .kgres { width: 3.2em; font: inherit; color: var(--ink); background: var(--panel);
+    border: 1px solid var(--line); border-radius: 3px; padding: 0 3px; }
   .kgsvg { display: block; width: 100%; overflow: hidden; background: rgba(110, 168, 254, 0.03);
     border: 1px solid var(--line); border-radius: 6px; cursor: grab; touch-action: none; user-select: none; }
   .kgsvg:active { cursor: grabbing; }
@@ -609,6 +616,13 @@ function renderFeed(events) {
 // selection SURVIVES the 1.5s live poll (the same poll-survival discipline the decisions region
 // uses): render() never touches el("kgpanel").
 let kgSeed = null;
+
+// The overview/drill LENS (spec 53 c4): `files` is the default directory/kind fold (byte-identical to
+// the server's `lens`-absent view); `code` buckets by coupling community at `kgResolution` (the grain
+// the server reads). Persist across overview/drill so a "<- overview" back link returns to the chosen
+// lens. The panel survives the 1.5s poll like every KG view (render() never touches kgpanel).
+let kgLens = "files";
+let kgResolution = "1";
 
 // The three confidence tiers (spec 29a) the c7 filter toggles, in precise->ambiguous order.
 const KG_TIERS = ["extracted", "inferred", "ambiguous"];
@@ -1055,13 +1069,25 @@ function renderKgOverview(ov) {
   kgMode = "overview";
   const clusters = (ov && ov.clusters) || [];
   const total = (ov && ov.total) || 0;
+  const controls = lensControls();
+  // The documented CODE-LENS EMPTY STATE (spec 53 c4): the selected resolution grain has no derived
+  // community (the offline detection pass never ran at it). Show the server's prompt, not an error,
+  // and keep the lens selector so the operator can switch back to files or another grain.
+  if (ov && ov.empty_state) {
+    el("kgpanel").innerHTML = '<div class="kgtoolbar">' + controls + '</div>'
+      + '<div class="empty">' + esc(ov.empty_state) + '</div>';
+    return;
+  }
   if (!clusters.length) {
-    el("kgpanel").innerHTML = '<div class="kgtoolbar">whole-graph overview</div>'
+    el("kgpanel").innerHTML = '<div class="kgtoolbar">' + controls + '</div>'
       + '<div class="empty">empty graph - nothing to explore yet</div>';
     return;
   }
   const dims = kgDims();
-  const nodes = clusters.map(c => ({ id: c.key, count: c.count, kind: c.kind }));
+  // A code-lens community super-node carries its deterministic display `label` (its highest-degree
+  // member); every other bucket names itself by `key`. The files lens carries no label, so `n.label`
+  // is undefined there and the key is used - byte-identical to before.
+  const nodes = clusters.map(c => ({ id: c.key, count: c.count, kind: c.kind, label: c.label }));
   const edges = ((ov && ov.edges) || []).map(e => ({ from: e.from, to: e.to, weight: e.weight }));
   const maxCount = clusters.reduce((m, c) => Math.max(m, c.count), 1);
   const maxW = edges.reduce((m, e) => Math.max(m, e.weight), 1);
@@ -1070,14 +1096,29 @@ function renderKgOverview(ov) {
     fill: n => kindColor(n.kind),
     nodeClass: () => "kgcluster",
     nodeAttrs: n => ' data-cluster="' + esc(n.id) + '"',
-    label: n => n.id + " (" + n.count + ")",
+    label: n => (n.label || n.id) + " (" + n.count + ")",
     edgeWidth: e => 0.6 + 4 * (e.weight / maxW)
   });
-  const toolbar = '<div class="kgtoolbar">' + total + " node" + (total === 1 ? "" : "s")
+  const toolbar = '<div class="kgtoolbar">' + controls + ' &middot; ' + total + " node" + (total === 1 ? "" : "s")
     + " in " + clusters.length + " cluster" + (clusters.length === 1 ? "" : "s")
     + " - click a cluster to drill in</div>";
   el("kgpanel").innerHTML = toolbar + svg;
   bindKgView();
+}
+
+// The overview toolbar's LENS selector (spec 53 c4): `files` (the default directory/kind fold) and
+// `code` (coupling communities), plus - only under `code` - a resolution grain input. The delegated
+// kgpanel click routes `data-lens` (switch lens) and the delegated change routes `data-lens-res`
+// (switch grain), each re-loading the overview; the active lens is marked.
+function lensControls() {
+  const tab = (id, text) => '<a href="#" class="kglens' + (kgLens === id ? " active" : "")
+    + '" data-lens="' + id + '">' + text + '</a>';
+  let res = "";
+  if (kgLens === "code") {
+    res = ' &middot; resolution <input class="kgres" type="text" spellcheck="false" '
+      + 'value="' + esc(kgResolution) + '" data-lens-res="1" title="the community grain to read">';
+  }
+  return 'lens: ' + tab("files", "files") + tab("code", "code") + res;
 }
 
 // The cluster DRILL (spec 42 c5): a cluster's member nodes, each a select-to-seed handle (data-seed)
@@ -1126,7 +1167,12 @@ async function loadKgOverview() {
     return;
   }
   try {
-    const ov = await (await fetch(apiUrl("/api/graph"), { cache: "no-store" })).json();
+    // The lens rides the query (spec 53 c4): `lens=code&resolution=<grain>` under the code lens; the
+    // files lens sends no lens param, so the request - and the response - stay byte-identical.
+    const q = kgLens === "code"
+      ? "?lens=code&resolution=" + encodeURIComponent(kgResolution)
+      : "";
+    const ov = await (await fetch(apiUrl("/api/graph" + q), { cache: "no-store" })).json();
     renderKgOverview(ov);
   } catch (e) {
     el("kgpanel").innerHTML = '<div class="empty">the knowledge graph is unavailable</div>';
@@ -1143,7 +1189,12 @@ async function drillCluster(key) {
     return;
   }
   try {
-    const nb = await (await fetch(apiUrl("/api/graph?cluster=" + encodeURIComponent(key)), { cache: "no-store" })).json();
+    // Carry the lens (spec 53 c4) so a code-lens community drills to its members through the SAME
+    // route; the files lens sends no lens param and the drill is byte-identical.
+    const q = kgLens === "code"
+      ? "&lens=code&resolution=" + encodeURIComponent(kgResolution)
+      : "";
+    const nb = await (await fetch(apiUrl("/api/graph?cluster=" + encodeURIComponent(key) + q), { cache: "no-store" })).json();
     renderKgDrill(nb);
   } catch (e) {
     el("kgpanel").innerHTML = '<div class="empty">the cluster is unavailable</div>';
@@ -1296,6 +1347,9 @@ function wireSelectToSeed() {
       // view on it; and a node's data-seed SEEDS the spec 30 neighborhood (unchanged).
       const back = ev.target.closest("[data-kgback]");
       if (back) { ev.preventDefault(); loadKgOverview(); return; }
+      // The overview LENS selector (spec 53 c4): switch the bucket key and re-load the overview.
+      const lens = ev.target.closest("[data-lens]");
+      if (lens && lens.dataset.lens) { ev.preventDefault(); kgLens = lens.dataset.lens; loadKgOverview(); return; }
       const cluster = ev.target.closest("[data-cluster]");
       if (cluster && cluster.dataset.cluster) { drillCluster(cluster.dataset.cluster); return; }
       // Directed-call entry (spec 52 c5): the two queries a code-entity node offers, and the third
@@ -1328,7 +1382,12 @@ function wireSelectToSeed() {
       if (box.checked) kgTiers.add(box.dataset.tier);
       else kgTiers.delete(box.dataset.tier);
       if (kgLast) renderGraph(kgLast);
+      return;
     }
+    // The code-lens RESOLUTION grain (spec 53 c4): a changed grain re-loads the overview at it; an
+    // empty value falls back to the default grain (never an empty request).
+    const res = ev.target.closest("[data-lens-res]");
+    if (res) { kgResolution = (res.value || "").trim() || "1"; loadKgOverview(); }
   });
   // The LANDING picker (spec 50 c3): ONE delegated click on the stable instances strip, so selecting
   // a chip attaches the run/graph views to that instance and survives the renderInstances innerHTML

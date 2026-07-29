@@ -27,7 +27,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::Serialize;
 
 use crate::contextgraph::{
-    CallGraph, Direction, Graph, Node, KIND_DECISION, KIND_FINDING, REL_SUPERSEDES, TIER_INFERRED,
+    CallGraph, Direction, Graph, Node, KIND_COMMUNITY, KIND_DECISION, KIND_FINDING,
+    REL_IN_COMMUNITY, REL_SUPERSEDES, TIER_INFERRED,
 };
 use crate::eventstore::{Event, Position};
 use crate::progress::{self, AgentActivity};
@@ -674,6 +675,13 @@ pub struct Cluster {
     /// The cluster's DOMINANT member kind (the most common kind among its members; ties broken by the
     /// lexicographically-smallest kind), so the panel colours the super-node without re-counting.
     pub kind: String,
+    /// The human DISPLAY label under [`Lens::Code`]: a coupling community's deterministic `label`
+    /// attr (its highest-degree member, folded by the `CommunityAssigned` recording of spec 53 c3),
+    /// so the panel names the subsystem instead of its opaque `community/<r>/<n>` id. Absent (skipped
+    /// in JSON) under [`Lens::Files`] and for a non-community bucket, where `key` already names the
+    /// module / kind - so the default files overview stays byte-identical.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 /// A weighted, symmetric edge between two DIFFERENT clusters in the overview (spec 42 c2): its
@@ -706,6 +714,13 @@ pub struct ClusterOverview {
     pub edges: Vec<ClusterEdge>,
     /// The full graph node count (every node, folded or not), so the panel reports the whole size.
     pub total: usize,
+    /// The documented empty state under [`Lens::Code`] when the selected resolution grain has NO
+    /// derived community assignments (the offline detection pass never ran at that grain): carries
+    /// [`CODE_LENS_UNDERIVED`] so the panel prompts the operator to run the derivation instead of an
+    /// error or a bare kind-bucket view. Absent (skipped in JSON) under [`Lens::Files`] and under a
+    /// derived code grain, so the default files overview stays byte-identical.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub empty_state: Option<String>,
 }
 
 /// One node in the run-tree SPINE (spec 30 c3): the run projected as
@@ -1009,6 +1024,118 @@ pub fn cluster_key(id: &str, kind: &str) -> String {
     kind.to_string()
 }
 
+// ---------------------------------------------------------------------------
+// The overview/drill LENS (spec 53 c4): the bucket key is PLUGGABLE. `lens=files` is the default
+// spec-42 directory/kind fold ([`cluster_key`]), byte-identical to today and to a `lens`-absent
+// request. `lens=code` buckets a node by its DERIVED coupling-community membership at a resolution
+// grain - the SAME overview/drill folds, a different key - so the middle-altitude view groups the
+// graph by how the code WORKS TOGETHER, not where it sits on disk. There is ONE fold authority: both
+// aggregations consume [`Buckets`], never a second parallel fold reconciled after the fact.
+// ---------------------------------------------------------------------------
+
+/// The default community-detection resolution grain, as its canonical string. The detection pass
+/// defaults to resolution `1.0`, whose `f64` display is `1`, so its communities are `community/1/<n>`
+/// (spec 53). The [`Lens::Code`] view reads THIS grain when a request omits `resolution=`.
+pub const DEFAULT_COMMUNITY_RESOLUTION: &str = "1";
+
+/// The documented empty-state message the [`Lens::Code`] overview carries when the selected
+/// resolution grain has NO derived community assignments (the offline detection pass never ran at
+/// that grain): the panel shows this instead of an error or a bare kind-bucket view, so an underived
+/// code lens degrades gracefully to a prompt to run the derivation (spec 53 c4).
+pub const CODE_LENS_UNDERIVED: &str = "code lens not derived yet - run `rigger graph communities`";
+
+/// The overview/drill bucket lens (spec 53 c4): how a graph node folds to its super-node bucket.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Lens {
+    /// The DEFAULT fold (spec 42): a node buckets by its file's DIRECTORY (module) or its KIND, via
+    /// [`cluster_key`]. Byte-identical to a `lens`-absent request.
+    Files,
+    /// The CODE fold (spec 53): a node with a live `IN_COMMUNITY` membership at `resolution` buckets
+    /// by its coupling COMMUNITY (its `community/<resolution>/<n>` id); a membership-less node keeps
+    /// its KIND bucket (so the view stays whole-graph). The `resolution` grain string selects which
+    /// derived grain to read.
+    Code {
+        /// The resolution grain to read, as the community id's grain segment (e.g. `1`, `1.5`).
+        resolution: String,
+    },
+}
+
+impl Lens {
+    /// Resolve the lens from the `/api/graph` selector params: `lens=code` selects the code fold at
+    /// `resolution=` (defaulting to [`DEFAULT_COMMUNITY_RESOLUTION`] when absent or empty); every
+    /// other value - `lens=files`, an unknown lens, or an absent one - resolves to [`Lens::Files`],
+    /// the byte-identical default. Total and infallible, so a hostile selector can never error the
+    /// route; it just falls back to the files view.
+    pub fn from_query(lens: Option<&str>, resolution: Option<&str>) -> Lens {
+        match lens {
+            Some("code") => Lens::Code {
+                resolution: resolution
+                    .filter(|r| !r.is_empty())
+                    .unwrap_or(DEFAULT_COMMUNITY_RESOLUTION)
+                    .to_string(),
+            },
+            _ => Lens::Files,
+        }
+    }
+}
+
+/// The bucket resolver for one `(graph, lens)` (spec 53 c4): the SINGLE authority mapping a node to
+/// its super-node bucket key - or `None` to EXCLUDE it from the fold - that both the overview and the
+/// drill consume. Built ONCE per request, so the code lens scans the live `IN_COMMUNITY` memberships
+/// a single time.
+struct Buckets<'g> {
+    lens: &'g Lens,
+    /// Under [`Lens::Code`]: node id -> the `community/<resolution>/<n>` id it lives in, at the
+    /// selected grain (at most one live membership per grain, per the spec 53 c3 fold). Empty under
+    /// [`Lens::Files`], and empty under a code grain with NO derived assignments - the empty-state
+    /// signal [`Buckets::underived`] reads.
+    membership: BTreeMap<&'g str, &'g str>,
+}
+
+impl<'g> Buckets<'g> {
+    /// Build the resolver: under [`Lens::Code`], index every live `IN_COMMUNITY` edge whose target
+    /// carries the selected grain's `community/<resolution>/` prefix (a substring equality on the id,
+    /// never a wildcard match). A no-op under [`Lens::Files`].
+    fn new(graph: &'g Graph, lens: &'g Lens) -> Self {
+        let mut membership: BTreeMap<&str, &str> = BTreeMap::new();
+        if let Lens::Code { resolution } = lens {
+            let prefix = format!("community/{resolution}/");
+            for e in &graph.edges {
+                if e.valid_to.is_none() && e.rel == REL_IN_COMMUNITY && e.to.starts_with(&prefix) {
+                    membership.insert(e.from.as_str(), e.to.as_str());
+                }
+            }
+        }
+        Buckets { lens, membership }
+    }
+
+    /// The bucket key a node folds to, or `None` to EXCLUDE it. Under [`Lens::Files`] every node
+    /// folds by [`cluster_key`] (never excluded). Under [`Lens::Code`] a member folds by its
+    /// community id; the `KIND_COMMUNITY` super-node itself is EXCLUDED (it IS a bucket, not a member,
+    /// so it never inflates a community's member count or dominant kind); every other membership-less
+    /// node keeps its KIND bucket.
+    fn key(&self, node: &Node) -> Option<String> {
+        match self.lens {
+            Lens::Files => Some(cluster_key(&node.id, &node.kind)),
+            Lens::Code { .. } => {
+                if let Some(community) = self.membership.get(node.id.as_str()) {
+                    Some((*community).to_string())
+                } else if node.kind == KIND_COMMUNITY {
+                    None
+                } else {
+                    Some(node.kind.clone())
+                }
+            }
+        }
+    }
+
+    /// The code lens at the selected grain has NO derived community: the documented empty state (the
+    /// detection pass never ran at this resolution). Always `false` under [`Lens::Files`].
+    fn underived(&self) -> bool {
+        matches!(self.lens, Lens::Code { .. }) && self.membership.is_empty()
+    }
+}
+
 /// Fold the WHOLE graph into its clustered overview (spec 42 c2): the default KG view that renders a
 /// ~7k-node graph as a few dozen super-nodes. Every node is folded (by [`cluster_key`]) into a
 /// [`Cluster`] carrying its member count and its DOMINANT member kind; every currently-valid edge
@@ -1019,16 +1146,61 @@ pub fn cluster_key(id: &str, kind: &str) -> String {
 /// nothing from the store and adds no event type. Bounded by the module / kind count, never the node
 /// count, so it renders at any graph size; an empty graph yields an empty overview (zero clusters,
 /// zero total), never an error.
-pub fn clustered_overview(graph: &Graph) -> ClusterOverview {
-    // Fold every node into its cluster bucket, remembering each node's cluster (so edges can be
-    // classified) and, per bucket, the member count and a kind histogram (to pick the dominant kind).
-    // A `BTreeMap` keeps the buckets - and each bucket's kind histogram - in sorted order, so the
-    // overview is deterministic and the dominant-kind tie resolves to the smallest kind by iteration.
+///
+/// The bucket key is the pluggable [`Lens`] (spec 53 c4): [`Lens::Files`] is the default fold above
+/// (byte-identical to today and to a `lens`-absent request); [`Lens::Code`] buckets each member node
+/// by its coupling COMMUNITY at a resolution grain - the SAME aggregation over a different key - so a
+/// community super-node is sized by member count, coloured by its dominant member kind, and labelled
+/// by the community node's deterministic label, while membership-less nodes keep their kind buckets.
+/// A code grain with NO derived assignments returns the [`CODE_LENS_UNDERIVED`] empty state.
+pub fn clustered_overview(graph: &Graph, lens: &Lens) -> ClusterOverview {
+    let buckets = Buckets::new(graph, lens);
+
+    // The documented empty state (spec 53 c4): a code lens whose selected resolution grain has NO
+    // derived community. Return an empty overview carrying the prompt, so the panel says "run
+    // `rigger graph communities`" instead of showing an error or a bare kind-bucket view. `total`
+    // still reports the whole graph size.
+    if buckets.underived() {
+        return ClusterOverview {
+            clusters: Vec::new(),
+            edges: Vec::new(),
+            total: graph.nodes.len(),
+            empty_state: Some(CODE_LENS_UNDERIVED.to_string()),
+        };
+    }
+
+    // Under the code lens, index each community node's deterministic display label (its `label` attr,
+    // folded by spec 53 c3) so a community cluster can name its subsystem instead of its opaque id. A
+    // no-op under the files lens (no community bucket ever exists there).
+    let community_label: BTreeMap<&str, &str> = if matches!(lens, Lens::Code { .. }) {
+        graph
+            .nodes
+            .iter()
+            .filter(|n| n.kind == KIND_COMMUNITY)
+            .filter_map(|n| {
+                n.attrs
+                    .get("label")
+                    .filter(|l| !l.is_empty())
+                    .map(|l| (n.id.as_str(), l.as_str()))
+            })
+            .collect()
+    } else {
+        BTreeMap::new()
+    };
+
+    // Fold every node into its cluster bucket (via the lens), remembering each node's cluster (so
+    // edges can be classified) and, per bucket, the member count and a kind histogram (to pick the
+    // dominant kind). A node the lens EXCLUDES (a `KIND_COMMUNITY` super-node under the code lens - it
+    // IS a bucket, not a member) is skipped, so it never inflates a community's count or dominant
+    // kind. A `BTreeMap` keeps the buckets - and each bucket's kind histogram - in sorted order, so
+    // the overview is deterministic and the dominant-kind tie resolves to the smallest kind.
     let mut node_cluster: BTreeMap<&str, String> = BTreeMap::new();
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
     let mut kind_hist: BTreeMap<String, BTreeMap<&str, usize>> = BTreeMap::new();
     for n in &graph.nodes {
-        let key = cluster_key(&n.id, &n.kind);
+        let Some(key) = buckets.key(n) else {
+            continue; // the lens excludes this node from the member fold
+        };
         node_cluster.insert(n.id.as_str(), key.clone());
         *counts.entry(key.clone()).or_default() += 1;
         *kind_hist
@@ -1054,10 +1226,14 @@ pub fn clustered_overview(graph: &Graph) -> ClusterOverview {
                     dominant = kind;
                 }
             }
+            // A community bucket carries the community node's deterministic display label; any other
+            // bucket (a module directory, a kind) already names itself, so it carries none.
+            let label = community_label.get(key.as_str()).map(|l| l.to_string());
             Cluster {
                 key,
                 count,
                 kind: dominant.to_string(),
+                label,
             }
         })
         .collect();
@@ -1097,6 +1273,8 @@ pub fn clustered_overview(graph: &Graph) -> ClusterOverview {
         clusters,
         edges,
         total: graph.nodes.len(),
+        // A derived overview (either lens) is not the empty state; `total` already reports the size.
+        empty_state: None,
     }
 }
 
@@ -1125,12 +1303,21 @@ pub const CLUSTER_RENDER_BUDGET: usize = 60;
 /// (no node folds to it) yields an empty drill, never an error - the graceful degradation the panel
 /// relies on. `seed` echoes the drilled cluster `key` and `depth` is 0 (a cluster is not a
 /// hop-bounded walk), so the panel labels the drill and its "<- overview" back link.
-pub fn cluster_detail(graph: &Graph, key: &str) -> Neighborhood {
-    // The cluster's members: every node folding to `key`, keyed by id for a deterministic, deduped set.
+///
+/// The membership is the pluggable [`Lens`] (spec 53 c4): the SAME drill over a different bucket key.
+/// Under [`Lens::Code`], drilling a `community/<r>/<n>` key yields exactly that community's member
+/// nodes and the coupling edges AMONG them (the community super-node is not a member, and a
+/// membership spoke to it is not an intra-community edge, so neither renders); drilling a kind key
+/// yields that kind's membership-less nodes.
+pub fn cluster_detail(graph: &Graph, key: &str, lens: &Lens) -> Neighborhood {
+    let buckets = Buckets::new(graph, lens);
+    // The cluster's members: every node the lens folds to `key`, keyed by id for a deterministic,
+    // deduped set. A node the lens EXCLUDES (a community super-node under the code lens) is never a
+    // member of any bucket.
     let members: BTreeSet<&str> = graph
         .nodes
         .iter()
-        .filter(|n| cluster_key(&n.id, &n.kind) == key)
+        .filter(|n| buckets.key(n).as_deref() == Some(key))
         .map(|n| n.id.as_str())
         .collect();
     let total = members.len();
@@ -2517,6 +2704,10 @@ pub fn route(
         //   * a non-empty `seed` -> the spec 30 seeded neighborhood, UNCHANGED. A spec-30 request never
         //     carries `cluster=`, so it always falls through to this branch; the c4 dispatch cannot
         //     regress the seeded panel.
+        // The overview and drill bucket key is the pluggable `lens=` (spec 53 c4): `lens=code` folds
+        // by coupling community at `resolution=` (default grain otherwise); an absent / other `lens`
+        // is `Lens::Files`, byte-identical to today. The lens rides only the overview and drill (both
+        // are whole-graph folds); the seeded neighborhood is a walk from a single node and takes none.
         // The seed branch is verbatim spec 30: `seed` is percent-decoded (the client encodes an id that
         // may carry `#` / `::` / `/`); `depth` defaults to two hops and is clamped so a hostile value
         // cannot make the walk churn; `tier=` is accepted but NOT filtered here (the neighborhood ships
@@ -2525,14 +2716,23 @@ pub fn route(
         // shortest QUERY-PATH rides the body when BOTH are present; and the body carries the seed's
         // EXPLAIN provenance (spec 30 c7), all built by `graph_json` over the neighborhood.
         "/api/graph" => {
+            // The overview/drill bucket lens (spec 53 c4), resolved from `lens=` + `resolution=`.
+            // Absent / unknown `lens` -> `Lens::Files` (byte-identical), so a spec-30/42 request is
+            // untouched. The seeded neighborhood below is lens-independent and ignores it.
+            let lens = Lens::from_query(
+                query_param(target, "lens").map(percent_decode).as_deref(),
+                query_param(target, "resolution")
+                    .map(percent_decode)
+                    .as_deref(),
+            );
             let body = if let Some(raw_cluster) = query_param(target, "cluster") {
-                serde_json::to_string(&cluster_detail(graph, &percent_decode(raw_cluster)))
+                serde_json::to_string(&cluster_detail(graph, &percent_decode(raw_cluster), &lens))
             } else {
                 let seed = query_param(target, "seed")
                     .map(percent_decode)
                     .unwrap_or_default();
                 if seed.is_empty() {
-                    serde_json::to_string(&clustered_overview(graph))
+                    serde_json::to_string(&clustered_overview(graph, &lens))
                 } else {
                     let depth = query_param(target, "depth")
                         .and_then(|v| v.parse::<i64>().ok())
@@ -2994,9 +3194,9 @@ mod supervised_lifecycle {
 mod tests {
     use super::*;
     use crate::contextgraph::{
-        Edge, Node, KIND_AGENT, KIND_CODE_ENTITY, KIND_DESIGN_DOC, KIND_FILE, KIND_RATIONALE,
-        KIND_UNIT, REL_DECIDED, REL_GOVERNS, REL_REFERENCES, TIER_AMBIGUOUS, TIER_EXTRACTED,
-        TIER_INFERRED,
+        Edge, Node, KIND_AGENT, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_DESIGN_DOC, KIND_FILE,
+        KIND_RATIONALE, KIND_UNIT, REL_CALLS, REL_DECIDED, REL_GOVERNS, REL_IN_COMMUNITY,
+        REL_REFERENCES, TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED,
     };
     use crate::eventstore::Event;
 
@@ -4413,7 +4613,7 @@ mod tests {
             ],
         };
 
-        let overview = clustered_overview(&graph);
+        let overview = clustered_overview(&graph, &Lens::Files);
 
         // `total` is the FULL node count, independent of the cluster count.
         assert_eq!(overview.total, 7, "total carries every node in the graph");
@@ -4427,16 +4627,19 @@ mod tests {
                     key: "decision".to_string(),
                     count: 2,
                     kind: KIND_DECISION.to_string(),
+                    label: None,
                 },
                 Cluster {
                     key: "docs".to_string(),
                     count: 3,
                     kind: KIND_DESIGN_DOC.to_string(),
+                    label: None,
                 },
                 Cluster {
                     key: "src".to_string(),
                     count: 2,
                     kind: KIND_CODE_ENTITY.to_string(),
+                    label: None,
                 },
             ],
             "each cluster_key bucket folds to a counted, dominant-kind Cluster; the src tie resolves to the smallest kind"
@@ -4543,7 +4746,7 @@ mod tests {
         let g = Graph { nodes, edges };
 
         // --- OVER-BUDGET DRILL: `src/big` (b+2 members, capped to b) ---
-        let big = cluster_detail(&g, "src/big");
+        let big = cluster_detail(&g, "src/big", &Lens::Files);
         assert_eq!(
             big.seed, "src/big",
             "the drill echoes the drilled cluster key as its seed"
@@ -4611,7 +4814,7 @@ mod tests {
         assert!(!spoke_view.god);
 
         // --- UNDER-BUDGET DRILL: `src/small` (7 members, whole) ---
-        let small = cluster_detail(&g, "src/small");
+        let small = cluster_detail(&g, "src/small", &Lens::Files);
         assert_eq!(
             small.truncated, None,
             "an at/under-budget cluster renders WHOLE - truncated omitted"
@@ -4649,7 +4852,7 @@ mod tests {
         );
 
         // --- DEV-LOOP KIND DRILL: `decision` (folds by kind) ---
-        let decisions = cluster_detail(&g, KIND_DECISION);
+        let decisions = cluster_detail(&g, KIND_DECISION, &Lens::Files);
         assert_eq!(decisions.truncated, None);
         let dec_ids: std::collections::BTreeSet<&str> =
             decisions.nodes.iter().map(|n| n.id.as_str()).collect();
@@ -4660,8 +4863,226 @@ mod tests {
         );
 
         // --- GRACEFUL: an unknown cluster key drills to an empty result, never a panic ---
-        let empty = cluster_detail(&g, "no/such/module");
+        let empty = cluster_detail(&g, "no/such/module", &Lens::Files);
         assert!(empty.nodes.is_empty() && empty.edges.is_empty() && empty.truncated.is_none());
+    }
+
+    /// Spec 53 c4 - the CODE LENS VIEW: with `lens=code` the SAME overview/drill folds bucket every
+    /// node carrying a live `IN_COMMUNITY` membership by its coupling COMMUNITY (a subsystem grouped
+    /// ACROSS directory lines), sizing the community super-node by member count, colouring it by its
+    /// dominant member kind, and labelling it with the community node's deterministic `label`;
+    /// currently-valid coupling edges that cross two communities weight a symmetric cross-edge (an
+    /// intra-community edge and the membership spokes to the excluded super-node add none); a
+    /// membership-LESS node keeps its KIND bucket (so the view stays whole-graph); a community drills
+    /// to exactly its members; a resolution grain with NO derived assignments returns the documented
+    /// empty state (never an error); and `Lens::Files` is byte-identical to the spec-42 directory/kind
+    /// fold (no `label`, no `empty_state`). This test OWNS the lens plumbing; it does not own detection
+    /// (c1), the grain/supersession (c2), or the fold recording (c3).
+    #[test]
+    fn code_lens_buckets_members_by_community_keeps_kind_buckets_and_reports_underived_grain() {
+        let ce = |id: &str| Node {
+            id: id.to_string(),
+            kind: KIND_CODE_ENTITY.to_string(),
+            attrs: BTreeMap::new(),
+        };
+        let community = |id: &str, label: &str| Node {
+            id: id.to_string(),
+            kind: KIND_COMMUNITY.to_string(),
+            attrs: BTreeMap::from([("label".to_string(), label.to_string())]),
+        };
+        let plain = |id: &str, kind: &str| Node {
+            id: id.to_string(),
+            kind: kind.to_string(),
+            attrs: BTreeMap::new(),
+        };
+        let edge = |from: &str, to: &str, rel: &str, tier: &str| Edge {
+            from: from.to_string(),
+            to: to.to_string(),
+            rel: rel.to_string(),
+            valid_from: 0,
+            valid_to: None,
+            source: 0,
+            tier: tier.to_string(),
+        };
+
+        // Two coupling communities, each a pair of code entities in DIFFERENT directories that call
+        // each other (proving the grouping crosses directory lines - the whole point of the code
+        // lens): community/1/0 = {foo, bar}, community/1/1 = {baz, qux}. Plus the two derived
+        // KIND_COMMUNITY super-nodes (each with a deterministic label attr) and two membership-LESS
+        // nodes (a decision and a design-doc) that must keep their KIND buckets under the code lens.
+        let foo = "src/one/a.rs::foo";
+        let bar = "src/two/b.rs::bar";
+        let baz = "src/three/c.rs::baz";
+        let qux = "src/four/d.rs::qux";
+        let graph = Graph {
+            nodes: vec![
+                ce(foo),
+                ce(bar),
+                ce(baz),
+                ce(qux),
+                community("community/1/0", "foo"),
+                community("community/1/1", "baz"),
+                plain("d1", KIND_DECISION),
+                plain("docs/x.md", KIND_DESIGN_DOC),
+            ],
+            edges: vec![
+                // Live memberships at grain 1 (the fold's IN_COMMUNITY spokes).
+                edge(foo, "community/1/0", REL_IN_COMMUNITY, TIER_INFERRED),
+                edge(bar, "community/1/0", REL_IN_COMMUNITY, TIER_INFERRED),
+                edge(baz, "community/1/1", REL_IN_COMMUNITY, TIER_INFERRED),
+                edge(qux, "community/1/1", REL_IN_COMMUNITY, TIER_INFERRED),
+                // Intra-community coupling (adds NO cross-community weight).
+                edge(foo, bar, REL_CALLS, TIER_EXTRACTED),
+                edge(baz, qux, REL_CALLS, TIER_EXTRACTED),
+                // Cross-community coupling, twice -> one symmetric weight-2 cross edge.
+                edge(foo, baz, REL_CALLS, TIER_EXTRACTED),
+                edge(bar, qux, REL_CALLS, TIER_EXTRACTED),
+            ],
+        };
+
+        // --- CODE LENS OVERVIEW at the default grain (resolution "1") ---
+        let code = Lens::Code {
+            resolution: DEFAULT_COMMUNITY_RESOLUTION.to_string(),
+        };
+        let overview = clustered_overview(&graph, &code);
+        assert_eq!(
+            overview.total, 8,
+            "total carries every graph node, community super-nodes included"
+        );
+        assert_eq!(
+            overview.empty_state, None,
+            "a derived grain is not the empty state"
+        );
+        assert_eq!(
+            overview.clusters,
+            vec![
+                // Each community super-node: sized by MEMBER count (2), coloured by dominant member
+                // kind, labelled by its community node's deterministic `label`. The excluded
+                // KIND_COMMUNITY node never inflates the count or the dominant kind.
+                Cluster {
+                    key: "community/1/0".to_string(),
+                    count: 2,
+                    kind: KIND_CODE_ENTITY.to_string(),
+                    label: Some("foo".to_string()),
+                },
+                Cluster {
+                    key: "community/1/1".to_string(),
+                    count: 2,
+                    kind: KIND_CODE_ENTITY.to_string(),
+                    label: Some("baz".to_string()),
+                },
+                // Membership-less nodes KEEP their KIND buckets (not their directory buckets), so the
+                // code lens stays whole-graph.
+                Cluster {
+                    key: KIND_DECISION.to_string(),
+                    count: 1,
+                    kind: KIND_DECISION.to_string(),
+                    label: None,
+                },
+                Cluster {
+                    key: KIND_DESIGN_DOC.to_string(),
+                    count: 1,
+                    kind: KIND_DESIGN_DOC.to_string(),
+                    label: None,
+                },
+            ],
+            "code lens buckets members by community (sized, dominant-kind, labelled) and keeps kind buckets for membership-less nodes"
+        );
+        assert_eq!(
+            overview.edges,
+            vec![ClusterEdge {
+                from: "community/1/0".to_string(),
+                to: "community/1/1".to_string(),
+                weight: 2,
+            }],
+            "only cross-community coupling edges weight the super-edge; intra-community edges and the membership spokes to the excluded super-node add none"
+        );
+
+        // --- CODE LENS DRILL: a community drills to exactly its members (the excluded super-node is
+        // not a member; the membership spokes are not intra-community edges) ---
+        let drill = cluster_detail(&graph, "community/1/0", &code);
+        assert_eq!(
+            drill.seed, "community/1/0",
+            "the drill echoes the community key"
+        );
+        assert_eq!(drill.truncated, None);
+        let members: std::collections::BTreeSet<&str> =
+            drill.nodes.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(
+            members,
+            [foo, bar].into_iter().collect(),
+            "the community drills to exactly its member code entities: {drill:?}"
+        );
+        assert_eq!(
+            drill.edges.len(),
+            1,
+            "only the intra-community coupling edge (foo->bar) renders; the membership spoke and the cross-community edge do not"
+        );
+        assert!(
+            drill.edges.iter().all(|e| e.rel == REL_CALLS
+                && members.contains(e.from.as_str())
+                && members.contains(e.to.as_str())),
+            "every drill edge is intra-community coupling: {drill:?}"
+        );
+
+        // --- UNDERIVED GRAIN: resolution "2" has no assignments -> the documented empty state ---
+        let underived = clustered_overview(
+            &graph,
+            &Lens::Code {
+                resolution: "2".to_string(),
+            },
+        );
+        assert!(
+            underived.clusters.is_empty() && underived.edges.is_empty(),
+            "an underived grain folds no communities: {underived:?}"
+        );
+        assert_eq!(
+            underived.empty_state.as_deref(),
+            Some(CODE_LENS_UNDERIVED),
+            "an underived grain carries the documented empty-state message, never an error"
+        );
+
+        // --- LENS=FILES is byte-identical to the spec-42 directory/kind fold (no label, no
+        // empty_state); a membership-less node buckets by its DIRECTORY here, not its kind ---
+        let files = clustered_overview(&graph, &Lens::Files);
+        assert_eq!(files.total, 8);
+        assert_eq!(files.empty_state, None, "files lens carries no empty state");
+        assert!(
+            files.clusters.iter().all(|c| c.label.is_none()),
+            "the files fold attaches no community label"
+        );
+        let file_keys: Vec<&str> = files.clusters.iter().map(|c| c.key.as_str()).collect();
+        assert_eq!(
+            file_keys,
+            vec![
+                KIND_COMMUNITY,
+                KIND_DECISION,
+                "docs",
+                "src/four",
+                "src/one",
+                "src/three",
+                "src/two",
+            ],
+            "the files lens folds by directory/kind (the community nodes bucket by their kind, the design-doc by its directory): {files:?}"
+        );
+
+        // The lens-selector parser: `lens=code` (default grain when resolution absent), an explicit
+        // grain, and any other/absent lens value -> the byte-identical Files default.
+        assert_eq!(
+            Lens::from_query(Some("code"), None),
+            Lens::Code {
+                resolution: DEFAULT_COMMUNITY_RESOLUTION.to_string()
+            }
+        );
+        assert_eq!(
+            Lens::from_query(Some("code"), Some("1.5")),
+            Lens::Code {
+                resolution: "1.5".to_string()
+            }
+        );
+        assert_eq!(Lens::from_query(None, None), Lens::Files);
+        assert_eq!(Lens::from_query(Some("files"), None), Lens::Files);
+        assert_eq!(Lens::from_query(Some("bogus"), Some("9")), Lens::Files);
     }
 
     /// A small tier-tagged fixture graph: a chain seed `a` -[extracted]- `b` -[inferred]- `c`
