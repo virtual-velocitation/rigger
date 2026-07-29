@@ -52,6 +52,10 @@ fn served_state(events: Vec<Event>) -> Value {
     // The lazy `/api/graph` provider (spec 45, criterion 1): this test drives the state poll, which
     // never consults it, so an empty graph provider satisfies `serve`'s `Fn() -> Graph` bound.
     let graph_provider = |_instance: Option<&str>| Graph::default();
+    let calls_provider =
+        |_: Option<&str>, _: &[String], _: rigger::contextgraph::Direction, _: i64, _: &str| {
+            rigger::contextgraph::CallGraph::default()
+        };
     let instances_provider = Vec::new;
     // A detached server thread: `serve` loops until the process ends; we drive one request.
     // `run_branch`/`base` are the same values `cmd_dash` threads from `resolve_run_base`.
@@ -60,6 +64,7 @@ fn served_state(events: Vec<Event>) -> Value {
             addr,
             provider,
             graph_provider,
+            calls_provider,
             instances_provider,
             3,
             "rigger-run",

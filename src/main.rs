@@ -4510,6 +4510,35 @@ fn cmd_dash(args: &[String]) -> Res {
         }
     };
 
+    // The DIRECTED-CALL provider for `/api/graph?view=calls` (spec 52, criterion 4): the SAME lazy
+    // direct-projection provider the whole-graph views use, but running the store-side directed
+    // traversal `Projection::calls` (the execution path / call sites of a seed) instead of reading
+    // the whole graph. Opened only on a call request, never on the state poll; per-request-open and
+    // best-effort like `graph_provider`, so an absent / empty graph or a seed with no calls degrades
+    // to an empty `CallGraph`, never an error. Chooses WHICH store to walk from the same spec-50
+    // attach selector.
+    let calls_provider = {
+        let graph_db = graph_db.clone();
+        let identity = identity.clone();
+        let registry_dir = registry_dir.clone();
+        move |instance: Option<&str>,
+              seed: &[String],
+              direction: contextgraph::Direction,
+              depth: i64,
+              tier_floor: &str|
+              -> contextgraph::CallGraph {
+            match dash_resolve_attach(instance, registry_dir.as_deref()) {
+                DashAttach::Local => {
+                    dash_read_calls(&graph_db, &identity, seed, direction, depth, tier_floor)
+                }
+                DashAttach::Instance(inst) => {
+                    dash_attach_calls(&inst, seed, direction, depth, tier_floor)
+                }
+                DashAttach::Empty => contextgraph::CallGraph::default(),
+            }
+        }
+    };
+
     // Fresh projection inputs on every request. Reading (not holding an open handle) is
     // what lets the dash start before the store exists and pick the run up once it does. The
     // selected instance (spec 50, criterion 3) chooses WHICH store is opened per request: the
@@ -4609,6 +4638,7 @@ fn cmd_dash(args: &[String]) -> Res {
                         listener,
                         provider,
                         graph_provider,
+                        calls_provider,
                         instances_provider,
                         max_retries,
                         RUN_BRANCH,
@@ -4752,6 +4782,50 @@ fn dash_read_whole_graph(graph_db: &str, identity: &str) -> contextgraph::Graph 
         Ok(p) => p.whole().unwrap_or_default(),
         Err(_) => contextgraph::Graph::default(),
     }
+}
+
+/// The DIRECTED-CALL walk for the `/api/graph?view=calls` provider (spec 52, criterion 4): the
+/// store-side `Projection::calls` traversal (the seed's execution path or call sites) read through
+/// the SAME lazy direct-projection open as [`dash_read_whole_graph`], never the polled read. Opens
+/// the projection per request and runs the walk `direction`/`depth`/`tier_floor` select. Best-effort
+/// exactly like the whole-graph read: an absent graph (a grep-only run never builds one), an open
+/// error, or a walk error all degrade to an empty [`contextgraph::CallGraph`], never an error, so a
+/// call request over a never-built or empty graph renders an empty view instead of failing.
+fn dash_read_calls(
+    graph_db: &str,
+    identity: &str,
+    seed: &[String],
+    direction: contextgraph::Direction,
+    depth: i64,
+    tier_floor: &str,
+) -> contextgraph::CallGraph {
+    if !Path::new(graph_db).exists() {
+        return contextgraph::CallGraph::default();
+    }
+    match Projector::open(graph_db, identity) {
+        Ok(p) => p
+            .calls(seed, direction, depth, tier_floor)
+            .unwrap_or_default(),
+        Err(_) => contextgraph::CallGraph::default(),
+    }
+}
+
+/// The directed-call walk over an ATTACHED instance's graph store (spec 52 c4 + spec 50 c3): the
+/// [`dash_read_calls`] analogue of [`dash_attach_graph`], opening the selected instance's `graph.db`
+/// read-only. Best-effort - a since-gone or never-built instance graph degrades to an empty
+/// [`contextgraph::CallGraph`], never an error.
+fn dash_attach_calls(
+    inst: &rigger::registry::Instance,
+    seed: &[String],
+    direction: contextgraph::Direction,
+    depth: i64,
+    tier_floor: &str,
+) -> contextgraph::CallGraph {
+    let graph_db = instance_rigger_dir(inst)
+        .join("graph.db")
+        .to_string_lossy()
+        .into_owned();
+    dash_read_calls(&graph_db, &inst.project, seed, direction, depth, tier_floor)
 }
 
 /// This run's progress from the SEPARATE progress store (spec 14), for the dash's live

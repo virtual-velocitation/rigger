@@ -26,7 +26,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
-use crate::contextgraph::{Graph, Node, KIND_DECISION, KIND_FINDING, REL_SUPERSEDES};
+use crate::contextgraph::{
+    CallGraph, Direction, Graph, Node, KIND_DECISION, KIND_FINDING, REL_SUPERSEDES, TIER_INFERRED,
+};
 use crate::eventstore::{Event, Position};
 use crate::progress::{self, AgentActivity};
 use crate::{blocker, ledger, metrics, spawn};
@@ -551,6 +553,21 @@ pub struct Neighborhood {
     /// `truncated` unambiguously means "this view is capped to its highest-degree members".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub truncated: Option<usize>,
+    /// The DIRECTED-CALL view marker (spec 52 c4): the direction the `view=calls` walk ran -
+    /// `"down"` (execution path / callees), `"up"` (call sites / callers), or `"both"` (the flow
+    /// through a centered seed). Set ONLY on a call view; omitted (`None`) for every neighborhood /
+    /// overview / drill, so a present `dir` unambiguously tells the renderer to draw the layered
+    /// left-to-right DAG instead of the force layout, and its absence keeps those views
+    /// byte-identical.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dir: Option<String>,
+    /// The UP call view's "referenced but not called" sidecar (spec 52 c4): the FILE nodes that
+    /// import / use the seed's name at file level but call it from no function - the who-uses-this
+    /// sites the traversed caller DAG deliberately excludes. Carried verbatim from
+    /// [`crate::contextgraph::CallGraph::referenced_not_called`], sorted by id. Empty (and omitted)
+    /// for a DOWN walk and for every non-call view, so a plain neighborhood is byte-identical.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub referenced_not_called: Vec<NeighborhoodNode>,
 }
 
 /// One node in a seeded KG neighborhood (spec 30 c5). `label` is the node's human-readable handle
@@ -571,6 +588,21 @@ pub struct NeighborhoodNode {
     /// True when this node is a GOD-NODE (spec 30 c6): its in-neighborhood `degree` is strictly
     /// above [`GOD_NODE_DEGREE_THRESHOLD`], i.e. a high-degree hub the panel flags.
     pub god: bool,
+    /// The DIRECTED-CALL LAYER (spec 52 c4): the node's SIGNED x-ordinate in a `view=calls` DAG -
+    /// the seed is `0`, a callee sits at `+hop` (so a DOWN walk draws the seed at the LEFT), and a
+    /// caller at `-hop` (so an UP walk draws the seed at the RIGHT); a `dir=both` walk carries both
+    /// signs around the centered seed. The left-to-right renderer maps `layer` directly to x. `None`
+    /// for every non-call node (a neighborhood / drill node), so those views are byte-identical.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub layer: Option<i64>,
+    /// The MULTI-CANDIDATE FRONTIER marker (spec 52 c4): when `Some`, this cross-file hop's name has
+    /// more than one definition, so the walk did NOT descend it and returns the SORTED candidate
+    /// definition ids for the human to re-seed on - honest by construction (the view may be
+    /// INCOMPLETE but never confidently wrong). Carried verbatim from
+    /// [`crate::contextgraph::CallNode::frontier`]. `None` for a fully-resolved node and for every
+    /// non-call node, so a plain neighborhood is byte-identical.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frontier: Option<Vec<String>>,
 }
 
 /// One TIER-TAGGED edge in a seeded KG neighborhood (spec 30 c5). `tier` is the edge's confidence
@@ -582,6 +614,20 @@ pub struct NeighborhoodEdge {
     pub to: String,
     pub rel: String,
     pub tier: String,
+    /// The RECURSION / BACK-edge marker (spec 52 c4): true when this edge (in a `view=calls` DAG)
+    /// points at a node whose layer is NOT deeper than its source - a recursion / mutual call the
+    /// walk marked rather than followed a second time, which the renderer draws as a distinct curved
+    /// return arc. Carried verbatim from [`crate::contextgraph::CallEdge::back`]. Always `false` for
+    /// a neighborhood / drill edge (and omitted from the JSON), so those views are byte-identical.
+    #[serde(skip_serializing_if = "is_not_back", default)]
+    pub back: bool,
+}
+
+/// Serde `skip_serializing_if` predicate for [`NeighborhoodEdge::back`]: keep the recursion marker
+/// off the wire for the common forward edge, so a plain neighborhood / drill edge (which is never a
+/// back edge) serializes byte-identically to before the call views existed.
+fn is_not_back(back: &bool) -> bool {
+    !*back
 }
 
 /// The PROVENANCE of a node (spec 30 c7): the graph facts that produced it, as a self-contained
@@ -1137,6 +1183,8 @@ pub fn cluster_detail(graph: &Graph, key: &str) -> Neighborhood {
             to: e.to.clone(),
             rel: e.rel.clone(),
             tier: e.tier.clone(),
+            // A neighborhood / drill edge is never a directed-call back edge (spec 52 c4).
+            back: false,
         })
         .collect();
 
@@ -1164,6 +1212,9 @@ pub fn cluster_detail(graph: &Graph, key: &str) -> Neighborhood {
                     label: node_label(n),
                     degree: d,
                     god: d > GOD_NODE_DEGREE_THRESHOLD,
+                    // A neighborhood / drill node carries no directed-call layer or frontier (spec 52 c4).
+                    layer: None,
+                    frontier: None,
                 }
             })
         })
@@ -1179,6 +1230,9 @@ pub fn cluster_detail(graph: &Graph, key: &str) -> Neighborhood {
         path: Vec::new(),
         explain: None,
         truncated,
+        // A cluster drill is not a directed-call view (spec 52 c4).
+        dir: None,
+        referenced_not_called: Vec::new(),
     }
 }
 
@@ -1243,6 +1297,8 @@ fn neighborhood_of(graph: &Graph, seeds: &[String], echo_seed: &str, depth: i64)
             to: e.to.clone(),
             rel: e.rel.clone(),
             tier: e.tier.clone(),
+            // A neighborhood / drill edge is never a directed-call back edge (spec 52 c4).
+            back: false,
         })
         .collect();
 
@@ -1271,6 +1327,9 @@ fn neighborhood_of(graph: &Graph, seeds: &[String], echo_seed: &str, depth: i64)
                 label: node_label(n),
                 degree: d,
                 god: d > GOD_NODE_DEGREE_THRESHOLD,
+                // A plain neighborhood node carries no directed-call layer or frontier (spec 52 c4).
+                layer: None,
+                frontier: None,
             }
         })
         .collect();
@@ -1286,6 +1345,10 @@ fn neighborhood_of(graph: &Graph, seeds: &[String], echo_seed: &str, depth: i64)
         explain: None,
         // A seeded neighborhood is a COMPLETE node set (never capped); only `cluster_detail` sets this.
         truncated: None,
+        // A plain neighborhood is not a directed-call view (spec 52 c4): no direction, no
+        // referenced-but-not-called sidecar. Absent, these keep the neighborhood byte-identical.
+        dir: None,
+        referenced_not_called: Vec::new(),
     }
 }
 
@@ -1395,6 +1458,232 @@ pub fn graph_json(
     // when the seed is not a graph node (a re-pointed unit id is not) - graceful, never an error.
     n.explain = explain(graph, requested_seed);
     serde_json::to_string(&n)
+}
+
+// ---------------------------------------------------------------------------
+// The DIRECTED-CALL views (spec 52 c4): `/api/graph?view=calls&dir=down|up|both`. A second seeded
+// branch beside the neighborhood, dispatching to the store-side directed traversal
+// `Projection::calls` through the SAME spec-45 lazy direct-projection provider - never the state
+// poll, never a second traversal implementation. The response reuses the [`Neighborhood`] shape with
+// the additive `layer`/`frontier`/`back`/`referenced_not_called`/`dir` fields, so the layered
+// left-to-right renderer draws it; an absent `view` keeps the neighborhood byte-identical.
+// ---------------------------------------------------------------------------
+
+/// The direction of a `view=calls` request (spec 52 c4): the execution path (`Down` - callees),
+/// the call sites (`Up` - callers), or the flow through a centered seed (`Both`). Parsed from the
+/// `dir=` query param, defaulting to the execution path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CallDir {
+    Down,
+    Up,
+    Both,
+}
+
+/// Parse the `dir=` query value into a [`CallDir`] (spec 52 c4). `up` and `both` select those
+/// directions; every other value - including an absent param and an unrecognized string - defaults
+/// to `down` (the execution path, "what does this call"), so the view is always well-defined.
+fn parse_call_dir(dir: Option<&str>) -> CallDir {
+    match dir {
+        Some("up") => CallDir::Up,
+        Some("both") => CallDir::Both,
+        _ => CallDir::Down,
+    }
+}
+
+/// Map one directed-traversal [`CallGraph`] node into a [`NeighborhoodNode`] the layered renderer
+/// draws (spec 52 c4). `sign` is the LAYER x-ordinate multiplier: `+1` for a DOWN (callee) walk so
+/// the seed sits at the LEFT, `-1` for an UP (caller) walk so it sits at the RIGHT; the seed itself
+/// is layer 0 either way. The multi-candidate `frontier` marker rides through verbatim, and `degree`
+/// is filled later from the merged edge set (a call node is never a god-node - the DAG is drawn by
+/// layer, not by hub degree).
+fn call_node_view(cn: &crate::contextgraph::CallNode, sign: i64) -> NeighborhoodNode {
+    NeighborhoodNode {
+        id: cn.node.id.clone(),
+        kind: cn.node.kind.clone(),
+        label: node_label(&cn.node),
+        degree: 0,
+        god: false,
+        layer: Some(sign * cn.layer),
+        frontier: cn.frontier.clone(),
+    }
+}
+
+/// Map one directed-traversal [`CallGraph`] edge into a [`NeighborhoodEdge`] (spec 52 c4), carrying
+/// the recursion `back` marker the renderer draws as a distinct return arc.
+fn call_edge_view(ce: &crate::contextgraph::CallEdge) -> NeighborhoodEdge {
+    NeighborhoodEdge {
+        from: ce.edge.from.clone(),
+        to: ce.edge.to.clone(),
+        rel: ce.edge.rel.clone(),
+        tier: ce.edge.tier.clone(),
+        back: ce.back,
+    }
+}
+
+/// A file that references the seed's name but never calls it (spec 52 c4 - the UP sidecar), as a
+/// flat [`NeighborhoodNode`] with no traversal metadata (it is not a walked node - no layer, no
+/// frontier, no degree).
+fn ref_node_view(n: &Node) -> NeighborhoodNode {
+    NeighborhoodNode {
+        id: n.id.clone(),
+        kind: n.kind.clone(),
+        label: node_label(n),
+        degree: 0,
+        god: false,
+        layer: None,
+        frontier: None,
+    }
+}
+
+/// Build the `view=calls` response body (spec 52 c4) from the directed traversal's `CallGraph`(s) as
+/// a [`Neighborhood`]-shaped view the layered left-to-right renderer draws. `down` is the callee walk
+/// (present for `dir=down` and `dir=both`), `up` the caller walk (present for `dir=up` and
+/// `dir=both`); the direction echoed on the body is inferred from which are present.
+///
+/// LAYERS are the SIGNED x-ordinate: a callee sits at `+hop` (so a DOWN walk draws the seed at the
+/// LEFT), a caller at `-hop` (so an UP walk draws the seed at the RIGHT), the seed at 0 - so a
+/// `dir=both` walk lays both flows around ONE centered seed in a SINGLE node array the existing SVG
+/// emitter draws with no per-node side flag. When a node appears on BOTH sides (a mutual call), the
+/// DOWN/callee placement wins (first-writer), so an id is drawn once; edges dedup by
+/// `(from, to, rel)`. Nodes emit in `(layer, id)` order and edges in `(from, to, rel)` order, so the
+/// same traversal yields a byte-identical body across polls. The UP `referenced_not_called` sidecar
+/// rides through; a DOWN-only walk carries none.
+fn calls_view(
+    down: Option<&CallGraph>,
+    up: Option<&CallGraph>,
+    seed: &str,
+    depth: i64,
+) -> Neighborhood {
+    let dir = match (down.is_some(), up.is_some()) {
+        (true, true) => "both",
+        (false, true) => "up",
+        _ => "down",
+    };
+
+    // Merge the nodes into one id-keyed map: DOWN (callee, +layer) first so a mutual-call node keeps
+    // its callee placement; UP (caller, -layer) fills only ids the DOWN side did not already place.
+    let mut node_by_id: BTreeMap<String, NeighborhoodNode> = BTreeMap::new();
+    if let Some(cg) = down {
+        for cn in &cg.nodes {
+            node_by_id
+                .entry(cn.node.id.clone())
+                .or_insert_with(|| call_node_view(cn, 1));
+        }
+    }
+    if let Some(cg) = up {
+        for cn in &cg.nodes {
+            node_by_id
+                .entry(cn.node.id.clone())
+                .or_insert_with(|| call_node_view(cn, -1));
+        }
+    }
+
+    // Merge the edges, deduped by (from, to, rel) so a mutual call drawn from both walks is one edge.
+    let mut edge_by_key: BTreeMap<(String, String, String), NeighborhoodEdge> = BTreeMap::new();
+    for cg in [down, up].into_iter().flatten() {
+        for ce in &cg.edges {
+            edge_by_key
+                .entry((
+                    ce.edge.from.clone(),
+                    ce.edge.to.clone(),
+                    ce.edge.rel.clone(),
+                ))
+                .or_insert_with(|| call_edge_view(ce));
+        }
+    }
+    let edges: Vec<NeighborhoodEdge> = edge_by_key.into_values().collect();
+
+    // The honest in-view degree of each node (incident merged edges, a self-loop once) - the same
+    // measure the neighborhood reports, so a node's degree is of what the panel actually draws.
+    let mut degree: BTreeMap<&str, usize> = BTreeMap::new();
+    for e in &edges {
+        *degree.entry(e.from.as_str()).or_default() += 1;
+        if e.to != e.from {
+            *degree.entry(e.to.as_str()).or_default() += 1;
+        }
+    }
+    let mut nodes: Vec<NeighborhoodNode> = node_by_id.into_values().collect();
+    for n in &mut nodes {
+        n.degree = degree.get(n.id.as_str()).copied().unwrap_or(0);
+    }
+    // Emit in (layer, id) order: the renderer places x by layer, and a stable order keeps the body
+    // byte-identical across polls. A call node always carries a layer, so the unwrap_or is unreached.
+    nodes.sort_by(|a, b| {
+        a.layer
+            .unwrap_or(0)
+            .cmp(&b.layer.unwrap_or(0))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+
+    // The "referenced but not called" sidecar is an UP-direction concept; carry it from the UP walk,
+    // as flat FILE nodes (already sorted by id by the traversal).
+    let referenced_not_called: Vec<NeighborhoodNode> = up
+        .map(|cg| cg.referenced_not_called.iter().map(ref_node_view).collect())
+        .unwrap_or_default();
+
+    Neighborhood {
+        seed: seed.to_string(),
+        depth,
+        nodes,
+        edges,
+        path: Vec::new(),
+        explain: None,
+        truncated: None,
+        dir: Some(dir.to_string()),
+        referenced_not_called,
+    }
+}
+
+/// Dispatch a `/api/graph?view=calls` request to the store-side directed traversal (spec 52 c4),
+/// returning `Some(Response)` for a call view and `None` for every other `/api/graph` request (so
+/// the caller falls through to the byte-identical neighborhood / overview / drill path).
+///
+/// The traversal runs through `calls_provider` - the SAME spec-45 lazy direct-projection provider
+/// the whole-graph views use, opened only on a graph request, never on the state poll - so this
+/// never materializes a second traversal. `dir=` picks the direction (default `down`); `depth=` is
+/// clamped like the neighborhood ([`DEFAULT_GRAPH_DEPTH`] / [`MAX_GRAPH_DEPTH`]); `tier=` is the
+/// confidence FLOOR passed straight to the traversal ([`TIER_INFERRED`] by default, excluding the
+/// unresolved `ambiguous` tier until the caller opts it in). The `seed` is percent-decoded like the
+/// neighborhood seed (a code-entity id carries `::` and `/`); an empty or missing seed degrades to
+/// an empty view (the traversal seeds on real nodes only), never an error. `instance` is the
+/// spec-50 attach selector threaded to the provider so the walk opens the SELECTED instance's store.
+fn calls_route<G>(instance: Option<&str>, target: &str, calls_provider: &G) -> Option<Response>
+where
+    G: Fn(Option<&str>, &[String], Direction, i64, &str) -> CallGraph,
+{
+    if query_param(target, "view").map(percent_decode).as_deref() != Some("calls") {
+        return None;
+    }
+    let seed = query_param(target, "seed")
+        .map(percent_decode)
+        .unwrap_or_default();
+    let seeds = [seed.clone()];
+    let depth = query_param(target, "depth")
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(DEFAULT_GRAPH_DEPTH)
+        .clamp(0, MAX_GRAPH_DEPTH);
+    // The confidence FLOOR: the traversal maps an absent / unrecognized value to the resolvable
+    // `inferred` floor itself, so passing the raw `tier=` (or the default) is safe.
+    let floor = query_param(target, "tier")
+        .map(percent_decode)
+        .unwrap_or_else(|| TIER_INFERRED.to_string());
+    let dir = parse_call_dir(query_param(target, "dir").map(percent_decode).as_deref());
+
+    let down = matches!(dir, CallDir::Down | CallDir::Both)
+        .then(|| calls_provider(instance, &seeds, Direction::Down, depth, &floor));
+    let up = matches!(dir, CallDir::Up | CallDir::Both)
+        .then(|| calls_provider(instance, &seeds, Direction::Up, depth, &floor));
+
+    let view = calls_view(down.as_ref(), up.as_ref(), &seed, depth);
+    // Serializing these plain view DTOs cannot realistically fail; degrade a serialization error to
+    // a 500 with the same shape the neighborhood route uses, so the panel never sees a torn body.
+    match serde_json::to_string(&view) {
+        Ok(body) => Some(Response::json(200, body)),
+        Err(e) => Some(Response::text(
+            500,
+            &format!("dash: calls projection failed: {e}"),
+        )),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2331,10 +2620,15 @@ fn parse_request_line(line: &str) -> Option<(String, String)> {
 /// async runtime. Only the `/api/*` paths consult a provider; the static page and the
 /// method/not-found guards need no store read, so the page still serves before a run has
 /// created the store.
-pub fn serve<F, G, H>(
+// The four injected providers plus the three run-context values put this one over clippy's
+// arg-count altitude (as the `route` dispatch already is); the providers are the composition
+// root's concretions and belong at this seam, so the lint is allowed rather than the seam bundled.
+#[allow(clippy::too_many_arguments)]
+pub fn serve<F, G, H, I>(
     addr: SocketAddr,
     provider: F,
     graph_provider: G,
+    calls_provider: I,
     instances_provider: H,
     configured_max_retries: u32,
     run_branch: &str,
@@ -2344,12 +2638,14 @@ where
     F: Fn(Option<&str>) -> Result<DashInputs, String>,
     G: Fn(Option<&str>) -> Graph,
     H: Fn() -> Vec<InstanceView>,
+    I: Fn(Option<&str>, &[String], Direction, i64, &str) -> CallGraph,
 {
     let listener = TcpListener::bind(addr)?;
     serve_on(
         listener,
         provider,
         graph_provider,
+        calls_provider,
         instances_provider,
         configured_max_retries,
         run_branch,
@@ -2371,10 +2667,12 @@ where
 /// providers open them read-only per request); an absent selector keeps serving the dash's own
 /// local project (backward compatible). The `instances_provider` reads the machine-global
 /// registry for the `/api/instances` landing list.
-pub fn serve_on<F, G, H>(
+#[allow(clippy::too_many_arguments)]
+pub fn serve_on<F, G, H, I>(
     listener: TcpListener,
     provider: F,
     graph_provider: G,
+    calls_provider: I,
     instances_provider: H,
     configured_max_retries: u32,
     run_branch: &str,
@@ -2384,6 +2682,7 @@ where
     F: Fn(Option<&str>) -> Result<DashInputs, String>,
     G: Fn(Option<&str>) -> Graph,
     H: Fn() -> Vec<InstanceView>,
+    I: Fn(Option<&str>, &[String], Direction, i64, &str) -> CallGraph,
 {
     let bound = listener.local_addr()?;
     eprintln!("rigger dash: serving on http://{bound}/ (read-only; Ctrl-C to stop)");
@@ -2394,6 +2693,7 @@ where
                     s,
                     &provider,
                     &graph_provider,
+                    &calls_provider,
                     &instances_provider,
                     configured_max_retries,
                     run_branch,
@@ -2421,10 +2721,12 @@ where
 /// selector (spec 50, criterion 3): present, they open that registered instance's stores;
 /// absent, the dash's own local project. `/api/instances` is served from the separate
 /// `instances_provider` (the registry landing) and needs no store read at all.
-fn handle_conn<F, G, H>(
+#[allow(clippy::too_many_arguments)]
+fn handle_conn<F, G, H, I>(
     stream: TcpStream,
     provider: &F,
     graph_provider: &G,
+    calls_provider: &I,
     instances_provider: &H,
     configured_max_retries: u32,
     run_branch: &str,
@@ -2434,6 +2736,7 @@ where
     F: Fn(Option<&str>) -> Result<DashInputs, String>,
     G: Fn(Option<&str>) -> Graph,
     H: Fn() -> Vec<InstanceView>,
+    I: Fn(Option<&str>, &[String], Direction, i64, &str) -> CallGraph,
 {
     // Bound how long a slow or broken client can hold the single serving slot.
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
@@ -2479,32 +2782,46 @@ where
                     &instances,
                 )
             } else if method == "GET" && target.starts_with("/api/") {
-                match provider(instance) {
-                    Ok((events, polled_graph, progress, liveness)) => {
-                        // The whole-graph views (only `/api/graph`) read the projection through
-                        // the SEPARATE lazy provider, opened HERE and never on the state poll;
-                        // every other `/api/*` path keeps the cheap run-seeded graph the polled
-                        // provider yields (spec 45, criterion 1). Both open the SELECTED instance's
-                        // store (spec 50, criterion 3).
-                        let graph = if path == "/api/graph" {
-                            graph_provider(instance)
-                        } else {
-                            polled_graph
-                        };
-                        route(
-                            &method,
-                            &target,
-                            &events,
-                            &graph,
-                            &progress,
-                            &liveness,
-                            configured_max_retries,
-                            run_branch,
-                            base,
-                            &[],
-                        )
+                // The DIRECTED-CALL views (spec 52 c4) dispatch to the store-side traversal through
+                // the SAME lazy provider - checked BEFORE the polled read so a `view=calls` request
+                // opens only the calls provider, never the whole-graph read. `calls_route` returns
+                // `None` for every other `/api/graph` request (and every non-graph path), so those
+                // fall through to the byte-identical neighborhood / overview / drill path below.
+                if let Some(resp) = (path == "/api/graph")
+                    .then(|| calls_route(instance, &target, calls_provider))
+                    .flatten()
+                {
+                    resp
+                } else {
+                    match provider(instance) {
+                        Ok((events, polled_graph, progress, liveness)) => {
+                            // The whole-graph views (only `/api/graph`) read the projection through
+                            // the SEPARATE lazy provider, opened HERE and never on the state poll;
+                            // every other `/api/*` path keeps the cheap run-seeded graph the polled
+                            // provider yields (spec 45, criterion 1). Both open the SELECTED
+                            // instance's store (spec 50, criterion 3).
+                            let graph = if path == "/api/graph" {
+                                graph_provider(instance)
+                            } else {
+                                polled_graph
+                            };
+                            route(
+                                &method,
+                                &target,
+                                &events,
+                                &graph,
+                                &progress,
+                                &liveness,
+                                configured_max_retries,
+                                run_branch,
+                                base,
+                                &[],
+                            )
+                        }
+                        Err(e) => {
+                            Response::text(500, &format!("dash: reading the store failed: {e}"))
+                        }
                     }
-                    Err(e) => Response::text(500, &format!("dash: reading the store failed: {e}")),
                 }
             } else {
                 // The page, 404, and the 405 read-only guard need no projection input.
@@ -3023,11 +3340,16 @@ mod tests {
         };
         let graph_provider = |_instance: Option<&str>| Graph::default();
         let instances_provider = Vec::new;
+        let calls_provider =
+            |_: Option<&str>, _: &[String], _: crate::contextgraph::Direction, _: i64, _: &str| {
+                crate::contextgraph::CallGraph::default()
+            };
         std::thread::spawn(move || {
             let _ = serve(
                 addr,
                 provider,
                 graph_provider,
+                calls_provider,
                 instances_provider,
                 3,
                 "rigger-run",
@@ -5658,6 +5980,10 @@ mod tests {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let addr = listener.local_addr().unwrap();
         let graph_provider = |_instance: Option<&str>| Graph::default();
+        let calls_provider =
+            |_: Option<&str>, _: &[String], _: crate::contextgraph::Direction, _: i64, _: &str| {
+                crate::contextgraph::CallGraph::default()
+            };
         let instances_provider = Vec::new;
         let server = std::thread::spawn(move || {
             let (conn, _) = listener.accept().unwrap();
@@ -5665,6 +5991,7 @@ mod tests {
                 conn,
                 &provider,
                 &graph_provider,
+                &calls_provider,
                 &instances_provider,
                 3,
                 "rigger-run",
@@ -5707,6 +6034,14 @@ mod tests {
         let graph_provider = |_instance: Option<&str>| -> Graph {
             panic!("a non-GET request must never open the graph projection");
         };
+        let calls_provider = |_: Option<&str>,
+                              _: &[String],
+                              _: crate::contextgraph::Direction,
+                              _: i64,
+                              _: &str|
+         -> crate::contextgraph::CallGraph {
+            panic!("a non-GET request must never open the calls projection");
+        };
         let instances_provider = || -> Vec<InstanceView> {
             panic!("a non-GET request must never read the instance registry");
         };
@@ -5718,6 +6053,7 @@ mod tests {
                 conn,
                 &provider,
                 &graph_provider,
+                &calls_provider,
                 &instances_provider,
                 3,
                 "rigger-run",
@@ -5779,6 +6115,12 @@ mod tests {
             }
         };
 
+        // A call view is not exercised here (no request carries `view=calls`), so the calls
+        // provider must never be consulted; a plain empty walk keeps the wiring complete.
+        let calls_provider =
+            |_: Option<&str>, _: &[String], _: crate::contextgraph::Direction, _: i64, _: &str| {
+                crate::contextgraph::CallGraph::default()
+            };
         let instances_provider = Vec::new;
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let addr = listener.local_addr().unwrap();
@@ -5790,6 +6132,7 @@ mod tests {
                     conn,
                     &provider,
                     &graph_provider,
+                    &calls_provider,
                     &instances_provider,
                     3,
                     "rigger-run",
@@ -5989,5 +6332,491 @@ mod tests {
             !should_reap_singleton(1, false),
             "a positive live count never reaps regardless of the seen flag"
         );
+    }
+
+    /// Spec 52 c5 (the RENDERING): the served page carries the DIRECTED-CALL layered layout - the
+    /// left-to-right DAG behind the SHARED SVG emitter (a barycenter within-layer sweep), the SVG
+    /// ARROWHEAD marker definition (which the page did not have before), the DISTINCT back-edge
+    /// rendering (a curved return arc), and the FRONTIER expand-and-reseed wiring - plus the entry
+    /// affordance that offers the two directed queries from a code-entity node. Visual layout is
+    /// outside the gate set (rule 4), so this is a STRUCTURAL guard on the JS that delivers the
+    /// rendering, mirroring the sibling exploration-viz page tests: it pins the mechanisms so a later
+    /// edit cannot drop the arrowheads, the back-edge distinction, the layered layout, or the
+    /// frontier re-seed.
+    #[test]
+    fn the_page_carries_the_directed_call_layered_render() {
+        let page = live_page();
+
+        // The LAYERED layout behind the shared emitter: x by server layer, a within-layer barycenter
+        // sweep (average of neighbour positions) - not a second force-layout copy.
+        assert!(
+            page.contains("function layeredLayout"),
+            "the page must carry the layered left-to-right call layout",
+        );
+        assert!(
+            page.contains("barycenter") || page.contains("bary"),
+            "the layered layout must order within-layer nodes by a barycenter sweep",
+        );
+        // The layered layout is drawn through the SAME kgSvg emitter (an injected layout callback),
+        // never a second SVG emitter reimplementing circles/lines.
+        assert!(
+            page.contains("layout: layeredLayout"),
+            "the calls view must reuse the shared kgSvg emitter with an injected layered layout",
+        );
+
+        // Direction is DRAWN: an SVG arrowhead marker definition (new to the page) and a marker-end
+        // on the forward edges.
+        assert!(
+            page.contains("<marker") && page.contains("marker-end"),
+            "the page must define an SVG arrowhead marker and apply it to directed edges",
+        );
+
+        // BACK edges (recursion) render DISTINCTLY: a curved return arc (a path with a quadratic
+        // segment) carrying a distinguishing class, not just another straight line.
+        assert!(
+            page.contains("kgline back"),
+            "a back edge must carry a distinguishing class so recursion reads distinctly",
+        );
+        assert!(
+            page.contains("edgeBack"),
+            "the emitter must render a back edge as a distinct curved arc via edgeBack",
+        );
+
+        // FRONTIERS are ACTIONABLE: a frontier node carries its candidates and expands on click, and
+        // choosing a candidate RE-SEEDS the call view on it.
+        assert!(
+            page.contains("data-frontier") && page.contains("data-candidates"),
+            "a multi-candidate frontier node must carry its candidate ids for the expand",
+        );
+        assert!(
+            page.contains("data-candidate") && page.contains("function seedCalls"),
+            "choosing a frontier candidate must re-seed the directed-call view on it",
+        );
+
+        // The call views are REACHABLE from a code-entity node: the neighborhood offers the two
+        // directed queries (execution path / call sites) beside it, wired through the delegated
+        // listener the exploration views already share.
+        assert!(
+            page.contains("data-calls-down") && page.contains("data-calls-up"),
+            "a code-entity node must offer the two directed queries (execution path / call sites)",
+        );
+        assert!(
+            page.contains("view=calls"),
+            "the page must fetch the directed-call views from the c4 route",
+        );
+        assert!(
+            page.contains("function renderKgCalls"),
+            "the page must carry the directed-call renderer",
+        );
+
+        // HIGH FAN-OUT within a layer caps at the render budget with a "+K more" note, so a
+        // widely-called function does not overplot its layer into an unreadable smear.
+        assert!(
+            page.contains("LAYER_FANOUT_BUDGET") && page.contains("held back"),
+            "a layer over the render budget must cap with a '+K more' held-back note",
+        );
+    }
+
+    /// Spec 52 c4 (the ROUTE): the `/api/graph?view=calls&dir=down|up|both` dispatch. These are the
+    /// implementer's inside-out unit tests over the pure builder [`calls_view`] and the dispatch
+    /// [`calls_route`] - the CallGraph -> Neighborhood-shaped mapping (signed layers, frontier, back,
+    /// the UP sidecar, the `dir=both` merge) and the param parse / provider dispatch / byte-identical
+    /// fall-through. The traversal itself is spec 52 c1/c3, proven at the store; here we own only the
+    /// route's presentation of it.
+    mod calls_route_c4 {
+        use super::*;
+        use crate::contextgraph::sqlite::Projector;
+        use crate::contextgraph::{
+            CallEdge, CallGraph, CallNode, Direction, Projection, REL_CALLS,
+            TYPE_CODE_ENTITY_EXTRACTED, TYPE_EDGE_INFERRED,
+        };
+
+        /// One reached call node with a store-side (non-negative) hop `layer` and an optional
+        /// multi-candidate `frontier`, as the traversal returns it.
+        fn cnode(id: &str, layer: i64, frontier: Option<Vec<String>>) -> CallNode {
+            CallNode {
+                node: Node {
+                    id: id.to_string(),
+                    kind: KIND_CODE_ENTITY.to_string(),
+                    attrs: BTreeMap::new(),
+                },
+                layer,
+                frontier,
+            }
+        }
+
+        /// One CALLS edge with the recursion `back` marker.
+        fn cedge(from: &str, to: &str, back: bool) -> CallEdge {
+            CallEdge {
+                edge: Edge {
+                    from: from.to_string(),
+                    to: to.to_string(),
+                    rel: REL_CALLS.to_string(),
+                    valid_from: 0,
+                    valid_to: None,
+                    source: 0,
+                    tier: TIER_INFERRED.to_string(),
+                },
+                back,
+            }
+        }
+
+        fn file_node(id: &str) -> Node {
+            Node {
+                id: id.to_string(),
+                kind: KIND_FILE.to_string(),
+                attrs: BTreeMap::new(),
+            }
+        }
+
+        fn layer_of(v: &Neighborhood, id: &str) -> Option<i64> {
+            v.nodes.iter().find(|n| n.id == id).and_then(|n| n.layer)
+        }
+        fn ids(v: &Neighborhood) -> Vec<String> {
+            v.nodes.iter().map(|n| n.id.clone()).collect()
+        }
+
+        /// Fold a code definition into a Projector, exactly as the store-side periphery tests do, so
+        /// the dispatch test drives the REAL `Projection::calls` through a store-backed provider.
+        fn apply_def(p: &Projector, pos: u64, file: &str, name: &str, line: u32, fresh: bool) {
+            let payload = serde_json::json!({
+                "file": file, "name": name, "kind": "function", "line": line, "lang": "rust",
+                "fresh": fresh,
+            });
+            let mut e = Event::new(
+                TYPE_CODE_ENTITY_EXTRACTED,
+                serde_json::to_vec(&payload).unwrap(),
+            );
+            e.position = pos;
+            p.apply(&e).unwrap();
+        }
+        fn apply_call(p: &Projector, pos: u64, file: &str, name: &str, caller: &str) {
+            let payload = serde_json::json!({
+                "file": file, "name": name, "lang": "rust", "caller": caller,
+            });
+            let mut e = Event::new(TYPE_EDGE_INFERRED, serde_json::to_vec(&payload).unwrap());
+            e.position = pos;
+            p.apply(&e).unwrap();
+        }
+
+        /// DOWN: the callee layers stay POSITIVE (seed at the left), the frontier candidate ids ride
+        /// through verbatim, a recursion edge keeps its back marker, and the nodes emit in (layer, id)
+        /// order. The DOWN execution path carries NO referenced-but-not-called sidecar.
+        #[test]
+        fn calls_view_down_signs_callees_positive_and_carries_frontier_and_back() {
+            let down = CallGraph {
+                nodes: vec![
+                    cnode("f.rs::s", 0, None),
+                    cnode("f.rs::a", 1, None),
+                    cnode(
+                        "f.rs::fr",
+                        1,
+                        Some(vec!["a.rs::t".to_string(), "b.rs::t".to_string()]),
+                    ),
+                ],
+                edges: vec![
+                    cedge("f.rs::s", "f.rs::a", false),
+                    cedge("f.rs::s", "f.rs::fr", false),
+                    cedge("f.rs::a", "f.rs::s", true), // recursion: a back edge
+                ],
+                referenced_not_called: Vec::new(),
+            };
+            let v = calls_view(Some(&down), None, "f.rs::s", 5);
+
+            assert_eq!(
+                v.dir.as_deref(),
+                Some("down"),
+                "the body echoes the direction"
+            );
+            assert!(
+                v.referenced_not_called.is_empty(),
+                "a DOWN walk carries no referenced-but-not-called sidecar",
+            );
+            // Callees are POSITIVE, seed 0 - so the renderer draws the seed at the LEFT.
+            assert_eq!(layer_of(&v, "f.rs::s"), Some(0));
+            assert_eq!(layer_of(&v, "f.rs::a"), Some(1));
+            assert_eq!(layer_of(&v, "f.rs::fr"), Some(1));
+            // The frontier candidate ids ride through verbatim on the frontier node.
+            let fr = v.nodes.iter().find(|n| n.id == "f.rs::fr").unwrap();
+            assert_eq!(
+                fr.frontier,
+                Some(vec!["a.rs::t".to_string(), "b.rs::t".to_string()]),
+            );
+            assert_eq!(
+                v.nodes.iter().filter(|n| n.frontier.is_some()).count(),
+                1,
+                "exactly the one multi-candidate node is a frontier",
+            );
+            // The recursion edge is marked back; the forward edges are not.
+            let back = |from: &str, to: &str| {
+                v.edges
+                    .iter()
+                    .find(|e| e.from == from && e.to == to)
+                    .map(|e| e.back)
+            };
+            assert_eq!(back("f.rs::a", "f.rs::s"), Some(true));
+            assert_eq!(back("f.rs::s", "f.rs::a"), Some(false));
+            // Nodes emit in (layer, id) order: layer 0 (s), then layer 1 id-sorted (a, fr).
+            assert_eq!(ids(&v), vec!["f.rs::s", "f.rs::a", "f.rs::fr"]);
+        }
+
+        /// UP: the caller layers are NEGATED (so the renderer draws the seed at the RIGHT), and the
+        /// referenced-but-not-called sidecar rides through as flat FILE nodes.
+        #[test]
+        fn calls_view_up_negates_callers_and_carries_the_referenced_sidecar() {
+            let up = CallGraph {
+                nodes: vec![cnode("a.rs::t", 0, None), cnode("b.rs::c", 1, None)],
+                edges: vec![cedge("b.rs::c", "a.rs::t", false)],
+                referenced_not_called: vec![file_node("d.rs")],
+            };
+            let v = calls_view(None, Some(&up), "a.rs::t", 5);
+
+            assert_eq!(v.dir.as_deref(), Some("up"));
+            assert_eq!(layer_of(&v, "a.rs::t"), Some(0), "the seed stays at 0");
+            assert_eq!(
+                layer_of(&v, "b.rs::c"),
+                Some(-1),
+                "a caller is NEGATED so the seed draws at the right",
+            );
+            let refd: Vec<&str> = v
+                .referenced_not_called
+                .iter()
+                .map(|n| n.id.as_str())
+                .collect();
+            assert_eq!(
+                refd,
+                vec!["d.rs"],
+                "the UP sidecar carries the import-only file"
+            );
+            assert!(
+                v.referenced_not_called.iter().all(|n| n.kind == KIND_FILE),
+                "every sidecar entry is a FILE node",
+            );
+            // (layer, id) order: the caller (-1) sorts before the seed (0).
+            assert_eq!(ids(&v), vec!["b.rs::c", "a.rs::t"]);
+            // The caller edge keeps the real CALLS direction onto the seed.
+            assert_eq!(
+                v.edges
+                    .iter()
+                    .map(|e| (e.from.as_str(), e.to.as_str()))
+                    .collect::<Vec<_>>(),
+                vec![("b.rs::c", "a.rs::t")],
+            );
+        }
+
+        /// BOTH: the seed is centered at 0, callees to the RIGHT (positive), callers to the LEFT
+        /// (negative), the shared seed deduped to ONE node, edges deduped by (from, to, rel), and the
+        /// UP sidecar carried - one "flow through this function" body from the two walks.
+        #[test]
+        fn calls_view_both_centers_the_seed_with_callees_right_and_callers_left() {
+            let down = CallGraph {
+                nodes: vec![cnode("m.rs::s", 0, None), cnode("m.rs::callee", 1, None)],
+                edges: vec![cedge("m.rs::s", "m.rs::callee", false)],
+                referenced_not_called: Vec::new(),
+            };
+            let up = CallGraph {
+                nodes: vec![cnode("m.rs::s", 0, None), cnode("m.rs::caller", 1, None)],
+                edges: vec![cedge("m.rs::caller", "m.rs::s", false)],
+                referenced_not_called: vec![file_node("z.rs")],
+            };
+            let v = calls_view(Some(&down), Some(&up), "m.rs::s", 5);
+
+            assert_eq!(v.dir.as_deref(), Some("both"));
+            assert_eq!(layer_of(&v, "m.rs::s"), Some(0), "the seed is centered");
+            assert_eq!(
+                layer_of(&v, "m.rs::callee"),
+                Some(1),
+                "a callee sits to the RIGHT (positive)",
+            );
+            assert_eq!(
+                layer_of(&v, "m.rs::caller"),
+                Some(-1),
+                "a caller sits to the LEFT (negative)",
+            );
+            assert_eq!(
+                v.nodes.iter().filter(|n| n.id == "m.rs::s").count(),
+                1,
+                "the shared seed is deduped to a single node across the two walks",
+            );
+            // Both edges are present, deduped by (from, to, rel), in (from, to, rel) order.
+            assert_eq!(
+                v.edges
+                    .iter()
+                    .map(|e| (e.from.as_str(), e.to.as_str()))
+                    .collect::<Vec<_>>(),
+                vec![("m.rs::caller", "m.rs::s"), ("m.rs::s", "m.rs::callee")],
+            );
+            assert_eq!(
+                v.referenced_not_called
+                    .iter()
+                    .map(|n| n.id.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["z.rs"],
+                "the UP sidecar rides through on a both walk",
+            );
+            // (layer, id) order: caller(-1), seed(0), callee(1).
+            assert_eq!(ids(&v), vec!["m.rs::caller", "m.rs::s", "m.rs::callee"]);
+        }
+
+        /// A plain neighborhood is BYTE-IDENTICAL after the additive fields (spec 52 c4 constraint):
+        /// none of `layer` / `frontier` / `back` / `dir` / `referenced_not_called` serialize when a
+        /// view is not a call view, so the serialized neighborhood carries exactly its original keys.
+        #[test]
+        fn a_plain_neighborhood_omits_every_additive_call_field() {
+            let graph = Graph {
+                nodes: vec![
+                    Node {
+                        id: "a".to_string(),
+                        kind: KIND_UNIT.to_string(),
+                        attrs: BTreeMap::new(),
+                    },
+                    Node {
+                        id: "b".to_string(),
+                        kind: KIND_UNIT.to_string(),
+                        attrs: BTreeMap::new(),
+                    },
+                ],
+                edges: vec![Edge {
+                    from: "a".to_string(),
+                    to: "b".to_string(),
+                    rel: REL_REFERENCES.to_string(),
+                    valid_from: 0,
+                    valid_to: None,
+                    source: 0,
+                    tier: TIER_EXTRACTED.to_string(),
+                }],
+            };
+            let body = graph_json(&graph, "a", &["a".to_string()], 1, None, None).unwrap();
+            for absent in [
+                "\"layer\"",
+                "\"frontier\"",
+                "\"back\"",
+                "\"dir\"",
+                "referenced_not_called",
+            ] {
+                assert!(
+                    !body.contains(absent),
+                    "a plain neighborhood must not serialize the additive call field {absent}: {body}",
+                );
+            }
+        }
+
+        /// The dispatch: `view=calls` runs the store-side traversal through the provider and returns
+        /// its layered body; an absent `view` DECLINES (so `handle_conn` falls through to the
+        /// byte-identical neighborhood). Drives the REAL `Projection::calls` through a store-backed
+        /// provider closure, so it proves the route wired the direction/seed onto the traversal.
+        #[test]
+        fn calls_route_runs_the_traversal_for_view_calls_and_declines_otherwise() {
+            let p = Projector::open(":memory:", "test").unwrap();
+            apply_def(&p, 1, "src/a.rs", "callee", 1, true);
+            apply_def(&p, 2, "src/c.rs", "caller", 1, true);
+            apply_call(&p, 3, "src/c.rs", "callee", "caller");
+            let cp = |_inst: Option<&str>,
+                      seed: &[String],
+                      dir: Direction,
+                      depth: i64,
+                      floor: &str|
+             -> CallGraph {
+                p.calls(seed, dir, depth, floor).unwrap_or_default()
+            };
+
+            // No view=calls: the dispatch declines so the neighborhood path runs unchanged.
+            assert!(
+                calls_route(None, "/api/graph?seed=src/c.rs::caller&depth=2", &cp).is_none(),
+                "a request with no view=calls is not a call view",
+            );
+
+            // view=calls&dir=down: the DOWN walk resolves the cross-file callee onto its definition.
+            let resp = calls_route(
+                None,
+                "/api/graph?view=calls&dir=down&seed=src%2Fc.rs%3A%3Acaller&depth=5",
+                &cp,
+            )
+            .expect("view=calls dispatches to the traversal");
+            assert_eq!(resp.status, 200);
+            let v: serde_json::Value = serde_json::from_slice(&resp.body).unwrap();
+            assert_eq!(v["dir"], "down");
+            assert_eq!(
+                v["seed"], "src/c.rs::caller",
+                "the body echoes the decoded seed"
+            );
+            let node_ids: Vec<&str> = v["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|n| n["id"].as_str().unwrap())
+                .collect();
+            assert!(
+                node_ids.contains(&"src/c.rs::caller") && node_ids.contains(&"src/a.rs::callee"),
+                "the DOWN walk resolved the cross-file callee onto its definition: {node_ids:?}",
+            );
+            let callee = v["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|n| n["id"] == "src/a.rs::callee")
+                .unwrap();
+            assert_eq!(
+                callee["layer"], 1,
+                "the callee sits at layer 1 (seed at the left)"
+            );
+        }
+
+        /// `depth=` is clamped and `tier=` is the floor (defaulting to `inferred`): a spy provider
+        /// records the (depth, floor) the route passed it, so the clamp / default is pinned without a
+        /// store. `dir` defaults to `down`, so a bare `view=calls` calls the provider once.
+        #[test]
+        fn calls_route_clamps_depth_and_defaults_the_tier_floor() {
+            use std::cell::RefCell;
+            let seen: RefCell<Vec<(i64, String)>> = RefCell::new(Vec::new());
+            let cp = |_inst: Option<&str>,
+                      _seed: &[String],
+                      _dir: Direction,
+                      depth: i64,
+                      floor: &str|
+             -> CallGraph {
+                seen.borrow_mut().push((depth, floor.to_string()));
+                CallGraph::default()
+            };
+
+            // Absent depth -> the neighborhood default; absent tier -> the resolvable inferred floor.
+            let _ = calls_route(None, "/api/graph?view=calls&seed=x", &cp);
+            assert_eq!(
+                seen.borrow()[0],
+                (DEFAULT_GRAPH_DEPTH, TIER_INFERRED.to_string()),
+            );
+
+            // An over-large depth is clamped to the ceiling; an explicit tier is the floor verbatim.
+            seen.borrow_mut().clear();
+            let _ = calls_route(
+                None,
+                "/api/graph?view=calls&seed=x&depth=9999&tier=ambiguous",
+                &cp,
+            );
+            assert_eq!(seen.borrow()[0], (MAX_GRAPH_DEPTH, "ambiguous".to_string()));
+        }
+
+        /// `dir=both` calls the provider TWICE (once per direction) and merges; `dir=down` / `dir=up`
+        /// call it once each - so the route asks the traversal for exactly the sides it draws.
+        #[test]
+        fn calls_route_walks_both_directions_for_dir_both() {
+            use std::cell::RefCell;
+            let dirs: RefCell<Vec<Direction>> = RefCell::new(Vec::new());
+            let cp = |_inst: Option<&str>,
+                      _seed: &[String],
+                      dir: Direction,
+                      _depth: i64,
+                      _floor: &str|
+             -> CallGraph {
+                dirs.borrow_mut().push(dir);
+                CallGraph::default()
+            };
+            let _ = calls_route(None, "/api/graph?view=calls&dir=both&seed=x", &cp);
+            assert_eq!(
+                *dirs.borrow(),
+                vec![Direction::Down, Direction::Up],
+                "dir=both walks BOTH the callees and the callers",
+            );
+        }
     }
 }

@@ -188,6 +188,12 @@ fn run_tree_spine_crosses_the_http_state_boundary() {
     // The lazy `/api/graph` provider (spec 45, criterion 1): this test drives the state poll, which
     // never consults it, so an empty graph provider satisfies `serve`'s `Fn() -> Graph` bound.
     let graph_provider = |_instance: Option<&str>| Graph::default();
+    // The lazy directed-call provider (spec 52, criterion 4): this test drives the state poll, which
+    // never consults it, so an empty walk satisfies `serve`'s calls-provider bound.
+    let calls_provider =
+        |_: Option<&str>, _: &[String], _: rigger::contextgraph::Direction, _: i64, _: &str| {
+            rigger::contextgraph::CallGraph::default()
+        };
     // The landing provider (spec 50, criterion 3): this test drives the state poll, not
     // `/api/instances`, so an empty registry list satisfies `serve`'s `Fn() -> Vec<InstanceView>`.
     let instances_provider = Vec::new;
@@ -197,6 +203,7 @@ fn run_tree_spine_crosses_the_http_state_boundary() {
             addr,
             provider,
             graph_provider,
+            calls_provider,
             instances_provider,
             3,
             "rigger-run",

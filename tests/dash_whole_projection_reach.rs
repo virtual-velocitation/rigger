@@ -271,6 +271,12 @@ fn try_fetch_whole_served(graph_db: &str, identity: &str, path: &str) -> Option<
     let provider = move |_instance: Option<&str>| -> Result<DashInputs, String> {
         Ok((Vec::new(), Graph::default(), Vec::new(), HashMap::new()))
     };
+    // The lazy directed-call provider (spec 52, criterion 4): this test drives the overview /
+    // neighborhood reach, not a call view, so an empty walk satisfies `serve`'s calls-provider bound.
+    let calls_provider =
+        |_: Option<&str>, _: &[String], _: rigger::contextgraph::Direction, _: i64, _: &str| {
+            rigger::contextgraph::CallGraph::default()
+        };
     let instances_provider = Vec::new;
 
     std::thread::spawn(move || {
@@ -278,6 +284,7 @@ fn try_fetch_whole_served(graph_db: &str, identity: &str, path: &str) -> Option<
             addr,
             provider,
             graph_provider,
+            calls_provider,
             instances_provider,
             3,
             "rigger-run",

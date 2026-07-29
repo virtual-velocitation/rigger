@@ -241,6 +241,21 @@
   /* A GOD-NODE (a high-degree hub the drill flags) gets a warning ring so a hub reads at a glance. */
   .kggodnode circle { stroke: var(--warn); stroke-width: 2; }
   .kglabel { fill: var(--ink); font-size: 10px; text-anchor: middle; pointer-events: none; }
+  /* Directed-call views (spec 52 c5). The arrowhead fill; a BACK edge (recursion) is a dashed accent
+     arc so it reads apart from the solid forward edges; a FRONTIER node (a multi-candidate hop) gets
+     an accent ring so it stands out as the actionable "choose a definition" node. */
+  .kgarrowhead { fill: var(--dim); }
+  .kgline.back { stroke: var(--warn); stroke-dasharray: 4 3; opacity: 0.85; }
+  .kgcall circle { stroke: var(--panel); stroke-width: 1; }
+  .kgcall.frontier circle { stroke: var(--warn); stroke-width: 2; stroke-dasharray: 3 2; }
+  .kgcalls-offer { padding: 4px 2px; font-size: 12px; color: var(--dim); }
+  .kgcalls-offer a { color: var(--accent); text-decoration: none; margin: 0 4px; }
+  .kgfrontier:not(:empty) { padding: 6px 2px; }
+  .kgfr-head { font-size: 12px; color: var(--dim); margin-bottom: 3px; }
+  .kgfr-cand { display: block; color: var(--accent); text-decoration: none; font-size: 12px; padding: 1px 0; }
+  .kgrefd { margin-top: 6px; }
+  .kgrefd h3 { font-size: 12px; margin: 4px 0; color: var(--dim); }
+  .kgcap { font-size: 11px; color: var(--warn); padding: 2px 2px; }
 </style>
 </head>
 <body>
@@ -632,12 +647,22 @@ function renderGraph(g) {
   // A "<- overview" back link (spec 42 c5) closes the exploration round-trip: the seeded neighborhood
   // is the leaf of overview -> drill -> seed, so it carries the same data-kgback handle back to the
   // whole-graph overview. The delegated listener already routes data-kgback; this only adds the affordance.
+  // The DIRECTED-CALL entry (spec 52 c5): a code-entity node (a `<file>::<name>` id) is a function,
+  // so it offers the two directed queries beside its neighborhood - "execution path" (what it calls,
+  // transitively) and "call sites" (who calls it) - routed by the shared delegated listener. Absent
+  // for a non-code node (a decision / file / doc has no call graph).
+  const callsOffer = (g.seed && g.seed.indexOf("::") >= 0)
+    ? '<div class="kgcalls-offer">directed calls: '
+      + '<a href="#" data-calls-down="' + esc(g.seed) + '">execution path &rarr;</a> '
+      + '<a href="#" data-calls-up="' + esc(g.seed) + '">&larr; call sites</a> '
+      + '<a href="#" data-calls-both="' + esc(g.seed) + '">flow (both)</a></div>'
+    : '';
   const head = '<div class="kgtoolbar"><a class="kgback" href="#" data-kgback="1">&larr; overview</a></div>'
     + '<div class="kgseed">neighborhood of <b>' + esc(g.seed || "")
     + '</b> (depth ' + esc(g.depth || 0) + ')'
     + (path.length ? ' &middot; path <b>' + esc(path[0]) + '</b> &rarr; <b>' + esc(path[path.length - 1])
         + '</b> (' + esc(path.length - 1) + ' hop' + (path.length - 1 === 1 ? '' : 's') + ')' : '')
-    + '</div>';
+    + '</div>' + callsOffer;
   if (!nodes.length && !edges.length) {
     el("kgpanel").innerHTML = head
       + '<div class="empty">no knowledge-graph neighborhood for this node</div>';
@@ -894,18 +919,40 @@ function forceLayout(nodes, edges, width, height) {
   return fitToBox(out, ids, 0, 0, width, height);
 }
 
-// Emit the SVG for a graph: the force layout places the nodes, then we draw one <line> per edge, and
+// Emit the SVG for a graph: a layout places the nodes, then we draw one edge per <line>/<path> and
 // one <g><circle><text></g> per node - all inside a single #kgzoom group the pan/zoom transforms. The
 // caller supplies per-node radius/colour/class/label and the select handle (data-cluster on a cluster
-// super-node, data-seed on a member), so ONE emitter serves both the overview and the drill.
+// super-node, data-seed on a member), so ONE emitter serves the overview, the drill, AND the directed
+// -call DAG (spec 52 c5). The DIRECTION is drawn from three optional opts the exploration views omit
+// (so their output is unchanged): `opts.layout` swaps the force layout for another position map (the
+// left-to-right layered layout); `opts.marker` adds an SVG ARROWHEAD marker definition and points the
+// forward edges at it; and `opts.edgeBack(e)` renders a recursion edge as a DISTINCT curved return
+// arc instead of a straight line. With none supplied the emitter draws exactly as before.
 function kgSvg(nodes, edges, width, height, opts) {
-  const pos = forceLayout(nodes, edges, width, height);
+  const pos = (opts.layout || forceLayout)(nodes, edges, width, height);
+  // The arrowhead marker (spec 52 c5): defined ONLY when the caller asks for direction, so the
+  // exploration views (no marker) emit no <defs> and stay byte-identical. Forward directed edges
+  // then carry marker-end so the callee end draws an arrowhead.
+  const defs = opts.marker
+    ? '<defs><marker id="kgarrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6"'
+      + ' orient="auto-start-reverse"><path d="M0,0 L8,4 L0,8 z" class="kgarrowhead"/></marker></defs>'
+    : "";
+  const arrow = opts.marker ? ' marker-end="url(#kgarrow)"' : "";
   const lines = edges.map(e => {
     const a = pos[e.from], b = pos[e.to];
     if (!a || !b) return "";
     const sw = opts.edgeWidth ? opts.edgeWidth(e) : 1;
+    // A BACK edge (recursion / mutual call, spec 52 c5) draws as a curved return arc through a
+    // perpendicular control point, with a distinguishing class, so it reads apart from a forward
+    // edge; every other edge stays the straight <line> the exploration views emit.
+    if (opts.edgeBack && opts.edgeBack(e)) {
+      const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2 - 34;
+      return '<path class="kgline back" d="M' + a.x.toFixed(1) + ',' + a.y.toFixed(1) + ' Q'
+        + mx.toFixed(1) + ',' + my.toFixed(1) + ' ' + b.x.toFixed(1) + ',' + b.y.toFixed(1)
+        + '" fill="none" stroke-width="' + sw.toFixed(2) + '"' + arrow + '/>';
+    }
     return '<line class="kgline" x1="' + a.x.toFixed(1) + '" y1="' + a.y.toFixed(1)
-      + '" x2="' + b.x.toFixed(1) + '" y2="' + b.y.toFixed(1) + '" stroke-width="' + sw.toFixed(2) + '"/>';
+      + '" x2="' + b.x.toFixed(1) + '" y2="' + b.y.toFixed(1) + '" stroke-width="' + sw.toFixed(2) + '"' + arrow + '/>';
   }).join("");
   const circles = nodes.map(n => {
     const q = pos[n.id];
@@ -919,8 +966,53 @@ function kgSvg(nodes, edges, width, height, opts) {
       + '<text class="kglabel" y="' + (r + 11).toFixed(1) + '">' + esc(opts.label(n)) + '</text></g>';
   }).join("");
   return '<svg class="kgsvg" width="100%" height="' + height + '" viewBox="0 0 ' + width + ' ' + height
-    + '" preserveAspectRatio="xMidYMid meet">'
+    + '" preserveAspectRatio="xMidYMid meet">' + defs
     + '<g id="kgzoom">' + lines + circles + '</g></svg>';
+}
+
+// The DIRECTED-CALL layered layout (spec 52 c5): a left-to-right DAG position map for `kgSvg`, keyed
+// off the SERVER-provided signed `layer` (callees positive so the seed draws at the LEFT, callers
+// negative so it draws at the RIGHT, the seed 0 - centered for a `both` walk). x is the layer mapped
+// across the width; within a layer, nodes order by a ONE-PASS BARYCENTER sweep (each node's y is the
+// average of its already-placed neighbours' y, so an edge crosses as little as possible) and then
+// space evenly. Deterministic: layers and within-layer ties break by id, so the same graph lays out
+// identically every poll. A drop-in `opts.layout` for kgSvg, never a second graph-drawing engine.
+function layeredLayout(nodes, edges, width, height) {
+  const pad = 44;
+  const byLayer = {};
+  nodes.forEach(n => { const L = Number(n.layer || 0); (byLayer[L] = byLayer[L] || []).push(n.id); });
+  const layers = Object.keys(byLayer).map(Number).sort((a, b) => a - b);
+  if (!layers.length) return {};
+  const minL = layers[0], maxL = layers[layers.length - 1];
+  const span = (maxL - minL) || 1;
+  const xOf = L => (layers.length === 1) ? width / 2 : pad + ((L - minL) / span) * (width - 2 * pad);
+  // Undirected adjacency, so a barycenter can average neighbours in either direction.
+  const nb = {};
+  nodes.forEach(n => { nb[n.id] = []; });
+  edges.forEach(e => { if (nb[e.from] && nb[e.to]) { nb[e.from].push(e.to); nb[e.to].push(e.from); } });
+  const pos = {};
+  const yOf = {};
+  const place = (ids, L) => {
+    ids.forEach((id, i) => {
+      const y = height * (i + 1) / (ids.length + 1);
+      pos[id] = { x: xOf(L), y: y };
+      yOf[id] = y;
+    });
+  };
+  // The first layer seeds a stable id-sorted order; each later layer orders by the barycenter of its
+  // already-placed neighbours (id as the deterministic tiebreak), then spaces evenly.
+  place(byLayer[layers[0]].slice().sort(), layers[0]);
+  for (let k = 1; k < layers.length; k++) {
+    const L = layers[k];
+    const barycenter = id => {
+      const placed = nb[id].filter(m => yOf[m] !== undefined);
+      if (!placed.length) return height / 2;
+      return placed.reduce((s, m) => s + yOf[m], 0) / placed.length;
+    };
+    const ids = byLayer[L].slice().sort((a, b) => (barycenter(a) - barycenter(b)) || (a < b ? -1 : 1));
+    place(ids, L);
+  }
+  return pos;
 }
 
 // PAN + ZOOM over the drawn graph: scroll zooms toward the cursor and drag pans, both by transforming
@@ -1058,6 +1150,135 @@ async function drillCluster(key) {
   }
 }
 
+// ---------------------------------------------------------------------------------------------------
+// DIRECTED-CALL views (spec 52 c5): the execution path ("what does this call, transitively", dir=down)
+// and the call sites ("who calls this", dir=up) of a code entity, as a LAYERED left-to-right DAG. The
+// same kgSvg emitter draws it (an injected layered layout + arrowheads + back-edge arcs); a multi-
+// candidate cross-file hop comes back a FRONTIER the human re-seeds on, never a guess. Reached from a
+// code-entity neighborhood (renderGraph offers the two directed queries) and from a chosen frontier
+// candidate; the panel survives the 1.5s poll like every KG view (render() never touches kgpanel).
+// ---------------------------------------------------------------------------------------------------
+
+// The direction of the currently-shown call view, so a frontier re-seed continues the SAME walk.
+let kgCallsDir = "down";
+
+// Fetch and draw a directed-call view of `seed` in `dir` (down|up|both) from the c4 route. Keeps the
+// shared `kgSeed` in sync so the rest of the panel wiring has a current seed. A static export / failed
+// fetch degrades to a message; the panel never throws.
+async function seedCalls(seed, dir) {
+  kgCallsDir = dir || "down";
+  kgSeed = seed;
+  if (!LIVE) {
+    el("kgpanel").innerHTML = '<div class="kgseed">selected <b>' + esc(seed) + '</b></div>'
+      + '<div class="empty">the directed-call views are available in the live dash (this is a static export)</div>';
+    return;
+  }
+  try {
+    const cg = await (await fetch(apiUrl("/api/graph?view=calls&seed=" + encodeURIComponent(seed)
+      + "&dir=" + encodeURIComponent(kgCallsDir) + "&depth=6"), { cache: "no-store" })).json();
+    renderKgCalls(cg);
+  } catch (e) {
+    el("kgpanel").innerHTML = '<div class="empty">the directed-call view is unavailable</div>';
+  }
+}
+
+// Draw a directed-call DAG (the c4 `view=calls` body): the layered left-to-right graph through the
+// shared kgSvg emitter (server `layer` -> x, barycenter -> within-layer y, arrowheads on the forward
+// edges, curved arcs on the back edges), a toolbar that switches direction, a place for a frontier's
+// expanded candidate list, and - for an UP walk - the flat "referenced but not called" who-uses list
+// beside the traversed DAG. A frontier node carries its candidates for the expand; a plain call node
+// re-seeds the neighborhood. An empty walk degrades to a message, never an error.
+function renderKgCalls(cg) {
+  kgMode = "calls";
+  const nodes = (cg && cg.nodes) || [];
+  const edges = (cg && cg.edges) || [];
+  const seed = (cg && cg.seed) || "";
+  const dir = (cg && cg.dir) || "down";
+  const refd = (cg && cg.referenced_not_called) || [];
+  const dirLabel = dir === "up" ? "call sites (who calls this)"
+    : dir === "both" ? "flow through this function"
+    : "execution path (what this calls)";
+  const back = '<a class="kgback" href="#" data-kgback="1">&larr; overview</a>';
+  const switcher = ' &middot; <a href="#" data-calls-down="' + esc(seed) + '">execution path</a>'
+    + ' <a href="#" data-calls-up="' + esc(seed) + '">call sites</a>'
+    + ' <a href="#" data-calls-both="' + esc(seed) + '">flow (both)</a>';
+  const head = '<div class="kgtoolbar">' + back + ' &middot; ' + esc(dirLabel) + ' of <b>'
+    + esc(seed) + '</b>' + switcher + '</div>'
+    + '<div id="kgfrontier" class="kgfrontier"></div>';
+  if (!nodes.length) {
+    el("kgpanel").innerHTML = head + '<div class="empty">no calls for this node in this direction</div>';
+    return;
+  }
+  const dims = kgDims();
+  // HIGH FAN-OUT cap (spec 52 c5): a single layer with more callees/callers than the render budget
+  // would overplot into an unreadable smear, so each layer keeps its first budget nodes (id-sorted,
+  // deterministic) and a "+K more" caption reports the rest the layer holds back; an edge to a
+  // held-back node is dropped so no line dangles. Re-seeding on a shown node reaches the rest, so
+  // nothing is lost - only deferred. A within-budget DAG renders whole (heldBack === 0, no caption).
+  const LAYER_FANOUT_BUDGET = 24;
+  const perLayer = {};
+  nodes.forEach(n => { const L = Number(n.layer || 0); (perLayer[L] = perLayer[L] || []).push(n); });
+  let shown = [], heldBack = 0;
+  Object.keys(perLayer).forEach(L => {
+    const grp = perLayer[L].slice().sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    if (grp.length > LAYER_FANOUT_BUDGET) {
+      shown = shown.concat(grp.slice(0, LAYER_FANOUT_BUDGET));
+      heldBack += grp.length - LAYER_FANOUT_BUDGET;
+    } else {
+      shown = shown.concat(grp);
+    }
+  });
+  const shownIds = {};
+  shown.forEach(n => { shownIds[n.id] = true; });
+  const shownEdges = edges.filter(e => shownIds[e.from] && shownIds[e.to]);
+  const capNote = heldBack
+    ? '<div class="kgcap">+' + heldBack + ' more held back (a layer exceeded the render budget of '
+      + LAYER_FANOUT_BUDGET + ' - re-seed on a node to expand it)</div>'
+    : "";
+  const svg = kgSvg(shown, shownEdges, dims.w, dims.h, {
+    layout: layeredLayout,
+    marker: true,
+    edgeBack: e => !!e.back,
+    radius: n => n.frontier ? 8 : 6,
+    fill: n => kindColor(n.kind),
+    // A frontier node is visually distinct and carries its candidate ids for the click-to-expand; a
+    // resolved call node re-seeds the neighborhood (data-seed), the same handle the drill uses.
+    nodeClass: n => n.frontier ? "kgcall frontier" : "kgcall",
+    nodeAttrs: n => n.frontier
+      ? ' data-frontier="1" data-candidates="' + esc((n.frontier || []).join("|")) + '"'
+      : ' data-seed="' + esc(n.id) + '"',
+    label: n => n.frontier
+      ? (n.label || n.id) + " (" + (n.frontier || []).length + " candidates)"
+      : (n.label || n.id),
+    edgeWidth: () => 1.2
+  });
+  // The UP "referenced but not called" sidecar: files that import/use the seed's name but call it
+  // from no function - each a data-seed handle back into the neighborhood. Empty for a down walk.
+  const refSection = refd.length
+    ? '<div class="kgrefd"><h3>referenced but not called</h3>'
+      + refd.map(n => '<div class="kgnode" data-seed="' + esc(n.id) + '"><span class="tlabel">'
+        + esc(n.label || n.id) + '</span><span class="kgkind">' + esc(n.kind) + '</span></div>').join("")
+      + '</div>'
+    : "";
+  el("kgpanel").innerHTML = head + capNote + svg + refSection;
+  bindKgView();
+}
+
+// Expand a clicked FRONTIER node (spec 52 c5): a multi-candidate cross-file hop the walk did NOT
+// descend. Render its candidate definitions into the frontier slot, each a data-candidate handle;
+// choosing one RE-SEEDS the directed-call view on that definition (seedCalls), so the human picks the
+// definition and the graph never guesses. `raw` is the `|`-joined candidate ids the node carried.
+function showFrontierChoices(raw) {
+  const box = el("kgfrontier");
+  if (!box) return;
+  const cands = String(raw || "").split("|").filter(Boolean);
+  if (!cands.length) { box.innerHTML = ""; return; }
+  box.innerHTML = '<div class="kgfr-head">this name has ' + cands.length
+    + ' definitions - choose one to continue the walk:</div>'
+    + cands.map(c => '<a class="kgfr-cand" href="#" data-candidate="' + esc(c) + '">'
+      + esc(c) + '</a>').join("");
+}
+
 // Wire select-to-seed ONCE (not per render): one delegated click listener on each stable container
 // (the tree and the KG panel itself), so it SURVIVES the render()/renderTree() innerHTML swaps that
 // destroy the individual nodes. A plain click on a node carrying data-seed sets the seed and drives
@@ -1067,14 +1288,30 @@ async function drillCluster(key) {
 function wireSelectToSeed() {
   ["tree", "kgpanel"].forEach(id => {
     el(id).addEventListener("click", ev => {
-      // Three-way exploration dispatch (spec 42 c5), most-specific handle first, so ONE delegated
+      // Exploration dispatch (spec 42 c5 + spec 52 c5), most-specific handle first, so ONE delegated
       // listener on the stable container survives the innerHTML swaps that destroy the individual
       // nodes: a "<- overview" back link returns to the clustered overview; a cluster super-node
-      // DRILLS to its members; and a node's data-seed SEEDS the spec 30 neighborhood (unchanged).
+      // DRILLS to its members; the two DIRECTED-CALL affordances open the execution-path / call-sites
+      // DAG; a clicked FRONTIER node EXPANDS its candidates and a chosen CANDIDATE re-seeds the call
+      // view on it; and a node's data-seed SEEDS the spec 30 neighborhood (unchanged).
       const back = ev.target.closest("[data-kgback]");
       if (back) { ev.preventDefault(); loadKgOverview(); return; }
       const cluster = ev.target.closest("[data-cluster]");
       if (cluster && cluster.dataset.cluster) { drillCluster(cluster.dataset.cluster); return; }
+      // Directed-call entry (spec 52 c5): the two queries a code-entity node offers, and the third
+      // "flow (both)" affordance - each opens the layered DAG in that direction.
+      const cdown = ev.target.closest("[data-calls-down]");
+      if (cdown && cdown.dataset.callsDown) { ev.preventDefault(); seedCalls(cdown.dataset.callsDown, "down"); return; }
+      const cup = ev.target.closest("[data-calls-up]");
+      if (cup && cup.dataset.callsUp) { ev.preventDefault(); seedCalls(cup.dataset.callsUp, "up"); return; }
+      const cboth = ev.target.closest("[data-calls-both]");
+      if (cboth && cboth.dataset.callsBoth) { ev.preventDefault(); seedCalls(cboth.dataset.callsBoth, "both"); return; }
+      // A chosen frontier candidate re-seeds the SAME-direction walk on that definition; a frontier
+      // node click expands its candidate list (the human picks, the graph never guesses).
+      const cand = ev.target.closest("[data-candidate]");
+      if (cand && cand.dataset.candidate) { ev.preventDefault(); seedCalls(cand.dataset.candidate, kgCallsDir); return; }
+      const front = ev.target.closest("[data-frontier]");
+      if (front) { ev.preventDefault(); showFrontierChoices(front.dataset.candidates); return; }
       const hit = ev.target.closest("[data-seed]");
       if (hit && hit.dataset.seed) {
         if (ev.shiftKey) pathTo(hit.dataset.seed);

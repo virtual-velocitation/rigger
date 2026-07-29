@@ -53,6 +53,10 @@ fn try_fetch_served_root_page() -> Option<String> {
         Ok((Vec::new(), Graph::default(), Vec::new(), HashMap::new()))
     };
     let graph_provider = |_instance: Option<&str>| Graph::default();
+    let calls_provider =
+        |_: Option<&str>, _: &[String], _: rigger::contextgraph::Direction, _: i64, _: &str| {
+            rigger::contextgraph::CallGraph::default()
+        };
     let instances_provider = Vec::new;
 
     // A detached server thread: `serve` loops until the process ends; we drive one request. If its
@@ -62,6 +66,7 @@ fn try_fetch_served_root_page() -> Option<String> {
             addr,
             provider,
             graph_provider,
+            calls_provider,
             instances_provider,
             3,
             "rigger-run",

@@ -120,12 +120,17 @@ fn try_fetch_served(path: &str, graph: Graph) -> Option<String> {
     let provider = move |_instance: Option<&str>| -> Result<DashInputs, String> {
         Ok((Vec::new(), graph.clone(), Vec::new(), HashMap::new()))
     };
+    let calls_provider =
+        |_: Option<&str>, _: &[String], _: rigger::contextgraph::Direction, _: i64, _: &str| {
+            rigger::contextgraph::CallGraph::default()
+        };
     let instances_provider = Vec::new;
     std::thread::spawn(move || {
         let _ = dash::serve(
             addr,
             provider,
             graph_provider,
+            calls_provider,
             instances_provider,
             3,
             "rigger-run",
@@ -1665,6 +1670,10 @@ fn the_served_graph_route_reads_the_lazy_provider_only_and_never_on_the_state_po
             hits_for_provider.fetch_add(1, Ordering::SeqCst);
             lazy_graph.clone()
         };
+        let calls_provider =
+            |_: Option<&str>, _: &[String], _: rigger::contextgraph::Direction, _: i64, _: &str| {
+                rigger::contextgraph::CallGraph::default()
+            };
         let instances_provider = Vec::new;
 
         std::thread::spawn(move || {
@@ -1672,6 +1681,7 @@ fn the_served_graph_route_reads_the_lazy_provider_only_and_never_on_the_state_po
                 addr,
                 provider,
                 graph_provider,
+                calls_provider,
                 instances_provider,
                 3,
                 "rigger-run",
