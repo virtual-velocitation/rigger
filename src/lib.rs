@@ -7,6 +7,11 @@
 
 pub mod blocker;
 pub mod canary;
+/// Deterministic coupling-community detection (spec 53, the CODE lens): the offline pass that
+/// groups code entities and files by how densely they call and reference one another, regardless of
+/// directory, and records the result as `CommunityAssigned` events the always-compiled fold turns
+/// into `IN_COMMUNITY` membership edges. Always compiled and proven in both feature lanes.
+pub mod community;
 pub mod conductor;
 pub mod config;
 pub mod contextgraph;

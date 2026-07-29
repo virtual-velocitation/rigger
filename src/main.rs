@@ -11,6 +11,7 @@ use std::process::{Command, Stdio};
 
 use rigger::blocker;
 use rigger::canary;
+use rigger::community;
 use rigger::conductor::{self, Deps};
 use rigger::config;
 use rigger::contextgraph::{self, sqlite::Projector, Projection};
@@ -1343,6 +1344,8 @@ rigger serve [opts]         run as an MCP server the driver connects to\n  \
 rigger graph --around <id>  print the context subgraph around a node\n  \
 rigger graph build          fold the project's source into the graph from a cold\n                              \
 checkout (no run required)\n  \
+rigger graph communities    derive the code lens's coupling communities offline and\n                              \
+[--resolution <r>]          record them as events (deterministic; default r=1.0)\n  \
 rigger stats                print the run's operator metrics: first-pass yield,\n                              \
 per-gate remediation counts, escalation rate, and\n                              \
 review approve/reject counts. --canary reports the\n                              \
@@ -3023,6 +3026,11 @@ fn cmd_graph(args: &[String]) -> Res {
     if args.first().map(String::as_str) == Some("build") {
         return cmd_graph_build(&args[1..]);
     }
+    // `rigger graph communities` is the OFFLINE detection pass (spec 53): derive the code lens's
+    // coupling communities over the already-folded structure layer and record them as events.
+    if args.first().map(String::as_str) == Some("communities") {
+        return cmd_graph_communities(&args[1..]);
+    }
     let mut around = String::new();
     let mut depth: i64 = 2;
     let mut i = 0;
@@ -3143,6 +3151,81 @@ fn cmd_graph_build(_args: &[String]) -> Res {
 
     println!(
         "graph build: ingested {appended} code-ingest event(s) into {}",
+        db_path("graph.db")
+    );
+    Ok(())
+}
+
+/// `rigger graph communities [--resolution <r>]` - the OFFLINE, DETERMINISTIC community-detection
+/// pass (spec 53, the CODE lens). It reads the project's already-folded coupling layer (the live
+/// `CALLS` / `REFERENCES` / `CONTAINS` edges among code-entity / file nodes), runs modularity-based
+/// detection over it at the given `--resolution` grain (default [`community::DEFAULT_RESOLUTION`]),
+/// and RECORDS the result as `CommunityAssigned` events - so the derived grouping is event-sourced
+/// (the `IN_COMMUNITY` membership edges are a rebuildable fold of the log), never computed at request
+/// time. Re-running at a resolution supersedes only that grain's prior assignments (the fold's
+/// `fresh` boundary), so distinct grains coexist and the lens always reads one live set per grain.
+///
+/// Store lifecycle mirrors `graph build` (the composition root, not the courier walk-up): it
+/// CREATES the store under the cwd's `.rigger/` when absent, then reads the WHOLE projection and
+/// appends-and-folds the pass's events in ONE batch. Detection is always-compiled and reads only
+/// folded edges, so this runs identically in both feature lanes; a graph with no coupling edges
+/// detects nothing and records nothing (exit 0, never an error).
+fn cmd_graph_communities(args: &[String]) -> Res {
+    let mut resolution = community::DEFAULT_RESOLUTION;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--resolution" => {
+                i += 1;
+                let raw = args.get(i).cloned().unwrap_or_default();
+                resolution = raw.parse::<f64>().map_err(|_| {
+                    format!("graph communities: --resolution expects a number, got {raw:?}")
+                })?;
+                if !(resolution.is_finite() && resolution > 0.0) {
+                    return Err(format!(
+                        "graph communities: --resolution must be a positive finite number, got {resolution}"
+                    )
+                    .into());
+                }
+            }
+            other => {
+                return Err(format!("graph communities: unknown argument {other:?}").into());
+            }
+        }
+        i += 1;
+    }
+
+    // Bootstrap the store like `graph build`/`run` do (create-or-open under the cwd's `.rigger/`).
+    std::fs::create_dir_all(RIGGER_DIR)?;
+    let selection = store_selection(None, None)?;
+    let backend = resolve_store(&selection, &db_path("events.db"))?;
+    let store = Namespaced::new(backend.as_ref(), &project_identity());
+    let graph = Projector::open(&db_path("graph.db"), &project_identity())?;
+
+    // Read the WHOLE live projection and detect communities over its coupling layer. `whole()` is
+    // the same direct, project-scoped, sorted read the dash's `/api/graph` provider consults.
+    let whole = graph.whole()?;
+    let coupling = community::Coupling::from_graph(&whole);
+    let assignment = community::detect(&coupling, resolution);
+    let events = community::events(&assignment);
+
+    // Append the pass's events in ONE store append and fold them in ONE transaction (the shared
+    // batched append-and-fold authority). The `fresh` head supersedes this grain's prior
+    // memberships; the rest re-add, so a re-run REPLACES this resolution's assignment set.
+    rigger::ingest::append_and_fold_batch(
+        &store,
+        Some(&graph as &dyn Projection),
+        conductor::STREAM,
+        &events,
+    )?;
+
+    println!(
+        "graph communities: detected {} communit{} over {} coupled node(s) at resolution {} ({} membership event(s) recorded into {})",
+        assignment.num_communities,
+        if assignment.num_communities == 1 { "y" } else { "ies" },
+        coupling.len(),
+        resolution,
+        events.len(),
         db_path("graph.db")
     );
     Ok(())
