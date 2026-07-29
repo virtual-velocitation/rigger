@@ -29,6 +29,12 @@
 //!     event type (spec 53 standing-b forbids it) or a projector-level clear outside the fold (breaks
 //!     event-sourcing), and an empty coupling is the degenerate whole-layer-empty read; a real SHRINK
 //!     is a smaller NON-empty assignment that DOES supersede (see property 3).
+//!  6. CROSS-PROJECT SCOPING - the `fresh` supersession (the edge retire AND the orphan-node drop) is
+//!     `project`-scoped, and community ids (`community/<r>/<n>`) are NOT project-qualified, so on a
+//!     shared backend two projects hold the SAME community id as DISTINCT `(id, project)` rows. A
+//!     FIRING re-run in ONE project must leave the OTHER project's identically-named grain
+//!     byte-identical - the axis the single-project siblings are structurally blind to. (REAL fold
+//!     over two projects on one backend.)
 //!
 //! Sibling coverage this deliberately does NOT duplicate: criterion 1's determinism/connectedness
 //! (`community_detection_pass.rs`), criterion 3's fold contract with HAND-AUTHORED events
@@ -664,5 +670,89 @@ fn an_empty_rerun_keeps_the_last_good_assignment() {
         grain_snapshot(&p.whole().unwrap(), "1"),
         "an empty re-run leaves the r=1 grain's last-good live layer byte-identical (keep-last-good, \
          not clear-on-empty)"
+    );
+}
+
+#[test]
+fn a_firing_rerun_supersedes_only_its_own_project() {
+    // CROSS-PROJECT SCOPING of the `fresh` supersession (criterion 2's per-resolution supersession
+    // extended to the OTHER axis the single-project siblings are structurally blind to). Community ids
+    // are `community/<res>/<n>` - NOT project-qualified - and the `nodes` primary key is
+    // `(id, project)`, so two projects on ONE shared backend BOTH hold a node `community/1/0` as
+    // DISTINCT rows. The fold's `fresh` arm is the ONLY thing keeping a re-run in project A from
+    // clobbering project B's identically-named grain: the edge retire is `... AND project = ?` and the
+    // orphan-node DELETE is `DELETE ... AND project = ?`. Every OTHER community test (this file's
+    // siblings, community_fold_periphery.rs, community_detection_cli.rs) runs a SINGLE project, so this
+    // guard is otherwise unexercised. This drives TWO projects through the REAL fold over one backend.
+    //
+    // MUTATION-VERIFICATION: dropping `AND project = ?3` from the node DELETE (sqlite.rs community fold
+    // arm) lets project A's shrink also delete project B's `community/1/0` and `community/1/1` nodes
+    // (neither has a live member in project A) - reddening the "project B byte-identical" node rows;
+    // dropping `AND project = ?4` from the edge retire retires project B's live memberships too -
+    // reddening its edge rows. Neither mutation reddens any single-project sibling.
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("graph.db");
+    let db = db_path.to_str().unwrap();
+
+    // Two projects share ONE backend file; the `(id, project)` primary key keeps their
+    // identically-named community nodes as DISTINCT rows, and `whole()` reads each in isolation.
+    let a = Projector::open(db, "proj-a").unwrap();
+    let b = Projector::open(db, "proj-b").unwrap();
+
+    // Project B: a stable r=1 grain - community/1/0 = {b1, b2}, community/1/1 = {b3}. Its positions are
+    // GLOBALLY disjoint from project A's because the `applied` ledger (position PRIMARY KEY) is shared
+    // across the backend - a reused position would be IGNORED and fold nothing.
+    record_assignment(
+        &b,
+        1.0,
+        "b-pass",
+        &[
+            ("n_b1", "community/1/0"),
+            ("n_b2", "community/1/0"),
+            ("n_b3", "community/1/1"),
+        ],
+        1,
+    );
+    let before_b = grain_snapshot(&b.whole().unwrap(), "1");
+    assert!(
+        !before_b.is_empty(),
+        "project B has a live r=1 layer before project A's re-run (else the guard is vacuous)"
+    );
+
+    // Project A: an r=1 grain with the SAME community ids, then a FIRING shrink re-run that EMPTIES
+    // community/1/1 (its sole member moves into community/1/0) - firing project A's edge retire AND
+    // orphan-node DELETE.
+    let next = record_assignment(
+        &a,
+        1.0,
+        "a-pass-1",
+        &[("n_a1", "community/1/0"), ("n_a2", "community/1/1")],
+        100,
+    );
+    record_assignment(
+        &a,
+        1.0,
+        "a-pass-2",
+        &[("n_a1", "community/1/0"), ("n_a2", "community/1/0")],
+        next,
+    );
+
+    // Project A's re-run FIRED over its OWN grain: its emptied community/1/1 node is gone.
+    assert_eq!(
+        grain_community_nodes(&a.whole().unwrap(), "1"),
+        vec!["community/1/0".to_string()],
+        "project A's firing shrink retired its OWN community/1/1 node; got {:?}",
+        grain_community_nodes(&a.whole().unwrap(), "1")
+    );
+
+    // Project B is UNTOUCHED - its whole live r=1 layer (the identically-named community/1/0 AND
+    // community/1/1 nodes, and every membership edge) is byte-identical across project A's firing
+    // re-run. A guard-less DELETE would have dropped project B's community nodes; a guard-less edge
+    // retire would have retired project B's memberships.
+    assert_eq!(
+        before_b,
+        grain_snapshot(&b.whole().unwrap(), "1"),
+        "a firing re-run in project A leaves project B's identically-named r=1 grain byte-identical \
+         (the fold's edge retire AND orphan-node DELETE are project-scoped)"
     );
 }
