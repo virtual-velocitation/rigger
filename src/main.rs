@@ -3162,14 +3162,19 @@ fn cmd_graph_build(_args: &[String]) -> Res {
 /// detection over it at the given `--resolution` grain (default [`community::DEFAULT_RESOLUTION`]),
 /// and RECORDS the result as `CommunityAssigned` events - so the derived grouping is event-sourced
 /// (the `IN_COMMUNITY` membership edges are a rebuildable fold of the log), never computed at request
-/// time. Re-running at a resolution supersedes only that grain's prior assignments (the fold's
-/// `fresh` boundary), so distinct grains coexist and the lens always reads one live set per grain.
+/// time. Re-running at a resolution with a NON-empty result supersedes only that grain's prior
+/// assignments (the fold's `fresh` boundary), so distinct grains coexist and the lens reads one live
+/// set per grain.
 ///
 /// Store lifecycle mirrors `graph build` (the composition root, not the courier walk-up): it
 /// CREATES the store under the cwd's `.rigger/` when absent, then reads the WHOLE projection and
 /// appends-and-folds the pass's events in ONE batch. Detection is always-compiled and reads only
 /// folded edges, so this runs identically in both feature lanes; a graph with no coupling edges
-/// detects nothing and records nothing (exit 0, never an error).
+/// detects nothing and records nothing (exit 0, never an error). Because an empty result records NO
+/// events, an empty re-run is KEEP-LAST-GOOD: it does NOT clear a grain's prior assignment - the last
+/// NON-empty pass at that resolution stays live (see `community::events`, decision
+/// d-u53c2-empty-rerun-keep-last-good). A real subsystem removal is a SHRINK - a smaller NON-empty
+/// result - which DOES supersede via the `fresh` boundary and drops the emptied community's node.
 fn cmd_graph_communities(args: &[String]) -> Res {
     let mut resolution = community::DEFAULT_RESOLUTION;
     let mut i = 0;

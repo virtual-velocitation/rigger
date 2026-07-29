@@ -276,9 +276,20 @@ pub fn detect(coupling: &Coupling, resolution: f64) -> Assignment {
 
 /// The `CommunityAssigned` events recording an [`Assignment`], in sorted-node-id order, with the
 /// FIRST event carrying `fresh: true` (the pass boundary the fold supersedes the resolution grain's
-/// prior memberships on - so a re-run REPLACES this grain's assignment set). Appending and folding
-/// these events materializes the community layer; a rebuild replays them to byte-identical rows. An
-/// empty assignment yields no events.
+/// prior memberships on - so a re-run whose assignment is NON-empty REPLACES this grain's assignment
+/// set). Appending and folding these events materializes the community layer; a rebuild replays them
+/// to byte-identical rows.
+///
+/// An EMPTY assignment yields NO events - which is the KEEP-LAST-GOOD policy, not an oversight: with
+/// no member there is no event to carry the `fresh` boundary, so the fold never fires the
+/// supersession and the grain's last NON-empty assignment stays LIVE. This is deliberate (an empty
+/// coupling is the degenerate whole-layer-empty read - detection run before code ingest, or all
+/// coupling removed - where clobbering a good derivation is worse than keeping it); CLEARING on empty
+/// would need a new event type to represent "this grain is now empty" (the event-sourced no-new-type
+/// constraint forbids one) or a projector-level clear outside the fold (which would break the
+/// rebuildable-projection invariant). A real SHRINK is a smaller NON-empty assignment that DOES carry
+/// `fresh` and DOES supersede, so "code lost a subsystem" is handled by supersession; only the
+/// all-coupling-gone case keeps last-good.
 pub fn events(assignment: &Assignment) -> Vec<Event> {
     assignment
         .members

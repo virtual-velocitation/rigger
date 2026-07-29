@@ -1363,6 +1363,9 @@ fn fold(tx: &Transaction, e: &Event, project: &str) -> Result<(), Error> {
             // a substr equality, never a LIKE/GLOB whose wildcards a value could carry). A no-op on
             // the first-ever pass (no prior memberships). This is the fold-side supersession the
             // grain criterion relies on; the criterion 3 recording discipline owns the mechanism.
+            // An EMPTY re-run never reaches here (an empty assignment records no events, so no `fresh`
+            // event fires): that is the deliberate KEEP-LAST-GOOD policy - the prior non-empty
+            // assignment stays live - documented on `community::events` (d-u53c2-empty-rerun-keep-last-good).
             if c.fresh {
                 let prefix = format!("community/{res}/");
                 tx.execute(
@@ -1370,6 +1373,33 @@ fn fold(tx: &Transaction, e: &Event, project: &str) -> Result<(), Error> {
                      WHERE valid_to IS NULL AND project = ?4 AND rel = ?3
                        AND substr(to_id, 1, length(?2)) = ?2",
                     params![at, prefix, REL_IN_COMMUNITY, project],
+                )
+                .map_err(be)?;
+                // Node-side supersession (the completeness half): the edge retire above leaves every
+                // community super-node of THIS grain with no live member, so a re-run that DROPS or
+                // EMPTIES a community (a shrink, or the last member moving out of one) would strand
+                // its KIND_COMMUNITY node - a ghost/orphan bucket that `whole()` (the read the dash
+                // `/api/graph` provider consults) still surfaces with ZERO live members and a STALE
+                // label. Drop every now-memberless community node OF THIS GRAIN so no such ghost
+                // survives; the pass's own events immediately re-`ensure` exactly the communities its
+                // NEW assignment uses (the first member of each folds its node back), leaving only the
+                // dropped/emptied communities gone. Nodes carry no `valid_to`, so this is a DELETE
+                // (the same node-removal primitive `prune` uses), not an edge-style retire. Scoped by
+                // the SAME `community/<res>/` id prefix (a substr equality, never a wildcard) so it
+                // never touches another grain's nodes, and by KIND_COMMUNITY so only derived
+                // super-nodes are eligible; the `NOT EXISTS(live member)` guard makes the intent
+                // exact - a community is dropped only once its last live member is gone. A rebuild
+                // replays the same events in the same order and re-derives the identical node set.
+                tx.execute(
+                    "DELETE FROM nodes
+                      WHERE kind = ?2 AND project = ?3
+                        AND substr(id, 1, length(?1)) = ?1
+                        AND NOT EXISTS (
+                            SELECT 1 FROM edges e
+                             WHERE e.to_id = nodes.id AND e.rel = ?4
+                               AND e.valid_to IS NULL AND e.project = ?3
+                        )",
+                    params![prefix, KIND_COMMUNITY, project, REL_IN_COMMUNITY],
                 )
                 .map_err(be)?;
             }
