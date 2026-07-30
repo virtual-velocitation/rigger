@@ -36,6 +36,7 @@
 //! the route nor these DTOs is feature-gated), so this guards the served contract in both lanes.
 
 use std::collections::{BTreeSet, HashMap};
+use std::process::Command;
 
 use rigger::contextgraph::{
     Edge, Graph, Node, KIND_CODE_ENTITY, KIND_CONCEPT, KIND_DECISION, KIND_DESIGN_DOC, REL_CALLS,
@@ -313,6 +314,58 @@ fn concepts_lens_drill_flags_the_shared_member_and_folds_it_under_its_primary() 
     );
 }
 
+/// THE PRIMARY-BUCKET TIE-BREAK, exercised at the boundary: when a shared member realizes two concepts
+/// of EQUAL member count, the primary is chosen by the lexicographically-smallest concept id (spec 54:
+/// "largest by member count, ties by lexicographically-smallest id"). The `lens_graph` fixture only
+/// exercises the size arm (c0 size 3 > c1 size 2); this closes the tie arm. Two concepts, each size 2,
+/// share one member: the member folds ONCE under the lex-smaller concept and is flagged `shared`; the
+/// lex-larger concept's drill does NOT carry it. Deterministic by construction: the same graph folds
+/// the shared member to the same primary every run.
+#[test]
+fn a_shared_member_of_two_equal_size_concepts_folds_to_the_lexicographically_smallest() {
+    // Two concepts of EQUAL size 2, both realized by `shared_fn`, so ONLY the id tie-break can decide
+    // the primary. `concept/1/0` sorts before `concept/1/1`, so the shared member's primary is c0.
+    let graph = Graph {
+        nodes: vec![
+            doc("docs/alpha.md"),
+            doc("docs/beta.md"),
+            ce("src/x.rs::shared_fn"),
+            concept(C0, "alpha"),
+            concept(C1, "beta"),
+        ],
+        edges: vec![
+            // concept/1/0 = {docs/alpha.md, shared_fn} (size 2).
+            edge("docs/alpha.md", C0, REL_REALIZES, TIER_INFERRED),
+            edge("src/x.rs::shared_fn", C0, REL_REALIZES, TIER_INFERRED),
+            // concept/1/1 = {docs/beta.md, shared_fn} (size 2 - EQUAL, so only the id tie-break decides).
+            edge("docs/beta.md", C1, REL_REALIZES, TIER_INFERRED),
+            edge("src/x.rs::shared_fn", C1, REL_REALIZES, TIER_INFERRED),
+        ],
+    };
+
+    // The lex-SMALLER concept c0 is the primary: the shared member folds here, flagged shared.
+    let primary = cluster_detail(&graph, C0, &concepts_default());
+    let members0: std::collections::BTreeMap<&str, bool> = primary
+        .nodes
+        .iter()
+        .map(|n| (n.id.as_str(), n.shared))
+        .collect();
+    assert_eq!(
+        members0,
+        std::collections::BTreeMap::from([("docs/alpha.md", false), ("src/x.rs::shared_fn", true)]),
+        "on an equal-size tie the shared member folds under the lexicographically-smallest concept c0, flagged shared: {primary:?}"
+    );
+
+    // The lex-LARGER concept c1 does NOT carry the shared member (it appears once, under c0 only).
+    let other = cluster_detail(&graph, C1, &concepts_default());
+    let members1: BTreeSet<&str> = other.nodes.iter().map(|n| n.id.as_str()).collect();
+    assert_eq!(
+        members1,
+        ["docs/beta.md"].into_iter().collect::<BTreeSet<&str>>(),
+        "the lex-larger concept c1 drills to ONLY its own non-shared member; the shared member is not duplicated here: {other:?}"
+    );
+}
+
 /// THE UNDERIVED-GRAIN empty state over the public boundary: a concepts lens at a resolution grain
 /// with NO derived assignments returns the documented `CONCEPTS_LENS_UNDERIVED` prompt - never an
 /// error and never a bare kind-bucket view - while `total` still reports the whole graph size.
@@ -528,5 +581,175 @@ fn the_served_graph_route_threads_the_concepts_lens_into_overview_and_drill() {
         default,
         served("/api/graph?lens=concepts&resolution=1").body,
         "the concepts lens actually changes the served body (the back-compat equality is not vacuous)"
+    );
+}
+
+// ---------------------------------------------------------------------------------------------------
+// THE RENDER PROOF (spec 54 c3 Honest-membership Global Constraint). The wire tests above prove the
+// fold FLAGS a multi-concept member with `shared` on the /api/graph body - but a flag the DRILL
+// discards flags nothing to a HUMAN, so honest membership is only met end-to-end once the served page
+// SURFACES it. This layer drives the served page's OWN `renderKgDrill` under node's built-in `vm` (no
+// npm, hermetic - the same runtime discipline as the spec-42 exploration-viz harness) and asserts the
+// concepts-drill SVG surfaces `n.shared`: the shared member's node group gains a `kgshared`
+// distinguishing class (a dashed accent ring, mirroring the `kggodnode` flag pattern), a `[shared]`
+// label tag a human reads without hovering, and a `<title>` tooltip - while its single-concept
+// siblings carry NONE of those. A negative control (a drill with no shared member) renders zero
+// markers, so the marker is CONDITIONED on `n.shared`, never blanket-applied. This is the proof the
+// wire-shape tests structurally cannot make: dropping `renderKgDrill`'s shared branch reddens it.
+
+/// Extract the single inline `<script>` body from the served page (the JS the browser runs).
+fn page_script(page: &str) -> &str {
+    let open = page
+        .find("<script>")
+        .expect("the served page carries a <script>")
+        + "<script>".len();
+    let close = page
+        .find("</script>")
+        .expect("the served page closes its <script>");
+    &page[open..close]
+}
+
+/// True when a `node` runtime can be spawned (present on dev machines and on GitHub `ubuntu-latest`,
+/// which ships Node.js on PATH, so this runtime guard runs in CI).
+fn node_available() -> bool {
+    Command::new("node")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// A DOM shim + driver (JavaScript) that RUNS the served page's OWN `renderKgDrill` under node's
+/// built-in `vm`. It drills a hand-built CONCEPTS neighborhood in which exactly one member realizes
+/// multiple concepts (`shared: true`) and folds here under its primary bucket, then reads the rendered
+/// `kgpanel` HTML and asserts the shared marker reached the SVG (class + label tag + tooltip) exactly
+/// once, and that a shared-free drill renders none. Mutation-proven: dropping the shared branch in
+/// `renderKgDrill`, or blanket-applying it, reddens the driver.
+const DRILL_SHARED_HARNESS: &str = r##"
+"use strict";
+const vm = require("vm");
+const fs = require("fs");
+const pageScript = fs.readFileSync(process.argv[2], "utf8");
+
+// Minimal DOM shim (vm-realm, prepended to the page script). No network is needed - the driver calls
+// `renderKgDrill` DIRECTLY with a fixture neighborhood - so `fetch` just rejects. A tiny element stub
+// lets the pan/zoom binder's querySelector resolve without throwing.
+const SHIM = String.raw`
+const __els = {};
+function __Stub(){ this._attrs = {}; }
+__Stub.prototype.setAttribute = function(k,v){ this._attrs[k] = String(v); };
+__Stub.prototype.getAttribute = function(k){ return this._attrs[k]; };
+__Stub.prototype.addEventListener = function(){};
+__Stub.prototype.getBoundingClientRect = function(){ return { left: 0, top: 0, width: 800, height: 300 }; };
+function __El(id){ this.id=id; this._html=""; this._text=""; this._listeners={}; this.dataset={};
+  this.clientWidth = 800; this.clientHeight = 300;
+  this.getBoundingClientRect = function(){ return { left: 0, top: 0, width: 800, height: 300 }; }; }
+Object.defineProperty(__El.prototype, "innerHTML", { get(){ return this._html; }, set(v){ this._html = String(v); } });
+Object.defineProperty(__El.prototype, "textContent", { get(){ return this._text; }, set(v){ this._text = String(v); } });
+__El.prototype.querySelectorAll = function(){ return []; };
+__El.prototype.querySelector = function(){ return new __Stub(); };
+__El.prototype.addEventListener = function(t,f){ (this._listeners[t]=this._listeners[t]||[]).push(f); };
+const document = { getElementById: function(id){ return __els[id] || (__els[id] = new __El(id)); } };
+const window = { addEventListener: function(){}, };
+const fetch = function(){ return Promise.reject(new Error("no network")); };
+const setTimeout = function(){ return 0; };
+`;
+
+// Test driver (vm-realm, appended after the page script - shares its scope, so it calls the page's
+// own `renderKgDrill` and reads its module state directly).
+const DRIVER = String.raw`
+;(function(){
+  function count(hay, needle){ let i=0,n=0; while((i=hay.indexOf(needle,i))!==-1){ n++; i+=needle.length; } return n; }
+
+  // A CONCEPTS drill (spec 54 c3): three members, of which exactly ONE (append) realizes multiple
+  // concepts and folds here under its primary bucket flagged shared; the other two are single-concept
+  // members that must carry NO marker.
+  const CONCEPT_DRILL = { seed: "concept/1/0", depth: 0,
+    nodes: [
+      { id: "docs/store.md", kind: "design-doc", label: "the store", degree: 1, god: false },
+      { id: "src/store/log.rs::append", kind: "code-entity", label: "append", degree: 2, god: false, shared: true },
+      { id: "src/index/build.rs::index", kind: "code-entity", label: "index", degree: 1, god: false }
+    ],
+    edges: [ { from: "src/store/log.rs::append", to: "src/index/build.rs::index", rel: "CALLS", tier: "inferred" } ] };
+
+  renderKgDrill(CONCEPT_DRILL);
+  const html = el("kgpanel")._html;
+
+  // (a) the shared member's node group gains the kgshared distinguishing class - EXACTLY once (only
+  // the multi-concept member), so a human SEES which member is multi-concept, never a blanket ring.
+  if (count(html, "kgshared") !== 1)
+    throw new Error("the concepts drill did not mark EXACTLY the shared member with the kgshared class: " + html);
+  // (b) the shared member carries a [shared] label tag - a human reads it without hovering.
+  if (count(html, "[shared]") !== 1)
+    throw new Error("the concepts drill did not tag the shared member's label [shared]: " + html);
+  // (c) a <title> tooltip explains the multi-concept membership on hover.
+  if (html.indexOf("<title>") === -1 || html.toLowerCase().indexOf("multiple concept") === -1)
+    throw new Error("the concepts drill did not attach a shared-membership <title> tooltip: " + html);
+  // The shared member still renders as a normal select-to-seed handle (no regression of the drill).
+  if (html.indexOf("src/store/log.rs::append") === -1 || html.indexOf("data-seed=") === -1)
+    throw new Error("the shared member lost its select-to-seed handle: " + html);
+
+  // (d) NEGATIVE CONTROL: a drill with NO shared member renders ZERO markers, so the marker is
+  // CONDITIONED on n.shared (a blanket ring would falsely mark these single-concept members).
+  const PLAIN_DRILL = { seed: "src", depth: 0,
+    nodes: [
+      { id: "src/a.rs::f", kind: "code-entity", label: "f", degree: 1, god: false },
+      { id: "src/b.rs::g", kind: "code-entity", label: "g", degree: 1, god: false }
+    ],
+    edges: [] };
+  renderKgDrill(PLAIN_DRILL);
+  const plain = el("kgpanel")._html;
+  if (count(plain, "kgshared") !== 0 || count(plain, "[shared]") !== 0)
+    throw new Error("a drill with no shared member falsely rendered the shared marker: " + plain);
+
+  console.log("OK concepts-drill-renders-the-shared-marker");
+})();
+`;
+
+const sandbox = { console: console };
+vm.createContext(sandbox);
+vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "drill-shared-harness.js" });
+"##;
+
+/// RUNTIME proof for spec 54 c3's Honest-membership constraint: the served page's OWN concepts DRILL
+/// renders the `shared` flag the fold computes. It drives the real `renderKgDrill` under node's `vm`
+/// with a fixture in which one member is multi-concept (`shared`), and asserts the drill SVG surfaces
+/// that member with a distinguishing class, a `[shared]` label tag, and a `<title>` tooltip - while a
+/// shared-free drill renders none. This closes the gap the wire-shape tests leave open (they prove the
+/// flag is SERIALIZED, never that the drill RENDERS it): dropping renderKgDrill's shared branch reddens it.
+#[test]
+fn the_concepts_drill_renders_the_shared_marker_to_the_human() {
+    if !node_available() {
+        eprintln!(
+            "SKIP the_concepts_drill_renders_the_shared_marker_to_the_human: no `node` runtime on \
+             PATH (present on dev machines and on ubuntu-latest CI); install node to run it."
+        );
+        return;
+    }
+
+    let page = rigger::dash::live_page();
+    let script = page_script(&page);
+
+    let dir = tempfile::tempdir().expect("a scratch dir for the drill harness");
+    let harness_path = dir.path().join("harness.js");
+    let script_path = dir.path().join("page-script.js");
+    std::fs::write(&harness_path, DRILL_SHARED_HARNESS).expect("write the drill harness");
+    std::fs::write(&script_path, script).expect("write the served page script");
+
+    let out = Command::new("node")
+        .arg(&harness_path)
+        .arg(&script_path)
+        .output()
+        .expect("spawn node to drive the served concepts drill");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "the concepts drill must render the shared marker, but the runtime harness failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    assert!(
+        stdout.contains("OK concepts-drill-renders-the-shared-marker"),
+        "the drill harness must confirm the shared marker reaches the SVG:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
     );
 }

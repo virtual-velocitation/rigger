@@ -248,6 +248,11 @@
   .kgcluster circle { opacity: 0.9; }
   /* A GOD-NODE (a high-degree hub the drill flags) gets a warning ring so a hub reads at a glance. */
   .kggodnode circle { stroke: var(--warn); stroke-width: 2; }
+  /* A SHARED concept member (spec 54 c3: it realizes MORE THAN ONE concept, folded under its primary
+     bucket) gets a dashed accent ring so a human drilling a concept SEES the multi-concept membership
+     the fold flagged - never a silently-deduplicated node. Defined after the god ring so a node that is
+     both a hub and multi-concept reads as shared (the honesty marker wins the ring). */
+  .kgshared circle { stroke: var(--accent); stroke-width: 2; stroke-dasharray: 3 2; }
   .kglabel { fill: var(--ink); font-size: 10px; text-anchor: middle; pointer-events: none; }
   /* Directed-call views (spec 52 c5). The arrowhead fill; a BACK edge (recursion) is a dashed accent
      arc so it reads apart from the solid forward edges; a FRONTIER node (a multi-candidate hop) gets
@@ -977,8 +982,12 @@ function kgSvg(nodes, edges, width, height, opts) {
     const cls = opts.nodeClass ? opts.nodeClass(n) : "kgdot";
     const attrs = opts.nodeAttrs ? opts.nodeAttrs(n) : "";
     const fill = opts.fill ? ' fill="' + esc(opts.fill(n)) + '"' : "";
+    // An optional native SVG <title> (hover tooltip), emitted ONLY when the caller supplies opts.title
+    // AND it returns a non-empty string - so every view that does not ask for one stays byte-identical.
+    const tip = opts.title ? opts.title(n) : "";
+    const titleEl = tip ? '<title>' + esc(tip) + '</title>' : "";
     return '<g class="kgn ' + cls + '"' + attrs + ' transform="translate(' + q.x.toFixed(1) + ','
-      + q.y.toFixed(1) + ')"><circle r="' + r.toFixed(1) + '"' + fill + '/>'
+      + q.y.toFixed(1) + ')">' + titleEl + '<circle r="' + r.toFixed(1) + '"' + fill + '/>'
       + '<text class="kglabel" y="' + (r + 11).toFixed(1) + '">' + esc(opts.label(n)) + '</text></g>';
   }).join("");
   return '<svg class="kgsvg" width="100%" height="' + height + '" viewBox="0 0 ' + width + ' ' + height
@@ -1127,7 +1136,11 @@ function lensControls() {
 // that hands off to the spec 30 seeded neighborhood; god-nodes (high-degree hubs the drill flagged) are
 // emphasized; a "<- overview" back link (data-kgback) returns to the overview; and when the drill was
 // capped the toolbar captions "showing the N most-connected of M". An empty cluster degrades to a
-// message, never an error.
+// message, never an error. Under the CONCEPTS lens (spec 54 c3) a member that realizes MORE THAN ONE
+// concept arrives flagged `shared` (it folds under its primary bucket, counted once): the drill
+// SURFACES that to the human - a `kgshared` distinguishing ring, a `[shared]` label tag, and a hover
+// <title> - so honest membership is met end-to-end, not just on the wire. Every other lens sends no
+// `shared`, so the marker never appears and the drill stays byte-identical.
 function renderKgDrill(nb) {
   kgMode = "drill";
   const nodes = (nb && nb.nodes) || [];
@@ -1149,9 +1162,16 @@ function renderKgDrill(nb) {
   const svg = kgSvg(nodes, edges, dims.w, dims.h, {
     radius: n => (n.god ? 9 : 5) + 6 * (Math.sqrt(n.degree || 0) / Math.sqrt(maxDeg)),
     fill: n => kindColor(n.kind),
-    nodeClass: n => n.god ? "kgmember kggodnode" : "kgmember",
+    // Flag classes mirror the god-node pattern: a hub keeps its `kggodnode` ring, and a multi-concept
+    // member (spec 54 c3 `shared`) gains `kgshared` so the concepts drill never hides shared membership.
+    nodeClass: n => "kgmember" + (n.god ? " kggodnode" : "") + (n.shared ? " kgshared" : ""),
+    // The hover tooltip explaining a shared member; single-concept members (and every other lens) get
+    // no title, so the node stays byte-identical.
+    title: n => n.shared ? "shared member: realizes multiple concepts (folded under its primary bucket)" : "",
     nodeAttrs: n => ' data-seed="' + esc(n.id) + '"',
-    label: n => n.label || n.id,
+    // A shared member's label carries a plain-text [shared] tag so a human reads the multi-concept
+    // membership without hovering; a single-concept member's label is unchanged.
+    label: n => n.shared ? (n.label || n.id) + " [shared]" : (n.label || n.id),
     edgeWidth: () => 1.2
   });
   el("kgpanel").innerHTML = toolbar + svg;
