@@ -39,7 +39,7 @@ fn positioned(pairs: &[(&str, &str)]) -> Vec<Event> {
 /// Serve the seeded run over a real loopback socket, drive one `GET /api/state`, and return
 /// the parsed JSON body - the exact path the operator's browser hits.
 fn served_state(events: Vec<Event>) -> Value {
-    let provider = move || -> Result<DashInputs, String> {
+    let provider = move |_instance: Option<&str>| -> Result<DashInputs, String> {
         Ok((events.clone(), Graph::default(), Vec::new(), HashMap::new()))
     };
     // A free loopback port: bind an ephemeral listener, learn its port, release it, serve there.
@@ -49,10 +49,27 @@ fn served_state(events: Vec<Event>) -> Value {
         .unwrap()
         .port();
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    // The lazy `/api/graph` provider (spec 45, criterion 1): this test drives the state poll, which
+    // never consults it, so an empty graph provider satisfies `serve`'s `Fn() -> Graph` bound.
+    let graph_provider = |_instance: Option<&str>| Graph::default();
+    let calls_provider =
+        |_: Option<&str>, _: &[String], _: rigger::contextgraph::Direction, _: i64, _: &str| {
+            rigger::contextgraph::CallGraph::default()
+        };
+    let instances_provider = Vec::new;
     // A detached server thread: `serve` loops until the process ends; we drive one request.
     // `run_branch`/`base` are the same values `cmd_dash` threads from `resolve_run_base`.
     std::thread::spawn(move || {
-        let _ = dash::serve(addr, provider, 3, "rigger-run", "origin/main");
+        let _ = dash::serve(
+            addr,
+            provider,
+            graph_provider,
+            calls_provider,
+            instances_provider,
+            3,
+            "rigger-run",
+            "origin/main",
+        );
     });
 
     let mut client = connect_with_retry(addr);

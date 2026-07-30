@@ -77,25 +77,24 @@ pub fn link_events(links: &[DesignLink]) -> Vec<Event> {
 /// batches (spec 29c criterion 5): the production entry point that lowers the ACTUAL design docs
 /// (and inline source rationale) into the design half of the unified graph, so a live run populates
 /// the graph 29b built the machinery for but left with no caller. Walks with the SHARED
-/// [`walk_guarded`](crate::grounder::walk_guarded) skeleton (the same skip-dirs / cycle guard the
-/// grounders use, so the design ingest never diverges from the code walk), and lowers each readable
+/// [`walk_guarded`](crate::grounder::walk_guarded) skeleton (the same project scope - the repo's own
+/// ignore rules, the always-excluded dotdirs, and root confinement - the grounders and the code
+/// ingest use, so the design ingest never diverges on which files count), and lowers each readable
 /// file through the shared [`extract_concepts`] / [`extract_links`] scope-gated authority: a design
 /// doc yields concept + link events, a source file yields its `# WHY:` / `# NOTE:` rationale, and a
 /// usage doc (or an unreadable / binary file, which `read_to_string` rejects) yields nothing.
-/// Returns `(file, events)` per file in SORTED path order (`walk_guarded` visits in filesystem
-/// order, so the collected batches are sorted for a deterministic emit order), skipping a file that
+/// Returns `(file, events)` per file in SORTED path order (`walk_guarded` visits in sorted file-name
+/// order, and the collected batches are sorted for a deterministic emit order), skipping a file that
 /// carries no design intent. The caller keys each batch on its content, so an unchanged file is not
 /// re-ingested.
 pub fn project_batches(root: &str) -> Vec<(String, Vec<Event>)> {
     use crate::grounder::design::extract::{extract_concepts, extract_links};
     use crate::grounder::walk_guarded;
-    use std::collections::HashSet;
     use std::ops::ControlFlow;
     use std::path::Path;
 
     let mut batches: Vec<(String, Vec<Event>)> = Vec::new();
-    let mut visited = HashSet::new();
-    let _ = walk_guarded(Path::new(root), &mut visited, &mut |path| {
+    let _ = walk_guarded(Path::new(root), &mut |path| {
         let rel = path
             .strip_prefix(root)
             .unwrap_or(path)

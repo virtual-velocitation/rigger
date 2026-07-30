@@ -124,6 +124,7 @@ fn served_body(path: &str) -> serde_json::Value {
         0,
         "rigger-run",
         "origin/main",
+        &[],
     );
     assert_eq!(
         resp.status, 200,

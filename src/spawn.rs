@@ -159,6 +159,24 @@ pub fn spawn_role(id: &str) -> &str {
     role.split(['#', '~']).next().unwrap_or(role)
 }
 
+/// The UNIT token of a spawn id `{unit}/{role}#{attempt}` - everything before the final `/`, the
+/// exact inverse of the `{unit}/{role}` half [`spawn_id`] renders and the companion of
+/// [`spawn_role`]. A unit id carries no `/` (and a `~retry{n}` respawn suffix rides the role, after
+/// the `/`), so the last `/` cleanly separates unit from role; a bare id with no `/` names no unit
+/// and yields `None`. Kept beside [`spawn_role`] so the id grammar has ONE owner: a reader that
+/// needs the emitting unit of a spawn-stamped event never re-parses the `/` in a view adapter.
+///
+/// ```
+/// # use rigger::spawn::unit_of;
+/// assert_eq!(unit_of("u1/implementer#0"), Some("u1"));
+/// assert_eq!(unit_of("u43-c1-machinery-gone/lens:sdet#1"), Some("u43-c1-machinery-gone"));
+/// assert_eq!(unit_of("u1/adjudicator#1~retry2"), Some("u1"));
+/// assert_eq!(unit_of("bare-id"), None);
+/// ```
+pub fn unit_of(id: &str) -> Option<&str> {
+    id.rsplit_once('/').map(|(unit, _)| unit)
+}
+
 /// The remediation ATTEMPT ordinal of a spawn id `{unit}/{role}#{attempt}` (a `~retry{n}`
 /// respawn suffix trimmed first), or `0` when the id carries no `#{attempt}`. The inverse of
 /// the `#{attempt}` ordinal [`spawn_id`] mints - kept here beside [`spawn_role`] so the id

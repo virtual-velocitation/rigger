@@ -979,7 +979,9 @@ mod tests {
         // The workflow-driver path's bridge from rigger_emit to the graph: when a
         // graph is wired, a ReviewFinding an agent emits folds into a KIND_FINDING node
         // the moment it lands, so an agent that grounds afterwards retrieves it via
-        // graph_context (not via the conductor hand-threading prompts).
+        // graph_context (not via the conductor hand-threading prompts). De-noise (spec 43):
+        // only the finding's CONTENT is projected (the node and its ABOUT edge to the code) -
+        // the reviewer's provenance is NOT projected as a KIND_AGENT node or a REL_RAISED edge.
         use crate::contextgraph::{self, sqlite::Projector, Projection};
 
         let store = Store::open(":memory:").unwrap();
@@ -1004,11 +1006,21 @@ mod tests {
             n.attrs.get("summary").map(String::as_str),
             Some("skips the buffer authority")
         );
+        // The finding's ABOUT edge to the code it concerns is folded (the content path).
         assert!(
             g.edges
                 .iter()
-                .any(|e| e.rel == contextgraph::REL_RAISED && e.from == "tech-lens"),
-            "the actor must be the RAISED source of the folded finding"
+                .any(|e| e.rel == contextgraph::REL_ABOUT && e.from == "f1" && e.to == "combat.rs"),
+            "the emitted finding's ABOUT edge to the code is folded"
+        );
+        // De-noise (spec 43): the actor's provenance is NOT projected.
+        assert!(
+            !g.nodes.iter().any(|n| n.kind == contextgraph::KIND_AGENT),
+            "no KIND_AGENT node is projected for the emitting reviewer"
+        );
+        assert!(
+            !g.edges.iter().any(|e| e.rel == contextgraph::REL_RAISED),
+            "no REL_RAISED agent-attribution edge is projected for the folded finding"
         );
     }
 

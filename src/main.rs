@@ -11,6 +11,8 @@ use std::process::{Command, Stdio};
 
 use rigger::blocker;
 use rigger::canary;
+use rigger::community;
+use rigger::concepts;
 use rigger::conductor::{self, Deps};
 use rigger::config;
 use rigger::contextgraph::{self, sqlite::Projector, Projection};
@@ -50,19 +52,31 @@ const DASH_MARKER_FILE: &str = "dash.marker";
 /// `rigger step` never spawns a real dashboard process.
 const DASH_DISABLE_ENV: &str = "RIGGER_NO_DASH";
 
+/// Env override for the PORT the step-path always-on dashboard binds. Absent (the production
+/// default) resolves to [`dash::DEFAULT_PORT`] with NO free-port search, so the singleton's
+/// stable fixed-address contract (spec 50, criterion 4) is unchanged. It exists for the case the
+/// fixed address otherwise makes untestable and unusable: a machine where a rigger dash already
+/// holds the default (the self-hosting dev box always does) or a non-rigger process owns 7420 -
+/// there the ensure path needs the same port seam the manual `rigger dash --port` already has.
+/// The crate's own step-path dash integration tests set it to an ephemeral loopback port so they
+/// exercise the ensure path WITHOUT fighting a real machine dash on the fixed default, exactly as
+/// the direct-`rigger dash` singleton test injects `free_loopback_port`. A malformed value falls
+/// back to the default (a bad knob never breaks a run's observability).
+const DASH_PORT_ENV: &str = "RIGGER_DASH_PORT";
+
 /// Env override (milliseconds) for the self-reap watcher's poll interval (spec 39, criterion 3),
 /// and its production default. The crate's own integration test sets the env small so the
 /// detached dash's self-reap is observable within the test, without changing the shipped cadence.
 const DASH_REAP_POLL_ENV: &str = "RIGGER_DASH_REAP_POLL_MS";
 const DASH_REAP_POLL_DEFAULT_MS: u64 = 5_000;
 
-/// Env override (seconds) for the self-reap watcher's heartbeat-staleness bound (spec 39,
-/// criterion 3), and its production default. Generous by design: a live run's inter-step gap
-/// (no marker touched for a few seconds while the driver launches the next `step`) must never
-/// read as idle, so this sits far above any plausible gap; a completed run still reaps promptly
-/// through the reclaimed-heartbeat + terminal arm, independent of this bound.
+/// Env override (seconds) for the self-reap watcher's IDLE WINDOW (spec 50, criterion 5): a
+/// registered instance whose heartbeat is older than this counts as no longer live. Absent, the
+/// window defaults to the registry's own idle bound ([`rigger::registry::DEFAULT_IDLE_MS`]) so the
+/// reader and the reaper share one staleness authority; the crate's own integration test sets it
+/// small so the singleton's self-reap is observable within the test rather than on the shipped
+/// multi-minute cadence.
 const DASH_REAP_STALE_ENV: &str = "RIGGER_DASH_REAP_STALE_SECS";
-const DASH_REAP_STALE_DEFAULT_SECS: u64 = 900;
 
 /// The tracked file under `.rigger/` that carries the durable project identity (spec 09,
 /// Gap 20): one trimmed line committed to git, so the identity survives directory renames
@@ -169,7 +183,8 @@ enum DriverKind {
 }
 
 /// Which event-store backend a run uses (§10): `sqlite` is the embedded default;
-/// `kurrentdb` is the server backend (built only behind the `kurrentdb` feature).
+/// `kurrentdb` is the server backend, compiled into every build (spec 47) and
+/// selected at runtime by `--eventstore kurrentdb`.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum StoreKind {
     Sqlite,
@@ -181,7 +196,7 @@ enum StoreKind {
 /// positional spec path, and whether to force a fresh run.
 struct RunArgs {
     driver: DriverKind,
-    store: StoreKind,
+    store: Option<StoreKind>,
     conn: Option<String>,
     spec: Option<String>,
     /// `--fresh`: begin a NEW run for the spec's criteria even when the latest run in the
@@ -207,7 +222,7 @@ struct RunArgs {
 /// are rejected (§10).
 fn parse_run_args(args: &[String]) -> Result<RunArgs, Box<dyn std::error::Error>> {
     let mut driver = DriverKind::Cli;
-    let mut store = StoreKind::Sqlite;
+    let mut store = None;
     let mut conn = None;
     let mut spec = None;
     let mut fresh = false;
@@ -240,8 +255,8 @@ fn parse_run_args(args: &[String]) -> Result<RunArgs, Box<dyn std::error::Error>
             "--eventstore" => {
                 i += 1;
                 store = match args.get(i).map(String::as_str) {
-                    Some("sqlite") => StoreKind::Sqlite,
-                    Some("kurrentdb") => StoreKind::KurrentDb,
+                    Some("sqlite") => Some(StoreKind::Sqlite),
+                    Some("kurrentdb") => Some(StoreKind::KurrentDb),
                     other => {
                         return Err(format!(
                             "run: --eventstore expects sqlite|kurrentdb, got {other:?}"
@@ -302,38 +317,419 @@ fn resolve_run_base(argv_base: Option<&str>, env_base: Option<&str>) -> (String,
     }
 }
 
-/// Construct the selected event-store backend as a boxed port (§10). `sqlite` (the
-/// default) opens the embedded file under `.rigger/`; `kurrentdb` reads its
-/// connection string from `--conn` or `KURRENTDB_CONN` and is built only behind the
-/// `kurrentdb` feature - requesting it without the feature is a clear error, so the
-/// default build stays green.
-fn open_store(
-    kind: StoreKind,
-    conn: Option<&str>,
-) -> Result<Box<dyn EventStore>, Box<dyn std::error::Error>> {
-    match kind {
-        StoreKind::Sqlite => Ok(Box::new(Store::open(&db_path("events.db"))?)),
-        StoreKind::KurrentDb => open_kurrentdb(conn),
+/// Which event-log backend a command resolves to (§48, "one resolution authority"): the
+/// embedded sqlite default, or the server backend addressed by a connection string. Produced
+/// by [`store_selection`] (which owns the precedence among the configuration sources) and
+/// consumed by [`resolve_store`] (which owns the construction) and the courier locator
+/// [`require_store_dir`] (which needs to know whether a local `events.db` is even required).
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum StoreSelection {
+    /// The embedded sqlite event log. Its store is the file the caller resolves; the isolated
+    /// replay store and the local identity migration are sqlite by construction and pass this.
+    Sqlite,
+    /// The server backend, addressed by this verbatim connection string.
+    Server(String),
+}
+
+impl StoreSelection {
+    /// Whether this selection is the embedded sqlite backend (whose store is a local file).
+    fn is_sqlite(&self) -> bool {
+        matches!(self, StoreSelection::Sqlite)
     }
 }
 
-#[cfg(feature = "kurrentdb")]
-fn open_kurrentdb(conn: Option<&str>) -> Result<Box<dyn EventStore>, Box<dyn std::error::Error>> {
-    let conn = conn
-        .map(str::to_string)
-        .or_else(|| std::env::var("KURRENTDB_CONN").ok())
-        .ok_or(
-            "run: --eventstore kurrentdb needs a connection string via --conn <url> or KURRENTDB_CONN",
-        )?;
-    Ok(Box::new(rigger::eventstore::kurrentdb::Store::open(&conn)?))
+/// Open the embedded sqlite event log at `path`. This is the ONE sqlite event-log constructor
+/// (§48, the single authority): [`resolve_store`] boxes it as the port for every command, and
+/// the local identity migration - which needs the concrete [`Store`] for its stream-rename
+/// maintenance - constructs through here too, so the sqlite backend is built at exactly one
+/// call site. The structural test in `tests/store_resolution.rs` pins that.
+fn open_sqlite_store(path: &str) -> Result<Store, Box<dyn std::error::Error>> {
+    Ok(Store::open(path)?)
 }
 
-#[cfg(not(feature = "kurrentdb"))]
-fn open_kurrentdb(_conn: Option<&str>) -> Result<Box<dyn EventStore>, Box<dyn std::error::Error>> {
+/// The `KURRENTDB_CONN` connection string from the environment, treating an empty value as
+/// unset so a stray `KURRENTDB_CONN=` never selects the server with no address.
+fn env_conn() -> Option<String> {
+    std::env::var("KURRENTDB_CONN")
+        .ok()
+        .filter(|s| !s.is_empty())
+}
+
+/// The connection string from the per-machine secret file `<rigger_dir>/store.conn` (§48 rung 3),
+/// treating an ABSENT file (or a blank one) as unset - `Ok(None)`, "no opinion", so the resolver
+/// falls through to the next rung. One line: the full connection string, credentials included - the
+/// gitignored developer-box fallback for a machine where exporting the env var every shell is
+/// friction. This is the READ that positions the secret file in the precedence chain (between the
+/// environment and the committed config); the SECRETS criterion layers the `.gitignore` pattern, the
+/// world-readable-permission warning, and connection-string redaction ONTO this one reader rather
+/// than adding a second parallel one.
+///
+/// A PRESENT-but-unreadable file (a permission or IO fault, distinct from a genuinely absent one)
+/// surfaces LOUDLY as an error, never collapsing into the same `None` an absent file returns - the
+/// exact NotFound-vs-other split [`config::read_store_config`] makes one rung down
+/// (d-u2-config-unreadable-loud / d-u2-conn-file-unreadable-loud). Swallowing it (the old
+/// `read_to_string(...).ok()`) let an unreadable secret file fall silently through to the sqlite
+/// default: a courier on a server-pinning box whose `store.conn` it cannot read - the different-user
+/// / permission edge §48 explicitly contemplates - would self-report to LOCAL sqlite while the
+/// conductor uses the server, fracturing the run's state across two stores.
+fn store_conn_file(rigger_dir: &Path) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    let path = rigger_dir.join("store.conn");
+    match std::fs::read_to_string(&path) {
+        Ok(body) => {
+            let conn = body.trim().to_string();
+            if conn.is_empty() {
+                return Ok(None);
+            }
+            // A real connection string was read: nudge the operator if the secret file is exposed
+            // to other users (a hygiene warning only - resolution proceeds regardless).
+            warn_if_conn_file_is_exposed(&path);
+            Ok(Some(conn))
+        }
+        // ABSENT is "no opinion" (fall through); any OTHER IO error is a present-but-unreadable
+        // secret file and surfaces LOUDLY - never the silent wrong-store fallback of the old `.ok()`.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("read store connection file: {e}").into()),
+    }
+}
+
+/// Whether a secret file's Unix `mode` grants READ to group or other - i.e. someone besides the
+/// owner can see the connection-string credential it holds. `0o044` masks the group-read and
+/// other-read bits; a credential file should be owner-only (`0o600`), so any of those bits set
+/// means the secret is exposed. Pure so the threshold is unit-testable without touching the fs.
+#[cfg(unix)]
+fn conn_file_is_group_or_other_readable(mode: u32) -> bool {
+    mode & 0o044 != 0
+}
+
+/// Warn (NEVER fail) when the per-machine secret file is readable by users other than its owner:
+/// it carries the connection string's credential, so a group- or world-readable file exposes that
+/// secret (§48, secrets discipline). This is a hygiene nudge on the ONE secret-file reader
+/// ([`store_conn_file`]) - store resolution proceeds regardless, and the connection string itself is
+/// never printed (only the file path and its mode). Unix-only: the mode bits are a POSIX concept
+/// with no cross-platform equivalent; elsewhere it is a no-op.
+fn warn_if_conn_file_is_exposed(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(path) {
+            let mode = meta.permissions().mode();
+            if conn_file_is_group_or_other_readable(mode) {
+                eprintln!(
+                    "warning: {} is readable by other users (mode {:o}); it holds the store \
+                     connection credential - restrict it to your account (chmod 600 {}) so the \
+                     secret is not exposed",
+                    path.display(),
+                    mode & 0o777,
+                    path.display()
+                );
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+}
+
+/// The `.rigger` directory whose committed config (`workflow.yml`) and per-machine secret file
+/// (`store.conn`) the store resolver reads for the lower-precedence rungs (§48 rungs 3-4). Anchored
+/// at the OWNING repo root (`main_repo_root`, whose `git-common-dir` resolves the main checkout even
+/// from a nested git worktree), so a courier's `rigger result` reads the SAME secret file and config
+/// the conductor does - the gitignored `store.conn` lives only in the main checkout, never in a
+/// linked worktree, so a cwd-anchored read would miss it and fracture the store selection. Falls
+/// back to the cwd's `.rigger` outside any git context.
+fn config_rigger_dir() -> PathBuf {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    main_repo_root(&cwd).unwrap_or(cwd).join(RIGGER_DIR)
+}
+
+/// Interpret the committed config's `store.backend` (§48 rung 4): an empty value is "no opinion"
+/// (the resolver falls through to the next rung, the default), `sqlite` / `kurrentdb` select a
+/// backend, and anything else is a clear configuration error naming the accepted values - never a
+/// silent fallback that would hide a typo behind today's default.
+fn store_backend_kind(
+    cfg: &config::StoreConfig,
+) -> Result<Option<StoreKind>, Box<dyn std::error::Error>> {
+    match cfg.backend.trim() {
+        "" => Ok(None),
+        "sqlite" => Ok(Some(StoreKind::Sqlite)),
+        "kurrentdb" => Ok(Some(StoreKind::KurrentDb)),
+        other => Err(format!(
+            "the project config's store.backend is {other:?}; only \"sqlite\" or \"kurrentdb\" \
+             are valid"
+        )
+        .into()),
+    }
+}
+
+/// Resolve the server connection string from the available credential sources, in precedence order:
+/// the explicit `--conn` flag, then the `KURRENTDB_CONN` environment value, then the per-machine
+/// `.rigger/store.conn` secret file. When the server backend is selected with NONE of them, the
+/// error names ALL THREE channels (§48 criterion 2) so the fix is unambiguous. `env_conn` is the
+/// already-resolved environment value (empty is treated as unset).
+fn resolve_conn(
+    flag_conn: Option<&str>,
+    env_conn: Option<&str>,
+    rigger_dir: &Path,
+) -> Result<String, Box<dyn std::error::Error>> {
+    if let Some(conn) = flag_conn.filter(|s| !s.is_empty()) {
+        return Ok(conn.to_string());
+    }
+    if let Some(conn) = env_conn.filter(|s| !s.is_empty()) {
+        return Ok(conn.to_string());
+    }
+    // The secret file, distinguishing absent (fall through to the error below) from
+    // present-but-unreadable (a LOUD read error, propagated with `?` - never swallowed into the
+    // "no connection string" case, which would misdiagnose an unreadable file as a missing one).
+    if let Some(conn) = store_conn_file(rigger_dir)? {
+        return Ok(conn);
+    }
     Err(
-        "run: --eventstore kurrentdb requires the `kurrentdb` cargo feature (build with -F kurrentdb)"
+        "the server event store is selected but no connection string is set - provide one via \
+         --conn <url>, the KURRENTDB_CONN environment variable, or the .rigger/store.conn \
+         secret file"
             .into(),
     )
+}
+
+/// Resolve WHICH event-log backend a command uses (§48, "one resolution authority") - the PURE
+/// core of the single selection authority, over an explicit `.rigger` directory and an explicit
+/// environment value so the full precedence is testable with temp dirs and no process-env
+/// mutation. The public [`store_selection`] wraps this with the real environment and the owning
+/// repo's `.rigger`. Precedence, highest first (§48 criterion 2, "resolution order"):
+///
+///   1. an explicit `--eventstore`/`--conn` flag (`flag_store` / `flag_conn`), kept on `run`. A
+///      non-empty `--conn` alone SELECTS the server addressed by it (a bare `--conn` is never
+///      dropped to a lower rung); `--eventstore sqlite` wins outright even against a `--conn`;
+///   2. the `KURRENTDB_CONN` environment value (`env_conn`, the full connection string);
+///   3. the local secret file `<rigger_dir>/store.conn` (the gitignored per-machine credential);
+///   4. the committed project config's `store:` selection (the CHOICE pinned in the repo, with an
+///      optional non-secret host/port URL - credentials never ride the committed file);
+///   5. the embedded sqlite store as the default when nothing selects otherwise (so a project that
+///      configures nothing behaves exactly as today - the backward-compatibility bar).
+///
+/// Selecting the server (by any rung) without a resolvable connection string is a clear error
+/// naming all three credential channels ([`resolve_conn`]).
+fn store_selection_at(
+    flag_store: Option<StoreKind>,
+    flag_conn: Option<&str>,
+    env_conn: Option<String>,
+    rigger_dir: &Path,
+) -> Result<StoreSelection, Box<dyn std::error::Error>> {
+    // The environment value, normalized (an empty `KURRENTDB_CONN=` is unset, never a server with
+    // no address). Threaded on to `resolve_conn` so the flag rung's fallback order stays uniform.
+    let env = env_conn.as_deref().filter(|s| !s.is_empty());
+    // A non-empty `--conn` flag, normalized (a stray `--conn ''` is unset, never a server with no
+    // address). It SELECTS the server on its own (below), so it is normalized once here.
+    let flag = flag_conn.filter(|s| !s.is_empty());
+    // 1. an explicit flag is the highest-precedence, unambiguous override.
+    match flag_store {
+        Some(StoreKind::KurrentDb) => {
+            return Ok(StoreSelection::Server(resolve_conn(flag, env, rigger_dir)?))
+        }
+        // `--eventstore sqlite` wins OUTRIGHT: the named backend is the unambiguous override, so it
+        // beats even a `--conn` present alongside it (contradictory flags resolve to the backend).
+        Some(StoreKind::Sqlite) => return Ok(StoreSelection::Sqlite),
+        // No `--eventstore`, but a bare `--conn <url>` SELECTS the server addressed verbatim by it
+        // (§48 rung 1; d-u2-conn-flag-selects-server). A non-empty `--conn` is a first-class
+        // highest-precedence source - dropping it to a lower rung was the store-fracture footgun
+        // (`rigger run --conn kurrentdb://prod <spec>` silently resolving LOCAL sqlite).
+        None => {
+            if let Some(conn) = flag {
+                return Ok(StoreSelection::Server(conn.to_string()));
+            }
+        }
+    }
+    // 2. the environment carries the full connection string, so a bare command (no flag) in a
+    //    shell or CI configured for the server resolves it - the wiring that keeps a worker's
+    //    `rigger result` on the same store the run uses, instead of a local sqlite fracture.
+    if let Some(conn) = env {
+        return Ok(StoreSelection::Server(conn.to_string()));
+    }
+    // 3. the per-machine gitignored secret file: a developer box that pins the shared server
+    //    without exporting the env var every shell. An absent file is "no opinion" (fall through);
+    //    a present-but-unreadable one surfaces LOUDLY here (`?`), never a silent drop to the sqlite
+    //    default that would fracture a server-pinned run's store (d-u2-conn-file-unreadable-loud).
+    if let Some(conn) = store_conn_file(rigger_dir)? {
+        return Ok(StoreSelection::Server(conn));
+    }
+    // 4. the committed project config: the CHOICE the team pins in the repo. Its optional
+    //    non-secret URL is the address; absent, the address must come from a credential source -
+    //    all of which rungs 1-3 already found empty, so `resolve_conn` names all three.
+    let cfg = config::read_store_config(rigger_dir)?;
+    match store_backend_kind(&cfg)? {
+        Some(StoreKind::KurrentDb) => {
+            let conn = if cfg.url.trim().is_empty() {
+                // No committed url: the address comes from a credential source. Thread the real
+                // `--conn` flag in (not `None`) so the SELECTED store and the credential that OPENS
+                // it can never drift - a non-empty flag already returned at rung 1, so this honours
+                // it defensively for any future path that reaches rung 4 with a flag live.
+                resolve_conn(flag, env, rigger_dir)?
+            } else {
+                cfg.url.trim().to_string()
+            };
+            return Ok(StoreSelection::Server(conn));
+        }
+        Some(StoreKind::Sqlite) => return Ok(StoreSelection::Sqlite),
+        None => {}
+    }
+    // 5. the default: the embedded sqlite store (backward compatible - a project that configures
+    //    nothing changes in nothing).
+    Ok(StoreSelection::Sqlite)
+}
+
+/// Resolve WHICH event-log backend a command uses, from the real environment and the owning repo's
+/// `.rigger` (§48, "one resolution authority"). This is the SINGLE place the selection is decided,
+/// so every command - and every worker's bare `rigger result` - agrees on the store without a
+/// per-command flag. The precedence and its error surface live in the pure [`store_selection_at`];
+/// this wrapper supplies the two ambient inputs (the `KURRENTDB_CONN` environment value and the
+/// resolved `.rigger` directory).
+fn store_selection(
+    flag_store: Option<StoreKind>,
+    flag_conn: Option<&str>,
+) -> Result<StoreSelection, Box<dyn std::error::Error>> {
+    let rigger_dir = config_rigger_dir();
+    store_selection_at(flag_store, flag_conn, env_conn(), &rigger_dir)
+}
+
+/// Construct the selected event-log backend as a boxed port (§48, "one resolution authority").
+/// This is the ONLY place a concrete event-log backend is handed to a command: every command
+/// routes its backend through here (the isolated replay store and the local identity migration
+/// pass an explicit [`StoreSelection::Sqlite`], being local by construction), so store selection
+/// is uniform. `sqlite_path` is where the embedded sqlite log lives when sqlite is selected; it
+/// is ignored for the server backend, whose entire address is its connection string.
+fn resolve_store(
+    sel: &StoreSelection,
+    sqlite_path: &str,
+) -> Result<Box<dyn EventStore>, Box<dyn std::error::Error>> {
+    match sel {
+        StoreSelection::Sqlite => Ok(Box::new(open_sqlite_store(sqlite_path)?)),
+        StoreSelection::Server(conn) => {
+            Ok(Box::new(rigger::eventstore::kurrentdb::Store::open(conn)?))
+        }
+    }
+}
+
+/// The CREDENTIAL-FREE store identity for the machine-global instance registry (spec 50),
+/// derived from the run's resolved [`StoreSelection`]: the local sqlite path (local by
+/// construction, no credential) or the shared server's `scheme://host:port` with any
+/// `user:password@` userinfo and any `?query` stripped by the crate's SINGLE redaction authority
+/// ([`rigger::eventstore::endpoint_label`], which shares `redact_conn`'s hardened authority parse -
+/// not a second, weaker parser). The credential the shared store OPENS with never reaches the
+/// registry - the dash re-resolves it through the store-resolution authority exactly as every
+/// command does.
+fn registry_store_identity(sel: &StoreSelection, root: &Path) -> rigger::registry::StoreIdentity {
+    match sel {
+        StoreSelection::Sqlite => rigger::registry::StoreIdentity::Local {
+            path: root
+                .join(RIGGER_DIR)
+                .join("events.db")
+                .to_string_lossy()
+                .into_owned(),
+        },
+        StoreSelection::Server(conn) => rigger::registry::StoreIdentity::Shared {
+            endpoint: rigger::eventstore::endpoint_label(conn),
+        },
+    }
+}
+
+/// How often a held [`RunRegistration`] refreshes its heartbeat: a THIRD of the registry's idle
+/// window ([`rigger::registry::DEFAULT_IDLE_MS`]), so a live in-process run is re-stamped at least
+/// three times before a reader would consider its entry stale - comfortably inside the window even
+/// under scheduling jitter or one very long in-process gate.
+fn registry_heartbeat_interval() -> std::time::Duration {
+    std::time::Duration::from_millis(rigger::registry::DEFAULT_IDLE_MS / 3)
+}
+
+/// A LIVE registration in the machine-global discovery registry (spec 50), held for as long as the
+/// run it represents is in flight. Its initial entry is written synchronously by
+/// [`register_run_instance`]; while this guard is held a background thread REFRESHES the heartbeat
+/// every [`registry_heartbeat_interval`], and dropping it (the run scope ends, on success OR error)
+/// signals that thread to stop and joins it. The periodic refresh is what keeps a run driven WHOLLY
+/// in-process (`rigger run`/`serve` - a single `conductor::run` call that can drive for hours, or a
+/// `rigger step` whose one gate runs longer than the idle window) from aging out of discovery
+/// MID-RUN: a one-shot register alone would let a reader prune the live entry after the window.
+struct RunRegistration {
+    /// Dropping this disconnects the channel, so the heartbeat thread's `recv_timeout` returns at
+    /// once (never waiting out a full interval) and the join below completes promptly.
+    tx: Option<std::sync::mpsc::Sender<()>>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl RunRegistration {
+    /// An inert guard that holds no thread - the homeless/unwritable degrade path, so the caller
+    /// binds one uniform type whether or not a registry entry was actually written.
+    fn inert() -> Self {
+        RunRegistration {
+            tx: None,
+            handle: None,
+        }
+    }
+}
+
+impl Drop for RunRegistration {
+    fn drop(&mut self) {
+        // Disconnect first so the sleeping heartbeat thread wakes immediately, THEN reap it. Both
+        // are best-effort: a poisoned/panicked thread never blocks the run's teardown.
+        drop(self.tx.take());
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+    }
+}
+
+/// Register THIS invocation's instance in the machine-global discovery registry (spec 50, criterion
+/// 2): the project root, the credential-free store identity, and a fresh heartbeat, keyed so a
+/// re-registration refreshes one entry in place. This is the SINGLE registration writer - every run
+/// entry point (`rigger step`, and the in-process `rigger run`/`serve`/`workflow` drivers) requests
+/// through it, so the machine-global registry sees every invocation that starts or advances a run,
+/// not just the stepwise loop path.
+///
+/// Returns a [`RunRegistration`] the CALLER MUST HOLD for the life of the run (`let _reg = ...;`):
+/// the initial entry is written here, synchronously, and the returned guard's background thread
+/// keeps its heartbeat fresh until the guard drops. BEST-EFFORT and warn-only throughout: the
+/// registry is discovery metadata whose loss is harmless (live instances repopulate it), so a
+/// homeless environment or a write error degrades to an inert guard and NEVER fails the run.
+#[must_use = "hold the RunRegistration for the life of the run so its heartbeat stays fresh"]
+fn register_run_instance(repo: &str, selection: &StoreSelection) -> RunRegistration {
+    let Some(dir) = rigger::registry::default_dir() else {
+        return RunRegistration::inert(); // homeless environment: degrade to no registration
+    };
+    let root = if repo.is_empty() {
+        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+    } else {
+        PathBuf::from(repo)
+    };
+    let inst = rigger::registry::Instance {
+        project: project_identity(),
+        root: root.to_string_lossy().into_owned(),
+        store: registry_store_identity(selection, &root),
+        heartbeat_ms: rigger::registry::now_ms(),
+    };
+    // The initial, synchronous registration. On failure, degrade to an inert guard rather than
+    // spawn a heartbeat thread that could only fail the same way.
+    if let Err(e) = rigger::registry::write(&dir, &inst) {
+        eprintln!("rigger: instance registry write skipped ({e}); discovery is unaffected");
+        return RunRegistration::inert();
+    }
+    // The heartbeat thread re-stamps `inst` every interval until the guard drops. `recv_timeout`
+    // makes the sleep interruptible: each `Timeout` refreshes the entry; a `Disconnected` (the guard
+    // dropped) ends the `while let` at once, so teardown never waits out a full interval.
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    let interval = registry_heartbeat_interval();
+    let handle = std::thread::spawn(move || {
+        while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = rx.recv_timeout(interval) {
+            let refreshed = rigger::registry::Instance {
+                heartbeat_ms: rigger::registry::now_ms(),
+                ..inst.clone()
+            };
+            let _ = rigger::registry::write(&dir, &refreshed); // best-effort refresh
+        }
+    });
+    RunRegistration {
+        tx: Some(tx),
+        handle: Some(handle),
+    }
 }
 
 /// The project identity that scopes the event streams and context graph (§5.1.1,
@@ -766,7 +1162,7 @@ fn migrate_local_identity() -> Res {
     if minted == legacy {
         return Ok(()); // no minted identity distinct from the basename
     }
-    let backend = Store::open(&store_path)?;
+    let backend = open_sqlite_store(&store_path)?;
     let graph = Projector::open(&db_path("graph.db"), &minted)?;
     if let Some(n) = migrate_project_identity(&backend, &minted, &legacy, Some(&graph))? {
         eprintln!(
@@ -947,6 +1343,12 @@ SDK, and drives the loop (one command; run `rigger\n                            
 setup` first - it provisions the driver in .rigger/shim/)\n  \
 rigger serve [opts]         run as an MCP server the driver connects to\n  \
 rigger graph --around <id>  print the context subgraph around a node\n  \
+rigger graph build          fold the project's source into the graph from a cold\n                              \
+checkout (no run required)\n  \
+rigger graph communities    derive the code lens's coupling communities offline and\n                              \
+[--resolution <r>]          record them as events (deterministic; default r=1.0)\n  \
+rigger graph concepts       derive the concepts lens's intent-layer grouping offline\n                              \
+[--resolution <r>]          and record them as events (deterministic; default r=1.0)\n  \
 rigger stats                print the run's operator metrics: first-pass yield,\n                              \
 per-gate remediation counts, escalation rate, and\n                              \
 review approve/reject counts. --canary reports the\n                              \
@@ -1017,7 +1419,7 @@ run/serve options:\n  \
 --driver <cli|workflow>          cli (default): standalone claude subprocess;\n                                   \
 workflow: in-Claude-Code MCP server\n  \
 --eventstore <sqlite|kurrentdb>  sqlite (default): embedded file in .rigger/;\n                                   \
-kurrentdb: server (needs the kurrentdb feature)\n  \
+kurrentdb: shared server backend, always available\n  \
 --conn <url>                     KurrentDB connection url (or set KURRENTDB_CONN)\n  \
 --fresh                          begin a NEW run even if the latest run matches this\n                                   \
 spec (which is otherwise adopted/resumed). The evented\n                                   \
@@ -1168,6 +1570,22 @@ impl StoreLocation {
     }
 }
 
+/// The [`StoreLocation`] a SERVER-backed project resolves to, anchored at `cwd`. The server
+/// holds ONE remote store, so there is no local `events.db` to walk to: identity binds to the
+/// OWNING root (the main repo root - correct even from a nested worktree, exactly as the sqlite
+/// walk's identity does), and [`resolve_store`] reaches the server by its connection string (the
+/// resolved dir's `events.db` path is ignored for the server backend). This is the ONE
+/// server-location authority every server-backed store access shares - the store-opening couriers
+/// ([`require_store_dir`]) that WRITE and the residue scan's run-liveness read ([`read_run_units`])
+/// that READS - so a server-configured project resolves the SAME store from every path (spec 48,
+/// "one resolution authority"), never a second parallel mapping that could drift.
+fn server_store_location(cwd: &Path) -> StoreLocation {
+    let dir = main_repo_root(cwd)
+        .unwrap_or_else(|| cwd.to_path_buf())
+        .join(RIGGER_DIR);
+    StoreLocation { dir }
+}
+
 /// Resolve the `.rigger` store a store-opening COURIER command (`emit`/`result`/`peers`/
 /// `reported`) must use, REFUSING rather than fabricating a fresh empty store when neither
 /// the current directory nor any ancestor holds one (spec 05, done-when: "store-opening
@@ -1186,8 +1604,18 @@ impl StoreLocation {
 /// conductor reads (see [`StoreLocation::identity`]). The run driver (`run`/`step`/`serve`)
 /// is deliberately NOT routed through here: it legitimately BOOTSTRAPS the store on the
 /// first step of a fresh project.
-fn require_store_dir() -> Result<StoreLocation, Box<dyn std::error::Error>> {
+fn require_store_dir() -> Result<(StoreLocation, StoreSelection), Box<dyn std::error::Error>> {
+    let sel = store_selection(None, None)?;
     let cwd = std::env::current_dir()?;
+    // A server-backed project shares ONE remote store; there is no local `events.db` to walk to,
+    // so a courier binds identity to the OWNING root (the main repo root, correct even from a
+    // nested worktree, exactly as the sqlite walk's identity does) and lets `resolve_store` reach
+    // the server - closing the state-fracture where a worker's bare `rigger result` wrote to local
+    // sqlite while the run lived on the server. The same [`server_store_location`] the residue
+    // scan's read resolves through, so write and read agree on the one server store.
+    if !sel.is_sqlite() {
+        return Ok((server_store_location(&cwd), sel));
+    }
     let walk = walk_stores_from(&cwd);
     let dir = walk.dir.ok_or_else(|| -> Box<dyn std::error::Error> {
         format!(
@@ -1214,7 +1642,7 @@ fn require_store_dir() -> Result<StoreLocation, Box<dyn std::error::Error>> {
             dir.display()
         );
     }
-    Ok(StoreLocation { dir })
+    Ok((StoreLocation { dir }, sel))
 }
 
 /// The path to a database file (`events.db` / `graph.db`) inside a resolved store
@@ -1449,8 +1877,14 @@ fn cmd_step(args: &[String]) -> Res {
     // the history; refuses loudly if both namespaces are populated.
     migrate_local_identity()?;
 
-    let backend = Store::open(&db_path("events.db"))?;
-    let store = Namespaced::new(&backend, &project_identity());
+    let selection = store_selection(None, None)?;
+    // Register this instance in the machine-global discovery registry (spec 50, criterion 2):
+    // every step "advances a run". Held (`_registration`) for the whole step so its heartbeat
+    // thread keeps the entry fresh even if THIS step's in-process gate runs longer than the idle
+    // window; dropped when the step returns. Best-effort and warn-only - it never blocks the step.
+    let _registration = register_run_instance(&repo, &selection);
+    let backend = resolve_store(&selection, &db_path("events.db"))?;
+    let store = Namespaced::new(backend.as_ref(), &project_identity());
 
     // The definition hash this step pins / re-checks (spec 13, unit 1): the digest of the
     // on-disk workflow.yml + agent-prompt set. Computed once and used for both the `--fresh`
@@ -1584,16 +2018,18 @@ fn cmd_step(args: &[String]) -> Res {
         }
     }
 
-    // Always-on dash on the native step path (spec 39, criterion 1): start a PERSISTENT run
-    // dashboard for this project if none is already serving, so the loop the driver actually
-    // advances through many short-lived `rigger step` invocations is never invisible. The
-    // first step of a run starts it; the per-project marker check makes every later step a
-    // no-op (never a second dash or a port fight). Started DETACHED so it survives across the
-    // run's many step processes, and best-effort so a start failure only warns - the run
-    // proceeds headless, exactly as the guard-bound `start_run_dashboard` degrades. Placed
-    // just before the conductor advances the frontier so the dash is serving while this
-    // step's gates and spawns are in flight.
-    ensure_run_dashboard();
+    // Always-on dash on the native step path, retargeted at the machine SINGLETON (spec 39,
+    // criterion 1; spec 50, criterion 4): ENSURE the one machine-level dash at the fixed default
+    // address is up, so the loop the driver advances through many short-lived `rigger step`
+    // invocations is never invisible. The first step of a run starts it at `dash::DEFAULT_PORT`
+    // (never a drifting port); every later step finds it serving and starts none (never a second
+    // dash). Started DETACHED so it survives across the run's many step processes, and best-effort
+    // so a start failure only warns - the run proceeds headless. Suppressed entirely by the
+    // opt-out (`RIGGER_NO_DASH` OR `dash: off`): a headless/CI run then binds no port at all. The
+    // config opt-out is read off the already-loaded `cfg`, not re-loaded. Placed just before the
+    // conductor advances the frontier so the dash is serving while this step's gates and spawns
+    // are in flight.
+    ensure_run_dashboard(cfg.workflow.dash_enabled());
 
     let driver = ReplayDriver::new(&store);
     let deps = Deps {
@@ -1865,7 +2301,7 @@ fn cmd_reported(args: &[String]) -> Res {
     // nothing could have been reported: treat it as unreported (the guard proceeds), the
     // same outcome as `result_of_at`'s absent-db edge, without fabricating a store.
     let reported = match require_store_dir() {
-        Ok(loc) => result_of_at(&loc.file("events.db"), &loc.identity(), id)?,
+        Ok((loc, sel)) => result_of_at(&loc.file("events.db"), &loc.identity(), id, &sel)?,
         Err(_) => None,
     };
     match reported {
@@ -1907,9 +2343,9 @@ fn cmd_prompt(args: &[String]) -> Res {
         [id] => id.as_str(),
         _ => return Err("prompt: expected exactly one spawn id: rigger prompt <id>".into()),
     };
-    let loc = require_store_dir()?;
-    let backend = Store::open(&loc.file("events.db"))?;
-    let store = Namespaced::new(&backend, &loc.identity());
+    let (loc, selection) = require_store_dir()?;
+    let backend = resolve_store(&selection, &loc.file("events.db"))?;
+    let store = Namespaced::new(backend.as_ref(), &loc.identity());
     let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
     match spawn::prompt_for(&events, id).map_err(|e| e.to_string())? {
         Some(p) => {
@@ -1937,12 +2373,13 @@ fn result_of_at(
     path: &str,
     project: &str,
     id: &str,
+    sel: &StoreSelection,
 ) -> Result<Option<spawn::SpawnResult>, Box<dyn std::error::Error>> {
-    if !Path::new(path).exists() {
+    if sel.is_sqlite() && !Path::new(path).exists() {
         return Ok(None);
     }
-    let backend = Store::open(path)?;
-    let store = Namespaced::new(&backend, project);
+    let backend = resolve_store(sel, path)?;
+    let store = Namespaced::new(backend.as_ref(), project);
     let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
     Ok(spawn::result_of(&events, id).map_err(|e| e.to_string())?)
 }
@@ -2225,10 +2662,18 @@ fn run_cli(parsed: &RunArgs) -> Res {
     // Migrate a pre-spec-09 store's legacy-namespace history to the minted identity once,
     // before opening the run backend (spec 09). Local-sqlite only - the migration renames
     // streams in the local `.rigger/events.db`; a shared KurrentDB backend is out of scope.
-    if parsed.store == StoreKind::Sqlite {
+    let selection = store_selection(parsed.store, parsed.conn.as_deref())?;
+    if selection.is_sqlite() {
         migrate_local_identity()?;
     }
-    let backend = open_store(parsed.store, parsed.conn.as_deref())?;
+    // Register this instance in the machine-global discovery registry (spec 50, criterion 2).
+    // `rigger run` drives the WHOLE run in-process through a single `conductor::run` below, so the
+    // held guard's heartbeat thread (not a one-shot register) is what keeps the entry from aging out
+    // of discovery mid-run; it is dropped when `run_cli` returns. Best-effort - it never blocks the
+    // run. Registered here, off the same resolved `selection` `rigger step` uses, so a native
+    // `rigger run` is as discoverable as the stepwise loop path.
+    let _registration = register_run_instance(&repo, &selection);
+    let backend = resolve_store(&selection, &db_path("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &project_identity());
     // `--fresh`: begin a NEW run before driving, so the conductor's own `ensure_started`
     // adopts this just-minted boundary instead of the (possibly wedged) latest run. See
@@ -2358,10 +2803,17 @@ fn run_workflow(parsed: &RunArgs) -> Res {
         }
     }
     // One-time spec-09 identity migration before opening the run backend (local-sqlite only).
-    if parsed.store == StoreKind::Sqlite {
+    let selection = store_selection(parsed.store, parsed.conn.as_deref())?;
+    if selection.is_sqlite() {
         migrate_local_identity()?;
     }
-    let backend = open_store(parsed.store, parsed.conn.as_deref())?;
+    // Register this instance in the machine-global discovery registry (spec 50, criterion 2). Like
+    // `rigger run`, the served conductor drives the whole run in-process (on the background thread
+    // in the scope below), so the held guard's heartbeat thread keeps the entry live for the whole
+    // MCP session; it is dropped when `run_workflow` returns. `repo` was resolved in a scoped block
+    // above, so read it once more here for the registration root. Best-effort - it never blocks.
+    let _registration = register_run_instance(&git_repo(), &selection);
+    let backend = resolve_store(&selection, &db_path("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &project_identity());
     // `--fresh`: begin a NEW run before the conductor thread starts, so its `ensure_started`
     // adopts this boundary rather than the latest (possibly wedged) run.
@@ -2572,6 +3024,21 @@ fn load_criteria(spec_path: Option<&str>) -> Result<Vec<String>, Box<dyn std::er
 }
 
 fn cmd_graph(args: &[String]) -> Res {
+    // `rigger graph build` is a distinct verb (populate) from the default `--around` inspector
+    // read: fold the project's source into the graph from a cold checkout, no run required.
+    if args.first().map(String::as_str) == Some("build") {
+        return cmd_graph_build(&args[1..]);
+    }
+    // `rigger graph communities` is the OFFLINE detection pass (spec 53): derive the code lens's
+    // coupling communities over the already-folded structure layer and record them as events.
+    if args.first().map(String::as_str) == Some("communities") {
+        return cmd_graph_communities(&args[1..]);
+    }
+    // `rigger graph concepts` is the OFFLINE intent-derivation pass (spec 54): derive the concepts
+    // lens's grouping over the already-folded intent layer and record them as events.
+    if args.first().map(String::as_str) == Some("concepts") {
+        return cmd_graph_concepts(&args[1..]);
+    }
     let mut around = String::new();
     let mut depth: i64 = 2;
     let mut i = 0;
@@ -2604,6 +3071,255 @@ fn cmd_graph(args: &[String]) -> Res {
     if g.nodes.is_empty() {
         println!("  (nothing found; has `rigger run` been run yet?)");
     }
+    Ok(())
+}
+
+/// `rigger graph build` - fold the project's source into `.rigger/graph.db` from a COLD checkout
+/// (spec 45): no run, no `RunStarted`, no event beyond the code-ingest events the fold already
+/// emits, so the graph exists on any repo the tool has merely cloned - not only ones a run has
+/// driven. It reuses the SAME walk-and-content-key ingest authority ([`rigger::ingest::ingest_project`])
+/// the live run uses; only this standalone entry is new, so a build and a run can never fork the
+/// key an event is deduped under.
+///
+/// Store lifecycle mirrors the RUN DRIVER, not the couriers: it CREATES the store under the cwd's
+/// `.rigger/` when absent (a cold checkout legitimately has none yet - this command's whole point
+/// is to populate it) rather than the courier walk-up that refuses a missing store. On an EXISTING
+/// store it refreshes incrementally: the seen-key set is seeded from the log's replay keys, so an
+/// unchanged file's content key is already recorded and its batch re-ingests nothing, while a
+/// changed file hashes to new keys and re-emits. The light lane compiles no extraction pass, so
+/// `graph build` there degrades to an empty graph (it still creates the store) and exits 0, never
+/// an error.
+fn cmd_graph_build(_args: &[String]) -> Res {
+    // Bootstrap the store like `run`/`step` do (create-or-open under the cwd's `.rigger/`), NOT the
+    // courier `require_store_dir` walk-up that refuses when none exists.
+    std::fs::create_dir_all(RIGGER_DIR)?;
+    let selection = store_selection(None, None)?;
+    let backend = resolve_store(&selection, &db_path("events.db"))?;
+    let store = Namespaced::new(backend.as_ref(), &project_identity());
+    let graph = Projector::open(&db_path("graph.db"), &project_identity())?;
+
+    // The tree to fold: the git top-level, so a build launched from a subdirectory still ingests
+    // the WHOLE project (the same root a run's `deps.repo` carries), falling back to the cwd
+    // outside any git context.
+    let root = {
+        let top = git_repo();
+        if top.is_empty() {
+            ".".to_string()
+        } else {
+            top
+        }
+    };
+
+    // Seed the seen-keys from the existing log's replay keys so a re-build refreshes incrementally
+    // (spec 45: "on an existing one it refreshes incrementally"). This mirrors the run's
+    // `replayed_keys` seeding - the SAME content-keyed dedup, driven from the log rather than a
+    // live run - so an unchanged file's already-recorded key is skipped and only changed files
+    // re-emit.
+    let prior = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+    let mut seen: std::collections::HashSet<String> = prior
+        .iter()
+        .filter_map(|e| e.meta.get(conductor::META_REPLAY_KEY).cloned())
+        .collect();
+
+    // The walk and content key are the shared authority; the cold build's emit SINK appends each
+    // file's WHOLE batch to the run stream in ONE append and folds it into the graph in ONE
+    // transaction (the code-ingest fold), skipping any key already seen. This is spec 49's
+    // batched-fold cadence: the measured cold-build throughput was transaction-cadence bound, so a
+    // per-file batch pays the store's transaction cost ONCE, not once per event. There is no run to
+    // stamp, so the events carry no run id - matching the run's own ingest events when no run id is
+    // set. The batched append-and-fold + position assignment is the SAME shared authority the run's
+    // keyed sink uses ([`rigger::ingest::append_and_fold_batch`]), so a build and a run fold a file's
+    // batch identically.
+    let mut appended = 0usize;
+    rigger::ingest::ingest_project_batched(&root, |keyed| {
+        // Keep only the not-yet-seen events of this file's batch, stamping each survivor with its
+        // replay key (the same content-keyed dedup a run seeds from the log). A batch already wholly
+        // recorded (an unchanged file on a re-build) survives to nothing and appends nothing.
+        let survivors: Vec<Event> = keyed
+            .iter()
+            .filter(|(key, _)| seen.insert(key.clone()))
+            .map(|(key, ev)| {
+                (*ev)
+                    .clone()
+                    .with_meta(conductor::META_REPLAY_KEY, key.as_str())
+            })
+            .collect();
+        // Fold best-effort, exactly as the run's batched append-and-fold does: a fold failure must
+        // not fail the ingest, which already landed durably in the log.
+        match rigger::ingest::append_and_fold_batch(
+            &store,
+            Some(&graph as &dyn Projection),
+            conductor::STREAM,
+            &survivors,
+        ) {
+            Ok(_) => appended += survivors.len(),
+            Err(e) => eprintln!("graph build: skipping a batch that failed to append: {e}"),
+        }
+    });
+
+    println!(
+        "graph build: ingested {appended} code-ingest event(s) into {}",
+        db_path("graph.db")
+    );
+    Ok(())
+}
+
+/// `rigger graph communities [--resolution <r>]` - the OFFLINE, DETERMINISTIC community-detection
+/// pass (spec 53, the CODE lens). It reads the project's already-folded coupling layer (the live
+/// `CALLS` / `REFERENCES` / `CONTAINS` edges among code-entity / file nodes), runs modularity-based
+/// detection over it at the given `--resolution` grain (default [`community::DEFAULT_RESOLUTION`]),
+/// and RECORDS the result as `CommunityAssigned` events - so the derived grouping is event-sourced
+/// (the `IN_COMMUNITY` membership edges are a rebuildable fold of the log), never computed at request
+/// time. Re-running at a resolution with a NON-empty result supersedes only that grain's prior
+/// assignments (the fold's `fresh` boundary), so distinct grains coexist and the lens reads one live
+/// set per grain.
+///
+/// Store lifecycle mirrors `graph build` (the composition root, not the courier walk-up): it
+/// CREATES the store under the cwd's `.rigger/` when absent, then reads the WHOLE projection and
+/// appends-and-folds the pass's events in ONE batch. Detection is always-compiled and reads only
+/// folded edges, so this runs identically in both feature lanes; a graph with no coupling edges
+/// detects nothing and records nothing (exit 0, never an error). Because an empty result records NO
+/// events, an empty re-run is KEEP-LAST-GOOD: it does NOT clear a grain's prior assignment - the last
+/// NON-empty pass at that resolution stays live (see `community::events`, decision
+/// d-u53c2-empty-rerun-keep-last-good). A real subsystem removal is a SHRINK - a smaller NON-empty
+/// result - which DOES supersede via the `fresh` boundary and drops the emptied community's node.
+fn cmd_graph_communities(args: &[String]) -> Res {
+    let mut resolution = community::DEFAULT_RESOLUTION;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--resolution" => {
+                i += 1;
+                let raw = args.get(i).cloned().unwrap_or_default();
+                resolution = raw.parse::<f64>().map_err(|_| {
+                    format!("graph communities: --resolution expects a number, got {raw:?}")
+                })?;
+                if !(resolution.is_finite() && resolution > 0.0) {
+                    return Err(format!(
+                        "graph communities: --resolution must be a positive finite number, got {resolution}"
+                    )
+                    .into());
+                }
+            }
+            other => {
+                return Err(format!("graph communities: unknown argument {other:?}").into());
+            }
+        }
+        i += 1;
+    }
+
+    // Bootstrap the store like `graph build`/`run` do (create-or-open under the cwd's `.rigger/`).
+    std::fs::create_dir_all(RIGGER_DIR)?;
+    let selection = store_selection(None, None)?;
+    let backend = resolve_store(&selection, &db_path("events.db"))?;
+    let store = Namespaced::new(backend.as_ref(), &project_identity());
+    let graph = Projector::open(&db_path("graph.db"), &project_identity())?;
+
+    // Read the WHOLE live projection and detect communities over its coupling layer. `whole()` is
+    // the same direct, project-scoped, sorted read the dash's `/api/graph` provider consults.
+    let whole = graph.whole()?;
+    let coupling = community::Coupling::from_graph(&whole);
+    let assignment = community::detect(&coupling, resolution);
+    let events = community::events(&assignment);
+
+    // Append the pass's events in ONE store append and fold them in ONE transaction (the shared
+    // batched append-and-fold authority). The `fresh` head supersedes this grain's prior
+    // memberships; the rest re-add, so a re-run REPLACES this resolution's assignment set.
+    rigger::ingest::append_and_fold_batch(
+        &store,
+        Some(&graph as &dyn Projection),
+        conductor::STREAM,
+        &events,
+    )?;
+
+    println!(
+        "graph communities: detected {} communit{} over {} coupled node(s) at resolution {} ({} membership event(s) recorded into {})",
+        assignment.num_communities,
+        if assignment.num_communities == 1 { "y" } else { "ies" },
+        coupling.len(),
+        resolution,
+        events.len(),
+        db_path("graph.db")
+    );
+    Ok(())
+}
+
+/// `rigger graph concepts [--resolution <r>]` - the OFFLINE, DETERMINISTIC intent-derivation pass
+/// (spec 54, the CONCEPTS lens). It reads the project's already-folded INTENT layer (the live
+/// `SPECIFIES` / `CONSTRAINS` / `GOVERNS` / `explains` / `references` edges among design docs,
+/// handbook rules, specs, rationale, and the code they attach to), runs the SAME deterministic
+/// community detection the code lens ships over it at the given `--resolution` grain (default
+/// [`concepts::DEFAULT_RESOLUTION`]), and RECORDS the result as `ConceptDerived` / `ConceptRealized`
+/// events - so the derived grouping is event-sourced (the `REALIZES` membership edges are a
+/// rebuildable fold of the log), never computed at request time. Re-running at a resolution with a
+/// NON-empty result supersedes only that grain's prior grouping (the fold's `fresh` boundary), so
+/// distinct grains coexist and the lens reads one live set per grain.
+///
+/// Store lifecycle mirrors `graph communities` (the composition root, not the courier walk-up): it
+/// CREATES the store under the cwd's `.rigger/` when absent, then reads the WHOLE projection and
+/// appends-and-folds the pass's events in ONE batch. The derivation is always-compiled and reads only
+/// folded edges, so this runs identically in both feature lanes; a graph with no intent edges derives
+/// nothing and records nothing (exit 0, never an error). Because an empty result records NO events, an
+/// empty re-run is KEEP-LAST-GOOD: it does NOT clear a grain's prior grouping - the last NON-empty
+/// pass at that resolution stays live (see `concepts::events`).
+fn cmd_graph_concepts(args: &[String]) -> Res {
+    let mut resolution = concepts::DEFAULT_RESOLUTION;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--resolution" => {
+                i += 1;
+                let raw = args.get(i).cloned().unwrap_or_default();
+                resolution = raw.parse::<f64>().map_err(|_| {
+                    format!("graph concepts: --resolution expects a number, got {raw:?}")
+                })?;
+                if !(resolution.is_finite() && resolution > 0.0) {
+                    return Err(format!(
+                        "graph concepts: --resolution must be a positive finite number, got {resolution}"
+                    )
+                    .into());
+                }
+            }
+            other => {
+                return Err(format!("graph concepts: unknown argument {other:?}").into());
+            }
+        }
+        i += 1;
+    }
+
+    // Bootstrap the store like `graph communities` does (create-or-open under the cwd's `.rigger/`).
+    std::fs::create_dir_all(RIGGER_DIR)?;
+    let selection = store_selection(None, None)?;
+    let backend = resolve_store(&selection, &db_path("events.db"))?;
+    let store = Namespaced::new(backend.as_ref(), &project_identity());
+    let graph = Projector::open(&db_path("graph.db"), &project_identity())?;
+
+    // Read the WHOLE live projection and derive concepts over its intent layer. `whole()` is the same
+    // direct, project-scoped, sorted read the dash's `/api/graph` provider consults.
+    let whole = graph.whole()?;
+    let layer = concepts::intent_layer(&whole);
+    let derivation = concepts::derive(&whole, &layer, resolution);
+    let events = concepts::events(&derivation);
+
+    // Append the pass's events in ONE store append and fold them in ONE transaction (the shared
+    // batched append-and-fold authority). The `fresh` head supersedes this grain's prior grouping;
+    // the rest re-add, so a re-run REPLACES this resolution's concept set.
+    rigger::ingest::append_and_fold_batch(
+        &store,
+        Some(&graph as &dyn Projection),
+        conductor::STREAM,
+        &events,
+    )?;
+
+    println!(
+        "graph concepts: derived {} concept{} over {} intent-linked node(s) at resolution {} ({} event(s) recorded into {})",
+        derivation.num_concepts,
+        if derivation.num_concepts == 1 { "" } else { "s" },
+        layer.len(),
+        resolution,
+        events.len(),
+        db_path("graph.db")
+    );
     Ok(())
 }
 
@@ -2650,7 +3366,8 @@ fn cmd_stats(args: &[String]) -> Res {
     // then delegate the namespace-scoped read + no-runs decision to `stats_lines`. This
     // wrapper owns only the I/O boundary (which file, which project, and the printing);
     // the read-model edges live in the testable seam below.
-    match stats_lines(&db_path("events.db"), &project_identity(), all)? {
+    let selection = store_selection(None, None)?;
+    match stats_lines(&db_path("events.db"), &project_identity(), all, &selection)? {
         Some(lines) => {
             for line in lines {
                 println!("{line}");
@@ -2685,13 +3402,14 @@ fn stats_lines(
     path: &str,
     project: &str,
     all: bool,
+    sel: &StoreSelection,
 ) -> Result<Option<Vec<String>>, Box<dyn std::error::Error>> {
-    if !Path::new(path).exists() {
+    if sel.is_sqlite() && !Path::new(path).exists() {
         return Ok(None);
     }
 
-    let backend = Store::open(path)?;
-    let store = Namespaced::new(&backend, project);
+    let backend = resolve_store(sel, path)?;
+    let store = Namespaced::new(backend.as_ref(), project);
     // The conductor projects its run state from STREAM read forward from revision 0
     // (inclusive); read the same stream the same way so the metrics fold sees exactly
     // the run the conductor drove, scoped to this project's namespace.
@@ -2943,11 +3661,12 @@ fn canary_stats_lines(
     path: &str,
     project: &str,
 ) -> Result<Option<Vec<String>>, Box<dyn std::error::Error>> {
-    if !Path::new(path).exists() {
+    let sel = store_selection(None, None)?;
+    if sel.is_sqlite() && !Path::new(path).exists() {
         return Ok(None);
     }
-    let backend = Store::open(path)?;
-    let store = Namespaced::new(&backend, project);
+    let backend = resolve_store(&sel, path)?;
+    let store = Namespaced::new(backend.as_ref(), project);
     let events = store.read_stream(canary::STREAM, 0, Direction::Forward)?;
     if events.is_empty() {
         return Ok(None);
@@ -3014,11 +3733,12 @@ fn read_model_drift(
     path: &str,
     project: &str,
 ) -> Result<metrics::ModelDrift, Box<dyn std::error::Error>> {
-    if !Path::new(path).exists() {
+    let sel = store_selection(None, None)?;
+    if sel.is_sqlite() && !Path::new(path).exists() {
         return Ok(metrics::ModelDrift::default());
     }
-    let backend = Store::open(path)?;
-    let store = Namespaced::new(&backend, project);
+    let backend = resolve_store(&sel, path)?;
+    let store = Namespaced::new(backend.as_ref(), project);
     let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
     Ok(metrics::model_drift(&events))
 }
@@ -3134,9 +3854,12 @@ fn cmd_canary(args: &[String]) -> Res {
     std::fs::create_dir_all(RIGGER_DIR)?;
     // Sqlite is the canary's local measurement store; migrate a pre-spec-09 namespace once
     // so the canary stream lands under the same identity `stats --canary` reads.
-    migrate_local_identity()?;
-    let backend = Store::open(&db_path("events.db"))?;
-    let store = Namespaced::new(&backend, &project_identity());
+    let selection = store_selection(None, None)?;
+    if selection.is_sqlite() {
+        migrate_local_identity()?;
+    }
+    let backend = resolve_store(&selection, &db_path("events.db"))?;
+    let store = Namespaced::new(backend.as_ref(), &project_identity());
     let driver = cli::Driver::default();
 
     let report = canary::run_canary(&store, &driver, &cfg, &panel, &corpus)?;
@@ -3172,11 +3895,14 @@ fn cmd_playbooks(args: &[String]) -> Res {
 
     // Migrate a pre-spec-09 namespace once so the lessons stream lands under the same
     // identity the conductor wrote, then READ (never fabricate) this project's run stream.
-    migrate_local_identity()?;
+    let selection = store_selection(None, None)?;
+    if selection.is_sqlite() {
+        migrate_local_identity()?;
+    }
     let db = db_path("events.db");
-    let events = if Path::new(&db).exists() {
-        let backend = Store::open(&db)?;
-        let store = Namespaced::new(&backend, &project_identity());
+    let events = if !selection.is_sqlite() || Path::new(&db).exists() {
+        let backend = resolve_store(&selection, &db)?;
+        let store = Namespaced::new(backend.as_ref(), &project_identity());
         store.read_stream(conductor::STREAM, 0, Direction::Forward)?
     } else {
         Vec::new()
@@ -3245,14 +3971,15 @@ fn cmd_replay(args: &[String]) -> Res {
     // 1. Lift the baseline: read (never write) this project's run stream and slice the
     //    requested run. `metrics::project` folds it into the recorded baseline.
     let db = db_path("events.db");
-    if !Path::new(&db).exists() {
+    let selection = store_selection(None, None)?;
+    if selection.is_sqlite() && !Path::new(&db).exists() {
         return Err(format!(
             "rigger replay: no runs recorded yet for this project (no {db}); run `rigger run` first"
         )
         .into());
     }
-    let backend = Store::open(&db)?;
-    let real = Namespaced::new(&backend, &project_identity());
+    let backend = resolve_store(&selection, &db)?;
+    let real = Namespaced::new(backend.as_ref(), &project_identity());
     let events = real.read_stream(conductor::STREAM, 0, Direction::Forward)?;
     let baseline = baseline_run_slice(&events, &run_id).ok_or_else(|| {
         format!(
@@ -3297,8 +4024,11 @@ fn cmd_replay(args: &[String]) -> Res {
     // WAL-mode sqlite only releases its `.db-wal`/`.db-shm` sidecars on close, so cleaning
     // up while the connection is still open would leak them (adv-u13r-replay-scratch-wal-shm-leak).
     let (candidate_metrics, drive_err) = {
-        let iso_backend = Store::open(replay_db.to_str().unwrap_or_default())?;
-        let iso = Namespaced::new(&iso_backend, "rigger-replay");
+        let iso_backend = resolve_store(
+            &StoreSelection::Sqlite,
+            replay_db.to_str().unwrap_or_default(),
+        )?;
+        let iso = Namespaced::new(iso_backend.as_ref(), "rigger-replay");
         // An offline replay re-fold over an isolated store: no run branch, no PR, so no base
         // to persist (spec 38, criterion 3).
         runscope::start_fresh(&iso, &criteria, &candidate_definition, "")?;
@@ -3697,6 +4427,28 @@ fn ensure_run_dashboard_at(
     }
 }
 
+/// Place `cmd`'s spawned child in its OWN process group (a new group whose PGID equals the
+/// child's PID, via `process_group(0)`), detached from the parent command's process group.
+/// This is the session-detachment that makes the always-on dash actually survive across steps
+/// (spec 44): WITHOUT it a detached dash inherits `rigger step`'s process group, and when the
+/// workflow courier runs `rigger step` as a foreground command the harness tears down that
+/// command's process group on completion and reaps the dash with it - the spec-39 always-on
+/// dash then dies the instant every step returns. `process_group(0)` makes the child a group
+/// leader in a group the parent's teardown never reaches. Std-only (no `libc`), so it compiles
+/// and holds identically on BOTH the default and `--no-default-features` lanes. Non-Unix builds
+/// keep the group-inheriting behavior (the always-on dash is a Unix-path feature).
+#[cfg(unix)]
+fn detach_process_group(cmd: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    // `process_group(0)` runs a `setpgid(0, 0)`-equivalent in the child before exec, making it a
+    // group leader whose PGID equals its own PID - a brand-new process group the parent command's
+    // group teardown never reaches.
+    cmd.process_group(0);
+}
+
+#[cfg(not(unix))]
+fn detach_process_group(_cmd: &mut Command) {}
+
 /// Spawn `rigger dash --port <n>` as a DETACHED child - NO [`dash::ReapedChild`] guard is
 /// held - returning its port + pid as a [`dash::DashMarker`] the caller records. Detached is
 /// deliberate: the step path that starts it returns per frontier, so a guard-bound child would
@@ -3713,10 +4465,22 @@ fn ensure_run_dashboard_at(
 /// must hold no inherited descriptor. The dash's own startup errors are therefore silent -
 /// acceptable for a best-effort, self-contained observability process whose logs nothing reads.
 fn spawn_run_dashboard_detached() -> std::io::Result<dash::DashMarker> {
-    let port = dash::free_port_from(dash::DEFAULT_PORT)?;
+    // The machine singleton binds the FIXED default address (spec 50, criterion 4) - no free-port
+    // search, so the address never drifts. If a dash is already serving it, the spawned `rigger
+    // dash` recognizes the singleton and exits 0 without binding a second (criterion 1's
+    // `bind_singleton`), so this is safe even when a concurrent run races to start one.
+    //
+    // The default is overridable via [`DASH_PORT_ENV`] for exactly the case the fixed address
+    // otherwise makes untestable and unusable: a machine where a rigger dash already holds the
+    // default (the self-hosting dev box always does), or where a non-rigger process owns 7420.
+    // Unset (the production default) resolves to [`dash::DEFAULT_PORT`] with NO free-port search,
+    // so the singleton's stable-address contract is unchanged; the ensure path just gains the same
+    // port seam the manual `rigger dash --port` already has, which lets the step-path dash tests
+    // inject an ephemeral port and never fight a real machine dash.
+    let port = dash_ensure_port();
     let exe = std::env::current_exe()?;
-    let child = Command::new(exe)
-        .arg("dash")
+    let mut cmd = Command::new(exe);
+    cmd.arg("dash")
         .arg("--port")
         .arg(port.to_string())
         // Self-reap on run-idle (spec 39, criterion 3): a DETACHED dash holds no `ReapedChild`,
@@ -3725,8 +4489,12 @@ fn spawn_run_dashboard_detached() -> std::io::Result<dash::DashMarker> {
         .arg("--reap-on-idle")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()?;
+        .stderr(Stdio::null());
+    // Session-detach BEFORE spawning: put the dash in its own process group so the teardown of
+    // the foreground `rigger step` command's process group does not reap it (spec 44). Without
+    // this the "detached" child still shares step's group and dies the instant the step returns.
+    detach_process_group(&mut cmd);
+    let child = cmd.spawn()?;
     let pid = child.id();
     // Detach: `child` is dropped at the end of this function. A std `Child`'s Drop neither
     // waits nor kills, so the dash process keeps running after this step returns. (Contrast
@@ -3736,21 +4504,61 @@ fn spawn_run_dashboard_detached() -> std::io::Result<dash::DashMarker> {
     Ok(dash::DashMarker { port, pid })
 }
 
-/// Start a persistent run dashboard for the step drive path if none is already serving this
-/// project (spec 39, criterion 1). The always-on promise of spec 19b, wired onto the native
-/// step path: the first `step` of a run starts a dashboard, later steps find its marker and
-/// start none. Best-effort and headless-degrading: a failed start only warns (the run
-/// continues headless), and the [`DASH_DISABLE_ENV`] opt-out skips the start entirely for a
-/// headless CI or the crate's own integration tests. The started dash is DETACHED so it
-/// survives across the run's many short-lived `step` processes.
-fn ensure_run_dashboard() {
-    if std::env::var_os(DASH_DISABLE_ENV).is_some() {
+/// Whether the always-on dash auto-ensure is SUPPRESSED for this run (spec 50, criterion 4) -
+/// the single opt-out authority. It is suppressed by EITHER opt-out: the environment disable
+/// ([`DASH_DISABLE_ENV`] set to any value, `env_disabled`) OR the config opt-out (`dash: off`,
+/// surfaced here as `config_dash_enabled == false`). Pure over its two resolved inputs so both
+/// opt-out paths - and the fact that either alone suffices - are provable without mutating the
+/// process environment or cwd; the real caller resolves `env_disabled` from the environment and
+/// `config_dash_enabled` from the already-loaded workflow.
+fn dash_ensure_suppressed(env_disabled: bool, config_dash_enabled: bool) -> bool {
+    env_disabled || !config_dash_enabled
+}
+
+/// The port the step-path always-on dashboard binds: [`DASH_PORT_ENV`] when set to a valid
+/// `u16`, else [`dash::DEFAULT_PORT`]. The real caller resolves the raw value from the process
+/// environment; the resolution itself is [`dash_ensure_port_from`], pure over that resolved input
+/// so both the override and the fixed-default fallback are provable without mutating the process
+/// environment (the same "pure over resolved inputs" discipline as [`dash_ensure_suppressed`]).
+fn dash_ensure_port() -> u16 {
+    dash_ensure_port_from(std::env::var(DASH_PORT_ENV).ok().as_deref())
+}
+
+/// Resolve the step-path ensure port from an already-read [`DASH_PORT_ENV`] value: a valid `u16`
+/// overrides, anything else (absent, empty, or malformed) falls back to [`dash::DEFAULT_PORT`] -
+/// so production (env unset) gets the fixed default with no free-port search, and a bad knob never
+/// breaks a run's observability.
+fn dash_ensure_port_from(raw: Option<&str>) -> u16 {
+    raw.and_then(|v| v.trim().parse().ok())
+        .unwrap_or(dash::DEFAULT_PORT)
+}
+
+/// Ensure the machine-level SINGLETON dashboard is up for the step drive path (spec 39,
+/// criterion 1; spec 50, criterion 4), unless opted out. The always-on promise retargeted at the
+/// singleton: the first `step` of a run starts the one dash at the FIXED [`dash::DEFAULT_PORT`]
+/// (never a drifting port); every later step finds it serving and starts none (never a second
+/// dash). `config_dash_enabled` is the workflow's resolved [`config::Workflow::dash_enabled`],
+/// passed in from the already-loaded config so this never re-reads it.
+///
+/// OPT-OUT (criterion 4): the ensure is skipped entirely when EITHER the [`DASH_DISABLE_ENV`]
+/// environment disable OR the config `dash: off` is set (resolved through
+/// [`dash_ensure_suppressed`]) - a headless or CI run then binds NO port at all and proceeds
+/// normally. Best-effort and headless-degrading otherwise: a failed start only warns. The started
+/// dash is DETACHED so it survives across the run's many short-lived `step` processes.
+fn ensure_run_dashboard(config_dash_enabled: bool) {
+    let env_disabled = std::env::var_os(DASH_DISABLE_ENV).is_some();
+    if dash_ensure_suppressed(env_disabled, config_dash_enabled) {
         return;
     }
     let marker_path = std::path::PathBuf::from(db_path(DASH_MARKER_FILE));
     match ensure_run_dashboard_at(
         &marker_path,
-        |m| dash::pid_is_alive(m.pid),
+        // Singleton-aware short-circuit (spec 50, criterion 4): a marker suppresses a fresh start
+        // only when a dash is actually SERVING its recorded port - a probe, not a bare pid-liveness
+        // check - so a marker left by a self-reaped or pid-recycled dash never masks a stopped
+        // singleton, and a singleton a PRIOR run (or another project's step) left serving the fixed
+        // address is reused rather than re-spawned.
+        |m| dash::dash_serving_on(m.port),
         spawn_run_dashboard_detached,
     ) {
         DashStart::Started(port) => {
@@ -3758,7 +4566,8 @@ fn ensure_run_dashboard() {
             // transport; in the step driver stdout carries only the `{wave,done}` JSON.
             eprintln!("rigger dash: serving this run at http://127.0.0.1:{port}/");
         }
-        // A prior step already started it - the idempotent no-op, nothing to announce.
+        // A dash is already serving the singleton address - the idempotent no-op, nothing to
+        // announce (this run started it earlier, a prior run left it up, or another project did).
         DashStart::AlreadyServing(_) => {}
         DashStart::Failed => {
             eprintln!("rigger: could not auto-start the dashboard; the run continues headless");
@@ -3835,28 +4644,126 @@ fn cmd_dash(args: &[String]) -> Res {
     // repo) and carries no persisted base, keeping the dash and `rigger status` on one handoff.
     let (release_base, _) = resolve_run_base(None, std::env::var("RIGGER_BASE").ok().as_deref());
 
-    // Snapshot the read-only inputs the self-reap watcher needs (spec 39, criterion 3) BEFORE the
-    // provider closure below moves the originals - only when this is the detached, self-reaping
-    // dash (`--reap-on-idle`). `None` for the guard-bound `rigger run` / `run_workflow` dash, which
-    // never starts a watcher (it keeps its `ReapedChild`).
-    let reap_inputs =
-        reap_on_idle.then(|| (events_db.clone(), identity.clone(), scratch_root.clone()));
+    // The machine-global instance registry the singleton's self-reap watcher polls (spec 50,
+    // criterion 5) - resolved ONLY when this is the detached, self-reaping singleton
+    // (`--reap-on-idle`) and the environment has a state home (a homeless environment holds no
+    // registry, so the watcher never starts and the dash simply serves). `None` for the guard-bound
+    // `rigger run` / `run_workflow` dash, which never starts a watcher (it keeps its `ReapedChild`).
+    // Retargets spec 39's per-run liveness snapshot at the singleton: the reap trigger is now the
+    // registry (every instance on the machine), not this one project's run, so no per-run inputs are
+    // captured here.
+    let reap_registry_dir = reap_on_idle.then(rigger::registry::default_dir).flatten();
+
+    // The SEPARATE, lazy graph provider for `/api/graph` (spec 45, criteria 1+2). It opens the
+    // projection and reads the graph ONLY when a graph request arrives - never on the 1.5s state
+    // poll - so a whole-graph read never rides the poll. It reads the WHOLE projection DIRECTLY
+    // (`dash_read_whole_graph`), NOT the run-seeded `subgraph(graph_seeds(events), 2)` the polled
+    // provider uses, so the overview and the seeded neighborhood reach any node the projection
+    // holds - fixing the never-built-repo dead-end where an empty run-seed set collapsed the graph
+    // to `Graph::default()`. Read-only and per-request-open like the polled provider: the dash
+    // still starts before the store exists, and an absent/empty graph degrades to an empty result,
+    // never an error. Its own clones of the db path + identity, captured before the polled
+    // `provider` below moves the originals.
+    // The machine-global instance registry (spec 50), for the landing list AND the ATTACH
+    // resolver (criterion 3). `None` in a homeless environment: the landing is then empty and no
+    // `?instance=` selector can resolve, but the dash still serves its own local project.
+    let registry_dir = rigger::registry::default_dir();
+
+    let graph_provider = {
+        let graph_db = graph_db.clone();
+        let identity = identity.clone();
+        let registry_dir = registry_dir.clone();
+        // The selected instance (spec 50, criterion 3) chooses WHICH store's whole graph is read:
+        // the dash's own project by default, an attached instance's LOCAL graph projection when
+        // one is selected, or an empty graph for a since-gone selector - never an error.
+        move |instance: Option<&str>| -> contextgraph::Graph {
+            match dash_resolve_attach(instance, registry_dir.as_deref()) {
+                DashAttach::Local => dash_read_whole_graph(&graph_db, &identity),
+                DashAttach::Instance(inst) => dash_attach_graph(&inst),
+                DashAttach::Empty => contextgraph::Graph::default(),
+            }
+        }
+    };
+
+    // The DIRECTED-CALL provider for `/api/graph?view=calls` (spec 52, criterion 4): the SAME lazy
+    // direct-projection provider the whole-graph views use, but running the store-side directed
+    // traversal `Projection::calls` (the execution path / call sites of a seed) instead of reading
+    // the whole graph. Opened only on a call request, never on the state poll; per-request-open and
+    // best-effort like `graph_provider`, so an absent / empty graph or a seed with no calls degrades
+    // to an empty `CallGraph`, never an error. Chooses WHICH store to walk from the same spec-50
+    // attach selector.
+    let calls_provider = {
+        let graph_db = graph_db.clone();
+        let identity = identity.clone();
+        let registry_dir = registry_dir.clone();
+        move |instance: Option<&str>,
+              seed: &[String],
+              direction: contextgraph::Direction,
+              depth: i64,
+              tier_floor: &str|
+              -> contextgraph::CallGraph {
+            match dash_resolve_attach(instance, registry_dir.as_deref()) {
+                DashAttach::Local => {
+                    dash_read_calls(&graph_db, &identity, seed, direction, depth, tier_floor)
+                }
+                DashAttach::Instance(inst) => {
+                    dash_attach_calls(&inst, seed, direction, depth, tier_floor)
+                }
+                DashAttach::Empty => contextgraph::CallGraph::default(),
+            }
+        }
+    };
 
     // Fresh projection inputs on every request. Reading (not holding an open handle) is
-    // what lets the dash start before the store exists and pick the run up once it does.
-    let provider = move || -> Result<dash::DashInputs, String> {
-        let events = dash_read_run(&events_db, &identity).map_err(|e| e.to_string())?;
-        let graph = dash_read_graph(&graph_db, &identity, &events);
-        let run_id = runscope::current_run_id(&events).unwrap_or_default();
-        let progress = dash_read_progress(&progress_db, &identity, &run_id);
-        let liveness = dash_read_liveness(&events, &scratch_root, &run_id);
-        Ok((events, graph, progress, liveness))
+    // what lets the dash start before the store exists and pick the run up once it does. The
+    // selected instance (spec 50, criterion 3) chooses WHICH store is opened per request: the
+    // dash's own project by default, an attached instance's stores when one is selected, or an
+    // empty state for a since-gone selector (an empty store renders empty, never an error).
+    let provider = {
+        let registry_dir = registry_dir.clone();
+        move |instance: Option<&str>| -> Result<dash::DashInputs, String> {
+            match dash_resolve_attach(instance, registry_dir.as_deref()) {
+                DashAttach::Local => {
+                    let events = dash_read_run(&events_db, &identity).map_err(|e| e.to_string())?;
+                    let graph = dash_read_graph(&graph_db, &identity, &events);
+                    let run_id = runscope::current_run_id(&events).unwrap_or_default();
+                    let progress = dash_read_progress(&progress_db, &identity, &run_id);
+                    let liveness = dash_read_liveness(&events, &scratch_root, &run_id);
+                    Ok((events, graph, progress, liveness))
+                }
+                DashAttach::Instance(inst) => Ok(dash_attach_inputs(&inst)),
+                DashAttach::Empty => Ok((
+                    Vec::new(),
+                    contextgraph::Graph::default(),
+                    Vec::new(),
+                    std::collections::HashMap::new(),
+                )),
+            }
+        }
+    };
+
+    // The LANDING provider (spec 50, criterion 3): the machine-global registry projected into the
+    // credential-free instance list, freshly read (and stale-pruned) on each `/api/instances` poll.
+    let instances_provider = {
+        let registry_dir = registry_dir.clone();
+        move || -> Vec<dash::InstanceView> {
+            match registry_dir.as_deref() {
+                Some(dir) => {
+                    let now = rigger::registry::now_ms();
+                    let live =
+                        rigger::registry::read_live(dir, now, rigger::registry::DEFAULT_IDLE_MS);
+                    dash::instance_views(&live, now)
+                }
+                None => Vec::new(),
+            }
+        }
     };
 
     match export {
         Some(path) => {
+            // An exported snapshot is always of the dash's own local project (no attach selector).
             let (events, graph, progress, liveness) =
-                provider().map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+                provider(None).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
             let html = dash::render_export(
                 &events,
                 &graph,
@@ -3871,37 +4778,58 @@ fn cmd_dash(args: &[String]) -> Res {
             Ok(())
         }
         None => {
-            // Self-reap on run-idle (spec 39, criterion 3): the detached step-path dash is
-            // started with `--reap-on-idle`, so a background thread polls the run's own liveness
-            // and exits this process once the run is complete or its heartbeat has gone stale -
-            // leaving no orphaned dash after a completed OR crashed run, driven by the run's
-            // liveness and NOT by any `step` process exiting. Read-only: the watcher only reads
-            // the store. The guard-bound `rigger run` / `run_workflow` dash omits the flag and
-            // keeps its `ReapedChild` reaping instead.
-            if let Some((events_db, identity, scratch_root)) = reap_inputs {
-                let poll = dash_reap_poll();
-                let stale_after = dash_reap_stale();
-                std::thread::spawn(move || {
-                    watch_and_self_reap_on_idle(
-                        events_db,
-                        identity,
-                        scratch_root,
-                        poll,
-                        stale_after,
-                    )
-                });
-            }
+            // Fixed address + singleton (spec 50, criterion 1): bind the RESOLVED address
+            // DIRECTLY - no free-port search. If a rigger dash is already serving that address,
+            // report it and exit 0 (never a second dash, never a drifted port); a non-dash
+            // holder is a genuine conflict the bind error surfaces (resolve it with `--port`).
             let addr = SocketAddr::from(([127, 0, 0, 1], port));
-            dash::serve(addr, provider, max_retries, RUN_BRANCH, &release_base)?;
-            Ok(())
+            match dash::bind_singleton(addr)? {
+                dash::SingletonBind::AlreadyServing(existing) => {
+                    // The singleton is the point: a second invocation reports the ONE known
+                    // address and exits cleanly instead of starting a rival dash.
+                    println!("rigger dash: already serving on http://{existing}/");
+                    Ok(())
+                }
+                dash::SingletonBind::Bound(listener) => {
+                    // Self-reap on machine idle (spec 50, criterion 5): the detached step-path
+                    // SINGLETON is started with `--reap-on-idle`, so a background thread polls the
+                    // machine-global instance registry and exits this process once NOTHING is
+                    // registered-and-alive - leaving no orphaned dash on a quiet machine, while
+                    // surviving one project's run ending as long as another's is still live. This
+                    // retargets spec 39's per-run liveness trigger at the machine-level singleton;
+                    // it is driven by the registry, NOT by any single `step` process exiting.
+                    // Read-only: the watcher only reads the registry. The guard-bound `rigger run` /
+                    // `run_workflow` dash omits the flag and keeps its `ReapedChild` reaping
+                    // instead. Started ONLY on the branch that actually binds and serves - a
+                    // short-circuited singleton invocation serves nothing and starts no watcher.
+                    if let Some(registry_dir) = reap_registry_dir {
+                        let poll = dash_reap_poll();
+                        let idle_window = dash_reap_idle_window();
+                        std::thread::spawn(move || {
+                            watch_and_self_reap_on_idle(registry_dir, idle_window, poll)
+                        });
+                    }
+                    dash::serve_on(
+                        listener,
+                        provider,
+                        graph_provider,
+                        calls_provider,
+                        instances_provider,
+                        max_retries,
+                        RUN_BRANCH,
+                        &release_base,
+                    )?;
+                    Ok(())
+                }
+            }
         }
     }
 }
 
-/// The dash self-reap watcher's poll interval (spec 39, criterion 3): how often the detached
-/// step-path dash re-checks whether the run it serves has gone idle. Env-tunable via
-/// [`DASH_REAP_POLL_ENV`] (milliseconds) - the crate's own integration test sets it small so the
-/// self-reap is observable quickly - defaulting to [`DASH_REAP_POLL_DEFAULT_MS`]. Clamped to at
+/// The dash self-reap watcher's poll interval (spec 50, criterion 5): how often the detached
+/// singleton dash re-checks the machine-global instance registry for a live instance. Env-tunable
+/// via [`DASH_REAP_POLL_ENV`] (milliseconds) - the crate's own integration test sets it small so
+/// the self-reap is observable quickly - defaulting to [`DASH_REAP_POLL_DEFAULT_MS`]. Clamped to at
 /// least 1ms so a `0` override never spins the watcher into a busy loop.
 fn dash_reap_poll() -> std::time::Duration {
     let ms = std::env::var(DASH_REAP_POLL_ENV)
@@ -3912,116 +4840,59 @@ fn dash_reap_poll() -> std::time::Duration {
     std::time::Duration::from_millis(ms)
 }
 
-/// The dash self-reap watcher's heartbeat-staleness bound (spec 39, criterion 3): once the run's
-/// freshest liveness marker is older than this, the run's liveness is treated as gone and the
-/// dash reaps (the crashed/wedged-run backstop). Env-tunable via [`DASH_REAP_STALE_ENV`]
-/// (seconds), defaulting to [`DASH_REAP_STALE_DEFAULT_SECS`] - generous, so a live run's normal
-/// inter-step gap (no marker touched for a few seconds between `step` processes) never trips a
-/// false reap; normal completion reaps promptly through the `None`-heartbeat + terminal arm
-/// regardless of this bound.
-fn dash_reap_stale() -> std::time::Duration {
-    let secs = std::env::var(DASH_REAP_STALE_ENV)
+/// The dash self-reap watcher's IDLE WINDOW (spec 50, criterion 5): a registered instance whose
+/// heartbeat is older than this counts as no longer live, so once EVERY registered instance has
+/// aged past it (and none was refreshed within it) the singleton reaps. Defaults to the registry's
+/// own idle window ([`rigger::registry::DEFAULT_IDLE_MS`]) so the reader and the reaper share ONE
+/// staleness bound; env-tunable via [`DASH_REAP_STALE_ENV`] (seconds) so the crate's own
+/// integration test can make the reap observable on a short window without the shipped multi-minute
+/// cadence.
+fn dash_reap_idle_window() -> std::time::Duration {
+    match std::env::var(DASH_REAP_STALE_ENV)
         .ok()
         .and_then(|v| v.trim().parse::<u64>().ok())
-        .unwrap_or(DASH_REAP_STALE_DEFAULT_SECS);
-    std::time::Duration::from_secs(secs)
-}
-
-/// The freshest per-spawn liveness-marker age across the WHOLE run's `agent-live/<run_id>/`
-/// directory (spec 39, criterion 3) - the run's HEARTBEAT, decoupled from any single wave's
-/// spawns. `None` when the run has no marker directory or it holds no marker: a run not yet
-/// heartbeating, or a completed run whose markers the terminal teardown (`reclaim_run_scratch`)
-/// already reclaimed. Reads the FRESHEST (minimum) age because ANY worker touching ANY marker
-/// means the run is still alive; the run's heartbeat is stale only once EVERY marker has aged
-/// out. Unlike [`dash_read_liveness`] (which reads only the current wave's unanswered spawns,
-/// for the per-agent view), this scans every marker the run left, so an inter-step gap - where
-/// the wave is momentarily empty yet the just-finished workers' markers are seconds old - reads
-/// as a LIVE heartbeat, not a false idle.
-fn run_heartbeat_age(
-    scratch_root: &str,
-    run_id: &str,
-    now: std::time::SystemTime,
-) -> Option<std::time::Duration> {
-    if scratch_root.is_empty() || run_id.is_empty() {
-        return None;
-    }
-    let dir = Path::new(scratch_root)
-        .join(rigger::liveness::MARKER_SUBDIR)
-        .join(rigger::liveness::marker_filename(run_id));
-    let mut freshest: Option<std::time::Duration> = None;
-    for entry in std::fs::read_dir(&dir).ok()?.flatten() {
-        let Ok(mtime) = entry.metadata().and_then(|m| m.modified()) else {
-            continue;
-        };
-        let age = now
-            .duration_since(mtime)
-            .unwrap_or(std::time::Duration::ZERO);
-        freshest = Some(freshest.map_or(age, |cur| cur.min(age)));
-    }
-    freshest
-}
-
-/// The UNIT-level fixpoint for the dash self-reap watcher (spec 39, criterion 3): true when the
-/// current run has at least one unit and EVERY unit is terminal (integrated or escalated), read
-/// through the single ledger authority ([`ledger::project`] + [`ledger::RunState::is_terminal`]).
-///
-/// This is the will-not-advance completion signal the `None`-heartbeat reap arm needs.
-/// [`terminal_and_no_live_worker`] is only a SPAWN-level fixpoint that is TRANSIENTLY true in every
-/// inter-wave gap (a wave's spawns are answered but the conductor has not parked the next wave yet);
-/// by contrast a unit reaches a terminal state ONLY through the conductor's integration pass inside
-/// `rigger step`, never merely because a worker reported its result. So this is FALSE while a wave's
-/// results are reported-but-not-yet-integrated and while any later-wave unit is still pending, and
-/// TRUE only once the run genuinely completed (every unit integrated) or wedged to an
-/// escalation-halt (every unit terminal). An UNBOUNDED run writes no liveness marker and so
-/// heartbeats a permanent `None`, so liveness alone cannot tell a completed run from one merely
-/// between waves; this settled signal makes that distinction, so the dash serves through inter-wave
-/// gaps and reaps only at genuine completion.
-///
-/// Scoped to the CURRENT run (`runscope::current_run`) so a prior run's units never gate this run.
-/// An unprojectable stream is treated as NOT settled (never reap on uncertainty).
-fn run_settled(events: &[Event]) -> bool {
-    let scoped = runscope::current_run(events);
-    match ledger::project(scoped) {
-        Ok(rs) => !rs.units.is_empty() && rs.units.keys().all(|id| rs.is_terminal(id)),
-        Err(_) => false,
+    {
+        Some(secs) => std::time::Duration::from_secs(secs),
+        None => std::time::Duration::from_millis(rigger::registry::DEFAULT_IDLE_MS),
     }
 }
 
-/// The dash self-reap watcher loop (spec 39, criterion 3), run on a background thread inside the
-/// detached step-path dash. On each `poll` tick it reads the run's events read-only, computes
-/// whether the run has STARTED, reached a TERMINAL fixpoint
-/// ([`terminal_and_no_live_worker`], the same predicate the step teardown gates on), and the
-/// run's current HEARTBEAT age ([`run_heartbeat_age`]); when [`dash::should_reap_on_idle`] says
-/// the run is over it exits the process, terminating the blocked [`dash::serve`] accept loop.
-/// This is the SELF-reap: the detached dash holds no `ReapedChild`, so its own liveness watch is
-/// what leaves no orphan after a completed or crashed run - and it fires on the run's liveness
-/// going idle, never on a single `step` process exiting. Never returns (it either loops or
-/// exits the process).
+/// The dash self-reap watcher loop (spec 50, criterion 5), run on a background thread inside the
+/// detached step-path SINGLETON dash. On each `poll` tick it reads the machine-global instance
+/// registry read-only ([`rigger::registry::read_live`], which prunes entries whose heartbeat has
+/// aged past `idle_window`); when [`dash::should_reap_singleton`] says the machine is quiet - no
+/// registered instance is live and at least one has been seen - it exits the process, terminating
+/// the blocked [`dash::serve`] accept loop. This RETARGETS spec 39's per-run liveness watch at the
+/// machine-level singleton: the dash serves every registered instance and outlives any single run,
+/// so it SURVIVES one project's run ending while another's is still live (that instance keeps
+/// `read_live` non-empty) and reaps only on a genuinely idle machine - driven by the registry, NOT
+/// by any single `step` process exiting. The `ever_seen_live` latch is the startup-race guard (a
+/// just-ensured singleton must not reap before its ensuring run writes its entry). Never returns
+/// (it either loops or exits the process).
 fn watch_and_self_reap_on_idle(
-    events_db: String,
-    identity: String,
-    scratch_root: String,
+    registry_dir: PathBuf,
+    idle_window: std::time::Duration,
     poll: std::time::Duration,
-    stale_after: std::time::Duration,
 ) -> ! {
+    let ttl_ms = u64::try_from(idle_window.as_millis()).unwrap_or(u64::MAX);
+    let mut ever_seen_live = false;
     loop {
         std::thread::sleep(poll);
-        // Read-only snapshot of the run, exactly as the dash's own provider reads it.
-        let events = dash_read_run(&events_db, &identity).unwrap_or_default();
-        let run_started = !events.is_empty();
-        let run_terminal = terminal_and_no_live_worker(&events).unwrap_or(false);
-        // The UNIT-level fixpoint: every unit terminal. Distinct from `run_terminal` (a spawn-level
-        // fixpoint that is transiently true between waves), it is what keeps an UNBOUNDED run's dash
-        // - which never heartbeats - from self-reaping mid-run in an inter-wave gap.
-        let settled = run_settled(&events);
-        let run_id = runscope::current_run_id(&events).unwrap_or_default();
-        let heartbeat = run_heartbeat_age(&scratch_root, &run_id, std::time::SystemTime::now());
-        if dash::should_reap_on_idle(run_started, run_terminal, settled, heartbeat, stale_after) {
-            // Self-reap: exit the whole process so the detached dash leaves no orphan. The stale
-            // `.rigger/dash.marker` this leaves behind is deliberately NOT removed - a next run's
-            // first `step` already tolerates it (`dash_start_needed` probes the recorded pid, sees
-            // it dead, and starts a fresh dash), and removing it here would race a successor dash
-            // that may already have rewritten the marker with its own live pid.
+        // Read-only scan of the machine-global registry: every instance whose heartbeat is fresher
+        // than the idle window. `read_live` also prunes the entries that have aged out, so a dead
+        // run's stale entry cannot keep the singleton alive.
+        let live = rigger::registry::read_live(&registry_dir, rigger::registry::now_ms(), ttl_ms);
+        if !live.is_empty() {
+            // Latch: once any live instance has been seen, a later return to zero is genuine machine
+            // idle (not the startup gap before the ensuring run's entry has landed).
+            ever_seen_live = true;
+        }
+        if dash::should_reap_singleton(live.len(), ever_seen_live) {
+            // Self-reap: exit the whole process so the detached singleton leaves no orphan on a
+            // quiet machine. The stale `.rigger/dash.marker` this leaves behind is deliberately NOT
+            // removed - a next run's first `step` already tolerates it (`dash_start_needed` probes
+            // the recorded pid, sees it dead, and starts a fresh dash), and removing it here would
+            // race a successor dash that may already have rewritten the marker with its own live pid.
             std::process::exit(0);
         }
     }
@@ -4034,11 +4905,19 @@ fn dash_read_run(
     events_db: &str,
     identity: &str,
 ) -> Result<Vec<Event>, Box<dyn std::error::Error>> {
-    if !Path::new(events_db).exists() {
+    // Resolve WHICH backend through the one authority, and SURFACE a genuine selection failure
+    // (an unreadable `.rigger/store.conn`, an unreadable/malformed `workflow.yml`, an invalid
+    // `store.backend`) with `?` - matching every other real-run-stream read (`canary_stats_lines`,
+    // `read_model_drift`, `read_run_units`). Swallowing it into a silent local-sqlite default would
+    // read the WRONG store on a server-pinned box whose secret file this user cannot read (the
+    // different-user / permission edge §48 contemplates), so the dashboard read reports an empty run
+    // against a live server (d-u2rr-observer-selection-loud, spec-19c loud-failure-surfacing).
+    let sel = store_selection(None, None)?;
+    if sel.is_sqlite() && !Path::new(events_db).exists() {
         return Ok(Vec::new());
     }
-    let backend = Store::open(events_db)?;
-    let store = Namespaced::new(&backend, identity);
+    let backend = resolve_store(&sel, events_db)?;
+    let store = Namespaced::new(backend.as_ref(), identity);
     let all = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
     Ok(runscope::current_run(&all).to_vec())
 }
@@ -4059,6 +4938,69 @@ fn dash_read_graph(graph_db: &str, identity: &str, events: &[Event]) -> contextg
         Ok(p) => p.subgraph(&seeds, 2).unwrap_or_default(),
         Err(_) => contextgraph::Graph::default(),
     }
+}
+
+/// The WHOLE projection for the `/api/graph` provider (spec 45, criterion 2): the direct-projection
+/// read the dedicated, lazy graph provider consults on a graph request. Unlike [`dash_read_graph`]
+/// it does NOT go through `graph_seeds` - it reads the entire live projection ([`Projector::whole`]),
+/// so the seeded neighborhood and whole-graph overview reach ANY node the projection holds. That
+/// fixes the never-built-repo dead-end: on a graph populated by code ingest with no run
+/// decisions/findings, `graph_seeds` is empty and the run-seeded read collapses to
+/// `Graph::default()`, whereas this read still returns the code nodes and their edges. Best-effort
+/// like the run-seeded read: an absent graph (a grep-only run never builds one), an open error, or a
+/// query error all degrade to an empty graph, never an error, so the rest of the dash still serves.
+fn dash_read_whole_graph(graph_db: &str, identity: &str) -> contextgraph::Graph {
+    if !Path::new(graph_db).exists() {
+        return contextgraph::Graph::default();
+    }
+    match Projector::open(graph_db, identity) {
+        Ok(p) => p.whole().unwrap_or_default(),
+        Err(_) => contextgraph::Graph::default(),
+    }
+}
+
+/// The DIRECTED-CALL walk for the `/api/graph?view=calls` provider (spec 52, criterion 4): the
+/// store-side `Projection::calls` traversal (the seed's execution path or call sites) read through
+/// the SAME lazy direct-projection open as [`dash_read_whole_graph`], never the polled read. Opens
+/// the projection per request and runs the walk `direction`/`depth`/`tier_floor` select. Best-effort
+/// exactly like the whole-graph read: an absent graph (a grep-only run never builds one), an open
+/// error, or a walk error all degrade to an empty [`contextgraph::CallGraph`], never an error, so a
+/// call request over a never-built or empty graph renders an empty view instead of failing.
+fn dash_read_calls(
+    graph_db: &str,
+    identity: &str,
+    seed: &[String],
+    direction: contextgraph::Direction,
+    depth: i64,
+    tier_floor: &str,
+) -> contextgraph::CallGraph {
+    if !Path::new(graph_db).exists() {
+        return contextgraph::CallGraph::default();
+    }
+    match Projector::open(graph_db, identity) {
+        Ok(p) => p
+            .calls(seed, direction, depth, tier_floor)
+            .unwrap_or_default(),
+        Err(_) => contextgraph::CallGraph::default(),
+    }
+}
+
+/// The directed-call walk over an ATTACHED instance's graph store (spec 52 c4 + spec 50 c3): the
+/// [`dash_read_calls`] analogue of [`dash_attach_graph`], opening the selected instance's `graph.db`
+/// read-only. Best-effort - a since-gone or never-built instance graph degrades to an empty
+/// [`contextgraph::CallGraph`], never an error.
+fn dash_attach_calls(
+    inst: &rigger::registry::Instance,
+    seed: &[String],
+    direction: contextgraph::Direction,
+    depth: i64,
+    tier_floor: &str,
+) -> contextgraph::CallGraph {
+    let graph_db = instance_rigger_dir(inst)
+        .join("graph.db")
+        .to_string_lossy()
+        .into_owned();
+    dash_read_calls(&graph_db, &inst.project, seed, direction, depth, tier_floor)
 }
 
 /// This run's progress from the SEPARATE progress store (spec 14), for the dash's live
@@ -4111,6 +5053,148 @@ fn dash_read_liveness(
     }
     ages
 }
+
+/// Which registered instance a dash request ATTACHES to (spec 50, criterion 3), resolved from the
+/// request's `?instance=<id>` selector against the machine-global registry.
+enum DashAttach {
+    /// No instance selected: serve the dash's OWN local project (backward compatible - today's
+    /// single-project dash).
+    Local,
+    /// Serve this registered instance's stores, read-only.
+    Instance(rigger::registry::Instance),
+    /// An instance was requested but is unknown or has aged out of the registry: serve an EMPTY
+    /// state - never the local default (a since-gone selection must not silently show the local
+    /// run) and never an error (an empty store renders an empty state, spec 50).
+    Empty,
+}
+
+/// Resolve which instance a dash request attaches to (spec 50, criterion 3). An absent/empty
+/// selector keeps the dash on its own local project; a selector names a registry entry by its
+/// stable id, resolved through a fresh [`rigger::registry::read_live`] (which also prunes stale
+/// entries) so a per-request open always lands on a currently-live instance. An unresolvable
+/// selector (homeless environment, unknown id, or a pruned-stale entry) degrades to [`DashAttach::Empty`].
+fn dash_resolve_attach(instance: Option<&str>, dir: Option<&Path>) -> DashAttach {
+    let Some(id) = instance.filter(|s| !s.is_empty()) else {
+        return DashAttach::Local;
+    };
+    let Some(dir) = dir else {
+        return DashAttach::Empty;
+    };
+    let live = rigger::registry::read_live(
+        dir,
+        rigger::registry::now_ms(),
+        rigger::registry::DEFAULT_IDLE_MS,
+    );
+    match live.into_iter().find(|i| i.id() == id) {
+        Some(inst) => DashAttach::Instance(inst),
+        None => DashAttach::Empty,
+    }
+}
+
+/// A registered instance's `.rigger` directory, where its LOCAL knowledge-graph and progress
+/// projections live regardless of whether its EVENT store is local sqlite or a shared server (the
+/// KG is built locally per project - spec 50: "the knowledge-graph views open that instance's
+/// local graph projection").
+fn instance_rigger_dir(inst: &rigger::registry::Instance) -> PathBuf {
+    Path::new(&inst.root).join(RIGGER_DIR)
+}
+
+/// Read a registered instance's current-run events, read-only (spec 50, criterion 3). A Local
+/// instance is opened directly as sqlite at its registered log path; a Shared instance resolves
+/// its connection through the store-resolution authority at the instance's OWN `.rigger` (the same
+/// config that lets a worker report to that shared store lets the dash read it), read under the
+/// instance's namespace identity. Best-effort: an absent, unreachable, or unreadable store degrades
+/// to an empty run - "an empty store renders an empty state, never an error" - because the selected
+/// instance is discovery metadata, not a source of truth.
+///
+/// Read an instance's `run` stream from an embedded sqlite event log at `path`, READ-ONLY: an
+/// ABSENT file degrades to an empty run (`Ok(Vec::new())`) rather than opening it, because
+/// [`open_sqlite_store`] -> [`Store::open`] CREATES the file AND its schema, and a dash attach is a
+/// read-only projection that MUST NEVER write a store under a foreign project (spec 50, the
+/// read-only global constraint). This is the ONE read-only sqlite attach reader: the Local arm and
+/// the Shared arm's Sqlite-degrade BOTH route through it, so the existence guard lives in exactly
+/// one place and no attach path can open-create a phantom `events.db`.
+fn dash_read_sqlite_stream_readonly(
+    path: &str,
+    project: &str,
+) -> Result<Vec<Event>, Box<dyn std::error::Error>> {
+    if !Path::new(path).exists() {
+        return Ok(Vec::new());
+    }
+    let backend = open_sqlite_store(path)?;
+    let store = Namespaced::new(&backend, project);
+    Ok(store.read_stream(conductor::STREAM, 0, Direction::Forward)?)
+}
+
+fn dash_attach_run(inst: &rigger::registry::Instance) -> Vec<Event> {
+    let read = || -> Result<Vec<Event>, Box<dyn std::error::Error>> {
+        let all = match &inst.store {
+            rigger::registry::StoreIdentity::Local { path } => {
+                dash_read_sqlite_stream_readonly(path, &inst.project)?
+            }
+            rigger::registry::StoreIdentity::Shared { .. } => {
+                let rigger_dir = instance_rigger_dir(inst);
+                // Resolve through the ATTACHED instance's OWN `.rigger` with NO ambient environment
+                // (`None`, never `env_conn()`): the dash process's own `KURRENTDB_CONN` addresses a
+                // DIFFERENT project's store, so letting it win (§48 rung 2) would attach the wrong
+                // store. The instance's own secret file / committed choice (rungs 3-4) is the
+                // authority for reading THAT instance (adv-u50c3-uphold-sdet-env-precedence).
+                let sel = store_selection_at(None, None, None, &rigger_dir)?;
+                let events_db = rigger_dir.join("events.db");
+                let events_db_path = events_db.to_string_lossy();
+                match sel {
+                    // The instance registered as Shared but its own config no longer resolves a
+                    // server (its secret file / config is gone): a Sqlite DEGRADE. Guard existence
+                    // EXACTLY like the Local arm - a read-only attach must NEVER open-create the
+                    // store, so an absent `events.db` renders an empty run, never a phantom store
+                    // file written under a foreign project (adv-u50c3-shared-attach-creates-phantom-store).
+                    StoreSelection::Sqlite => {
+                        dash_read_sqlite_stream_readonly(&events_db_path, &inst.project)?
+                    }
+                    StoreSelection::Server(_) => {
+                        let backend = resolve_store(&sel, &events_db_path)?;
+                        let store = Namespaced::new(backend.as_ref(), &inst.project);
+                        store.read_stream(conductor::STREAM, 0, Direction::Forward)?
+                    }
+                }
+            }
+        };
+        Ok(runscope::current_run(&all).to_vec())
+    };
+    read().unwrap_or_default()
+}
+
+/// The cheap per-request inputs for an ATTACHED instance (spec 50, criterion 3): its run events,
+/// the run-seeded context subgraph, and this-run progress - all from that instance's stores, read
+/// read-only. The graph and progress are ALWAYS the instance's LOCAL projections under its
+/// `.rigger`; only the event store may be remote. Liveness ages are the LOCAL run's scratch, which
+/// a possibly-remote instance has none of reachable here, so its per-agent ages are simply absent.
+fn dash_attach_inputs(inst: &rigger::registry::Instance) -> dash::DashInputs {
+    let events = dash_attach_run(inst);
+    let rigger_dir = instance_rigger_dir(inst);
+    let graph_db = rigger_dir.join("graph.db").to_string_lossy().into_owned();
+    let progress_db = rigger_dir
+        .join("progress.db")
+        .to_string_lossy()
+        .into_owned();
+    let graph = dash_read_graph(&graph_db, &inst.project, &events);
+    let run_id = runscope::current_run_id(&events).unwrap_or_default();
+    let progress = dash_read_progress(&progress_db, &inst.project, &run_id);
+    (events, graph, progress, std::collections::HashMap::new())
+}
+
+/// The WHOLE knowledge-graph projection for an ATTACHED instance (spec 50, criterion 3), the
+/// `/api/graph` view's lazy read: that instance's LOCAL `graph.db` under its `.rigger`, read
+/// directly ([`dash_read_whole_graph`]) so it reaches any node the projection holds even when the
+/// run seeded none. Best-effort/empty-degrade like the local read.
+fn dash_attach_graph(inst: &rigger::registry::Instance) -> contextgraph::Graph {
+    let graph_db = instance_rigger_dir(inst)
+        .join("graph.db")
+        .to_string_lossy()
+        .into_owned();
+    dash_read_whole_graph(&graph_db, &inst.project)
+}
+
 /// `rigger ground "<query>" [<k>]` - run the project's configured grounder (the
 /// same one the `run`/`serve` paths build from `defaults.grounder` via
 /// [`select_grounder`]) over the repo and print up to `k` (default 8) relevant
@@ -4284,9 +5368,9 @@ fn cmd_emit(args: &[String]) -> Res {
     // Resolve the EXISTING store (walk up; refuse if none) rather than fabricating one
     // in the wrong cwd, and scope it by the RESOLVED root's identity (not the cwd's), so
     // a walked-up write lands in the stream the conductor reads - see [`require_store_dir`].
-    let loc = require_store_dir()?;
-    let backend = Store::open(&loc.file("events.db"))?;
-    let store = Namespaced::new(&backend, &loc.identity());
+    let (loc, selection) = require_store_dir()?;
+    let backend = resolve_store(&selection, &loc.file("events.db"))?;
+    let store = Namespaced::new(backend.as_ref(), &loc.identity());
     let graph = Projector::open(&loc.file("graph.db"), &loc.identity())?;
 
     // Same args shape the MCP tool receives, so emit_event - the shared core both
@@ -4336,10 +5420,10 @@ fn cmd_progress(args: &[String]) -> Res {
         return Err("progress: <activity> must be non-empty".into());
     }
 
-    let loc = require_store_dir()?;
+    let (loc, selection) = require_store_dir()?;
     // Resolve the current run READ-ONLY from the run store, only to scope the report.
-    let run_backend = Store::open(&loc.file("events.db"))?;
-    let run_store = Namespaced::new(&run_backend, &loc.identity());
+    let run_backend = resolve_store(&selection, &loc.file("events.db"))?;
+    let run_store = Namespaced::new(run_backend.as_ref(), &loc.identity());
     let events = run_store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
     let run_id = runscope::current_run_id(&events).unwrap_or_default();
     // Append to the SEPARATE progress store - never the run stream.
@@ -4366,12 +5450,12 @@ fn cmd_status(args: &[String]) -> Res {
             other => return Err(format!("status: unknown argument {other:?} (only --json)").into()),
         }
     }
-    let loc = require_store_dir()?;
+    let (loc, selection) = require_store_dir()?;
     let now = std::time::SystemTime::now();
 
     // The current run's slice of the run stream, and its id.
-    let run_backend = Store::open(&loc.file("events.db"))?;
-    let run_store = Namespaced::new(&run_backend, &loc.identity());
+    let run_backend = resolve_store(&selection, &loc.file("events.db"))?;
+    let run_store = Namespaced::new(run_backend.as_ref(), &loc.identity());
     let all = run_store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
     let run_events = runscope::current_run(&all);
     let run_id = runscope::current_run_id(&all).unwrap_or_default();
@@ -4549,9 +5633,9 @@ fn cmd_reset(args: &[String]) -> Res {
         _ => return Err(format!("reset: expected only --runs, got {}", args.join(" ")).into()),
     }
 
-    let loc = require_store_dir()?;
-    let backend = Store::open(&loc.file("events.db"))?;
-    let store = Namespaced::new(&backend, &loc.identity());
+    let (loc, selection) = require_store_dir()?;
+    let backend = resolve_store(&selection, &loc.file("events.db"))?;
+    let store = Namespaced::new(backend.as_ref(), &loc.identity());
     // ONE whole-stream forward read: it feeds BOTH the attribution and the per-index node-id
     // lookup inside `superseded_graph_nodes`, honoring run_attribution's whole-stream contract.
     let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
@@ -4563,11 +5647,17 @@ fn cmd_reset(args: &[String]) -> Res {
 
     let graph = Projector::open(&loc.file("graph.db"), &loc.identity())?;
     let removed = graph.prune(&drop, boundary)?;
+    // Compact the projection file so the prune reclaims DISK, not just rows (spec 46, criterion 3):
+    // the deletes free pages inside graph.db that SQLite retains on a freelist, so without a VACUUM
+    // the file stays as LARGE on disk as before even though the dead rows are gone. VACUUM reclaims
+    // disk ONLY - it changes no query result and gives no query or fold speedup; it rebuilds only
+    // the rebuildable projection and the event log is untouched.
+    let reclaimed_bytes = graph.compact()?;
     println!(
         "reset --runs: pruned {} dead-run node(s) and reclaimed {} superseded edge(s) from the \
-         context graph (every lesson, the active run, and every live edge preserved; the event \
-         log is untouched)",
-        removed.nodes, removed.superseded_edges
+         context graph, then compacted the graph file (reclaimed {} byte(s) on disk) - every \
+         lesson, the active run, and every live edge are preserved; the event log is untouched",
+        removed.nodes, removed.superseded_edges, reclaimed_bytes
     );
     Ok(())
 }
@@ -4671,9 +5761,9 @@ fn graph_node_id(e: &Event) -> Option<String> {
 fn cmd_peers(args: &[String]) -> Res {
     let files: Vec<String> = args.to_vec();
 
-    let loc = require_store_dir()?;
-    let backend = Store::open(&loc.file("events.db"))?;
-    let store = Namespaced::new(&backend, &loc.identity());
+    let (loc, selection) = require_store_dir()?;
+    let backend = resolve_store(&selection, &loc.file("events.db"))?;
+    let store = Namespaced::new(backend.as_ref(), &loc.identity());
 
     // The side-car replays the whole backlog from position 0; wait until it has
     // drained every event currently in the store before reading, so a one-shot CLI
@@ -4930,9 +6020,9 @@ fn cmd_result(args: &[String]) -> Res {
     // worktree would otherwise record into a fresh dead store (no store) or misfile under
     // the worktree's own namespace (walked-up store) while the real spawn stays parked
     // forever - both fixed here (see [`require_store_dir`] / [`StoreLocation::identity`]).
-    let loc = require_store_dir()?;
-    let backend = Store::open(&loc.file("events.db"))?;
-    let store = Namespaced::new(&backend, &loc.identity());
+    let (loc, selection) = require_store_dir()?;
+    let backend = resolve_store(&selection, &loc.file("events.db"))?;
+    let store = Namespaced::new(backend.as_ref(), &loc.identity());
 
     // One cheap pre-write read of the run stream, to advise (on stderr) about an orphan
     // id or about superseding an existing result BEFORE the append. Advisory only: the
@@ -5110,7 +6200,12 @@ fn cmd_validate(args: &[String]) -> Res {
     // orphaned build caches, shadow stores, and dead `rigger/u/*` branches - with sizes -
     // so residue is seen before a disk fills. Warnings only; validate NEVER fails or
     // deletes anything (cleanup stays with the step-start sweep).
-    for advisory in residue_advisories(root, &cfg) {
+    // A genuine store-SELECTION failure here (unreadable `.rigger/store.conn`, malformed
+    // `workflow.yml`, invalid `store.backend`) SURFACES loudly - `?` fails validate - rather than
+    // degrading to a wrong-store read that would misreport live worktrees/branches as residue
+    // (d-u2rr-observer-selection-loud). The residue FINDINGS themselves stay warning-only below;
+    // this only makes an inability to even resolve the run store loud, never silent.
+    for advisory in residue_advisories(root, &cfg)? {
         eprintln!("{advisory}");
     }
     // Model-drift advisory (spec 13b, unit 1): warn when a tier's resolved model id
@@ -5392,7 +6487,10 @@ impl ResidueReport {
 /// [`scan_residue`]. Anchored at `root`'s owning store so the scanned scratch root is the
 /// SAME `<repo>/.rigger/tmp` the run uses; the path is resolved WITHOUT creating it, so
 /// validate stays read-only.
-fn residue_advisories(root: &Path, cfg: &config::Config) -> Vec<String> {
+fn residue_advisories(
+    root: &Path,
+    cfg: &config::Config,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| root.to_path_buf());
     // The repo whose `<repo>/.rigger/tmp` the run uses: the store's OWNING root when a
     // store exists (walking up as the couriers do), else the cwd's git top-level, else the
@@ -5412,7 +6510,13 @@ fn residue_advisories(root: &Path, cfg: &config::Config) -> Vec<String> {
         &repo,
         &cfg.workflow.defaults.workdir,
     ));
-    let run_units = read_run_units(&cwd);
+    // A genuine store-SELECTION failure (unreadable secret file / malformed config / invalid
+    // backend) SURFACES here rather than silently reading the wrong store - which, folding zero live
+    // units, would misreport every LIVE `rigger/u/*` worktree/branch as removable residue
+    // (d-u2rr-observer-selection-loud). The benign no-run/no-store and store-access-miss cases still
+    // yield an empty live set inside `read_run_units`, so an unconfigured or never-run project scans
+    // cleanly.
+    let run_units = read_run_units(&cwd)?;
     let slugs = live_slugs(&run_units.live_branches);
     let local_branches = local_unit_branches(&cwd);
     let report = scan_residue(
@@ -5429,7 +6533,7 @@ fn residue_advisories(root: &Path, cfg: &config::Config) -> Vec<String> {
     // scan - so a process left holding a now-deleted (or soon-to-be-removed) scratch dir is
     // visible even when no teardown is running.
     advisories.extend(leaked_process_advisories(&scratch));
-    advisories
+    Ok(advisories)
 }
 
 /// The warning-only `rigger validate` advisories (spec 23, unit 2) naming every process still
@@ -5464,18 +6568,53 @@ fn leaked_process_advisories(scratch_root: &Path) -> Vec<String> {
 /// (walk UP to the owning store, scope by its identity). No store (a project that never
 /// ran) means no live units, so every scratch worktree and `rigger/u/*` branch reads as
 /// residue.
-fn read_run_units(cwd: &Path) -> RunUnits {
-    let Some(dir) = find_store_dir_from(cwd) else {
-        return RunUnits::default();
+///
+/// This reads the DURABLE real run stream, so it resolves WHICH backend through the one
+/// authority ([`store_selection`]) exactly as every other real-run-stream read does
+/// (`dash_read_run`, `canary_stats_lines`, `read_model_drift`): a project configured for the
+/// server backend reads the SERVER's run (spec 48 criterion 1, "a command invoked in a project
+/// configured for the server-backed store resolves that store"), never a stale local sqlite
+/// file. It is NOT local-by-construction like the isolated replay store, so it must not pin
+/// [`StoreSelection::Sqlite`].
+///
+/// A genuine selection FAILURE off a PRESENT source - an unreadable `.rigger/store.conn`, an
+/// unreadable/malformed `workflow.yml`, an invalid `store.backend`, or the server selected with no
+/// resolvable connection string - SURFACES as an `Err` here (propagated with `?`), never a silent
+/// degrade to the local sqlite default: reading the wrong (empty local) store would fold zero live
+/// units and misreport every LIVE `rigger/u/<slug>` worktree/branch as residue (via
+/// [`residue_advisories`], spec 06 line 60) - the exact silent-wrong-store fracture spec 48's one
+/// resolution authority and spec 19c's loud-failure-surfacing forbid (d-u2rr-observer-selection-loud).
+/// Only the BENIGN "no run ever happened / nothing selected" cases degrade to `Ok(RunUnits::default())`
+/// (no live units): a sqlite selection whose local store was never created, and a store that resolves
+/// but cannot be opened or read (e.g. an unreachable configured server) - a store-ACCESS miss, distinct
+/// from a selection FAILURE.
+fn read_run_units(cwd: &Path) -> Result<RunUnits, Box<dyn std::error::Error>> {
+    let sel = store_selection(None, None)?;
+    // Resolve the store's OWNING root and identity. For sqlite the durable log is a LOCAL file,
+    // so walk UP to it (as the couriers do); its absence means no run ever happened => no live
+    // units. For the server backend there is no local `events.db` to walk to, so resolve through
+    // the shared [`server_store_location`] (the SAME authority the store-opening couriers'
+    // [`require_store_dir`] server branch uses), binding identity to the main repo root and
+    // letting [`resolve_store`] reach the server.
+    let loc = if sel.is_sqlite() {
+        let Some(dir) = find_store_dir_from(cwd) else {
+            return Ok(RunUnits::default());
+        };
+        StoreLocation { dir }
+    } else {
+        server_store_location(cwd)
     };
-    let loc = StoreLocation { dir };
-    let Ok(backend) = Store::open(&loc.file("events.db")) else {
-        return RunUnits::default();
+    // A store-ACCESS miss (an unreachable configured server, a corrupt local log) degrades to no
+    // live units - best-effort, distinct from the selection FAILURE surfaced above: the store WAS
+    // resolved, it just cannot be reached, so the residue scan stays warning-only rather than
+    // failing validate on a transient outage.
+    let Ok(backend) = resolve_store(&sel, &loc.file("events.db")) else {
+        return Ok(RunUnits::default());
     };
-    let store = Namespaced::new(&backend, &loc.identity());
+    let store = Namespaced::new(backend.as_ref(), &loc.identity());
     match store.read_stream(conductor::STREAM, 0, Direction::Forward) {
-        Ok(events) => current_run_units(&events),
-        Err(_) => RunUnits::default(),
+        Ok(events) => Ok(current_run_units(&events)),
+        Err(_) => Ok(RunUnits::default()),
     }
 }
 
@@ -5935,11 +7074,25 @@ fn init_project(root: &Path) -> Result<ScaffoldReport, Box<dyn std::error::Error
         std::fs::write(&settings_path, &merged)?;
     }
 
-    // 4. Write .gitignore entries for machine-local installs (.claude/ and .rigger/shim/)
-    // when they are not already ignored or tracked. Record WHICH patterns were appended
-    // so the summary reports the real gitignore change and nothing it did not do.
+    // 4. Write .gitignore entries for machine-local installs, the always-on dash's runtime
+    // breadcrumbs, and the per-machine store-connection secret file, when they are not already
+    // ignored or tracked. `.claude/` and `.rigger/shim/` are the machine-local installs;
+    // `.rigger/dash.url` and `.rigger/dash.marker` are the dash's discoverability breadcrumbs
+    // (spec 39) - left untracked-and-not-ignored they get swept into a unit worktree's commit by
+    // `git add` and then collide with the live dash's rewrites when the conductor merges the unit
+    // ("untracked working tree files would be overwritten"). `.rigger/store.conn` is the store
+    // resolver's per-machine secret file (spec 48 rung 3): it carries the connection string's
+    // credentials, so it is git-ignored BY CONSTRUCTION - a developer's credentials can never ride
+    // a committed file. Record WHICH patterns were appended so the summary reports the real
+    // gitignore change and nothing it did not do.
     let mut gitignore_added = Vec::new();
-    for pattern in [".claude/", ".rigger/shim/"] {
+    for pattern in [
+        ".claude/",
+        ".rigger/shim/",
+        ".rigger/dash.url",
+        ".rigger/dash.marker",
+        ".rigger/store.conn",
+    ] {
         if write_gitignore_entries(root, pattern)? {
             gitignore_added.push(pattern.to_string());
         }
@@ -5990,15 +7143,31 @@ fn print_orientation() {
     );
 }
 
-/// Write a .gitignore entry for the given pattern if it is not already ignored or
-/// tracked, returning whether it APPENDED an entry (`true`) or left `.gitignore`
-/// untouched (`false`). Idempotent: a rerun finds the entry already present and is a
+/// Write a .gitignore entry for the given pattern if it is not already an explicit line
+/// or a tracked path, returning whether it APPENDED an entry (`true`) or left `.gitignore`
+/// untouched (`false`). Idempotent: a rerun finds the exact line already present and is a
 /// no-op, so setup never pollutes `.gitignore` with duplicates.
+///
+/// Deliberately does NOT consult `git check-ignore` to skip a path a BROADER rule already
+/// covers. `git check-ignore` resolves ignores against machine-local global sources
+/// (`core.excludesFile`, `~/.config/git/ignore`, `.git/info/exclude`), so letting it decide
+/// what to append would make the COMMITTED `.gitignore` contingent on the setup-runner's
+/// machine: an operator whose global excludes already list `.rigger/` would ship a
+/// `.gitignore` MISSING the `.rigger/dash.url` / `.rigger/dash.marker` lines, and a teammate
+/// or CI cloning with a clean HOME would then let `git add` sweep the dash breadcrumbs into a
+/// unit commit - the exact collision spec 46 criterion 1 exists to prevent. The committed
+/// file must be self-contained and portable, so we append the explicit line whenever it is
+/// absent. A redundant-but-correct per-file line in a repo whose OWN rules already ignore a
+/// broader path (e.g. `.rigger/`) is harmless; the exact-line check above still guarantees
+/// idempotency, and the file stays machine-independent.
 fn write_gitignore_entries(root: &Path, pattern: &str) -> Result<bool, Box<dyn std::error::Error>> {
     let gitignore_path = root.join(".gitignore");
     let normalized_pattern = pattern.trim_end_matches('/');
 
-    // Check if already in .gitignore
+    // Already an explicit line in .gitignore: a no-op. This exact-line check is the
+    // idempotency guarantee, and it reads ONLY the repo's own committed `.gitignore` (never
+    // machine-local global git config), so it holds even OUTSIDE a git repo and never makes
+    // the committed file depend on the runner's machine.
     let current = std::fs::read_to_string(&gitignore_path).unwrap_or_default();
     if current
         .lines()
@@ -7090,11 +8259,12 @@ fn docs_drift_failure(root: &Path) -> Option<String> {
 
 fn cmd_prime() -> Res {
     let path = db_path("events.db");
-    if !Path::new(&path).exists() {
+    let selection = store_selection(None, None)?;
+    if selection.is_sqlite() && !Path::new(&path).exists() {
         println!("# Rigger: no decisions recorded yet (run `rigger run` to start).");
         return Ok(());
     }
-    let store = Store::open(&path)?;
+    let store = resolve_store(&selection, &path)?;
     let events = store.read_all(0, Direction::Backward, &Filter::default())?;
     println!("# Rigger: recent decisions");
     let mut shown = 0;
@@ -7602,6 +8772,70 @@ mod tests {
         );
     }
 
+    /// Spec 50, criterion 4 (opt-out): the always-on ensure is suppressed by EITHER opt-out - the
+    /// environment disable OR the config `dash: off` (surfaced as `config_dash_enabled == false`) -
+    /// and only proceeds when NEITHER is set. Pins that the two opt-out paths are independent (each
+    /// alone suffices) and that a run with no opt-out still ensures the dash.
+    #[test]
+    fn dash_ensure_is_suppressed_by_either_opt_out_and_proceeds_when_neither_is_set() {
+        // Neither opt-out: the ensure proceeds (the always-on default).
+        assert!(
+            !dash_ensure_suppressed(false, true),
+            "with no env disable and the config dash ON, the ensure proceeds"
+        );
+        // The ENV opt-out alone suppresses it (even with the config dash ON).
+        assert!(
+            dash_ensure_suppressed(true, true),
+            "RIGGER_NO_DASH alone suppresses the ensure"
+        );
+        // The CONFIG opt-out alone suppresses it (even with no env disable).
+        assert!(
+            dash_ensure_suppressed(false, false),
+            "`dash: off` alone suppresses the ensure"
+        );
+        // Both set: still suppressed.
+        assert!(
+            dash_ensure_suppressed(true, false),
+            "both opt-outs set stays suppressed"
+        );
+    }
+
+    /// Spec 50, criterion 4 (stable fixed address): the step-path ensure port resolves to the
+    /// FIXED [`dash::DEFAULT_PORT`] when the override env is unset - production's no-free-port-search
+    /// singleton contract - and only a VALID `u16` override relocates it; an empty or malformed
+    /// value degrades to the default so a bad knob never breaks a run's observability. Pure over the
+    /// already-read env value so both branches are provable without mutating the process
+    /// environment (the same discipline as `dash_ensure_suppressed`).
+    #[test]
+    fn dash_ensure_port_defaults_to_the_fixed_address_and_only_a_valid_override_relocates_it() {
+        // Unset: the fixed default, with no free-port search - the production singleton address.
+        assert_eq!(
+            dash_ensure_port_from(None),
+            dash::DEFAULT_PORT,
+            "an unset override binds the fixed DEFAULT_PORT (the stable singleton address)"
+        );
+        // A valid u16 relocates it (the seam the step-path dash tests use to inject an ephemeral
+        // port and never fight a real machine dash on the fixed default).
+        assert_eq!(
+            dash_ensure_port_from(Some("54321")),
+            54321,
+            "a valid u16 override relocates the ensure port"
+        );
+        assert_eq!(
+            dash_ensure_port_from(Some("  8080  ")),
+            8080,
+            "surrounding whitespace is trimmed before parsing"
+        );
+        // Absent-shaped or malformed values degrade to the default, never a panic or a break.
+        for bad in ["", "   ", "not-a-port", "70000", "-1", "80.5"] {
+            assert_eq!(
+                dash_ensure_port_from(Some(bad)),
+                dash::DEFAULT_PORT,
+                "a malformed override ({bad:?}) falls back to the fixed default"
+            );
+        }
+    }
+
     /// spec 24, crit 1: `compose_precommit` is the PURE, filesystem-free composer for the
     /// docs pre-commit hook. A FRESH install (no existing hook) yields a runnable `/bin/sh`
     /// script carrying rigger's sentinel-marked managed block: it regenerates the docs
@@ -7949,6 +9183,292 @@ mod tests {
             superseded_edge_boundary(&events),
             Some(Duration::from_secs(300).as_nanos() as i64),
             "the boundary is the active run's RunStarted valid_from in the edge time base (nanos)"
+        );
+    }
+
+    /// Spec 43, criterion 4 (CONSUMERS ARE UNAFFECTED). The graph fold de-noises to the target
+    /// project: it stopped projecting the loop's own run machinery (the agent / unit / gate NODES,
+    /// the `agent --TOUCHES--> file` edge, and the agent-attribution edges). This test proves the
+    /// three named functional consumers produce the SAME result before and after that de-noise,
+    /// because NONE of them reads a dropped node - each reads a substrate the fold change never
+    /// touches:
+    ///
+    ///   * `metrics::project` folds the EVENT LOG. The de-noise removed the graph NODES for
+    ///     `GateVerdict` / `UnitStarted` / `UnitIntegrated`, but those EVENTS still stand in the
+    ///     log, and metrics reads them from there (it never receives a `Projection`), so its counts
+    ///     are unmoved.
+    ///   * run pruning (`superseded_graph_nodes` -> `Projector::prune`) derives its drop set from
+    ///     the EVENT LOG through the one `run::run_attribution` authority, which attributes ONLY
+    ///     decisions / findings / lessons - never a `UnitStarted` / `FileTouched` / `GateVerdict`.
+    ///     So no machinery id can enter the drop set, the derivation is byte-identical whether or
+    ///     not the machinery events are present, and pruning the de-noised graph (which has no
+    ///     machinery nodes) still drops exactly the dead-run content and keeps the active run's.
+    ///   * blast radius grounds over the CODE cross-reference (here the always-available `Grep`
+    ///     default over the source tree; the `symbols` grounder likewise reads its symbol index) -
+    ///     never the context graph - so a graph-only change cannot alter a radius.
+    ///
+    /// This owns the safe-consumer guarantee; it deliberately does NOT re-assert content survival
+    /// (criterion 2 owns that). The event stream carries the machinery in its RAW production shape
+    /// (a `UnitStarted` with both `id` and `unit`, a `GateVerdict` with `pass`, a `FileTouched`
+    /// with `by`) - the exact payloads the log records and the de-noise now ignores.
+    #[test]
+    fn the_denoise_leaves_metrics_run_pruning_and_blast_radius_unaffected() {
+        use rigger::grounder::{Grep, Grounder};
+
+        // One positioned event in raw on-log JSON. Distinct positions are required: the graph fold
+        // dedups on position (`INSERT OR IGNORE INTO applied`), and metrics / attribution key by
+        // index, so a monotonic position per event models the real append order.
+        fn ev(pos: u64, type_: &str, json: serde_json::Value) -> Event {
+            let mut e = Event::new(type_, serde_json::to_vec(&json).unwrap());
+            e.position = pos;
+            e
+        }
+
+        // A whole run stream spanning a DEAD run r1 and the ACTIVE run r2, each interleaving the
+        // machinery the de-noise dropped (FileTouched / UnitStarted / GateVerdict / UnitIntegrated)
+        // with the content (DecisionMade / ReviewFinding) and the unit lifecycle metrics folds.
+        let stream = vec![
+            // --- Dead run r1 ---
+            ev(
+                1,
+                runscope::TYPE_RUN_STARTED,
+                serde_json::json!({ "run": "r1", "criteria": ["c"] }),
+            ),
+            ev(
+                2,
+                contextgraph::TYPE_FILE_TOUCHED,
+                serde_json::json!({ "path": "src/combat.rs", "by": "rust-engineer" }),
+            ),
+            ev(
+                3,
+                ledger::TYPE_UNIT_STARTED,
+                serde_json::json!({ "id": "u_r1", "unit": "u_r1", "criterion": "c1", "agent": "rust-engineer", "needs": [] }),
+            ),
+            ev(
+                4,
+                contextgraph::TYPE_GATE_VERDICT,
+                serde_json::json!({ "gate": "build", "pass": true }),
+            ),
+            ev(
+                5,
+                contextgraph::TYPE_DECISION_MADE,
+                serde_json::json!({ "id": "d_r1", "summary": "dead-run decision", "governs": ["src/combat.rs"], "supersedes": "" }),
+            ),
+            ev(
+                6,
+                contextgraph::TYPE_REVIEW_FINDING,
+                serde_json::json!({ "id": "f_r1", "by": "tech-lens", "unit": "u_r1", "summary": "dead-run finding", "about": ["src/combat.rs"] }),
+            ),
+            ev(
+                7,
+                ledger::TYPE_UNIT_STATUS,
+                serde_json::json!({ "id": "u_r1", "status": "verified" }),
+            ),
+            ev(
+                8,
+                ledger::TYPE_UNIT_STATUS,
+                serde_json::json!({ "id": "u_r1", "status": "reviewed" }),
+            ),
+            ev(
+                9,
+                ledger::TYPE_UNIT_INTEGRATED,
+                serde_json::json!({ "id": "u_r1", "commit": "abc1" }),
+            ),
+            // --- Active run r2 ---
+            ev(
+                10,
+                runscope::TYPE_RUN_STARTED,
+                serde_json::json!({ "run": "r2", "criteria": ["c"] }),
+            ),
+            ev(
+                11,
+                contextgraph::TYPE_FILE_TOUCHED,
+                serde_json::json!({ "path": "src/combat.rs", "by": "rust-engineer" }),
+            ),
+            ev(
+                12,
+                ledger::TYPE_UNIT_STARTED,
+                serde_json::json!({ "id": "u_r2", "unit": "u_r2", "criterion": "c1", "agent": "rust-engineer", "needs": [] }),
+            ),
+            ev(
+                13,
+                contextgraph::TYPE_GATE_VERDICT,
+                serde_json::json!({ "gate": "clippy", "pass": true }),
+            ),
+            ev(
+                14,
+                contextgraph::TYPE_DECISION_MADE,
+                serde_json::json!({ "id": "d_r2", "summary": "active-run decision", "governs": ["src/combat.rs"], "supersedes": "" }),
+            ),
+            ev(
+                15,
+                ledger::TYPE_UNIT_STATUS,
+                serde_json::json!({ "id": "u_r2", "status": "verified" }),
+            ),
+            ev(
+                16,
+                ledger::TYPE_UNIT_STATUS,
+                serde_json::json!({ "id": "u_r2", "status": "reviewed" }),
+            ),
+            ev(
+                17,
+                ledger::TYPE_UNIT_INTEGRATED,
+                serde_json::json!({ "id": "u_r2", "commit": "abc2" }),
+            ),
+        ];
+
+        // ===================================================================================
+        // CONSUMER 1 - metrics::project folds the EVENT LOG, machinery events and all.
+        // ===================================================================================
+        // The de-noise stopped projecting `GateVerdict` / `UnitStarted` / `UnitIntegrated` as graph
+        // nodes, but metrics reads those events from the log - so it still tallies two started
+        // units, two clean first passes, both gates, and two review approvals. Asserting the
+        // headline fields (not the whole struct) keeps the pin focused on the de-noised event types
+        // without coupling to the unrelated review-quality fold.
+        let m = metrics::project(&stream);
+        assert_eq!(
+            m.units_started, 2,
+            "both UnitStarted events fold from the log"
+        );
+        assert_eq!(
+            m.first_pass_clean, 2,
+            "both units integrated with no failure - metrics reads the lifecycle from the log, not the graph"
+        );
+        assert_eq!(
+            m.gates.get("build").map(|g| (g.pass, g.fail)),
+            Some((1, 0)),
+            "the build GateVerdict is still folded from the log though it is no longer a graph node"
+        );
+        assert_eq!(
+            m.gates.get("clippy").map(|g| (g.pass, g.fail)),
+            Some((1, 0)),
+            "the clippy GateVerdict is still folded from the log"
+        );
+        assert_eq!(m.units_escalated, 0, "no unit escalated");
+        assert_eq!(
+            m.review_approve, 2,
+            "both `reviewed` statuses count as approvals"
+        );
+        assert_eq!(m.review_reject, 0, "no review rejected");
+
+        // ===================================================================================
+        // CONSUMER 2 - run pruning derives its drop set from the EVENT LOG.
+        // ===================================================================================
+        // `superseded_graph_nodes` reuses `run::run_attribution`, which attributes ONLY
+        // decision / finding / lesson events - so the machinery events (a `UnitStarted` carrying an
+        // `id`, a `FileTouched`, a `GateVerdict`, a `UnitIntegrated`) contribute NOTHING to the drop
+        // set, and it is exactly the dead run's decision and finding.
+        let drop = superseded_graph_nodes(&stream);
+        assert_eq!(
+            drop,
+            vec!["d_r1", "f_r1"],
+            "the drop set is precisely the dead run's content - no machinery id (u_r1, u_r2, build, clippy, src/combat.rs) leaks in"
+        );
+
+        // The derivation is UNAFFECTED by the machinery events' presence: stripping every
+        // FileTouched / UnitStarted / GateVerdict / UnitStatus / UnitIntegrated from the stream (the
+        // events the de-noise stopped projecting) leaves the drop set byte-identical. This is the
+        // "same result before and after the de-noise" guarantee for the pruning consumer.
+        let content_only: Vec<Event> = stream
+            .iter()
+            .filter(|e| {
+                e.type_ == runscope::TYPE_RUN_STARTED
+                    || e.type_ == contextgraph::TYPE_DECISION_MADE
+                    || e.type_ == contextgraph::TYPE_REVIEW_FINDING
+                    || e.type_ == contextgraph::TYPE_LESSON_LEARNED
+            })
+            .cloned()
+            .collect();
+        assert_eq!(
+            superseded_graph_nodes(&content_only),
+            drop,
+            "removing the machinery events does not change the pruning drop set - it reads only the run windows and the content ids"
+        );
+
+        // End-to-end: fold the whole run into the DE-NOISED graph (which projects no machinery
+        // node), then run the real prune. It still drops exactly the dead-run content and keeps the
+        // active run's decision plus the code it governs.
+        let graph = Projector::open(":memory:", "test").unwrap();
+        for e in &stream {
+            graph.apply(e).unwrap();
+        }
+        let boundary = superseded_edge_boundary(&stream);
+        graph.prune(&drop, boundary).unwrap();
+
+        let g = graph
+            .subgraph(
+                &[
+                    "d_r1".to_string(),
+                    "f_r1".to_string(),
+                    "d_r2".to_string(),
+                    "src/combat.rs".to_string(),
+                ],
+                2,
+            )
+            .unwrap();
+        assert!(
+            g.nodes
+                .iter()
+                .any(|n| n.id == "d_r2" && n.kind == contextgraph::KIND_DECISION),
+            "the active run's decision survives the prune; got {:?}",
+            g.nodes.iter().map(|n| (&n.id, &n.kind)).collect::<Vec<_>>()
+        );
+        assert!(
+            g.edges.iter().any(|e| e.rel == contextgraph::REL_GOVERNS
+                && e.from == "d_r2"
+                && e.to == "src/combat.rs"),
+            "and its GOVERNS edge to the code it concerns survives"
+        );
+        assert!(
+            !g.nodes.iter().any(|n| n.id == "d_r1"),
+            "the dead run's decision is pruned"
+        );
+        assert!(
+            !g.nodes.iter().any(|n| n.id == "f_r1"),
+            "the dead run's finding is pruned"
+        );
+
+        // ===================================================================================
+        // CONSUMER 3 - blast radius grounds over the CODE cross-reference, never the graph.
+        // ===================================================================================
+        // A blast radius is a function of the source tree (via the `Grep` default here, or the
+        // `symbols` grounder's cross-reference index), never of the context graph - so removing
+        // machinery graph nodes cannot move it. The radius of `apply_damage` covers the file that
+        // defines it and the file that references it, and excludes an unrelated file.
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::write(
+            repo.path().join("combat.rs"),
+            "pub fn apply_damage(target: &mut Enemy) { target.hp -= 1; }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            repo.path().join("enemy.rs"),
+            "fn hit(e: &mut Enemy) { apply_damage(e); }\n",
+        )
+        .unwrap();
+        std::fs::write(repo.path().join("audio.rs"), "pub fn play_sound() {}\n").unwrap();
+        let grep = Grep {
+            root: repo.path().to_string_lossy().into_owned(),
+        };
+        let br = grep.blast_radius("apply_damage", 8);
+        assert!(
+            br.safe.iter().any(|f| f == "combat.rs"),
+            "the safe radius covers the file that DEFINES apply_damage; got {:?}",
+            br.safe
+        );
+        assert!(
+            br.safe.iter().any(|f| f == "enemy.rs"),
+            "and the file that REFERENCES it; got {:?}",
+            br.safe
+        );
+        assert!(
+            !br.safe.iter().any(|f| f == "audio.rs"),
+            "an unrelated file is not in the radius; got {:?}",
+            br.safe
+        );
+        assert!(
+            !br.serialize,
+            "apply_damage is not a hub, so the radius does not serialize"
         );
     }
 
@@ -10049,10 +11569,13 @@ mod tests {
     }
 
     #[test]
-    fn parse_run_args_defaults_to_cli_sqlite() {
+    fn parse_run_args_defaults_to_cli_and_an_unset_store() {
         let a = parse_run_args(&[]).unwrap();
         assert!(a.driver == DriverKind::Cli);
-        assert!(a.store == StoreKind::Sqlite);
+        // No `--eventstore` flag leaves the store UNSET, so the resolver picks it up from the
+        // configuration chain (env, then default sqlite) - a flagless `run` is not pinned to
+        // sqlite at parse time, which is what lets it honor a server-configured project.
+        assert!(a.store.is_none());
         assert!(a.conn.is_none());
         assert!(a.spec.is_none());
         assert!(!a.fresh, "--fresh is off unless asked");
@@ -10098,7 +11621,7 @@ mod tests {
         ];
         let a = parse_run_args(&args).unwrap();
         assert!(a.driver == DriverKind::Workflow);
-        assert!(a.store == StoreKind::KurrentDb);
+        assert!(a.store == Some(StoreKind::KurrentDb));
         assert_eq!(a.conn.as_deref(), Some("kurrentdb://localhost:2113"));
         assert_eq!(a.spec.as_deref(), Some("spec.md"));
     }
@@ -10325,18 +11848,271 @@ mod tests {
         );
     }
 
-    /// With the default build (no `kurrentdb` feature), requesting the server store
-    /// is a clear error, never a silent fallback - the default build stays green.
-    #[cfg(not(feature = "kurrentdb"))]
+    /// KurrentDB is ALWAYS AVAILABLE (spec 47): the adapter is compiled into every
+    /// build, not gated behind a cargo feature. Selecting it WITHOUT a connection
+    /// string fails with the missing-`--conn` error - proving the real adapter is
+    /// compiled in and reachable - and NEVER with a missing-cargo-feature error
+    /// (which can no longer happen). Ungated on purpose: this must hold in BOTH
+    /// feature lanes (default and `--no-default-features`).
     #[test]
-    fn kurrentdb_without_the_feature_is_a_clear_error() {
-        match open_store(StoreKind::KurrentDb, Some("kurrentdb://x")) {
-            Ok(_) => panic!("kurrentdb must not open without the feature"),
-            Err(e) => assert!(
-                e.to_string().contains("kurrentdb"),
-                "the error must name the missing feature; got: {e}"
-            ),
-        }
+    fn kurrentdb_is_always_available_and_needs_a_conn() {
+        // Resolve over an EMPTY `.rigger` with no credential source anywhere - no flag conn, no
+        // environment (threaded as `None`), no secret file - so the flag-selected server has
+        // nothing to resolve and hits the missing-connection-string guard. Hermetic: independent
+        // of both the ambient repo's config and the process environment.
+        let tmp = tempfile::tempdir().unwrap();
+        let rigger_dir = tmp.path().join(".rigger");
+        std::fs::create_dir_all(&rigger_dir).unwrap();
+
+        let err = match store_selection_at(Some(StoreKind::KurrentDb), None, None, &rigger_dir) {
+            Ok(_) => panic!("kurrentdb without a conn must not select a store"),
+            Err(e) => e.to_string(),
+        };
+
+        // The real adapter's missing-conn guard names the --conn / KURRENTDB_CONN
+        // channel - reaching it proves the adapter is compiled in.
+        assert!(
+            err.contains("--conn") || err.contains("KURRENTDB_CONN"),
+            "the error must be the missing-connection-string error, proving the adapter is \
+             reachable; got: {err}"
+        );
+        // It must NOT be the retired missing-feature error: the adapter is always
+        // compiled in, so no "requires the cargo feature" dead end can occur.
+        assert!(
+            !err.contains("feature"),
+            "the adapter is always compiled in, so no missing-feature error can occur; got: {err}"
+        );
+    }
+
+    /// Spec 48, criterion 4 - NO TOPOLOGY OPINIONS, the resolver's half. The selection chain is a
+    /// pure conduit for the connection string: whichever rung supplies it - an explicit `--conn`
+    /// flag, the `KURRENTDB_CONN` environment, or the `.rigger/store.conn` secret file - the string
+    /// reaches `StoreSelection::Server` BYTE FOR BYTE. The resolver strips no credential, normalizes
+    /// no TLS parameter, and rewrites no host; the only code that ever interprets the address is the
+    /// adapter's client (proven in `eventstore::kurrentdb`). Exercised with a REMOTE, TLS-secured,
+    /// CREDENTIALED address - nothing a localhost default would produce - through each credential
+    /// rung, asserting the resolved string is identical to the input. Hermetic: a temp `.rigger`
+    /// and threaded environment, so no process-env mutation and deterministic under parallelism.
+    #[test]
+    fn store_selection_preserves_a_credentialed_tls_conn_verbatim() {
+        use std::fs;
+        let tmp = tempfile::tempdir().unwrap();
+        let rigger_dir = tmp.path().join(".rigger");
+        fs::create_dir_all(&rigger_dir).unwrap();
+
+        // A remote host, TLS on, real credentials, a non-default port: every part a topology
+        // opinion (a localhost default, a forced tls=false, a dropped credential) would corrupt.
+        let conn = "kurrentdb://operator:s3cr3t@events.internal.example:2113?tls=true";
+        let expected = StoreSelection::Server(conn.to_string());
+
+        // Rung 1: an explicit --conn flag reaches Server verbatim.
+        assert_eq!(
+            store_selection_at(None, Some(conn), None, &rigger_dir).unwrap(),
+            expected,
+            "a --conn flag reaches the adapter verbatim - the resolver injects no topology opinion"
+        );
+        // Rung 2: the KURRENTDB_CONN environment value reaches Server verbatim.
+        assert_eq!(
+            store_selection_at(None, None, Some(conn.to_string()), &rigger_dir).unwrap(),
+            expected,
+            "the environment connection string reaches the adapter verbatim"
+        );
+        // Rung 3: the .rigger/store.conn secret file reaches Server verbatim (no surrounding
+        // whitespace, so the file rung's line-trim leaves the address itself untouched).
+        fs::write(rigger_dir.join("store.conn"), conn).unwrap();
+        assert_eq!(
+            store_selection_at(None, None, None, &rigger_dir).unwrap(),
+            expected,
+            "the secret-file connection string reaches the adapter verbatim"
+        );
+    }
+
+    /// Spec 48, criterion 2 - PRECEDENCE. `store_selection_at` resolves the event-log backend
+    /// from the configuration sources in one STRICT order every command shares: an explicit flag
+    /// beats the environment beats the local secret file (`.rigger/store.conn`) beats the
+    /// committed project config (`store:` in `workflow.yml`) beats the embedded-sqlite default.
+    /// Proven here over the PURE core - a temp `.rigger` for the two file-backed rungs and the
+    /// environment threaded as a value, so no process-env mutation is needed and the ordering is
+    /// deterministic under parallel test execution. Each source carries a DISTINCT value, so the
+    /// value the result carries names the winning rung unambiguously.
+    #[test]
+    fn store_selection_precedence_flag_env_secret_file_config_then_default() {
+        use std::fs;
+        let tmp = tempfile::tempdir().unwrap();
+        let rigger_dir = tmp.path().join(".rigger");
+        fs::create_dir_all(&rigger_dir).unwrap();
+
+        // (Re)write the two file-backed rungs; `None` removes the file so the rung is absent.
+        let write_secret = |conn: Option<&str>| match conn {
+            Some(c) => fs::write(rigger_dir.join("store.conn"), c).unwrap(),
+            None => {
+                let _ = fs::remove_file(rigger_dir.join("store.conn"));
+            }
+        };
+        let write_config = |body: Option<&str>| match body {
+            Some(b) => fs::write(rigger_dir.join("workflow.yml"), b).unwrap(),
+            None => {
+                let _ = fs::remove_file(rigger_dir.join("workflow.yml"));
+            }
+        };
+        let sel = |flag_store, flag_conn: Option<&str>, env: Option<&str>| {
+            store_selection_at(flag_store, flag_conn, env.map(String::from), &rigger_dir)
+        };
+        let server = |host: &str| StoreSelection::Server(host.to_string());
+
+        // The two lower file-backed sources present together, each a DISTINCT address.
+        write_secret(Some("kurrentdb://secret-file:2113?tls=false"));
+        write_config(Some(
+            "store:\n  backend: kurrentdb\n  url: \"kurrentdb://config-host:2113?tls=false\"\n",
+        ));
+
+        // 1. The explicit flag wins over env, the secret file, and the config.
+        assert_eq!(
+            sel(
+                Some(StoreKind::KurrentDb),
+                Some("kurrentdb://flag-host:2113?tls=false"),
+                Some("kurrentdb://env-host:2113?tls=false"),
+            )
+            .unwrap(),
+            server("kurrentdb://flag-host:2113?tls=false"),
+            "an explicit --conn flag is the highest-precedence source"
+        );
+        // A flag selecting sqlite also wins outright, even with a server env/secret/config live.
+        assert_eq!(
+            sel(
+                Some(StoreKind::Sqlite),
+                None,
+                Some("kurrentdb://env-host:2113?tls=false"),
+            )
+            .unwrap(),
+            StoreSelection::Sqlite,
+            "--eventstore sqlite beats every lower source"
+        );
+        // A BARE --conn (flag_store=None) SELECTS the server addressed verbatim by it: a non-empty
+        // --conn is a first-class highest-precedence source, never silently dropped to a lower rung
+        // (the store-fracture footgun spec 48 motivates against - d-u2-conn-flag-selects-server).
+        assert_eq!(
+            sel(None, Some("kurrentdb://bare-conn:2113?tls=false"), None).unwrap(),
+            server("kurrentdb://bare-conn:2113?tls=false"),
+            "a bare --conn selects the server, beating the secret file and config beneath it"
+        );
+        // The bare --conn outranks the environment too (it is rung 1; KURRENTDB_CONN is rung 2).
+        assert_eq!(
+            sel(
+                None,
+                Some("kurrentdb://bare-conn:2113?tls=false"),
+                Some("kurrentdb://env-host:2113?tls=false"),
+            )
+            .unwrap(),
+            server("kurrentdb://bare-conn:2113?tls=false"),
+            "a bare --conn outranks KURRENTDB_CONN"
+        );
+        // An explicit --eventstore sqlite still wins OUTRIGHT over a --conn: the flag-store is the
+        // unambiguous backend override, so contradictory flags resolve to sqlite, never the server.
+        assert_eq!(
+            sel(
+                Some(StoreKind::Sqlite),
+                Some("kurrentdb://bare-conn:2113?tls=false"),
+                None,
+            )
+            .unwrap(),
+            StoreSelection::Sqlite,
+            "--eventstore sqlite wins outright even with a --conn present"
+        );
+        // An EMPTY --conn is not a selection: it is unset, so the rungs beneath decide (here the
+        // secret file), exactly as an absent flag would - a stray `--conn ''` never selects a
+        // server with no address.
+        assert_eq!(
+            sel(None, Some(""), None).unwrap(),
+            server("kurrentdb://secret-file:2113?tls=false"),
+            "an empty --conn is unset, so the secret file wins beneath it"
+        );
+
+        // 2. No flag: the environment beats the secret file and the config.
+        assert_eq!(
+            sel(None, None, Some("kurrentdb://env-host:2113?tls=false")).unwrap(),
+            server("kurrentdb://env-host:2113?tls=false"),
+            "KURRENTDB_CONN beats the secret file and the committed config"
+        );
+        // An empty environment value is treated as unset (never selects a server with no address).
+        assert_eq!(
+            sel(None, None, Some("")).unwrap(),
+            server("kurrentdb://secret-file:2113?tls=false"),
+            "an empty env value is unset, so the secret file wins beneath it"
+        );
+
+        // 3. No flag, no env: the local secret file beats the config.
+        assert_eq!(
+            sel(None, None, None).unwrap(),
+            server("kurrentdb://secret-file:2113?tls=false"),
+            ".rigger/store.conn beats the committed config"
+        );
+
+        // 4. No flag, no env, no secret file: the committed config's non-secret URL is used.
+        write_secret(None);
+        assert_eq!(
+            sel(None, None, None).unwrap(),
+            server("kurrentdb://config-host:2113?tls=false"),
+            "the committed store: config beats the default"
+        );
+        // A config pinning sqlite explicitly resolves the embedded store.
+        write_config(Some("store:\n  backend: sqlite\n"));
+        assert_eq!(
+            sel(None, None, None).unwrap(),
+            StoreSelection::Sqlite,
+            "store: sqlite in the config selects the embedded backend"
+        );
+
+        // 5. Nothing configured anywhere: the embedded-sqlite default (backward compatible).
+        write_config(None);
+        assert_eq!(
+            sel(None, None, None).unwrap(),
+            StoreSelection::Sqlite,
+            "no source configured resolves the sqlite default"
+        );
+        // A workflow.yml with no `store:` key is also "no opinion" -> the default.
+        write_config(Some("name: demo\n"));
+        assert_eq!(
+            sel(None, None, None).unwrap(),
+            StoreSelection::Sqlite,
+            "a config without a store: key defaults to sqlite"
+        );
+
+        // The three-source error: the server is selected (config pins kurrentdb) with NO url and
+        // no credential source anywhere - the error must name ALL THREE credential channels.
+        write_config(Some("store:\n  backend: kurrentdb\n"));
+        // The TWIN of the rung-1 drop (config-kurrentdb-with-no-url + a CLI --conn): the config
+        // selects the server but carries no url, and the CLI --conn is the credential that resolves
+        // it. The --conn is NEVER dropped here either - the exact input that previously fell through
+        // to the sqlite default now resolves the server verbatim from the flag.
+        assert_eq!(
+            sel(None, Some("kurrentdb://flag-conn:2113?tls=false"), None).unwrap(),
+            server("kurrentdb://flag-conn:2113?tls=false"),
+            "a config-selected server with no url takes the --conn credential, never drops it"
+        );
+        let err = sel(None, None, None).unwrap_err().to_string();
+        assert!(
+            err.contains("--conn") && err.contains("KURRENTDB_CONN") && err.contains("store.conn"),
+            "a config-selected server with no resolvable conn must name all three credential \
+             sources; got: {err}"
+        );
+        // And the same three-source error when the flag selects the server with nothing to resolve.
+        let err = sel(Some(StoreKind::KurrentDb), None, None)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("--conn") && err.contains("KURRENTDB_CONN") && err.contains("store.conn"),
+            "--eventstore kurrentdb with no conn must name all three credential sources; got: {err}"
+        );
+
+        // An unknown backend in the committed config is a clear configuration error, not a silent
+        // fallback to the default.
+        write_config(Some("store:\n  backend: bogus\n"));
+        let err = sel(None, None, None).unwrap_err().to_string();
+        assert!(
+            err.contains("bogus") && err.contains("sqlite") && err.contains("kurrentdb"),
+            "an unknown store.backend must be rejected naming the valid values; got: {err}"
+        );
     }
 
     /// With the turbovec feature compiled OUT, selecting the DEFAULT grounder (an
@@ -10827,6 +12603,173 @@ mod tests {
         );
     }
 
+    /// Spec 45, criterion 2 (DIRECT-PROJECTION REACH): the `/api/graph` provider reads the WHOLE
+    /// projection directly, not the run-seeded `subgraph(graph_seeds(events), 2)`. So on an
+    /// indexed-but-never-built repo - a graph populated by code ingest with NO run
+    /// decisions/findings, hence an EMPTY `graph_seeds` - a seed naming a real node still returns
+    /// its neighborhood and the whole-graph overview still returns its clusters, instead of the
+    /// `Graph::default()` dead-end the run-seeded read produced.
+    #[test]
+    fn dash_graph_provider_reaches_the_whole_projection_when_run_seeds_are_empty() {
+        use std::collections::HashMap;
+
+        let dir = tempfile::tempdir().unwrap();
+        let graph_path = dir.path().join("graph.db");
+        let graph_path = graph_path.to_str().unwrap();
+        let identity = "reachtest";
+
+        // A projection built from CODE INGEST alone (spec 29a: CodeEntityExtracted + EdgeInferred),
+        // exactly what a cold-checkout `graph build` folds. No decision, no finding - so nothing a
+        // run would seed a subgraph from.
+        {
+            let p = Projector::open(graph_path, identity).unwrap();
+            let def = serde_json::json!({
+                "file": "src/combat.rs", "name": "apply_damage",
+                "kind": "function", "line": 7, "lang": "rust",
+            });
+            let mut e = Event::new(
+                contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+                serde_json::to_vec(&def).unwrap(),
+            );
+            e.position = 1;
+            p.apply(&e).unwrap();
+            let refr =
+                serde_json::json!({ "file": "src/combat.rs", "name": "clamp", "lang": "rust" });
+            let mut e2 = Event::new(
+                contextgraph::TYPE_EDGE_INFERRED,
+                serde_json::to_vec(&refr).unwrap(),
+            );
+            e2.position = 2;
+            p.apply(&e2).unwrap();
+        }
+
+        // Precondition = the never-built dead-end. The run log carries no content events, so
+        // `graph_seeds` is EMPTY and the OLD run-seeded read collapses to `Graph::default()`.
+        let no_run_events: Vec<Event> = Vec::new();
+        assert!(
+            dash::graph_seeds(&no_run_events).is_empty(),
+            "the never-built repo has no run seeds"
+        );
+        let run_seeded = dash_read_graph(graph_path, identity, &no_run_events);
+        assert!(
+            run_seeded.nodes.is_empty(),
+            "the run-seeded read is the empty dead-end this criterion removes, got {run_seeded:?}"
+        );
+
+        // The fix: the graph provider reads the whole projection directly, so a real code node is
+        // reachable with no run seeds at all.
+        let whole = dash_read_whole_graph(graph_path, identity);
+        assert!(
+            whole
+                .nodes
+                .iter()
+                .any(|n| n.id == "src/combat.rs::apply_damage"),
+            "the whole-projection read reaches a code node with no run seeds, got {whole:?}"
+        );
+
+        // Seeded-neighborhood reach: `/api/graph?seed=<real node>` over the whole graph returns the
+        // node's neighborhood - not the empty default.
+        let seed = "src/combat.rs::apply_damage";
+        let resp = dash::route(
+            "GET",
+            &format!("/api/graph?seed={seed}"),
+            &no_run_events,
+            &whole,
+            &[],
+            &HashMap::new(),
+            3,
+            "rigger-run",
+            "main",
+            &[],
+        );
+        assert_eq!(resp.status, 200);
+        let body = String::from_utf8(resp.body).unwrap();
+        let nb: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(
+            nb["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|n| n["id"] == seed),
+            "the seeded neighborhood over the whole projection contains the seed node, got {body}"
+        );
+
+        // Whole-graph overview reach: `/api/graph` (no seed) returns clusters over the whole graph,
+        // never an empty default.
+        let resp2 = dash::route(
+            "GET",
+            "/api/graph",
+            &no_run_events,
+            &whole,
+            &[],
+            &HashMap::new(),
+            3,
+            "rigger-run",
+            "main",
+            &[],
+        );
+        assert_eq!(resp2.status, 200);
+        let body2 = String::from_utf8(resp2.body).unwrap();
+        let ov: serde_json::Value = serde_json::from_str(&body2).unwrap();
+        assert!(
+            !ov["clusters"].as_array().unwrap().is_empty() && ov["total"].as_u64().unwrap() > 0,
+            "the whole-graph overview returns clusters, not an empty default, got {body2}"
+        );
+    }
+
+    /// Spec 45 GLOBAL CONSTRAINT (read-only provider, L33-34 / L72-73): the direct-projection
+    /// provider is READ-ONLY, and "the dash still starts before the store exists; an absent graph
+    /// degrades to an empty result, never an error". `dash_read_whole_graph` over an ABSENT graph db
+    /// (the grep-only / never-built repo that has no `.rigger/graph.db`) must return an EMPTY graph
+    /// and MUST NOT materialize the db.
+    ///
+    /// This pins the load-bearing `if !Path::new(graph_db).exists()` guard: `Projector::open` opens
+    /// with the default `OPEN_READWRITE | OPEN_CREATE` and runs `execute_batch(SCHEMA)`, so WITHOUT
+    /// the guard a read would spuriously CREATE the file+schema on a repo that never built one - a
+    /// real, user-facing WRITE that breaks the read-only contract. The file-not-created assertion is
+    /// the guard's teeth: delete the guard and this test reddens.
+    #[test]
+    fn dash_read_whole_graph_on_an_absent_db_is_empty_and_creates_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        // A path that does NOT exist: the never-built repo has no graph projection at all.
+        let graph_path = dir.path().join("graph.db");
+        let graph_db = graph_path.to_str().unwrap();
+        let identity = "reachtest";
+        assert!(
+            !Path::new(graph_db).exists(),
+            "precondition: the never-built repo has no graph db yet"
+        );
+
+        // (a) The read degrades to an EMPTY graph, never an error.
+        let whole = dash_read_whole_graph(graph_db, identity);
+        assert!(
+            whole.nodes.is_empty() && whole.edges.is_empty(),
+            "an absent projection reads as an empty graph, got {whole:?}"
+        );
+
+        // (b) The read is READ-ONLY: it must NOT have materialized the db. Removing the
+        // `if !Path::new(graph_db).exists()` guard makes `Projector::open` CREATE + SCHEMA-write the
+        // file here, reddening this assertion - these are the guard's teeth.
+        assert!(
+            !Path::new(graph_db).exists(),
+            "a read over an absent projection must NOT create {graph_db} (read-only provider)"
+        );
+
+        // The composed provider closure the dash consults on /api/graph (main.rs, the
+        // `move || dash_read_whole_graph(..)` provider) honors the same read-only contract over the
+        // absent path.
+        let provider = || -> contextgraph::Graph { dash_read_whole_graph(graph_db, identity) };
+        let via_provider = provider();
+        assert!(
+            via_provider.nodes.is_empty() && via_provider.edges.is_empty(),
+            "the composed provider over an absent projection is empty, got {via_provider:?}"
+        );
+        assert!(
+            !Path::new(graph_db).exists(),
+            "the composed provider must NOT create the db either (read-only provider)"
+        );
+    }
+
     /// `rigger setup` must provision the per-project JS driver: write the three
     /// embedded runtime files into `.rigger/shim/` with the embedded content. (The
     /// npm-install step is asserted separately so this test does not depend on npm.)
@@ -11258,6 +13201,199 @@ mod tests {
             }),
             "a gitignore-only repair must not claim it scaffolded the workflow, agents, or \
              hook: {lines:?}"
+        );
+    }
+
+    /// Spec 46, criterion 1 (CONSUMER GITIGNORE): the always-on dash writes two runtime
+    /// breadcrumbs under `.rigger/` - `.rigger/dash.url` and `.rigger/dash.marker`. Left
+    /// untracked-and-not-ignored in a consumer's repo they get swept into a unit worktree's
+    /// commit by `git add`, then collide with the live dash's rewrites when the conductor
+    /// merges the unit (`git merge` aborts with "untracked working tree files would be
+    /// overwritten"). So `rigger init`/`setup` must append an ignore line for BOTH, exactly
+    /// as it does for the other machine-local installs, and the append must be idempotent -
+    /// a second setup adds no duplicate line.
+    #[test]
+    fn init_project_gitignores_the_dash_runtime_breadcrumbs_idempotently() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // First scaffold on a fresh consumer repo: both dash breadcrumbs are
+        // untracked-and-not-ignored, so setup appends an ignore line for each and reports it.
+        let first = init_project(dir.path()).expect("first init scaffolds the project");
+        assert!(
+            first
+                .gitignore_added
+                .contains(&".rigger/dash.url".to_string())
+                && first
+                    .gitignore_added
+                    .contains(&".rigger/dash.marker".to_string()),
+            "the first init reports appending BOTH dash-artifact ignore patterns, got: {:?}",
+            first.gitignore_added
+        );
+
+        let gitignore = dir.path().join(".gitignore");
+        let content = std::fs::read_to_string(&gitignore).unwrap();
+        assert!(
+            content.lines().any(|l| l.trim() == ".rigger/dash.url"),
+            "the written .gitignore ignores the dash url breadcrumb, got:\n{content}"
+        );
+        assert!(
+            content.lines().any(|l| l.trim() == ".rigger/dash.marker"),
+            "the written .gitignore ignores the dash marker breadcrumb, got:\n{content}"
+        );
+
+        // Idempotent: a second setup finds both already ignored and appends nothing new.
+        let second = init_project(dir.path()).expect("a rerun must succeed");
+        assert!(
+            !second
+                .gitignore_added
+                .contains(&".rigger/dash.url".to_string())
+                && !second
+                    .gitignore_added
+                    .contains(&".rigger/dash.marker".to_string()),
+            "a rerun re-appends no dash-artifact ignore pattern, got: {:?}",
+            second.gitignore_added
+        );
+
+        let after = std::fs::read_to_string(&gitignore).unwrap();
+        assert_eq!(
+            after
+                .lines()
+                .filter(|l| l.trim() == ".rigger/dash.url")
+                .count(),
+            1,
+            "exactly one .rigger/dash.url ignore line - no duplicate accrued, got:\n{after}"
+        );
+        assert_eq!(
+            after
+                .lines()
+                .filter(|l| l.trim() == ".rigger/dash.marker")
+                .count(),
+            1,
+            "exactly one .rigger/dash.marker ignore line - no duplicate accrued, got:\n{after}"
+        );
+    }
+
+    /// Spec 48, SECRETS DISCIPLINE: the per-machine connection-string secret file
+    /// `.rigger/store.conn` (store resolver rung 3) carries credentials, so `rigger init`/`setup`
+    /// must git-ignore it BY CONSTRUCTION - the same scaffold mechanism that ignores the dash
+    /// breadcrumbs - so a developer who drops their credentials into it can never commit them, and
+    /// the committed project config never requires a secret. The append is idempotent: a second
+    /// setup adds no duplicate line.
+    #[test]
+    fn init_project_gitignores_the_store_conn_secret_file_idempotently() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // First scaffold on a fresh consumer repo: the secret file is untracked-and-not-ignored, so
+        // setup appends an ignore line for it and reports it.
+        let first = init_project(dir.path()).expect("first init scaffolds the project");
+        assert!(
+            first
+                .gitignore_added
+                .contains(&".rigger/store.conn".to_string()),
+            "the first init reports appending the store.conn secret-file ignore pattern, got: {:?}",
+            first.gitignore_added
+        );
+
+        let gitignore = dir.path().join(".gitignore");
+        let content = std::fs::read_to_string(&gitignore).unwrap();
+        assert!(
+            content.lines().any(|l| l.trim() == ".rigger/store.conn"),
+            "the written .gitignore ignores the store.conn secret file, got:\n{content}"
+        );
+
+        // Idempotent: a second setup finds it already ignored and appends nothing new.
+        let second = init_project(dir.path()).expect("a rerun must succeed");
+        assert!(
+            !second
+                .gitignore_added
+                .contains(&".rigger/store.conn".to_string()),
+            "a rerun re-appends no store.conn ignore pattern, got: {:?}",
+            second.gitignore_added
+        );
+
+        let after = std::fs::read_to_string(&gitignore).unwrap();
+        assert_eq!(
+            after
+                .lines()
+                .filter(|l| l.trim() == ".rigger/store.conn")
+                .count(),
+            1,
+            "exactly one .rigger/store.conn ignore line - no duplicate accrued, got:\n{after}"
+        );
+    }
+
+    /// Spec 48, SECRETS DISCIPLINE (the permission-hygiene rung): the store-connection secret file
+    /// carries a credential, so the resolver flags it when it is readable by users other than its
+    /// owner. Owner-only modes (`0o600` and friends) are clean; any group-read or other-read bit
+    /// exposes the secret and must be flagged. Pins the exact threshold so the nudge neither
+    /// false-positives on a locked-down file nor misses an exposed one.
+    #[cfg(unix)]
+    #[test]
+    fn a_group_or_other_readable_secret_file_mode_is_flagged_owner_only_is_not() {
+        use super::conn_file_is_group_or_other_readable as exposed;
+        // Owner-only: the credential is not exposed.
+        assert!(!exposed(0o600), "0o600 (owner rw) is owner-only");
+        assert!(!exposed(0o700), "0o700 (owner rwx) is owner-only");
+        assert!(!exposed(0o400), "0o400 (owner read) is owner-only");
+        // Any group-read or other-read bit exposes the credential.
+        assert!(exposed(0o640), "0o640 grants group read");
+        assert!(exposed(0o604), "0o604 grants other read");
+        assert!(
+            exposed(0o644),
+            "0o644 (a default umask) grants group+other read"
+        );
+        assert!(exposed(0o444), "0o444 is world-readable");
+    }
+
+    /// Spec 46, criterion 1 (CONSUMER GITIGNORE), the broad-rule corner: even when a
+    /// consumer's OWN committed `.gitignore` already covers both dash breadcrumbs through a
+    /// broader rule (`.rigger/`), setup STILL appends the explicit `.rigger/dash.url` and
+    /// `.rigger/dash.marker` lines. The committed `.gitignore` must be self-contained and
+    /// portable, never contingent on any ignore resolution that could differ per machine, so
+    /// the required lines are always present in the artifact shipped to a teammate/CI. The
+    /// redundant-but-correct per-file line is harmless; the exact-line idempotency guard still
+    /// prevents any duplicate. Proves setup does NOT let a broader ignore rule suppress the
+    /// explicit dash lines (the regression a machine-local `git check-ignore` skip introduced).
+    #[test]
+    fn init_project_still_writes_the_dash_ignore_lines_when_a_broader_rule_covers_them() {
+        let dir = tempfile::tempdir().unwrap();
+        git_init_quiet(dir.path());
+        // The consumer's own repo already ignores the entire runtime dir through a broad rule.
+        std::fs::write(dir.path().join(".gitignore"), ".rigger/\n").unwrap();
+
+        let report = init_project(dir.path()).expect("init must scaffold");
+        assert!(
+            report
+                .gitignore_added
+                .contains(&".rigger/dash.url".to_string())
+                && report
+                    .gitignore_added
+                    .contains(&".rigger/dash.marker".to_string()),
+            "setup appends the explicit dash lines even when .rigger/ broadly covers them, \
+             so the committed .gitignore stays self-contained, got: {:?}",
+            report.gitignore_added
+        );
+
+        let content = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+        assert!(
+            content.lines().any(|l| l.trim() == ".rigger/dash.url")
+                && content.lines().any(|l| l.trim() == ".rigger/dash.marker"),
+            "both explicit per-file dash ignore lines are present in the committed .gitignore \
+             even though .rigger/ already covers them, got:\n{content}"
+        );
+
+        // Idempotent: a rerun re-appends nothing (the exact lines are already present), so the
+        // redundant-but-correct lines never accrue a duplicate.
+        let second = init_project(dir.path()).expect("a rerun must succeed");
+        assert!(
+            !second
+                .gitignore_added
+                .contains(&".rigger/dash.url".to_string())
+                && !second
+                    .gitignore_added
+                    .contains(&".rigger/dash.marker".to_string()),
+            "a rerun re-appends no dash line (exact-line idempotency), got: {:?}",
+            second.gitignore_added
         );
     }
 
@@ -11979,6 +14115,244 @@ mod tests {
         }
     }
 
+    /// Spec 44, criterion 1 (this unit OWNS the courier-prompt guarantee): the step
+    /// courier must run `rigger step` as ONE FOREGROUND, BLOCKING Bash call - never
+    /// `run_in_background`, never watched via a Monitor / poll loop - because a foreground
+    /// call blocks until the step prints its single JSON line, which is exactly the line to
+    /// relay. And when it must report a failure, the `error` string must be the command's
+    /// ACTUAL stderr or the fixed phrase `step did not complete within my attempts` - NEVER
+    /// an invented placeholder token. This pins the exact defect that surfaced while
+    /// dogfooding the loop: a courier that backgrounded the step, watched it with a Monitor,
+    /// and returned `{"wave":[],"done":false,"error":"PLACEHOLDER_DO_NOT_USE"}` before the
+    /// step had produced anything - a fabricated error that stopped the run after zero waves
+    /// while lying about its own state. Asserted over the EMBEDDED `RIGGER_WORKFLOW` (the
+    /// `include_str!` byte-source `rigger setup` writes and the drift check reads), the same
+    /// structural style spec 39 used for the workflow string, because the cargo gate set
+    /// runs no JS. This unit owns ONLY the courier prompt: it asserts nothing about the
+    /// driver's null-step guard (criterion 2) or the dash detachment (criterion 3).
+    #[test]
+    fn workflow_step_courier_prompt_is_foreground_and_honest() {
+        // Assert over comment-stripped source so the phrases are checked in the actual
+        // courier-prompt string literal, not the file's documentation prose.
+        let code = strip_line_comments(RIGGER_WORKFLOW);
+
+        // 1. FOREGROUND, BLOCKING: the courier runs the step as one blocking Bash call - a
+        //    foreground call blocks until the step prints its single JSON line, which is
+        //    exactly the line the courier relays.
+        assert!(
+            code.contains("FOREGROUND, BLOCKING Bash"),
+            "the step-courier prompt must instruct running `rigger step` as one FOREGROUND, \
+             BLOCKING Bash call (a foreground call blocks until the step prints its JSON line)"
+        );
+
+        // 2. NOT backgrounded, NOT polled: the exact shape the defect ran the step in (a
+        //    `run_in_background` step watched by a Monitor, returning a fabricated error
+        //    before the step produced anything) is explicitly forbidden in the prompt.
+        assert!(
+            code.contains("NOT run_in_background"),
+            "the step-courier prompt must explicitly forbid `run_in_background` (the step must \
+             block in the foreground, not run detached)"
+        );
+        assert!(
+            code.contains("NOT via a Monitor"),
+            "the step-courier prompt must explicitly forbid watching the step via a Monitor / \
+             poll loop (that path fabricated an error before the step produced its JSON)"
+        );
+
+        // 3. HONEST error: when the courier must report a failure, `error` is the ACTUAL
+        //    stderr or the one fixed no-completion phrase - never an invented placeholder.
+        assert!(
+            code.contains("step did not complete within my attempts"),
+            "the courier's `error` must be allowed to carry the fixed no-completion phrase"
+        );
+        assert!(
+            code.contains("NEVER an invented placeholder"),
+            "the step-courier prompt must forbid returning a fabricated placeholder token in \
+             `error` (the error must be real stderr or the fixed no-completion phrase)"
+        );
+
+        // 4. Regression guard on the exact fabricated token the defect returned: it must not
+        //    appear ANYWHERE in the embedded workflow (asserted on the raw source, comments
+        //    included) - a courier that returns it lies that the step failed.
+        assert!(
+            !RIGGER_WORKFLOW.contains("PLACEHOLDER_DO_NOT_USE"),
+            "the fabricated placeholder token `PLACEHOLDER_DO_NOT_USE` must never appear in the \
+             embedded workflow - a courier returning it lies that the step failed after zero waves"
+        );
+    }
+
+    /// Isolate the STEP-courier prompt (the agent that runs `rigger step` and relays the wave)
+    /// from the surrounding driver source, so a structural assertion pins the RIGHT agent's
+    /// instructions and not some other prompt that shares a word. The prompt is the template
+    /// string that opens with `Advance the run one frontier` and runs up to the `{ phase: 'Plan'`
+    /// options object that closes the `agent(...)` call. Asserted over comment-stripped source so
+    /// the phrases are checked in the actual prompt literal, not the file's documentation prose.
+    fn step_courier_prompt(code: &str) -> &str {
+        let at = code
+            .find("Advance the run one frontier")
+            .expect("the driver must still define the step-courier prompt");
+        let end = code[at..]
+            .find("{ phase: 'Plan'")
+            .map(|off| at + off)
+            .expect("the step-courier prompt must close with the `{ phase: 'Plan' }` options");
+        &code[at..end]
+    }
+
+    /// Spec 51, criterion 3 (this unit OWNS the courier amendment): the step courier keeps its
+    /// foreground-blocking rule and its placeholder prohibition, and gains the ONE sanctioned
+    /// exception - if the DRIVING HARNESS (not the courier) converts the running foreground step
+    /// into a BACKGROUND task because it outran the harness's foreground cap, the courier must
+    /// NOT return a placeholder sentinel (the defect the re-park/wait work fixes): it WAITS on
+    /// that background task's OUTPUT FILE until it holds the step's single JSON line and returns
+    /// that line verbatim - polling the output file is the sanctioned wait here - or, if the JSON
+    /// still cannot be obtained, falls back to the existing re-run rule (recorded gate results let
+    /// a re-run resume past finished work). This pins the exact gap spec 51 closes: a courier
+    /// forbidden from monitors and unable to wait returned a placeholder for an auto-backgrounded
+    /// step, stopping the driver. Asserted structurally over the EMBEDDED `RIGGER_WORKFLOW` (the
+    /// `include_str!` byte-source `rigger setup` writes and the drift check reads), the same
+    /// convention spec 44's courier tests use because the cargo gate set runs no JS. This unit
+    /// owns ONLY the courier amendment: it asserts nothing about the reviewer-error re-park
+    /// (criteria 1/2) or the worktree self-heal / sweep-ordering (criteria 4/5).
+    #[test]
+    fn workflow_step_courier_waits_on_an_auto_backgrounded_step() {
+        let code = strip_line_comments(RIGGER_WORKFLOW);
+        let prompt = step_courier_prompt(&code);
+
+        // 1. The NORMAL-case foreground rule is UNCHANGED: the courier still runs the step as one
+        //    foreground, blocking Bash call (the amendment adds an exception, it does not relax
+        //    the default that a foreground call blocks until the step prints its JSON line).
+        assert!(
+            prompt.contains("FOREGROUND, BLOCKING Bash"),
+            "the amended step-courier prompt must keep the FOREGROUND, BLOCKING rule for the \
+             normal case; got:\n{prompt}"
+        );
+        assert!(
+            prompt.contains("NOT run_in_background"),
+            "the amended prompt must keep forbidding the courier from backgrounding the step \
+             itself; got:\n{prompt}"
+        );
+
+        // 2. The exception is scoped to a HARNESS-INITIATED backgrounding, not a courier choice:
+        //    the prompt states the driving harness may convert the foreground call into a
+        //    background task on its own (it outran the foreground cap), a conversion the courier
+        //    did not choose - so a courier reading this cannot use it to justify backgrounding.
+        assert!(
+            prompt.contains("harness")
+                && prompt.contains("background task")
+                && prompt.contains("did not choose"),
+            "the amendment must scope the wait to a HARNESS-initiated conversion of the foreground \
+             call into a background task (a conversion the courier did not choose), not a courier \
+             decision to background the step; got:\n{prompt}"
+        );
+
+        // 3. The SANCTIONED WAIT: on that path the courier waits on the background task's OUTPUT
+        //    FILE, polling it until it holds the step's single JSON line, and returns that line
+        //    verbatim - the exact sanctioned exception spec 51 grants (a courier otherwise
+        //    forbidden from monitors and unable to wait).
+        assert!(
+            prompt.contains("output file")
+                && prompt.contains("poll")
+                && prompt.contains("sanctioned")
+                && prompt.contains("verbatim"),
+            "the amendment must instruct the courier to WAIT by polling the auto-backgrounded \
+             step's OUTPUT FILE for the single JSON line and return it verbatim (the sanctioned \
+             wait); got:\n{prompt}"
+        );
+
+        // 4. FALL BACK to the existing re-run rule when the JSON still cannot be obtained: the
+        //    step's gate results are recorded durably, so a re-run resumes past finished work -
+        //    the amendment must route to that rule, never to a fabricated result.
+        assert!(
+            prompt.contains("re-run") && prompt.contains("resume"),
+            "if the JSON cannot be obtained from the background task's output, the amendment must \
+             fall back to re-running the step (a re-run resumes past durably recorded work), not \
+             fabricate a result; got:\n{prompt}"
+        );
+
+        // 5. The PLACEHOLDER PROHIBITION still holds ON THIS PATH: returning a sentinel or
+        //    placeholder for an auto-backgrounded step is exactly the defect spec 51 closes, so
+        //    the amended prompt must keep forbidding it (never a fabricated wave / error token).
+        assert!(
+            prompt.contains("placeholder"),
+            "the amendment must keep the placeholder prohibition on the auto-background path (a \
+             sentinel / placeholder remains forbidden); got:\n{prompt}"
+        );
+        assert!(
+            !RIGGER_WORKFLOW.contains("PLACEHOLDER_DO_NOT_USE"),
+            "the fabricated placeholder token must never appear in the embedded workflow"
+        );
+    }
+
+    /// Spec 44, criterion 2 (this unit OWNS the driver null-step guard): the driver must GUARD
+    /// a null step BEFORE it dereferences `step.error`. `agent()` can RESOLVE to null - rather
+    /// than reject - when the courier agent dies on a TERMINAL error (an expired login, an
+    /// exhausted API quota): it produces no structured output, so the await yields null instead
+    /// of throwing and the surrounding try/catch never fires. Dereferencing `step.error` on that
+    /// null step crashes the driver uncaught - the exact defect that surfaced while dogfooding
+    /// the loop (an uncaught crash instead of a clean, resumable stop). The guard turns it into a
+    /// clean, loud, RESUMABLE stop that names the likely cause. This unit owns ONLY the null-step
+    /// guard: it asserts nothing about the courier prompt (criterion 1) or the dash detachment
+    /// (criterion 3). Asserted structurally over the EMBEDDED `RIGGER_WORKFLOW` (the
+    /// `include_str!` byte-source `rigger setup` writes and the drift check reads), the same
+    /// style spec 39 used for the workflow string, because the cargo gate set runs no JS.
+    #[test]
+    fn workflow_driver_guards_a_null_step_before_dereferencing_it() {
+        // Assert over comment-stripped source so the guard is checked in the actual driver code
+        // and its stop-message string literal, not the file's documentation prose.
+        let code = strip_line_comments(RIGGER_WORKFLOW);
+
+        // 1. The guard EXISTS: the driver tests `!step` (agent() resolved to null) explicitly.
+        assert!(
+            code.contains("if (!step)"),
+            "the driver must guard a null step with `if (!step)` before touching its fields"
+        );
+
+        // 2. The guard PRECEDES the dereference: `if (!step)` must appear BEFORE the first
+        //    `step.error` read, or a null step would still crash on the very dereference the
+        //    guard exists to prevent (presence alone does not prove the guard is reachable in
+        //    time - the wedge-stop ordering test above pins position for the same reason).
+        let guard = code
+            .find("if (!step)")
+            .expect("the driver must guard a null step");
+        let deref = code
+            .find("step.error")
+            .expect("the driver must read step.error after the guard");
+        assert!(
+            guard < deref,
+            "the `if (!step)` guard must precede the `step.error` dereference, or a null step \
+             (agent() resolved to null) would still crash before the guard runs"
+        );
+
+        // 3. The guard stops CLEANLY and LOUDLY: it routes the null step through the throwing
+        //    `stop()` (a controlled workflow failure), never a silent return or an uncaught
+        //    null-dereference crash. The stop call must live between the guard and the deref.
+        assert!(
+            code[guard..deref].contains("stop("),
+            "the null-step guard must stop loudly via `stop(...)` (a clean, controlled failure), \
+             not fall through or crash on the dereference"
+        );
+
+        // 4. The diagnostic names the LIKELY CAUSE (the courier agent died on a terminal API
+        //    error - an expired login / an exhausted quota, so agent() resolved to null) and
+        //    that the run is RESUMABLE - the two things spec 44 requires the message to carry so
+        //    the operator knows why it stopped and that a re-run continues from this frontier.
+        assert!(
+            code.contains("resolved to null"),
+            "the null-step diagnostic must name the cause: agent() RESOLVED TO NULL rather than \
+             rejecting (the courier agent died terminally, producing no JSON)"
+        );
+        assert!(
+            code.contains("expired login") && code.contains("quota"),
+            "the null-step diagnostic must name the likely terminal cause (an expired login or \
+             an exhausted API quota)"
+        );
+        assert!(
+            code.contains("RESUMABLE"),
+            "the null-step diagnostic must tell the operator the run is RESUMABLE (a re-run \
+             continues from this frontier)"
+        );
+    }
+
     /// Spec 19a Unit 3 (done-when item 3): the static `meta.description` is the tagline
     /// the skills list and the `/workflows` header both show, so it must read as a
     /// jargon-free, user-useful line - what the workflow does and when to reach for it -
@@ -12693,7 +15067,8 @@ mod tests {
         let path = dir.path().join("events.db");
         let path_str = path.to_str().unwrap();
 
-        let out = stats_lines(path_str, "proj-x", false).expect("absent db is not an error");
+        let out = stats_lines(path_str, "proj-x", false, &StoreSelection::Sqlite)
+            .expect("absent db is not an error");
         assert!(out.is_none(), "an absent db must read as no runs (None)");
         assert!(
             !path.exists(),
@@ -12716,8 +15091,8 @@ mod tests {
         seed_run(path_str, "proj-me", &[]);
         assert!(path.exists(), "the db file must exist for this edge");
 
-        let out =
-            stats_lines(path_str, "proj-me", false).expect("empty run stream is not an error");
+        let out = stats_lines(path_str, "proj-me", false, &StoreSelection::Sqlite)
+            .expect("empty run stream is not an error");
         assert!(
             out.is_none(),
             "an existing db with an empty run stream must read as no runs (None)"
@@ -12744,7 +15119,8 @@ mod tests {
         );
 
         // proj-me, reading the same file, sees its OWN (empty) namespace - no runs.
-        let mine = stats_lines(path_str, "proj-me", false).expect("read is not an error");
+        let mine = stats_lines(path_str, "proj-me", false, &StoreSelection::Sqlite)
+            .expect("read is not an error");
         assert!(
             mine.is_none(),
             "stats must be namespace-scoped: another project's run must not leak in"
@@ -12752,7 +15128,8 @@ mod tests {
 
         // Sanity: the other project's run IS visible to it, so the data really is there
         // and the None above is the namespace boundary, not a read failure.
-        let theirs = stats_lines(path_str, "proj-other", false).expect("read is not an error");
+        let theirs = stats_lines(path_str, "proj-other", false, &StoreSelection::Sqlite)
+            .expect("read is not an error");
         assert!(
             theirs.is_some(),
             "the project that owns the run must see its stats"
@@ -12779,7 +15156,7 @@ mod tests {
             ],
         );
 
-        let lines = stats_lines(path_str, "proj-me", false)
+        let lines = stats_lines(path_str, "proj-me", false, &StoreSelection::Sqlite)
             .expect("read is not an error")
             .expect("a populated run must render lines, not None");
         let out = lines.join("\n");
@@ -12808,7 +15185,8 @@ mod tests {
         let path = dir.path().join("events.db");
         let path_str = path.to_str().unwrap();
 
-        let got = result_of_at(path_str, "proj-x", "u/impl#0").expect("absent db is not an error");
+        let got = result_of_at(path_str, "proj-x", "u/impl#0", &StoreSelection::Sqlite)
+            .expect("absent db is not an error");
         assert!(got.is_none(), "an absent db must read as unreported (None)");
         assert!(
             !path.exists(),
@@ -12834,7 +15212,8 @@ mod tests {
                 .unwrap()],
         );
 
-        let got = result_of_at(path_str, "proj-me", "u/impl#0").expect("read is not an error");
+        let got = result_of_at(path_str, "proj-me", "u/impl#0", &StoreSelection::Sqlite)
+            .expect("read is not an error");
         assert!(
             got.is_none(),
             "a spawn with no result of its own must read as unreported (None)"
@@ -12862,7 +15241,7 @@ mod tests {
             ],
         );
 
-        let got = result_of_at(path_str, "proj-me", "u/impl#0")
+        let got = result_of_at(path_str, "proj-me", "u/impl#0", &StoreSelection::Sqlite)
             .expect("read is not an error")
             .expect("a recorded result must read back as Some, not None");
         assert_eq!(got.id, "u/impl#0");
@@ -12892,15 +15271,16 @@ mod tests {
         );
 
         // proj-me, reading the same file, sees its OWN (empty) namespace: still unreported.
-        let mine = result_of_at(path_str, "proj-me", "u/impl#0").expect("read is not an error");
+        let mine = result_of_at(path_str, "proj-me", "u/impl#0", &StoreSelection::Sqlite)
+            .expect("read is not an error");
         assert!(
             mine.is_none(),
             "another project's result must not leak in - the read must be namespace-scoped"
         );
 
         // Sanity: the owner DOES see it, so the None above is the namespace boundary, not a miss.
-        let theirs =
-            result_of_at(path_str, "proj-other", "u/impl#0").expect("read is not an error");
+        let theirs = result_of_at(path_str, "proj-other", "u/impl#0", &StoreSelection::Sqlite)
+            .expect("read is not an error");
         assert!(
             theirs.is_some(),
             "the project that owns the result must see it"
@@ -12923,6 +15303,121 @@ mod tests {
         assert!(
             extra.to_string().contains("rigger reported <id>"),
             "the extra-args error must show the usage; got: {extra}"
+        );
+    }
+
+    // --- Spec 44, criterion 3: the always-on dash is SESSION-DETACHED from `rigger step` ---
+
+    /// Read the process-group id (PGID / `pgrp`) of `pid` from `/proc/<pid>/stat`. Pure std, so
+    /// it holds on BOTH feature lanes. `/proc/<pid>/stat` is `pid (comm) state ppid pgrp ...`;
+    /// `comm` may itself contain spaces and parens, so we split AFTER the last `)` - the tokens
+    /// that follow are then `state ppid pgrp ...`, making `pgrp` the third whitespace token. A
+    /// zombie (an exited-but-unreaped child) still has a readable `stat`, so this is race-free
+    /// against the child having already exited; only a fully reaped pid is gone.
+    #[cfg(target_os = "linux")]
+    fn pgid_of(pid: u32) -> u32 {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .unwrap_or_else(|e| panic!("read /proc/{pid}/stat: {e}"));
+        let after_comm = stat
+            .rsplit_once(')')
+            .expect("/proc stat has a parenthesised comm field")
+            .1;
+        after_comm
+            .split_whitespace()
+            .nth(2)
+            .expect("/proc stat has a pgrp field after comm")
+            .parse()
+            .expect("pgrp is a base-10 integer")
+    }
+
+    /// The load-bearing detachment proof: `detach_process_group` puts a spawned child in its OWN
+    /// process group - a group whose PGID equals the child's own PID (it is the group leader) and
+    /// which DIFFERS from this test process's process group. That different group is exactly what
+    /// lets the detached dash survive the teardown of the parent `rigger step` command's process
+    /// group (spec 44): a group-scoped teardown of the parent's group never reaches the child's
+    /// own group. Uses a controlled, fully-reaped `sleep` child so the test is deterministic and
+    /// leaks nothing.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn detach_process_group_places_the_child_in_its_own_process_group() {
+        let parent_pgid = pgid_of(std::process::id());
+
+        let mut cmd = Command::new("sleep");
+        cmd.arg("30")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        detach_process_group(&mut cmd);
+        let mut child = cmd.spawn().expect("spawn a controlled child");
+        let child_pgid = pgid_of(child.id());
+
+        assert_eq!(
+            child_pgid,
+            child.id(),
+            "a detached child is its OWN process-group leader (PGID == its PID)"
+        );
+        assert_ne!(
+            child_pgid, parent_pgid,
+            "a detached child is in a DIFFERENT process group than its parent - so a teardown of \
+             the parent command's process group cannot reap it"
+        );
+
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    /// The control that makes the assertion above meaningful: WITHOUT `detach_process_group`, a
+    /// spawned child INHERITS the parent's process group. So the detachment is load-bearing - it
+    /// is precisely what moves the child out of `rigger step`'s group. If this ever failed
+    /// (child already in its own group with no detach), the detached-case assertion would prove
+    /// nothing.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_child_spawned_without_detachment_inherits_the_parent_process_group() {
+        let parent_pgid = pgid_of(std::process::id());
+
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn a controlled child");
+        let child_pgid = pgid_of(child.id());
+
+        assert_eq!(
+            child_pgid, parent_pgid,
+            "a child spawned WITHOUT detachment stays in the parent's process group - the very \
+             group whose teardown would otherwise reap the dash; detach_process_group is what \
+             breaks it out"
+        );
+
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    /// End-to-end wiring: the dash actually spawned by `spawn_run_dashboard_detached` is placed
+    /// in its own process group (PGID == the spawned pid, a different group than this parent), so
+    /// the production step path really does session-detach the always-on dash (spec 44 criterion
+    /// 3), not merely the seam in isolation. The spawned child is deliberately un-reaped - being
+    /// un-reaped across steps is the whole point of "detached" - and the OS reaps this transient
+    /// child when the test process exits.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn spawn_run_dashboard_detached_session_detaches_the_dash() {
+        let parent_pgid = pgid_of(std::process::id());
+
+        let marker = spawn_run_dashboard_detached().expect("spawn the detached dash");
+        let dash_pgid = pgid_of(marker.pid);
+
+        assert_eq!(
+            dash_pgid, marker.pid,
+            "the spawned dash is its own process-group leader (PGID == its PID)"
+        );
+        assert_ne!(
+            dash_pgid, parent_pgid,
+            "the spawned dash is in a DIFFERENT process group than the step process that spawned \
+             it - so tearing down the step command's process group does not reap the dash"
         );
     }
 }

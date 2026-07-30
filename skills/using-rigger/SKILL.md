@@ -19,6 +19,10 @@ Drive every run through the native /rigger workflow (visible in /workflows and o
 - Hand-driving `rigger step` in a shell. The driver owns stepping; a hand step races the driver and can double-spawn or wedge the frontier.
 - Hand-implementing a unit the loop parked. That leaves the loop still stuck for the next unit and forks the code from the log - fix the loop instead (see below).
 
+## Graph hygiene before a large run
+
+The context graph the loop reasons over is a persistent projection rigger maintains incrementally: each run's decisions and findings are folded in one event at a time as they are emitted, and superseded rows are retired in place rather than re-derived from scratch, so a step never re-folds the whole history. Across many runs graph.db therefore ACCUMULATES the dead-run rows and retired edges that no live query reads, so the file grows on disk without bound even though the live graph the loop grounds on does not. Keep it lean before a large run with `rigger reset --runs`, which prunes that dead-run accumulation and reclaims the disk it held; a very stale graph should be pruned this way first. This is PRE-RUN hygiene through a real command, NOT a hand-driven `rigger step`: hand-stepping races the driver (see the one-blessed-driver anti-patterns above), whereas `rigger reset --runs` is a one-shot prune you run BEFORE launching the loop.
+
 ## Spec shape
 
 One observable behavior per criterion; the atomic unit is one checkbox; put type shapes and structural detail in a non-criteria Notes section. The loop's spec-shape lint flags these shapes because a planner paraphrases or truncates them when told to copy a criterion verbatim, which then fails the baseline match the conductor reconciles proposals against: multi-behavior, sub-bullet-as-unit, over-long. Recommendation: one observable behavior per criterion; put type shapes and detail in a non-criteria Notes section.

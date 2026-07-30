@@ -34,15 +34,29 @@ pub fn index_events(idx: &SymbolIndex) -> Vec<Event> {
 /// keys each batch on its content, so an unchanged file is not re-ingested and a changed one
 /// re-extracts.
 pub fn project_batches(root: &str) -> Vec<(String, Vec<Event>)> {
+    project_batches_paced(root, crate::parallel::default_workers()).0
+}
+
+/// [`project_batches`] at a chosen parse width, also reporting how many worker threads engaged. The
+/// per-file lowering fans across up to `workers` threads via [`crate::parallel::map_ordered`], but
+/// the batches come back in the index's SORTED path order (index-preserving), so the emit is
+/// byte-identical to a serial walk's however the pool interleaved. `workers <= 1` runs the lowering
+/// inline - the serial walk a wider walk is compared against. Each file is lowered through the ONE
+/// [`extract_events`] authority (never a second parallel copy), and a file that extracts to nothing
+/// contributes no batch. Returns `(batches, workers_engaged)`.
+pub fn project_batches_paced(root: &str, workers: usize) -> (Vec<(String, Vec<Event>)>, usize) {
     let idx = crate::grounder::symbols::store::load(root)
         .unwrap_or_else(|| crate::grounder::symbols::build_index(root, None));
-    idx.files()
-        .iter()
-        .filter_map(|(path, fs)| {
+    let files: Vec<(&String, &FileSymbols)> = idx.files().iter().collect();
+    // Parse/lower per file in parallel; `map_ordered` returns the per-file results in the input
+    // (sorted-path) order, so the emit sequence is independent of which worker finished first.
+    let (per_file, workers_engaged) =
+        crate::parallel::map_ordered(&files, workers, |&(path, fs)| {
             let events = extract_events(path, fs);
             (!events.is_empty()).then(|| (path.clone(), events))
-        })
-        .collect()
+        });
+    // Drop the files that extracted to nothing, preserving the sorted order of the rest.
+    (per_file.into_iter().flatten().collect(), workers_engaged)
 }
 
 /// Emit one file's extracted symbols as events: one `CodeEntityExtracted` per definition, then

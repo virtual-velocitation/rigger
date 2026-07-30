@@ -7,6 +7,12 @@
 
 pub mod blocker;
 pub mod canary;
+/// Deterministic coupling-community detection (spec 53, the CODE lens): the offline pass that
+/// groups code entities and files by how densely they call and reference one another, regardless of
+/// directory, and records the result as `CommunityAssigned` events the always-compiled fold turns
+/// into `IN_COMMUNITY` membership edges. Always compiled and proven in both feature lanes.
+pub mod community;
+pub mod concepts;
 pub mod conductor;
 pub mod config;
 pub mod contextgraph;
@@ -25,6 +31,10 @@ pub mod failure;
 pub mod gate;
 pub mod grounder;
 pub mod hooks;
+/// Project-source ingest into the context graph (spec 45): the ONE walk-and-content-key
+/// authority both the live run and the standalone `rigger graph build` entry share, so the
+/// content key an event is deduped under can never drift between the two ingest entries.
+pub mod ingest;
 pub mod ledger;
 pub mod liveness;
 pub mod mcpserver;
@@ -36,9 +46,14 @@ pub mod metrics;
 pub mod ort_runtime;
 #[cfg(feature = "turbovec")]
 pub mod ort_teardown;
+pub mod parallel;
 pub mod playbooks;
 pub mod progress;
 pub mod reap;
+/// Machine-global instance registry (spec 50): credential-free discovery metadata so a single
+/// machine-level dash can find every local project's runs (and any configured shared store)
+/// without a coordination protocol. Discovery only - never a source of truth, never a credential.
+pub mod registry;
 pub mod run;
 pub mod safety;
 pub mod sidecar;

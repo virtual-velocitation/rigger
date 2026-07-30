@@ -19,7 +19,7 @@
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
     Projection, KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_FILE, REL_CONTAINS, REL_REFERENCES,
-    TYPE_CODE_ENTITY_EXTRACTED, TYPE_EDGE_INFERRED, TYPE_FILE_TOUCHED,
+    TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE, TYPE_EDGE_INFERRED,
 };
 use rigger::eventstore::Event;
 
@@ -155,13 +155,15 @@ fn replaying_the_code_events_does_not_double_the_entity_node_or_its_structural_e
 #[test]
 fn the_file_container_holds_kind_file_in_the_integrated_graph_either_fold_order() {
     // The gating scenario the isolation-only fold tests never exercise (they fold code events into
-    // an empty graph with no FileTouched): in a REAL run a source file is ALSO touched, governed,
-    // and cited, so the SAME rel-path node is folded as KIND_ARTIFACT by TYPE_FILE_TOUCHED and as
-    // KIND_FILE by the code events. Spec 29a's "one graph" makes that ONE node, so its kind must
-    // land on KIND_FILE - the code half's deliverable - no matter which event folds first. This
-    // pins the integrated identity in BOTH interleavings, so the file container node's kind is a
-    // pure function of the source, not of log interleaving.
-    let touch = |path: &str| serde_json::json!({ "path": path, "by": "impl" });
+    // an empty graph with no other reference to the file): in a REAL run a source file is ALSO the
+    // subject of a decision, so the SAME rel-path node is folded as KIND_ARTIFACT by a DecisionMade
+    // that GOVERNS it and as KIND_FILE by the code events. (GOVERNS is the surviving artifact-node
+    // vehicle: the spec 43 de-noise dropped the old TYPE_FILE_TOUCHED path that once folded the bare
+    // artifact node.) Spec 29a's "one graph" makes that ONE node, so its kind must land on KIND_FILE
+    // - the code half's deliverable - no matter which event folds first. This pins the integrated
+    // identity in BOTH interleavings, so the file container node's kind is a pure function of the
+    // source, not of log interleaving.
+    let governs = |path: &str| serde_json::json!({ "id": "d1", "summary": "x", "governs": [path], "supersedes": "" });
     let def = |path: &str| {
         serde_json::json!({
             "file": path, "name": "apply_damage", "kind": "function", "line": 7, "lang": "rust",
@@ -170,11 +172,11 @@ fn the_file_container_holds_kind_file_in_the_integrated_graph_either_fold_order(
     let reference =
         |path: &str| serde_json::json!({ "file": path, "name": "clamp", "lang": "rust" });
 
-    // Artifact-first: the file is TOUCHED (folds a KIND_ARTIFACT node) BEFORE its code is
-    // extracted - the steady state of every real run, where FileTouched precedes extraction. The
-    // code events must PROMOTE that shared node to KIND_FILE, not leave it KIND_ARTIFACT.
+    // Artifact-first: a decision GOVERNS the file (folds a KIND_ARTIFACT node) BEFORE its code is
+    // extracted. The code events must PROMOTE that shared node to KIND_FILE, not leave it
+    // KIND_ARTIFACT.
     let a = Projector::open(":memory:", "test").unwrap();
-    apply_json(&a, 1, TYPE_FILE_TOUCHED, touch("src/combat.rs"));
+    apply_json(&a, 1, TYPE_DECISION_MADE, governs("src/combat.rs"));
     apply_json(&a, 2, TYPE_CODE_ENTITY_EXTRACTED, def("src/combat.rs"));
     apply_json(&a, 3, TYPE_EDGE_INFERRED, reference("src/combat.rs"));
     let ga = a.subgraph(&["src/combat.rs".to_string()], 3).unwrap();
@@ -182,10 +184,10 @@ fn the_file_container_holds_kind_file_in_the_integrated_graph_either_fold_order(
         .nodes
         .iter()
         .find(|n| n.id == "src/combat.rs")
-        .expect("the touched-then-extracted file is one node in the integrated graph");
+        .expect("the governed-then-extracted file is one node in the integrated graph");
     assert_eq!(
         fa.kind, KIND_FILE,
-        "a file touched before its code is extracted must be PROMOTED to the file container \
+        "a file governed before its code is extracted must be PROMOTED to the file container \
          kind, not left as the generic artifact kind; got {:?}",
         fa
     );
@@ -198,35 +200,35 @@ fn the_file_container_holds_kind_file_in_the_integrated_graph_either_fold_order(
         ga.edges
     );
 
-    // Code-first: the code is extracted (folds a KIND_FILE node) BEFORE the file is touched. The
-    // later FileTouched must NOT DEMOTE the established file container back to KIND_ARTIFACT.
+    // Code-first: the code is extracted (folds a KIND_FILE node) BEFORE the decision governs it. The
+    // later DecisionMade must NOT DEMOTE the established file container back to KIND_ARTIFACT.
     let b = Projector::open(":memory:", "test").unwrap();
     apply_json(&b, 1, TYPE_CODE_ENTITY_EXTRACTED, def("src/render.rs"));
     apply_json(&b, 2, TYPE_EDGE_INFERRED, reference("src/render.rs"));
-    apply_json(&b, 3, TYPE_FILE_TOUCHED, touch("src/render.rs"));
+    apply_json(&b, 3, TYPE_DECISION_MADE, governs("src/render.rs"));
     let gb = b.subgraph(&["src/render.rs".to_string()], 3).unwrap();
     let fb = gb
         .nodes
         .iter()
         .find(|n| n.id == "src/render.rs")
-        .expect("the extracted-then-touched file is one node in the integrated graph");
+        .expect("the extracted-then-governed file is one node in the integrated graph");
     assert_eq!(
         fb.kind, KIND_FILE,
-        "a later touch of an already-extracted file must not demote the file container kind; \
-         got {:?}",
+        "a later governing decision on an already-extracted file must not demote the file \
+         container kind; got {:?}",
         fb
     );
 
-    // A path that is ONLY touched, never code-extracted, stays the generic artifact kind - the
+    // A path that is ONLY governed, never code-extracted, stays the generic artifact kind - the
     // promotion is targeted to files code was actually extracted from, not a blanket relabel.
     let c = Projector::open(":memory:", "test").unwrap();
-    apply_json(&c, 1, TYPE_FILE_TOUCHED, touch("docs/notes.md"));
+    apply_json(&c, 1, TYPE_DECISION_MADE, governs("docs/notes.md"));
     let gc = c.subgraph(&["docs/notes.md".to_string()], 1).unwrap();
     let fc = gc
         .nodes
         .iter()
         .find(|n| n.id == "docs/notes.md")
-        .expect("the touched-only file node exists");
+        .expect("the governed-only file node exists");
     assert_eq!(
         fc.kind, KIND_ARTIFACT,
         "a path with no code extracted from it stays the generic artifact kind; got {:?}",

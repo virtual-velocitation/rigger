@@ -2,23 +2,23 @@
 //! node and edge tables in a local SQLite file and answers Subgraph and Resolve.
 //! A single connection behind a mutex serializes the read-then-write of apply.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 
 use super::{
-    Edge, Error, Graph, Node, Projection, KIND_AGENT, KIND_ARCH_DECISION, KIND_ARTIFACT,
-    KIND_CODE_ENTITY, KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, KIND_FINDING, KIND_GATE,
-    KIND_HANDBOOK_RULE, KIND_LESSON, KIND_RATIONALE, KIND_UNIT, META_ACTOR, REL_ABOUT,
-    REL_ASSIGNED_TO, REL_BLOCKS, REL_CALLS, REL_CONSTRAINS, REL_CONTAINS, REL_DECIDED,
-    REL_DOC_REFERENCES, REL_EXPLAINS, REL_GATED_BY, REL_GOVERNS, REL_RAISED, REL_REFERENCES,
-    REL_SPECIFIES, REL_SUPERSEDES, REL_TOUCHES, TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED,
-    TYPE_ALIAS_DEFINED, TYPE_ALIAS_UNRESOLVED, TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE,
-    TYPE_DOC_CONCEPT_EXTRACTED, TYPE_DOC_LINK_EXTRACTED, TYPE_EDGE_INFERRED, TYPE_FILE_TOUCHED,
-    TYPE_GATE_VERDICT, TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED,
-    TYPE_UNIT_STARTED,
+    CallEdge, CallGraph, CallNode, Direction, Edge, Error, Graph, Node, Projection,
+    KIND_ARCH_DECISION, KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT,
+    KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, KIND_FINDING, KIND_HANDBOOK_RULE, KIND_LESSON,
+    KIND_RATIONALE, REL_ABOUT, REL_CALLS, REL_CONSTRAINS, REL_CONTAINS, REL_DOC_REFERENCES,
+    REL_EXPLAINS, REL_GOVERNS, REL_IN_COMMUNITY, REL_RAISED, REL_REALIZES, REL_REFERENCES,
+    REL_SPECIFIES, REL_SUPERSEDES, TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED,
+    TYPE_ALIAS_DEFINED, TYPE_ALIAS_UNRESOLVED, TYPE_CODE_ENTITY_EXTRACTED, TYPE_COMMUNITY_ASSIGNED,
+    TYPE_CONCEPT_DERIVED, TYPE_CONCEPT_REALIZED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED,
+    TYPE_DOC_LINK_EXTRACTED, TYPE_EDGE_INFERRED, TYPE_FILE_TOUCHED, TYPE_GATE_VERDICT,
+    TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
 };
 use crate::eventstore::{Event, Position};
 use crate::spawn::{SpawnResult, TYPE_SPAWN_RESULT};
@@ -82,10 +82,52 @@ impl Projector {
         conn.execute_batch(SCHEMA).map_err(be)?;
         migrate_project_scope(&conn, project)?;
         migrate_edge_tier(&conn)?;
+        migrate_indexes(&conn)?;
         Ok(Projector {
             conn: Mutex::new(conn),
             project: project.to_string(),
         })
+    }
+
+    /// The WHOLE live projection for this project: every node plus every currently-valid edge
+    /// (`valid_to IS NULL`), read DIRECTLY (spec 45, criterion 2 - the direct-projection read the
+    /// dedicated `/api/graph` provider consults). Unlike [`Projection::subgraph`] it takes no seed
+    /// and walks no reachability CTE - it returns the full graph, so a whole-graph overview and a
+    /// seeded neighborhood both reach any node the projection holds (the fix for the never-built
+    /// repo whose run-seed set is empty). Read isolation (spec 28, criterion 2): scoped to
+    /// `self.project` exactly like `subgraph`, so on a shared backend it returns only this project's
+    /// nodes and edges. Deterministic by construction (spec 45): the rows are ORDERed so the read
+    /// itself sorts, independent of any downstream fold. Read-only; a fresh/empty graph yields an
+    /// empty [`Graph`], never an error.
+    pub fn whole(&self) -> Result<Graph, Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut nstmt = conn
+            .prepare(
+                "SELECT id, kind, attrs FROM nodes
+                 WHERE project = ?1
+                 ORDER BY id",
+            )
+            .map_err(be)?;
+        let nodes: Vec<Node> = nstmt
+            .query_map(params![self.project], row_to_node)
+            .map_err(be)?
+            .collect::<Result<_, _>>()
+            .map_err(be)?;
+
+        let mut estmt = conn
+            .prepare(
+                "SELECT from_id, to_id, rel, valid_from, source, tier FROM edges
+                 WHERE valid_to IS NULL AND project = ?1
+                 ORDER BY from_id, to_id, rel, valid_from",
+            )
+            .map_err(be)?;
+        let edges: Vec<Edge> = estmt
+            .query_map(params![self.project], row_to_edge)
+            .map_err(be)?
+            .collect::<Result<_, _>>()
+            .map_err(be)?;
+
+        Ok(Graph { nodes, edges })
     }
 
     /// Prune the given nodes and every edge that touches them from the graph, returning the
@@ -173,6 +215,49 @@ impl Projector {
         })
     }
 
+    /// Compact the on-disk graph file after a [`prune`], returning the bytes reclaimed (spec 46,
+    /// criterion 3). [`prune`] drops superseded projection ROWS, but SQLite keeps the freed pages
+    /// inside `graph.db` on a freelist for reuse, so the file stays as LARGE on disk as before the
+    /// prune even though those rows are gone. `VACUUM` rebuilds the database without those free
+    /// pages, then a `TRUNCATE` checkpoint folds the WAL side-file back so the MAIN file actually
+    /// shrinks on disk immediately (not only at the next checkpoint), which is what a consumer
+    /// inspecting the file then sees.
+    ///
+    /// This reclaims DISK ONLY. `VACUUM` changes NO query result and gives NO query or fold
+    /// speedup: the row-count reduction that speeds reads is [`prune`]'s job, not `compact`'s. The
+    /// projection is a persistent, incrementally-maintained file - `apply` folds only unseen log
+    /// positions and `open` runs idempotent migrations without re-folding history - so a
+    /// freelist-bloated file is never itself a slower query or a slower open; the only thing
+    /// `compact` changes is the file's SIZE on disk.
+    ///
+    /// It is the DISK counterpart to `prune`'s ROW reclamation and the SAME graph-mutation
+    /// authority - never a second connection opened elsewhere. It is a pure projection-file
+    /// rebuild: it never touches the event log (the source of truth) and never changes a query
+    /// result, only the file size, so it is safe to run unconditionally after every prune. The
+    /// reclaimed byte count is the drop in `page_count * page_size` across the `VACUUM`; a
+    /// no-op-shaped compaction (nothing was freed) simply reclaims 0 bytes.
+    pub fn compact(&self) -> Result<u64, Error> {
+        let conn = self.conn.lock().unwrap();
+        let page_size: i64 = conn
+            .query_row("PRAGMA page_size", [], |r| r.get(0))
+            .map_err(be)?;
+        // `page_count` counts the freelist pages the prune's deletes freed, so this is the
+        // pre-VACUUM file size; after the VACUUM it is the compacted count.
+        let before: i64 = conn
+            .query_row("PRAGMA page_count", [], |r| r.get(0))
+            .map_err(be)?;
+        conn.execute_batch("VACUUM").map_err(be)?;
+        // Fold the WAL back into the main file so the shrink lands on disk now, not at some later
+        // checkpoint - the reported reclamation must match the file size on disk.
+        conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
+            .map_err(be)?;
+        let after: i64 = conn
+            .query_row("PRAGMA page_count", [], |r| r.get(0))
+            .map_err(be)?;
+        let reclaimed_pages = before.saturating_sub(after).max(0) as u64;
+        Ok(reclaimed_pages * page_size.max(0) as u64)
+    }
+
     /// Re-scope every node and edge tagged `from` to `to`, in ONE transaction, returning the
     /// number of NODES moved. This is the graph analog of [`Store::rename_stream_prefix`] for
     /// the spec-09 identity migration (spec 28 GC5 backward-compat): a single-project deployment
@@ -207,6 +292,297 @@ impl Projector {
             .map_err(be)?;
         tx.commit().map_err(be)?;
         Ok(moved)
+    }
+
+    /// The DOWN direction of [`Projection::calls`] (spec 52 criterion 1): the execution path out of
+    /// the seed. A breadth-first walk by LAYER over the live, caller-attributed `CALLS` edges
+    /// (spec 37), following callees transitively. It answers "what does this call" as a directed,
+    /// layered DAG - the thing the undirected [`subgraph`](Projection::subgraph) cannot, because a
+    /// naive forward walk stops at the first file boundary where a cross-file call points at a BARE
+    /// placeholder node (the definition lives in another file's namespace).
+    ///
+    /// - **Layers.** The seed is layer 0; each callee reached for the FIRST time takes its
+    ///   discoverer's layer + 1. BFS visits shallowest-first, so a node's recorded layer is its
+    ///   minimum hop distance from the seed, stable across polls.
+    /// - **Cross-file resolution.** A `CALLS` edge whose callee target is BARE (no `name` attr - the
+    ///   definition is in another file) is resolved by the pinned name-suffix expression over
+    ///   code-entity DEFINITION nodes: EXACTLY ONE definition auto-continues (the edge is redirected
+    ///   onto the real definition); MORE THAN ONE becomes a marked frontier ([`CallNode::frontier`]
+    ///   carrying the SORTED candidate ids) the walk does NOT descend - honest by construction, the
+    ///   human re-seeds on a chosen candidate; ZERO leaves the bare node a terminal leaf. A same-file
+    ///   callee already lands on its real definition, so it needs no resolution.
+    /// - **Cycles / dedup.** Reached nodes dedup (a node is expanded at most once), so recursion and
+    ///   mutual calls TERMINATE into a DAG instead of looping. An edge whose target layer is NOT
+    ///   deeper than its source is marked a BACK edge ([`CallEdge::back`]) rather than duplicated.
+    /// - **Tier floor.** An edge is followed only when its confidence tier is at or above
+    ///   `tier_floor`; the default (an empty / unrecognized value or [`TIER_INFERRED`]) is the
+    ///   resolvable floor that excludes [`TIER_AMBIGUOUS`], and passing [`TIER_AMBIGUOUS`] opts the
+    ///   unresolved tier in.
+    /// - **Determinism / isolation.** Neighbor and candidate reads are `ORDER BY` sorted and the
+    ///   result nodes/edges are sorted (by layer then id, and by endpoints), so the same graph and
+    ///   seed yield a byte-identical [`CallGraph`] across polls. Every read is scoped to
+    ///   `self.project` exactly like [`subgraph`](Projection::subgraph). A missing seed, or a seed
+    ///   with no calls, yields an empty view - never an error.
+    fn calls_down(
+        &self,
+        seed: &[String],
+        depth: i64,
+        tier_floor: &str,
+    ) -> Result<CallGraph, Error> {
+        let conn = self.conn.lock().unwrap();
+        let floor = tier_floor_rank(tier_floor);
+
+        // `layer_of` records each REACHED node's min hop distance from the seed (its final layer);
+        // it also serves as the visited set, so a node is expanded at most once - recursion and
+        // mutual calls dedup into a DAG. `frontier_of` holds, for a multi-candidate hop the walk
+        // did NOT descend, its sorted candidate ids.
+        let mut layer_of: BTreeMap<String, i64> = BTreeMap::new();
+        let mut frontier_of: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let mut call_edges: Vec<CallEdge> = Vec::new();
+        let mut queue: VecDeque<(String, i64)> = VecDeque::new();
+
+        // The seed sits at layer 0. Only ids that EXIST as nodes in this project are seeded (a
+        // missing seed yields an empty view); deduped and ordered so the walk is deterministic.
+        let mut seeds: Vec<String> = seed.to_vec();
+        seeds.sort();
+        seeds.dedup();
+        for s in seeds {
+            if layer_of.contains_key(&s) {
+                continue;
+            }
+            if node_row(&conn, &s, &self.project)?.is_some() {
+                layer_of.insert(s.clone(), 0);
+                queue.push_back((s, 0));
+            }
+        }
+
+        // Breadth-first by layer: dequeuing shallowest-first makes each node's recorded layer its
+        // MINIMUM hop distance, and bounds the walk to `depth` hops.
+        while let Some((cur, cur_layer)) = queue.pop_front() {
+            if cur_layer >= depth {
+                continue; // depth clamp: do not expand a node at the bound
+            }
+            for (raw_to, tier, valid_from, source) in calls_out(&conn, &cur, &self.project)? {
+                if tier_rank(&tier) < floor {
+                    continue; // below the confidence floor: not a followed edge
+                }
+                // Resolve the callee: a same-file definition lands directly; a bare cross-file
+                // placeholder resolves by its name-suffix to the definition(s) sharing the name.
+                let (target, frontier) = resolve_down_hop(&conn, &raw_to, &self.project)?;
+                let newly = !layer_of.contains_key(&target);
+                let target_layer = if newly {
+                    cur_layer + 1
+                } else {
+                    layer_of[&target]
+                };
+                if newly {
+                    layer_of.insert(target.clone(), target_layer);
+                    match &frontier {
+                        // A frontier is marked but NEVER descended - the human re-seeds on a chosen
+                        // candidate, so the walk never guesses which definition a name resolves to.
+                        Some(cands) => {
+                            frontier_of.insert(target.clone(), cands.clone());
+                        }
+                        None => queue.push_back((target.clone(), target_layer)),
+                    }
+                }
+                // A recursion / mutual-call edge points at a node no deeper than its source: mark it
+                // a BACK edge rather than following the target a second time (the DAG already holds
+                // it).
+                let back = target_layer <= cur_layer;
+                call_edges.push(CallEdge {
+                    edge: Edge {
+                        from: cur.clone(),
+                        to: target.clone(),
+                        rel: REL_CALLS.to_string(),
+                        valid_from,
+                        valid_to: None,
+                        source,
+                        tier,
+                    },
+                    back,
+                });
+            }
+        }
+
+        // Materialize the reached nodes (fetch kind/attrs) with their layer and any frontier
+        // marker, ordered by (layer, id); sort the edges by endpoints. Deterministic by
+        // construction, so the same graph and seed yield a byte-identical result across polls.
+        let mut nodes: Vec<CallNode> = Vec::with_capacity(layer_of.len());
+        for (id, layer) in &layer_of {
+            if let Some(node) = node_row(&conn, id, &self.project)? {
+                nodes.push(CallNode {
+                    node,
+                    layer: *layer,
+                    frontier: frontier_of.get(id).cloned(),
+                });
+            }
+        }
+        nodes.sort_by(|a, b| {
+            a.layer
+                .cmp(&b.layer)
+                .then_with(|| a.node.id.cmp(&b.node.id))
+        });
+        call_edges.sort_by(|a, b| {
+            a.edge
+                .from
+                .cmp(&b.edge.from)
+                .then_with(|| a.edge.to.cmp(&b.edge.to))
+                .then_with(|| a.edge.rel.cmp(&b.edge.rel))
+        });
+
+        Ok(CallGraph {
+            nodes,
+            edges: call_edges,
+            // The "referenced but not called" sidecar is an UP-direction concept (who imports/uses
+            // the seed without calling it); the DOWN execution path never carries it.
+            referenced_not_called: Vec::new(),
+        })
+    }
+
+    /// The UP direction of [`Projection::calls`] (spec 52 criterion 3): the CALL SITES into the seed.
+    /// A breadth-first walk by LAYER over the live, caller-attributed `CALLS` edges (spec 37), this
+    /// time following CALLERS transitively - the REVERSE of [`calls_down`](Projector::calls_down). It
+    /// answers "who calls this, transitively" as a directed, layered DAG, resolving THROUGH the bare
+    /// cross-file placeholder nodes a naive reverse walk would never connect (a cross-file caller's
+    /// call target lives in the CALLER's file namespace as a bare placeholder, not on the seed's
+    /// definition).
+    ///
+    /// - **Layers.** The seed is layer 0; each caller reached for the FIRST time takes its callee's
+    ///   layer + 1. BFS visits shallowest-first, so a caller's recorded layer is its minimum hop
+    ///   distance from the seed, stable across polls. The left-to-right renderer draws the seed on the
+    ///   RIGHT with callers flowing in from deeper layers.
+    /// - **Reverse cross-file resolution (the mirror of the DOWN policy).** A caller of the seed's
+    ///   name is found through the reverse name-match: an edge that literally targets `cur` is a
+    ///   SAME-FILE caller (its call already lands on the definition - always followed, unambiguous);
+    ///   an edge to a BARE placeholder whose entity-name equals `cur`'s name is a CROSS-FILE caller,
+    ///   attributed to `cur` only when that name has EXACTLY ONE definition (`cur` itself). When the
+    ///   name has MORE THAN ONE definition the caller is a marked FRONTIER ([`CallNode::frontier`]
+    ///   carrying the SORTED candidate definition ids) the walk does NOT ascend - honest by
+    ///   construction, since that caller might be calling a same-named sibling rather than the seed;
+    ///   the human re-seeds on a chosen candidate.
+    /// - **Cycles / dedup.** Reached nodes dedup (a node is expanded at most once), so recursion and
+    ///   mutual calls TERMINATE into a DAG. An edge whose discovered caller sits at a layer NOT deeper
+    ///   than the callee it was found from is marked a BACK edge ([`CallEdge::back`]) rather than
+    ///   ascended a second time.
+    /// - **Referenced-but-not-called.** Beyond the traversed caller DAG, the UP view carries a flat,
+    ///   NON-traversed [`CallGraph::referenced_not_called`] list: the FILE nodes that reference the
+    ///   seed's name at file level but call it from no function within them (top-level imports / uses)
+    ///   - the who-uses-this sites the caller DAG deliberately excludes.
+    /// - **Tier floor / determinism / isolation.** Identical to [`calls_down`](Projector::calls_down):
+    ///   an edge is followed only at/above `tier_floor`; neighbor and candidate reads are `ORDER BY`
+    ///   sorted and the result is sorted, so the same graph and seed yield a byte-identical
+    ///   [`CallGraph`] across polls; every read is scoped to `self.project`; a missing seed, or a seed
+    ///   nothing calls, yields an empty / seed-only view - never an error.
+    fn calls_up(&self, seed: &[String], depth: i64, tier_floor: &str) -> Result<CallGraph, Error> {
+        let conn = self.conn.lock().unwrap();
+        let floor = tier_floor_rank(tier_floor);
+
+        // `layer_of` records each REACHED node's min hop distance from the seed and doubles as the
+        // visited set (a node is expanded at most once - recursion and mutual calls dedup into a
+        // DAG); `frontier_of` holds, for a caller whose call to its callee was multi-candidate, the
+        // sorted candidate definition ids the walk did NOT ascend.
+        let mut layer_of: BTreeMap<String, i64> = BTreeMap::new();
+        let mut frontier_of: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let mut call_edges: Vec<CallEdge> = Vec::new();
+        let mut queue: VecDeque<(String, i64)> = VecDeque::new();
+
+        // The seed sits at layer 0. Only ids that EXIST as nodes in this project are seeded (a
+        // missing seed yields an empty view); deduped and ordered so the walk is deterministic.
+        let mut seeds: Vec<String> = seed.to_vec();
+        seeds.sort();
+        seeds.dedup();
+        for s in seeds {
+            if layer_of.contains_key(&s) {
+                continue;
+            }
+            if node_row(&conn, &s, &self.project)?.is_some() {
+                layer_of.insert(s.clone(), 0);
+                queue.push_back((s, 0));
+            }
+        }
+
+        // Breadth-first by layer over CALLERS: dequeuing shallowest-first makes each caller's
+        // recorded layer its MINIMUM hop distance, and bounds the walk to `depth` hops.
+        while let Some((cur, cur_layer)) = queue.pop_front() {
+            if cur_layer >= depth {
+                continue; // depth clamp: do not expand a node at the bound
+            }
+            for (caller, tier, valid_from, source, frontier) in
+                callers_of(&conn, &cur, &self.project)?
+            {
+                if tier_rank(&tier) < floor {
+                    continue; // below the confidence floor: not a followed edge
+                }
+                let newly = !layer_of.contains_key(&caller);
+                let caller_layer = if newly {
+                    cur_layer + 1
+                } else {
+                    layer_of[&caller]
+                };
+                if newly {
+                    layer_of.insert(caller.clone(), caller_layer);
+                    match &frontier {
+                        // A frontier caller is marked but NEVER ascended - it might call a same-named
+                        // sibling rather than the seed, so the walk never guesses; the human re-seeds
+                        // on a chosen candidate definition.
+                        Some(cands) => {
+                            frontier_of.insert(caller.clone(), cands.clone());
+                        }
+                        None => queue.push_back((caller.clone(), caller_layer)),
+                    }
+                }
+                // A recursion / mutual-call edge whose caller is no deeper than the callee it was
+                // found from: mark it BACK rather than ascending the caller a second time (the DAG
+                // already holds it). The edge keeps its real CALLS direction (caller -> callee).
+                let back = caller_layer <= cur_layer;
+                call_edges.push(CallEdge {
+                    edge: Edge {
+                        from: caller.clone(),
+                        to: cur.clone(),
+                        rel: REL_CALLS.to_string(),
+                        valid_from,
+                        valid_to: None,
+                        source,
+                        tier,
+                    },
+                    back,
+                });
+            }
+        }
+
+        // Materialize the reached nodes (fetch kind/attrs) with their layer and any frontier marker,
+        // ordered by (layer, id); sort the edges by endpoints. Deterministic by construction.
+        let mut nodes: Vec<CallNode> = Vec::with_capacity(layer_of.len());
+        for (id, layer) in &layer_of {
+            if let Some(node) = node_row(&conn, id, &self.project)? {
+                nodes.push(CallNode {
+                    node,
+                    layer: *layer,
+                    frontier: frontier_of.get(id).cloned(),
+                });
+            }
+        }
+        nodes.sort_by(|a, b| {
+            a.layer
+                .cmp(&b.layer)
+                .then_with(|| a.node.id.cmp(&b.node.id))
+        });
+        call_edges.sort_by(|a, b| {
+            a.edge
+                .from
+                .cmp(&b.edge.from)
+                .then_with(|| a.edge.to.cmp(&b.edge.to))
+                .then_with(|| a.edge.rel.cmp(&b.edge.rel))
+        });
+
+        let referenced_not_called = referenced_not_called(&conn, seed, &self.project)?;
+
+        Ok(CallGraph {
+            nodes,
+            edges: call_edges,
+            referenced_not_called,
+        })
     }
 }
 
@@ -272,6 +648,37 @@ fn migrate_edge_tier(conn: &Connection) -> Result<(), Error> {
     Ok(())
 }
 
+/// Additive read-path indexes (spec 45, unit 4). Two pure additions - no column, no data
+/// migration, no result change - that keep the whole-graph and directed-call reads sub-linear as a
+/// repository grows. Run AFTER [`migrate_project_scope`] and [`migrate_edge_tier`] so both indexes
+/// land on the FINAL table shapes: on a pre-spec-28 graph.db the scope migration DROPS and recreates
+/// `nodes`, which would strand a `nodes` index created any earlier, so this must fire last. Unlike
+/// the column migrations, `CREATE INDEX IF NOT EXISTS` is inherently idempotent, so it needs no
+/// [`column_exists`] guard - a fresh db and an existing one both gain both indexes on open, and a
+/// re-open is a no-op.
+///
+/// - `idx_edges_live_rel_from` is a PARTIAL index on `(rel, from_id) WHERE valid_to IS NULL`: the
+///   relationship-scoped forward scan a directed CALLS/REFERENCES traversal (spec 46) walks reads
+///   only LIVE edges, so restricting the index to `valid_to IS NULL` keeps it small and lets SQLite
+///   seek by `rel` then `from_id` instead of scanning every historical edge. A query MUST carry the
+///   exact `valid_to IS NULL` term for SQLite to use a partial index.
+/// - `idx_nodes_name_suffix` is an EXPRESSION index on `substr(id, instr(id, '::') + 2)` - the
+///   entity-name suffix of a `<file>::<name>` [`code_entity_id`]. This is the SAME expression the
+///   convergent-tier-upgrade fold already uses on the edge side (`substr(to_id, instr(to_id, '::') +
+///   2)`), pinned here on `nodes.id` so the coming cross-file name resolution resolves a bare name to
+///   its definition node via an index seek, not a full scan. SQLite uses an expression index only
+///   when the query's expression MATCHES the indexed one, so the resolution query must be phrased
+///   with this identical expression or it silently misses the index.
+fn migrate_indexes(conn: &Connection) -> Result<(), Error> {
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_edges_live_rel_from
+             ON edges(rel, from_id) WHERE valid_to IS NULL;
+         CREATE INDEX IF NOT EXISTS idx_nodes_name_suffix
+             ON nodes(substr(id, instr(id, '::') + 2));",
+    )
+    .map_err(be)
+}
+
 /// Whether `table` (a trusted schema-literal name, never caller input) has a column named
 /// `col`, via `PRAGMA table_info` - so [`migrate_project_scope`] fires exactly once and leaves
 /// a fresh or already-migrated db untouched.
@@ -311,6 +718,34 @@ impl Projection for Projector {
             .map_err(be)?;
         if inserted > 0 {
             fold(&tx, e, &self.project)?;
+        }
+        tx.commit().map_err(be)?;
+        Ok(())
+    }
+
+    /// Fold a whole batch of events in ONE transaction (spec 49's batched-fold cadence): the store's
+    /// transaction cost is paid ONCE for the whole file batch instead of once per event, which is the
+    /// load-bearing fix for a cold `graph build` whose measured throughput was transaction-cadence
+    /// bound. The result is IDENTICAL to folding each event with [`apply`](Projection::apply) in
+    /// order - same per-position idempotency guard (`applied`), same fold - so batching alters
+    /// CADENCE only, never the graph. Atomic: a fold error rolls the whole batch back (the events are
+    /// still durable in the log, and the sink folds best-effort), never a half-applied batch.
+    fn apply_batch(&self, events: &[Event]) -> Result<(), Error> {
+        if events.is_empty() {
+            return Ok(());
+        }
+        let mut guard = self.conn.lock().unwrap();
+        let tx = guard.transaction().map_err(be)?;
+        for e in events {
+            let inserted = tx
+                .execute(
+                    "INSERT OR IGNORE INTO applied (position) VALUES (?1)",
+                    [e.position as i64],
+                )
+                .map_err(be)?;
+            if inserted > 0 {
+                fold(&tx, e, &self.project)?;
+            }
         }
         tx.commit().map_err(be)?;
         Ok(())
@@ -383,6 +818,23 @@ impl Projection for Projector {
         Ok(Graph { nodes, edges })
     }
 
+    /// Directed `CALLS` traversal (spec 52): dispatch on direction. `Down` (callees - the execution
+    /// path) runs the forward layered walk; `Up` (callers - the call sites) runs the reverse layered
+    /// walk plus the referenced-but-not-called sidecar (spec 52 criterion 3). Read isolation and
+    /// clamping match [`subgraph`]: both walks stay scoped to `self.project` and bounded by `depth`.
+    fn calls(
+        &self,
+        seed: &[String],
+        direction: Direction,
+        depth: i64,
+        tier_floor: &str,
+    ) -> Result<CallGraph, Error> {
+        match direction {
+            Direction::Down => self.calls_down(seed, depth, tier_floor),
+            Direction::Up => self.calls_up(seed, depth, tier_floor),
+        }
+    }
+
     fn resolve(&self, mention: &str) -> Result<Option<String>, Error> {
         let conn = self.conn.lock().unwrap();
         let canonical: Option<String> = conn
@@ -449,20 +901,11 @@ fn fold(tx: &Transaction, e: &Event, project: &str) -> Result<(), Error> {
                 &[("summary", &d.summary)],
                 project,
             )?;
-            // DECIDED: the acting agent (from event metadata) made this decision.
-            if let Some(actor) = e.meta.get(META_ACTOR).filter(|a| !a.is_empty()) {
-                ensure_node(tx, actor, KIND_AGENT, &[], project)?;
-                add_edge(
-                    tx,
-                    actor,
-                    &d.id,
-                    REL_DECIDED,
-                    at,
-                    e.position,
-                    project,
-                    TIER_EXTRACTED,
-                )?;
-            }
+            // De-noise (spec 43): the graph models the TARGET PROJECT, not the loop's own
+            // machinery, so no fold produces a KIND_AGENT node or an agent-attribution edge.
+            // The acting persona (event actor) is NOT projected - the decision's CONTENT and its
+            // GOVERNS edges to the code it concerns are what the graph is about. The actor stays
+            // in the log for metrics and the run-tree, which read events, not this projection.
             for path in &d.governs {
                 let canonical = resolve_in_tx(tx, path);
                 ensure_node(tx, &canonical, KIND_ARTIFACT, &[], project)?;
@@ -501,94 +944,29 @@ fn fold(tx: &Transaction, e: &Event, project: &str) -> Result<(), Error> {
             }
         }
         TYPE_FILE_TOUCHED => {
-            let f: super::FileTouched = serde_json::from_slice(&e.data).map_err(be)?;
-            let path = resolve_in_tx(tx, &f.path);
-            ensure_node(tx, &path, KIND_ARTIFACT, &[], project)?;
-            if !f.by.is_empty() {
-                ensure_node(tx, &f.by, KIND_AGENT, &[], project)?;
-                add_edge(
-                    tx,
-                    &f.by,
-                    &path,
-                    REL_TOUCHES,
-                    at,
-                    e.position,
-                    project,
-                    TIER_EXTRACTED,
-                )?;
-            }
+            // De-noise (spec 43): `agent --TOUCHES--> file` is run machinery, not the target
+            // project's structure, so this arm is a graph no-op. The FileTouched event stays in
+            // the log (metrics and the run-tree read it); it just no longer projects a KIND_AGENT
+            // node or a REL_TOUCHES edge. The file's node, when it is one, is created by the code
+            // structure folds and by the decisions/findings that GOVERN / are ABOUT it.
         }
         TYPE_GATE_VERDICT => {
-            let g: super::GateVerdict = serde_json::from_slice(&e.data).map_err(be)?;
-            ensure_node(
-                tx,
-                &g.gate,
-                KIND_GATE,
-                &[("pass", &g.pass.to_string())],
-                project,
-            )?;
-            if !g.artifact.is_empty() {
-                let artifact = resolve_in_tx(tx, &g.artifact);
-                ensure_node(tx, &artifact, KIND_ARTIFACT, &[], project)?;
-                add_edge(
-                    tx,
-                    &artifact,
-                    &g.gate,
-                    REL_GATED_BY,
-                    at,
-                    e.position,
-                    project,
-                    TIER_EXTRACTED,
-                )?;
-            }
+            // De-noise (spec 43): a gate is run machinery, not the target project, so this arm is
+            // a graph no-op - no KIND_GATE node, no REL_GATED_BY edge. The GateVerdict event stays
+            // in the log, where metrics (per-gate remediation counts) and the run-tree read it.
         }
         TYPE_UNIT_STARTED => {
-            let u: super::UnitStarted = serde_json::from_slice(&e.data).map_err(be)?;
-            ensure_node(
-                tx,
-                &u.unit,
-                KIND_UNIT,
-                &[("criterion", &u.criterion), ("status", "started")],
-                project,
-            )?;
-            // ASSIGNED_TO: the unit is assigned to its agent.
-            if !u.agent.is_empty() {
-                ensure_node(tx, &u.agent, KIND_AGENT, &[], project)?;
-                add_edge(
-                    tx,
-                    &u.unit,
-                    &u.agent,
-                    REL_ASSIGNED_TO,
-                    at,
-                    e.position,
-                    project,
-                    TIER_EXTRACTED,
-                )?;
-            }
-            // BLOCKS: each dependency blocks this unit until it lands.
-            for need in &u.needs {
-                ensure_node(tx, need, KIND_UNIT, &[], project)?;
-                add_edge(
-                    tx,
-                    need,
-                    &u.unit,
-                    REL_BLOCKS,
-                    at,
-                    e.position,
-                    project,
-                    TIER_EXTRACTED,
-                )?;
-            }
+            // De-noise (spec 43): a unit is run machinery, not the target project, so this arm is
+            // a graph no-op - no KIND_UNIT node, no KIND_AGENT node, no REL_ASSIGNED_TO / REL_BLOCKS
+            // edge. The UnitStarted event stays in the log; the run-tree projects units/stages
+            // straight from events (its proper home), and metrics reads it for units-started.
         }
         TYPE_UNIT_INTEGRATED => {
             let u: super::UnitIntegrated = serde_json::from_slice(&e.data).map_err(be)?;
-            ensure_node(
-                tx,
-                &u.unit,
-                KIND_UNIT,
-                &[("commit", &u.commit), ("status", "integrated")],
-                project,
-            )?;
+            // De-noise (spec 43): no KIND_UNIT node is projected (a unit is run machinery). But the
+            // integrate still drives disposition-expiry below - the LIFECYCLE the fold owns, which
+            // reads the finding's `$.unit` string attribute (a token, never a KIND_UNIT node) and
+            // is therefore unaffected by dropping the unit node.
             // Disposition-expiry (spec 25, criterion 2 - the UPHELD-AND-ADDRESSED trigger's
             // INVALIDATE half): integrating a unit ADDRESSES every finding its review upheld,
             // so those findings are now resolved. The adjudicator's earlier SpawnResult marked
@@ -647,9 +1025,11 @@ fn fold(tx: &Transaction, e: &Event, project: &str) -> Result<(), Error> {
             // node carries the summary, the reviewer (`by`), and the unit; an ABOUT
             // edge ties it to each file it concerns (so a later reviewer grounded on
             // those files reaches it the same way it reaches the decisions that GOVERN
-            // them); and a RAISED edge records the reviewer's provenance (the
-            // DECIDED-style link). The actor metadata, when present, takes precedence
-            // over `by` as the provenance source so it matches the other folds.
+            // them). De-noise (spec 43): the reviewer's provenance is NOT projected as a
+            // KIND_AGENT node or a REL_RAISED edge - that agent attribution is run
+            // machinery, not the target project. The `by` reviewer stays as a node
+            // ATTRIBUTE on the finding (read by consumers off the content node), and the
+            // event's actor stays in the log for metrics and the run-tree.
             let f: super::ReviewFinding = serde_json::from_slice(&e.data).map_err(be)?;
             ensure_node(
                 tx,
@@ -658,25 +1038,6 @@ fn fold(tx: &Transaction, e: &Event, project: &str) -> Result<(), Error> {
                 &[("summary", &f.summary), ("by", &f.by), ("unit", &f.unit)],
                 project,
             )?;
-            let raiser = e
-                .meta
-                .get(META_ACTOR)
-                .filter(|a| !a.is_empty())
-                .map(String::as_str)
-                .unwrap_or(f.by.as_str());
-            if !raiser.is_empty() {
-                ensure_node(tx, raiser, KIND_AGENT, &[], project)?;
-                add_edge(
-                    tx,
-                    raiser,
-                    &f.id,
-                    REL_RAISED,
-                    at,
-                    e.position,
-                    project,
-                    TIER_EXTRACTED,
-                )?;
-            }
             for path in &f.about {
                 let canonical = resolve_in_tx(tx, path);
                 ensure_node(tx, &canonical, KIND_ARTIFACT, &[], project)?;
@@ -981,6 +1342,224 @@ fn fold(tx: &Transaction, e: &Event, project: &str) -> Result<(), Error> {
                 project,
             )?;
         }
+        TYPE_COMMUNITY_ASSIGNED => {
+            // Spec 53 criterion 3 (the EVENT-SOURCED FOLD): one membership the offline
+            // community-detection pass emitted. Fold it into a KIND_COMMUNITY super-node plus a live
+            // `<node> --IN_COMMUNITY--> <community>` edge, so the derived coupling grouping lives in
+            // the event-sourced projection (never computed at request time) and the `lens=code` view
+            // is a pure read over it. ALWAYS compiled: the light lane folds a community log with the
+            // detection pass absent, which is why the node kind, the relation, and this arm live
+            // outside the feature that gates detection - mirroring the 29a CodeEntityExtracted arm.
+            // Project-scoped like every arm (spec 28).
+            let c: super::CommunityAssigned = serde_json::from_slice(&e.data).map_err(be)?;
+            // The resolution grain is the f64's canonical string (the emit contract: the community
+            // id's grain segment equals this), so the `fresh` reset and the stored attr agree.
+            let res = format!("{}", c.resolution);
+            // Re-run supersession (rides `fresh` on the pass's FIRST event, mirroring
+            // supersede_file_edges): retire (set `valid_to` on, never delete) every LIVE
+            // IN_COMMUNITY edge of THIS resolution grain BEFORE folding the new pass, so a re-run at
+            // a resolution REPLACES that grain's assignment set rather than accreting - and leaves
+            // every OTHER grain's memberships live (scoped by the exact `community/<res>/` id prefix,
+            // a substr equality, never a LIKE/GLOB whose wildcards a value could carry). A no-op on
+            // the first-ever pass (no prior memberships). This is the fold-side supersession the
+            // grain criterion relies on; the criterion 3 recording discipline owns the mechanism.
+            // An EMPTY re-run never reaches here (an empty assignment records no events, so no `fresh`
+            // event fires): that is the deliberate KEEP-LAST-GOOD policy - the prior non-empty
+            // assignment stays live - documented on `community::events` (d-u53c2-empty-rerun-keep-last-good).
+            if c.fresh {
+                let prefix = format!("community/{res}/");
+                tx.execute(
+                    "UPDATE edges SET valid_to = ?1
+                     WHERE valid_to IS NULL AND project = ?4 AND rel = ?3
+                       AND substr(to_id, 1, length(?2)) = ?2",
+                    params![at, prefix, REL_IN_COMMUNITY, project],
+                )
+                .map_err(be)?;
+                // Node-side supersession (the completeness half): the edge retire above leaves every
+                // community super-node of THIS grain with no live member, so a re-run that DROPS or
+                // EMPTIES a community (a shrink, or the last member moving out of one) would strand
+                // its KIND_COMMUNITY node - a ghost/orphan bucket that `whole()` (the read the dash
+                // `/api/graph` provider consults) still surfaces with ZERO live members and a STALE
+                // label. Drop every now-memberless community node OF THIS GRAIN so no such ghost
+                // survives; the pass's own events immediately re-`ensure` exactly the communities its
+                // NEW assignment uses (the first member of each folds its node back), leaving only the
+                // dropped/emptied communities gone. Nodes carry no `valid_to`, so this is a DELETE
+                // (the same node-removal primitive `prune` uses), not an edge-style retire. Scoped by
+                // the SAME `community/<res>/` id prefix (a substr equality, never a wildcard) so it
+                // never touches another grain's nodes, and by KIND_COMMUNITY so only derived
+                // super-nodes are eligible; the `NOT EXISTS(live member)` guard makes the intent
+                // exact - a community is dropped only once its last live member is gone. A rebuild
+                // replays the same events in the same order and re-derives the identical node set.
+                tx.execute(
+                    "DELETE FROM nodes
+                      WHERE kind = ?2 AND project = ?3
+                        AND substr(id, 1, length(?1)) = ?1
+                        AND NOT EXISTS (
+                            SELECT 1 FROM edges e
+                             WHERE e.to_id = nodes.id AND e.rel = ?4
+                               AND e.valid_to IS NULL AND e.project = ?3
+                        )",
+                    params![prefix, KIND_COMMUNITY, project, REL_IN_COMMUNITY],
+                )
+                .map_err(be)?;
+            }
+            // The community super-node (first-writer-wins kind; its attrs are set below once the
+            // deterministic label is computed). A bare ensure keeps any attrs an earlier member of
+            // the same community already wrote until this fold overwrites them with the recomputed
+            // label over the now-larger live membership.
+            ensure_node(tx, &c.community, KIND_COMMUNITY, &[], project)?;
+            // The membership edge, a DERIVED grouping (TIER_INFERRED - one confidence step below the
+            // explicit structural edges detection runs over). Upsert-live like every fold (spec 40).
+            add_edge(
+                tx,
+                &c.node,
+                &c.community,
+                REL_IN_COMMUNITY,
+                at,
+                e.position,
+                project,
+                TIER_INFERRED,
+            )?;
+            // Deterministic label: the community node's label is its highest-degree LIVE member's
+            // label (its `name` attr, else its id), ties broken to the lexicographically-smallest
+            // label - the dominant-kind tie-break discipline the overview uses. Degree is the count
+            // of live structural edges (CALLS / REFERENCES / CONTAINS - the coupling layer detection
+            // runs over) incident to the member, project-scoped. Recomputed over the community's
+            // CURRENT live members on every fold, so after the pass's last member folds the label is
+            // correct over the whole membership; and because it reads only the folded graph (which,
+            // for a rebuild, is byte-identical at every step), a rebuild re-derives the SAME label -
+            // nothing waits on a model. `max`/`min` are order-independent, keeping the derivation a
+            // pure function of the log.
+            let label: Option<String> = tx
+                .query_row(
+                    "SELECT COALESCE(json_extract(n.attrs, '$.name'), n.id) AS lbl
+                       FROM edges m
+                       JOIN nodes n ON n.id = m.from_id AND n.project = ?2
+                      WHERE m.to_id = ?1 AND m.rel = ?3 AND m.valid_to IS NULL AND m.project = ?2
+                      ORDER BY (
+                          SELECT COUNT(*) FROM edges d
+                           WHERE d.project = ?2 AND d.valid_to IS NULL
+                             AND d.rel IN (?4, ?5, ?6)
+                             AND (d.from_id = m.from_id OR d.to_id = m.from_id)
+                      ) DESC, lbl ASC
+                      LIMIT 1",
+                    params![
+                        c.community,
+                        project,
+                        REL_IN_COMMUNITY,
+                        REL_CALLS,
+                        REL_REFERENCES,
+                        REL_CONTAINS
+                    ],
+                    |r| r.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(be)?;
+            // Write the community node's attrs in one deterministic blob (serde_json sorts keys, so
+            // the stored json is byte-stable across folds and rebuilds). All values are strings, the
+            // shape Node.attrs (a String map) and the direct-read providers expect.
+            let attrs = serde_json::json!({
+                "resolution": res,
+                "hash": c.hash,
+                "label": label.unwrap_or_default(),
+            })
+            .to_string();
+            tx.execute(
+                "UPDATE nodes SET attrs = ?1 WHERE id = ?2 AND project = ?3",
+                params![attrs, c.community, project],
+            )
+            .map_err(be)?;
+        }
+        TYPE_CONCEPT_DERIVED => {
+            // Spec 54 (the CONCEPTS lens): one concept the offline intent-derivation pass emitted.
+            // Fold it into a KIND_CONCEPT super-node carrying the pass-computed label, so the derived
+            // grouping lives in the event-sourced projection (never computed at request time) and the
+            // `lens=concepts` view is a pure read over it. ALWAYS compiled, mirroring the 53
+            // CommunityAssigned arm: the light lane folds a concept log with the derivation pass
+            // absent. Project-scoped like every arm (spec 28).
+            let c: super::ConceptDerived = serde_json::from_slice(&e.data).map_err(be)?;
+            // The resolution grain is the f64's canonical string (the emit contract: the concept id's
+            // grain segment equals this), so the `fresh` reset and the stored attr agree.
+            let res = format!("{}", c.resolution);
+            // Re-run supersession (rides `fresh` on the pass's FIRST event, mirroring the community
+            // arm): retire (set `valid_to` on, never delete) every LIVE REALIZES edge of THIS
+            // resolution grain, then drop the grain's now-orphan concept nodes, BEFORE folding the new
+            // pass - so a re-run at a resolution REPLACES that grain's grouping rather than accreting,
+            // and leaves every OTHER grain's memberships live (scoped by the exact `concept/<res>/` id
+            // prefix, a substr equality, never a LIKE/GLOB whose wildcards a value could carry). A
+            // no-op on the first-ever pass. The pass emits all its ConceptDerived events before any
+            // ConceptRealized, so this boundary fires once, at the head, before this pass's grouping
+            // folds. An EMPTY re-run never reaches here (an empty derivation records no events, so no
+            // `fresh` event fires): the KEEP-LAST-GOOD policy documented on `concepts::events`.
+            if c.fresh {
+                let prefix = format!("concept/{res}/");
+                tx.execute(
+                    "UPDATE edges SET valid_to = ?1
+                     WHERE valid_to IS NULL AND project = ?4 AND rel = ?3
+                       AND substr(to_id, 1, length(?2)) = ?2",
+                    params![at, prefix, REL_REALIZES, project],
+                )
+                .map_err(be)?;
+                // Node-side supersession (the completeness half, mirroring the community arm): the
+                // edge retire above leaves every concept super-node of THIS grain with no live member,
+                // so a re-run that DROPS or EMPTIES a concept would strand its KIND_CONCEPT node - a
+                // ghost bucket `whole()` still surfaces with ZERO live members and a STALE label. Drop
+                // every now-memberless concept node OF THIS GRAIN; this pass's own ConceptDerived
+                // events immediately re-`ensure` exactly the concepts its NEW grouping uses, leaving
+                // only the dropped/emptied concepts gone. Scoped by the SAME `concept/<res>/` id prefix
+                // and by KIND_CONCEPT, with a `NOT EXISTS(live member)` guard, so it never touches
+                // another grain's nodes. A rebuild replays the same events in the same order and
+                // re-derives the identical node set.
+                tx.execute(
+                    "DELETE FROM nodes
+                      WHERE kind = ?2 AND project = ?3
+                        AND substr(id, 1, length(?1)) = ?1
+                        AND NOT EXISTS (
+                            SELECT 1 FROM edges e
+                             WHERE e.to_id = nodes.id AND e.rel = ?4
+                               AND e.valid_to IS NULL AND e.project = ?3
+                        )",
+                    params![prefix, KIND_CONCEPT, project, REL_REALIZES],
+                )
+                .map_err(be)?;
+            }
+            // The concept super-node, carrying its pass-computed label + provenance attrs. Unlike the
+            // community arm (which recomputes a label from the folded members), the label is KNOWN
+            // upfront - it rides on the event - so a single `ensure_node` with the attrs suffices; the
+            // attrs blob is a sorted-key BTreeMap render (byte-stable across folds and rebuilds).
+            ensure_node(
+                tx,
+                &c.concept,
+                KIND_CONCEPT,
+                &[
+                    ("resolution", res.as_str()),
+                    ("hash", c.hash.as_str()),
+                    ("label", c.label.as_str()),
+                ],
+                project,
+            )?;
+        }
+        TYPE_CONCEPT_REALIZED => {
+            // Spec 54: one concept membership the offline intent-derivation pass emitted. Fold it into
+            // a live `<node> --REALIZES--> <concept>` edge, a DERIVED grouping (TIER_INFERRED - one
+            // confidence step below the explicit intent edges the derivation runs over). The concept
+            // super-node already exists (its ConceptDerived folded earlier in the pass); ensure it
+            // defensively (a bare ensure is idempotent and first-writer-wins keeps the Derived label
+            // attrs) so the edge never dangles if the events are replayed out of the pass's order.
+            // Upsert-live like every fold (spec 40). ALWAYS compiled, mirroring the community arm.
+            let r: super::ConceptRealized = serde_json::from_slice(&e.data).map_err(be)?;
+            ensure_node(tx, &r.concept, KIND_CONCEPT, &[], project)?;
+            add_edge(
+                tx,
+                &r.node,
+                &r.concept,
+                REL_REALIZES,
+                at,
+                e.position,
+                project,
+                TIER_INFERRED,
+            )?;
+        }
         _ => {}
     }
     Ok(())
@@ -1068,6 +1647,341 @@ fn resolve_in_tx(tx: &Transaction, mention: &str) -> String {
 /// same-file reference's target, so a reference to a locally-defined name lands on its definition.
 fn code_entity_id(file: &str, name: &str) -> String {
     format!("{file}::{name}")
+}
+
+/// The entity-name suffix of a `<file>::<name>` id (spec 52): everything after the FIRST `::`. A
+/// file path never contains `::`, so this is exactly the callee/definition name - the twin of the
+/// SQL `substr(id, instr(id, '::') + 2)` the name-suffix expression index is built on. An id with
+/// no `::` (never a code-entity id) is returned whole.
+fn name_suffix(id: &str) -> &str {
+    match id.find("::") {
+        Some(i) => &id[i + 2..],
+        None => id,
+    }
+}
+
+/// The confidence rank of an EDGE tier (spec 52 / 29a addendum 6.2): `extracted` (2, the precise
+/// seed) > `inferred` (1, a derived cross-file link) > `ambiguous` (0, grep-visible-only). A
+/// directed walk follows an edge only when its rank is at or above the floor.
+fn tier_rank(tier: &str) -> u8 {
+    match tier {
+        TIER_EXTRACTED => 2,
+        TIER_INFERRED => 1,
+        _ => 0,
+    }
+}
+
+/// The confidence rank of a requested tier FLOOR (spec 52). Unlike [`tier_rank`], an empty or
+/// unrecognized value defaults to the resolvable floor (rank 1 = `inferred`): a directed walk
+/// defaults to `extracted` + `inferred` and EXCLUDES the unresolved `ambiguous` tier, and a caller
+/// opts the ambiguous tier in per-request by passing [`TIER_AMBIGUOUS`].
+fn tier_floor_rank(tier: &str) -> u8 {
+    match tier {
+        TIER_EXTRACTED => 2,
+        TIER_AMBIGUOUS => 0,
+        _ => 1,
+    }
+}
+
+/// Fetch a node's `(id, kind, attrs)` scoped to `project`, or `None` when it does not exist there
+/// (spec 52). Read isolation matches [`Projection::subgraph`]: a same-id row in another project is
+/// never returned. Used to seed the directed walk on real nodes only and to materialize each
+/// reached node's kind/attrs for the result.
+fn node_row(conn: &Connection, id: &str, project: &str) -> Result<Option<Node>, Error> {
+    conn.query_row(
+        "SELECT id, kind, attrs FROM nodes WHERE id = ?1 AND project = ?2",
+        params![id, project],
+        row_to_node,
+    )
+    .optional()
+    .map_err(be)
+}
+
+/// Whether the node `id` carries a `name` attr in `project` (spec 52) - i.e. it is a code-entity
+/// DEFINITION, not a bare cross-file placeholder the reference fold created attr-less. This is how
+/// a directed hop tells a same-file callee (which already lands on its definition) from a bare
+/// cross-file callee (which must be resolved by name-suffix).
+fn node_has_name(conn: &Connection, id: &str, project: &str) -> Result<bool, Error> {
+    let found = conn
+        .query_row(
+            "SELECT 1 FROM nodes
+              WHERE id = ?1 AND project = ?2 AND json_extract(attrs, '$.name') IS NOT NULL",
+            params![id, project],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(be)?;
+    Ok(found.is_some())
+}
+
+/// The code-entity DEFINITION nodes whose entity-name equals `suffix`, in `project`, sorted by id
+/// (spec 52 - the conservative cross-file resolution's candidate set). Phrased with the PINNED
+/// `substr(id, instr(id, '::') + 2)` expression so it seeks the `idx_nodes_name_suffix` expression
+/// index rather than scanning; filtered to real definitions (a `name` attr present), so a bare
+/// placeholder sharing the name is never itself a candidate.
+fn definitions_with_suffix(
+    conn: &Connection,
+    suffix: &str,
+    project: &str,
+) -> Result<Vec<String>, Error> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id FROM nodes
+              WHERE substr(id, instr(id, '::') + 2) = ?1
+                AND kind = ?2
+                AND json_extract(attrs, '$.name') IS NOT NULL
+                AND project = ?3
+              ORDER BY id",
+        )
+        .map_err(be)?;
+    let ids = stmt
+        .query_map(params![suffix, KIND_CODE_ENTITY, project], |r| {
+            r.get::<_, String>(0)
+        })
+        .map_err(be)?
+        .collect::<Result<_, _>>()
+        .map_err(be)?;
+    Ok(ids)
+}
+
+/// The live, caller-attributed `CALLS` edges OUT of `from_id` in `project`, as
+/// `(to_id, tier, valid_from, source)`, sorted by callee (spec 52). Carries the exact
+/// `rel = CALLS AND valid_to IS NULL` shape the partial `idx_edges_live_rel_from` index serves, so
+/// each hop's forward scan seeks rather than scans. The ordering makes the walk deterministic.
+fn calls_out(
+    conn: &Connection,
+    from_id: &str,
+    project: &str,
+) -> Result<Vec<(String, String, i64, Position)>, Error> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT to_id, tier, valid_from, source FROM edges
+              WHERE from_id = ?1 AND rel = ?2 AND valid_to IS NULL AND project = ?3
+              ORDER BY to_id",
+        )
+        .map_err(be)?;
+    let rows = stmt
+        .query_map(params![from_id, REL_CALLS, project], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, i64>(3)? as Position,
+            ))
+        })
+        .map_err(be)?
+        .collect::<Result<_, _>>()
+        .map_err(be)?;
+    Ok(rows)
+}
+
+/// Resolve one DOWN hop's callee target (spec 52 criterion 1). Returns the id the edge should land
+/// on and, when the hop is a multi-candidate frontier, its SORTED candidate ids:
+///
+/// - a SAME-FILE callee already carries a `name` attr (it is its own definition) -> land on it,
+///   no frontier;
+/// - a BARE cross-file placeholder resolves by name-suffix over the DEFINITION nodes: EXACTLY ONE
+///   definition auto-continues (the edge is redirected onto the real definition, no frontier);
+///   MORE THAN ONE is a marked frontier (the placeholder id, carrying the sorted candidates) the
+///   caller does NOT descend; ZERO leaves the placeholder a terminal leaf (no descent target).
+fn resolve_down_hop(
+    conn: &Connection,
+    raw_to: &str,
+    project: &str,
+) -> Result<(String, Option<Vec<String>>), Error> {
+    if node_has_name(conn, raw_to, project)? {
+        return Ok((raw_to.to_string(), None));
+    }
+    let cands = definitions_with_suffix(conn, name_suffix(raw_to), project)?;
+    match cands.len() {
+        1 => Ok((cands.into_iter().next().unwrap(), None)),
+        0 => Ok((raw_to.to_string(), None)),
+        _ => Ok((raw_to.to_string(), Some(cands))),
+    }
+}
+
+/// The live, caller-attributed `CALLS` edges whose target is EXACTLY `to_id`, in `project`, as
+/// `(from_id, tier, valid_from, source)` sorted by caller (spec 52). These are the SAME-FILE callers
+/// of `to_id`: a same-file call already lands on the callee's definition, so its edge literally
+/// targets it - always an unambiguous caller. Carries the `rel = CALLS AND valid_to IS NULL` shape
+/// the partial `idx_edges_live_rel_from` index cannot serve on `to_id`, but the reverse read stays
+/// scoped and ordered so the UP walk is deterministic.
+fn callers_direct(
+    conn: &Connection,
+    to_id: &str,
+    project: &str,
+) -> Result<Vec<(String, String, i64, Position)>, Error> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT from_id, tier, valid_from, source FROM edges
+              WHERE to_id = ?1 AND rel = ?2 AND valid_to IS NULL AND project = ?3
+              ORDER BY from_id",
+        )
+        .map_err(be)?;
+    let rows = stmt
+        .query_map(params![to_id, REL_CALLS, project], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, i64>(3)? as Position,
+            ))
+        })
+        .map_err(be)?
+        .collect::<Result<_, _>>()
+        .map_err(be)?;
+    Ok(rows)
+}
+
+/// The live, caller-attributed `CALLS` edges into a BARE cross-file placeholder whose entity-name
+/// equals `name`, in `project`, as `(from_id, tier, valid_from, source)` sorted by caller (spec 52 -
+/// the reverse cross-file resolution). A cross-file call targets a bare placeholder in the CALLER's
+/// file namespace (no `name` attr - the definition lives elsewhere), so these are the callers that
+/// call `name` across a file boundary. Phrased with the PINNED `substr(id, instr(id,'::')+2)`
+/// name-suffix expression so it seeks the `idx_nodes_name_suffix` index; filtered to bare targets (a
+/// `name` attr absent) so an edge that lands directly on a real definition (a same-file caller, or a
+/// call to a DIFFERENT same-named definition) is never miscounted here - those are covered by
+/// [`callers_direct`] on the exact definition, keeping the two caller sets disjoint.
+fn callers_via_bare(
+    conn: &Connection,
+    name: &str,
+    project: &str,
+) -> Result<Vec<(String, String, i64, Position)>, Error> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT e.from_id, e.tier, e.valid_from, e.source FROM edges e
+               JOIN nodes n ON n.id = e.to_id AND n.project = e.project
+              WHERE e.rel = ?1 AND e.valid_to IS NULL AND e.project = ?2
+                AND substr(e.to_id, instr(e.to_id, '::') + 2) = ?3
+                AND json_extract(n.attrs, '$.name') IS NULL
+              ORDER BY e.from_id",
+        )
+        .map_err(be)?;
+    let rows = stmt
+        .query_map(params![REL_CALLS, project, name], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, i64>(3)? as Position,
+            ))
+        })
+        .map_err(be)?
+        .collect::<Result<_, _>>()
+        .map_err(be)?;
+    Ok(rows)
+}
+
+/// One resolved UP caller hop (spec 52 criterion 3): `(caller_id, tier, valid_from, source,
+/// frontier)`, where `frontier` is `Some(sorted candidate definition ids)` when the caller's
+/// cross-file call is multi-candidate (the walk must not ascend it) and `None` for an unambiguous
+/// caller. Named to keep the reverse-walk signatures out of clippy's `type_complexity`.
+type CallerHop = (String, String, i64, Position, Option<Vec<String>>);
+
+/// The callers of `cur` for one UP hop (spec 52 criterion 3), each a [`CallerHop`] whose `frontier`
+/// carries the SORTED candidate definition ids on a multi-candidate hop the walk must NOT ascend.
+/// Two disjoint sources, mirroring [`resolve_down_hop`] in reverse:
+///
+/// - **Same-file callers** ([`callers_direct`]) whose edge literally targets `cur` - always an
+///   unambiguous caller, no frontier.
+/// - **Cross-file callers** ([`callers_via_bare`]) that call `cur`'s NAME through a bare placeholder,
+///   attributed to `cur` only when that name resolves unambiguously: EXACTLY ONE definition (`cur`
+///   itself) -> a real caller, no frontier; MORE THAN ONE definition -> a marked frontier carrying
+///   the sorted candidate ids (the caller might be calling a same-named sibling, so the walk stops
+///   there). The cross-file source applies only when `cur` is a DEFINITION (carries a `name` attr):
+///   a bare node is not a definition, so a cross-file call to its name resolves to the real
+///   definitions elsewhere, never to it.
+fn callers_of(conn: &Connection, cur: &str, project: &str) -> Result<Vec<CallerHop>, Error> {
+    let mut out: Vec<CallerHop> = Vec::new();
+    for (from, tier, vf, src) in callers_direct(conn, cur, project)? {
+        out.push((from, tier, vf, src, None));
+    }
+    if node_has_name(conn, cur, project)? {
+        let name = name_suffix(cur);
+        let cands = definitions_with_suffix(conn, name, project)?;
+        // `cur` is a definition of its own name, so it is always among the candidates: exactly one
+        // means `cur` is the sole definition (unambiguous), more than one is a frontier.
+        let frontier = if cands.len() > 1 { Some(cands) } else { None };
+        for (from, tier, vf, src) in callers_via_bare(conn, name, project)? {
+            out.push((from, tier, vf, src, frontier.clone()));
+        }
+    }
+    Ok(out)
+}
+
+/// The FILE nodes that reference the seed's name(s) at file level but call them from no function
+/// within them (spec 52 criterion 3 - the UP direction's "referenced but not called" sidecar).
+/// Sorted by id, scoped to `project`.
+///
+/// A file references a name when it carries a live `REFERENCES` edge to a `<file>::<name>` target
+/// whose entity-name matches; it CALLS the name when some caller inside it (a `<file>::<caller>`
+/// source) carries a live `CALLS` edge to such a target. The result is the set difference -
+/// files that reference but never call - the imports / uses a who-uses-this reader wants beside the
+/// caller DAG. The seed names are the entity-name suffixes of the seed ids that exist as nodes; a
+/// seed that is not a node contributes nothing. Empty when the seed has no such name (a bare or
+/// missing seed).
+fn referenced_not_called(
+    conn: &Connection,
+    seed: &[String],
+    project: &str,
+) -> Result<Vec<Node>, Error> {
+    // The seed names to look up (entity-name suffixes of the seed ids that exist as nodes), deduped
+    // and sorted for a deterministic query.
+    let mut names: Vec<String> = Vec::new();
+    for s in seed {
+        if node_row(conn, s, project)?.is_some() {
+            names.push(name_suffix(s).to_string());
+        }
+    }
+    names.sort();
+    names.dedup();
+    if names.is_empty() {
+        return Ok(Vec::new());
+    }
+    let names_json = serde_json::to_string(&names).map_err(be)?;
+
+    // Files that reference any seed name at file level (a REFERENCES edge from the file container).
+    let mut ref_stmt = conn
+        .prepare(
+            "SELECT DISTINCT from_id FROM edges
+              WHERE rel = ?1 AND valid_to IS NULL AND project = ?2
+                AND substr(to_id, instr(to_id, '::') + 2) IN (SELECT value FROM json_each(?3))",
+        )
+        .map_err(be)?;
+    let referencing: Vec<String> = ref_stmt
+        .query_map(params![REL_REFERENCES, project, names_json], |r| r.get(0))
+        .map_err(be)?
+        .collect::<Result<_, _>>()
+        .map_err(be)?;
+
+    // Files that CALL any seed name from within (the file part of each caller-attributed CALLS edge).
+    let mut call_stmt = conn
+        .prepare(
+            "SELECT DISTINCT substr(from_id, 1, instr(from_id, '::') - 1) FROM edges
+              WHERE rel = ?1 AND valid_to IS NULL AND project = ?2
+                AND substr(to_id, instr(to_id, '::') + 2) IN (SELECT value FROM json_each(?3))",
+        )
+        .map_err(be)?;
+    let calling: BTreeSet<String> = call_stmt
+        .query_map(params![REL_CALLS, project, names_json], |r| r.get(0))
+        .map_err(be)?
+        .collect::<Result<_, _>>()
+        .map_err(be)?;
+
+    // Referenced but not called: materialize each such file as its node, sorted by id.
+    let mut files: Vec<String> = referencing
+        .into_iter()
+        .filter(|f| !calling.contains(f))
+        .collect();
+    files.sort();
+    files.dedup();
+    let mut nodes: Vec<Node> = Vec::with_capacity(files.len());
+    for f in files {
+        if let Some(node) = node_row(conn, &f, project)? {
+            nodes.push(node);
+        }
+    }
+    Ok(nodes)
 }
 
 /// The confidence tier for a REFERENCES edge (spec 29a criterion 2, addendum 6.2). Derived from how
@@ -1237,6 +2151,13 @@ fn add_edge(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Machinery kinds/rels the fold no longer projects (spec 43 de-noise): imported here because
+    // only these tests - which PROVE the machinery is gone - still name them. REL_RAISED stays in
+    // the module-level import (invalidate_finding_edges still references it).
+    use super::super::{
+        KIND_AGENT, KIND_GATE, KIND_UNIT, META_ACTOR, REL_ASSIGNED_TO, REL_BLOCKS, REL_DECIDED,
+        REL_GATED_BY, REL_TOUCHES,
+    };
 
     fn apply_decision(
         p: &Projector,
@@ -1374,22 +2295,117 @@ mod tests {
         assert_eq!(governs, 1, "a replayed event must not double the edge");
     }
 
-    /// Fold a `FileTouched` (`by` touches `path`) from its raw on-log JSON at `pos`, exactly the
-    /// event the loop records each time an agent writes a file. `secs` sets the event's
-    /// valid-from (when the touch happened) so a test can assert the collapsed edge keeps the
-    /// EARLIEST assertion time; `pos` becomes the edge's `source`, so the LATEST assertion wins.
-    fn apply_touch(p: &Projector, pos: u64, by: &str, path: &str, secs: u64) {
-        let payload = serde_json::json!({ "path": path, "by": by });
-        let mut e = Event::new(TYPE_FILE_TOUCHED, serde_json::to_vec(&payload).unwrap())
+    /// spec 49 criterion 2 (graph side): `apply_batch` folds a WHOLE batch in ONE call to the SAME
+    /// graph that folding each event with `apply` would produce, and stays idempotent per position -
+    /// so the batched-fold cadence changes only the transaction count, never the graph rows.
+    #[test]
+    fn apply_batch_folds_a_batch_equivalently_to_per_event_applies_and_is_idempotent() {
+        let decision = |pos: u64, id: &str, path: &str| -> Event {
+            let payload = serde_json::json!({ "id": id, "summary": "x", "governs": [path], "supersedes": "" });
+            let mut e = Event::new(TYPE_DECISION_MADE, serde_json::to_vec(&payload).unwrap());
+            e.position = pos;
+            e
+        };
+        let batch = vec![
+            decision(1, "d1", "a.rs"),
+            decision(2, "d2", "b.rs"),
+            decision(3, "d3", "c.rs"),
+        ];
+
+        // Reference: fold each event one at a time.
+        let per_event = Projector::open(":memory:", "test").unwrap();
+        for e in &batch {
+            per_event.apply(e).unwrap();
+        }
+
+        // Batched: fold the whole slice in ONE call.
+        let batched = Projector::open(":memory:", "test").unwrap();
+        batched.apply_batch(&batch).unwrap();
+
+        assert_eq!(
+            live_governs(&batched).len(),
+            3,
+            "apply_batch folds all three decisions' GOVERNS edges in one call"
+        );
+        assert_eq!(
+            live_governs(&batched),
+            live_governs(&per_event),
+            "apply_batch yields the SAME graph as folding each event with apply"
+        );
+
+        // Idempotent per position: re-applying the SAME batch at the same positions adds nothing.
+        batched.apply_batch(&batch).unwrap();
+        assert_eq!(
+            live_governs(&batched).len(),
+            3,
+            "re-applying a batch at the same positions must not double any edge"
+        );
+    }
+
+    /// spec 49 criterion 2 (graph side): `apply_batch` is ONE transaction - a fold error partway
+    /// through rolls the WHOLE batch back, so it is never half-applied. This distinguishes the
+    /// single-transaction override from a per-event loop (which would have committed the earlier
+    /// events before the later one failed), pinning the batched cadence itself, not just its result.
+    #[test]
+    fn apply_batch_is_atomic_a_mid_batch_fold_error_rolls_the_whole_batch_back() {
+        // A good decision, then a POISON event: a DecisionMade whose data is not valid JSON, so its
+        // fold errors AFTER the good event has already folded WITHIN the same transaction.
+        let good = {
+            let payload = serde_json::json!({
+                "id": "d1", "summary": "x", "governs": ["a.rs"], "supersedes": ""
+            });
+            let mut e = Event::new(TYPE_DECISION_MADE, serde_json::to_vec(&payload).unwrap());
+            e.position = 1;
+            e
+        };
+        let poison = {
+            let mut e = Event::new(TYPE_DECISION_MADE, b"{ not valid json".to_vec());
+            e.position = 2;
+            e
+        };
+
+        let p = Projector::open(":memory:", "test").unwrap();
+        assert!(
+            p.apply_batch(&[good.clone(), poison]).is_err(),
+            "a fold error must surface from apply_batch"
+        );
+        assert_eq!(
+            live_governs(&p).len(),
+            0,
+            "the good event folded before the poison must be ROLLED BACK with the failed batch"
+        );
+
+        // The `applied` guard was rolled back too, so a retry re-folds the good event cleanly.
+        p.apply(&good).unwrap();
+        assert_eq!(
+            live_governs(&p).len(),
+            1,
+            "after the rollback the good event still folds on its own (its position was not consumed)"
+        );
+    }
+
+    /// Fold a `DecisionMade` (`id` GOVERNS `path`) from its raw on-log JSON at `pos`, with the
+    /// event's valid-from set to `secs`. GOVERNS (decision -> file) is the SURVIVING content edge
+    /// the spec-40 upsert-live dedup is demonstrated over: the fold no longer projects the old
+    /// `agent --TOUCHES--> file` machinery edge (spec 43 de-noise), but `add_edge`'s collapse-a-
+    /// re-assertion-into-the-one-live-edge behaviour is edge-agnostic, so a re-asserted
+    /// decision->file GOVERNS edge exercises it exactly as a re-touch once did. `secs` sets the
+    /// event's valid-from so a test can assert the collapsed edge keeps the EARLIEST assertion
+    /// time; `pos` becomes the edge's `source`, so the LATEST assertion wins.
+    fn apply_governs_at(p: &Projector, pos: u64, id: &str, path: &str, secs: u64) {
+        let payload = serde_json::json!({
+            "id": id, "summary": "x", "governs": [path], "supersedes": "",
+        });
+        let mut e = Event::new(TYPE_DECISION_MADE, serde_json::to_vec(&payload).unwrap())
             .with_valid_from(UNIX_EPOCH + std::time::Duration::from_secs(secs));
         e.position = pos;
         p.apply(&e).unwrap();
     }
 
-    /// Every LIVE `TOUCHES` edge as `(from, to, source, valid_from)`, read straight from the
+    /// Every LIVE `GOVERNS` edge as `(from, to, source, valid_from)`, read straight from the
     /// table (not through the live `subgraph` filter), so a test can COUNT the rows and prove a
     /// re-assertion collapsed into the one existing live edge rather than accreting a row per fold.
-    fn live_touches(p: &Projector) -> Vec<(String, String, i64, i64)> {
+    fn live_governs(p: &Projector) -> Vec<(String, String, i64, i64)> {
         let conn = p.conn.lock().unwrap();
         let mut stmt = conn
             .prepare(
@@ -1397,7 +2413,7 @@ mod tests {
                  WHERE rel = ?1 AND valid_to IS NULL ORDER BY from_id, to_id",
             )
             .unwrap();
-        stmt.query_map(params![REL_TOUCHES], |r| {
+        stmt.query_map(params![REL_GOVERNS], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
@@ -1410,41 +2426,83 @@ mod tests {
         .unwrap()
     }
 
+    /// Every node as `(id, kind)`.
+    type NodeKinds = Vec<(String, String)>;
+    /// Every live edge as `(from, rel, to)`.
+    type LiveEdges = Vec<(String, String, String)>;
+
+    /// Every node's `(id, kind)` and every LIVE edge's `(from, rel, to)`, read straight from the
+    /// tables. Unlike a seeded `subgraph`, this sees the WHOLE graph, so a test can prove a node
+    /// kind or edge rel is ABSENT everywhere (a seeded neighborhood could only prove local absence).
+    fn all_nodes_edges(p: &Projector) -> (NodeKinds, LiveEdges) {
+        let conn = p.conn.lock().unwrap();
+        let nodes = {
+            let mut s = conn
+                .prepare("SELECT id, kind FROM nodes ORDER BY id")
+                .unwrap();
+            s.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap()
+        };
+        let edges = {
+            let mut s = conn
+                .prepare(
+                    "SELECT from_id, rel, to_id FROM edges
+                     WHERE valid_to IS NULL ORDER BY from_id, rel, to_id",
+                )
+                .unwrap();
+            s.query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+        };
+        (nodes, edges)
+    }
+
     #[test]
-    fn touches_folds_to_one_live_edge_with_latest_provenance() {
-        // Spec 40 criterion 1: every `FileTouched` re-asserts `agent --TOUCHES--> file`, and the
-        // old bare-insert fold appended a fresh live row per touch (measured: 45 identical live
-        // rows for a single relationship - 60% of the live graph redundant). The upsert-live fold
-        // collapses a re-assertion into the ONE existing live edge, bumping its provenance to the
-        // LATEST assertion (source) and keeping the EARLIEST valid_from - so N touches yield
-        // exactly ONE live edge, while a DIFFERENT agent or a DIFFERENT file still folds its own
-        // distinct live edge (dedup removes only EXACT (from, rel, to, tier) duplicates).
+    fn re_asserted_governs_folds_to_one_live_edge_with_latest_provenance() {
+        // Spec 40 criterion 1 (demonstrated over the surviving GOVERNS edge after the spec 43
+        // de-noise dropped the old TOUCHES machinery vehicle): every re-fold of a decision that
+        // GOVERNS a file re-asserts `decision --GOVERNS--> file`, and the old bare-insert fold
+        // appended a fresh live row per assertion (measured worst case: 45 identical live rows for
+        // a single relationship). The upsert-live fold collapses a re-assertion into the ONE
+        // existing live edge, bumping its provenance to the LATEST assertion (source) and keeping
+        // the EARLIEST valid_from - so N re-assertions yield exactly ONE live edge, while a
+        // DIFFERENT decision or a DIFFERENT file still folds its own distinct live edge (dedup
+        // removes only EXACT (from, rel, to, tier) duplicates).
         let p = Projector::open(":memory:", "test").unwrap();
 
-        // agent-a touches src/f.rs four times (positions 10..=13; valid_from 100..=400s).
-        apply_touch(&p, 10, "agent-a", "src/f.rs", 100);
-        apply_touch(&p, 11, "agent-a", "src/f.rs", 200);
-        apply_touch(&p, 12, "agent-a", "src/f.rs", 300);
-        apply_touch(&p, 13, "agent-a", "src/f.rs", 400);
+        // d1 governs src/f.rs four times (positions 10..=13; valid_from 100..=400s).
+        apply_governs_at(&p, 10, "d1", "src/f.rs", 100);
+        apply_governs_at(&p, 11, "d1", "src/f.rs", 200);
+        apply_governs_at(&p, 12, "d1", "src/f.rs", 300);
+        apply_governs_at(&p, 13, "d1", "src/f.rs", 400);
 
-        // A DIFFERENT agent and a DIFFERENT file each fold their own distinct live edge.
-        apply_touch(&p, 14, "agent-b", "src/f.rs", 500);
-        apply_touch(&p, 15, "agent-a", "src/g.rs", 600);
+        // A DIFFERENT decision and a DIFFERENT file each fold their own distinct live edge.
+        apply_governs_at(&p, 14, "d2", "src/f.rs", 500);
+        apply_governs_at(&p, 15, "d1", "src/g.rs", 600);
 
         let f = to_nanos(UNIX_EPOCH + std::time::Duration::from_secs(100));
         let g = to_nanos(UNIX_EPOCH + std::time::Duration::from_secs(600));
         let b = to_nanos(UNIX_EPOCH + std::time::Duration::from_secs(500));
         assert_eq!(
-            live_touches(&p),
+            live_governs(&p),
             vec![
-                // a->f collapsed from FOUR folds to ONE: source = latest (13), valid_from = earliest.
-                ("agent-a".to_string(), "src/f.rs".to_string(), 13, f),
-                // a different FILE is a distinct edge, untouched by the a->f dedup.
-                ("agent-a".to_string(), "src/g.rs".to_string(), 15, g),
-                // a different AGENT is a distinct edge, untouched by the a->f dedup.
-                ("agent-b".to_string(), "src/f.rs".to_string(), 14, b),
+                // d1->f collapsed from FOUR folds to ONE: source = latest (13), valid_from = earliest.
+                ("d1".to_string(), "src/f.rs".to_string(), 13, f),
+                // a different FILE is a distinct edge, untouched by the d1->f dedup.
+                ("d1".to_string(), "src/g.rs".to_string(), 15, g),
+                // a different DECISION is a distinct edge, untouched by the d1->f dedup.
+                ("d2".to_string(), "src/f.rs".to_string(), 14, b),
             ],
-            "N touches of one relationship collapse to ONE live edge (source=latest, valid_from=earliest); a different agent/file keeps its own distinct live edge"
+            "N re-assertions of one relationship collapse to ONE live edge (source=latest, valid_from=earliest); a different decision/file keeps its own distinct live edge"
         );
     }
 
@@ -1546,16 +2604,17 @@ mod tests {
         // their own single live edge. This owns the rebuild-dedup; it leans on (but does not own)
         // the upsert-live fold arm (criterion 1) or the live-only scoping (criterion 2).
 
-        // The canonical log the rebuild re-folds: agent-a --TOUCHES--> src/f.rs re-asserted 45
-        // times (the measured worst case - one `FileTouched` fold per touch), interleaved with two
-        // DISTINCT relationships (a different agent, a different file) that must each survive the
-        // rebuild as their own single live edge.
+        // The canonical log the rebuild re-folds: decision d1 --GOVERNS--> src/f.rs re-asserted 45
+        // times (the measured worst case - one fold per re-assertion), interleaved with two
+        // DISTINCT relationships (a different decision, a different file) that must each survive the
+        // rebuild as their own single live edge. GOVERNS is the surviving content edge the dedup is
+        // demonstrated over after the spec 43 de-noise dropped the old TOUCHES machinery vehicle.
         let fold_log = |p: &Projector| {
             for pos in 1..=45u64 {
-                apply_touch(p, pos, "agent-a", "src/f.rs", 100 * pos);
+                apply_governs_at(p, pos, "d1", "src/f.rs", 100 * pos);
             }
-            apply_touch(p, 46, "agent-b", "src/f.rs", 5000);
-            apply_touch(p, 47, "agent-a", "src/g.rs", 6000);
+            apply_governs_at(p, 46, "d2", "src/f.rs", 5000);
+            apply_governs_at(p, 47, "d1", "src/g.rs", 6000);
         };
 
         // PREMISE - reproduce the dirty on-disk graph the OLD bare-insert left behind. Each of the
@@ -1571,9 +2630,9 @@ mod tests {
                     "INSERT INTO edges (from_id, to_id, rel, valid_from, valid_to, source, project, tier)
                      VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7)",
                     params![
-                        "agent-a",
+                        "d1",
                         "src/f.rs",
-                        REL_TOUCHES,
+                        REL_GOVERNS,
                         to_nanos(UNIX_EPOCH + std::time::Duration::from_secs((100 * pos) as u64)),
                         pos,
                         "test",
@@ -1584,13 +2643,13 @@ mod tests {
             }
         }
         assert_eq!(
-            live_touches(&dirty).len(),
+            live_governs(&dirty).len(),
             45,
             "premise: the old bare-insert fold left K=45 identical live rows for one relationship - the duplicates a rebuild must collapse"
         );
 
         // REBUILD - discard the dirty graph and fold the SAME log from scratch into a FRESH, EMPTY
-        // projection. Every relationship collapses to exactly ONE live edge: the 45-fold agent-a
+        // projection. Every relationship collapses to exactly ONE live edge: the 45-fold d1
         // ->src/f.rs to a single row (source = latest position 45, valid_from = earliest), and the
         // two DISTINCT relationships each to their own single live edge.
         let rebuilt = Projector::open(":memory:", "test").unwrap();
@@ -1600,15 +2659,15 @@ mod tests {
         let g = to_nanos(UNIX_EPOCH + std::time::Duration::from_secs(6000));
         let b = to_nanos(UNIX_EPOCH + std::time::Duration::from_secs(5000));
         let want = vec![
-            // agent-a->src/f.rs: 45 duplicate live edges collapsed to ONE (source=45, valid_from=earliest).
-            ("agent-a".to_string(), "src/f.rs".to_string(), 45, f),
+            // d1->src/f.rs: 45 duplicate live edges collapsed to ONE (source=45, valid_from=earliest).
+            ("d1".to_string(), "src/f.rs".to_string(), 45, f),
             // a different FILE is a distinct relationship, its own single live edge.
-            ("agent-a".to_string(), "src/g.rs".to_string(), 47, g),
-            // a different AGENT is a distinct relationship, its own single live edge.
-            ("agent-b".to_string(), "src/f.rs".to_string(), 46, b),
+            ("d1".to_string(), "src/g.rs".to_string(), 47, g),
+            // a different DECISION is a distinct relationship, its own single live edge.
+            ("d2".to_string(), "src/f.rs".to_string(), 46, b),
         ];
         assert_eq!(
-            live_touches(&rebuilt),
+            live_governs(&rebuilt),
             want,
             "a rebuild collapses the 45 duplicate live edges to exactly ONE per (from, rel, to, tier); distinct relationships each survive as their own single live edge"
         );
@@ -1618,7 +2677,7 @@ mod tests {
         let rebuilt_again = Projector::open(":memory:", "test").unwrap();
         fold_log(&rebuilt_again);
         assert_eq!(
-            live_touches(&rebuilt_again),
+            live_governs(&rebuilt_again),
             want,
             "rebuilding the same log from scratch re-derives the identical deduped live edges"
         );
@@ -1649,6 +2708,575 @@ mod tests {
         let mut e = Event::new(TYPE_EDGE_INFERRED, serde_json::to_vec(&payload).unwrap());
         e.position = pos;
         p.apply(&e).unwrap();
+    }
+
+    /// A caller-attributed reference (spec 37): folds a `<file>::<caller> --CALLS--> <file>::<name>`
+    /// edge alongside the file-level REFERENCES edge, so the community fixture builds real
+    /// structural coupling the deterministic label is computed over.
+    fn apply_ref_caller(p: &Projector, pos: u64, file: &str, name: &str, caller: &str) {
+        let payload =
+            serde_json::json!({ "file": file, "name": name, "lang": "rust", "caller": caller });
+        let mut e = Event::new(TYPE_EDGE_INFERRED, serde_json::to_vec(&payload).unwrap());
+        e.position = pos;
+        p.apply(&e).unwrap();
+    }
+
+    /// Construct and fold one `CommunityAssigned` event by hand (no detection-pass dependency), so
+    /// the fold is proven in BOTH feature lanes exactly like the code-ingest fold tests.
+    fn apply_community(
+        p: &Projector,
+        pos: u64,
+        node: &str,
+        community: &str,
+        resolution: f64,
+        hash: &str,
+        fresh: bool,
+    ) {
+        let payload = serde_json::json!({
+            "node": node, "community": community,
+            "resolution": resolution, "hash": hash, "fresh": fresh,
+        });
+        let mut e = Event::new(
+            TYPE_COMMUNITY_ASSIGNED,
+            serde_json::to_vec(&payload).unwrap(),
+        );
+        e.position = pos;
+        p.apply(&e).unwrap();
+    }
+
+    /// Fold the canonical spec-53 community fixture: a coupling graph whose `apply_damage` hub is
+    /// the clear highest-degree member, then a resolution-1.0 detection pass grouping members ACROSS
+    /// directory lines (`src/combat`, `src/net`) into `community/1/0` and an equal-degree pair into
+    /// `community/1/1` (its label decided by the lexicographic tie-break). Shared by the fold and
+    /// the rebuild tests so they re-derive from the SAME log.
+    fn seed_community_fixture(p: &Projector) {
+        // Coupling graph (definitions).
+        apply_code_entity(
+            p,
+            1,
+            "src/combat/hit.rs",
+            "apply_damage",
+            "function",
+            10,
+            "rust",
+        );
+        apply_code_entity(p, 2, "src/combat/hit.rs", "clamp", "function", 30, "rust");
+        apply_code_entity(p, 3, "src/net/socket.rs", "send", "function", 5, "rust");
+        apply_code_entity(p, 4, "src/util.rs", "alpha", "function", 1, "rust");
+        apply_code_entity(p, 5, "src/util.rs", "zeta", "function", 2, "rust");
+        // `apply_damage` calls three symbols, making it the highest-degree hub (1 CONTAINS + 3
+        // CALLS = degree 4); `clamp` reaches degree 3 (CONTAINS + the CALLS + the REFERENCES twin);
+        // `send` stays at degree 1 (its CONTAINS only).
+        apply_ref_caller(p, 6, "src/combat/hit.rs", "clamp", "apply_damage");
+        apply_ref_caller(p, 7, "src/combat/hit.rs", "min", "apply_damage");
+        apply_ref_caller(p, 8, "src/combat/hit.rs", "max", "apply_damage");
+        // Detection pass at resolution 1.0. The FIRST event carries `fresh` (the pass boundary).
+        apply_community(
+            p,
+            9,
+            "src/combat/hit.rs::apply_damage",
+            "community/1/0",
+            1.0,
+            "h-alpha",
+            true,
+        );
+        apply_community(
+            p,
+            10,
+            "src/combat/hit.rs::clamp",
+            "community/1/0",
+            1.0,
+            "h-alpha",
+            false,
+        );
+        apply_community(
+            p,
+            11,
+            "src/net/socket.rs::send",
+            "community/1/0",
+            1.0,
+            "h-alpha",
+            false,
+        );
+        apply_community(
+            p,
+            12,
+            "src/util.rs::alpha",
+            "community/1/1",
+            1.0,
+            "h-alpha",
+            false,
+        );
+        apply_community(
+            p,
+            13,
+            "src/util.rs::zeta",
+            "community/1/1",
+            1.0,
+            "h-alpha",
+            false,
+        );
+    }
+
+    /// A deterministic snapshot of the whole community layer: every KIND_COMMUNITY node (id, kind,
+    /// attrs json) and every LIVE IN_COMMUNITY edge (from, to), each sorted. Two folds of the same
+    /// log must produce byte-identical snapshots (the rebuildable-projection invariant).
+    fn community_snapshot(p: &Projector) -> Vec<String> {
+        let conn = p.conn.lock().unwrap();
+        let mut rows: Vec<String> = Vec::new();
+        let mut nstmt = conn
+            .prepare(
+                "SELECT id, kind, COALESCE(attrs, '') FROM nodes
+                 WHERE kind = ?1 AND project = ?2 ORDER BY id",
+            )
+            .unwrap();
+        rows.extend(
+            nstmt
+                .query_map(params![KIND_COMMUNITY, p.project], |r| {
+                    Ok(format!(
+                        "node\t{}\t{}\t{}",
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?
+                    ))
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap(),
+        );
+        let mut estmt = conn
+            .prepare(
+                "SELECT from_id, to_id FROM edges
+                 WHERE rel = ?1 AND valid_to IS NULL AND project = ?2
+                 ORDER BY from_id, to_id",
+            )
+            .unwrap();
+        rows.extend(
+            estmt
+                .query_map(params![REL_IN_COMMUNITY, p.project], |r| {
+                    Ok(format!(
+                        "edge\t{}\t{}",
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?
+                    ))
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap(),
+        );
+        rows
+    }
+
+    #[test]
+    fn community_assigned_events_fold_to_a_community_node_with_live_membership_and_a_deterministic_label(
+    ) {
+        // Spec 53 criterion 3 (the EVENT-SOURCED FOLD): each CommunityAssigned event folds into a
+        // live `<member> --IN_COMMUNITY--> <community>` edge PLUS the KIND_COMMUNITY super-node,
+        // whose deterministic LABEL is its highest-degree member's label (ties broken to the
+        // lexicographically-smallest). Built by hand (no detection dependency) so the fold is proven
+        // in BOTH feature lanes. Owns the recording discipline; it does NOT own detection
+        // (criterion 1) - the assignments are given.
+        let p = Projector::open(":memory:", "test").unwrap();
+        seed_community_fixture(&p);
+
+        let g = p.whole().unwrap();
+
+        // The community super-node folded, tagged KIND_COMMUNITY, carrying its resolution grain, the
+        // pass hash, and a deterministic label - its highest-degree member (`apply_damage`, degree
+        // 4), grouped ACROSS the src/combat and src/net directory lines.
+        let comm = g
+            .nodes
+            .iter()
+            .find(|n| n.id == "community/1/0")
+            .expect("community super-node folded from CommunityAssigned");
+        assert_eq!(comm.kind, KIND_COMMUNITY);
+        assert_eq!(comm.attrs.get("resolution").map(String::as_str), Some("1"));
+        assert_eq!(comm.attrs.get("hash").map(String::as_str), Some("h-alpha"));
+        assert_eq!(
+            comm.attrs.get("label").map(String::as_str),
+            Some("apply_damage"),
+            "the community label is its highest-degree member's label; got {:?}",
+            comm.attrs
+        );
+
+        // Every member carries a LIVE membership edge to its community - across directories.
+        for m in [
+            "src/combat/hit.rs::apply_damage",
+            "src/combat/hit.rs::clamp",
+            "src/net/socket.rs::send",
+        ] {
+            assert!(
+                g.edges.iter().any(|e| e.rel == REL_IN_COMMUNITY
+                    && e.from == m
+                    && e.to == "community/1/0"
+                    && e.valid_to.is_none()),
+                "a live IN_COMMUNITY edge ties member {m} to community/1/0; got {:?}",
+                g.edges
+            );
+        }
+
+        // A member with NO structural degree beyond its own container still folds; and the
+        // equal-degree pair's community label resolves by the lexicographic tie-break.
+        let comm1 = g
+            .nodes
+            .iter()
+            .find(|n| n.id == "community/1/1")
+            .expect("second community super-node folded");
+        assert_eq!(
+            comm1.attrs.get("label").map(String::as_str),
+            Some("alpha"),
+            "equal-degree members break the label tie to the lexicographically-smallest label; got {:?}",
+            comm1.attrs
+        );
+    }
+
+    #[test]
+    fn a_rebuild_reproduces_byte_identical_community_rows_from_the_log() {
+        // Spec 53 criterion 3: the community layer is a rebuildable projection of the log. Folding
+        // the SAME log into a FRESH projection re-derives byte-identical community nodes (id, kind,
+        // AND attrs - including the computed label) and live membership edges, so a full rebuild
+        // reproduces the derivation without re-running detection.
+        let p1 = Projector::open(":memory:", "test").unwrap();
+        seed_community_fixture(&p1);
+        let p2 = Projector::open(":memory:", "test").unwrap();
+        seed_community_fixture(&p2);
+
+        let s1 = community_snapshot(&p1);
+        let s2 = community_snapshot(&p2);
+        assert!(
+            s1.iter().any(|r| r.starts_with("node\t"))
+                && s1.iter().any(|r| r.starts_with("edge\t")),
+            "precondition: the fixture folded community nodes and membership edges; got {s1:?}"
+        );
+        assert_eq!(
+            s1, s2,
+            "a rebuild from the same log re-derives byte-identical community rows"
+        );
+    }
+
+    #[test]
+    fn a_fresh_rerun_supersedes_only_its_own_resolution_grain() {
+        // Spec 53 criterion 3 (the fold's supersession mechanism; criterion 2 owns the grain
+        // semantics): a re-run's `fresh` boundary retires ONLY the re-run resolution's prior
+        // memberships, leaving a DIFFERENT resolution grain's memberships live and coexisting.
+        let p = Projector::open(":memory:", "test").unwrap();
+        apply_code_entity(&p, 1, "a.rs", "x", "function", 1, "rust");
+        apply_code_entity(&p, 2, "b.rs", "y", "function", 1, "rust");
+        // Resolution-1.0 pass: x, y in community/1/0.
+        apply_community(&p, 3, "a.rs::x", "community/1/0", 1.0, "h1", true);
+        apply_community(&p, 4, "b.rs::y", "community/1/0", 1.0, "h1", false);
+        // Resolution-2.0 pass (a DIFFERENT grain): x in community/2/0.
+        apply_community(&p, 5, "a.rs::x", "community/2/0", 2.0, "h2", true);
+        // Re-run resolution 1.0 (fresh): x moves to community/1/1.
+        apply_community(&p, 6, "a.rs::x", "community/1/1", 1.0, "h1b", true);
+        apply_community(&p, 7, "b.rs::y", "community/1/1", 1.0, "h1b", false);
+
+        let x_memberships: Vec<(String, Option<i64>)> = edges_from(&p, "a.rs::x")
+            .into_iter()
+            .filter(|(_to, rel, _vt)| rel == REL_IN_COMMUNITY)
+            .map(|(to, _rel, vt)| (to, vt))
+            .collect();
+
+        // The prior resolution-1.0 membership is superseded (valid_to set), never deleted.
+        assert!(
+            x_memberships
+                .iter()
+                .any(|(to, vt)| to == "community/1/0" && vt.is_some()),
+            "the re-run supersedes x's prior community/1/0 membership (valid_to set); got {x_memberships:?}"
+        );
+        // Exactly ONE live resolution-1.0 membership remains: the new community/1/1 assignment.
+        let live_res1: Vec<&String> = x_memberships
+            .iter()
+            .filter(|(to, vt)| to.starts_with("community/1/") && vt.is_none())
+            .map(|(to, _)| to)
+            .collect();
+        assert_eq!(
+            live_res1,
+            vec![&"community/1/1".to_string()],
+            "the re-run leaves exactly one live resolution-1.0 membership, the new grain; got {x_memberships:?}"
+        );
+        // The resolution-2.0 grain is UNTOUCHED by the resolution-1.0 re-run - it stays live.
+        assert!(
+            x_memberships
+                .iter()
+                .any(|(to, vt)| to == "community/2/0" && vt.is_none()),
+            "the resolution-2.0 membership stays live across a resolution-1.0 re-run; got {x_memberships:?}"
+        );
+    }
+
+    #[test]
+    fn a_concept_rerun_supersedes_only_its_grain_through_the_real_derivation_pipeline() {
+        // Spec 54 RE-RUN SUPERSESSION (this unit OWNS the concept lifecycle claim; the community
+        // sibling `a_fresh_rerun_supersedes_only_its_own_resolution_grain` proves the mirror over
+        // hand-built CommunityAssigned events). Unlike that sibling - and unlike the c1 fold-periphery
+        // tests that hand-build events - this drives the REAL concepts pipeline end to end
+        // (`intent_layer` -> `derive` -> `events` -> fold) over a CHANGED intent layer at the SAME
+        // resolution, so the concept arm's edge-retire is LOAD-BEARING: a member MOVES from
+        // concept/1/1 to concept/1/0, and only the retire keeps it from ending with two live r=1
+        // memberships.
+        //
+        // Mutation teeth, TWO independent mechanisms (this unit's diff is test-only; production stays
+        // byte-identical):
+        //   (a) RETIRE FIRES (d-u54c4-teeth-mutation-proven): neutralize the concept arm's
+        //       `if c.fresh { UPDATE edges SET valid_to ... }` (e.g. its WHERE -> `WHERE 1=0`) and this
+        //       reddens for the RIGHT reason - the mover then shows TWO live r=1 memberships
+        //       [concept/1/0, concept/1/1] and no retired concept/1/1 row.
+        //   (b) PREFIX BOUNDARY (d-u54c4-rerun2-adjacent-prefix-isolation): the retire scopes by
+        //       `format!("concept/{res}/")` at sqlite.rs:1495, and the TRAILING SLASH is the sole guard
+        //       that an r=1 re-run (prefix "concept/1/") does not bleed into ADJACENT-numeric grains
+        //       (concept/10/*, concept/11/*). Drop that slash (prefix -> "concept/1") and
+        //       `substr("concept/10/0",1,9) == "concept/1"` matches, so the re-run retires the r=10/r=11
+        //       grains' edges AND drops their now-memberless concept nodes - reddening the byte-identical
+        //       isolation assertions below. This is the ISOLATION half of the d54-c4 charter this unit
+        //       OWNS ("leaving other resolutions untouched"); it mirrors the community sibling
+        //       `a_firing_rerun_supersedes_only_its_own_resolution_grain` (community/1/ vs community/10/).
+        //       A NON-adjacent control (r=2, concept/2/*) alone is VACUOUS here: "concept/1" never
+        //       prefix-matches "concept/2" whether or not the slash is present.
+        use crate::concepts::{derive, events, intent_layer, Derivation};
+
+        // Two DISJOINT intent regions, each a design doc SPECIFYING its own files. Region A's doc has
+        // the lexicographically-smallest id, so it is `concept/1/0`; region B's doc is `concept/1/1`
+        // (groups are numbered by ascending representative). `b2_in_a` rewires ONE file (`src/b2.rs`)
+        // from region B's doc onto region A's doc - how the mover crosses grains at the SAME
+        // resolution: a genuine re-derivation, not a relabelled event.
+        fn two_region_intent(b2_in_a: bool) -> Graph {
+            let doc = |id: &str, title: &str| {
+                let mut attrs = BTreeMap::new();
+                attrs.insert("title".to_string(), title.to_string());
+                Node {
+                    id: id.to_string(),
+                    kind: KIND_DESIGN_DOC.to_string(),
+                    attrs,
+                }
+            };
+            let file = |id: &str| Node {
+                id: id.to_string(),
+                kind: KIND_FILE.to_string(),
+                attrs: BTreeMap::new(),
+            };
+            let spec = |from: &str, to: &str| Edge {
+                from: from.to_string(),
+                to: to.to_string(),
+                rel: REL_SPECIFIES.to_string(),
+                valid_from: 0,
+                valid_to: None,
+                source: 0,
+                tier: TIER_EXTRACTED.to_string(),
+            };
+            let nodes = vec![
+                doc("docs/a.md", "Region A"),
+                doc("docs/b.md", "Region B"),
+                file("src/a1.rs"),
+                file("src/a2.rs"),
+                file("src/b1.rs"),
+                file("src/b2.rs"),
+            ];
+            let mut edges = vec![
+                spec("docs/a.md", "src/a1.rs"),
+                spec("docs/a.md", "src/a2.rs"),
+                spec("docs/b.md", "src/b1.rs"),
+            ];
+            // The mover: originally region B's doc specifies it; after the change region A's doc does.
+            edges.push(spec(
+                if b2_in_a { "docs/a.md" } else { "docs/b.md" },
+                "src/b2.rs",
+            ));
+            Graph { nodes, edges }
+        }
+
+        // Stamp a pass's events with unique ascending positions (fold idempotency is per-position) and
+        // ONE increasing valid_from per pass, so the re-run's retire stamps a valid_to that strictly
+        // post-dates the edges it retires (a clean bi-temporal order, not merely a non-null marker).
+        fn stamped(evs: Vec<Event>, base_pos: u64, secs: u64) -> Vec<Event> {
+            evs.into_iter()
+                .enumerate()
+                .map(|(i, mut e)| {
+                    e.position = base_pos + i as u64;
+                    e.valid_from = UNIX_EPOCH + std::time::Duration::from_secs(secs);
+                    e
+                })
+                .collect()
+        }
+
+        let membership =
+            |d: &Derivation| -> BTreeMap<String, String> { d.members.iter().cloned().collect() };
+
+        // Original r=1 derivation: the mover starts in concept/1/1 (region B).
+        let g1 = two_region_intent(false);
+        let d1 = derive(&g1, &intent_layer(&g1), 1.0);
+        let m1 = membership(&d1);
+        assert_eq!(
+            m1["docs/a.md"], "concept/1/0",
+            "region A's doc is concept/1/0"
+        );
+        assert_eq!(
+            m1["docs/b.md"], "concept/1/1",
+            "region B's doc is concept/1/1"
+        );
+        assert_eq!(
+            m1["src/b2.rs"], "concept/1/1",
+            "the mover starts in concept/1/1"
+        );
+
+        // Coexisting isolation controls over the SAME original layer, each a DIFFERENT resolution grain
+        // the r=1 re-run must leave byte-identical. `format!("{res}")` renders 2.0/10.0/11.0 as
+        // "2"/"10"/"11" (matching the id-grain segment the retire scopes by), so:
+        //   - r=2 (concept/2/*): the NON-adjacent numeric control. "concept/1" never prefix-matches
+        //     "concept/2", so this holds whether or not the retire prefix carries its trailing slash -
+        //     the WEAK guarantee (per-resolution scoping in general, NOT the boundary this unit owns).
+        //   - r=10 and r=11 (concept/10/*, concept/11/*): the ADJACENT-numeric controls. These are the
+        //     LOAD-BEARING proof of the retire's trailing-slash prefix boundary (see mutation teeth (b)
+        //     on this test): drop the slash and "concept/1" bleeds into concept/10//concept/11/,
+        //     reddening their assertions below.
+        let d2 = derive(&g1, &intent_layer(&g1), 2.0);
+        let d10 = derive(&g1, &intent_layer(&g1), 10.0);
+        let d11 = derive(&g1, &intent_layer(&g1), 11.0);
+        for (res, d) in [(2.0_f64, &d2), (10.0, &d10), (11.0, &d11)] {
+            assert!(
+                !events(d).is_empty(),
+                "the r={res} isolation grain is non-empty, so its events fire"
+            );
+        }
+
+        let p = Projector::open(":memory:", "test").unwrap();
+        p.apply_batch(&stamped(events(&d1), 1, 1_000)).unwrap();
+        p.apply_batch(&stamped(events(&d2), 1_000, 1_500)).unwrap();
+        p.apply_batch(&stamped(events(&d10), 2_000, 1_600)).unwrap();
+        p.apply_batch(&stamped(events(&d11), 3_000, 1_700)).unwrap();
+
+        // A grain's REALIZES edges across its member nodes, read RAW (retired rows included) and keyed
+        // by the grain's own `concept/<res>/` id prefix - the exact substring the retire scopes by.
+        let grain_realizes = |p: &Projector,
+                              members: &[(String, String)],
+                              prefix: &str|
+         -> Vec<(String, String, Option<i64>)> {
+            let mut rows: Vec<(String, String, Option<i64>)> = members
+                .iter()
+                .map(|(node, _)| node.clone())
+                .collect::<BTreeSet<String>>()
+                .into_iter()
+                .flat_map(|node| {
+                    edges_from(p, &node)
+                        .into_iter()
+                        .filter(|(to, rel, _)| rel == REL_REALIZES && to.starts_with(prefix))
+                        .map(move |(to, _rel, vt)| (node.clone(), to, vt))
+                })
+                .collect();
+            rows.sort();
+            rows
+        };
+        // The grain's LIVE concept super-nodes. The retire's node-drop half (sqlite.rs:1513 DELETE FROM
+        // nodes) is scoped by the SAME `concept/<res>/` prefix, so the boundary must hold for nodes too
+        // - dropping the slash would DELETE the concept/10//concept/11/ super-nodes once their edges
+        // bleed-retire. Mirrors the community sibling's node-side check (`grain_community_nodes`).
+        let grain_concept_nodes = |p: &Projector, prefix: &str| -> Vec<String> {
+            let mut ids: Vec<String> = p
+                .whole()
+                .unwrap()
+                .nodes
+                .into_iter()
+                .filter(|n| n.kind == KIND_CONCEPT && n.id.starts_with(prefix))
+                .map(|n| n.id)
+                .collect();
+            ids.sort();
+            ids
+        };
+
+        let r2_before = grain_realizes(&p, &d2.members, "concept/2/");
+        let r10_edges_before = grain_realizes(&p, &d10.members, "concept/10/");
+        let r10_nodes_before = grain_concept_nodes(&p, "concept/10/");
+        let r11_edges_before = grain_realizes(&p, &d11.members, "concept/11/");
+        let r11_nodes_before = grain_concept_nodes(&p, "concept/11/");
+        for (what, empty) in [
+            ("r=2 edges", r2_before.is_empty()),
+            ("r=10 edges", r10_edges_before.is_empty()),
+            ("r=10 concept nodes", r10_nodes_before.is_empty()),
+            ("r=11 edges", r11_edges_before.is_empty()),
+            ("r=11 concept nodes", r11_nodes_before.is_empty()),
+        ] {
+            assert!(
+                !empty,
+                "precondition: the {what} isolation grain folded a non-empty live layer \
+                 (else the boundary guard below is vacuous)"
+            );
+        }
+
+        // Re-derive r=1 over the CHANGED layer (the fresh boundary): the mover crosses to concept/1/0.
+        let g2 = two_region_intent(true);
+        let d1b = derive(&g2, &intent_layer(&g2), 1.0);
+        let m1b = membership(&d1b);
+        assert_eq!(
+            m1b["src/b2.rs"], "concept/1/0",
+            "after the change the mover derives into concept/1/0"
+        );
+        p.apply_batch(&stamped(events(&d1b), 4_000, 3_000)).unwrap();
+
+        // === RE-RUN SUPERSESSION, asserted on the mover via the edges_from RAW read ===
+        let mover: Vec<(String, Option<i64>)> = edges_from(&p, "src/b2.rs")
+            .into_iter()
+            .filter(|(_to, rel, _)| rel == REL_REALIZES)
+            .map(|(to, _rel, vt)| (to, vt))
+            .collect();
+
+        // The prior concept/1/1 membership is RETIRED (valid_to set) - kept in the table, not deleted.
+        assert!(
+            mover
+                .iter()
+                .any(|(to, vt)| to == "concept/1/1" && vt.is_some()),
+            "the mover's prior concept/1/1 membership is retired (valid_to set), not deleted; got {mover:?}"
+        );
+        assert!(
+            !mover
+                .iter()
+                .any(|(to, vt)| to == "concept/1/1" && vt.is_none()),
+            "no live concept/1/1 membership survives for the mover; got {mover:?}"
+        );
+        // Exactly ONE live r=1 membership remains: the new concept/1/0 grain.
+        let live_r1: Vec<&String> = mover
+            .iter()
+            .filter(|(to, vt)| to.starts_with("concept/1/") && vt.is_none())
+            .map(|(to, _)| to)
+            .collect();
+        assert_eq!(
+            live_r1,
+            vec![&"concept/1/0".to_string()],
+            "the re-run leaves the mover exactly one live r=1 membership, the new concept/1/0; got {mover:?}"
+        );
+
+        // === ISOLATION: every OTHER resolution grain is byte-identical across the r=1 re-run ===
+        // The NON-adjacent control (holds regardless of the trailing slash - the weak guarantee).
+        assert_eq!(
+            grain_realizes(&p, &d2.members, "concept/2/"),
+            r2_before,
+            "the resolution-2.0 grain stays byte-identical across a resolution-1.0 re-run"
+        );
+        // The ADJACENT-numeric controls - the LOAD-BEARING proof of the retire's trailing-slash prefix
+        // boundary (mutation teeth (b)): both the edge retire (sqlite.rs:1495) AND the node drop
+        // (sqlite.rs:1513) must exclude concept/10//concept/11/. Dropping the slash reddens these.
+        assert_eq!(
+            grain_realizes(&p, &d10.members, "concept/10/"),
+            r10_edges_before,
+            "the ADJACENT concept/10/ grain's REALIZES edges are untouched by the r=1 re-run - the \
+             `concept/1/` retire prefix's trailing slash excludes concept/10/ (drop the slash and \
+             this reddens)"
+        );
+        assert_eq!(
+            grain_concept_nodes(&p, "concept/10/"),
+            r10_nodes_before,
+            "the ADJACENT concept/10/ grain's concept super-nodes survive the r=1 re-run - the \
+             node-drop half of the retire also respects the trailing-slash boundary"
+        );
+        assert_eq!(
+            grain_realizes(&p, &d11.members, "concept/11/"),
+            r11_edges_before,
+            "the ADJACENT concept/11/ grain's REALIZES edges are untouched by the r=1 re-run (the \
+             same trailing-slash boundary, one adjacent grain further out)"
+        );
+        assert_eq!(
+            grain_concept_nodes(&p, "concept/11/"),
+            r11_nodes_before,
+            "the ADJACENT concept/11/ grain's concept super-nodes survive the r=1 re-run"
+        );
     }
 
     #[test]
@@ -1712,6 +3340,80 @@ mod tests {
                 && e.to == "src/combat.rs::clamp"),
             "a REFERENCES edge ties the file to the referenced symbol; got {:?}",
             g.edges
+        );
+    }
+
+    #[test]
+    fn whole_reads_the_full_projection_excludes_invalidated_edges_and_scopes_by_project() {
+        // Spec 45, criterion 2: `whole()` is the DIRECT read the `/api/graph` provider consults -
+        // the entire live projection, NO seed and NO reachability walk. It must (a) return every
+        // node and every currently-valid edge, (b) EXCLUDE an edge invalidated by a supersede
+        // (`valid_to` set), (c) be scoped to its own project on a shared backend, and (d) sort
+        // deterministically.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.db");
+        let path = path.to_str().unwrap();
+
+        // Project p1: d1 governs a.rs, then d2 supersedes d1 and ALSO governs a.rs (so d1's GOVERNS
+        // edge is invalidated while d2's stays live), plus a code entity in b.rs.
+        let p1 = Projector::open(path, "p1").unwrap();
+        apply_decision(&p1, 1, "d1", "old", &["a.rs"], "");
+        apply_decision(&p1, 2, "d2", "new", &["a.rs"], "d1");
+        apply_code_entity(&p1, 3, "b.rs", "run", "function", 1, "rust");
+
+        // Project p2 on the SAME backend file: its nodes must never leak into p1's whole read.
+        let p2 = Projector::open(path, "p2").unwrap();
+        apply_decision(&p2, 1, "pz", "other-project", &["z.rs"], "");
+
+        let g = p1.whole().unwrap();
+
+        // (a) every p1 node is present - both decisions, the governed file, the code entity and its
+        // file container - WITHOUT any seed.
+        for id in ["d1", "d2", "a.rs", "b.rs", "b.rs::run"] {
+            assert!(
+                g.nodes.iter().any(|n| n.id == id),
+                "whole() returns node {id}, got {:?}",
+                g.nodes
+            );
+        }
+        // (c) p2's nodes are NOT visible through p1's scoped whole read.
+        assert!(
+            !g.nodes.iter().any(|n| n.id == "pz" || n.id == "z.rs"),
+            "whole() is project-scoped: p2 nodes never leak into p1, got {:?}",
+            g.nodes
+        );
+
+        // (a) the live GOVERNS edge (from d2) and the live structural CONTAINS edge are returned.
+        assert!(
+            g.edges
+                .iter()
+                .any(|e| e.from == "d2" && e.to == "a.rs" && e.rel == REL_GOVERNS),
+            "the live GOVERNS edge is returned, got {:?}",
+            g.edges
+        );
+        assert!(
+            g.edges
+                .iter()
+                .any(|e| e.from == "b.rs" && e.to == "b.rs::run" && e.rel == REL_CONTAINS),
+            "the live CONTAINS edge is returned, got {:?}",
+            g.edges
+        );
+        // (b) the supersede-invalidated GOVERNS edge (from d1) is EXCLUDED by the valid_to filter.
+        assert!(
+            !g.edges
+                .iter()
+                .any(|e| e.from == "d1" && e.rel == REL_GOVERNS),
+            "the supersede-invalidated GOVERNS edge is excluded, got {:?}",
+            g.edges
+        );
+
+        // (d) deterministic: nodes come back sorted by id.
+        let ids: Vec<String> = g.nodes.iter().map(|n| n.id.clone()).collect();
+        let mut sorted = ids.clone();
+        sorted.sort();
+        assert_eq!(
+            ids, sorted,
+            "whole() returns nodes sorted by id, got {ids:?}"
         );
     }
 
@@ -2757,6 +4459,618 @@ mod tests {
     }
 
     #[test]
+    fn calls_down_walks_the_execution_path_as_a_layered_deduped_dag_with_a_back_edge() {
+        // Spec 52 criterion 1: the DOWN traversal. From a seed with a SAME-FILE callee and a
+        // SINGLE-CANDIDATE cross-file callee, `calls(Down)` returns the transitive DAG with correct
+        // per-node LAYERS, DEDUPED nodes under a cycle, and the recursive edge marked as a BACK
+        // edge. A cross-file hop resolves THROUGH its bare placeholder to the real definition and
+        // continues; nothing is a frontier (every hop here is single-candidate).
+        let p = Projector::open(":memory:", "test").unwrap();
+        let a = "src/a.rs";
+        let b = "src/b.rs";
+
+        // Definitions first (so the cross-file references fold INFERRED, not AMBIGUOUS): a.rs
+        // defines `main` and `helper`; b.rs defines `work`.
+        apply_batch_def(&p, 1, a, "main", 1, true);
+        apply_batch_def(&p, 2, a, "helper", 5, false);
+        apply_batch_def(&p, 3, b, "work", 1, true);
+        // Calls: main -> helper (same-file), main -> work (single-candidate cross-file), and
+        // work -> main (cross-file, closing a CYCLE back onto the seed).
+        apply_batch_ref_caller(&p, 4, a, "helper", "main");
+        apply_batch_ref_caller(&p, 5, a, "work", "main");
+        apply_batch_ref_caller(&p, 6, b, "main", "work");
+
+        let node_ids = |cg: &CallGraph| -> Vec<String> {
+            let mut v: Vec<String> = cg.nodes.iter().map(|n| n.node.id.clone()).collect();
+            v.sort();
+            v
+        };
+        let edge_pairs = |cg: &CallGraph| -> Vec<(String, String)> {
+            let mut v: Vec<(String, String)> = cg
+                .edges
+                .iter()
+                .map(|e| (e.edge.from.clone(), e.edge.to.clone()))
+                .collect();
+            v.sort();
+            v
+        };
+
+        let cg = p
+            .calls(
+                &["src/a.rs::main".to_string()],
+                Direction::Down,
+                5,
+                TIER_INFERRED,
+            )
+            .unwrap();
+
+        // LAYERS: the seed at 0; both its callees at 1; the cross-file callee resolved to its real
+        // definition b.rs::work (NOT the bare a.rs::work placeholder). The cycle back onto main
+        // DEDUPS - main appears EXACTLY ONCE, still at layer 0.
+        let layer = |id: &str| -> Option<i64> {
+            cg.nodes.iter().find(|n| n.node.id == id).map(|n| n.layer)
+        };
+        assert_eq!(
+            layer("src/a.rs::main"),
+            Some(0),
+            "the seed is layer 0; nodes were {:?}",
+            node_ids(&cg)
+        );
+        assert_eq!(
+            layer("src/a.rs::helper"),
+            Some(1),
+            "the same-file callee is layer 1; nodes were {:?}",
+            node_ids(&cg)
+        );
+        assert_eq!(
+            layer("src/b.rs::work"),
+            Some(1),
+            "the cross-file callee resolved to its definition at layer 1; nodes were {:?}",
+            node_ids(&cg)
+        );
+        assert_eq!(
+            cg.nodes
+                .iter()
+                .filter(|n| n.node.id == "src/a.rs::main")
+                .count(),
+            1,
+            "the recursion dedups: main appears exactly once (a DAG, not a loop); nodes were {:?}",
+            node_ids(&cg)
+        );
+        // The walk resolved THROUGH the bare cross-file placeholders - they are not in the answer.
+        for bare in ["src/a.rs::work", "src/b.rs::main"] {
+            assert!(
+                !cg.nodes.iter().any(|n| n.node.id == bare),
+                "the bare cross-file placeholder {bare} is resolved away, not returned; nodes were {:?}",
+                node_ids(&cg)
+            );
+        }
+        assert_eq!(
+            node_ids(&cg),
+            vec!["src/a.rs::helper", "src/a.rs::main", "src/b.rs::work"],
+            "exactly the seed plus its two resolved callees"
+        );
+
+        // No FRONTIER: every hop is single-candidate, so no node is a marked frontier.
+        assert!(
+            cg.nodes.iter().all(|n| n.frontier.is_none()),
+            "single-candidate hops carry no frontier marker; nodes were {:?}",
+            cg.nodes
+                .iter()
+                .map(|n| (n.node.id.clone(), n.frontier.clone()))
+                .collect::<Vec<_>>()
+        );
+
+        // EDGES: two forward tree edges (back=false) and the recursion edge work -> main (back=true).
+        let back_of = |from: &str, to: &str| -> Option<bool> {
+            cg.edges
+                .iter()
+                .find(|e| e.edge.from == from && e.edge.to == to)
+                .map(|e| e.back)
+        };
+        assert_eq!(
+            back_of("src/a.rs::main", "src/a.rs::helper"),
+            Some(false),
+            "the same-file forward edge is not a back edge; edges were {:?}",
+            edge_pairs(&cg)
+        );
+        assert_eq!(
+            back_of("src/a.rs::main", "src/b.rs::work"),
+            Some(false),
+            "the resolved cross-file forward edge lands on the definition, not a back edge; edges were {:?}",
+            edge_pairs(&cg)
+        );
+        assert_eq!(
+            back_of("src/b.rs::work", "src/a.rs::main"),
+            Some(true),
+            "the recursion edge closing the cycle onto the seed is marked BACK; edges were {:?}",
+            edge_pairs(&cg)
+        );
+        assert_eq!(
+            edge_pairs(&cg),
+            vec![
+                ("src/a.rs::main".to_string(), "src/a.rs::helper".to_string()),
+                ("src/a.rs::main".to_string(), "src/b.rs::work".to_string()),
+                ("src/b.rs::work".to_string(), "src/a.rs::main".to_string()),
+            ],
+            "exactly the three resolved CALLS edges"
+        );
+        assert!(
+            cg.edges.iter().all(|e| e.edge.rel == REL_CALLS),
+            "every traversed edge is a CALLS edge"
+        );
+    }
+
+    #[test]
+    fn calls_down_follows_a_single_candidate_hop_but_marks_a_multi_candidate_one_a_sorted_frontier()
+    {
+        // Spec 52 criterion 2 - the CONSERVATIVE RESOLUTION policy, hardened past c1's coverage
+        // (adj-u52cdw-c2-scope-reconcile). One seed reaches BOTH kinds of cross-file hop, so a single
+        // walk proves the boundary the policy turns on:
+        //   - a SINGLE-definition callee IS followed - resolved through its bare placeholder onto the
+        //     real definition, and the walk DESCENDS past it (its own callee is reached one layer
+        //     deeper);
+        //   - a MULTI-definition callee becomes a marked FRONTIER carrying its SORTED candidate ids
+        //     and is NOT descended (honest by construction - the view may be INCOMPLETE but never
+        //     confidently wrong; the human re-seeds on a chosen candidate).
+        // The candidate-sort assertion has TEETH the c1 periphery test lacks: that test folds a name's
+        // two definitions a.rs-then-b.rs, so their natural row order already EQUALS the sorted order
+        // and the sort is unproven (sdet-u52cdw-frontier-sort-vacuous). Here `dup`'s b.rs definition
+        // is folded BEFORE its a.rs one, so the natural (rowid) row order is [b, a]; only the
+        // `ORDER BY id` in `definitions_with_suffix` yields the asserted [a, b] - drop the sort and
+        // this assertion fails.
+        let p = Projector::open(":memory:", "test").unwrap();
+
+        // Definitions, folded before the calls so every cross-file reference tiers INFERRED (a
+        // definition already exists), placing it at/above the default floor.
+        apply_batch_def(&p, 1, "src/caller.rs", "entry", 1, true); // the seed
+        apply_batch_def(&p, 2, "src/solo.rs", "solo", 1, true); // the SINGLE-candidate callee
+        apply_batch_def(&p, 3, "src/sink.rs", "sink", 1, true); // solo's own callee (proves descent)
+                                                                // `dup` is defined in TWO files - fold b.rs BEFORE a.rs so the pre-sort (rowid) order is
+                                                                // [b, a] and only `ORDER BY id` re-sorts it to [a, b].
+        apply_batch_def(&p, 4, "src/b.rs", "dup", 1, true);
+        apply_batch_def(&p, 5, "src/b.rs", "only_via_b", 2, false);
+        apply_batch_def(&p, 6, "src/a.rs", "dup", 1, true);
+        apply_batch_def(&p, 7, "src/a.rs", "only_via_a", 2, false);
+
+        // Calls: entry -> solo (single-candidate cross-file) and entry -> dup (multi-candidate);
+        // solo -> sink (so the followed single-candidate hop has somewhere to descend); and each
+        // `dup` candidate calls a distinct sentinel that is reachable ONLY by descending that
+        // candidate.
+        apply_batch_ref_caller(&p, 8, "src/caller.rs", "solo", "entry");
+        apply_batch_ref_caller(&p, 9, "src/caller.rs", "dup", "entry");
+        apply_batch_ref_caller(&p, 10, "src/solo.rs", "sink", "solo");
+        apply_batch_ref_caller(&p, 11, "src/a.rs", "only_via_a", "dup");
+        apply_batch_ref_caller(&p, 12, "src/b.rs", "only_via_b", "dup");
+
+        let cg = p
+            .calls(
+                &["src/caller.rs::entry".to_string()],
+                Direction::Down,
+                5,
+                TIER_INFERRED,
+            )
+            .unwrap();
+
+        let node_ids = |cg: &CallGraph| -> Vec<String> {
+            let mut v: Vec<String> = cg.nodes.iter().map(|n| n.node.id.clone()).collect();
+            v.sort();
+            v
+        };
+        let node = |id: &str| cg.nodes.iter().find(|n| n.node.id == id);
+
+        // SINGLE-candidate: `solo` IS followed - resolved onto its real definition (not the bare
+        // caller-namespace placeholder), at layer 1, carrying NO frontier marker.
+        let solo = node("src/solo.rs::solo")
+            .expect("the single-candidate callee is followed onto its def");
+        assert_eq!(
+            solo.layer, 1,
+            "the followed single-candidate callee is one hop from the seed"
+        );
+        assert!(
+            solo.frontier.is_none(),
+            "a single-candidate hop is fully resolved - not a frontier"
+        );
+        assert!(
+            node("src/caller.rs::solo").is_none(),
+            "the bare cross-file placeholder is resolved away, not returned; nodes were {:?}",
+            node_ids(&cg),
+        );
+        // ...and the walk DESCENDS past it: solo's own callee is reached at layer 2, so the
+        // single-candidate hop was followed THROUGH, not merely landed on.
+        let sink =
+            node("src/sink.rs::sink").expect("the walk descends past the followed single hop");
+        assert_eq!(
+            sink.layer, 2,
+            "solo's callee is two hops from the seed - the single-candidate hop was traversed"
+        );
+
+        // MULTI-candidate: `dup` is a marked FRONTIER on the bare placeholder, carrying its SORTED
+        // candidate ids. TEETH: b.rs was folded before a.rs, so a missing `ORDER BY id` would return
+        // [b, a]; only the real sort yields [a, b].
+        let dup = node("src/caller.rs::dup")
+            .expect("the multi-candidate callee is returned as a frontier node");
+        assert_eq!(dup.layer, 1, "the frontier callee is one hop from the seed");
+        assert_eq!(
+            dup.frontier,
+            Some(vec![
+                "src/a.rs::dup".to_string(),
+                "src/b.rs::dup".to_string()
+            ]),
+            "the frontier carries its candidate ids SORTED by id - even though b.rs was folded first",
+        );
+
+        // The multi-candidate hop is the ONLY frontier; the single-candidate hop did not become one.
+        assert_eq!(
+            cg.nodes.iter().filter(|n| n.frontier.is_some()).count(),
+            1,
+            "exactly one node is a frontier - the multi-candidate hop, not the single one",
+        );
+
+        // NOT DESCENDED: neither candidate definition, nor anything reachable ONLY through a
+        // candidate, appears - the walk stopped at the frontier and never guessed.
+        for hidden in [
+            "src/a.rs::dup",
+            "src/b.rs::dup",
+            "src/a.rs::only_via_a",
+            "src/b.rs::only_via_b",
+        ] {
+            assert!(
+                node(hidden).is_none(),
+                "{hidden} lies beyond the un-descended frontier and must not be reached; nodes were {:?}",
+                node_ids(&cg),
+            );
+        }
+
+        // Exactly the seed, the followed single-candidate chain, and the marked frontier placeholder.
+        assert_eq!(
+            node_ids(&cg),
+            vec![
+                "src/caller.rs::dup".to_string(),
+                "src/caller.rs::entry".to_string(),
+                "src/sink.rs::sink".to_string(),
+                "src/solo.rs::solo".to_string(),
+            ],
+            "the reached set is the seed + the followed single-candidate chain + the marked frontier",
+        );
+    }
+
+    #[test]
+    fn calls_down_leaves_a_zero_candidate_cross_file_callee_a_terminal_leaf_not_a_frontier() {
+        // Spec 52 criterion 2 - the ZERO-candidate branch of the resolution policy
+        // (adj-u52cdw-c2-scope-reconcile). A bare cross-file callee whose name is defined NOWHERE the
+        // graph knows resolves to ZERO candidates: `resolve_down_hop` returns the bare placeholder id
+        // itself with NO frontier - it is a terminal LEAF, categorically distinct from a
+        // multi-candidate frontier (there is nothing to fan out to). Such a call tiers `ambiguous`,
+        // so the floor is lowered to reach it; the point proved here is the resolution OUTCOME (a
+        // bare leaf, `frontier` None), not the floor itself.
+        let p = Projector::open(":memory:", "test").unwrap();
+        apply_batch_def(&p, 1, "src/caller.rs", "entry", 1, true);
+        // `ghost` is defined in no file the graph knows - the CALLS edge tiers ambiguous and, once
+        // followed, resolves to zero candidates.
+        apply_batch_ref_caller(&p, 2, "src/caller.rs", "ghost", "entry");
+
+        let cg = p
+            .calls(
+                &["src/caller.rs::entry".to_string()],
+                Direction::Down,
+                5,
+                TIER_AMBIGUOUS,
+            )
+            .unwrap();
+
+        let ghost = cg
+            .nodes
+            .iter()
+            .find(|n| n.node.id == "src/caller.rs::ghost")
+            .expect("the zero-candidate callee is reached on the bare placeholder itself");
+        assert_eq!(
+            ghost.layer, 1,
+            "the unresolved callee sits one hop from the seed"
+        );
+        assert!(
+            ghost.frontier.is_none(),
+            "a ZERO-candidate resolution is a terminal leaf, NOT a frontier (nothing to fan out to)",
+        );
+        // It is a genuine LEAF: nothing descends from the bare placeholder.
+        assert!(
+            !cg.edges
+                .iter()
+                .any(|e| e.edge.from == "src/caller.rs::ghost"),
+            "no edge leaves the zero-candidate leaf; edges were {:?}",
+            cg.edges
+                .iter()
+                .map(|e| (e.edge.from.clone(), e.edge.to.clone()))
+                .collect::<Vec<_>>(),
+        );
+        // Exactly the seed and its one terminal leaf - the walk neither errored nor guessed.
+        let mut ids: Vec<String> = cg.nodes.iter().map(|n| n.node.id.clone()).collect();
+        ids.sort();
+        assert_eq!(
+            ids,
+            vec![
+                "src/caller.rs::entry".to_string(),
+                "src/caller.rs::ghost".to_string()
+            ],
+            "the walk resolves the unknown callee to a bare terminal leaf, nothing more",
+        );
+    }
+
+    #[test]
+    fn calls_up_walks_the_call_sites_as_a_layered_deduped_dag_and_lists_referenced_but_not_called()
+    {
+        // Spec 52 criterion 3: the UP traversal. From a seed DEFINITION, `calls(Up)` returns the
+        // transitive CALLER DAG - callers resolving THROUGH bare cross-file placeholders back onto the
+        // seed's definition (the reverse name-match), each at its correct per-node LAYER, deduped
+        // under a mutual-call cycle whose recursive edge is marked BACK - PLUS the flat, non-traversed
+        // "referenced but not called" list of files that import/use the seed name without calling it.
+        let p = Projector::open(":memory:", "test").unwrap();
+        let a = "src/a.rs";
+        let b = "src/b.rs";
+        let c = "src/c.rs";
+        let d = "src/d.rs";
+
+        // Definitions first, so every cross-file reference tiers INFERRED (a definition already
+        // exists), placing it at/above the default floor. a.rs defines the SEED `target` and a
+        // same-file caller `local`; b.rs defines `mid`; c.rs defines `top`.
+        apply_batch_def(&p, 1, a, "target", 1, true);
+        apply_batch_def(&p, 2, a, "local", 2, false);
+        apply_batch_def(&p, 3, b, "mid", 1, true);
+        apply_batch_def(&p, 4, c, "top", 1, true);
+        // Calls (each is a caller-attributed reference the emit pass produces for a call in a body):
+        //   local  -> target  (SAME-FILE: lands directly on the seed def)
+        //   mid    -> target  (CROSS-FILE single-candidate: through the bare b.rs::target placeholder)
+        //   top    -> mid     (CROSS-FILE single-candidate: through the bare c.rs::mid placeholder)
+        //   target -> mid     (the mutual call that closes a CYCLE - target both defines the seed and
+        //                      calls mid, so walking UP from target reaches mid, whose callers include
+        //                      target again: a BACK edge, deduped, not re-ascended)
+        apply_batch_ref_caller(&p, 5, a, "target", "local");
+        apply_batch_ref_caller(&p, 6, a, "mid", "target");
+        apply_batch_ref_caller(&p, 7, b, "target", "mid");
+        apply_batch_ref_caller(&p, 8, c, "mid", "top");
+        // d.rs imports/uses `target` at TOP LEVEL (no enclosing caller): a file-level REFERENCES edge
+        // with NO CALLS twin - the "referenced but not called" site.
+        apply_batch_ref(&p, 9, d, "target", true);
+
+        let node_ids = |cg: &CallGraph| -> Vec<String> {
+            let mut v: Vec<String> = cg.nodes.iter().map(|n| n.node.id.clone()).collect();
+            v.sort();
+            v
+        };
+        let edge_pairs = |cg: &CallGraph| -> Vec<(String, String)> {
+            let mut v: Vec<(String, String)> = cg
+                .edges
+                .iter()
+                .map(|e| (e.edge.from.clone(), e.edge.to.clone()))
+                .collect();
+            v.sort();
+            v
+        };
+
+        let cg = p
+            .calls(
+                &["src/a.rs::target".to_string()],
+                Direction::Up,
+                5,
+                TIER_INFERRED,
+            )
+            .unwrap();
+
+        // LAYERS: the seed at 0; its direct same-file caller and its single-candidate cross-file
+        // caller at 1; the caller-of-a-caller at 2. Cross-file callers resolved THROUGH their bare
+        // placeholders onto the real caller definitions (b.rs::mid, c.rs::top), never the bare nodes.
+        let layer = |id: &str| -> Option<i64> {
+            cg.nodes.iter().find(|n| n.node.id == id).map(|n| n.layer)
+        };
+        assert_eq!(
+            layer("src/a.rs::target"),
+            Some(0),
+            "the seed is layer 0; nodes were {:?}",
+            node_ids(&cg)
+        );
+        assert_eq!(
+            layer("src/a.rs::local"),
+            Some(1),
+            "the same-file caller is layer 1; nodes were {:?}",
+            node_ids(&cg)
+        );
+        assert_eq!(
+            layer("src/b.rs::mid"),
+            Some(1),
+            "the cross-file caller resolved to its def at layer 1; nodes were {:?}",
+            node_ids(&cg)
+        );
+        assert_eq!(
+            layer("src/c.rs::top"),
+            Some(2),
+            "the caller-of-a-caller is two hops up; nodes were {:?}",
+            node_ids(&cg)
+        );
+        // The bare cross-file placeholders the callers literally target are resolved away.
+        for bare in ["src/b.rs::target", "src/c.rs::mid", "src/a.rs::mid"] {
+            assert!(
+                !cg.nodes.iter().any(|n| n.node.id == bare),
+                "the bare cross-file placeholder {bare} is resolved away, not returned; nodes were {:?}",
+                node_ids(&cg),
+            );
+        }
+        // The mutual call dedups: the seed appears EXACTLY ONCE, still at layer 0 (a DAG, not a loop).
+        assert_eq!(
+            cg.nodes
+                .iter()
+                .filter(|n| n.node.id == "src/a.rs::target")
+                .count(),
+            1,
+            "the recursion dedups: the seed appears exactly once; nodes were {:?}",
+            node_ids(&cg),
+        );
+        assert_eq!(
+            node_ids(&cg),
+            vec![
+                "src/a.rs::local".to_string(),
+                "src/a.rs::target".to_string(),
+                "src/b.rs::mid".to_string(),
+                "src/c.rs::top".to_string(),
+            ],
+            "exactly the seed plus its transitive resolved callers",
+        );
+
+        // No FRONTIER: every caller's call is single-candidate here.
+        assert!(
+            cg.nodes.iter().all(|n| n.frontier.is_none()),
+            "single-candidate caller hops carry no frontier marker; nodes were {:?}",
+            cg.nodes
+                .iter()
+                .map(|n| (n.node.id.clone(), n.frontier.clone()))
+                .collect::<Vec<_>>(),
+        );
+
+        // EDGES keep the real CALLS direction (caller -> callee). Three forward caller edges and the
+        // mutual recursion target -> mid marked BACK (its caller, the seed, sits no deeper than mid).
+        let back_of = |from: &str, to: &str| -> Option<bool> {
+            cg.edges
+                .iter()
+                .find(|e| e.edge.from == from && e.edge.to == to)
+                .map(|e| e.back)
+        };
+        assert_eq!(
+            back_of("src/a.rs::local", "src/a.rs::target"),
+            Some(false),
+            "the same-file forward caller edge is not a back edge; edges were {:?}",
+            edge_pairs(&cg)
+        );
+        assert_eq!(back_of("src/b.rs::mid", "src/a.rs::target"), Some(false), "the resolved cross-file caller edge lands on the seed def, not a back edge; edges were {:?}", edge_pairs(&cg));
+        assert_eq!(
+            back_of("src/c.rs::top", "src/b.rs::mid"),
+            Some(false),
+            "the caller-of-a-caller forward edge is not a back edge; edges were {:?}",
+            edge_pairs(&cg)
+        );
+        assert_eq!(
+            back_of("src/a.rs::target", "src/b.rs::mid"),
+            Some(true),
+            "the mutual-call edge closing the cycle is marked BACK; edges were {:?}",
+            edge_pairs(&cg)
+        );
+        assert_eq!(
+            edge_pairs(&cg),
+            vec![
+                (
+                    "src/a.rs::local".to_string(),
+                    "src/a.rs::target".to_string()
+                ),
+                ("src/a.rs::target".to_string(), "src/b.rs::mid".to_string()),
+                ("src/b.rs::mid".to_string(), "src/a.rs::target".to_string()),
+                ("src/c.rs::top".to_string(), "src/b.rs::mid".to_string()),
+            ],
+            "exactly the four resolved caller edges",
+        );
+        assert!(
+            cg.edges.iter().all(|e| e.edge.rel == REL_CALLS),
+            "every traversed edge is a CALLS edge"
+        );
+
+        // REFERENCED-BUT-NOT-CALLED: d.rs imports `target` without calling it, so it is the one
+        // non-traversed site. a.rs and b.rs both CALL target (local, mid), so - though they reference
+        // it - they are callers in the DAG, never in this list; and it is a FILE node, not an entity.
+        let refd: Vec<String> = cg
+            .referenced_not_called
+            .iter()
+            .map(|n| n.id.clone())
+            .collect();
+        assert_eq!(
+            refd,
+            vec!["src/d.rs".to_string()],
+            "only the import-only file is referenced-but-not-called (callers are excluded)",
+        );
+        assert_eq!(
+            cg.referenced_not_called[0].kind, KIND_FILE,
+            "the referenced-but-not-called entry is the referencing FILE node",
+        );
+    }
+
+    #[test]
+    fn calls_up_marks_an_ambiguous_cross_file_caller_a_frontier_and_does_not_ascend_it() {
+        // Spec 52 criterion 3, the honest-by-construction half of the UP walk (the reverse of the
+        // DOWN conservative-resolution policy). A cross-file caller calls a name with MORE THAN ONE
+        // definition, so it cannot be confidently attributed to THIS seed: it comes back a marked
+        // FRONTIER carrying the SORTED candidate definition ids and is NOT ascended - the walk never
+        // guesses, and nothing reachable only by ascending past it appears.
+        let p = Projector::open(":memory:", "test").unwrap();
+
+        // `target` is defined in TWO files, so a cross-file call to `target` is multi-candidate. Fold
+        // e.rs BEFORE a.rs so the natural (rowid) order is [e, a]; only `ORDER BY id` in
+        // `definitions_with_suffix` yields the asserted [a, b]-sorted candidate list.
+        apply_batch_def(&p, 1, "src/e.rs", "target", 1, true);
+        apply_batch_def(&p, 2, "src/a.rs", "target", 1, true); // the SEED
+        apply_batch_def(&p, 3, "src/f.rs", "amb", 1, true); // the ambiguous caller
+        apply_batch_def(&p, 4, "src/g.rs", "over", 1, true); // amb's own caller (must NOT be reached)
+                                                             // amb calls `target` cross-file (multi-candidate); over calls amb (only reachable by ascending
+                                                             // past the frontier).
+        apply_batch_ref_caller(&p, 5, "src/f.rs", "target", "amb");
+        apply_batch_ref_caller(&p, 6, "src/g.rs", "amb", "over");
+
+        let cg = p
+            .calls(
+                &["src/a.rs::target".to_string()],
+                Direction::Up,
+                5,
+                TIER_INFERRED,
+            )
+            .unwrap();
+        let node = |id: &str| cg.nodes.iter().find(|n| n.node.id == id);
+        let node_ids = |cg: &CallGraph| -> Vec<String> {
+            let mut v: Vec<String> = cg.nodes.iter().map(|n| n.node.id.clone()).collect();
+            v.sort();
+            v
+        };
+
+        // The ambiguous caller is a marked FRONTIER at layer 1, carrying its SORTED candidate defs.
+        // TEETH: e.rs was folded before a.rs, so a missing `ORDER BY id` would return [e, a]; only the
+        // real sort yields [a, e].
+        let amb =
+            node("src/f.rs::amb").expect("the ambiguous caller is returned as a frontier node");
+        assert_eq!(
+            amb.layer, 1,
+            "the frontier caller is one hop up from the seed"
+        );
+        assert_eq!(
+            amb.frontier,
+            Some(vec!["src/a.rs::target".to_string(), "src/e.rs::target".to_string()]),
+            "the frontier carries its candidate definition ids SORTED by id - even though e.rs was folded first",
+        );
+        assert_eq!(
+            cg.nodes.iter().filter(|n| n.frontier.is_some()).count(),
+            1,
+            "exactly one node is a frontier - the multi-candidate caller",
+        );
+
+        // NOT ASCENDED: nothing reachable ONLY by ascending past the frontier appears (`over`), and
+        // the other same-named definition is never descended into (`e.rs::target`).
+        for hidden in ["src/g.rs::over", "src/e.rs::target"] {
+            assert!(
+                node(hidden).is_none(),
+                "{hidden} lies beyond the un-ascended frontier and must not be reached; nodes were {:?}",
+                node_ids(&cg),
+            );
+        }
+        assert_eq!(
+            node_ids(&cg),
+            vec!["src/a.rs::target".to_string(), "src/f.rs::amb".to_string()],
+            "the reached set is the seed plus the marked frontier caller, nothing more",
+        );
+        // The edge to the frontier keeps the real CALLS direction, redirected onto the seed def.
+        assert_eq!(
+            cg.edges
+                .iter()
+                .map(|e| (e.edge.from.clone(), e.edge.to.clone()))
+                .collect::<Vec<_>>(),
+            vec![("src/f.rs::amb".to_string(), "src/a.rs::target".to_string())],
+            "one caller edge, onto the seed def, marking the frontier",
+        );
+    }
+
+    #[test]
     fn a_blast_radius_computed_event_folds_to_nothing_idempotently() {
         // spec 16 unit 3: BlastRadiusComputed is PURE AUDIT - the projector matches no fold arm
         // for it (it falls to the `_ => {}` sink), so it adds NO node and NO edge, and re-applying
@@ -2790,7 +5104,10 @@ mod tests {
     }
 
     #[test]
-    fn decided_edge_links_the_acting_agent() {
+    fn decision_fold_projects_no_agent_node_or_decided_edge() {
+        // De-noise (spec 43): the acting persona is run machinery, not the target project, so a
+        // DecisionMade - even carrying an event actor - projects NO KIND_AGENT node and NO REL_DECIDED
+        // attribution edge. Its CONTENT survives: the decision node and its GOVERNS edge to the code.
         let p = Projector::open(":memory:", "test").unwrap();
         let payload = serde_json::json!({"id": "d1", "summary": "x", "governs": ["mod.rs"]});
         let mut e = Event::new(TYPE_DECISION_MADE, serde_json::to_vec(&payload).unwrap());
@@ -2798,21 +5115,39 @@ mod tests {
         e.meta.insert(META_ACTOR.to_string(), "agent-7".to_string());
         p.apply(&e).unwrap();
         let g = p.subgraph(&["d1".to_string()], 2).unwrap();
+        // Content survives.
+        assert!(
+            g.nodes
+                .iter()
+                .any(|n| n.id == "d1" && n.kind == KIND_DECISION),
+            "the decision content node survives the de-noise"
+        );
         assert!(
             g.edges
                 .iter()
-                .any(|x| x.rel == REL_DECIDED && x.from == "agent-7" && x.to == "d1"),
-            "DECIDED(agent-7 -> d1) must come from the event actor"
+                .any(|x| x.rel == REL_GOVERNS && x.from == "d1" && x.to == "mod.rs"),
+            "the decision's GOVERNS edge to the code it concerns survives"
+        );
+        // Machinery is gone.
+        assert!(
+            !g.nodes.iter().any(|n| n.kind == KIND_AGENT),
+            "no KIND_AGENT node is projected for the acting persona"
+        );
+        assert!(
+            !g.edges.iter().any(|x| x.rel == REL_DECIDED),
+            "no REL_DECIDED agent-attribution edge is projected"
         );
     }
 
     #[test]
     fn review_finding_creates_a_finding_node_about_each_file() {
-        // A ReviewFinding folds into a KIND_FINDING node carrying its summary, an
-        // ABOUT edge to each file it concerns, and a RAISED edge from the reviewer.
-        // The finding is reachable from the file it is ABOUT - the same traversal that
-        // returns the decisions GOVERNING the file - so a later reviewer grounded on
-        // that file retrieves it through the graph, not via hand-threaded prompts.
+        // A ReviewFinding folds into a KIND_FINDING node carrying its summary (and the reviewer
+        // as a node ATTRIBUTE), and an ABOUT edge to each file it concerns. The finding is
+        // reachable from the file it is ABOUT - the same traversal that returns the decisions
+        // GOVERNING the file - so a later reviewer grounded on that file retrieves it through the
+        // graph, not via hand-threaded prompts. De-noise (spec 43): the reviewer's provenance is
+        // NOT projected as a KIND_AGENT node or a REL_RAISED edge (that agent attribution is run
+        // machinery); the `by` reviewer remains only as the finding node's `by` attribute.
         let p = Projector::open(":memory:", "test").unwrap();
         let payload = serde_json::json!({
             "id": "f1",
@@ -2844,18 +5179,22 @@ mod tests {
                 .any(|x| x.rel == REL_ABOUT && x.from == "f1" && x.to == "combat.rs"),
             "ABOUT(f1 -> combat.rs)"
         );
+        // Machinery is gone: no reviewer agent node, no RAISED attribution edge.
         assert!(
-            g.edges
-                .iter()
-                .any(|x| x.rel == REL_RAISED && x.from == "tech-lens" && x.to == "f1"),
-            "RAISED(tech-lens -> f1): the reviewer's provenance"
+            !g.nodes.iter().any(|n| n.kind == KIND_AGENT),
+            "no KIND_AGENT node is projected for the reviewer"
+        );
+        assert!(
+            !g.edges.iter().any(|x| x.rel == REL_RAISED),
+            "no REL_RAISED agent-attribution edge is projected"
         );
     }
 
     #[test]
-    fn review_finding_actor_meta_takes_precedence_for_the_raised_edge() {
-        // The acting agent from the event's actor metadata is the RAISED source,
-        // matching the DecisionMade DECIDED fold. It takes precedence over `by`.
+    fn review_finding_projects_no_raised_edge_even_with_an_event_actor() {
+        // De-noise (spec 43): a ReviewFinding carrying an event actor still projects NO KIND_AGENT
+        // node and NO REL_RAISED edge - the agent attribution is run machinery, dropped for both
+        // the `by` reviewer and the actor override. Only the finding's CONTENT node survives.
         let p = Projector::open(":memory:", "test").unwrap();
         let payload = serde_json::json!({
             "id": "f1", "summary": "x", "about": ["a.rs"],
@@ -2867,10 +5206,18 @@ mod tests {
         p.apply(&e).unwrap();
         let g = p.subgraph(&["f1".to_string()], 2).unwrap();
         assert!(
-            g.edges
+            g.nodes
                 .iter()
-                .any(|x| x.rel == REL_RAISED && x.from == "adversary" && x.to == "f1"),
-            "RAISED(adversary -> f1) must come from the event actor"
+                .any(|n| n.id == "f1" && n.kind == KIND_FINDING),
+            "the finding content node survives the de-noise"
+        );
+        assert!(
+            !g.nodes.iter().any(|n| n.kind == KIND_AGENT),
+            "no KIND_AGENT node is projected for the actor"
+        );
+        assert!(
+            !g.edges.iter().any(|x| x.rel == REL_RAISED),
+            "no REL_RAISED edge is projected even when an event actor is present"
         );
     }
 
@@ -3050,7 +5397,8 @@ mod tests {
         let p = Projector::open(":memory:", "test").unwrap();
         // f-a is upheld for unit u1 (which will integrate); f-b is upheld for unit u2 (which
         // will NOT integrate). Emitted in production shape: id/by/summary/about + meta.spawn,
-        // no data.unit.
+        // no data.unit. (After the spec 43 de-noise a finding carries only its ABOUT edge - the
+        // RAISED agent-attribution edge is no longer projected - so integration invalidates ABOUT.)
         apply_review_finding(&p, 1, "f-a", "lens:sdet", "u1/lens:sdet#0", &["a.rs"]);
         apply_review_finding(&p, 2, "f-b", "lens:arch", "u2/lens:arch#0", &["b.rs"]);
 
@@ -3098,6 +5446,14 @@ mod tests {
         assert!(
             after.nodes.iter().any(|n| n.id == "f-b"),
             "an upheld finding whose unit has NOT integrated stays live"
+        );
+        // Spec 43 criterion 3 (LIFECYCLE survives the de-noise): disposition-expiry fired above
+        // even though NO KIND_UNIT node was ever created for u1 - the invalidation reads the
+        // finding's `$.unit` string attribute (a token), not a unit node.
+        let (nodes, _) = all_nodes_edges(&p);
+        assert!(
+            !nodes.iter().any(|(_, k)| k == KIND_UNIT),
+            "no KIND_UNIT node is projected, yet the integrate still drove disposition-expiry"
         );
     }
 
@@ -3237,25 +5593,243 @@ mod tests {
     }
 
     #[test]
-    fn unit_started_creates_assigned_to_and_blocks() {
+    fn unit_started_folds_to_no_node_or_edge() {
+        // De-noise (spec 43): a unit, its assigned agent, and its dependency edges are all run
+        // machinery, not the target project, so a UnitStarted folds to NOTHING in the graph - no
+        // KIND_UNIT node, no KIND_AGENT node, no REL_ASSIGNED_TO / REL_BLOCKS edge. The event stays
+        // in the log, where the run-tree (units/stages) and metrics read it. Seeding the graph on
+        // any of the ids the event named returns an empty neighborhood.
         let p = Projector::open(":memory:", "test").unwrap();
         let payload =
             serde_json::json!({"unit": "u2", "criterion": "c", "agent": "impl", "needs": ["u1"]});
         let mut e = Event::new(TYPE_UNIT_STARTED, serde_json::to_vec(&payload).unwrap());
         e.position = 1;
         p.apply(&e).unwrap();
-        let g = p.subgraph(&["u2".to_string()], 2).unwrap();
+        for seed in [["u2"], ["u1"], ["impl"]] {
+            let g = p
+                .subgraph(&seed.iter().map(|s| s.to_string()).collect::<Vec<_>>(), 2)
+                .unwrap();
+            assert!(
+                g.nodes.is_empty() && g.edges.is_empty(),
+                "a UnitStarted event folds to no node/edge; seeding {seed:?} gave {g:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn machinery_is_gone_after_folding_a_full_run() {
+        // Spec 43 criterion 1 (OWNS the machinery drop): after folding a run's FileTouched,
+        // UnitStarted, UnitIntegrated, GateVerdict, DecisionMade, and ReviewFinding events, the
+        // projection contains NO harness machinery anywhere - no KIND_AGENT / KIND_UNIT / KIND_GATE
+        // node, no REL_TOUCHES edge, and no agent-attribution edge (RAISED or DECIDED, nor the
+        // ASSIGNED_TO / BLOCKS / GATED_BY machinery edges). The graph models the TARGET PROJECT
+        // (its code and the design memory about it), not the loop's own bookkeeping.
+        let p = Projector::open(":memory:", "test").unwrap();
+
+        // DecisionMade with an acting agent (event actor), governing a file.
+        let mut d = Event::new(
+            TYPE_DECISION_MADE,
+            serde_json::to_vec(&serde_json::json!({
+                "id": "d1", "summary": "x", "governs": ["combat.rs"], "supersedes": ""
+            }))
+            .unwrap(),
+        );
+        d.position = 1;
+        d.meta
+            .insert(META_ACTOR.to_string(), "rust-engineer".to_string());
+        p.apply(&d).unwrap();
+
+        // FileTouched (agent touches file).
+        let mut ft = Event::new(
+            TYPE_FILE_TOUCHED,
+            serde_json::to_vec(&serde_json::json!({ "path": "combat.rs", "by": "rust-engineer" }))
+                .unwrap(),
+        );
+        ft.position = 2;
+        p.apply(&ft).unwrap();
+
+        // GateVerdict on the file.
+        let mut gv = Event::new(
+            TYPE_GATE_VERDICT,
+            serde_json::to_vec(
+                &serde_json::json!({ "gate": "cargo test", "pass": true, "artifact": "combat.rs" }),
+            )
+            .unwrap(),
+        );
+        gv.position = 3;
+        p.apply(&gv).unwrap();
+
+        // UnitStarted (unit assigned to an agent, blocked by another unit).
+        let mut us = Event::new(
+            TYPE_UNIT_STARTED,
+            serde_json::to_vec(&serde_json::json!({
+                "unit": "u2", "criterion": "c", "agent": "impl", "needs": ["u1"]
+            }))
+            .unwrap(),
+        );
+        us.position = 4;
+        p.apply(&us).unwrap();
+
+        // ReviewFinding raised by a reviewer about the file.
+        let mut rf = Event::new(
+            TYPE_REVIEW_FINDING,
+            serde_json::to_vec(&serde_json::json!({
+                "id": "f1", "by": "tech-lens", "unit": "u2", "summary": "y", "about": ["combat.rs"]
+            }))
+            .unwrap(),
+        );
+        rf.position = 5;
+        p.apply(&rf).unwrap();
+
+        // UnitIntegrated.
+        let mut ui = Event::new(
+            TYPE_UNIT_INTEGRATED,
+            serde_json::to_vec(&serde_json::json!({ "id": "u2", "commit": "abc" })).unwrap(),
+        );
+        ui.position = 6;
+        p.apply(&ui).unwrap();
+
+        let (nodes, edges) = all_nodes_edges(&p);
+        for kind in [KIND_AGENT, KIND_UNIT, KIND_GATE] {
+            assert!(
+                !nodes.iter().any(|(_, k)| k == kind),
+                "no {kind} machinery node is projected; got nodes {nodes:?}"
+            );
+        }
+        for rel in [
+            REL_TOUCHES,
+            REL_RAISED,
+            REL_DECIDED,
+            REL_ASSIGNED_TO,
+            REL_BLOCKS,
+            REL_GATED_BY,
+        ] {
+            assert!(
+                !edges.iter().any(|(_, r, _)| r == rel),
+                "no {rel} machinery edge is projected; got edges {edges:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn content_survives_the_de_noise() {
+        // Spec 43 criterion 2 (OWNS content preservation): the same fold that drops machinery STILL
+        // produces the KIND_DECISION / KIND_FINDING / KIND_LESSON content nodes and their edges to
+        // the code they concern (GOVERNS for a decision, ABOUT for a finding and a lesson). Only the
+        // agent attribution is absent. It does NOT own the machinery drop (criterion 1).
+        let p = Projector::open(":memory:", "test").unwrap();
+        apply_decision(&p, 1, "d1", "use the shared authority", &["combat.rs"], "");
+        apply_review_finding(&p, 2, "f1", "tech-lens", "u1/tech-lens#0", &["combat.rs"]);
+        let mut le = Event::new(
+            TYPE_LESSON_LEARNED,
+            serde_json::to_vec(
+                &serde_json::json!({ "id": "l1", "summary": "z", "about": ["combat.rs"] }),
+            )
+            .unwrap(),
+        );
+        le.position = 3;
+        p.apply(&le).unwrap();
+
+        let g = p.subgraph(&["combat.rs".to_string()], 2).unwrap();
+        // Content nodes survive, reachable from the code they concern.
+        assert!(
+            g.nodes
+                .iter()
+                .any(|n| n.id == "d1" && n.kind == KIND_DECISION),
+            "the decision content node survives"
+        );
+        assert!(
+            g.nodes
+                .iter()
+                .any(|n| n.id == "f1" && n.kind == KIND_FINDING),
+            "the finding content node survives"
+        );
+        assert!(
+            g.nodes
+                .iter()
+                .any(|n| n.id == "l1" && n.kind == KIND_LESSON),
+            "the lesson content node survives"
+        );
+        // Content edges to the code survive.
         assert!(
             g.edges
                 .iter()
-                .any(|x| x.rel == REL_ASSIGNED_TO && x.from == "u2" && x.to == "impl"),
-            "ASSIGNED_TO(u2 -> impl)"
+                .any(|e| e.rel == REL_GOVERNS && e.from == "d1" && e.to == "combat.rs"),
+            "the decision's GOVERNS edge survives"
         );
         assert!(
             g.edges
                 .iter()
-                .any(|x| x.rel == REL_BLOCKS && x.from == "u1" && x.to == "u2"),
-            "BLOCKS(u1 -> u2)"
+                .any(|e| e.rel == REL_ABOUT && e.from == "f1" && e.to == "combat.rs"),
+            "the finding's ABOUT edge survives"
+        );
+        assert!(
+            g.edges
+                .iter()
+                .any(|e| e.rel == REL_ABOUT && e.from == "l1" && e.to == "combat.rs"),
+            "the lesson's ABOUT edge survives"
+        );
+        // Only the agent attribution is absent.
+        assert!(
+            !g.nodes.iter().any(|n| n.kind == KIND_AGENT),
+            "no agent attribution node survives"
+        );
+        assert!(
+            !g.edges
+                .iter()
+                .any(|e| e.rel == REL_RAISED || e.rel == REL_DECIDED),
+            "no agent attribution edge survives"
+        );
+    }
+
+    #[test]
+    fn consumers_read_the_log_not_the_dropped_machinery_nodes() {
+        // Spec 43 criterion 4 (OWNS the safe-consumer guarantee): metrics folds the EVENT LOG, never
+        // the graph, so dropping the unit/gate nodes cannot change what it reports. Fold a run's
+        // UnitStarted + GateVerdicts into the de-noised projection AND compute metrics from the same
+        // events: the graph carries NO KIND_UNIT / KIND_GATE node, yet metrics still counts the unit
+        // from the log - proving the consumer never depended on the dropped nodes. It does NOT own
+        // content preservation (criterion 2).
+        let unit_started = {
+            // Production shape: the conductor emits UnitStarted with an `id` and `agent` (metrics
+            // keys on `id`), plus the `unit` the fold once read.
+            let mut e = Event::new(
+                TYPE_UNIT_STARTED,
+                serde_json::to_vec(&serde_json::json!({
+                    "id": "u1", "unit": "u1", "criterion": "c", "agent": "impl", "needs": []
+                }))
+                .unwrap(),
+            );
+            e.position = 1;
+            e
+        };
+        let gate_pass = {
+            let mut e = Event::new(
+                TYPE_GATE_VERDICT,
+                serde_json::to_vec(&serde_json::json!({ "gate": "cargo test", "pass": true }))
+                    .unwrap(),
+            );
+            e.position = 2;
+            e
+        };
+        let events = vec![unit_started, gate_pass];
+
+        // Fold into the (de-noised) graph.
+        let p = Projector::open(":memory:", "test").unwrap();
+        for e in &events {
+            p.apply(e).unwrap();
+        }
+        let (nodes, _) = all_nodes_edges(&p);
+        assert!(
+            !nodes.iter().any(|(_, k)| k == KIND_UNIT || k == KIND_GATE),
+            "the de-noised graph carries no unit/gate machinery node; got {nodes:?}"
+        );
+
+        // Metrics reads the LOG and is unaffected by the absent nodes.
+        let m = crate::metrics::project(&events);
+        assert_eq!(
+            m.units_started, 1,
+            "metrics counts the unit from the event log, not the (absent) graph node"
         );
     }
 
@@ -3660,8 +6234,10 @@ mod tests {
         //
         // One shared graph.db, two Projectors ("alpha", "beta"). BOTH fold a decision "d1" (and
         // an artifact "shared.rs") - the SAME seed ids under both projects - plus a
-        // project-UNIQUE neighbor decision ("only-alpha" / "only-beta") governing the same file
-        // and a project-unique DECIDING agent. On a shared backend the two projects occupy
+        // project-UNIQUE neighbor decision ("only-alpha" / "only-beta") governing the same file.
+        // Each decision carries an actor, but the de-noise (spec 43) drops it: no agent node is
+        // projected, so scoping is proven over the surviving decision/file nodes. On a shared
+        // backend the two projects occupy
         // DISTINCT global positions (the `Namespaced` decorator scopes streams over one global
         // log), so distinct positions keep the shared `applied` ledger from mistaking beta's
         // fold for an already-applied one.
@@ -3709,12 +6285,15 @@ mod tests {
             );
         }
         // alpha's own neighborhood is intact (the filter isolates, it does not empty the graph).
-        for kept in ["only-alpha", "agent-alpha"] {
-            assert!(
-                ag.nodes.iter().any(|n| n.id == kept),
-                "alpha's own node {kept} stays reachable under scope, got {ag:?}"
-            );
-        }
+        assert!(
+            ag.nodes.iter().any(|n| n.id == "only-alpha"),
+            "alpha's own node only-alpha stays reachable under scope, got {ag:?}"
+        );
+        // De-noise (spec 43): the DECIDING agent is never a node, in either project's read.
+        assert!(
+            !ag.nodes.iter().any(|n| n.kind == KIND_AGENT),
+            "no KIND_AGENT node is projected (the actor is dropped), got {ag:?}"
+        );
 
         // beta's read is the mirror image over the SAME shared backend.
         let bg = beta.subgraph(&["shared.rs".to_string()], 2).unwrap();
@@ -3735,12 +6314,14 @@ mod tests {
                 "beta's read must not surface alpha-only node {leaked}, got {bg:?}"
             );
         }
-        for kept in ["only-beta", "agent-beta"] {
-            assert!(
-                bg.nodes.iter().any(|n| n.id == kept),
-                "beta's own node {kept} stays reachable under scope, got {bg:?}"
-            );
-        }
+        assert!(
+            bg.nodes.iter().any(|n| n.id == "only-beta"),
+            "beta's own node only-beta stays reachable under scope, got {bg:?}"
+        );
+        assert!(
+            !bg.nodes.iter().any(|n| n.kind == KIND_AGENT),
+            "no KIND_AGENT node is projected in beta's read either, got {bg:?}"
+        );
     }
 
     #[test]
@@ -4006,24 +6587,25 @@ mod tests {
         // Each project's rebuilt subgraph reaches EXACTLY its own nodes - never the other's, even
         // though both share the seed ids d1 and shared.rs. Exact-set equality pins BOTH failure
         // directions at once: no beta node leaks into alpha's rebuild (over-reach), and none of
-        // alpha's own nodes go missing (under-derivation). agent-alpha/agent-beta are reached at
-        // depth 2 (shared.rs <- d1/only-* via GOVERNS, then agent -> decision via DECIDED), so the
-        // set exercises node, edge, and traversal re-derivation together.
-        let want = |own_decision: &str, own_agent: &str| -> BTreeSet<String> {
-            ["shared.rs", "d1", own_decision, own_agent]
+        // alpha's own nodes go missing (under-derivation). Each decision carries an actor, but the
+        // de-noise (spec 43) drops it - no agent node is re-derived - so the scoped set is the
+        // shared file, the shared decision id, and the project-unique decision, exercising node,
+        // edge, and traversal re-derivation together.
+        let want = |own_decision: &str| -> BTreeSet<String> {
+            ["shared.rs", "d1", own_decision]
                 .iter()
                 .map(|s| s.to_string())
                 .collect()
         };
         assert_eq!(
             scoped.get("alpha"),
-            Some(&want("only-alpha", "agent-alpha")),
+            Some(&want("only-alpha")),
             "the rebuilt alpha subgraph reaches EXACTLY alpha's own nodes (no beta leak, none \
              missing), got {scoped:?}"
         );
         assert_eq!(
             scoped.get("beta"),
-            Some(&want("only-beta", "agent-beta")),
+            Some(&want("only-beta")),
             "the rebuilt beta subgraph reaches EXACTLY beta's own nodes (no alpha leak, none \
              missing), got {scoped:?}"
         );
@@ -4404,6 +6986,93 @@ mod tests {
             (nodes, edges),
             rebuilt_again,
             "rebuilding the code log from scratch re-derives the identical nodes and tiered edges"
+        );
+    }
+
+    /// Every user-defined index name on the graph tables, read from `sqlite_master` (the
+    /// implicit `sqlite_autoindex_*` primary-key indexes are excluded), so a test can assert an
+    /// additive migration created a named index.
+    fn index_names(p: &Projector) -> BTreeSet<String> {
+        let conn = p.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT name FROM sqlite_master
+                  WHERE type = 'index' AND name NOT LIKE 'sqlite_%'",
+            )
+            .unwrap();
+        stmt.query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    /// The `EXPLAIN QUERY PLAN` `detail` lines for `sql`, so a test can assert the planner chose a
+    /// named index rather than a full table scan.
+    fn query_plan(p: &Projector, sql: &str) -> Vec<String> {
+        let conn = p.conn.lock().unwrap();
+        let mut stmt = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+        stmt.query_map([], |r| r.get::<_, String>(3))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn additive_indexes_exist_and_the_pinned_name_suffix_query_uses_its_index() {
+        // Spec 45 criterion 4: the two additive indexes that keep whole-graph and directed reads
+        // sub-linear are present after migration and are actually USED. This test names NO
+        // feature-gated symbol, so it compiles and runs identically on the default and
+        // `--no-default-features` lanes - the "in BOTH feature lanes" clause is satisfied by
+        // construction. `open` runs the migration, so a fresh db already carries both indexes.
+        let p = Projector::open(":memory:", "test").unwrap();
+        let names = index_names(&p);
+        assert!(
+            names.contains("idx_edges_live_rel_from"),
+            "the partial live-edge index edges(rel, from_id) WHERE valid_to IS NULL is present; got {names:?}"
+        );
+        assert!(
+            names.contains("idx_nodes_name_suffix"),
+            "the entity-name-suffix expression index on nodes is present; got {names:?}"
+        );
+
+        // A few code-entity nodes (`<file>::<name>` ids) so the resolution query has a realistic
+        // target space to resolve `Foo` against.
+        {
+            let conn = p.conn.lock().unwrap();
+            for id in ["a.rs::Foo", "b.rs::Foo", "c.rs::Bar"] {
+                conn.execute(
+                    "INSERT INTO nodes (id, kind, attrs, project) VALUES (?1, ?2, NULL, 'test')",
+                    params![id, KIND_CODE_ENTITY],
+                )
+                .unwrap();
+            }
+        }
+
+        // ARE USED (expression index): a name-resolution query phrased with the PINNED expression
+        // `substr(id, instr(id, '::') + 2)` - identical to the fold's twin on `to_id` - hits the
+        // expression index, not a full scan. SQLite uses an expression index only when the query's
+        // expression matches it, so this pins the exact phrasing the coming cross-file resolution
+        // (spec 46) MUST reuse or silently miss the index.
+        let plan = query_plan(
+            &p,
+            "SELECT id FROM nodes WHERE substr(id, instr(id, '::') + 2) = 'Foo'",
+        );
+        assert!(
+            plan.iter().any(|d| d.contains("idx_nodes_name_suffix")),
+            "the pinned substr(id, instr(id,'::')+2) resolution uses idx_nodes_name_suffix; plan was {plan:?}"
+        );
+
+        // ARE USED (partial index): the relationship-scoped forward scan
+        // (`rel = ? AND valid_to IS NULL`, the shape a directed CALLS traversal walks) is served by
+        // the partial live-edge index. The query carries the exact `valid_to IS NULL` term, so
+        // SQLite is allowed to pick the partial index over the plain `from_id`/`to_id` indexes.
+        let plan = query_plan(
+            &p,
+            "SELECT to_id FROM edges WHERE rel = 'CALLS' AND valid_to IS NULL",
+        );
+        assert!(
+            plan.iter().any(|d| d.contains("idx_edges_live_rel_from")),
+            "the relationship-scoped forward scan uses the partial idx_edges_live_rel_from; plan was {plan:?}"
         );
     }
 }

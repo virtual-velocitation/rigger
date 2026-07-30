@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 
 use crate::config::{AgentDef, Config, Stage};
 use crate::contextgraph::{self, Graph, Projection};
-use crate::eventstore::{Direction, Event, EventStore, ExpectedRevision};
+use crate::eventstore::{Direction, Event, EventStore};
 use crate::failure::{self, Signal};
 use crate::gate::{self, Gate};
 use crate::grounder::{BlastRadius, Grounder};
@@ -1999,26 +1999,46 @@ impl RunCtx<'_> {
     /// expected-revision handling, the position stamp, and the post-append graph fold
     /// live in ONE place and can never silently diverge (finding
     /// arch-emit-keyed-dup-authority).
-    fn append_and_fold(&self, mut ev: Event) -> Result<u64, Error> {
-        // Stamp the run id on every conductor-emitted event (spec 06, unit 1): the one
-        // chokepoint every emit path routes through, so unit/status/gate-verdict/spec-
-        // defect events are all attributable to their run. Skipped only when the run id
-        // is empty (the pure-helper test context, which appends nothing meaningful).
-        if !self.run_id.is_empty() {
-            ev = ev.with_meta(crate::run::META_RUN_ID, &self.run_id);
+    fn append_and_fold(&self, ev: Event) -> Result<u64, Error> {
+        // A single event is the one-event case of the batched authority, so run-id stamping, the
+        // append, and the graph fold live in exactly ONE place (finding arch-emit-keyed-dup-authority
+        // stays closed - there is no second append+fold path to drift). The returned position is the
+        // appended log position a caller may CITE later (the content-address cache's green-verdict
+        // provenance, spec 12 unit 1); the un-citing emit wrappers discard it.
+        self.append_and_fold_batch(std::slice::from_ref(&ev))
+    }
+
+    /// The conductor's batched event-mutation authority: append a whole slice of already-built
+    /// events to the run stream in ONE append and fold them into the live graph in ONE transaction
+    /// (spec 49's batched-fold cadence - one transaction per file's batch, not per event, since the
+    /// measured cold-build throughput was transaction-cadence bound). Run-id stamping stays the one
+    /// chokepoint here (spec 06, unit 1), and the batched append-and-fold + position assignment is
+    /// the shared [`crate::ingest::append_and_fold_batch`] authority a cold `rigger graph build`
+    /// also uses, so the run and a cold build can never fold a file's batch differently.
+    /// [`append_and_fold`](RunCtx::append_and_fold) is the one-event case; returns the last appended
+    /// position.
+    fn append_and_fold_batch(&self, events: &[Event]) -> Result<u64, Error> {
+        if events.is_empty() {
+            return Ok(0);
         }
-        let pos =
-            self.deps
-                .store
-                .append(STREAM, ExpectedRevision::Any, std::slice::from_ref(&ev))?;
-        if let Some(g) = self.deps.graph {
-            ev.position = pos;
-            let _ = g.apply(&ev);
-        }
-        // Return the appended log position so a caller that must CITE this event later
-        // (the content-address cache's green-verdict provenance, spec 12 unit 1) can
-        // record it; the un-citing emit wrappers discard it.
-        Ok(pos)
+        // Stamp the run id on every event (spec 06, unit 1) - the one chokepoint every emit path
+        // routes through, so unit/status/gate-verdict/spec-defect events are all attributable to
+        // their run. Skipped only when the run id is empty (the pure-helper test context, which
+        // appends nothing meaningful).
+        let stamped: Vec<Event> = if self.run_id.is_empty() {
+            events.to_vec()
+        } else {
+            events
+                .iter()
+                .map(|e| e.clone().with_meta(crate::run::META_RUN_ID, &self.run_id))
+                .collect()
+        };
+        Ok(crate::ingest::append_and_fold_batch(
+            self.deps.store,
+            self.deps.graph,
+            STREAM,
+            &stamped,
+        )?)
     }
 
     /// Emit an event, optionally stamping the acting agent in its metadata (the
@@ -2099,6 +2119,40 @@ impl RunCtx<'_> {
             }
         }
         self.append_and_fold(ev).map(|_| ())
+    }
+
+    /// The batched analogue of [`emit_keyed`](RunCtx::emit_keyed): given a file's WHOLE keyed batch,
+    /// drop the events whose key is already recorded (the replay dedup, UNCHANGED - an already-seen
+    /// key appends nothing), then append the SURVIVORS in ONE transaction and fold them in ONE graph
+    /// transaction via [`append_and_fold_batch`](RunCtx::append_and_fold_batch) (spec 49's per-file
+    /// cadence). Each survivor is rebuilt exactly as `emit_keyed` builds it - a fresh event carrying
+    /// the replay key, its payload round-tripped through the same serialize path - and an event whose
+    /// data is not JSON is skipped exactly as the per-event `from_slice` guard skips it (BEFORE its
+    /// key is recorded), so batching changes transaction CADENCE only, never event content, order, or
+    /// the dedup contract. The dedup lock is held only around the set (released before the append),
+    /// so concurrent units in a wave still append their own keyed events in parallel.
+    ///
+    /// Symbols-gated: its only caller is the code-ingest sink, which the light lane compiles out.
+    #[cfg(feature = "symbols")]
+    fn emit_keyed_batch(&self, keyed: &[(String, &Event)]) -> Result<(), Error> {
+        let survivors: Vec<Event> = {
+            let mut keys = self.replayed_keys.lock().unwrap();
+            keyed
+                .iter()
+                .filter_map(|(key, ev)| {
+                    // The `from_slice` guard runs BEFORE the dedup insert, exactly as the per-event
+                    // sink does (`if let Ok(payload) = from_slice { emit_keyed(..) }`), so a non-JSON
+                    // event neither appends nor records its key.
+                    let payload: Value = serde_json::from_slice(&ev.data).ok()?;
+                    if !keys.insert(key.clone()) {
+                        return None;
+                    }
+                    let data = serde_json::to_vec(&payload).ok()?;
+                    Some(Event::new(&ev.type_, data).with_meta(META_REPLAY_KEY, key.as_str()))
+                })
+                .collect()
+        };
+        self.append_and_fold_batch(&survivors).map(|_| ())
     }
 
     /// The requested model ALIAS an agent is spawned with for `attempt` - the cascade rung
@@ -4750,11 +4804,38 @@ impl RunCtx<'_> {
                 // keys on to exclude a sibling's approve.
                 self.emit_meta(t, v, &[(contextgraph::META_ACTOR, role), (META_SPAWN, &id)])
             };
-            let result = self
-                .deps
-                .driver
-                .spawn(agent_def, prompt, &opts, &emit)
-                .map_err(|e| Error(format!("stage {:?} {tier} {agent_id:?}: {}", st.name, e.0)))?;
+            let result = match self.deps.driver.spawn(agent_def, prompt, &opts, &emit) {
+                Ok(result) => result,
+                Err(e) => {
+                    // REVIEWER ERROR RE-PARK (spec 51, criterion 1): a REVIEW-stage spawn whose
+                    // RECORDED result is a plain ERROR - an externally-killed reviewer (quota
+                    // exhaustion, a crash) whose error the death courier (or the operator) recorded
+                    // on its id - is an INFRASTRUCTURE fault, NOT a verdict. An error is not a
+                    // verdict: review must COMPLETE. So the conductor does NOT adopt the error as
+                    // the review outcome and does NOT fail the step; it charges the unit no attempt
+                    // (the work was never judged) and RE-PARKS a FRESH attempt of the SAME review by
+                    // looping to the next `spawn_retry_id`. That id is unrecorded, so the replay
+                    // driver parks it and the next `rigger step` returns it in the wave; a completed
+                    // real verdict then folds through the NORMAL adjudication path below. This is
+                    // bounded by `REVIEWER_RESPAWN_BOUND` exactly like the degenerate loop, so a
+                    // persistently-erroring review spawn escalates through the halt below rather
+                    // than re-parking forever (spec 51, criterion 2 owns that bound).
+                    //
+                    // A driver PARK (the replay frontier) or a BUDGET refusal unwinds the unit
+                    // cleanly and PROPAGATES unchanged (its marker survives the `format!` wrapping,
+                    // so `is_parked`/`is_budget_refused` still recognize it upstream). And the LIVE
+                    // drivers (cli / workflow) never RECORD a spawn result, so `review_spawn_errored`
+                    // is false there and a genuine in-process review failure still propagates to
+                    // remediation exactly as before - only a REPLAYED recorded error re-parks.
+                    if !is_parked(&e) && !is_budget_refused(&e) && self.review_spawn_errored(&id)? {
+                        continue;
+                    }
+                    return Err(Error(format!(
+                        "stage {:?} {tier} {agent_id:?}: {}",
+                        st.name, e.0
+                    )));
+                }
+            };
             // A substantive result folds into the review; a degenerate one loops to respawn
             // the SAME reviewer under the next retry id.
             if !self.reviewer_result_is_degenerate(
@@ -4845,6 +4926,38 @@ impl RunCtx<'_> {
                     .ok()
                     .is_some_and(|v| emitted_verdict_approves(&v))
         }))
+    }
+
+    /// Whether the review spawn `id` has a RECORDED result that is a plain ERROR (spec 51,
+    /// criterion 1: REVIEWER ERROR RE-PARK) - the signal that an externally-killed reviewer
+    /// (quota exhaustion, a crash) had an error result recorded on its id by the death courier
+    /// or the operator. An error is NOT a verdict: review must COMPLETE, so on this signal
+    /// [`run_reviewer`](RunCtx::run_reviewer) treats the result as an INFRASTRUCTURE fault on
+    /// that spawn and RE-PARKS a FRESH attempt of the SAME review (the next
+    /// [`spawn_retry_id`]) rather than adopting the error as the review outcome and failing the
+    /// step - charging the unit NO remediation attempt, because the work was never judged.
+    ///
+    /// A LIVENESS fault ([`SpawnResult::is_liveness_fault`](spawn::SpawnResult::is_liveness_fault))
+    /// is EXCLUDED: a hung review agent has its OWN re-park-then-loud-halt path (the replay
+    /// driver re-parks its id and `rigger step` surfaces it via `liveness::hung_spawns`), so it
+    /// must never ALSO be silently re-driven here. A non-error (substantive) result is likewise
+    /// excluded - it is a real verdict that folds normally.
+    ///
+    /// Scoped to the CURRENT run (like every execution-replay lookup, spec 06 unit 1), so a
+    /// prior run's recorded review error never re-parks a fresh run's same-id review spawn. On
+    /// the LIVE drivers (cli / workflow) no spawn result is ever recorded, so this is always
+    /// `false` there and a genuine in-process review failure still propagates to remediation
+    /// unchanged - only a REPLAYED recorded error re-parks.
+    fn review_spawn_errored(&self, id: &str) -> Result<bool, Error> {
+        let all = self
+            .deps
+            .store
+            .read_stream(STREAM, 0, Direction::Forward)
+            .map_err(|e| Error(e.to_string()))?;
+        let events = crate::run::current_run(&all);
+        Ok(spawn::result_of(events, id)
+            .map_err(|e| Error(e.to_string()))?
+            .is_some_and(|res| res.is_error() && !res.is_liveness_fault()))
     }
 
     /// Whether a reviewer spawn's `result` is DEGENERATE (Gap 18) - an infrastructure
@@ -6452,42 +6565,22 @@ impl RunCtx<'_> {
             return;
         }
         let root = self.deps.repo.clone();
-        // The code half (29a): the project's real definitions and references. Reuses the `symbols`
-        // grounder's persisted index when present (no re-parse), so in a live run this is a cheap
-        // read of what the grounder already built - not a second whole-tree parse.
-        for (file, batch) in crate::grounder::symbols::events::project_batches(&root) {
-            self.emit_ingest_batch("gc", &file, &batch);
-        }
-        // The design half (29b): the project's design docs and inline source rationale.
-        for (file, batch) in crate::grounder::design::events::project_batches(&root) {
-            self.emit_ingest_batch("gd", &file, &batch);
-        }
-    }
-
-    /// Emit one file's extraction batch through the keyed emit authority (spec 29c criterion 5),
-    /// keyed `<prefix>/<file>@<hash>#<i>` where `<hash>` fingerprints the WHOLE batch's bytes. Every
-    /// event of a file shares one `<hash>`, so a re-ingest of an UNCHANGED file finds every key
-    /// already recorded and appends nothing (it is not re-ingested), while a CHANGED file's batch
-    /// hashes differently - so every key differs and the whole batch re-emits, its `fresh` head
-    /// superseding the file's prior structural edges by 29a's mechanism. The replay-key metadata is
-    /// audit-only; the fold ignores it exactly as it ignores every other replay key.
-    #[cfg(feature = "symbols")]
-    fn emit_ingest_batch(&self, prefix: &str, file: &str, batch: &[Event]) {
-        // A stable content fingerprint of the batch: the SAME line-ending-normalized FNV content
-        // primitive the symbols reindex freshening gate keys on, reused (not a fresh hash copy) so
-        // the change-detection key is one content-identity authority. The batch bytes are JSON the
-        // emit pass just serialized, so they are valid UTF-8.
-        let concat: String = batch
-            .iter()
-            .filter_map(|e| std::str::from_utf8(&e.data).ok())
-            .collect();
-        let hash = crate::grounder::symbols::store::content_hash(&concat);
-        for (i, ev) in batch.iter().enumerate() {
-            let key = format!("{prefix}/{file}@{hash}#{i}");
-            if let Ok(payload) = serde_json::from_slice::<Value>(&ev.data) {
-                let _ = self.emit_keyed(&key, &ev.type_, payload);
-            }
-        }
+        // The walk over the project's per-file extraction batches AND their `<prefix>/<file>@<hash>#<i>`
+        // content key are the shared ingest authority ([`crate::ingest::ingest_project_batched`]) - the
+        // SAME walk and keying a standalone `rigger graph build` uses, so the two can never fork the
+        // key an event is deduped under. The run's emit SINK is its replay-keyed, concurrency-safe
+        // [`emit_keyed_batch`](RunCtx::emit_keyed_batch): a file's WHOLE batch is appended-and-folded
+        // through the single mutation authority in ONE store transaction and ONE graph transaction
+        // (spec 49's batched-fold cadence, since the measured cold-build throughput was
+        // transaction-cadence bound), keyed so a re-ingest of an UNCHANGED file finds every key
+        // already recorded (seeded into `replayed_keys` at run start) and appends nothing, while a
+        // CHANGED file's batch hashes differently - every key differs, so the whole batch, its `fresh`
+        // head included, re-emits and supersedes the file's prior structural edges by 29a's mechanism.
+        // The dedup lock is held only around the key set (released before the append), so a concurrent
+        // unit in the wave still appends its own keyed events in parallel.
+        crate::ingest::ingest_project_batched(&root, |keyed| {
+            let _ = self.emit_keyed_batch(keyed);
+        });
     }
 
     /// Light lane: no extraction pass is compiled, so there is nothing to ingest - the always-
@@ -8489,7 +8582,7 @@ mod tests {
     use super::*;
     use crate::config;
     use crate::eventstore::sqlite::Store;
-    use crate::eventstore::Filter;
+    use crate::eventstore::{ExpectedRevision, Filter};
     use crate::gate::ExecRunner;
     use std::path::Path;
 
@@ -12197,6 +12290,161 @@ mod tests {
         );
     }
 
+    /// Spec 49 criterion 2 (BATCHED FOLD CADENCE): the run's ingest sink appends each file's WHOLE
+    /// batch in ONE store append and folds it in ONE graph transaction - NOT one append and one
+    /// fold per event. The measured cold-build throughput (69 events/s) was transaction-cadence
+    /// bound, so this is the load-bearing fix: a K-file fixture where every file yields a
+    /// MULTI-EVENT batch (a def plus a reference to it = a `CodeEntityExtracted` AND an
+    /// `EdgeInferred`) must produce one append and one `apply_batch` PER FILE, and never a per-event
+    /// `apply`. This criterion owns the batching only; it does not assert parallelism (criterion 1),
+    /// so it drives the sink at the default width and asserts nothing about worker engagement.
+    #[cfg(feature = "symbols")]
+    #[test]
+    fn the_ingest_sink_appends_and_folds_once_per_file_batch_never_once_per_event() {
+        use std::sync::Mutex as SpyMutex;
+
+        // A store spy: forwards to a real in-memory store but records the SIZE of every append, so
+        // the test can prove the ingest issues ONE append per file batch (not one per event).
+        struct CountingStore<'a> {
+            inner: &'a dyn EventStore,
+            appends: SpyMutex<Vec<usize>>,
+        }
+        impl EventStore for CountingStore<'_> {
+            fn append(
+                &self,
+                stream: &str,
+                expected: ExpectedRevision,
+                events: &[Event],
+            ) -> Result<crate::eventstore::Position, crate::eventstore::Error> {
+                self.appends.lock().unwrap().push(events.len());
+                self.inner.append(stream, expected, events)
+            }
+            fn read_stream(
+                &self,
+                stream: &str,
+                from: crate::eventstore::Revision,
+                dir: Direction,
+            ) -> Result<Vec<Event>, crate::eventstore::Error> {
+                self.inner.read_stream(stream, from, dir)
+            }
+            fn read_all(
+                &self,
+                from: crate::eventstore::Position,
+                dir: Direction,
+                filter: &Filter,
+            ) -> Result<Vec<Event>, crate::eventstore::Error> {
+                self.inner.read_all(from, dir, filter)
+            }
+            fn subscribe_all(
+                &self,
+                from: crate::eventstore::Position,
+                filter: &Filter,
+            ) -> Result<crate::eventstore::Subscription, crate::eventstore::Error> {
+                self.inner.subscribe_all(from, filter)
+            }
+            fn subscribe_stream(
+                &self,
+                stream: &str,
+                from: crate::eventstore::Revision,
+            ) -> Result<crate::eventstore::Subscription, crate::eventstore::Error> {
+                self.inner.subscribe_stream(stream, from)
+            }
+        }
+
+        // A graph spy: counts per-EVENT folds (`apply`) and records the size of every per-BATCH fold
+        // (`apply_batch`), so the test can prove the ingest folds a file's whole batch in ONE
+        // `apply_batch` call and NEVER an `apply` per event.
+        #[derive(Default)]
+        struct CountingGraph {
+            per_event: AtomicU32,
+            batch_folds: SpyMutex<Vec<usize>>,
+        }
+        impl Projection for CountingGraph {
+            fn apply(&self, _e: &Event) -> Result<(), contextgraph::Error> {
+                self.per_event.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+            fn apply_batch(&self, events: &[Event]) -> Result<(), contextgraph::Error> {
+                self.batch_folds.lock().unwrap().push(events.len());
+                Ok(())
+            }
+            fn subgraph(&self, _s: &[String], _d: i64) -> Result<Graph, contextgraph::Error> {
+                Ok(Graph::default())
+            }
+            fn resolve(&self, _m: &str) -> Result<Option<String>, contextgraph::Error> {
+                Ok(None)
+            }
+        }
+
+        // K source files, each a MULTI-EVENT batch: `defN` (a CodeEntityExtracted) and `useN` which
+        // references it (an EdgeInferred). So a file's batch carries >1 event and "one transaction
+        // for the whole batch" is observably different from "one transaction per event".
+        const K: usize = 4;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        for i in 0..K {
+            std::fs::write(
+                root.join(format!("src/m{i}.rs")),
+                format!("pub fn def{i}() {{}}\npub fn use{i}() {{ def{i}(); }}\n"),
+            )
+            .unwrap();
+        }
+        let root_str = root.to_str().unwrap().to_string();
+
+        let inner = Store::open(":memory:").unwrap();
+        let store = CountingStore {
+            inner: &inner,
+            appends: SpyMutex::new(Vec::new()),
+        };
+        let graph = CountingGraph::default();
+        let driver = Stub::new();
+        let grounder = StubGrounder {
+            by_query: HashMap::new(),
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: root_str,
+            grounder: Some(&grounder),
+            graph: Some(&graph),
+            criteria: Vec::new(),
+        };
+        let cfg = Config::default();
+        let ctx = RunCtx::for_test(&cfg, &deps);
+
+        ctx.ingest_project_batches();
+
+        let appends = store.appends.lock().unwrap().clone();
+        let batch_folds = graph.batch_folds.lock().unwrap().clone();
+        let per_event = graph.per_event.load(Ordering::SeqCst);
+
+        // One append per file batch: exactly K appends (each code file is one batch; this pure-source
+        // fixture carries no design docs, so the design half emits nothing).
+        assert_eq!(
+            appends.len(),
+            K,
+            "one append per file batch: {K} files => {K} appends; got sizes {appends:?}"
+        );
+        // Each file's whole batch appended as a UNIT: at least one append carried more than one event
+        // (a def and its reference), so this is not a disguised per-event append of size 1.
+        assert!(
+            appends.iter().any(|&n| n >= 2),
+            "a file's multi-event batch (def + reference) must append as one unit; got {appends:?}"
+        );
+        // The fold cadence matches the append cadence exactly: one `apply_batch` per append, carrying
+        // the SAME events, and NEVER a per-event `apply`.
+        assert_eq!(
+            batch_folds, appends,
+            "each file batch folds in exactly one apply_batch of the same size it appended in"
+        );
+        assert_eq!(
+            per_event, 0,
+            "the batched fold must never fold one event at a time (apply); got {per_event} apply calls"
+        );
+    }
+
     /// Spec 29c criterion 3 (design-intent grounding BY TRAVERSAL - the highest-value new
     /// capability c3 OWNS). An agent whose blast radius touches file `F` retrieves, IN ITS PROMPT
     /// and BY GRAPH TRAVERSAL (never by vector similarity), the handbook rule that GOVERNS `F` and
@@ -13986,6 +14234,251 @@ mod tests {
     }
 
     #[test]
+    fn a_review_stage_error_result_re_parks_a_fresh_attempt_no_charge_then_a_real_verdict_folds() {
+        // Spec 51, criterion 1 (REVIEWER ERROR RE-PARK): a REVIEW-stage spawn whose RECORDED
+        // result is an ERROR (an externally-killed reviewer - quota exhaustion, a crash - whose
+        // error the death courier recorded on its id) is an INFRASTRUCTURE fault, NOT a verdict.
+        // The next `rigger step` must NOT adopt the error as the review outcome and must NOT fail
+        // the step; it charges the unit no attempt (the work was never judged) and RE-PARKS a
+        // FRESH attempt of the SAME review in the returned wave. A completed REAL verdict on the
+        // re-parked spawn then flows into the NORMAL adjudication path. Driven under the PRODUCTION
+        // stepwise/replay driver (each `replay_step` is one `rigger step`), so the classification
+        // is exercised exactly as a live run replays a recorded review error.
+        let store = Store::open(":memory:").unwrap();
+        let cfg = degenerate_reviewer_cfg();
+        let replay_step = |store: &Store| {
+            let driver = crate::driver::replay::ReplayDriver::new(store);
+            let deps = Deps {
+                store,
+                driver: &driver,
+                gates: &ExecRunner,
+                repo: String::new(),
+                grounder: None,
+                graph: None,
+                criteria: Vec::new(),
+            };
+            // The whole point: a recorded review error is a CLEAN re-park, never a run failure.
+            run(&cfg, &deps).expect("a review-error re-park is a clean unwind, never a run failure")
+        };
+
+        let impl0 = spawn_id("u", ROLE_IMPLEMENTER, 0);
+        let lens0 = spawn_id("u", &lens_role("sdet"), 0);
+        let adj0 = spawn_id("u", ROLE_ADJUDICATOR, 0);
+        let adj_retry1 = spawn_retry_id("u", ROLE_ADJUDICATOR, 0, 1);
+
+        // Step 1: the implementer parks; record its success.
+        replay_step(&store);
+        crate::spawn::record_result(&store, &crate::spawn::SpawnResult::ok(&impl0, "the diff"))
+            .unwrap();
+
+        // Step 2: the review LENS parks; record a substantive lens review.
+        replay_step(&store);
+        assert!(
+            crate::spawn::is_recorded(
+                &store.read_stream(STREAM, 0, Direction::Forward).unwrap(),
+                &lens0
+            ),
+            "the review lens parked"
+        );
+        crate::spawn::record_result(
+            &store,
+            &crate::spawn::SpawnResult::ok(&lens0, "lens: no blocker"),
+        )
+        .unwrap();
+
+        // Step 3: the ADJUDICATOR parks; the death courier records an ERROR on it (a reviewer
+        // killed mid-run: usage-limit exhaustion).
+        replay_step(&store);
+        assert!(
+            crate::spawn::is_recorded(
+                &store.read_stream(STREAM, 0, Direction::Forward).unwrap(),
+                &adj0
+            ),
+            "the adjudicator parked"
+        );
+        crate::spawn::record_result(
+            &store,
+            &crate::spawn::SpawnResult::failed(&adj0, "agent killed mid-run: usage limit reached"),
+        )
+        .unwrap();
+
+        // Step 4: the errored adjudicator RE-PARKS a fresh attempt (~retry1) instead of failing the
+        // step - and charges the unit NO attempt (no UnitFailed / UnitEscalated), because an error
+        // is not a verdict.
+        replay_step(&store);
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(
+            crate::spawn::is_recorded(&events, &adj_retry1),
+            "the errored review re-parks a FRESH ~retry1 attempt in the wave"
+        );
+        assert!(
+            !events.iter().any(|e| e.type_ == ledger::TYPE_UNIT_FAILED),
+            "an errored review is an infra fault - the unit is charged no remediation attempt"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.type_ == ledger::TYPE_UNIT_ESCALATED),
+            "an errored review never escalates the unit"
+        );
+        assert!(
+            !has_status(&events, "reviewed"),
+            "an errored review is not a verdict - no `reviewed` status is emitted yet"
+        );
+
+        // A COMPLETED real verdict on the re-parked spawn flows into the NORMAL adjudication path.
+        crate::spawn::record_result(
+            &store,
+            &crate::spawn::SpawnResult::ok(&adj_retry1, r#"{"verdict":"approve"}"#),
+        )
+        .unwrap();
+        replay_step(&store);
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(
+            has_status(&events, "reviewed"),
+            "the real verdict on the re-parked spawn folds through the normal adjudication path"
+        );
+        assert!(
+            !events.iter().any(|e| e.type_ == ledger::TYPE_UNIT_FAILED),
+            "recovery still charges the unit no attempt"
+        );
+    }
+
+    #[test]
+    fn a_review_spawn_that_errors_on_every_re_parked_attempt_escalates_through_the_bound() {
+        // Spec 51, criterion 2 (ESCALATION BOUND): the reviewer-error RE-PARK (criterion 1) is
+        // BOUNDED - it can never re-park forever. When the SAME review spawn's RECORDED result is a
+        // plain ERROR on its ORIGINAL spawn AND on every re-parked `~retry{n}` attempt up to
+        // [`REVIEWER_RESPAWN_BOUND`], the conductor does NOT keep minting a fresh review spawn: it
+        // escalates through the SAME bounded path the degenerate-output loop uses, halting the run
+        // LOUDLY (naming the dead reviewer) rather than looping. Like that degenerate halt it is an
+        // INFRASTRUCTURE fault - the unit is charged NO attempt (no `UnitFailed`/`UnitEscalated`),
+        // because the work was never judged. Driven under the PRODUCTION stepwise/replay driver
+        // (each `replay_step` is one `rigger step`), so the bound is exercised exactly as a live run
+        // replays a CHAIN of recorded review errors - the multi-error path criterion 1's
+        // single-error re-park test cannot reach. This criterion OWNS the bound; it does NOT own the
+        // re-park (criterion 1).
+        let store = Store::open(":memory:").unwrap();
+        let cfg = degenerate_reviewer_cfg();
+        let replay_step = |store: &Store| -> Result<(), Error> {
+            let driver = crate::driver::replay::ReplayDriver::new(store);
+            let deps = Deps {
+                store,
+                driver: &driver,
+                gates: &ExecRunner,
+                repo: String::new(),
+                grounder: None,
+                graph: None,
+                criteria: Vec::new(),
+            };
+            run(&cfg, &deps).map(|_| ())
+        };
+
+        let impl0 = spawn_id("u", ROLE_IMPLEMENTER, 0);
+        let lens0 = spawn_id("u", &lens_role("sdet"), 0);
+        // The adjudicator's ORIGINAL spawn plus its bounded respawns: at most `1 +
+        // REVIEWER_RESPAWN_BOUND` attempts before the bound trips. All of them will error.
+        let adj_attempts: Vec<String> = (0..=REVIEWER_RESPAWN_BOUND)
+            .map(|retry| spawn_retry_id("u", ROLE_ADJUDICATOR, 0, retry))
+            .collect();
+        // The FOURTH attempt (one past the bound): it must NEVER be parked - the bound holds.
+        let adj_past_bound = spawn_retry_id("u", ROLE_ADJUDICATOR, 0, REVIEWER_RESPAWN_BOUND + 1);
+
+        // Step 1: the implementer parks; record its success.
+        replay_step(&store).expect("the implementer step is a clean unwind");
+        crate::spawn::record_result(&store, &crate::spawn::SpawnResult::ok(&impl0, "the diff"))
+            .unwrap();
+
+        // Step 2: the review LENS parks; record a substantive lens review so only the ADJUDICATOR
+        // exercises the errored-re-park bound under test.
+        replay_step(&store).expect("the lens step is a clean unwind");
+        crate::spawn::record_result(
+            &store,
+            &crate::spawn::SpawnResult::ok(&lens0, "lens: no blocker"),
+        )
+        .unwrap();
+
+        // Steps 3..=(3 + REVIEWER_RESPAWN_BOUND): the adjudicator's original spawn and each
+        // re-parked `~retry{n}` attempt parks in turn; the death courier records a PLAIN ERROR (a
+        // reviewer killed mid-run: usage-limit exhaustion) on each, re-parking the NEXT attempt.
+        // EVERY re-park is a clean unwind (never a run failure) right up to the bound.
+        for id in &adj_attempts {
+            replay_step(&store)
+                .expect("each errored re-park within the bound is a clean unwind, never a failure");
+            let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            assert!(
+                crate::spawn::is_recorded(&events, id),
+                "the adjudicator attempt {id} parked before the bound tripped"
+            );
+            crate::spawn::record_result(
+                &store,
+                &crate::spawn::SpawnResult::failed(id, "agent killed mid-run: usage limit reached"),
+            )
+            .unwrap();
+        }
+
+        // The NEXT step EXHAUSTS the bound: the original plus all REVIEWER_RESPAWN_BOUND respawns
+        // have each errored, so the conductor does NOT re-park a further attempt - it escalates
+        // through the bounded path, halting the run LOUDLY instead of re-parking forever.
+        let err = match replay_step(&store) {
+            Ok(()) => panic!(
+                "a review spawn that errors on every attempt up to the bound must HALT the run, \
+                 not re-park a further attempt forever"
+            ),
+            Err(e) => e,
+        };
+        // The bounded halt NAMES the dead reviewer (its agent id, the tier, and the unit) so the
+        // operator sees WHICH spawn is failing - the same loud surface the degenerate bound uses.
+        assert!(
+            err.0.contains("\"judge\"") && err.0.contains("adjudicator") && err.0.contains("\"u\""),
+            "the bounded escalation must name the dead reviewer, its tier, and the unit: {}",
+            err.0
+        );
+        // The internal recognition marker is stripped before the halt reaches the operator.
+        assert!(
+            !err.0.contains(DEGENERATE_MARKER),
+            "the operator-facing halt must not carry the internal sentinel marker: {:?}",
+            err.0
+        );
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        // THE BOUND HOLDS: no attempt PAST the bound is ever parked. A missing `SpawnRequested` for
+        // the fourth id proves the re-park did not loop forever - it stopped at exactly `1 +
+        // REVIEWER_RESPAWN_BOUND` spawns and escalated instead.
+        assert!(
+            !crate::spawn::is_recorded(&events, &adj_past_bound),
+            "the bound holds: the attempt past REVIEWER_RESPAWN_BOUND ({adj_past_bound}) is never parked"
+        );
+        // The unit was charged NO attempt: like the degenerate halt, a persistently-erroring
+        // reviewer is the operator's infrastructure problem, NOT code for remediation.
+        assert!(
+            !events.iter().any(|e| e.type_ == ledger::TYPE_UNIT_FAILED),
+            "a bounded reviewer-error escalation must not charge the unit an attempt (no UnitFailed)"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.type_ == ledger::TYPE_UNIT_ESCALATED),
+            "a bounded reviewer-error escalation is not a code defect for remediation (no UnitEscalated)"
+        );
+        // And it emits NO per-unit lesson - routing the halt through run_wave's dedicated
+        // degenerate arm keeps the operator's broken reviewer from being misattributed to the unit
+        // under review as a LESSON_LEARNED.
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.type_ == contextgraph::TYPE_LESSON_LEARNED),
+            "a bounded reviewer-error escalation must emit no per-unit lesson (no misattribution)"
+        );
+        // The `reviewed` status is NEVER emitted: an error is not a verdict, and an exhausted bound
+        // is a halt, not an approval or a rejection - review integrity is preserved.
+        assert!(
+            !has_status(&events, "reviewed"),
+            "an all-errored, bound-exhausted review never yields a verdict (no `reviewed` status)"
+        );
+    }
+
+    #[test]
     fn a_gating_spawn_that_emits_an_approve_verdict_but_returns_no_verdict_line_hard_errors_with_the_result_channel_fix(
     ) {
         // Spec 18, unit 3: the runtime verdict-channel mismatch backstop. A gating
@@ -14964,7 +15457,11 @@ mod tests {
     }
 
     #[test]
-    fn agent_decision_creates_a_decided_edge() {
+    fn agent_decision_folds_content_but_no_agent_attribution() {
+        // De-noise (spec 43): a live run's DecisionMade folds its CONTENT - the decision node and
+        // its GOVERNS edge to the code it concerns - but NOT the acting agent. Even though the emit
+        // stamps the actor 'a', no KIND_AGENT node and no REL_DECIDED attribution edge is projected;
+        // the graph models the target project, not the persona that acted.
         let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
         let mut cfg = Config::default();
         cfg.agents.insert("a".into(), agent("a"));
@@ -14998,10 +15495,22 @@ mod tests {
         run(&cfg, &deps).unwrap();
         let g = graph.subgraph(&["d1".to_string()], 2).unwrap();
         assert!(
+            g.nodes.iter().any(|n| n.id == "d1"),
+            "the decision content node is folded"
+        );
+        assert!(
             g.edges
                 .iter()
-                .any(|e| e.rel == contextgraph::REL_DECIDED && e.from == "a" && e.to == "d1"),
-            "the acting agent 'a' must DECIDE d1 (actor stamped on the emit)"
+                .any(|e| e.rel == contextgraph::REL_GOVERNS && e.from == "d1" && e.to == "f.rs"),
+            "the decision's GOVERNS edge to the code it concerns is folded"
+        );
+        assert!(
+            !g.edges.iter().any(|e| e.rel == contextgraph::REL_DECIDED),
+            "de-noise (spec 43): no REL_DECIDED agent-attribution edge is folded"
+        );
+        assert!(
+            !g.nodes.iter().any(|n| n.kind == contextgraph::KIND_AGENT),
+            "de-noise (spec 43): no KIND_AGENT node is folded for the acting persona"
         );
     }
 
@@ -19460,10 +19969,11 @@ mod tests {
     }
 
     #[test]
-    fn live_run_produces_a_gated_by_edge() {
-        // After a stage with a gate touches a file and integrates, the graph must
-        // carry GATED_BY(file -> gate): the conductor emits a GateVerdict carrying
-        // the artifact, which the projector folds (§7, Phase 2 carryover).
+    fn live_run_folds_no_gate_machinery() {
+        // De-noise (spec 43): a gate is run machinery, not the target project. After a stage with a
+        // gate touches a file and integrates, the conductor still emits a GateVerdict (metrics and
+        // the run-tree read it from the log), but the fold projects NO KIND_GATE node and NO
+        // GATED_BY edge - the graph carries none of the gate bookkeeping.
         let repo = init_repo();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
@@ -19494,12 +20004,16 @@ mod tests {
             criteria: Vec::new(),
         };
         run(&cfg, &deps).unwrap();
-        let g = graph.subgraph(&["touched.rs".to_string()], 2).unwrap();
+        let g = graph
+            .subgraph(&["touched.rs".to_string(), "ok".to_string()], 2)
+            .unwrap();
         assert!(
-            g.edges.iter().any(|e| e.rel == contextgraph::REL_GATED_BY
-                && e.from == "touched.rs"
-                && e.to == "ok"),
-            "the live run must fold GATED_BY(touched.rs -> ok) after the stage integrates"
+            !g.edges.iter().any(|e| e.rel == contextgraph::REL_GATED_BY),
+            "de-noise (spec 43): the live run folds NO GATED_BY gate-machinery edge"
+        );
+        assert!(
+            !g.nodes.iter().any(|n| n.kind == contextgraph::KIND_GATE),
+            "de-noise (spec 43): the live run folds NO KIND_GATE node"
         );
     }
 

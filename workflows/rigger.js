@@ -516,13 +516,14 @@ for (;;) {
   let step
   try {
     step = await agent(
-      `You are a rigger COURIER. Advance the run one frontier and return the wave, verbatim. Run EXACTLY this, from ${REPO}, using Bash with the timeout parameter set to 1800000 (a step integrates ready units by running cargo gates on BOTH feature lanes inline and can take 20+ minutes when several units are ready at once; too short a timeout kills it mid-gate and the courier exhausts its re-run attempts before the gates ever finish):\n` +
+      `You are a rigger COURIER. Advance the run one frontier and return the wave, verbatim. Run EXACTLY this, from ${REPO}, as ONE FOREGROUND, BLOCKING Bash call - explicitly NOT run_in_background, and NOT via a Monitor or a poll loop - because a foreground Bash call blocks until the step prints its single JSON line, which is exactly the line you return; set the timeout parameter to 1800000 (a step integrates ready units by running cargo gates on BOTH feature lanes inline and can take 20+ minutes when several units are ready at once; too short a timeout kills it mid-gate and the courier exhausts its re-run attempts before the gates ever finish):\n` +
         `  cd ${REPO} && CARGO_TARGET_DIR=${REPO}/.rigger/tmp/cargo-target rigger step --spec ${SPEC}${BASEFLAG}${FRESHFLAG}\n` +
         `(the CARGO_TARGET_DIR prefix makes every gate share one build cache instead of cold-building per worktree - keep it exactly as written). ` +
         `It prints ONE line of JSON on stdout: {"wave":[...],"done":<bool>} (a halted run also carries a "halted":"<reason>" field). Return that JSON object EXACTLY as printed, INLINE and IN FULL, in your structured output - no matter how large it is. NEVER write it to a file, return a path, a reference, a summary, or a truncation: the driver can only read your returned JSON, so anything but the verbatim object (all wave items, all their fields) LOSES the wave and stalls the run. Do not drop fields or run anything else. ` +
         `If the Bash call TIMES OUT, re-run the exact same command - as many times as needed: the step's gate results are recorded durably as they complete, so every re-run resumes past the recorded ones and gets strictly further; return the JSON from the run that prints it. ` +
         `If it exits non-zero and stderr says "another \`rigger step\` is already running" (a TRANSIENT concurrent step - e.g. an earlier step orphaned by a Bash timeout is still finishing its gate, and steps are serialized so two never run at once), WAIT ~60 seconds and re-run the exact same command; repeat until it returns the JSON. This is normal back-off, NOT a failure. ` +
-        `NEVER fabricate or guess the JSON: if you cannot obtain it after many re-runs, or the command prints no JSON / exits non-zero for a DIFFERENT reason (not a timeout and not the "already running" back-off), return {"wave":[],"done":true,"error":"<the stderr / failure message, or 'step did not complete within my attempts'>"} so the loop stops cleanly and the error is visible.`,
+        `The ONE sanctioned exception to the foreground rule: you must never background the step yourself, but the DRIVING HARNESS may CONVERT your foreground Bash call into a BACKGROUND task on its own when the step outruns the harness's foreground cap - a conversion you did not choose, signalled by the tool result naming a background task (a task id / a "running in the background" notice) INSTEAD of the command's stdout. On that path do NOT treat it as a failure and do NOT return a placeholder: WAIT for that background task, polling its OUTPUT FILE until the file holds the step's single JSON line, then return that line verbatim exactly as in the normal case - polling the background task's output file is the ONE sanctioned wait here, permitted ONLY because the harness (not you) backgrounded the step. If you still cannot obtain the JSON from that output file, fall back to the re-run rule above: re-run the exact same FOREGROUND command (the step's gate results are recorded durably, so the re-run resumes past finished work). Returning a sentinel or a placeholder is forbidden on this path too - the JSON you return must be the step's real output. ` +
+        `NEVER fabricate or guess the JSON: if you cannot obtain it after many re-runs, or the command prints no JSON / exits non-zero for a DIFFERENT reason (not a timeout and not the "already running" back-off), return {"wave":[],"done":true,"error":"<the stderr / failure message, or 'step did not complete within my attempts'>"} so the loop stops cleanly and the error is visible. The error string MUST be the command's ACTUAL stderr text or the literal phrase 'step did not complete within my attempts' - NEVER an invented placeholder token. A placeholder in ANY field means the command was not run to completion, which stops the run while lying about its state.`,
       // sonnet, not haiku: the courier's one job is a verbatim relay of a possibly
       // large JSON object, and haiku demonstrably "helps" by externalizing big waves
       // to a file reference - which loses the wave (the driver reads only the
@@ -534,6 +535,23 @@ for (;;) {
     // from `rigger step` failing, which the courier reports in `error`. Without this catch the
     // rejection would abort the whole driver uncaught; instead stop cleanly and loudly.
     stop(`the \`rigger step\` courier agent itself failed: ${e && e.message ? e.message : String(e)}`)
+  }
+
+  // Null-step guard. `agent()` can RESOLVE to null - rather than REJECT - when the courier agent
+  // dies on a TERMINAL error (an expired login, an exhausted API quota): it produces no
+  // structured output, so the await above yields null instead of throwing and the try/catch
+  // never fires. Reading `step.error` (or any field) on that null step would crash the driver
+  // with an uncaught null-dereference. Guard it HERE, before the dereference, and route it
+  // through the same throwing `stop()` every anomalous exit uses - a clean, loud, resumable stop
+  // that names the likely cause, instead of an uncaught crash mid-run.
+  if (!step) {
+    stop(
+      'the `rigger step` courier returned no step: agent() resolved to null rather than ' +
+        'rejecting, so the try/catch never fired. The courier agent most likely died on a ' +
+        'TERMINAL error - an expired login or an exhausted API quota - producing no JSON at ' +
+        'all. The run is RESUMABLE: restore the credential/quota and re-run - the conductor ' +
+        'replays the durable results and continues from this frontier.',
+    )
   }
 
   if (step.error) {
