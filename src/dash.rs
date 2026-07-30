@@ -818,6 +818,29 @@ pub struct Reprojection {
     /// bodies stay lean.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub unresolved: Vec<UnresolvedMember>,
+    /// The member ids flagged SHARED (spec 55 c2): a member realizing MORE THAN ONE concept folds
+    /// under its PRIMARY concept (criterion 1, so it appears ONCE) and is listed here, so the panel
+    /// marks a multi-bucket member rather than silently duplicating or hiding it - the re-projection's
+    /// twin of the drill's per-node `shared` flag. Sorted by member id. Always empty (and omitted from
+    /// the JSON) under [`Lens::Code`] (a node carries at most one community) and [`Lens::Files`] (files
+    /// never share), so those bodies stay lean.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub shared: Vec<String>,
+    /// The full BUCKET count when a WIDE re-grain was capped to [`CLUSTER_RENDER_BUDGET`] (spec 55 c2):
+    /// the largest buckets are kept (ties by key), the cross-bucket edges are pruned to the kept set,
+    /// and this carries M so the panel captions "showing N of M". Absent (`None`, omitted from the
+    /// JSON) for an at/under-budget re-grain, so a present `truncated` unambiguously means the cell was
+    /// capped - mirroring [`Neighborhood::truncated`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncated: Option<usize>,
+    /// The documented empty-CELL message (spec 55 c2), set under a DERIVED lens when the member set
+    /// folds into NO community/concept bucket: [`REPROJECT_NO_COMMUNITY`] under [`Lens::Code`],
+    /// [`REPROJECT_NO_CONCEPT`] under [`Lens::Concepts`]. The criterion-1 kind-fallback clusters still
+    /// render, so this caption is ADDITIVE - the defined-but-empty cell is explained, never blanked.
+    /// Absent (`None`, omitted from the JSON) under [`Lens::Files`] (a file re-grain always resolves)
+    /// and whenever any member DID fold into a derived bucket.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub empty_state: Option<String>,
 }
 
 /// One MARKED-UNRESOLVED member of a FILES re-projection (spec 55 c1): a bare cross-file placeholder
@@ -1187,6 +1210,20 @@ pub const DEFAULT_CONCEPT_RESOLUTION: &str = "1";
 /// underived concepts lens degrades gracefully to a prompt to run the derivation (spec 54 c3).
 pub const CONCEPTS_LENS_UNDERIVED: &str = "concepts not derived yet - run `rigger graph concepts`";
 
+/// The documented empty-CELL message a [`Lens::Code`] RE-PROJECTION (spec 55 c2) carries when the
+/// selected subject's member set folds into NO coupling community - the members exist, but none is
+/// part of any derived community at this grain. Distinct from [`CODE_LENS_UNDERIVED`] (the whole-graph
+/// "the offline pass never ran" prompt): a re-projection cell is empty when THIS subject's members
+/// carry no membership, whether or not the grain is derived elsewhere, so the panel captions the
+/// defined-but-empty cell rather than showing a bare kind-bucket fold with no explanation.
+pub const REPROJECT_NO_COMMUNITY: &str = "no derived communities";
+
+/// The documented empty-CELL message a [`Lens::Concepts`] RE-PROJECTION (spec 55 c2) carries when the
+/// selected subject's member set realizes NO concept - the [`Lens::Concepts`] twin of
+/// [`REPROJECT_NO_COMMUNITY`]. The kind-fallback clusters criterion 1 ships still render; this message
+/// is additive, so a "not part of any concept" caption never hides the members it re-grains.
+pub const REPROJECT_NO_CONCEPT: &str = "not part of any concept";
+
 /// The overview/drill bucket lens (spec 53 c4): how a graph node folds to its super-node bucket.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Lens {
@@ -1376,6 +1413,19 @@ impl<'g> Buckets<'g> {
             Lens::Files => None,
             Lens::Code { .. } => Some(CODE_LENS_UNDERIVED),
             Lens::Concepts { .. } => Some(CONCEPTS_LENS_UNDERIVED),
+        }
+    }
+
+    /// The documented empty-CELL message for a RE-PROJECTION whose member set folds into NO derived
+    /// bucket (spec 55 c2): [`REPROJECT_NO_COMMUNITY`] under [`Lens::Code`], [`REPROJECT_NO_CONCEPT`]
+    /// under [`Lens::Concepts`], `None` under [`Lens::Files`] (a file re-grain always resolves).
+    /// Distinct from [`underived_message`]: a re-projection cell is empty when THIS subject's members
+    /// carry no membership, independent of whether the grain is derived for the graph at large.
+    fn no_membership_message(&self) -> Option<&'static str> {
+        match self.lens {
+            Lens::Files => None,
+            Lens::Code { .. } => Some(REPROJECT_NO_COMMUNITY),
+            Lens::Concepts { .. } => Some(REPROJECT_NO_CONCEPT),
         }
     }
 
@@ -1735,12 +1785,44 @@ pub fn cluster_detail(graph: &Graph, key: &str, lens: &Lens) -> Neighborhood {
 /// deterministic by construction.
 pub fn reproject(graph: &Graph, subject: &str, lens: &Lens) -> Reprojection {
     let members = member_set(graph, subject);
-    match lens {
+    let mut re = match lens {
         Lens::Files => reproject_files(graph, subject, &members),
         Lens::Code { .. } | Lens::Concepts { .. } => {
             reproject_derived(graph, subject, lens, &members)
         }
+    };
+    // Spec 55 c2, the WIDE cell: cap the bucket list to the render budget UNIFORMLY across lenses, so
+    // a re-grain over a huge subject (e.g. a concept whose members span hundreds of files) renders at
+    // any size. `total` (the member-set size) is untouched; `truncated` carries the full bucket count.
+    re.truncated = cap_clusters(&mut re.clusters, &mut re.edges);
+    re
+}
+
+/// Cap a re-projection's bucket list to [`CLUSTER_RENDER_BUDGET`] (spec 55 c2, the WIDE cell): keep
+/// the LARGEST buckets (ties broken by key ascending, for a pick stable across polls), and PRUNE every
+/// cross-bucket edge that touches a dropped bucket so none dangles. Returns `Some(full bucket count)`
+/// for the panel's "showing N of M" caption when the cap fired, `None` when the re-grain already fit.
+/// The kept buckets keep their by-key sort order ([`fold_buckets`] emits them sorted), so the capped
+/// body is deterministic. Mirrors the [`cluster_detail`] drill's degree cap, at the bucket grain.
+fn cap_clusters(clusters: &mut Vec<Cluster>, edges: &mut Vec<ClusterEdge>) -> Option<usize> {
+    let total = clusters.len();
+    if total <= CLUSTER_RENDER_BUDGET {
+        return None;
     }
+    // The kept keys: the budget's worth of largest buckets, ties by key ascending. Collected as owned
+    // strings so the immutable borrow ends before the retains below mutate `clusters` / `edges`.
+    let kept: BTreeSet<String> = {
+        let mut ranked: Vec<&Cluster> = clusters.iter().collect();
+        ranked.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.key.cmp(&b.key)));
+        ranked
+            .into_iter()
+            .take(CLUSTER_RENDER_BUDGET)
+            .map(|c| c.key.clone())
+            .collect()
+    };
+    clusters.retain(|c| kept.contains(&c.key));
+    edges.retain(|e| kept.contains(&e.from) && kept.contains(&e.to));
+    Some(total)
 }
 
 /// The subject's MEMBER SET at its own grain (spec 55 c1), as the member NODES (so the fold can read
@@ -1801,12 +1883,34 @@ fn reproject_derived(graph: &Graph, subject: &str, lens: &Lens, members: &[&Node
         |n| buckets.key(n),
         &bucket_label,
     );
+    // Spec 55 c2, the EMPTY cell: when NO member folds into a derived (community/concept) bucket, the
+    // cell is defined-but-empty. The kind-fallback clusters above still render (criterion 1, nothing
+    // dropped); this message is the additive caption the panel shows. A single member with a derived
+    // membership makes the cell full and clears the message.
+    let has_derived_bucket = members
+        .iter()
+        .any(|m| buckets.membership.contains_key(m.id.as_str()));
+    let empty_state = (!has_derived_bucket)
+        .then(|| buckets.no_membership_message().map(str::to_string))
+        .flatten();
+    // Spec 55 c2, the SHARED member: a member realizing MORE THAN ONE concept folds under its PRIMARY
+    // bucket above (appears once) and is flagged here. `members` is ascending-id ordered (member_set),
+    // so the flagged list is sorted by construction; only the concepts lens ever populates it.
+    let shared: Vec<String> = members
+        .iter()
+        .filter(|m| buckets.is_shared(m.id.as_str()))
+        .map(|m| m.id.clone())
+        .collect();
     Reprojection {
         subject: subject.to_string(),
         clusters,
         edges,
         total: members.len(),
         unresolved: Vec::new(),
+        shared,
+        // The wide-cell cap runs once, uniformly, in `reproject`.
+        truncated: None,
+        empty_state,
     }
 }
 
@@ -1902,6 +2006,12 @@ fn reproject_files(graph: &Graph, subject: &str, members: &[&Node]) -> Reproject
         edges,
         total: members.len(),
         unresolved,
+        // A files re-grain always resolves a member (to a file, its kind, or the unresolved sidecar)
+        // and never shares, so the spec 55 c2 empty-cell message and shared flag never apply here; the
+        // wide-cell cap runs once, uniformly, in `reproject`.
+        shared: Vec::new(),
+        truncated: None,
+        empty_state: None,
     }
 }
 
