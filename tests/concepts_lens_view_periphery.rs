@@ -35,7 +35,7 @@
 //! `dash` + `contextgraph` compile on BOTH the default and the `--no-default-features` lane (neither
 //! the route nor these DTOs is feature-gated), so this guards the served contract in both lanes.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::process::Command;
 
 use rigger::contextgraph::{
@@ -363,6 +363,57 @@ fn a_shared_member_of_two_equal_size_concepts_folds_to_the_lexicographically_sma
         members1,
         ["docs/beta.md"].into_iter().collect::<BTreeSet<&str>>(),
         "the lex-larger concept c1 drills to ONLY its own non-shared member; the shared member is not duplicated here: {other:?}"
+    );
+}
+
+/// WHOLE-GRAPH COMPLETENESS AT THE DRILL, over the public boundary: the overview test proves a
+/// membership-LESS node keeps its KIND bucket in the OVERVIEW, but a KIND bucket that cannot be
+/// DRILLED hides its members from a human - so `cluster_detail(graph, <a KIND key>, &Concepts)` must
+/// reach the SAME kind-fallback arm and yield exactly that kind's membership-less nodes. This exercises
+/// the drill's `key`-else branch (a membership-less node folds by its KIND, not by a concept) that the
+/// concept-key drills never touch, and pins three boundary facts the overview cannot: (1) a
+/// membership-less node of a kind is reachable by drilling its KIND bucket; (2) a node that DOES realize
+/// a concept is NOT in its kind's fallback drill (it folded to its concept, so kind and concept buckets
+/// never double-count it); (3) the excluded `KIND_CONCEPT` super-node is a bucket, never a member, so it
+/// appears in NO drill - not a concept drill and not its own `KIND_CONCEPT` kind-fallback drill. Every
+/// kind-fallback member is `shared = false` (the shared marker is concepts-membership-only).
+#[test]
+fn drilling_a_kind_fallback_bucket_under_lens_concepts_keeps_membershipless_nodes_whole_graph() {
+    let graph = lens_graph();
+
+    // --- DRILL the code-entity KIND bucket: exactly the membership-LESS helper, never the concept
+    // members append/index (they folded to c0) and never the excluded concept super-nodes ---
+    let ce_drill = cluster_detail(&graph, KIND_CODE_ENTITY, &concepts_default());
+    let ce_members: BTreeMap<&str, bool> = ce_drill
+        .nodes
+        .iter()
+        .map(|n| (n.id.as_str(), n.shared))
+        .collect();
+    assert_eq!(
+        ce_members,
+        BTreeMap::from([(HELPER, false)]),
+        "the code-entity kind-fallback drill yields ONLY the membership-less helper (append/index folded to their concept, the concept super-nodes are excluded), flagged shared=false: {ce_drill:?}"
+    );
+
+    // --- DRILL the decision KIND bucket: exactly the membership-less decision, not shared ---
+    let dec_drill = cluster_detail(&graph, KIND_DECISION, &concepts_default());
+    let dec_members: BTreeMap<&str, bool> = dec_drill
+        .nodes
+        .iter()
+        .map(|n| (n.id.as_str(), n.shared))
+        .collect();
+    assert_eq!(
+        dec_members,
+        BTreeMap::from([("d1", false)]),
+        "the decision kind-fallback drill keeps the membership-less decision reachable, flagged shared=false: {dec_drill:?}"
+    );
+
+    // --- The excluded KIND_CONCEPT super-node is a BUCKET, not a member: drilling its literal kind key
+    // yields NOTHING (the concept super-nodes belong to no drill) ---
+    let concept_kind_drill = cluster_detail(&graph, KIND_CONCEPT, &concepts_default());
+    assert!(
+        concept_kind_drill.nodes.is_empty(),
+        "the KIND_CONCEPT super-node is a bucket not a member, so its kind key drills to nothing: {concept_kind_drill:?}"
     );
 }
 
