@@ -28,7 +28,8 @@ use serde::Serialize;
 
 use crate::contextgraph::{
     CallGraph, Direction, Graph, Node, KIND_COMMUNITY, KIND_CONCEPT, KIND_DECISION, KIND_FINDING,
-    REL_IN_COMMUNITY, REL_REALIZES, REL_SUPERSEDES, TIER_INFERRED,
+    KIND_LESSON, REL_ABOUT, REL_GOVERNS, REL_IN_COMMUNITY, REL_REALIZES, REL_SUPERSEDES,
+    TIER_INFERRED,
 };
 use crate::eventstore::{Event, Position};
 use crate::progress::{self, AgentActivity};
@@ -671,6 +672,53 @@ pub struct ProvenanceEdge {
     pub to: String,
     pub tier: String,
     pub source: Position,
+}
+
+/// One RATIONALE LEAF (spec 55, the rationale overlay "why" layer): a decision, finding, or lesson
+/// attached to a graph node through a live knowledge edge - a `decision` that `GOVERNS` the node, or
+/// a `finding` / `lesson` that is `ABOUT` it. It carries the leaf's CONTENT only - its `id`, its
+/// `kind` (`"decision"` / `"finding"` / `"lesson"`), and its `summary` - and deliberately NOT the
+/// builder-agent attribution a finding node also carries (the `by` reviewer and the `unit`): that is
+/// run machinery, not the target project's design memory, so the overlay never surfaces it (spec 55
+/// "content, not machinery"; the `unit` attr is in any case dormant in production). Built by
+/// [`node_rationale`] over the already-projected graph, so the overlay is a pure read.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct RationaleLeaf {
+    /// The leaf node's id (the decision / finding / lesson id, so the client can key its disclosure).
+    pub id: String,
+    /// The leaf's node kind: [`KIND_DECISION`], [`KIND_FINDING`], or [`KIND_LESSON`].
+    pub kind: String,
+    /// The leaf's human CONTENT: the `summary` attr the fold records for a decision / finding /
+    /// lesson node. Empty only if the node carries no summary (never for a real emitted leaf).
+    pub summary: String,
+}
+
+/// The rationale leaves attached to ONE node (spec 55): the node id echoed, and its leaves sorted
+/// deterministically. Only ever produced for a node that carries AT LEAST ONE leaf - a node with no
+/// rationale is absent from the batch (the client badges only the nodes that have any; spec 55
+/// "batched per request for the visible nodes that have any"), so this shape never carries an empty
+/// `leaves`.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct NodeRationale {
+    /// The node whose rationale these leaves are (echoed so the client keys the badge to it).
+    pub node: String,
+    /// The node's rationale leaves, sorted by `(kind, id)` so the same graph yields byte-identical
+    /// output every request. Always non-empty (see [`NodeRationale`]).
+    pub leaves: Vec<RationaleLeaf>,
+}
+
+/// The `/api/graph?explain=<id>[,<id>...]` batch body (spec 55, the rationale overlay data path): the
+/// per-node rationale for the VISIBLE nodes the client asked about, in ONE request. Only the nodes
+/// that carry any rationale appear, ordered by node id - so the client renders a "why" badge exactly
+/// on the nodes that have leaves and nowhere else. A distinct response shape from the neighborhood /
+/// overview / drill, served over the SAME lazy whole-graph provider `/api/graph` already reads, never
+/// the state poll. Built by [`rationale_batch`], a pure read over the already-projected graph.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct RationaleBatch {
+    /// The nodes that carry rationale, ordered by node id (deterministic). Empty when NONE of the
+    /// requested nodes carries a decision / finding / lesson - the graceful empty a project with no
+    /// decisions degrades to, never an error.
+    pub nodes: Vec<NodeRationale>,
 }
 
 /// One super-node in the whole-graph clustered overview (spec 42 c2): a [`cluster_key`] bucket the
@@ -1718,6 +1766,78 @@ pub fn explain(graph: &Graph, node: &str) -> Option<Explanation> {
         node: node.to_string(),
         sources,
     })
+}
+
+/// The RATIONALE of a single node (spec 55, the rationale overlay data path): the decisions,
+/// findings, and lessons attached to `node` through the live knowledge edges - a `decision` that
+/// `GOVERNS` it, or a `finding` / `lesson` that is `ABOUT` it - as CONTENT-only [`RationaleLeaf`]s.
+///
+/// A leaf is the SOURCE of a currently-valid (`valid_to` unset) edge whose TARGET is `node`, whose
+/// relation is [`REL_GOVERNS`] or [`REL_ABOUT`], and whose source node is a [`KIND_DECISION`],
+/// [`KIND_FINDING`], or [`KIND_LESSON`]. Both filters are load-bearing:
+///   - restricting the relation to `GOVERNS`/`ABOUT` excludes a `SUPERSEDES` edge, so a decision that
+///     supersedes `node` is NOT reported as `node`'s rationale;
+///   - restricting the kind to decision/finding/lesson excludes a `handbook-rule`, which also reuses
+///     `GOVERNS` for its rule-governs-code edge (see [`crate::contextgraph::REL_GOVERNS`]) - the
+///     overlay is the dev-loop's design MEMORY (decisions/findings/lessons), not the ingested
+///     handbook rules the intent layer carries.
+///
+/// Leaves are DEDUPED by id and sorted by `(kind, id)` - kind first (so decisions, then findings,
+/// then lessons), id within a kind - so the same graph yields a byte-identical list every request
+/// (spec 55 "deterministically ordered"). A node with no attached decision/finding/lesson returns an
+/// EMPTY vec (the "nodes without rationale return none" case). Pure over the already-projected
+/// `graph`, like [`explain`] and the rest of the KG panel.
+pub fn node_rationale(graph: &Graph, node: &str) -> Vec<RationaleLeaf> {
+    // Collect the SOURCE of every live GOVERNS/ABOUT edge into `node` whose source node is a
+    // decision / finding / lesson. Keyed by id in a `BTreeMap` so a leaf reached by two edges (a
+    // decision that governs the node twice) is counted once.
+    let mut leaves: BTreeMap<String, RationaleLeaf> = BTreeMap::new();
+    for e in &graph.edges {
+        if e.valid_to.is_some() || e.to != node {
+            continue; // only LIVE edges that TARGET this node
+        }
+        if e.rel != REL_GOVERNS && e.rel != REL_ABOUT {
+            continue; // excludes SUPERSEDES / DECIDED / ... - only the rationale attachments
+        }
+        let Some(src) = graph.nodes.iter().find(|n| n.id == e.from) else {
+            continue;
+        };
+        if src.kind != KIND_DECISION && src.kind != KIND_FINDING && src.kind != KIND_LESSON {
+            continue; // excludes a handbook-rule (also GOVERNS) and any other kind
+        }
+        leaves
+            .entry(src.id.clone())
+            .or_insert_with(|| RationaleLeaf {
+                id: src.id.clone(),
+                kind: src.kind.clone(),
+                // CONTENT only: the summary attr. A finding's `by`/`unit` are deliberately not read.
+                summary: src.attrs.get("summary").cloned().unwrap_or_default(),
+            });
+    }
+    let mut leaves: Vec<RationaleLeaf> = leaves.into_values().collect();
+    leaves.sort_by(|a, b| a.kind.cmp(&b.kind).then_with(|| a.id.cmp(&b.id)));
+    leaves
+}
+
+/// The RATIONALE OVERLAY BATCH (spec 55): the per-node rationale for a set of visible `nodes`, in one
+/// pass over the graph. The requested ids are DEDUPED and iterated in sorted order (so the response
+/// is deterministic regardless of the request's id order or repeats), and only the nodes that carry
+/// AT LEAST ONE leaf appear - "the visible nodes that have any" - so the client badges exactly those.
+/// Each node's leaves come from [`node_rationale`]. Pure over the already-projected `graph`.
+pub fn rationale_batch(graph: &Graph, nodes: &[String]) -> Vec<NodeRationale> {
+    // Dedup + deterministically order the requested ids (a `BTreeSet`), then attach each node's
+    // leaves, keeping ONLY the nodes that carry any (the client badges only those).
+    let requested: BTreeSet<&str> = nodes.iter().map(String::as_str).collect();
+    requested
+        .into_iter()
+        .filter_map(|id| {
+            let leaves = node_rationale(graph, id);
+            (!leaves.is_empty()).then(|| NodeRationale {
+                node: id.to_string(),
+                leaves,
+            })
+        })
+        .collect()
 }
 
 /// Compute the QUERY-PATH between two selected nodes (spec 30 c6): the shortest chain of node ids
@@ -2870,6 +2990,31 @@ pub fn route(
         // shortest QUERY-PATH rides the body when BOTH are present; and the body carries the seed's
         // EXPLAIN provenance (spec 30 c7), all built by `graph_json` over the neighborhood.
         "/api/graph" => {
+            // The RATIONALE OVERLAY batch (spec 55): `explain=<id>[,<id>...]` returns the decisions,
+            // findings, and lessons attached to each requested node (content only, deterministically
+            // ordered), for the visible nodes that carry any - the overlay's data path, in ONE
+            // request. A distinct response shape from the neighborhood / overview / drill below,
+            // served over the SAME lazy whole-graph provider this arm already reads (never the state
+            // poll). The ids are comma-separated, each `encodeURIComponent`d by the client (an id
+            // carries `#` / `::` / `/`), so the list is split on `,` FIRST and each piece is
+            // percent-decoded. Checked before the lens/seed dispatch, and taken ONLY when `explain=`
+            // is present, so every existing `/api/graph` view stays byte-identical.
+            if let Some(raw_explain) = query_param(target, "explain") {
+                let ids: Vec<String> = raw_explain
+                    .split(',')
+                    .filter(|s| !s.is_empty())
+                    .map(percent_decode)
+                    .collect();
+                let batch = RationaleBatch {
+                    nodes: rationale_batch(graph, &ids),
+                };
+                return match serde_json::to_string(&batch) {
+                    Ok(body) => Response::json(200, body),
+                    Err(e) => {
+                        Response::text(500, &format!("dash: rationale projection failed: {e}"))
+                    }
+                };
+            }
             // The overview/drill bucket lens (spec 53 c4), resolved from `lens=` + `resolution=`.
             // Absent / unknown `lens` -> `Lens::Files` (byte-identical), so a spec-30/42 request is
             // untouched. The seeded neighborhood below is lens-independent and ignores it.
@@ -7626,5 +7771,338 @@ mod tests {
                 "dir=both walks BOTH the callees and the callers",
             );
         }
+    }
+}
+
+/// Spec 55, criterion 3 - the RATIONALE OVERLAY DATA PATH. Inside-out unit tests over the pure
+/// [`node_rationale`] / [`rationale_batch`] surface and the `/api/graph?explain=` route branch: the
+/// per-node query returns the decisions/findings/lessons attached to a node (CONTENT only,
+/// deterministically ordered), a node with no rationale returns none, and the batch endpoint covers a
+/// set of visible nodes in one request. This criterion OWNS the overlay data. The served-boundary
+/// proof (one real HTTP GET over `dash::serve`) lives in `tests/rationale_overlay_data.rs`.
+#[cfg(test)]
+mod rationale_overlay_c3 {
+    use super::*;
+    use crate::contextgraph::{Edge, KIND_CODE_ENTITY, KIND_FILE, KIND_HANDBOOK_RULE};
+
+    /// A node with the given kind and optional `summary` (a decision / finding / lesson content
+    /// node carries a summary; a plain file / entity target does not).
+    fn node(id: &str, kind: &str, summary: &str) -> Node {
+        Node {
+            id: id.to_string(),
+            kind: kind.to_string(),
+            attrs: if summary.is_empty() {
+                BTreeMap::new()
+            } else {
+                BTreeMap::from([("summary".to_string(), summary.to_string())])
+            },
+        }
+    }
+
+    /// A finding content node carrying the run-machinery attribution (`by` reviewer + `unit`)
+    /// ALONGSIDE its `summary`, so a test can prove the leaf drops the machinery and keeps only the
+    /// content.
+    fn finding_node(id: &str, summary: &str, by: &str, unit: &str) -> Node {
+        Node {
+            id: id.to_string(),
+            kind: KIND_FINDING.to_string(),
+            attrs: BTreeMap::from([
+                ("summary".to_string(), summary.to_string()),
+                ("by".to_string(), by.to_string()),
+                ("unit".to_string(), unit.to_string()),
+            ]),
+        }
+    }
+
+    fn edge(from: &str, to: &str, rel: &str, valid_to: Option<i64>) -> Edge {
+        Edge {
+            from: from.to_string(),
+            to: to.to_string(),
+            rel: rel.to_string(),
+            valid_from: 0,
+            valid_to,
+            source: 0,
+            tier: TIER_INFERRED.to_string(),
+        }
+    }
+
+    /// The fixture. A target file `shared.rs` carries four live rationale leaves through
+    /// `GOVERNS` (decisions) / `ABOUT` (finding, lesson) edges, laid out so the deterministic
+    /// `(kind, id)` order is DISCRIMINATING:
+    ///
+    /// - two decisions `dz` and `da` (added `dz` first) prove the id-secondary sort within a kind;
+    /// - a finding `a-find` whose id is lexicographically SMALLER than either decision id proves the
+    ///   kind-primary sort (id-only ordering would float `a-find` to the front);
+    /// - a lesson `l1`.
+    ///
+    /// Three NON-leaves also point at `shared.rs`, one per exclusion rule: a `handbook-rule` `hb`
+    /// (GOVERNS, wrong kind), an INVALIDATED decision `dgone` (a superseded governing edge), and -
+    /// separately - a superseding decision `dnew --SUPERSEDES--> dz` (so `node_rationale(dz)` proves
+    /// SUPERSEDES is not rationale). The code entity `shared.rs::foo` carries ONE leaf (`da` governs
+    /// it), and `other.rs` carries NONE.
+    fn rationale_graph() -> Graph {
+        Graph {
+            nodes: vec![
+                node("shared.rs", KIND_FILE, ""),
+                node("shared.rs::foo", KIND_CODE_ENTITY, ""),
+                node("other.rs", KIND_FILE, ""),
+                node("dz", KIND_DECISION, "decision zed"),
+                node("da", KIND_DECISION, "decision ay"),
+                node("dnew", KIND_DECISION, "the superseding decision"),
+                node("dgone", KIND_DECISION, "the superseded governing decision"),
+                finding_node(
+                    "a-find",
+                    "the finding content",
+                    "lens:architecture-reviewer",
+                    "u7",
+                ),
+                node("l1", KIND_LESSON, "the lesson content"),
+                node("hb", KIND_HANDBOOK_RULE, "the handbook rule"),
+            ],
+            edges: vec![
+                edge("dz", "shared.rs", REL_GOVERNS, None),
+                edge("da", "shared.rs", REL_GOVERNS, None),
+                edge("a-find", "shared.rs", REL_ABOUT, None),
+                edge("l1", "shared.rs", REL_ABOUT, None),
+                // Non-leaves incident to shared.rs, one per exclusion rule.
+                edge("hb", "shared.rs", REL_GOVERNS, None), // handbook rule: wrong kind
+                edge("dgone", "shared.rs", REL_GOVERNS, Some(5)), // invalidated governing edge
+                // A superseding decision points AT dz (so dz's own rationale query sees only this).
+                edge("dnew", "dz", REL_SUPERSEDES, None),
+                // shared.rs::foo carries exactly one leaf.
+                edge("da", "shared.rs::foo", REL_GOVERNS, None),
+            ],
+        }
+    }
+
+    fn ids(leaves: &[RationaleLeaf]) -> Vec<String> {
+        leaves.iter().map(|l| l.id.clone()).collect()
+    }
+    fn kinds(leaves: &[RationaleLeaf]) -> Vec<String> {
+        leaves.iter().map(|l| l.kind.clone()).collect()
+    }
+
+    /// The per-node query returns the decisions/findings/lessons attached to a node, deterministically
+    /// ordered by `(kind, id)` - kind first (decisions, then findings, then lessons), id within a
+    /// kind. The fixture is laid out so this ONE assertion is load-bearing for BOTH sort keys.
+    #[test]
+    fn node_rationale_returns_attached_leaves_ordered_by_kind_then_id() {
+        let g = rationale_graph();
+        let leaves = node_rationale(&g, "shared.rs");
+        assert_eq!(
+            ids(&leaves),
+            vec!["da", "dz", "a-find", "l1"],
+            "leaves sort by (kind, id): decisions (da<dz) before findings before lessons - NOT by \
+             id alone (which would float a-find first)"
+        );
+        assert_eq!(
+            kinds(&leaves),
+            vec!["decision", "decision", "finding", "lesson"],
+            "each leaf carries its node kind"
+        );
+    }
+
+    /// A leaf carries the CONTENT only - id, kind, summary - and NEVER the finding's run-machinery
+    /// attribution (`by` reviewer / `unit`). Pinned as the exact serialized shape so a regression that
+    /// leaked `by`/`unit` onto the wire reddens.
+    #[test]
+    fn a_finding_leaf_carries_content_only_never_the_by_or_unit_machinery() {
+        let g = rationale_graph();
+        let leaves = node_rationale(&g, "shared.rs");
+        let find = leaves
+            .iter()
+            .find(|l| l.id == "a-find")
+            .expect("the finding is a leaf of shared.rs");
+        assert_eq!(
+            find.summary, "the finding content",
+            "the leaf keeps the content summary"
+        );
+        let json = serde_json::to_string(find).expect("a leaf serializes");
+        assert_eq!(
+            json, r#"{"id":"a-find","kind":"finding","summary":"the finding content"}"#,
+            "the leaf is content-only on the wire: id/kind/summary, no by/unit machinery"
+        );
+        assert!(
+            !json.contains("architecture-reviewer")
+                && !json.contains("\"by\"")
+                && !json.contains("\"unit\"")
+                && !json.contains("u7"),
+            "no builder-agent attribution surfaces: {json}"
+        );
+    }
+
+    /// The kind filter excludes a `handbook-rule` even though it reuses `GOVERNS`, and the relation
+    /// filter excludes a `SUPERSEDES` edge, so a superseding decision is not reported as its target's
+    /// rationale.
+    #[test]
+    fn a_handbook_rule_and_a_supersedes_edge_are_not_rationale() {
+        let g = rationale_graph();
+        let shared = node_rationale(&g, "shared.rs");
+        assert!(
+            !shared.iter().any(|l| l.id == "hb"),
+            "a handbook-rule that GOVERNS the node is NOT a decision/finding/lesson leaf: {shared:?}"
+        );
+        // dz is superseded by dnew (dnew --SUPERSEDES--> dz); the only edge INTO dz is that
+        // SUPERSEDES edge, so dz's rationale is empty - a superseding decision is not rationale.
+        assert!(
+            node_rationale(&g, "dz").is_empty(),
+            "a SUPERSEDES edge is not a rationale attachment"
+        );
+    }
+
+    /// An INVALIDATED (superseded) governing edge is not live rationale: `dgone` GOVERNS `shared.rs`
+    /// on an edge whose `valid_to` is set, so it never appears.
+    #[test]
+    fn an_invalidated_edge_is_not_live_rationale() {
+        let g = rationale_graph();
+        let leaves = node_rationale(&g, "shared.rs");
+        assert!(
+            !leaves.iter().any(|l| l.id == "dgone"),
+            "a decision reaching the node only through an invalidated edge is not live rationale: \
+             {leaves:?}"
+        );
+    }
+
+    /// A node with no attached decision/finding/lesson returns NONE (empty) - "nodes without
+    /// rationale return none".
+    #[test]
+    fn a_node_without_rationale_returns_none() {
+        let g = rationale_graph();
+        assert!(
+            node_rationale(&g, "other.rs").is_empty(),
+            "a node with no attached decision/finding/lesson has no rationale"
+        );
+        assert!(
+            node_rationale(&g, "not-a-node").is_empty(),
+            "an unknown id has no rationale (graceful, never an error)"
+        );
+    }
+
+    /// The batch covers a SET of visible nodes in one call and keeps ONLY the nodes that carry any
+    /// rationale, ordered by node id. `other.rs` (no rationale) is absent; `shared.rs` and
+    /// `shared.rs::foo` are present with their leaves.
+    #[test]
+    fn the_batch_covers_the_visible_set_and_keeps_only_nodes_with_rationale() {
+        let g = rationale_graph();
+        let batch = rationale_batch(
+            &g,
+            &[
+                "other.rs".to_string(),
+                "shared.rs".to_string(),
+                "shared.rs::foo".to_string(),
+            ],
+        );
+        assert_eq!(
+            batch.iter().map(|n| n.node.clone()).collect::<Vec<_>>(),
+            vec!["shared.rs", "shared.rs::foo"],
+            "only nodes with rationale appear, ordered by node id (other.rs is dropped)"
+        );
+        assert_eq!(
+            ids(&batch[0].leaves),
+            vec!["da", "dz", "a-find", "l1"],
+            "shared.rs carries its four ordered leaves"
+        );
+        assert_eq!(
+            ids(&batch[1].leaves),
+            vec!["da"],
+            "shared.rs::foo carries its one leaf"
+        );
+    }
+
+    /// The batch is DETERMINISTIC regardless of the request's id order and repeats: a shuffled,
+    /// duplicated request yields a byte-identical response.
+    #[test]
+    fn the_batch_is_deterministic_across_request_order_and_dedups() {
+        let g = rationale_graph();
+        let ordered = rationale_batch(&g, &["shared.rs".to_string(), "shared.rs::foo".to_string()]);
+        let shuffled = rationale_batch(
+            &g,
+            &[
+                "shared.rs::foo".to_string(),
+                "shared.rs".to_string(),
+                "shared.rs".to_string(), // a repeat must not double the node
+                "other.rs".to_string(),
+            ],
+        );
+        assert_eq!(
+            serde_json::to_string(&RationaleBatch { nodes: ordered }).unwrap(),
+            serde_json::to_string(&RationaleBatch { nodes: shuffled }).unwrap(),
+            "the batch dedups and sorts, so id order/repeats do not change the bytes"
+        );
+    }
+
+    /// Drive the `route` in-process: `GET /api/graph?explain=<ids>` returns the rationale batch as a
+    /// 200 JSON body in ONE request, covering the visible set. A percent-encoded id (`::` -> `%3A%3A`)
+    /// proves the split-then-decode of the comma-separated list.
+    #[test]
+    fn the_explain_route_returns_the_batch_in_one_request() {
+        let g = rationale_graph();
+        let resp = route(
+            "GET",
+            "/api/graph?explain=shared.rs,shared.rs%3A%3Afoo,other.rs",
+            &[],
+            &g,
+            &[],
+            &HashMap::new(),
+            3,
+            "rigger-run",
+            "origin/main",
+            &[],
+        );
+        assert_eq!(resp.status, 200, "the explain route answers 200");
+        assert!(
+            resp.content_type.contains("application/json"),
+            "the batch is JSON: {}",
+            resp.content_type
+        );
+        let body = String::from_utf8(resp.body).expect("a utf8 body");
+        let json: serde_json::Value =
+            serde_json::from_str(&body).expect("the explain body is valid JSON");
+        let nodes = json["nodes"].as_array().expect("a nodes array");
+        let got: Vec<&str> = nodes.iter().map(|n| n["node"].as_str().unwrap()).collect();
+        assert_eq!(
+            got,
+            vec!["shared.rs", "shared.rs::foo"],
+            "the encoded id decodes to shared.rs::foo and other.rs (no rationale) is dropped: {json}"
+        );
+        // The content crosses the wire and the machinery does not.
+        assert!(
+            body.contains("the finding content") && body.contains("the lesson content"),
+            "leaf content is served: {body}"
+        );
+        assert!(
+            !body.contains("architecture-reviewer") && !body.contains("\"by\""),
+            "no builder-agent attribution is served: {body}"
+        );
+    }
+
+    /// Additive guarantee: with `explain=` ABSENT, `/api/graph` is the existing view - the seeded
+    /// neighborhood carries a `seed` and NO rationale `leaves`, and the branch fires ONLY on
+    /// `explain=`.
+    #[test]
+    fn an_absent_explain_leaves_the_graph_route_unchanged() {
+        let g = rationale_graph();
+        let resp = route(
+            "GET",
+            "/api/graph?seed=shared.rs&depth=1",
+            &[],
+            &g,
+            &[],
+            &HashMap::new(),
+            3,
+            "rigger-run",
+            "origin/main",
+            &[],
+        );
+        assert_eq!(resp.status, 200);
+        let body = String::from_utf8(resp.body).expect("a utf8 body");
+        assert!(
+            body.contains("\"seed\""),
+            "an explain-less request is the seeded neighborhood: {body}"
+        );
+        assert!(
+            !body.contains("\"leaves\""),
+            "the neighborhood carries no rationale batch: {body}"
+        );
     }
 }
