@@ -230,8 +230,9 @@
   .kgtoolbar b { color: var(--ink); }
   .kgback { color: var(--accent); text-decoration: none; cursor: pointer; }
   .kgback:hover { text-decoration: underline; }
-  /* The overview LENS selector (spec 53 c4): pick the bucket key - `files` (directory/kind, the
-     default) or `code` (coupling communities); the resolution input is visible only under `code`. */
+  /* The overview LENS selector (spec 53 c4 / spec 54 c3): pick the bucket key - `files`
+     (directory/kind, the default), `code` (coupling communities), or `concepts` (derived intent
+     concepts); the resolution input is visible only under a derived lens (`code` / `concepts`). */
   .kglens { color: var(--muted); text-decoration: none; cursor: pointer; padding: 0 3px; }
   .kglens:hover { text-decoration: underline; }
   .kglens.active { color: var(--ink); font-weight: 600; }
@@ -247,6 +248,11 @@
   .kgcluster circle { opacity: 0.9; }
   /* A GOD-NODE (a high-degree hub the drill flags) gets a warning ring so a hub reads at a glance. */
   .kggodnode circle { stroke: var(--warn); stroke-width: 2; }
+  /* A SHARED concept member (spec 54 c3: it realizes MORE THAN ONE concept, folded under its primary
+     bucket) gets a dashed accent ring so a human drilling a concept SEES the multi-concept membership
+     the fold flagged - never a silently-deduplicated node. Defined after the god ring so a node that is
+     both a hub and multi-concept reads as shared (the honesty marker wins the ring). */
+  .kgshared circle { stroke: var(--accent); stroke-width: 2; stroke-dasharray: 3 2; }
   .kglabel { fill: var(--ink); font-size: 10px; text-anchor: middle; pointer-events: none; }
   /* Directed-call views (spec 52 c5). The arrowhead fill; a BACK edge (recursion) is a dashed accent
      arc so it reads apart from the solid forward edges; a FRONTIER node (a multi-candidate hop) gets
@@ -617,10 +623,11 @@ function renderFeed(events) {
 // uses): render() never touches el("kgpanel").
 let kgSeed = null;
 
-// The overview/drill LENS (spec 53 c4): `files` is the default directory/kind fold (byte-identical to
-// the server's `lens`-absent view); `code` buckets by coupling community at `kgResolution` (the grain
-// the server reads). Persist across overview/drill so a "<- overview" back link returns to the chosen
-// lens. The panel survives the 1.5s poll like every KG view (render() never touches kgpanel).
+// The overview/drill LENS (spec 53 c4 / spec 54 c3): `files` is the default directory/kind fold
+// (byte-identical to the server's `lens`-absent view); `code` buckets by coupling community and
+// `concepts` by derived intent concept, each at `kgResolution` (the grain the server reads). Persist
+// across overview/drill so a "<- overview" back link returns to the chosen lens. The panel survives
+// the 1.5s poll like every KG view (render() never touches kgpanel).
 let kgLens = "files";
 let kgResolution = "1";
 
@@ -975,8 +982,12 @@ function kgSvg(nodes, edges, width, height, opts) {
     const cls = opts.nodeClass ? opts.nodeClass(n) : "kgdot";
     const attrs = opts.nodeAttrs ? opts.nodeAttrs(n) : "";
     const fill = opts.fill ? ' fill="' + esc(opts.fill(n)) + '"' : "";
+    // An optional native SVG <title> (hover tooltip), emitted ONLY when the caller supplies opts.title
+    // AND it returns a non-empty string - so every view that does not ask for one stays byte-identical.
+    const tip = opts.title ? opts.title(n) : "";
+    const titleEl = tip ? '<title>' + esc(tip) + '</title>' : "";
     return '<g class="kgn ' + cls + '"' + attrs + ' transform="translate(' + q.x.toFixed(1) + ','
-      + q.y.toFixed(1) + ')"><circle r="' + r.toFixed(1) + '"' + fill + '/>'
+      + q.y.toFixed(1) + ')">' + titleEl + '<circle r="' + r.toFixed(1) + '"' + fill + '/>'
       + '<text class="kglabel" y="' + (r + 11).toFixed(1) + '">' + esc(opts.label(n)) + '</text></g>';
   }).join("");
   return '<svg class="kgsvg" width="100%" height="' + height + '" viewBox="0 0 ' + width + ' ' + height
@@ -1114,18 +1125,22 @@ function lensControls() {
   const tab = (id, text) => '<a href="#" class="kglens' + (kgLens === id ? " active" : "")
     + '" data-lens="' + id + '">' + text + '</a>';
   let res = "";
-  if (kgLens === "code") {
+  if (kgLens === "code" || kgLens === "concepts") {
     res = ' &middot; resolution <input class="kgres" type="text" spellcheck="false" '
-      + 'value="' + esc(kgResolution) + '" data-lens-res="1" title="the community grain to read">';
+      + 'value="' + esc(kgResolution) + '" data-lens-res="1" title="the derived grain to read">';
   }
-  return 'lens: ' + tab("files", "files") + tab("code", "code") + res;
+  return 'lens: ' + tab("files", "files") + tab("code", "code") + tab("concepts", "concepts") + res;
 }
 
 // The cluster DRILL (spec 42 c5): a cluster's member nodes, each a select-to-seed handle (data-seed)
 // that hands off to the spec 30 seeded neighborhood; god-nodes (high-degree hubs the drill flagged) are
 // emphasized; a "<- overview" back link (data-kgback) returns to the overview; and when the drill was
 // capped the toolbar captions "showing the N most-connected of M". An empty cluster degrades to a
-// message, never an error.
+// message, never an error. Under the CONCEPTS lens (spec 54 c3) a member that realizes MORE THAN ONE
+// concept arrives flagged `shared` (it folds under its primary bucket, counted once): the drill
+// SURFACES that to the human - a `kgshared` distinguishing ring, a `[shared]` label tag, and a hover
+// <title> - so honest membership is met end-to-end, not just on the wire. Every other lens sends no
+// `shared`, so the marker never appears and the drill stays byte-identical.
 function renderKgDrill(nb) {
   kgMode = "drill";
   const nodes = (nb && nb.nodes) || [];
@@ -1147,9 +1162,16 @@ function renderKgDrill(nb) {
   const svg = kgSvg(nodes, edges, dims.w, dims.h, {
     radius: n => (n.god ? 9 : 5) + 6 * (Math.sqrt(n.degree || 0) / Math.sqrt(maxDeg)),
     fill: n => kindColor(n.kind),
-    nodeClass: n => n.god ? "kgmember kggodnode" : "kgmember",
+    // Flag classes mirror the god-node pattern: a hub keeps its `kggodnode` ring, and a multi-concept
+    // member (spec 54 c3 `shared`) gains `kgshared` so the concepts drill never hides shared membership.
+    nodeClass: n => "kgmember" + (n.god ? " kggodnode" : "") + (n.shared ? " kgshared" : ""),
+    // The hover tooltip explaining a shared member; single-concept members (and every other lens) get
+    // no title, so the node stays byte-identical.
+    title: n => n.shared ? "shared member: realizes multiple concepts (folded under its primary bucket)" : "",
     nodeAttrs: n => ' data-seed="' + esc(n.id) + '"',
-    label: n => n.label || n.id,
+    // A shared member's label carries a plain-text [shared] tag so a human reads the multi-concept
+    // membership without hovering; a single-concept member's label is unchanged.
+    label: n => n.shared ? (n.label || n.id) + " [shared]" : (n.label || n.id),
     edgeWidth: () => 1.2
   });
   el("kgpanel").innerHTML = toolbar + svg;
@@ -1167,10 +1189,11 @@ async function loadKgOverview() {
     return;
   }
   try {
-    // The lens rides the query (spec 53 c4): `lens=code&resolution=<grain>` under the code lens; the
-    // files lens sends no lens param, so the request - and the response - stay byte-identical.
-    const q = kgLens === "code"
-      ? "?lens=code&resolution=" + encodeURIComponent(kgResolution)
+    // The lens rides the query (spec 53 c4 / spec 54 c3): `lens=<code|concepts>&resolution=<grain>`
+    // under a derived lens; the files lens sends no lens param, so the request - and the response -
+    // stay byte-identical.
+    const q = (kgLens === "code" || kgLens === "concepts")
+      ? "?lens=" + kgLens + "&resolution=" + encodeURIComponent(kgResolution)
       : "";
     const ov = await (await fetch(apiUrl("/api/graph" + q), { cache: "no-store" })).json();
     renderKgOverview(ov);
@@ -1189,10 +1212,10 @@ async function drillCluster(key) {
     return;
   }
   try {
-    // Carry the lens (spec 53 c4) so a code-lens community drills to its members through the SAME
-    // route; the files lens sends no lens param and the drill is byte-identical.
-    const q = kgLens === "code"
-      ? "&lens=code&resolution=" + encodeURIComponent(kgResolution)
+    // Carry the lens (spec 53 c4 / spec 54 c3) so a code community / concept drills to its members
+    // through the SAME route; the files lens sends no lens param and the drill is byte-identical.
+    const q = (kgLens === "code" || kgLens === "concepts")
+      ? "&lens=" + kgLens + "&resolution=" + encodeURIComponent(kgResolution)
       : "";
     const nb = await (await fetch(apiUrl("/api/graph?cluster=" + encodeURIComponent(key) + q), { cache: "no-store" })).json();
     renderKgDrill(nb);

@@ -27,8 +27,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::Serialize;
 
 use crate::contextgraph::{
-    CallGraph, Direction, Graph, Node, KIND_COMMUNITY, KIND_DECISION, KIND_FINDING,
-    REL_IN_COMMUNITY, REL_SUPERSEDES, TIER_INFERRED,
+    CallGraph, Direction, Graph, Node, KIND_COMMUNITY, KIND_CONCEPT, KIND_DECISION, KIND_FINDING,
+    REL_IN_COMMUNITY, REL_REALIZES, REL_SUPERSEDES, TIER_INFERRED,
 };
 use crate::eventstore::{Event, Position};
 use crate::progress::{self, AgentActivity};
@@ -604,6 +604,13 @@ pub struct NeighborhoodNode {
     /// non-call node, so a plain neighborhood is byte-identical.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub frontier: Option<Vec<String>>,
+    /// The SHARED-MEMBERSHIP marker (spec 54 c3): true when this node realizes MORE THAN ONE derived
+    /// concept, so a [`Lens::Concepts`] drill flags it - it folds under its PRIMARY concept and
+    /// appears once, never silently duplicated across the concepts it realizes. `false` (and omitted
+    /// from the JSON) for a single-concept or membership-less node and for every non-concepts view, so
+    /// a plain neighborhood / drill / call node stays byte-identical.
+    #[serde(skip_serializing_if = "is_not_shared", default)]
+    pub shared: bool,
 }
 
 /// One TIER-TAGGED edge in a seeded KG neighborhood (spec 30 c5). `tier` is the edge's confidence
@@ -629,6 +636,13 @@ pub struct NeighborhoodEdge {
 /// back edge) serializes byte-identically to before the call views existed.
 fn is_not_back(back: &bool) -> bool {
     !*back
+}
+
+/// Serde `skip_serializing_if` predicate for [`NeighborhoodNode::shared`]: keep the shared-membership
+/// marker off the wire for the common single-concept / membership-less node, so a plain neighborhood /
+/// drill / call node serializes byte-identically to before the concepts lens existed.
+fn is_not_shared(shared: &bool) -> bool {
+    !*shared
 }
 
 /// The PROVENANCE of a node (spec 30 c7): the graph facts that produced it, as a self-contained
@@ -1044,6 +1058,18 @@ pub const DEFAULT_COMMUNITY_RESOLUTION: &str = "1";
 /// code lens degrades gracefully to a prompt to run the derivation (spec 53 c4).
 pub const CODE_LENS_UNDERIVED: &str = "code lens not derived yet - run `rigger graph communities`";
 
+/// The default concept-derivation resolution grain, as its canonical string. The offline
+/// intent-derivation pass defaults to resolution `1.0`, whose `f64` display is `1`, so its concepts
+/// are `concept/1/<n>` (spec 54). The [`Lens::Concepts`] view reads THIS grain when a request omits
+/// `resolution=`.
+pub const DEFAULT_CONCEPT_RESOLUTION: &str = "1";
+
+/// The documented empty-state message the [`Lens::Concepts`] overview carries when the selected
+/// resolution grain has NO derived concept assignments (the offline intent-derivation pass never ran
+/// at that grain): the panel shows this instead of an error or a bare kind-bucket view, so an
+/// underived concepts lens degrades gracefully to a prompt to run the derivation (spec 54 c3).
+pub const CONCEPTS_LENS_UNDERIVED: &str = "concepts not derived yet - run `rigger graph concepts`";
+
 /// The overview/drill bucket lens (spec 53 c4): how a graph node folds to its super-node bucket.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Lens {
@@ -1058,20 +1084,38 @@ pub enum Lens {
         /// The resolution grain to read, as the community id's grain segment (e.g. `1`, `1.5`).
         resolution: String,
     },
+    /// The CONCEPTS fold (spec 54): a node with a live `REALIZES` membership at `resolution` buckets
+    /// by its intent CONCEPT (its `concept/<resolution>/<n>` id) - the idea the docs and code realize,
+    /// grouped across directory lines; a membership-less node keeps its KIND bucket (so the view stays
+    /// whole-graph). A node realizing MORE THAN ONE concept folds under its PRIMARY (the largest
+    /// concept by member count, ties by lexicographically-smallest id) and is flagged `shared` -
+    /// counted once, never silently duplicated. The `resolution` grain string selects which derived
+    /// grain to read.
+    Concepts {
+        /// The resolution grain to read, as the concept id's grain segment (e.g. `1`, `1.5`).
+        resolution: String,
+    },
 }
 
 impl Lens {
-    /// Resolve the lens from the `/api/graph` selector params: `lens=code` selects the code fold at
-    /// `resolution=` (defaulting to [`DEFAULT_COMMUNITY_RESOLUTION`] when absent or empty); every
-    /// other value - `lens=files`, an unknown lens, or an absent one - resolves to [`Lens::Files`],
-    /// the byte-identical default. Total and infallible, so a hostile selector can never error the
-    /// route; it just falls back to the files view.
+    /// Resolve the lens from the `/api/graph` selector params: `lens=code` selects the code fold and
+    /// `lens=concepts` the concepts fold, each at `resolution=` (defaulting to the derivation's
+    /// default grain - [`DEFAULT_COMMUNITY_RESOLUTION`] / [`DEFAULT_CONCEPT_RESOLUTION`] - when absent
+    /// or empty); every other value - `lens=files`, an unknown lens, or an absent one - resolves to
+    /// [`Lens::Files`], the byte-identical default. Total and infallible, so a hostile selector can
+    /// never error the route; it just falls back to the files view.
     pub fn from_query(lens: Option<&str>, resolution: Option<&str>) -> Lens {
         match lens {
             Some("code") => Lens::Code {
                 resolution: resolution
                     .filter(|r| !r.is_empty())
                     .unwrap_or(DEFAULT_COMMUNITY_RESOLUTION)
+                    .to_string(),
+            },
+            Some("concepts") => Lens::Concepts {
+                resolution: resolution
+                    .filter(|r| !r.is_empty())
+                    .unwrap_or(DEFAULT_CONCEPT_RESOLUTION)
                     .to_string(),
             },
             _ => Lens::Files,
@@ -1085,42 +1129,104 @@ impl Lens {
 /// a single time.
 struct Buckets<'g> {
     lens: &'g Lens,
-    /// Under [`Lens::Code`]: node id -> the `community/<resolution>/<n>` id it lives in, at the
-    /// selected grain (at most one live membership per grain, per the spec 53 c3 fold). Empty under
-    /// [`Lens::Files`], and empty under a code grain with NO derived assignments - the empty-state
+    /// A node id -> its single bucket super-node id: under [`Lens::Code`] the `community/<r>/<n>` it
+    /// lives in (at most one live membership per grain, per the spec 53 c3 fold); under
+    /// [`Lens::Concepts`] the PRIMARY `concept/<r>/<n>` it realizes (the largest concept it realizes,
+    /// ties by lexicographically-smallest id, when it realizes more than one). Empty under
+    /// [`Lens::Files`], and empty under a derived-lens grain with NO assignments - the empty-state
     /// signal [`Buckets::underived`] reads.
     membership: BTreeMap<&'g str, &'g str>,
+    /// The member nodes carrying MORE THAN ONE live `REALIZES` membership at this grain (spec 54 c3):
+    /// each folds under its PRIMARY concept above and is FLAGGED `shared` in the drill, so a
+    /// multi-concept member appears once, never silently duplicated. Always empty under
+    /// [`Lens::Files`] and [`Lens::Code`] (a node carries at most one community).
+    shared: BTreeSet<&'g str>,
 }
 
 impl<'g> Buckets<'g> {
-    /// Build the resolver: under [`Lens::Code`], index every live `IN_COMMUNITY` edge whose target
+    /// Build the resolver. Under [`Lens::Code`], index every live `IN_COMMUNITY` edge whose target
     /// carries the selected grain's `community/<resolution>/` prefix (a substring equality on the id,
-    /// never a wildcard match). A no-op under [`Lens::Files`].
+    /// never a wildcard match). Under [`Lens::Concepts`], index every live `REALIZES` edge to a
+    /// `concept/<resolution>/` target, then fold each member to its PRIMARY concept (the largest
+    /// concept by member count, ties by smallest id) and record the members that realize more than one
+    /// as `shared`. A no-op under [`Lens::Files`].
     fn new(graph: &'g Graph, lens: &'g Lens) -> Self {
         let mut membership: BTreeMap<&str, &str> = BTreeMap::new();
-        if let Lens::Code { resolution } = lens {
-            let prefix = format!("community/{resolution}/");
-            for e in &graph.edges {
-                if e.valid_to.is_none() && e.rel == REL_IN_COMMUNITY && e.to.starts_with(&prefix) {
-                    membership.insert(e.from.as_str(), e.to.as_str());
+        let mut shared: BTreeSet<&str> = BTreeSet::new();
+        match lens {
+            Lens::Files => {}
+            Lens::Code { resolution } => {
+                let prefix = format!("community/{resolution}/");
+                for e in &graph.edges {
+                    if e.valid_to.is_none()
+                        && e.rel == REL_IN_COMMUNITY
+                        && e.to.starts_with(&prefix)
+                    {
+                        membership.insert(e.from.as_str(), e.to.as_str());
+                    }
+                }
+            }
+            Lens::Concepts { resolution } => {
+                // Every live `<member> --REALIZES--> concept/<resolution>/<n>` membership, grouped per
+                // member. The derivation records at most one membership per grain, but a later
+                // model-assisted refinement may realize a member under several concepts, so index them
+                // ALL and fold honestly rather than trust a single-membership assumption.
+                let prefix = format!("concept/{resolution}/");
+                let mut realized: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+                for e in &graph.edges {
+                    if e.valid_to.is_none() && e.rel == REL_REALIZES && e.to.starts_with(&prefix) {
+                        realized
+                            .entry(e.from.as_str())
+                            .or_default()
+                            .insert(e.to.as_str());
+                    }
+                }
+                // Each concept's member count, to pick a multi-concept member's PRIMARY bucket: the
+                // largest concept, ties by lexicographically-smallest id.
+                let mut size: BTreeMap<&str, usize> = BTreeMap::new();
+                for concepts in realized.values() {
+                    for c in concepts {
+                        *size.entry(*c).or_default() += 1;
+                    }
+                }
+                for (node, concepts) in &realized {
+                    let primary = concepts
+                        .iter()
+                        .copied()
+                        .max_by(|a, b| {
+                            let sa = size.get(a).copied().unwrap_or(0);
+                            let sb = size.get(b).copied().unwrap_or(0);
+                            // Larger member count wins; on a tie the lexicographically-SMALLER id wins
+                            // (so `b.cmp(a)` makes the smaller `a` compare greater).
+                            sa.cmp(&sb).then_with(|| b.cmp(a))
+                        })
+                        .expect("a realized member has at least one concept");
+                    membership.insert(node, primary);
+                    if concepts.len() > 1 {
+                        shared.insert(node);
+                    }
                 }
             }
         }
-        Buckets { lens, membership }
+        Buckets {
+            lens,
+            membership,
+            shared,
+        }
     }
 
     /// The bucket key a node folds to, or `None` to EXCLUDE it. Under [`Lens::Files`] every node
-    /// folds by [`cluster_key`] (never excluded). Under [`Lens::Code`] a member folds by its
-    /// community id; the `KIND_COMMUNITY` super-node itself is EXCLUDED (it IS a bucket, not a member,
-    /// so it never inflates a community's member count or dominant kind); every other membership-less
-    /// node keeps its KIND bucket.
+    /// folds by [`cluster_key`] (never excluded). Under [`Lens::Code`] / [`Lens::Concepts`] a member
+    /// folds by its (primary) super-node id; the super-node itself ([`KIND_COMMUNITY`] /
+    /// [`KIND_CONCEPT`]) is EXCLUDED (it IS a bucket, not a member, so it never inflates a bucket's
+    /// member count or dominant kind); every other membership-less node keeps its KIND bucket.
     fn key(&self, node: &Node) -> Option<String> {
         match self.lens {
             Lens::Files => Some(cluster_key(&node.id, &node.kind)),
-            Lens::Code { .. } => {
-                if let Some(community) = self.membership.get(node.id.as_str()) {
-                    Some((*community).to_string())
-                } else if node.kind == KIND_COMMUNITY {
+            Lens::Code { .. } | Lens::Concepts { .. } => {
+                if let Some(bucket) = self.membership.get(node.id.as_str()) {
+                    Some((*bucket).to_string())
+                } else if self.excludes_super_node(&node.kind) {
                     None
                 } else {
                     Some(node.kind.clone())
@@ -1129,10 +1235,49 @@ impl<'g> Buckets<'g> {
         }
     }
 
-    /// The code lens at the selected grain has NO derived community: the documented empty state (the
-    /// detection pass never ran at this resolution). Always `false` under [`Lens::Files`].
+    /// The super-node KIND this lens EXCLUDES from the member fold (it IS a bucket, not a member):
+    /// [`KIND_COMMUNITY`] under [`Lens::Code`], [`KIND_CONCEPT`] under [`Lens::Concepts`]. Excludes
+    /// nothing under [`Lens::Files`].
+    fn excludes_super_node(&self, kind: &str) -> bool {
+        match self.lens {
+            Lens::Files => false,
+            Lens::Code { .. } => kind == KIND_COMMUNITY,
+            Lens::Concepts { .. } => kind == KIND_CONCEPT,
+        }
+    }
+
+    /// A derived lens at the selected grain has NO assignments: the documented empty state (the
+    /// offline pass never ran at this resolution). Always `false` under [`Lens::Files`].
     fn underived(&self) -> bool {
-        matches!(self.lens, Lens::Code { .. }) && self.membership.is_empty()
+        matches!(self.lens, Lens::Code { .. } | Lens::Concepts { .. }) && self.membership.is_empty()
+    }
+
+    /// The documented empty-state message for this lens when [`Buckets::underived`]: the derivation
+    /// prompt for the active derived lens. `None` under [`Lens::Files`] (never underived).
+    fn underived_message(&self) -> Option<&'static str> {
+        match self.lens {
+            Lens::Files => None,
+            Lens::Code { .. } => Some(CODE_LENS_UNDERIVED),
+            Lens::Concepts { .. } => Some(CONCEPTS_LENS_UNDERIVED),
+        }
+    }
+
+    /// The super-node KIND whose deterministic `label` attr names a bucket cluster under this lens:
+    /// [`KIND_COMMUNITY`] (a coupling community) under [`Lens::Code`], [`KIND_CONCEPT`] (a derived
+    /// concept) under [`Lens::Concepts`]. `None` under [`Lens::Files`], where a bucket key already
+    /// names its module / kind and no label is attached.
+    fn label_kind(&self) -> Option<&'static str> {
+        match self.lens {
+            Lens::Files => None,
+            Lens::Code { .. } => Some(KIND_COMMUNITY),
+            Lens::Concepts { .. } => Some(KIND_CONCEPT),
+        }
+    }
+
+    /// Whether `id` carries MORE THAN ONE live concept membership at this grain (spec 54 c3): a shared
+    /// member the drill flags. Always `false` under [`Lens::Files`] and [`Lens::Code`].
+    fn is_shared(&self, id: &str) -> bool {
+        self.shared.contains(id)
     }
 }
 
@@ -1156,36 +1301,36 @@ impl<'g> Buckets<'g> {
 pub fn clustered_overview(graph: &Graph, lens: &Lens) -> ClusterOverview {
     let buckets = Buckets::new(graph, lens);
 
-    // The documented empty state (spec 53 c4): a code lens whose selected resolution grain has NO
-    // derived community. Return an empty overview carrying the prompt, so the panel says "run
-    // `rigger graph communities`" instead of showing an error or a bare kind-bucket view. `total`
-    // still reports the whole graph size.
+    // The documented empty state (spec 53 c4 / spec 54 c3): a derived lens whose selected resolution
+    // grain has NO assignments. Return an empty overview carrying the lens's derivation prompt, so the
+    // panel says "run `rigger graph communities`" / "run `rigger graph concepts`" instead of showing
+    // an error or a bare kind-bucket view. `total` still reports the whole graph size.
     if buckets.underived() {
         return ClusterOverview {
             clusters: Vec::new(),
             edges: Vec::new(),
             total: graph.nodes.len(),
-            empty_state: Some(CODE_LENS_UNDERIVED.to_string()),
+            empty_state: buckets.underived_message().map(str::to_string),
         };
     }
 
-    // Under the code lens, index each community node's deterministic display label (its `label` attr,
-    // folded by spec 53 c3) so a community cluster can name its subsystem instead of its opaque id. A
-    // no-op under the files lens (no community bucket ever exists there).
-    let community_label: BTreeMap<&str, &str> = if matches!(lens, Lens::Code { .. }) {
-        graph
+    // Index each bucket super-node's deterministic display label (its `label` attr) so a bucket
+    // cluster can name its subsystem / idea instead of its opaque id: a coupling community under the
+    // code lens (folded by spec 53 c3), a derived concept under the concepts lens (folded by spec 54).
+    // A no-op under the files lens (no such bucket ever exists there).
+    let bucket_label: BTreeMap<&str, &str> = match buckets.label_kind() {
+        Some(super_kind) => graph
             .nodes
             .iter()
-            .filter(|n| n.kind == KIND_COMMUNITY)
+            .filter(|n| n.kind == super_kind)
             .filter_map(|n| {
                 n.attrs
                     .get("label")
                     .filter(|l| !l.is_empty())
                     .map(|l| (n.id.as_str(), l.as_str()))
             })
-            .collect()
-    } else {
-        BTreeMap::new()
+            .collect(),
+        None => BTreeMap::new(),
     };
 
     // Fold every node into its cluster bucket (via the lens), remembering each node's cluster (so
@@ -1226,9 +1371,9 @@ pub fn clustered_overview(graph: &Graph, lens: &Lens) -> ClusterOverview {
                     dominant = kind;
                 }
             }
-            // A community bucket carries the community node's deterministic display label; any other
-            // bucket (a module directory, a kind) already names itself, so it carries none.
-            let label = community_label.get(key.as_str()).map(|l| l.to_string());
+            // A community / concept bucket carries the super-node's deterministic display label; any
+            // other bucket (a module directory, a kind) already names itself, so it carries none.
+            let label = bucket_label.get(key.as_str()).map(|l| l.to_string());
             Cluster {
                 key,
                 count,
@@ -1402,6 +1547,9 @@ pub fn cluster_detail(graph: &Graph, key: &str, lens: &Lens) -> Neighborhood {
                     // A neighborhood / drill node carries no directed-call layer or frontier (spec 52 c4).
                     layer: None,
                     frontier: None,
+                    // A concepts-lens drill flags a member that realizes MORE THAN ONE concept (spec 54
+                    // c3); every other lens leaves this false (the resolver's `shared` set is empty).
+                    shared: buckets.is_shared(n.id.as_str()),
                 }
             })
         })
@@ -1517,6 +1665,8 @@ fn neighborhood_of(graph: &Graph, seeds: &[String], echo_seed: &str, depth: i64)
                 // A plain neighborhood node carries no directed-call layer or frontier (spec 52 c4).
                 layer: None,
                 frontier: None,
+                // A plain neighborhood is not a lens fold, so no node is a shared concept member.
+                shared: false,
             }
         })
         .collect();
@@ -1692,6 +1842,8 @@ fn call_node_view(cn: &crate::contextgraph::CallNode, sign: i64) -> Neighborhood
         god: false,
         layer: Some(sign * cn.layer),
         frontier: cn.frontier.clone(),
+        // A directed-call node is not a lens fold, so it is never a shared concept member.
+        shared: false,
     }
 }
 
@@ -1719,6 +1871,8 @@ fn ref_node_view(n: &Node) -> NeighborhoodNode {
         god: false,
         layer: None,
         frontier: None,
+        // A referenced-not-called sidecar node is not a lens fold, so never a shared concept member.
+        shared: false,
     }
 }
 
@@ -5083,6 +5237,239 @@ mod tests {
         assert_eq!(Lens::from_query(None, None), Lens::Files);
         assert_eq!(Lens::from_query(Some("files"), None), Lens::Files);
         assert_eq!(Lens::from_query(Some("bogus"), Some("9")), Lens::Files);
+    }
+
+    /// The CONCEPTS LENS VIEW (spec 54 c3): `lens=concepts` buckets every `REALIZES`-carrying node by
+    /// its intent CONCEPT through the SAME overview/drill folds - the idea the docs and code realize,
+    /// grouped across directory lines. A node realizing MORE THAN ONE concept folds under its PRIMARY
+    /// (the largest concept by member count, ties by lexicographically-smallest id) and is flagged
+    /// `shared` - counted once, never silently duplicated; a membership-less node keeps its KIND
+    /// bucket (so the view stays whole-graph); the `KIND_CONCEPT` super-node is a bucket, not a
+    /// member, so it is excluded; an underived grain carries the documented empty state; and the files
+    /// lens stays byte-identical. This is the criterion-3 fold behaviour driven inside-out.
+    #[test]
+    fn concepts_lens_buckets_members_by_concept_with_primary_shared_and_empty_state() {
+        let ce = |id: &str| Node {
+            id: id.to_string(),
+            kind: KIND_CODE_ENTITY.to_string(),
+            attrs: BTreeMap::new(),
+        };
+        let doc = |id: &str| Node {
+            id: id.to_string(),
+            kind: KIND_DESIGN_DOC.to_string(),
+            attrs: BTreeMap::new(),
+        };
+        let concept = |id: &str, label: &str| Node {
+            id: id.to_string(),
+            kind: KIND_CONCEPT.to_string(),
+            attrs: BTreeMap::from([("label".to_string(), label.to_string())]),
+        };
+        let plain = |id: &str, kind: &str| Node {
+            id: id.to_string(),
+            kind: kind.to_string(),
+            attrs: BTreeMap::new(),
+        };
+        let edge = |from: &str, to: &str, rel: &str, tier: &str| Edge {
+            from: from.to_string(),
+            to: to.to_string(),
+            rel: rel.to_string(),
+            valid_from: 0,
+            valid_to: None,
+            source: 0,
+            tier: tier.to_string(),
+        };
+
+        // Two derived concepts, each grouping a DOC with the CODE it governs across directory lines
+        // (the whole point of the lens): concept/1/0 "the graph" = {docs/kg.md, graph::build,
+        // store::append} (size 3, the LARGER); concept/1/1 "the review" = {docs/review.md, graph::build}
+        // (size 2, the SMALLER). `graph::build` REALIZES BOTH - a SHARED member whose PRIMARY is the
+        // larger concept/1/0 (by size, not the tie-break). Plus the two KIND_CONCEPT super-nodes (each
+        // labelled) and TWO membership-less nodes (an unattached code entity + a decision) that keep
+        // their KIND buckets. One cross-concept doc reference weights the super-edge; one intra-concept
+        // GOVERNS edge adds none.
+        let kg = "docs/kg.md";
+        let review = "docs/review.md";
+        let build = "src/graph/index.rs::build";
+        let append = "src/store/log.rs::append";
+        let helper = "src/util/misc.rs::helper";
+        let graph = Graph {
+            nodes: vec![
+                doc(kg),
+                doc(review),
+                ce(build),
+                ce(append),
+                ce(helper),
+                concept("concept/1/0", "the graph"),
+                concept("concept/1/1", "the review"),
+                plain("d1", KIND_DECISION),
+            ],
+            edges: vec![
+                // Live REALIZES memberships at grain 1 (member --REALIZES--> concept).
+                edge(kg, "concept/1/0", REL_REALIZES, TIER_INFERRED),
+                edge(build, "concept/1/0", REL_REALIZES, TIER_INFERRED),
+                edge(append, "concept/1/0", REL_REALIZES, TIER_INFERRED),
+                edge(review, "concept/1/1", REL_REALIZES, TIER_INFERRED),
+                // The SHARED member: build also realizes the smaller concept/1/1.
+                edge(build, "concept/1/1", REL_REALIZES, TIER_INFERRED),
+                // One CROSS-concept doc reference (kg in c0, review in c1) -> one weight-1 super-edge.
+                edge(kg, review, REL_REFERENCES, TIER_INFERRED),
+                // One INTRA-concept edge (kg and append both in c0) -> adds NO cross weight.
+                edge(kg, append, REL_GOVERNS, TIER_INFERRED),
+            ],
+        };
+
+        let concepts = Lens::Concepts {
+            resolution: DEFAULT_CONCEPT_RESOLUTION.to_string(),
+        };
+
+        // --- OVERVIEW: buckets by concept, shared member counted ONCE under its primary ---
+        let overview = clustered_overview(&graph, &concepts);
+        assert_eq!(
+            overview.total, 8,
+            "total carries every graph node, the excluded concept super-nodes included"
+        );
+        assert_eq!(
+            overview.empty_state, None,
+            "a derived grain is not the empty state"
+        );
+        assert_eq!(
+            overview.clusters,
+            vec![
+                // The unattached code entity keeps its KIND bucket (not its directory).
+                Cluster {
+                    key: KIND_CODE_ENTITY.to_string(),
+                    count: 1,
+                    kind: KIND_CODE_ENTITY.to_string(),
+                    label: None,
+                },
+                // concept/1/0 (the larger): {kg.md, build, append} = 3 members, dominant kind
+                // code-entity (build + append), labelled by the concept node's label.
+                Cluster {
+                    key: "concept/1/0".to_string(),
+                    count: 3,
+                    kind: KIND_CODE_ENTITY.to_string(),
+                    label: Some("the graph".to_string()),
+                },
+                // concept/1/1 (the smaller): the SHARED build folds under its primary c0, so c1 counts
+                // ONLY its sole non-shared member docs/review.md.
+                Cluster {
+                    key: "concept/1/1".to_string(),
+                    count: 1,
+                    kind: KIND_DESIGN_DOC.to_string(),
+                    label: Some("the review".to_string()),
+                },
+                // The membership-less decision keeps its KIND bucket.
+                Cluster {
+                    key: KIND_DECISION.to_string(),
+                    count: 1,
+                    kind: KIND_DECISION.to_string(),
+                    label: None,
+                },
+            ],
+            "concepts lens folds members by concept (primary bucket, shared counted once), keeps kind buckets for the unattached nodes, and labels each concept: {overview:?}"
+        );
+        assert_eq!(
+            overview.edges,
+            vec![ClusterEdge {
+                from: "concept/1/0".to_string(),
+                to: "concept/1/1".to_string(),
+                weight: 1,
+            }],
+            "only the cross-concept doc reference weights the super-edge; the intra-concept edge and the REALIZES spokes to the excluded super-node add none: {overview:?}"
+        );
+
+        // --- DRILL c0: exactly its primary members, the SHARED member flagged ---
+        let drill0 = cluster_detail(&graph, "concept/1/0", &concepts);
+        assert_eq!(
+            drill0.seed, "concept/1/0",
+            "the drill echoes the concept key"
+        );
+        let members0: BTreeMap<&str, bool> = drill0
+            .nodes
+            .iter()
+            .map(|n| (n.id.as_str(), n.shared))
+            .collect();
+        assert_eq!(
+            members0,
+            BTreeMap::from([(kg, false), (build, true), (append, false)]),
+            "concept/1/0 drills to exactly {{kg, build, append}}; the multi-concept build carries shared=true, the single-concept members shared=false: {drill0:?}"
+        );
+        assert_eq!(
+            drill0.edges.len(),
+            1,
+            "only the intra-concept kg->append edge renders; the REALIZES spokes and the cross-concept reference do not: {drill0:?}"
+        );
+
+        // --- DRILL c1: the shared build appears ONCE (under its primary c0), never here ---
+        let drill1 = cluster_detail(&graph, "concept/1/1", &concepts);
+        let members1: BTreeSet<&str> = drill1.nodes.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(
+            members1,
+            [review].into_iter().collect::<BTreeSet<&str>>(),
+            "concept/1/1 drills to ONLY its non-shared member docs/review.md; the shared build appears once, under its primary c0: {drill1:?}"
+        );
+        assert!(
+            drill1.nodes.iter().all(|n| !n.shared),
+            "review realizes only one concept, so it is not shared: {drill1:?}"
+        );
+
+        // --- UNDERIVED grain: resolution 2 has no assignments -> the documented empty state ---
+        let underived = clustered_overview(
+            &graph,
+            &Lens::Concepts {
+                resolution: "2".to_string(),
+            },
+        );
+        assert!(
+            underived.clusters.is_empty() && underived.edges.is_empty(),
+            "an underived concepts grain folds no concepts: {underived:?}"
+        );
+        assert_eq!(
+            underived.total, 8,
+            "the empty state still reports the whole graph size"
+        );
+        assert_eq!(
+            underived.empty_state.as_deref(),
+            Some(CONCEPTS_LENS_UNDERIVED),
+            "an underived concepts grain carries the documented empty-state message, never an error"
+        );
+
+        // --- FILES lens byte-identical: no label, no empty_state, membership-less code buckets by
+        // its DIRECTORY (not its kind), the concept super-nodes bucket by their kind ---
+        let files = clustered_overview(&graph, &Lens::Files);
+        assert_eq!(files.total, 8);
+        assert_eq!(files.empty_state, None, "files lens carries no empty state");
+        assert!(
+            files.clusters.iter().all(|c| c.label.is_none()),
+            "the files fold attaches no concept label: {files:?}"
+        );
+        assert!(
+            files.clusters.iter().any(|c| c.key == "src/graph"),
+            "under the files lens graph::build buckets by its directory src/graph, not by concept: {files:?}"
+        );
+
+        // --- THE PUBLIC SELECTOR: lens=concepts is a total, infallible parse ---
+        assert_eq!(
+            Lens::from_query(Some("concepts"), None),
+            Lens::Concepts {
+                resolution: DEFAULT_CONCEPT_RESOLUTION.to_string()
+            },
+            "lens=concepts with no resolution selects the default concept grain"
+        );
+        assert_eq!(
+            Lens::from_query(Some("concepts"), Some("")),
+            Lens::Concepts {
+                resolution: DEFAULT_CONCEPT_RESOLUTION.to_string()
+            },
+            "an empty resolution still defaults to the default concept grain"
+        );
+        assert_eq!(
+            Lens::from_query(Some("concepts"), Some("1.5")),
+            Lens::Concepts {
+                resolution: "1.5".to_string()
+            },
+            "an explicit resolution grain is honoured verbatim"
+        );
     }
 
     /// A small tier-tagged fixture graph: a chain seed `a` -[extracted]- `b` -[inferred]- `c`
