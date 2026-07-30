@@ -137,7 +137,7 @@ flowchart TB
     direction LR
     ES["EventStore<br/>sqlite (default) | kurrentdb (server)<br/>selected by store resolution"]
     DR["AgentDriver<br/>cli (claude subprocess, default) | workflow (MCP)"]
-    GR["Grounder<br/>grep (default) | turbovec | symbols"]
+    GR["Grounder<br/>turbovec (default) | symbols | grep (explicit opt-out)"]
   end
 
   subgraph MEM["MEMORY + OBSERVABILITY"]
@@ -164,7 +164,7 @@ chosen by config or cargo feature:*
 |---|---|---|---|---|
 | **EventStore** | `append` / `read_stream` / `read_all` / `subscribe_all` | `sqlite` (embedded, 1 file) | `kurrentdb` (server backend) | **store resolution** (section 5.1.1): a flag, an env var, a secret file, or the committed `store:` selection - never a recompile |
 | **AgentDriver** | `spawn(agent, prompt, opts, emit) -> result` | `cli` (`claude` subprocess) | `workflow` (MCP shim) | the `--driver` flag / config |
-| **Grounder** | `ground(query, k) -> Vec<Ref>` | `grep` (self-contained) | `turbovec` (semantic), `symbols` (structural) | cargo feature + config |
+| **Grounder** | `ground(query, k) -> Vec<Ref>` | `turbovec` (semantic; the unset default, shipped in the default build) | `symbols` (structural), `grep` (self-contained; the explicit light opt-out) | cargo feature + config |
 
 ---
 
@@ -215,7 +215,7 @@ dash: on                                    # on (default) | off (suppress the a
 
 defaults:
   autonomy: manual                          # manual | auto_notify | silent
-  grounder: turbovec                        # grep (default impl) | turbovec | symbols
+  grounder: turbovec                        # turbovec (default) | symbols | grep (explicit light opt-out)
 
   # The three-tier review panel, declared ONCE and applied to every implementer
   # unit. Each unit reviews ITSELF with this panel inside its own lifecycle (section 4.1).
@@ -746,10 +746,15 @@ safe.
 Grounding seeds each agent with exactly the code and memory it needs, on three axes:
 
 - **Semantic** - the pluggable `Grounder` trait (`ground(query, k) -> Vec<Ref>`) for fuzzy
-  "find things like this". The default impl is `Grep` (a self-contained literal search, no
-  index, no dependency); `turbovec` (behind the `turbovec` cargo feature) adds native
-  quantized vector search with embeddings and falls back to grep if its model is
-  unavailable.
+  "find things like this". The default impl is `turbovec`: it ships in the default build
+  (the `turbovec` cargo feature is on by default) and an unset `defaults.grounder` resolves
+  to it, so a workflow that says nothing gets native quantized vector search with embeddings.
+  `grep` (a self-contained literal search, no index, no dependency) is the explicit LIGHT
+  opt-out, reachable ONLY when a workflow writes `grounder: grep` by name. Selecting a
+  grounder NEVER silently degrades to grep: a binary built without the `turbovec` feature
+  raises a LOUD error naming the `defaults.grounder: grep` escape hatch (silently swapping in
+  grep is exactly what once hid turbovec being absent for a whole session), never a quiet
+  fallback.
 - **Structural** - the `symbols` grounder (behind the `symbols` feature): a deterministic,
   tree-sitter-derived symbol index answering "where is this defined, what references it, what
   does changing this file reach", serving both a precise/ranked contract for grounding and a
@@ -820,14 +825,26 @@ conflict and an agent cannot fan out.
 
 ## 7. The dashboard: a fixed-address machine singleton  **[AS-BUILT]**
 
-An observer wants ONE place to watch every run on their machine. If each run bound its own
-address, that view would scatter across an unpredictable set of addresses and force the
-observer to hunt for the right one. So the dashboard (`rigger dash`, `src/dash.rs`) is a
+An observer wants ONE place to watch every run on their machine. If each observation point
+bound its own address, that view would scatter across an unpredictable set of addresses and
+force the observer to hunt for the right one. So `rigger dash` (`src/dash.rs`) binds a
 **machine-level singleton at a fixed, stable address**: `http://127.0.0.1:7420/`
-(`dash::DEFAULT_PORT`), always the same on every run - a second `rigger dash` recognizes the
-running singleton and exits without binding a second one. (An env override,
-`RIGGER_DASH_PORT`, exists only so the fixed address is testable and usable on a box that
-already has something on 7420; it does not weaken the singleton contract.)
+(`dash::DEFAULT_PORT`) - a second `rigger dash` recognizes the running singleton and exits
+without binding a second one, never searching upward. The loop driver's native step path
+(`rigger step`, `ensure_run_dashboard`) targets that SAME fixed singleton: the first step of
+a run starts it on `DEFAULT_PORT` and every later step finds it serving and starts none, so a
+whole `rigger step` loop shares the one machine dash. (An env override, `RIGGER_DASH_PORT`,
+exists only so the fixed address is testable and usable on a box that already has something on
+7420; it does not weaken the singleton contract.)
+
+One path is deliberately NOT the fixed singleton, and the doc scopes the claim to say so: the
+one-shot `rigger run` driver (`start_run_dashboard` -> `spawn_run_dashboard` ->
+`dash::free_port_from(DEFAULT_PORT)`) spawns its OWN per-run dashboard that searches UPWARD
+from `DEFAULT_PORT` for a free port, so two concurrent `rigger run` invocations bind 7420 and
+7421 - each one-shot run gets a private view for its own lifetime, reaped when that run ends.
+The fixed singleton above is the shared, always-on observation point that `rigger dash` and
+the `rigger step` loop bind; the port-searching per-run dash is `rigger run`'s private view,
+not the machine singleton.
 
 - **An instance registry** (`src/registry.rs`) makes discovery a lookup, not a protocol.
   Every `rigger` invocation that starts or advances a run registers its instance - the
@@ -921,9 +938,11 @@ structurally.
 ## 10. Repo layout & `cargo install` usage  **[AS-BUILT]**
 
 A single Rust crate: a library (`src/lib.rs`) plus a binary (`src/main.rs`), with the ports
-and adapters as modules under `src/`. Two opt-in cargo features (`turbovec`, `symbols`) keep
-the default build light; the server event-store backend has **no** feature flag and is always
-in the binary.
+and adapters as modules under `src/`. Two cargo features (`turbovec`, `symbols`) are ON BY
+DEFAULT (`default = ["turbovec", "symbols"]`), so a plain `cargo build` ships both grounders;
+`--no-default-features` is the deliberate LIGHT opt-out that drops them (leaving the
+self-contained `grep` grounder). The server event-store backend has **no** feature flag and is
+always in the binary.
 
 ```
 github.com/virtual-velocitation/rigger
@@ -943,7 +962,7 @@ github.com/virtual-velocitation/rigger
 |   |-- ingest.rs                the one parallel, incremental, project-scoped ingest authority
 |   |-- dash.rs registry.rs      the fixed-address dashboard singleton + the instance registry
 |   |-- driver/                  cli.rs (claude subprocess) + workflow.rs (MCP shim)
-|   |-- grounder/                grep (default) + turbovec + symbols (structural)
+|   |-- grounder/                turbovec (default) + symbols (structural) + grep (opt-out)
 |   |-- gate.rs safety.rs ledger.rs config.rs spec.rs worktree.rs sidecar.rs mcpserver.rs
 |-- examples/demo/               a worked example: a fictional project's .rigger config
 |-- .github/workflows/rust.yml   CI: build-test, turbovec, symbols, kurrentdb jobs
@@ -951,8 +970,9 @@ github.com/virtual-velocitation/rigger
 
 ```bash
 cargo install --git https://github.com/virtual-velocitation/rigger
-# opt into the heavier grounders:
-cargo install --git https://github.com/virtual-velocitation/rigger --features turbovec
+# the plain install above already ships the turbovec + symbols grounders (default features);
+# for a lighter, grep-only build, drop them:
+cargo install --git https://github.com/virtual-velocitation/rigger --no-default-features
 
 cd my-project
 rigger init                         # scaffold .rigger/workflow.yml + .rigger/agents/
