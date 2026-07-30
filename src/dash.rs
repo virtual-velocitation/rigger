@@ -27,9 +27,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::Serialize;
 
 use crate::contextgraph::{
-    CallGraph, Direction, Graph, Node, KIND_COMMUNITY, KIND_CONCEPT, KIND_DECISION, KIND_FINDING,
-    KIND_LESSON, REL_ABOUT, REL_GOVERNS, REL_IN_COMMUNITY, REL_REALIZES, REL_SUPERSEDES,
-    TIER_INFERRED,
+    CallGraph, Direction, Edge, Graph, Node, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT,
+    KIND_DECISION, KIND_FILE, KIND_FINDING, KIND_LESSON, REL_ABOUT, REL_CONTAINS, REL_GOVERNS,
+    REL_IN_COMMUNITY, REL_REALIZES, REL_SUPERSEDES, TIER_INFERRED,
 };
 use crate::eventstore::{Event, Position};
 use crate::progress::{self, AgentActivity};
@@ -785,6 +785,56 @@ pub struct ClusterOverview {
     pub empty_state: Option<String>,
 }
 
+/// The SUBJECT x LENS re-projection body (spec 55 c1): a SELECTED subject re-grained at a lens's
+/// altitude, in place, rather than switched to a whole-graph overview. Built by [`reproject`] from
+/// the subject's MEMBER SET (a concept's `REALIZES` members; a community's members; a file's
+/// contained entities; a single entity is its own set), re-bucketed under the requested lens - by
+/// coupling community under [`Lens::Code`], by derived concept under [`Lens::Concepts`], by DISTINCT
+/// DEFINING FILE under [`Lens::Files`]. A pure read over the already-projected graph: no store touch,
+/// no new event type. Deterministic by construction, so the same graph + subject + lens yield a
+/// byte-identical body.
+#[derive(Debug, Serialize, PartialEq, Eq, Default)]
+pub struct Reprojection {
+    /// The re-grained subject's id, echoed so the panel labels the view and its back link (the
+    /// re-projection's analogue of [`Neighborhood::seed`]).
+    pub subject: String,
+    /// The re-bucketed member set as [`Cluster`] super-nodes, ordered deterministically by
+    /// [`Cluster::key`]: coupling-community buckets under [`Lens::Code`], concept buckets under
+    /// [`Lens::Concepts`], and DISTINCT DEFINING FILE buckets under [`Lens::Files`] (the same
+    /// renderer draws them as the whole-graph overview's clusters).
+    pub clusters: Vec<Cluster>,
+    /// The symmetric cross-bucket coupling edges AMONG the member set (the same [`ClusterEdge`] fold
+    /// the overview uses, restricted to member-to-member edges), ordered by `(from, to)`.
+    pub edges: Vec<ClusterEdge>,
+    /// The member-set size (every member, resolved or not), so the panel reports the re-grain size -
+    /// NOT the whole-graph node count.
+    pub total: usize,
+    /// The MARKED-UNRESOLVED members (spec 55 c1 honesty rule), set only under [`Lens::Files`]: a
+    /// bare cross-file placeholder member whose name resolves to MORE THAN ONE definition (or to
+    /// none) cannot be attributed to a single defining file, so it is surfaced here - each carrying
+    /// its SORTED candidate definition ids - rather than folded into the WRONG file bucket its
+    /// (referencing-file) id would encode. Ordered by member id. Empty (and omitted from the JSON)
+    /// under [`Lens::Code`] / [`Lens::Concepts`] and for a fully-resolvable FILES re-grain, so those
+    /// bodies stay lean.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unresolved: Vec<UnresolvedMember>,
+}
+
+/// One MARKED-UNRESOLVED member of a FILES re-projection (spec 55 c1): a bare cross-file placeholder
+/// whose entity-name has NOT exactly one definition, so it cannot be honestly attributed to a single
+/// defining file. `candidates` carries the SORTED ids of the definitions sharing the name (empty when
+/// the name is defined nowhere the graph knows) - the frontier a human re-seeds on, never a silent
+/// wrong attribution. Mirrors the directed-call view's frontier honesty (spec 52), applied to
+/// re-projection.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct UnresolvedMember {
+    /// The bare placeholder member's id (the call target in its referencing file's namespace).
+    pub id: String,
+    /// The SORTED ids of the code-entity definitions sharing the member's entity-name: MORE THAN ONE
+    /// (the ambiguous case) or ZERO (defined nowhere the graph knows).
+    pub candidates: Vec<String>,
+}
+
 /// One node in the run-tree SPINE (spec 30 c3): the run projected as
 /// `spec -> unit -> stage -> role -> agent`, each node carrying its live status plus the
 /// collapse/expand hints the client renders. It is a plain serde DTO built HERE from the
@@ -1061,29 +1111,48 @@ pub const CLUSTER_ROOT: &str = "(root)";
 /// never mistaken for one. The fold is a pure, total function of `(id, kind)`, so a given graph folds
 /// to one stable set of buckets (the determinism the exploration view relies on).
 pub fn cluster_key(id: &str, kind: &str) -> String {
-    // Reduce a path-bearing id to the file path it names by stripping a code-entity `::name` suffix,
-    // then a rationale / doc-section `#...` suffix. A plain path id survives both untouched.
+    match file_of(id) {
+        // A file-bearing id clusters by the file's DIRECTORY (its module); a directory-less repo-root
+        // file -> `(root)`.
+        Some(file) => match file.rsplit_once('/') {
+            Some((dir, _)) if !dir.is_empty() => dir.to_string(),
+            _ => CLUSTER_ROOT.to_string(),
+        },
+        // Every other node is a dev-loop node with no path id: cluster by its KIND.
+        None => kind.to_string(),
+    }
+}
+
+/// The FILE PATH a node id names, or `None` when the id names no file (a dev-loop node - a decision /
+/// finding / unit / community / concept). The single file-naming authority [`cluster_key`] (which
+/// folds to the file's DIRECTORY) and the subject-by-lens FILES re-projection (which folds to the
+/// FILE itself, spec 55 c1) both read.
+///
+/// An id is reduced to a file path by stripping a code-entity `::name` suffix, then a rationale /
+/// doc-section `#...` suffix (a plain path id survives both untouched). The reduced path names a file
+/// iff its LAST segment carries an extension: a `.` with a non-empty stem AND a non-empty suffix - so
+/// a dotfile like `.gitignore` (whose only `.` is leading) is NOT a file, and a dev-loop id like
+/// `plan-critique` (no extension) never is either. A file path contains neither `::` nor `#`, so the
+/// splits leave a plain path untouched. Pure and total.
+fn file_of(id: &str) -> Option<&str> {
     let file = id.split_once("::").map_or(id, |(f, _)| f);
     let file = file.split_once('#').map_or(file, |(f, _)| f);
-
-    // The id names a file iff its LAST path segment carries an extension: a `.` with a non-empty
-    // stem AND a non-empty suffix (so a dotfile like `.gitignore` - whose only `.` is leading - is
-    // NOT treated as an extensioned path, and a dev-loop id like `plan-critique` never is either).
     let last_segment = file.rsplit_once('/').map_or(file, |(_, seg)| seg);
     let names_a_file = last_segment
         .rsplit_once('.')
         .is_some_and(|(stem, ext)| !stem.is_empty() && !ext.is_empty());
+    names_a_file.then_some(file)
+}
 
-    if names_a_file {
-        // Cluster by the file's DIRECTORY (its module); a directory-less repo-root file -> `(root)`.
-        return match file.rsplit_once('/') {
-            Some((dir, _)) if !dir.is_empty() => dir.to_string(),
-            _ => CLUSTER_ROOT.to_string(),
-        };
+/// The entity-name SUFFIX of a `<file>::<name>` id (the part after the first `::`), or the whole id
+/// when it carries no `::`. The in-memory twin of the pinned `substr(id, instr(id, '::') + 2)`
+/// expression the store's cross-file name resolution uses (spec 52), so the FILES re-projection's
+/// bare-node resolution (spec 55 c1) matches a bare placeholder to the DEFINITIONS sharing its name.
+fn name_suffix(id: &str) -> &str {
+    match id.find("::") {
+        Some(i) => &id[i + 2..],
+        None => id,
     }
-
-    // Every other node is a dev-loop node with no path id: cluster by its KIND.
-    kind.to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -1362,11 +1431,31 @@ pub fn clustered_overview(graph: &Graph, lens: &Lens) -> ClusterOverview {
         };
     }
 
-    // Index each bucket super-node's deterministic display label (its `label` attr) so a bucket
-    // cluster can name its subsystem / idea instead of its opaque id: a coupling community under the
-    // code lens (folded by spec 53 c3), a derived concept under the concepts lens (folded by spec 54).
-    // A no-op under the files lens (no such bucket ever exists there).
-    let bucket_label: BTreeMap<&str, &str> = match buckets.label_kind() {
+    // Fold the WHOLE graph through the shared bucket fold: every node folds by the lens's
+    // [`Buckets::key`], and cross-bucket edges weight the super-edges. `total` reports the whole node
+    // count; a derived overview is not the empty state (handled above).
+    let bucket_label = bucket_label_index(graph, &buckets);
+    let (clusters, edges) = fold_buckets(
+        graph.nodes.iter(),
+        &graph.edges,
+        |n| buckets.key(n),
+        &bucket_label,
+    );
+    ClusterOverview {
+        clusters,
+        edges,
+        total: graph.nodes.len(),
+        empty_state: None,
+    }
+}
+
+/// Index each bucket super-node's deterministic display `label` attr, so a bucket cluster can name
+/// its subsystem / idea instead of its opaque id: a coupling community under [`Lens::Code`] (folded
+/// by spec 53 c3), a derived concept under [`Lens::Concepts`] (spec 54). Empty under [`Lens::Files`]
+/// (no super-node bucket exists there) and for the FILES re-projection (a file names itself). Read by
+/// the shared [`fold_buckets`].
+fn bucket_label_index<'g>(graph: &'g Graph, buckets: &Buckets<'g>) -> BTreeMap<&'g str, &'g str> {
+    match buckets.label_kind() {
         Some(super_kind) => graph
             .nodes
             .iter()
@@ -1379,20 +1468,35 @@ pub fn clustered_overview(graph: &Graph, lens: &Lens) -> ClusterOverview {
             })
             .collect(),
         None => BTreeMap::new(),
-    };
+    }
+}
 
-    // Fold every node into its cluster bucket (via the lens), remembering each node's cluster (so
-    // edges can be classified) and, per bucket, the member count and a kind histogram (to pick the
-    // dominant kind). A node the lens EXCLUDES (a `KIND_COMMUNITY` super-node under the code lens - it
-    // IS a bucket, not a member) is skipped, so it never inflates a community's count or dominant
-    // kind. A `BTreeMap` keeps the buckets - and each bucket's kind histogram - in sorted order, so
-    // the overview is deterministic and the dominant-kind tie resolves to the smallest kind.
+/// The SINGLE bucket-fold authority the whole-graph overview ([`clustered_overview`]) and the
+/// subject re-projection ([`reproject`]) both consume - implemented ONCE over the shared abstraction,
+/// never a second parallel fold. Fold each node `key_of` yields a bucket key for into a [`Cluster`]
+/// carrying its MEMBER COUNT and DOMINANT member kind (ties -> the lexicographically-smallest kind),
+/// attach the bucket's display `label` when `bucket_label` names one, and weight the SYMMETRIC
+/// cross-bucket [`ClusterEdge`]s over `edges`.
+///
+/// A node `key_of` maps to `None` is EXCLUDED (a lens super-node, or a FILES re-projection member the
+/// honesty rule could not resolve to one file). An edge is followed only when currently valid and
+/// BOTH endpoints fall in the folded set (so a member-restricted fold naturally drops edges leaving
+/// the member set); an intra-bucket edge (or self-loop) adds no weight; the pair is canonicalized
+/// (smaller key first) so an `a -> b` and a `b -> a` graph edge fold into one weighted super-edge.
+/// Deterministic by construction (`BTreeMap` folds), so clusters sort by key, each bucket's dominant
+/// kind resolves the tie to the smallest kind, and edges sort by `(from, to)`.
+fn fold_buckets<'g>(
+    nodes: impl Iterator<Item = &'g Node>,
+    edges: &[Edge],
+    key_of: impl Fn(&Node) -> Option<String>,
+    bucket_label: &BTreeMap<&str, &str>,
+) -> (Vec<Cluster>, Vec<ClusterEdge>) {
     let mut node_cluster: BTreeMap<&str, String> = BTreeMap::new();
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
-    let mut kind_hist: BTreeMap<String, BTreeMap<&str, usize>> = BTreeMap::new();
-    for n in &graph.nodes {
-        let Some(key) = buckets.key(n) else {
-            continue; // the lens excludes this node from the member fold
+    let mut kind_hist: BTreeMap<String, BTreeMap<&'g str, usize>> = BTreeMap::new();
+    for n in nodes {
+        let Some(key) = key_of(n) else {
+            continue; // excluded from the member fold (a super-node / an unresolvable member)
         };
         node_cluster.insert(n.id.as_str(), key.clone());
         *counts.entry(key.clone()).or_default() += 1;
@@ -1403,10 +1507,9 @@ pub fn clustered_overview(graph: &Graph, lens: &Lens) -> ClusterOverview {
             .or_default() += 1;
     }
 
-    // Each bucket becomes a Cluster whose kind is its DOMINANT member kind: the kind with the highest
-    // member count, ties broken by the lexicographically-smallest kind. The histogram iterates in
-    // sorted kind order, so replacing only on a STRICTLY-greater count keeps the first (smallest) kind
-    // on a tie - the deterministic colour the spec requires by construction.
+    // Each bucket becomes a Cluster whose kind is its DOMINANT member kind: the highest-count kind,
+    // ties broken by the lexicographically-smallest kind (the histogram iterates in sorted kind
+    // order, so replacing only on a STRICTLY-greater count keeps the first/smallest kind on a tie).
     let clusters: Vec<Cluster> = counts
         .into_iter()
         .map(|(key, count)| {
@@ -1419,8 +1522,6 @@ pub fn clustered_overview(graph: &Graph, lens: &Lens) -> ClusterOverview {
                     dominant = kind;
                 }
             }
-            // A community / concept bucket carries the super-node's deterministic display label; any
-            // other bucket (a module directory, a kind) already names itself, so it carries none.
             let label = bucket_label.get(key.as_str()).map(|l| l.to_string());
             Cluster {
                 key,
@@ -1431,13 +1532,11 @@ pub fn clustered_overview(graph: &Graph, lens: &Lens) -> ClusterOverview {
         })
         .collect();
 
-    // Every currently-valid edge whose two endpoints are known nodes in DIFFERENT clusters weights a
-    // symmetric cluster edge. The endpoint pair is canonicalized (smaller cluster key first) so an
-    // `a -> b` and a `b -> a` graph edge fold into one weighted edge; an intra-cluster edge (both
-    // endpoints in one cluster, self-loops included) is skipped, and an invalidated edge counts for
-    // nothing (matching the currently-valid view the rest of the KG panel reads).
+    // Every currently-valid edge whose two endpoints are known FOLDED nodes in DIFFERENT clusters
+    // weights a symmetric cluster edge; an endpoint outside the folded set (e.g. a member-set fold's
+    // edge to a non-member) has no cluster to weight, and an intra-cluster edge adds none.
     let mut weights: BTreeMap<(String, String), usize> = BTreeMap::new();
-    for e in &graph.edges {
+    for e in edges {
         if e.valid_to.is_some() {
             continue;
         }
@@ -1445,10 +1544,10 @@ pub fn clustered_overview(graph: &Graph, lens: &Lens) -> ClusterOverview {
             node_cluster.get(e.from.as_str()),
             node_cluster.get(e.to.as_str()),
         ) else {
-            continue; // an endpoint that is not a known graph node has no cluster to weight
+            continue;
         };
         if a == b {
-            continue; // an intra-cluster edge (or self-loop) adds no cross-cluster weight
+            continue;
         }
         let pair = if a <= b {
             (a.clone(), b.clone())
@@ -1457,18 +1556,12 @@ pub fn clustered_overview(graph: &Graph, lens: &Lens) -> ClusterOverview {
         };
         *weights.entry(pair).or_default() += 1;
     }
-    let edges: Vec<ClusterEdge> = weights
+    let cluster_edges: Vec<ClusterEdge> = weights
         .into_iter()
         .map(|((from, to), weight)| ClusterEdge { from, to, weight })
         .collect();
 
-    ClusterOverview {
-        clusters,
-        edges,
-        total: graph.nodes.len(),
-        // A derived overview (either lens) is not the empty state; `total` already reports the size.
-        empty_state: None,
-    }
+    (clusters, cluster_edges)
 }
 
 /// The RENDER BUDGET a drilled cluster is capped to (spec 42 c3). A cluster with at most this many
@@ -1616,6 +1709,199 @@ pub fn cluster_detail(graph: &Graph, key: &str, lens: &Lens) -> Neighborhood {
         // A cluster drill is not a directed-call view (spec 52 c4).
         dir: None,
         referenced_not_called: Vec::new(),
+    }
+}
+
+/// Re-grain a SELECTED subject at a lens's altitude, in place (spec 55 c1): the SUBJECT x LENS
+/// re-projection. Rather than switching to a whole-graph overview, this resolves the subject's MEMBER
+/// SET at its own grain and re-buckets that set under the requested lens - so a concept flipped to the
+/// Code lens shows its members grouped by coupling community, and flipped to Files shows the DISTINCT
+/// DEFINING FILES those members resolve to. The two controls compose freely; a single entity is its
+/// own member set, so the instrument composes rather than modes.
+///
+/// The MEMBER SET is read at the subject's grain from its OWN node kind: a [`KIND_CONCEPT`] resolves
+/// to the nodes that `REALIZES` it; a [`KIND_COMMUNITY`] to the nodes `IN_COMMUNITY` it; a
+/// [`KIND_FILE`] to the entities it `CONTAINS`; any other node (a single code entity / doc) is its own
+/// singleton set; an unknown subject is the empty set (the documented empty cell, spec 55 c2). The
+/// RE-BUCKET is the shared [`fold_buckets`] authority: coupling community under [`Lens::Code`],
+/// derived concept under [`Lens::Concepts`], and the DISTINCT DEFINING FILE under [`Lens::Files`].
+///
+/// Under [`Lens::Files`] the fold resolves CROSS-GRAIN honestly ([`Reprojection::unresolved`]): a
+/// member that is a real definition (or a doc / file path) folds under its own file; a BARE cross-file
+/// placeholder (no `name` attr) resolves by name-suffix to the DEFINITION sharing its name - EXACTLY
+/// ONE folds under that definition's file, MORE THAN ONE (or zero) is surfaced as a marked-unresolved
+/// entry carrying the sorted candidate ids, never a wrong attribution to the referencing file its id
+/// encodes. A pure read over the already-projected graph: no store touch, no new event type, and
+/// deterministic by construction.
+pub fn reproject(graph: &Graph, subject: &str, lens: &Lens) -> Reprojection {
+    let members = member_set(graph, subject);
+    match lens {
+        Lens::Files => reproject_files(graph, subject, &members),
+        Lens::Code { .. } | Lens::Concepts { .. } => {
+            reproject_derived(graph, subject, lens, &members)
+        }
+    }
+}
+
+/// The subject's MEMBER SET at its own grain (spec 55 c1), as the member NODES (so the fold can read
+/// each member's kind / attrs). Dispatched on the SUBJECT'S node kind: a concept's `REALIZES`
+/// members, a community's `IN_COMMUNITY` members, a file's `CONTAINS` entities, else the subject's own
+/// singleton set; an unknown subject (absent from the graph) is empty. Deterministic - members come
+/// out in ascending-id order - and deduped.
+fn member_set<'g>(graph: &'g Graph, subject: &str) -> Vec<&'g Node> {
+    let by_id: BTreeMap<&str, &Node> = graph.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+    let mut ids: BTreeSet<&str> = BTreeSet::new();
+    match by_id.get(subject).map(|n| n.kind.as_str()) {
+        // A concept re-grains to the members that REALIZE it (spec 54).
+        Some(KIND_CONCEPT) => {
+            for e in &graph.edges {
+                if e.valid_to.is_none() && e.rel == REL_REALIZES && e.to == subject {
+                    ids.insert(e.from.as_str());
+                }
+            }
+        }
+        // A coupling community re-grains to its IN_COMMUNITY members (spec 53).
+        Some(KIND_COMMUNITY) => {
+            for e in &graph.edges {
+                if e.valid_to.is_none() && e.rel == REL_IN_COMMUNITY && e.to == subject {
+                    ids.insert(e.from.as_str());
+                }
+            }
+        }
+        // A file re-grains to the entities it CONTAINS (spec 29a).
+        Some(KIND_FILE) => {
+            for e in &graph.edges {
+                if e.valid_to.is_none() && e.rel == REL_CONTAINS && e.from == subject {
+                    ids.insert(e.to.as_str());
+                }
+            }
+        }
+        // A single entity (a code entity / doc / any other node) is its own member set.
+        Some(_) => {
+            ids.insert(subject);
+        }
+        // An unknown subject has no member set (the documented empty cell, spec 55 c2).
+        None => {}
+    }
+    ids.into_iter()
+        .filter_map(|id| by_id.get(id).copied())
+        .collect()
+}
+
+/// Re-bucket a member set under a DERIVED lens ([`Lens::Code`] / [`Lens::Concepts`]): fold each
+/// member by its coupling community / derived concept through the shared [`fold_buckets`] authority,
+/// restricted to the member set so cross-bucket edges among members weight the super-edges. `total`
+/// is the member-set size, not the whole graph.
+fn reproject_derived(graph: &Graph, subject: &str, lens: &Lens, members: &[&Node]) -> Reprojection {
+    let buckets = Buckets::new(graph, lens);
+    let bucket_label = bucket_label_index(graph, &buckets);
+    let (clusters, edges) = fold_buckets(
+        members.iter().copied(),
+        &graph.edges,
+        |n| buckets.key(n),
+        &bucket_label,
+    );
+    Reprojection {
+        subject: subject.to_string(),
+        clusters,
+        edges,
+        total: members.len(),
+        unresolved: Vec::new(),
+    }
+}
+
+/// Re-bucket a member set under [`Lens::Files`] to its DISTINCT DEFINING FILES, resolving cross-grain
+/// honestly (spec 55 c1). Each member is resolved to a file key, or surfaced as marked-unresolved:
+///
+/// - a member that IS a definition (a `name` attr) or a doc / file-path node folds under its OWN
+///   file ([`file_of`]);
+/// - a BARE cross-file code-entity placeholder (no `name` attr) resolves by name-suffix over the
+///   DEFINITION nodes sharing its name: EXACTLY ONE folds under that definition's file; MORE THAN ONE
+///   (or zero) is marked-unresolved with the sorted candidate ids;
+/// - a member with no file identity at all (a rare dev-loop node) keeps its KIND bucket, mirroring
+///   the derived lens - nothing is silently dropped.
+///
+/// The resolved keys feed the shared [`fold_buckets`] authority (no bucket label under files), so the
+/// file buckets are sized, dominant-kind coloured, and cross-file coupling edges weighted exactly as
+/// every other lens. `total` is the member-set size (resolved or not).
+fn reproject_files(graph: &Graph, subject: &str, members: &[&Node]) -> Reprojection {
+    // Index every code-entity DEFINITION (a `name` attr) by its entity-name suffix, for the
+    // conservative cross-file resolution - the in-memory twin of the store's `definitions_with_suffix`
+    // (spec 52). Each candidate list is sorted + deduped for a deterministic frontier.
+    let mut defs_by_suffix: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for n in &graph.nodes {
+        if n.kind == KIND_CODE_ENTITY && n.attrs.contains_key("name") {
+            defs_by_suffix
+                .entry(name_suffix(&n.id))
+                .or_default()
+                .push(n.id.as_str());
+        }
+    }
+    for cands in defs_by_suffix.values_mut() {
+        cands.sort_unstable();
+        cands.dedup();
+    }
+
+    // Resolve each member to a file key (or mark it unresolved). `resolved` is member-id -> file key
+    // the fold reads back; `unresolved` collects the marked-unresolved frontiers.
+    let mut resolved: BTreeMap<&str, String> = BTreeMap::new();
+    let mut unresolved: Vec<UnresolvedMember> = Vec::new();
+    for m in members {
+        let is_bare = m.kind == KIND_CODE_ENTITY && !m.attrs.contains_key("name");
+        if is_bare {
+            // A bare cross-file placeholder resolves by name-suffix; the honesty rule decides.
+            let cands = defs_by_suffix
+                .get(name_suffix(&m.id))
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            match cands {
+                [only] => {
+                    if let Some(file) = file_of(only) {
+                        resolved.insert(m.id.as_str(), file.to_string());
+                        continue;
+                    }
+                    // A definition whose id names no file cannot attribute one: unresolved.
+                    unresolved.push(UnresolvedMember {
+                        id: m.id.clone(),
+                        candidates: vec![(*only).to_string()],
+                    });
+                }
+                _ => unresolved.push(UnresolvedMember {
+                    id: m.id.clone(),
+                    candidates: cands.iter().map(|c| (*c).to_string()).collect(),
+                }),
+            }
+            continue;
+        }
+        // A definition / doc / file-path member folds under its OWN file; a member with no file
+        // identity keeps its kind bucket (never silently dropped).
+        match file_of(&m.id) {
+            Some(file) => {
+                resolved.insert(m.id.as_str(), file.to_string());
+            }
+            None => {
+                resolved.insert(m.id.as_str(), m.kind.clone());
+            }
+        }
+    }
+
+    // Fold the resolved members into their file (or kind) buckets through the shared authority; a
+    // member marked unresolved has no key, so it is excluded from every bucket and edge. Files name
+    // themselves, so there is no bucket label.
+    let empty_label: BTreeMap<&str, &str> = BTreeMap::new();
+    let (clusters, edges) = fold_buckets(
+        members.iter().copied(),
+        &graph.edges,
+        |n| resolved.get(n.id.as_str()).cloned(),
+        &empty_label,
+    );
+    unresolved.sort_by(|a, b| a.id.cmp(&b.id));
+    Reprojection {
+        subject: subject.to_string(),
+        clusters,
+        edges,
+        total: members.len(),
+        unresolved,
     }
 }
 
@@ -3032,6 +3318,14 @@ pub fn route(
                     .unwrap_or_default();
                 if seed.is_empty() {
                     serde_json::to_string(&clustered_overview(graph, &lens))
+                } else if query_param(target, "lens").is_some() {
+                    // SUBJECT x LENS re-projection (spec 55 c1): a non-empty seed WITH an explicit
+                    // `lens=` re-grains THAT subject's member set at the chosen altitude, in place -
+                    // NOT a whole-graph overview and NOT the seeded neighborhood. The composition
+                    // fires only when a lens is explicitly present, so a lens-ABSENT seed request
+                    // stays the byte-identical spec-30 seeded neighborhood below (spec 55 c4's
+                    // composition-absent back-compat).
+                    serde_json::to_string(&reproject(graph, &seed, &lens))
                 } else {
                     let depth = query_param(target, "depth")
                         .and_then(|v| v.parse::<i64>().ok())
