@@ -137,7 +137,7 @@ flowchart TB
     direction LR
     ES["EventStore<br/>sqlite (default) | kurrentdb (server)<br/>selected by store resolution"]
     DR["AgentDriver<br/>cli (claude subprocess, default) | workflow (MCP)"]
-    GR["Grounder<br/>turbovec (default) | symbols | grep (explicit opt-out)"]
+    GR["Grounder<br/>turbovec (default) | symbols | hybrid | grep (explicit opt-out)"]
   end
 
   subgraph MEM["MEMORY + OBSERVABILITY"]
@@ -164,7 +164,7 @@ chosen by config or cargo feature:*
 |---|---|---|---|---|
 | **EventStore** | `append` / `read_stream` / `read_all` / `subscribe_all` | `sqlite` (embedded, 1 file) | `kurrentdb` (server backend) | **store resolution** (section 5.1.1): a flag, an env var, a secret file, or the committed `store:` selection - never a recompile |
 | **AgentDriver** | `spawn(agent, prompt, opts, emit) -> result` | `cli` (`claude` subprocess) | `workflow` (MCP shim) | the `--driver` flag / config |
-| **Grounder** | `ground(query, k) -> Vec<Ref>` | `turbovec` (semantic; the unset default, shipped in the default build) | `symbols` (structural), `grep` (self-contained; the explicit light opt-out) | cargo feature + config |
+| **Grounder** | `ground(query, k) -> Vec<Ref>` | `turbovec` (semantic; the unset default, shipped in the default build) | `symbols` (structural), `hybrid` (structural+semantic composite), `grep` (self-contained; the explicit light opt-out) | cargo feature + config |
 
 ---
 
@@ -215,7 +215,7 @@ dash: on                                    # on (default) | off (suppress the a
 
 defaults:
   autonomy: manual                          # manual | auto_notify | silent
-  grounder: turbovec                        # turbovec (default) | symbols | grep (explicit light opt-out)
+  grounder: turbovec                        # turbovec (default) | symbols | hybrid | grep (explicit light opt-out)
 
   # The three-tier review panel, declared ONCE and applied to every implementer
   # unit. Each unit reviews ITSELF with this panel inside its own lifecycle (section 4.1).
@@ -962,7 +962,7 @@ github.com/virtual-velocitation/rigger
 |   |-- ingest.rs                the one parallel, incremental, project-scoped ingest authority
 |   |-- dash.rs registry.rs      the fixed-address dashboard singleton + the instance registry
 |   |-- driver/                  cli.rs (claude subprocess) + workflow.rs (MCP shim)
-|   |-- grounder/                turbovec (default) + symbols (structural) + grep (opt-out)
+|   |-- grounder/                turbovec (default) + symbols (structural) + hybrid + grep (opt-out)
 |   |-- gate.rs safety.rs ledger.rs config.rs spec.rs worktree.rs sidecar.rs mcpserver.rs
 |-- examples/demo/               a worked example: a fictional project's .rigger config
 |-- .github/workflows/rust.yml   CI: build-test, turbovec, symbols, kurrentdb jobs
@@ -1007,7 +1007,7 @@ Where each responsibility lives, and the design move that keeps it project-agnos
 | `ledger` | per-unit run state | a pure fold over the event log - never a second source of truth |
 | `gate` | the verification library + the per-gate autonomy ratchet | a gate is any command that must exit 0; rigor is config |
 | `safety` | spawn-budget circuit breaker, bounded retry, escalation | every bound is config, never a constant |
-| `grounder` | seeds each agent with exactly the code it needs | pluggable: `grep` (default), `turbovec` (semantic), `symbols` (structural) |
+| `grounder` | seeds each agent with exactly the code it needs | pluggable: `turbovec` (semantic; the default), `symbols` (structural), `hybrid` (structural+semantic), `grep` (explicit opt-out) |
 | `eventstore` | the append-only log + the two backends + redaction | one trait; the backend is chosen by store resolution, not a recompile |
 | `contextgraph` + `community` + `concepts` | the knowledge graph: code + design + decisions, its derivations, and the directed-call traversal | a rebuildable bi-temporal projection of the log; derivations are event-sourced |
 | `ingest` | the one parallel, incremental, project-scoped source fold | one walk-and-key authority the run and `graph build` share |
@@ -1039,7 +1039,7 @@ Where each responsibility lives, and the design move that keeps it project-agnos
     superseded facts are invalidated, never deleted; retrieval returns a connected subgraph,
     not a chunk dump.
   - R4 PLUGGABLE SEAMS: EventStore (sqlite default | kurrentdb server), AgentDriver (cli
-    default | workflow), Grounder (grep default | turbovec | symbols) are traits chosen by
+    default | workflow), Grounder (turbovec default | symbols | hybrid | grep) are traits chosen by
     configuration / cargo feature; the core depends only on the traits.
   - R5 ORTHOGONAL ISOLATION: worktree isolation guards FILES; the event stream is the shared
     DECISION channel; live cross-agent awareness never crosses the file boundary.

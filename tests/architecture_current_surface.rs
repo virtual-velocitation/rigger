@@ -64,7 +64,24 @@ const CURRENT_SURFACE_TOKENS: &[(&str, &str)] = &[
     ("the directed call-query view", "view=calls"),
     ("the execution-path (forward) call direction", "dir=down"),
     ("the call-sites (reverse) call direction", "dir=up"),
+    // The grounder configuration surface: turbovec is the unset DEFAULT (an unset
+    // `defaults.grounder` resolves to it and it ships in the default build); grep is the
+    // explicit opt-out, reachable only when named. `main::select_grounder` /
+    // `grounder::resolves_to_turbovec` are the resolution authority. The document must name
+    // turbovec as the default so a re-regression to "grep (default)" fails RED (the negative
+    // guard below is the other half of this pin).
+    (
+        "the turbovec-default grounder selection",
+        "turbovec (default)",
+    ),
 ];
+
+/// The exact phrasings that call `grep` the default grounder. Every one INVERTS the real
+/// configuration surface (turbovec is the unset default; grep is the explicit, named-only
+/// opt-out), so none may appear in the front-door document. This guard is the negative half
+/// of the grounder-default pin: it is what makes a re-regression at §11 (the module map or
+/// ADR-0001 R4) fail RED even when a correct "turbovec (default)" claim survives elsewhere.
+const GREP_AS_DEFAULT_PHRASINGS: &[&str] = &["grep` (default)", "grep (default)", "grep default"];
 
 #[test]
 fn architecture_names_the_current_store_and_inspector_surface() {
@@ -84,5 +101,26 @@ fn architecture_names_the_current_store_and_inspector_surface() {
          per-machine `.rigger/store.conn` secret file) and the graph inspector's real query \
          surface (the three `lens=` names and the directed `view=calls` `dir=` views). \
          Surfaces the document fails to name: {missing:#?}"
+    );
+}
+
+#[test]
+fn architecture_never_calls_grep_the_default_grounder() {
+    let text = architecture_text();
+
+    let inversions: Vec<&str> = GREP_AS_DEFAULT_PHRASINGS
+        .iter()
+        .copied()
+        .filter(|phrasing| text.contains(phrasing))
+        .collect();
+
+    assert!(
+        inversions.is_empty(),
+        "docs/architecture.md must not call `grep` the default grounder (spec 56, criterion \
+         1): turbovec is the unset default (an unset `defaults.grounder` resolves to it and it \
+         ships in the default build), and `grep` is the explicit, named-only opt-out. Every \
+         grounder enumeration (the seams diagram, the seams table, the config example, the \
+         module map, and ADR-0001 R4) must name turbovec as the default. Inverting phrasings \
+         still present in the document: {inversions:#?}"
     );
 }
