@@ -1681,6 +1681,15 @@ function wireSelectToSeed() {
       if (cand && cand.dataset.candidate) { ev.preventDefault(); seedCalls(cand.dataset.candidate, kgCallsDir); return; }
       const front = ev.target.closest("[data-frontier]");
       if (front) { ev.preventDefault(); showFrontierChoices(front.dataset.candidates); return; }
+      // A click INSIDE a rationale-overlay badge (spec 55 c4) is the badge's OWN native <details>
+      // disclosure - never an exploration handle. In the neighborhood view the badge is rendered
+      // INSIDE the node's div.kgnode[data-seed] (renderGraph), so without this guard a click on the
+      // "why - N" summary (or any leaf summary within it) would match the data-seed branch below and
+      // RE-SEED, destroying the just-opened disclosure. Returning early WITHOUT preventDefault lets
+      // the native <details> toggle proceed (the design's "NO JS click handler" disclosure), so the
+      // badge expands and the neighborhood is left in place. The badge carries data-explain and
+      // nothing else here does, so this catches the badge summary AND its nested leaf summaries.
+      if (ev.target.closest("[data-explain]")) return;
       const hit = ev.target.closest("[data-seed]");
       if (hit && hit.dataset.seed) {
         if (ev.shiftKey) pathTo(hit.dataset.seed);

@@ -53,6 +53,37 @@ fn node_available() -> bool {
         .unwrap_or(false)
 }
 
+/// Spawn `node` on a self-contained vm harness (a complete node program that reads the served page
+/// script from `argv[2]` and drives it under a DOM shim), asserting it exits 0 and prints `ok_token`.
+/// Shared by every runtime guard in this file so the node-spawn boilerplate lives once.
+fn run_node_harness(harness_src: &str, ok_token: &str) {
+    let page = dash::live_page();
+    let script = page_script(&page);
+
+    let dir = tempfile::tempdir().expect("a scratch dir for the runtime harness");
+    let harness_path = dir.path().join("harness.js");
+    let script_path = dir.path().join("page-script.js");
+    std::fs::write(&harness_path, harness_src).expect("write the runtime harness");
+    std::fs::write(&script_path, script).expect("write the served page script");
+
+    let out = Command::new("node")
+        .arg(&harness_path)
+        .arg(&script_path)
+        .output()
+        .expect("spawn node to drive the served client seam");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "the runtime harness must drive the client seam, but node failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    assert!(
+        stdout.contains(ok_token),
+        "the runtime harness must confirm '{ok_token}':\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+}
+
 /// The SERVED root page SHIPS the client seam (spec 55 c4): the subject-sticky lens control, the
 /// re-projection fetch + renderer, the rationale-overlay toggle, and the overlay data path - each
 /// assertion bound to the c4 mechanism so an unrelated token cannot satisfy it, and the existing
@@ -427,30 +458,348 @@ fn the_client_seam_dispatches_subject_sticky_lens_and_additive_overlay() {
         return;
     }
 
-    let page = dash::live_page();
-    let script = page_script(&page);
+    run_node_harness(SEAM_HARNESS, "OK subject-lens-and-overlay-seam-drives");
+}
 
-    let dir = tempfile::tempdir().expect("a scratch dir for the seam harness");
-    let harness_path = dir.path().join("harness.js");
-    let script_path = dir.path().join("page-script.js");
-    std::fs::write(&harness_path, SEAM_HARNESS).expect("write the seam harness");
-    std::fs::write(&script_path, script).expect("write the served page script");
+// ---------------------------------------------------------------------------------------------------
+// Two ADDITIVE runtime guards that close the coverage the primary seam harness left open (spec 55 c4):
+//   * a NEIGHBORHOOD rationale-badge click must EXPAND (native <details>) and must NOT re-seed - the
+//     badge is rendered INSIDE the node's `div.kgnode[data-seed]` (renderGraph), so a click on the
+//     "why - N" summary (or a nested leaf summary) would, without the delegated listener's early
+//     `data-explain` guard, match the `data-seed` branch and re-seed, destroying the disclosure. The
+//     primary harness fires SYNTHETIC single-attribute targets whose `closest()` matches only their
+//     own attribute and so CANNOT model this nesting; this guard parses the served page's OWN rendered
+//     bytes into a faithful mini-DOM whose `closest()` is a real ancestor WALK.
+//   * the DRILL view (an `overlayNotes()`-bearing SVG view, unlike the inline-badge neighborhood) must
+//     render BYTE-IDENTICAL with the overlay OFF - the additive proof `test f` makes for the
+//     neighborhood, driven here for a second, differently-wired view whose overlay routes through
+//     `overlayNotes()`. Its pre-overlay baseline is asserted to carry NO `kgwhy-notes`, so an ungated
+//     `overlayNotes()` (a wrapper emitted with the overlay off) reddens this guard.
+// ---------------------------------------------------------------------------------------------------
 
-    let out = Command::new("node")
-        .arg(&harness_path)
-        .arg(&script_path)
-        .output()
-        .expect("spawn node to drive the served client seam");
+/// The DOM shim + graph fixtures both additive drivers run under (node `vm`, no npm). Mirrors the shim
+/// the primary seam harness uses, plus a `__DRILL` fixture so the `overlayNotes()`-bearing SVG view can
+/// be driven. Kept free of backticks / `${` so it embeds verbatim inside a `String.raw` template.
+const ADDITIVE_SHIM: &str = r#"
+const __els = {};
+const __fetched = [];
+// The seeded NEIGHBORHOOD of the focused subject: three nodes, ONE of which (d1) carries rationale in
+// the overlay batch; the other two carry none. Same shape the primary seam harness uses.
+const __NEIGH = { seed: "concept:auth", depth: 2,
+  nodes: [ { id: "d1", kind: "decision", label: "route through the shared authority" },
+           { id: "src/a.rs::f", kind: "code-entity", label: "f" },
+           { id: "plain.rs", kind: "file", label: "plain.rs" } ],
+  edges: [ { from: "d1", to: "src/a.rs::f", rel: "GOVERNS", tier: "extracted" } ] };
+// A cluster DRILL neighborhood (the /api/graph?cluster= body): three members, one (d1) rationale-
+// bearing. Drawn by renderKgDrill as an SVG, with overlayNotes() the ONLY overlay surface (no inline
+// badge fits a circle) - exactly the seam the additive byte-identical-off proof pins here.
+const __DRILL = { seed: "src",
+  nodes: [ { id: "d1", kind: "decision", label: "route through the shared authority", degree: 2 },
+           { id: "src/a.rs::f", kind: "code-entity", label: "f", degree: 1 },
+           { id: "plain.rs", kind: "file", label: "plain.rs", degree: 1 } ],
+  edges: [ { from: "d1", to: "src/a.rs::f", tier: "extracted" } ] };
+// The whole-graph overview (the load-time default fetch).
+const __OVERVIEW = { clusters: [ { key: "src", count: 2, kind: "code-entity" },
+                                 { key: "docs", count: 1, kind: "design-doc" } ],
+                     edges: [ { from: "docs", to: "src", weight: 1 } ], total: 3 };
+// The rationale batch: only d1 carries a leaf; the other visible nodes carry none.
+const __RATIONALE = { nodes: [ { node: "d1",
+  leaves: [ { id: "dec1", kind: "decision",
+              summary: "route the write through the shared authority so there is exactly one writer" } ] } ] };
+function __Stub(){ this._attrs = {}; }
+__Stub.prototype.setAttribute = function(k,v){ this._attrs[k] = String(v); };
+__Stub.prototype.getAttribute = function(k){ return this._attrs[k]; };
+__Stub.prototype.addEventListener = function(){};
+__Stub.prototype.getBoundingClientRect = function(){ return { left: 0, top: 0, width: 800, height: 300 }; };
+function __El(id){ this.id=id; this._html=""; this._text=""; this._listeners={}; this.dataset={};
+  this.hidden=false; this.className=""; this.checked=false;
+  this.clientWidth = 800; this.clientHeight = 300;
+  this.getBoundingClientRect = function(){ return { left: 0, top: 0, width: 800, height: 300 }; }; }
+Object.defineProperty(__El.prototype, "innerHTML", { get(){ return this._html; }, set(v){ this._html = String(v); } });
+Object.defineProperty(__El.prototype, "textContent", { get(){ return this._text; }, set(v){ this._text = String(v); } });
+__El.prototype.querySelectorAll = function(){ return []; };
+__El.prototype.querySelector = function(){ return new __Stub(); };
+__El.prototype.addEventListener = function(t,f){ (this._listeners[t]=this._listeners[t]||[]).push(f); };
+const document = { getElementById: function(id){ return __els[id] || (__els[id] = new __El(id)); } };
+const window = { addEventListener: function(){} };
+function __view(url){
+  const s = String(url);
+  if (s.indexOf("explain=") !== -1) return __RATIONALE;
+  if (s.indexOf("cluster=") !== -1) return __DRILL;
+  if (s.indexOf("seed=") !== -1 && s.indexOf("seed=&") === -1) return __NEIGH;
+  return __OVERVIEW;
+}
+const fetch = function(url){
+  if (String(url).indexOf("/api/graph") !== -1) {
+    __fetched.push(String(url));
+    return Promise.resolve({ json: function(){ return Promise.resolve(__view(url)); } });
+  }
+  return Promise.reject(new Error("no network for " + url));
+};
+const setTimeout = function(){ return 0; };
+"#;
 
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "the client seam must dispatch the subject-sticky lens + additive overlay, but the runtime \
-         harness failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+/// Assemble a complete node vm program: the shared shim, then the served page script (read from
+/// `argv[2]`), then the per-test driver - the same three-part composition the primary seam harness
+/// uses, parameterized on the driver so each additive guard is one focused node program.
+fn build_additive_harness(driver: &str) -> String {
+    const TEMPLATE: &str = r##""use strict";
+const vm = require("vm");
+const fs = require("fs");
+const pageScript = fs.readFileSync(process.argv[2], "utf8");
+const SHIM = String.raw`__ADDITIVE_SHIM__`;
+const DRIVER = String.raw`__ADDITIVE_DRIVER__`;
+const sandbox = { console: console, process: process };
+vm.createContext(sandbox);
+vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "dash-additive-harness.js" });
+"##;
+    TEMPLATE
+        .replace("__ADDITIVE_SHIM__", ADDITIVE_SHIM)
+        .replace("__ADDITIVE_DRIVER__", driver)
+}
+
+/// Driver: a NEIGHBORHOOD rationale-badge click EXPANDS and does NOT re-seed. It renders the real
+/// neighborhood (overlay on) so the badge appears inside the node's `data-seed` div, PARSES the served
+/// bytes into a faithful mini-DOM (real parent links, `closest()` a true ancestor walk), then fires the
+/// panel's OWN delegated click listener on the badge's "why" summary AND a nested leaf summary. Each
+/// must issue NO new `/api/graph?seed=` fetch (no re-seed) and must not `preventDefault` (the native
+/// disclosure is free to expand). Mutation-proven: dropping the delegated listener's `data-explain`
+/// early guard makes the summary click fall through to the `data-seed` branch, re-seed, and redden this.
+const BADGE_NO_RESEED_DRIVER: &str = r##"
+;(async function(){
+  function flush(){ return (async()=>{ for (let k=0;k<40;k++) await Promise.resolve(); })(); }
+  function fire(listeners, target){
+    (listeners||[]).forEach(function(fn){ fn({ target: target, shiftKey: false,
+      preventDefault: function(){ target.__prevented = true; } }); });
+  }
+  function handle(name, value){
+    return { dataset: (function(){ var d = {}; d[name] = value; return d; })(),
+             closest: function(sel){ return sel === "[data-" + __attr(name) + "]" ? this : null; } };
+  }
+  function __attr(k){ return k.replace(/[A-Z]/g, function(c){ return "-" + c.toLowerCase(); }); }
+
+  // A FAITHFUL mini-DOM: parse the served page's OWN rendered innerHTML into a tree with real parent
+  // links, so closest() is a genuine ancestor WALK (the primary harness's single-attribute synthetic
+  // targets cannot represent the badge-nested-in-a-data-seed-node collision this guard covers).
+  const VOID = { input:1, br:1, img:1, hr:1, meta:1, link:1, col:1 };
+  function camel(k){ return k.replace(/-([a-z])/g, function(_,c){ return c.toUpperCase(); }); }
+  function mkText(text, parent){ return { tag:"#text", text:text, attrs:{}, dataset:{}, children:[], parent:parent }; }
+  function parseDOM(html){
+    const root = { tag:"#root", attrs:{}, dataset:{}, children:[], parent:null };
+    let cur = root, i = 0; const n = html.length;
+    while (i < n){
+      const lt = html.indexOf("<", i);
+      if (lt === -1){ if (i < n) cur.children.push(mkText(html.slice(i), cur)); break; }
+      if (lt > i) cur.children.push(mkText(html.slice(i, lt), cur));
+      const gt = html.indexOf(">", lt);
+      if (gt === -1) break;
+      let t = html.slice(lt+1, gt).trim();
+      i = gt + 1;
+      if (t.charAt(0) === "/"){ if (cur.parent) cur = cur.parent; continue; }
+      let selfClose = false;
+      if (t.charAt(t.length-1) === "/"){ selfClose = true; t = t.slice(0, -1).trim(); }
+      const sp = t.search(/\s/);
+      const name = (sp === -1 ? t : t.slice(0, sp)).toLowerCase();
+      const attrStr = sp === -1 ? "" : t.slice(sp+1);
+      const attrs = {}, dataset = {};
+      const re = /([a-zA-Z_:][-a-zA-Z0-9_:.]*)(?:\s*=\s*"([^"]*)")?/g;
+      let m;
+      while ((m = re.exec(attrStr))){
+        const k = m[1]; if (!k) continue;
+        const v = (m[2] === undefined) ? "" : m[2];
+        attrs[k] = v;
+        if (k.indexOf("data-") === 0) dataset[camel(k.slice(5))] = v;
+      }
+      const node = { tag:name, attrs:attrs, dataset:dataset, children:[], parent:cur };
+      cur.children.push(node);
+      if (!VOID[name] && !selfClose) cur = node;
+    }
+    return root;
+  }
+  function matches(node, sel){
+    if (!node || node.tag === "#text" || node.tag === "#root") return false;
+    if (sel.charAt(0) === "["){
+      const inner = sel.slice(1, -1);
+      const eq = inner.indexOf("=");
+      if (eq === -1) return Object.prototype.hasOwnProperty.call(node.attrs, inner);
+      let k = inner.slice(0, eq), v = inner.slice(eq+1);
+      if (v.charAt(0) === '"') v = v.slice(1, -1);
+      return node.attrs[k] === v;
+    }
+    if (sel.charAt(0) === "."){
+      const cls = sel.slice(1);
+      return node.attrs.class ? node.attrs.class.split(/\s+/).indexOf(cls) !== -1 : false;
+    }
+    return node.tag === sel;
+  }
+  function attachClosest(node){
+    node.closest = function(sel){ let c = this; while (c){ if (matches(c, sel)) return c; c = c.parent; } return null; };
+    node.children.forEach(attachClosest);
+  }
+  function find(node, pred){
+    if (pred(node)) return node;
+    for (let j = 0; j < node.children.length; j++){ const r = find(node.children[j], pred); if (r) return r; }
+    return null;
+  }
+
+  // Render the neighborhood, then toggle the overlay ON so the rationale badge appears INSIDE d1's
+  // data-seed div (renderGraph). We drive the page's OWN render, then parse its emitted bytes.
+  await flush();
+  seedGraph("concept:auth");
+  await flush();
+  const headListeners = (el("kghead")._listeners && el("kghead")._listeners.click) || [];
+  if (!headListeners.length) throw new Error("no delegated click listener on the KG header (seam unwired)");
+  fire(headListeners, handle("overlay", "1"));
+  await flush();
+  const body = el("kgpanel")._html;
+  if (body.indexOf("kgbadge") === -1 || body.indexOf("data-explain=\"d1\"") === -1)
+    throw new Error("precondition: the overlay must badge the rationale-bearing node d1: " + body);
+
+  const dom = parseDOM(body);
+  attachClosest(dom);
+  const badge = find(dom, function(n){ return n.attrs["data-explain"] === "d1"; });
+  if (!badge) throw new Error("precondition: could not locate the rationale badge (data-explain=d1) in the parsed DOM");
+  const badgeSummary = find(badge, function(n){ return n.tag === "summary"; });
+  if (!badgeSummary) throw new Error("precondition: the badge carries no <summary> disclosure");
+  // A NESTED leaf summary too (a leaf <details> inside the badge): the adjudicator's "why summary OR any
+  // leaf summary" - both live inside the data-seed node and neither may re-seed.
+  let leafSummary = null;
+  (function walk(n){ if (leafSummary) return; if (n.tag === "summary" && n !== badgeSummary){ leafSummary = n; return; } n.children.forEach(walk); })(badge);
+
+  // Sanity: a faithful closest() from the badge summary reaches BOTH the badge (data-explain) AND the
+  // enclosing node (data-seed) - the exact nesting the single-attribute synthetic harness cannot model.
+  if (!badgeSummary.closest("[data-explain]")) throw new Error("faithful closest() must reach the badge (data-explain) from its summary");
+  if (!badgeSummary.closest("[data-seed]")) throw new Error("precondition: the badge is expected nested inside a data-seed node here");
+
+  const kgListeners = (el("kgpanel")._listeners && el("kgpanel")._listeners.click) || [];
+  if (!kgListeners.length) throw new Error("no delegated click listener on the KG panel (seam unwired)");
+
+  // Click the badge's "why - N" summary. It must NOT re-seed (no new /api/graph?seed= fetch) and it must
+  // NOT preventDefault (so the native <details> disclosure is free to expand).
+  __fetched.length = 0;
+  fire(kgListeners, badgeSummary);
+  await flush();
+  const reseeds = __fetched.filter(function(u){ return u.indexOf("seed=") !== -1 && u.indexOf("seed=&") === -1; });
+  if (reseeds.length !== 0)
+    throw new Error("REGRESSION: clicking the badge summary RE-SEEDED (issued a neighborhood fetch): " + JSON.stringify(__fetched));
+  if (badgeSummary.__prevented)
+    throw new Error("clicking the badge summary must NOT preventDefault - the native disclosure must be free to expand");
+
+  // The nested leaf summary must also not re-seed (its closest() reaches the badge's data-explain first).
+  if (leafSummary){
+    __fetched.length = 0;
+    fire(kgListeners, leafSummary);
+    await flush();
+    const reseeds2 = __fetched.filter(function(u){ return u.indexOf("seed=") !== -1 && u.indexOf("seed=&") === -1; });
+    if (reseeds2.length !== 0)
+      throw new Error("REGRESSION: clicking a nested leaf summary RE-SEEDED: " + JSON.stringify(__fetched));
+    if (leafSummary.__prevented)
+      throw new Error("clicking a leaf summary must NOT preventDefault");
+  }
+
+  // Model the native disclosure: default not prevented -> the badge's <details> expands (open set). The
+  // no-reseed assertions above are the mutation discriminator; this asserts the click reaches the
+  // native toggle rather than being swallowed.
+  let details = badgeSummary.parent; while (details && details.tag !== "details") details = details.parent;
+  if (!details) throw new Error("the badge summary must live inside a <details> disclosure");
+  const wasOpen = Object.prototype.hasOwnProperty.call(details.attrs, "open");
+  if (!badgeSummary.__prevented) details.attrs.open = "";
+  if (wasOpen || !Object.prototype.hasOwnProperty.call(details.attrs, "open"))
+    throw new Error("the badge disclosure must EXPAND on click (details.open set), attrs were: " + JSON.stringify(details.attrs));
+
+  console.log("OK badge-click-expands-no-reseed");
+})().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
+"##;
+
+/// Driver: the DRILL view (an overlayNotes-bearing SVG view) is BYTE-IDENTICAL with the overlay off.
+/// It drills a cluster (overlay off) and captures the baseline - asserting it carries NO overlay "why"
+/// section (overlayNotes GATED off) - then toggles the overlay ON (the drill re-renders WITH the "why"
+/// section surfacing the rationale-bearing node) and back OFF, asserting the body is byte-identical to
+/// the pre-overlay baseline. Mutation-proven: an overlayNotes() that emits its wrapper with the overlay
+/// off would put `kgwhy-notes` in the baseline and redden the first assertion.
+const DRILL_OVERLAY_OFF_DRIVER: &str = r##"
+;(async function(){
+  function flush(){ return (async()=>{ for (let k=0;k<40;k++) await Promise.resolve(); })(); }
+  function fire(listeners, target){
+    (listeners||[]).forEach(function(fn){ fn({ target: target, preventDefault: function(){} }); });
+  }
+  function handle(name, value){
+    return { dataset: (function(){ var d = {}; d[name] = value; return d; })(),
+             closest: function(sel){ return sel === "[data-" + __attr(name) + "]" ? this : null; } };
+  }
+  function __attr(k){ return k.replace(/[A-Z]/g, function(c){ return "-" + c.toLowerCase(); }); }
+
+  await flush();
+  // Drive to the DRILL view (an overlayNotes-bearing SVG view), overlay OFF.
+  drillCluster("src");
+  await flush();
+  if (typeof kgMode === "undefined" || kgMode !== "drill")
+    throw new Error("did not enter the drill view: kgMode=" + (typeof kgMode === "undefined" ? null : kgMode));
+  const drillBaseline = el("kgpanel")._html;
+  // The pre-overlay baseline must carry NO overlay "why" section (overlayNotes GATED off) - exactly what
+  // an ungated overlayNotes mutant violates.
+  if (drillBaseline.indexOf("kgwhy-notes") !== -1)
+    throw new Error("the drill view must carry NO overlay section before the overlay is toggled: " + drillBaseline);
+
+  // Toggle the overlay ON: the drill re-renders, overlayNotes surfacing the rationale-bearing node.
+  const headListeners = (el("kghead")._listeners && el("kghead")._listeners.click) || [];
+  if (!headListeners.length) throw new Error("no delegated click listener on the KG header (seam unwired)");
+  fire(headListeners, handle("overlay", "1"));
+  await flush();
+  const drillOn = el("kgpanel")._html;
+  if (drillOn.indexOf("kgwhy-notes") === -1)
+    throw new Error("the overlay ON must add the drill 'why' section (overlayNotes): " + drillOn);
+  if (drillOn.indexOf("one writer") === -1)
+    throw new Error("the drill overlay must disclose the rationale-bearing node's leaf content: " + drillOn);
+
+  // Toggle the overlay back OFF: the drill must render BYTE-IDENTICAL to the pre-overlay baseline.
+  fire(headListeners, handle("overlay", "0"));
+  await flush();
+  const drillOff = el("kgpanel")._html;
+  if (drillOff !== drillBaseline)
+    throw new Error("REGRESSION: the drill view with the overlay OFF must be BYTE-IDENTICAL to its pre-overlay baseline\n--- baseline ---\n" + drillBaseline + "\n--- overlay-off ---\n" + drillOff);
+
+  console.log("OK drill-overlay-off-byte-identical");
+})().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
+"##;
+
+/// RUNTIME guard (spec 55 c4, badge collision): a click on a NEIGHBORHOOD rationale-badge summary
+/// EXPANDS the native disclosure and does NOT re-seed the neighborhood. Drives the served page's own
+/// script through a faithful mini-DOM (real `closest()` ancestor walk) - the proof the primary seam
+/// harness's single-attribute synthetic targets cannot make. Dropping the delegated listener's
+/// `data-explain` early guard reddens it (the summary click re-seeds).
+#[test]
+fn a_neighborhood_rationale_badge_click_expands_and_does_not_reseed() {
+    if !node_available() {
+        eprintln!(
+            "SKIP a_neighborhood_rationale_badge_click_expands_and_does_not_reseed: no `node` runtime \
+             on PATH. This runtime guard needs node (present on dev machines and on ubuntu-latest CI); \
+             install node to run it."
+        );
+        return;
+    }
+    run_node_harness(
+        &build_additive_harness(BADGE_NO_RESEED_DRIVER),
+        "OK badge-click-expands-no-reseed",
     );
-    assert!(
-        stdout.contains("OK subject-lens-and-overlay-seam-drives"),
-        "the seam harness must confirm the subject-sticky + additive-overlay path:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+}
+
+/// RUNTIME guard (spec 55 c4, additive): the DRILL view - an overlayNotes-bearing SVG view, unlike the
+/// inline-badge neighborhood - renders BYTE-IDENTICAL with the overlay off, the same additive proof the
+/// primary harness makes for the neighborhood, driven here for the second overlay-surface wiring. An
+/// ungated `overlayNotes()` (emitting its wrapper with the overlay off) reddens it.
+#[test]
+fn the_drill_view_is_byte_identical_with_the_overlay_off() {
+    if !node_available() {
+        eprintln!(
+            "SKIP the_drill_view_is_byte_identical_with_the_overlay_off: no `node` runtime on PATH. \
+             This runtime guard needs node (present on dev machines and on ubuntu-latest CI); install \
+             node to run it."
+        );
+        return;
+    }
+    run_node_harness(
+        &build_additive_harness(DRILL_OVERLAY_OFF_DRIVER),
+        "OK drill-overlay-off-byte-identical",
     );
 }
