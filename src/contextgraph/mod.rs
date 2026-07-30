@@ -56,6 +56,26 @@ pub const KIND_HANDBOOK_RULE: &str = "handbook-rule";
 /// its id is `<file>#L<line>` (the comment's source site), so a later criterion can link it to the
 /// entity it explains.
 pub const KIND_RATIONALE: &str = "rationale";
+/// A coupling-community node (spec 53): a derived subsystem - a set of code entities and files that
+/// call and reference each other densely, regardless of directory - grouped by the offline,
+/// deterministic community-detection pass. Its id is `community/<resolution>/<n>` (so distinct
+/// resolution grains coexist as distinct communities); its attrs carry the `resolution`, the pass's
+/// content `hash`, and a deterministic `label` (its highest-degree member's label). Folded from a
+/// `CommunityAssigned` event, never computed at request time, so the `lens=code` view is a pure read
+/// over an already-projected grouping. Always compiled, so the light lane folds it with the
+/// detection pass absent, mirroring the 29a `KIND_CODE_ENTITY` split.
+pub const KIND_COMMUNITY: &str = "community";
+/// A concept node (spec 54, the CONCEPTS lens): a derived IDEA the project is about - "the knowledge
+/// graph", "review adjudication" - a connected region of the INTENT layer (design docs, handbook
+/// rules, specs, rationale) plus the code that layer governs/specifies/constrains/explains, grouped
+/// by the offline, deterministic derivation. Concepts cannot be read off ids or directories; they
+/// span both. Its id is `concept/<resolution>/<n>` (so distinct resolution grains coexist as distinct
+/// concepts); its attrs carry the `resolution`, the pass's content `hash`, and a deterministic
+/// `label` (the title of its most-central document member). Folded from a `ConceptDerived` event,
+/// never computed at request time, so the `lens=concepts` view is a pure read over an
+/// already-projected grouping. Always compiled, so the light lane folds it with the derivation pass
+/// absent, mirroring the 53 `KIND_COMMUNITY` split.
+pub const KIND_CONCEPT: &str = "concept";
 
 // Edge relationships.
 pub const REL_DECIDED: &str = "DECIDED";
@@ -108,6 +128,23 @@ pub const REL_EXPLAINS: &str = "explains";
 /// upper-case [`REL_REFERENCES`] code-symbol structural edge (spec 29a) - two relations, two id
 /// spaces, never conflated.
 pub const REL_DOC_REFERENCES: &str = "references";
+/// A code node is `IN_COMMUNITY` a derived coupling community (spec 53): the membership edge from a
+/// code entity / file node to its [`KIND_COMMUNITY`] super-node, folded from a `CommunityAssigned`
+/// event. Every node carries at most ONE live membership per resolution grain (a re-run at a
+/// resolution supersedes that grain's prior memberships; other grains stay live), so the
+/// `lens=code` view buckets each member by its one live community. Folded at [`TIER_INFERRED`] - a
+/// derived grouping, one confidence step below the explicit structural edges it is detected over.
+pub const REL_IN_COMMUNITY: &str = "IN_COMMUNITY";
+/// A node REALIZES a derived concept (spec 54): the membership edge from a member node (a design-doc,
+/// handbook-rule, spec, rationale, or the code entity / file the intent layer attaches to) to its
+/// [`KIND_CONCEPT`] super-node, folded from a `ConceptRealized` event. Direction: the concept is
+/// realized BY its members (`<member> --REALIZES--> <concept>`), recorded in ONE direction
+/// consistently so the projection queries it uniformly. Every node carries at most ONE live
+/// membership per resolution grain (a re-run at a resolution supersedes that grain's prior
+/// memberships; other grains stay live), so the `lens=concepts` view buckets each member by its one
+/// live concept. Folded at [`TIER_INFERRED`] - a derived grouping, one confidence step below the
+/// explicit intent edges it is detected over, mirroring the 53 `IN_COMMUNITY` split.
+pub const REL_REALIZES: &str = "REALIZES";
 
 // Edge confidence tiers (spec 29a, addendum 6.2). Every folded edge carries one, the
 // `precise`/`safe` split of the two-view blast radius made a first-class edge attribute. The
@@ -163,6 +200,59 @@ pub struct Graph {
     pub edges: Vec<Edge>,
 }
 
+/// The direction of a directed `CALLS` traversal (spec 52). `Down` follows CALLEES - the
+/// EXECUTION PATH, "what does this call, transitively"; `Up` follows CALLERS - the CALL SITES,
+/// "who calls this". A [`Projection::calls`] walk is depth-bounded and layered in exactly one
+/// direction, over the caller-attributed `CALLS` edges (spec 37) the undirected
+/// [`subgraph`](Projection::subgraph) can only reach neighbor-wise.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Direction {
+    /// Callees: the transitive execution path out of the seed.
+    Down,
+    /// Callers: the transitive call sites into the seed.
+    Up,
+}
+
+/// One node in a [`CallGraph`] (spec 52): the underlying graph [`Node`] plus its traversal
+/// metadata. `layer` is the node's hop distance from the seed (the seed is layer 0), which the
+/// left-to-right renderer maps to an x position. `frontier`, when `Some`, marks a multi-candidate
+/// cross-file hop the walk did NOT descend, carrying its SORTED candidate definition ids - the
+/// human re-seeds on one to continue, so the view stays honest (it may be INCOMPLETE but is never
+/// confidently wrong). `None` is a fully-resolved node the walk reached normally.
+#[derive(Clone, Debug)]
+pub struct CallNode {
+    pub node: Node,
+    pub layer: i64,
+    pub frontier: Option<Vec<String>>,
+}
+
+/// One edge in a [`CallGraph`] (spec 52): the underlying graph [`Edge`] plus `back`, set when the
+/// edge points at a node whose layer is NOT deeper than the edge's source - a recursion / mutual
+/// call the walk marks rather than following a second time (reached nodes dedup into a DAG, so a
+/// cycle terminates instead of duplicating).
+#[derive(Clone, Debug)]
+pub struct CallEdge {
+    pub edge: Edge,
+    pub back: bool,
+}
+
+/// The result of a directed `CALLS` traversal (spec 52): a layered DAG of code entities reachable
+/// from the seed by following `CALLS` edges in one [`Direction`], deduped under cycles. A `Down`
+/// walk is the execution path; an `Up` walk is the call sites. Shaped like a [`Graph`] but with
+/// per-node `layer`/`frontier` and per-edge `back` metadata the neighborhood view does not carry.
+///
+/// `referenced_not_called` is the UP direction's flat, NON-traversed sidecar (empty for `Down`): the
+/// FILE nodes that reference the seed's name at file level (a `REFERENCES` edge to the name) but
+/// carry NO caller-attributed `CALLS` edge to it from within the file - the imports / uses a
+/// "who-uses-this" reader cares about, which the layered caller DAG (functions that CALL the seed)
+/// deliberately does not include. Sorted by id, deterministic across polls.
+#[derive(Clone, Debug, Default)]
+pub struct CallGraph {
+    pub nodes: Vec<CallNode>,
+    pub edges: Vec<CallEdge>,
+    pub referenced_not_called: Vec<Node>,
+}
+
 // Event type discriminators carried in Event.type_.
 pub const TYPE_DECISION_MADE: &str = "DecisionMade";
 pub const TYPE_FILE_TOUCHED: &str = "FileTouched";
@@ -198,6 +288,24 @@ pub const TYPE_DOC_CONCEPT_EXTRACTED: &str = "DocConceptExtracted";
 /// with the extraction pass absent - the fold arm and the edge relations live outside the feature
 /// that gates the extraction, mirroring the 29a `EdgeInferred` split.
 pub const TYPE_DOC_LINK_EXTRACTED: &str = "DocLinkExtracted";
+/// One community membership the offline detection pass emits (spec 53): the pass records one
+/// `CommunityAssigned` per member node, and the always-compiled fold turns it into a `KIND_COMMUNITY`
+/// super-node plus a live `IN_COMMUNITY` membership edge. Always compiled, so the light lane folds a
+/// community log with the detection pass absent, mirroring the 29a `CodeEntityExtracted` split.
+pub const TYPE_COMMUNITY_ASSIGNED: &str = "CommunityAssigned";
+/// One concept the offline intent-derivation pass emits (spec 54): the pass records one
+/// `ConceptDerived` per derived concept, and the always-compiled fold turns it into a
+/// [`KIND_CONCEPT`] super-node carrying the pass-computed `label`. Always compiled, so the light lane
+/// folds a concept log with the derivation pass absent - the node kind and this arm live outside the
+/// feature that gates derivation, mirroring the 53 `CommunityAssigned` split. The FIRST event of a
+/// pass carries `fresh`, the supersession boundary the fold retires the grain's prior membership on.
+pub const TYPE_CONCEPT_DERIVED: &str = "ConceptDerived";
+/// One concept membership the offline intent-derivation pass emits (spec 54): the pass records one
+/// `ConceptRealized` per member, and the always-compiled fold turns it into a live
+/// `<member> --REALIZES--> <concept>` edge. Always compiled, so the light lane folds a concept log
+/// with the derivation pass absent - the relation and this arm live outside the feature that gates
+/// derivation, mirroring the 53 `CommunityAssigned` split.
+pub const TYPE_CONCEPT_REALIZED: &str = "ConceptRealized";
 
 #[derive(Deserialize)]
 struct DecisionMade {
@@ -209,40 +317,19 @@ struct DecisionMade {
     #[serde(default)]
     supersedes: String,
 }
-#[derive(Deserialize)]
-struct FileTouched {
-    path: String,
-    #[serde(default)]
-    by: String,
-}
-#[derive(Deserialize)]
-struct GateVerdict {
-    gate: String,
-    #[serde(default)]
-    pass: bool,
-    #[serde(default)]
-    artifact: String,
-}
-#[derive(Deserialize)]
-struct UnitStarted {
-    unit: String,
-    #[serde(default)]
-    criterion: String,
-    #[serde(default)]
-    agent: String,
-    #[serde(default)]
-    needs: Vec<String>,
-}
+// De-noise (spec 43): the FileTouched / GateVerdict / UnitStarted fold DTOs are gone. Their fold
+// arms project only harness machinery (agent/unit/gate nodes and TOUCHES/ASSIGNED_TO/BLOCKS/
+// GATED_BY edges), which the graph no longer models - so those arms are now graph no-ops that
+// deserialize nothing. The events themselves stay in the log, read by metrics and the run-tree.
 #[derive(Deserialize)]
 struct UnitIntegrated {
     // The conductor emits UNIT_INTEGRATED with an `id` key (`{"id": <unit>, "commit": ...}`),
     // unlike UNIT_STARTED which redundantly carries both `id` and `unit`. Accept `id` as an
     // alias so this fold parses what production actually records; without it the fold fails to
-    // deserialize every real event and its disposition-expiry effect is dead in production.
+    // deserialize every real event and its disposition-expiry effect is dead in production. Only
+    // the unit id is read (to drive disposition-expiry); the commit is not projected (de-noise).
     #[serde(alias = "id")]
     unit: String,
-    #[serde(default)]
-    commit: String,
 }
 #[derive(Deserialize)]
 struct AliasDefined {
@@ -386,6 +473,102 @@ pub(crate) struct DocLinkExtracted {
     pub rel: String,
 }
 
+/// The `CommunityAssigned` payload (spec 53): one membership the offline community-detection pass
+/// emits. Like the 29a/29b payloads it is the ONE serialization contract shared by both sides of the
+/// log - the feature-gated detection pass (a later unit) constructs and serializes it, and this
+/// always-compiled fold deserializes it - so the field names can never drift between emitter and
+/// folder. The fold projects it into a [`KIND_COMMUNITY`] node plus a live
+/// `<node> --IN_COMMUNITY--> <community>` edge; the community node's deterministic `label` is
+/// computed BY the fold (the highest-degree live member), so nothing waits on a model and a rebuild
+/// re-derives it byte-identically.
+#[derive(Serialize, Deserialize)]
+pub(crate) struct CommunityAssigned {
+    /// The member node id being assigned: an existing code-entity (`<file>::<name>`) or file node.
+    pub node: String,
+    /// The community id this member joins: `community/<resolution>/<n>`. Encodes the resolution
+    /// grain, so distinct grains coexist as distinct communities and the `fresh` reset can scope
+    /// itself to one grain by the `community/<resolution>/` prefix.
+    pub community: String,
+    /// The resolution grain this pass ran at (default 1.0). Folded onto the community node's
+    /// `resolution` attr so the `lens=code` view can select a grain.
+    #[serde(default)]
+    pub resolution: f64,
+    /// The pass's content hash (a deterministic digest of the input coupling graph + resolution).
+    /// Folded onto the community node's `hash` attr, so a consumer can tell which pass produced a
+    /// grouping without re-running detection.
+    #[serde(default)]
+    pub hash: String,
+    /// Set `true` on the FIRST event of a pass (mirrors [`CodeEntityExtracted::fresh`]). It marks
+    /// the pass boundary: the fold SUPERSEDES (sets `valid_to` on, never deletes) every live
+    /// `IN_COMMUNITY` edge of THIS resolution grain before folding this pass's memberships, so a
+    /// re-run at a resolution REPLACES that grain's assignment set rather than accreting - and
+    /// leaves every OTHER resolution grain's memberships live. On the first-ever pass it supersedes
+    /// nothing. Rides the existing event and defaults `false`, so a pre-field log folds as
+    /// non-boundary.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub fresh: bool,
+}
+
+/// The `ConceptDerived` payload (spec 54): one concept the offline intent-derivation pass emits. Like
+/// the 53 `CommunityAssigned` payload it is the ONE serialization contract shared by both sides of
+/// the log - the feature-gated derivation pass (`concepts`) constructs and serializes it, and this
+/// always-compiled fold deserializes it - so the field names can never drift between emitter and
+/// folder. The fold projects it into a [`KIND_CONCEPT`] super-node carrying the pass-computed
+/// `label`. Unlike the community fold (which computes a label from the folded members), a concept's
+/// label rides on the event because it comes from the INTENT layer (a document title), which the pass
+/// reads once and pins here - so nothing waits on a model and a rebuild re-derives it byte-identically
+/// from the recorded events.
+#[derive(Serialize, Deserialize)]
+pub(crate) struct ConceptDerived {
+    /// The concept id: `concept/<resolution>/<n>`. Encodes the resolution grain, so distinct grains
+    /// coexist as distinct concepts and the `fresh` reset scopes itself to one grain by the
+    /// `concept/<resolution>/` prefix.
+    pub concept: String,
+    /// The concept's deterministic label: the title of its most-central document member (highest
+    /// intent-degree, ties lexicographic), or its most-central member's label if it has no document
+    /// member. Folded onto the concept node's `label` attr.
+    #[serde(default)]
+    pub label: String,
+    /// The resolution grain this pass ran at (default 1.0). Folded onto the concept node's
+    /// `resolution` attr so the `lens=concepts` view can select a grain.
+    #[serde(default)]
+    pub resolution: f64,
+    /// The pass's content hash (a deterministic digest of the input intent layer + resolution).
+    /// Folded onto the concept node's `hash` attr, so a consumer can tell which pass produced a
+    /// grouping without re-running the derivation.
+    #[serde(default)]
+    pub hash: String,
+    /// Set `true` on the FIRST event of a pass (mirrors [`CommunityAssigned::fresh`]). It marks the
+    /// pass boundary: the fold SUPERSEDES (sets `valid_to` on, never deletes) every live `REALIZES`
+    /// edge of THIS resolution grain and drops the grain's now-orphan concept nodes before folding
+    /// this pass's concepts, so a re-run at a resolution REPLACES that grain's grouping rather than
+    /// accreting - and leaves every OTHER resolution grain's memberships live. On the first-ever pass
+    /// it supersedes nothing. Rides the event and defaults `false`, so a pre-field log folds as
+    /// non-boundary.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub fresh: bool,
+}
+
+/// The `ConceptRealized` payload (spec 54): one concept membership the offline intent-derivation pass
+/// emits. The ONE serialization contract shared by both sides of the log - the pass constructs it,
+/// this always-compiled fold deserializes it - so the field names can never drift. The fold projects
+/// it into a live `<node> --REALIZES--> <concept>` edge at [`TIER_INFERRED`].
+#[derive(Serialize, Deserialize)]
+pub(crate) struct ConceptRealized {
+    /// The member node id joining the concept: a design-doc / handbook-rule / spec / rationale node,
+    /// or the code entity (`<file>::<name>`) / file the intent layer attaches to.
+    pub node: String,
+    /// The concept id this member realizes: `concept/<resolution>/<n>`.
+    pub concept: String,
+    /// The resolution grain this pass ran at (default 1.0), carried so a consumer reading the event
+    /// stream can attribute the membership to its grain without joining to the concept node.
+    #[serde(default)]
+    pub resolution: f64,
+    /// The pass's content hash, carried for provenance symmetry with [`ConceptDerived`].
+    #[serde(default)]
+    pub hash: String,
+}
+
 #[derive(Debug, thiserror::Error)]
 #[error("graph: {0}")]
 pub struct Error(pub String);
@@ -396,9 +579,52 @@ pub trait Projection: Send + Sync {
     /// Fold a single event into the graph, idempotently per global position.
     fn apply(&self, e: &Event) -> Result<(), Error>;
 
+    /// Fold a whole batch of events into the graph in ONE transaction, idempotently per global
+    /// position - the batched analogue of [`apply`](Projection::apply). The result is exactly what
+    /// applying each event in order would produce; the only difference is transaction CADENCE.
+    ///
+    /// The default folds each event through [`apply`](Projection::apply) (one transaction per
+    /// event), so an implementation with no cheaper batch path is unaffected and every `apply`
+    /// still runs. The sqlite [`Projector`](crate::contextgraph::sqlite::Projector) OVERRIDES it to
+    /// open ONE transaction for the whole batch: that is what lets an ingest sink fold a file's
+    /// whole batch at the store's transaction cost of ONE commit instead of one per event (spec 49
+    /// - the measured cold-build throughput was transaction-cadence bound, not parse-bound).
+    fn apply_batch(&self, events: &[Event]) -> Result<(), Error> {
+        for e in events {
+            self.apply(e)?;
+        }
+        Ok(())
+    }
+
     /// The connected subgraph reachable from any seed within depth hops,
     /// following only currently valid edges (the FEED arc / an agent's blast radius).
     fn subgraph(&self, seed: &[String], depth: i64) -> Result<Graph, Error>;
+
+    /// A directed, depth-bounded traversal over the caller-attributed `CALLS` edges (spec 52),
+    /// beside the undirected [`subgraph`](Projection::subgraph). `direction` picks callees
+    /// ([`Direction::Down`] - the execution path) or callers ([`Direction::Up`] - the call sites);
+    /// `depth` clamps the hop distance; `tier_floor` is the LOWEST edge confidence tier the walk
+    /// follows - [`TIER_INFERRED`] (the default the route passes) excludes the unresolved
+    /// [`TIER_AMBIGUOUS`] tier, and passing [`TIER_AMBIGUOUS`] opts it in. A cross-file hop that
+    /// lands on a BARE placeholder node resolves by the shared name-suffix to its definition(s):
+    /// a hop with EXACTLY ONE definition is auto-followed, a multi-definition hop becomes a marked
+    /// frontier the walk does NOT descend (honest by construction). Reached nodes dedup into a
+    /// layered DAG; a recursion edge is marked ([`CallEdge::back`]) rather than duplicated.
+    ///
+    /// The default returns an empty [`CallGraph`], so a projection with no directed-walk support (a
+    /// test double, or a not-yet-overriding adapter) degrades to an empty view rather than erroring.
+    /// The sqlite [`Projector`](crate::contextgraph::sqlite::Projector) OVERRIDES it with the real
+    /// walk. Read-only over the projection; an empty graph or a seed with no calls yields an empty
+    /// [`CallGraph`], never an error.
+    fn calls(
+        &self,
+        _seed: &[String],
+        _direction: Direction,
+        _depth: i64,
+        _tier_floor: &str,
+    ) -> Result<CallGraph, Error> {
+        Ok(CallGraph::default())
+    }
 
     /// Map a mention to a canonical node id, falling back to a direct id match.
     fn resolve(&self, mention: &str) -> Result<Option<String>, Error>;

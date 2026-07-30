@@ -106,9 +106,13 @@ jobs:
       - name: run the installed binary
         run: "$RUNNER_TEMP/rigger-install/bin/rigger --help"
 
-  # The KurrentDB EventStore adapter. Its contract test spins up a real KurrentDB
-  # via testcontainers (the runner provides Docker), so it runs the same suite the
-  # SQLite store passes - proxy fidelity.
+  # The KurrentDB EventStore adapter is compiled into every build now (spec 47: its
+  # build-time feature flag is retired), so this job carries no `--features kurrentdb`.
+  # It runs the adapter's contract test in isolation - it spins up a real KurrentDB
+  # via testcontainers (the runner provides Docker) and runs the same suite the SQLite
+  # store passes (proxy fidelity). The two build-test lanes also compile the adapter
+  # and run its graceful-skip contract test; this job keeps it single-threaded so the
+  # one container-backed test owns its fixed port.
   kurrentdb:
     runs-on: ubuntu-latest
     steps:
@@ -121,6 +125,6 @@ jobs:
       # ONNX runtime (and OpenBLAS) just to exercise the KurrentDB contract test;
       # it stays focused and light.
       - name: clippy
-        run: cargo clippy --no-default-features --features kurrentdb --lib --tests -- -D warnings
+        run: cargo clippy --no-default-features --lib --tests -- -D warnings
       - name: contract test (KurrentDB via testcontainers)
-        run: cargo test --no-default-features --features kurrentdb eventstore::kurrentdb -- --test-threads=1
+        run: cargo test --no-default-features eventstore::kurrentdb -- --test-threads=1

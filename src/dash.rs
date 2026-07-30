@@ -26,7 +26,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
-use crate::contextgraph::{Graph, Node, KIND_DECISION, KIND_FINDING, REL_SUPERSEDES};
+use crate::contextgraph::{
+    CallGraph, Direction, Edge, Graph, Node, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT,
+    KIND_DECISION, KIND_FILE, KIND_FINDING, KIND_LESSON, REL_ABOUT, REL_CONTAINS, REL_GOVERNS,
+    REL_IN_COMMUNITY, REL_REALIZES, REL_SUPERSEDES, TIER_INFERRED,
+};
 use crate::eventstore::{Event, Position};
 use crate::progress::{self, AgentActivity};
 use crate::{blocker, ledger, metrics, spawn};
@@ -65,6 +69,147 @@ pub fn free_port_from(start: u16) -> io::Result<u16> {
         io::ErrorKind::AddrNotAvailable,
         "no free loopback port at or above the requested start port",
     ))
+}
+
+/// The HTTP response header every dash response carries (spec 50, criterion 1). A second
+/// `rigger dash` invocation probes an already-bound port for this header to recognize an
+/// already-serving SINGLETON and short-circuit - reporting the existing address instead of
+/// binding a second one. Its PRESENCE is the signal; the value (the crate version) is
+/// informational only. Adding the header keeps the dash read-only and introduces no new
+/// endpoint - the recognition rides the root page every dash already serves.
+pub const DASH_HEADER: &str = "X-Rigger-Dash";
+
+/// Whether a rigger dash is ALREADY serving on loopback `port` (spec 50, criterion 1). Drives
+/// one `GET /` and returns `true` only when the response carries the [`DASH_HEADER`] response
+/// header, so an unrelated process that merely holds the port is NEVER mistaken for a dash. Any
+/// connect / write / read failure, or a header-less response, returns `false`. Bounded by short
+/// timeouts so a dead, slow, or silent holder cannot stall the caller. `std`-only, so it is
+/// identical on the default and `--no-default-features` lanes.
+pub fn dash_serving_on(port: u16) -> bool {
+    use std::io::Read;
+
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(500)) else {
+        return false;
+    };
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
+    if stream
+        .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .is_err()
+    {
+        return false;
+    }
+    // Read only the response head (status line + headers), bounded THREE independent ways so a
+    // dead, slow, or hostile holder can NEVER stall the caller:
+    //   * an overall wall-clock DEADLINE across the whole head - the per-read timeout is reset to
+    //     the REMAINING budget each iteration. This is the load-bearing bound: a holder that
+    //     dribbles bytes just under a fixed per-read timeout while NEVER sending a newline would
+    //     reset a per-read-only timeout forever and never complete a line, so only a bound on the
+    //     TOTAL read defeats it;
+    //   * a TOTAL byte cap - a real HTTP header block is small, so an endless within-a-line dribble
+    //     is bounded in volume (memory) even inside the deadline;
+    //   * the blank end-of-headers line - once the header block is fully read WITHOUT the marker,
+    //     stop rather than keep reading a body, so a genuine non-dash conflict fails fast.
+    // Matching stays line-anchored and case-insensitive: only a line that STARTS with the header
+    // name counts, so the marker cannot be spoofed by the same text inside another header's value.
+    let needle = format!("{DASH_HEADER}:").to_ascii_lowercase();
+    let deadline = std::time::Instant::now() + Duration::from_millis(750);
+    const MAX_HEAD_BYTES: usize = 8 * 1024;
+    let mut head: Vec<u8> = Vec::with_capacity(512);
+    let mut buf = [0u8; 512];
+    loop {
+        let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) else {
+            return false; // overall deadline elapsed
+        };
+        if remaining.is_zero() || stream.set_read_timeout(Some(remaining)).is_err() {
+            return false;
+        }
+        match stream.read(&mut buf) {
+            // Closed before / at the end of the head: decide on exactly what arrived.
+            Ok(0) => return head_has_header_line(&head, needle.as_bytes()),
+            Ok(n) => {
+                head.extend_from_slice(&buf[..n]);
+                if head_has_header_line(&head, needle.as_bytes()) {
+                    return true;
+                }
+                if head.len() >= MAX_HEAD_BYTES || head_block_ended(&head) {
+                    return false; // head too large, or the headers ended without the marker
+                }
+            }
+            Err(_) => return false, // a slow/silent holder times out here, or the peer reset
+        }
+    }
+}
+
+/// Whether any LINE of the HTTP response head in `head` BEGINS with `needle_lower` - the
+/// lowercased header-name prefix (e.g. `x-rigger-dash:`). The match is case-insensitive and
+/// ANCHORED to a line start (byte 0, or just after a `\n`), so the marker is recognized only as a
+/// header NAME and can never be spoofed by the same text appearing inside another header's value.
+fn head_has_header_line(head: &[u8], needle_lower: &[u8]) -> bool {
+    if needle_lower.is_empty() {
+        return false;
+    }
+    let mut start = 0usize;
+    loop {
+        let line = &head[start..];
+        if line.len() >= needle_lower.len()
+            && line[..needle_lower.len()]
+                .iter()
+                .zip(needle_lower)
+                .all(|(b, n)| b.to_ascii_lowercase() == *n)
+        {
+            return true;
+        }
+        match line.iter().position(|&b| b == b'\n') {
+            Some(rel) => start += rel + 1,
+            None => return false,
+        }
+        if start >= head.len() {
+            return false;
+        }
+    }
+}
+
+/// Whether the HTTP header block in `head` has ENDED - a blank line (`\r\n\r\n`, or a bare `\n\n`)
+/// separating the headers from the body. Once seen, no further header can appear, so the probe can
+/// stop instead of draining a body.
+fn head_block_ended(head: &[u8]) -> bool {
+    head.windows(4).any(|w| w == b"\r\n\r\n") || head.windows(2).any(|w| w == b"\n\n")
+}
+
+/// The outcome of binding the dash's fixed address as a SINGLETON (spec 50, criterion 1).
+#[derive(Debug)]
+pub enum SingletonBind {
+    /// The address was free; serve on this freshly-bound listener.
+    Bound(TcpListener),
+    /// A rigger dash is ALREADY serving this address, so the caller reports it and exits 0
+    /// instead of binding a second one (the singleton is the point).
+    AlreadyServing(SocketAddr),
+}
+
+/// Bind the dash's fixed `addr` as a SINGLETON (spec 50, criterion 1): bind it DIRECTLY, with
+/// NO free-port search. When the port is already held:
+///   * by another rigger dash (recognized via [`dash_serving_on`]) -> [`SingletonBind::AlreadyServing`],
+///     so the caller reports the existing address and exits cleanly rather than starting a second
+///     dash (the second invocation is a no-op that never binds a second port);
+///   * by an UNRELATED process -> the `AddrInUse` error propagates - a genuine conflict the
+///     operator resolves with an explicit `--port`, never a silent drift to another port.
+///
+/// This is the one place the fixed-address policy lives: the address in / the address out, or a
+/// loud conflict; it never searches upward the way [`free_port_from`] does. `std`-only, so it
+/// holds identically on the default and `--no-default-features` lanes.
+pub fn bind_singleton(addr: SocketAddr) -> io::Result<SingletonBind> {
+    match TcpListener::bind(addr) {
+        Ok(listener) => Ok(SingletonBind::Bound(listener)),
+        Err(e) if e.kind() == io::ErrorKind::AddrInUse => {
+            if dash_serving_on(addr.port()) {
+                Ok(SingletonBind::AlreadyServing(addr))
+            } else {
+                Err(e)
+            }
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// The per-project record of the run dashboard currently serving a project: the loopback
@@ -139,77 +284,39 @@ pub fn dash_start_needed(
     }
 }
 
-/// The self-reap decision for the step-path PERSISTENT dashboard (spec 39, criterion 3):
-/// given a snapshot of the run it serves, returns `true` iff the dash should REAP ITSELF now -
-/// the run is complete or its liveness has gone stale - so a completed or crashed run leaves no
-/// orphaned dash. This is the domain core the detached dash's watcher polls; the watcher owns
-/// only the I/O (reading the store, scanning the heartbeat markers, sleeping, and exiting on
-/// `true`), so the DECISION is provable here without a real dashboard process or a real run.
+/// The self-reap decision for the machine-level SINGLETON dashboard (spec 50, criterion 5):
+/// given the count of registered instances currently LIVE and whether the watcher has EVER
+/// observed a live instance, returns `true` iff the singleton should REAP ITSELF now - so a quiet
+/// machine leaves no orphaned dash. This is the domain core the detached dash's watcher polls; the
+/// watcher owns only the I/O (reading the machine-global instance registry, sleeping, and exiting
+/// on `true`), so the DECISION is provable here without a real dashboard process or a real run.
 ///
-/// The trigger is LIVENESS, never the pure `done` flag alone: between two `rigger step`
-/// processes the log's [`spawn::step_result`] `done` is transiently `true` (the last wave is
-/// answered but the conductor has not parked the next one yet), so a continuously-polling
-/// watcher that reaped on `done` would kill a live run's dash in an inter-step gap. The run's
-/// HEARTBEAT - the freshest liveness-marker mtime, which stays fresh while any worker is alive
-/// and only goes absent/stale once the run stops - distinguishes a truly idle run from one merely
-/// between steps FOR A BOUNDED RUN. But an UNBOUNDED run (the default scaffold sets no
-/// `max_wall_clock`) writes NO liveness marker at all, so its heartbeat is PERMANENTLY `None`; the
-/// heartbeat alone cannot then tell a genuinely-complete run from one transiently terminal between
-/// waves. So the `None` arm is additionally gated on a UNIT-LEVEL fixpoint, `run_settled`, which
-/// only the conductor's integration pass produces - never a bare inter-wave frontier snapshot.
+/// This RETARGETS spec 39's per-run trigger ("my run went idle") at the singleton ("NOTHING has
+/// been registered or alive for the idle window"). The dash is no longer a per-run, per-project
+/// process watching its OWN run's liveness markers: it is one machine-level process that serves
+/// every registered instance and outlives any single run, so its liveness signal is the discovery
+/// [`crate::registry`] - not one run's `agent-live` heartbeat. `live_instances` is the length of
+/// [`crate::registry::read_live`], which already applies the idle window (an instance counts as
+/// live only while its heartbeat is fresher than the window; a reader prunes the rest), so "no live
+/// instance" means EVERY registered instance's heartbeat has aged past the idle window and none was
+/// refreshed within it.
 ///
-/// - `run_started`: the run has produced at least one event (a non-empty current-run slice).
-///   Guards a just-started dash on an empty store from reaping before its run has begun - an
-///   empty log is vacuously `done`, so without this a fresh dash would reap on its first poll.
-/// - `run_terminal`: the run reached a SPAWN-level terminal fixpoint (`terminal_and_no_live_worker`
-///   in the binary): every parked spawn answered, no hung spawn, no manual-review pause. This is
-///   TRANSIENTLY true in every inter-wave gap (the wave answered, the next not parked yet).
-/// - `run_settled`: the run reached a UNIT-level fixpoint - it has at least one unit and EVERY unit
-///   is terminal (integrated or escalated). A unit becomes terminal ONLY through the conductor's
-///   integration pass (which runs inside `rigger step`), never merely because a worker reported its
-///   result, so `run_settled` is FALSE in the transient inter-wave window where results are in but
-///   not yet integrated, and false while any later-wave unit is still pending. It is the
-///   will-not-advance signal that distinguishes genuine completion from a transiently-terminal
-///   snapshot when there is no heartbeat to consult (the unbounded run), and it stays correct for a
-///   bounded run too (whose markers the final teardown reclaims, so it also lands on the `None` arm).
-/// - `heartbeat_age`: the freshest per-spawn liveness-marker age across the WHOLE run's markers
-///   (not just the unanswered wave), or `None` when none is recorded - a run not yet heartbeating,
-///   an unbounded run that never heartbeats, or a completed run whose `agent-live` markers the
-///   terminal teardown reclaimed.
-/// - `stale_after`: the heartbeat-staleness bound; a heartbeat older than this means the run's
-///   liveness has gone stale (a crashed or wedged run that never reached a clean fixpoint).
-///
-/// The two reap arms:
-/// - `None` heartbeat: reap only when the run has STARTED, is spawn-level TERMINAL, and is
-///   unit-level SETTLED - genuine completion (or an escalation-halt), where every unit reached a
-///   terminal state and, for a bounded run, the final step's teardown reclaimed the markers. A
-///   `None` heartbeat that is terminal but NOT settled is either a run still coming up (a wave
-///   parked whose workers have not touched a marker yet) OR an unbounded run merely between waves
-///   (results reported, integration not yet run) - both must keep serving.
-/// - `Some(age)` heartbeat: reap once `age > stale_after`. A fresh heartbeat (small age) means a
-///   worker is alive - even when the log reads terminal in an inter-step gap - so the dash keeps
-///   serving; a stale heartbeat means the run's liveness died, whether it reached a clean
-///   fixpoint (markers not yet reclaimed) or wedged, so the dash reaps.
-pub fn should_reap_on_idle(
-    run_started: bool,
-    run_terminal: bool,
-    run_settled: bool,
-    heartbeat_age: Option<Duration>,
-    stale_after: Duration,
-) -> bool {
-    match heartbeat_age {
-        // No heartbeat recorded: reap only when the run has STARTED, the log confirms a spawn-level
-        // terminal fixpoint, AND every unit is terminal (the unit-level fixpoint the conductor's
-        // integration pass produces). Requiring `run_settled` here is what keeps an UNBOUNDED run's
-        // dash serving through inter-wave gaps: with no heartbeat, `run_terminal` alone is
-        // transiently true between waves, so without the settled gate the dash would self-reap
-        // mid-run. A `None` heartbeat that is terminal-but-not-settled is a run still coming up or
-        // merely between waves - keep serving.
-        None => run_started && run_terminal && run_settled,
-        // A heartbeat is recorded: reap once it has gone stale. A fresh heartbeat means a worker
-        // is alive (a live run, even between steps when the log reads terminal), so keep serving.
-        Some(age) => age > stale_after,
-    }
+/// - `live_instances`: how many registered instances are currently live (heartbeat within the idle
+///   window). Greater than zero means at least one run - on THIS project or any other, local or a
+///   shared store - is alive and needs the dash, so it keeps serving. This is what lets the
+///   singleton SURVIVE one project's run ending while another's is still live: that other instance
+///   keeps the count positive.
+/// - `ever_seen_live`: whether the watcher has observed a live instance on any prior poll. This is
+///   the startup-race guard, the direct analogue of spec 39's `run_started`: a singleton the step
+///   path just ensured reads zero live instances until its ensuring run writes its registry entry,
+///   and it must NOT reap on those first empty polls before the entry lands. Once any live instance
+///   has been seen, a return to zero is genuine machine idle and reaps. The safe direction on
+///   uncertainty (never yet seen a live instance) is to keep serving.
+pub fn should_reap_singleton(live_instances: usize, ever_seen_live: bool) -> bool {
+    // Reap only once the watcher has seen a live instance AND none remains live: a quiet machine.
+    // A positive count never reaps (a live run - any project's - keeps the singleton serving), and
+    // an empty registry that has never yet held a live instance keeps serving (the startup guard).
+    ever_seen_live && live_instances == 0
 }
 
 /// What the dash's data provider yields per request: the run's events, its context subgraph,
@@ -217,6 +324,65 @@ pub fn should_reap_on_idle(
 /// Factored into a `type` so the provider signature stays readable across the server, its
 /// callers, and the tests.
 pub type DashInputs = (Vec<Event>, Graph, Vec<Event>, HashMap<String, u64>);
+
+/// One row of the dash's LANDING view (spec 50, criterion 3): a registered rigger instance the
+/// operator can ATTACH to. It is the presentation projection of a [`crate::registry::Instance`],
+/// carrying only what the page needs to label and select it - and CREDENTIAL-FREE by
+/// construction, because the registry entry it is built from is already redacted (the shared
+/// endpoint passed through [`crate::eventstore::endpoint_label`] at registration, never a raw
+/// connection string). The `id` is the OPAQUE selector the client echoes back on
+/// `?instance=<id>` to attach the run/graph views to this instance's stores.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct InstanceView {
+    /// The registry entry's stable id - the token the client puts on `?instance=` to attach.
+    pub id: String,
+    /// The project's stream-namespace identity, shown as the instance's name.
+    pub project: String,
+    /// The project root on disk, so two same-named projects are still told apart.
+    pub root: String,
+    /// `local` (an embedded sqlite log) or `shared` (a server backend) - drives the label/icon.
+    pub kind: String,
+    /// The CREDENTIAL-FREE store label: the local sqlite path, or the bare `scheme://host:port`
+    /// of a shared endpoint. Taken verbatim from the already-redacted registry entry.
+    pub store: String,
+    /// Whole seconds since this instance last heartbeat (0 when the stamp is in the future under
+    /// clock skew) - the page shows it as freshness / sorts the live ones first.
+    pub age_secs: u64,
+}
+
+/// Project the live registry entries into the landing view's rows (spec 50, criterion 3), sorted
+/// deterministically (by project, then root) because [`crate::registry::read_live`] returns entries
+/// in an unspecified filesystem order. Pure and credential-free: every field is copied from the
+/// already-redacted [`crate::registry::Instance`], so no connection secret can reach the view.
+pub fn instance_views(instances: &[crate::registry::Instance], now_ms: u64) -> Vec<InstanceView> {
+    use crate::registry::StoreIdentity;
+    let mut views: Vec<InstanceView> = instances
+        .iter()
+        .map(|i| {
+            let (kind, store) = match &i.store {
+                StoreIdentity::Local { path } => ("local", path.clone()),
+                StoreIdentity::Shared { endpoint } => ("shared", endpoint.clone()),
+            };
+            InstanceView {
+                id: i.id(),
+                project: i.project.clone(),
+                root: i.root.clone(),
+                kind: kind.to_string(),
+                store,
+                age_secs: now_ms.saturating_sub(i.heartbeat_ms) / 1000,
+            }
+        })
+        .collect();
+    views.sort_by(|a, b| a.project.cmp(&b.project).then_with(|| a.root.cmp(&b.root)));
+    views
+}
+
+/// The `/api/instances` body (spec 50, criterion 3): the landing list of registered instances as
+/// a JSON array of [`InstanceView`]. A tiny hand-built wrapper so the endpoint has no extra DTO,
+/// mirroring [`events_json`].
+pub fn instances_json(instances: &[InstanceView]) -> String {
+    serde_json::json!({ "instances": instances }).to_string()
+}
 
 // ---------------------------------------------------------------------------
 // View DTOs. These live HERE, not on the projection types: adding `Serialize` to
@@ -389,6 +555,21 @@ pub struct Neighborhood {
     /// `truncated` unambiguously means "this view is capped to its highest-degree members".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub truncated: Option<usize>,
+    /// The DIRECTED-CALL view marker (spec 52 c4): the direction the `view=calls` walk ran -
+    /// `"down"` (execution path / callees), `"up"` (call sites / callers), or `"both"` (the flow
+    /// through a centered seed). Set ONLY on a call view; omitted (`None`) for every neighborhood /
+    /// overview / drill, so a present `dir` unambiguously tells the renderer to draw the layered
+    /// left-to-right DAG instead of the force layout, and its absence keeps those views
+    /// byte-identical.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dir: Option<String>,
+    /// The UP call view's "referenced but not called" sidecar (spec 52 c4): the FILE nodes that
+    /// import / use the seed's name at file level but call it from no function - the who-uses-this
+    /// sites the traversed caller DAG deliberately excludes. Carried verbatim from
+    /// [`crate::contextgraph::CallGraph::referenced_not_called`], sorted by id. Empty (and omitted)
+    /// for a DOWN walk and for every non-call view, so a plain neighborhood is byte-identical.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub referenced_not_called: Vec<NeighborhoodNode>,
 }
 
 /// One node in a seeded KG neighborhood (spec 30 c5). `label` is the node's human-readable handle
@@ -409,6 +590,28 @@ pub struct NeighborhoodNode {
     /// True when this node is a GOD-NODE (spec 30 c6): its in-neighborhood `degree` is strictly
     /// above [`GOD_NODE_DEGREE_THRESHOLD`], i.e. a high-degree hub the panel flags.
     pub god: bool,
+    /// The DIRECTED-CALL LAYER (spec 52 c4): the node's SIGNED x-ordinate in a `view=calls` DAG -
+    /// the seed is `0`, a callee sits at `+hop` (so a DOWN walk draws the seed at the LEFT), and a
+    /// caller at `-hop` (so an UP walk draws the seed at the RIGHT); a `dir=both` walk carries both
+    /// signs around the centered seed. The left-to-right renderer maps `layer` directly to x. `None`
+    /// for every non-call node (a neighborhood / drill node), so those views are byte-identical.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub layer: Option<i64>,
+    /// The MULTI-CANDIDATE FRONTIER marker (spec 52 c4): when `Some`, this cross-file hop's name has
+    /// more than one definition, so the walk did NOT descend it and returns the SORTED candidate
+    /// definition ids for the human to re-seed on - honest by construction (the view may be
+    /// INCOMPLETE but never confidently wrong). Carried verbatim from
+    /// [`crate::contextgraph::CallNode::frontier`]. `None` for a fully-resolved node and for every
+    /// non-call node, so a plain neighborhood is byte-identical.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frontier: Option<Vec<String>>,
+    /// The SHARED-MEMBERSHIP marker (spec 54 c3): true when this node realizes MORE THAN ONE derived
+    /// concept, so a [`Lens::Concepts`] drill flags it - it folds under its PRIMARY concept and
+    /// appears once, never silently duplicated across the concepts it realizes. `false` (and omitted
+    /// from the JSON) for a single-concept or membership-less node and for every non-concepts view, so
+    /// a plain neighborhood / drill / call node stays byte-identical.
+    #[serde(skip_serializing_if = "is_not_shared", default)]
+    pub shared: bool,
 }
 
 /// One TIER-TAGGED edge in a seeded KG neighborhood (spec 30 c5). `tier` is the edge's confidence
@@ -420,6 +623,27 @@ pub struct NeighborhoodEdge {
     pub to: String,
     pub rel: String,
     pub tier: String,
+    /// The RECURSION / BACK-edge marker (spec 52 c4): true when this edge (in a `view=calls` DAG)
+    /// points at a node whose layer is NOT deeper than its source - a recursion / mutual call the
+    /// walk marked rather than followed a second time, which the renderer draws as a distinct curved
+    /// return arc. Carried verbatim from [`crate::contextgraph::CallEdge::back`]. Always `false` for
+    /// a neighborhood / drill edge (and omitted from the JSON), so those views are byte-identical.
+    #[serde(skip_serializing_if = "is_not_back", default)]
+    pub back: bool,
+}
+
+/// Serde `skip_serializing_if` predicate for [`NeighborhoodEdge::back`]: keep the recursion marker
+/// off the wire for the common forward edge, so a plain neighborhood / drill edge (which is never a
+/// back edge) serializes byte-identically to before the call views existed.
+fn is_not_back(back: &bool) -> bool {
+    !*back
+}
+
+/// Serde `skip_serializing_if` predicate for [`NeighborhoodNode::shared`]: keep the shared-membership
+/// marker off the wire for the common single-concept / membership-less node, so a plain neighborhood /
+/// drill / call node serializes byte-identically to before the concepts lens existed.
+fn is_not_shared(shared: &bool) -> bool {
+    !*shared
 }
 
 /// The PROVENANCE of a node (spec 30 c7): the graph facts that produced it, as a self-contained
@@ -450,6 +674,53 @@ pub struct ProvenanceEdge {
     pub source: Position,
 }
 
+/// One RATIONALE LEAF (spec 55, the rationale overlay "why" layer): a decision, finding, or lesson
+/// attached to a graph node through a live knowledge edge - a `decision` that `GOVERNS` the node, or
+/// a `finding` / `lesson` that is `ABOUT` it. It carries the leaf's CONTENT only - its `id`, its
+/// `kind` (`"decision"` / `"finding"` / `"lesson"`), and its `summary` - and deliberately NOT the
+/// builder-agent attribution a finding node also carries (the `by` reviewer and the `unit`): that is
+/// run machinery, not the target project's design memory, so the overlay never surfaces it (spec 55
+/// "content, not machinery"; the `unit` attr is in any case dormant in production). Built by
+/// [`node_rationale`] over the already-projected graph, so the overlay is a pure read.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct RationaleLeaf {
+    /// The leaf node's id (the decision / finding / lesson id, so the client can key its disclosure).
+    pub id: String,
+    /// The leaf's node kind: [`KIND_DECISION`], [`KIND_FINDING`], or [`KIND_LESSON`].
+    pub kind: String,
+    /// The leaf's human CONTENT: the `summary` attr the fold records for a decision / finding /
+    /// lesson node. Empty only if the node carries no summary (never for a real emitted leaf).
+    pub summary: String,
+}
+
+/// The rationale leaves attached to ONE node (spec 55): the node id echoed, and its leaves sorted
+/// deterministically. Only ever produced for a node that carries AT LEAST ONE leaf - a node with no
+/// rationale is absent from the batch (the client badges only the nodes that have any; spec 55
+/// "batched per request for the visible nodes that have any"), so this shape never carries an empty
+/// `leaves`.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct NodeRationale {
+    /// The node whose rationale these leaves are (echoed so the client keys the badge to it).
+    pub node: String,
+    /// The node's rationale leaves, sorted by `(kind, id)` so the same graph yields byte-identical
+    /// output every request. Always non-empty (see [`NodeRationale`]).
+    pub leaves: Vec<RationaleLeaf>,
+}
+
+/// The `/api/graph?explain=<id>[,<id>...]` batch body (spec 55, the rationale overlay data path): the
+/// per-node rationale for the VISIBLE nodes the client asked about, in ONE request. Only the nodes
+/// that carry any rationale appear, ordered by node id - so the client renders a "why" badge exactly
+/// on the nodes that have leaves and nowhere else. A distinct response shape from the neighborhood /
+/// overview / drill, served over the SAME lazy whole-graph provider `/api/graph` already reads, never
+/// the state poll. Built by [`rationale_batch`], a pure read over the already-projected graph.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct RationaleBatch {
+    /// The nodes that carry rationale, ordered by node id (deterministic). Empty when NONE of the
+    /// requested nodes carries a decision / finding / lesson - the graceful empty a project with no
+    /// decisions degrades to, never an error.
+    pub nodes: Vec<NodeRationale>,
+}
+
 /// One super-node in the whole-graph clustered overview (spec 42 c2): a [`cluster_key`] bucket the
 /// KG panel draws as a single circle instead of its member nodes. `count` is how many graph nodes
 /// folded into it (the circle's size) and `kind` is its DOMINANT member kind (the kind the most of
@@ -466,6 +737,13 @@ pub struct Cluster {
     /// The cluster's DOMINANT member kind (the most common kind among its members; ties broken by the
     /// lexicographically-smallest kind), so the panel colours the super-node without re-counting.
     pub kind: String,
+    /// The human DISPLAY label under [`Lens::Code`]: a coupling community's deterministic `label`
+    /// attr (its highest-degree member, folded by the `CommunityAssigned` recording of spec 53 c3),
+    /// so the panel names the subsystem instead of its opaque `community/<r>/<n>` id. Absent (skipped
+    /// in JSON) under [`Lens::Files`] and for a non-community bucket, where `key` already names the
+    /// module / kind - so the default files overview stays byte-identical.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 /// A weighted, symmetric edge between two DIFFERENT clusters in the overview (spec 42 c2): its
@@ -498,6 +776,86 @@ pub struct ClusterOverview {
     pub edges: Vec<ClusterEdge>,
     /// The full graph node count (every node, folded or not), so the panel reports the whole size.
     pub total: usize,
+    /// The documented empty state under [`Lens::Code`] when the selected resolution grain has NO
+    /// derived community assignments (the offline detection pass never ran at that grain): carries
+    /// [`CODE_LENS_UNDERIVED`] so the panel prompts the operator to run the derivation instead of an
+    /// error or a bare kind-bucket view. Absent (skipped in JSON) under [`Lens::Files`] and under a
+    /// derived code grain, so the default files overview stays byte-identical.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub empty_state: Option<String>,
+}
+
+/// The SUBJECT x LENS re-projection body (spec 55 c1): a SELECTED subject re-grained at a lens's
+/// altitude, in place, rather than switched to a whole-graph overview. Built by [`reproject`] from
+/// the subject's MEMBER SET (a concept's `REALIZES` members; a community's members; a file's
+/// contained entities; a single entity is its own set), re-bucketed under the requested lens - by
+/// coupling community under [`Lens::Code`], by derived concept under [`Lens::Concepts`], by DISTINCT
+/// DEFINING FILE under [`Lens::Files`]. A pure read over the already-projected graph: no store touch,
+/// no new event type. Deterministic by construction, so the same graph + subject + lens yield a
+/// byte-identical body.
+#[derive(Debug, Serialize, PartialEq, Eq, Default)]
+pub struct Reprojection {
+    /// The re-grained subject's id, echoed so the panel labels the view and its back link (the
+    /// re-projection's analogue of [`Neighborhood::seed`]).
+    pub subject: String,
+    /// The re-bucketed member set as [`Cluster`] super-nodes, ordered deterministically by
+    /// [`Cluster::key`]: coupling-community buckets under [`Lens::Code`], concept buckets under
+    /// [`Lens::Concepts`], and DISTINCT DEFINING FILE buckets under [`Lens::Files`] (the same
+    /// renderer draws them as the whole-graph overview's clusters).
+    pub clusters: Vec<Cluster>,
+    /// The symmetric cross-bucket coupling edges AMONG the member set (the same [`ClusterEdge`] fold
+    /// the overview uses, restricted to member-to-member edges), ordered by `(from, to)`.
+    pub edges: Vec<ClusterEdge>,
+    /// The member-set size (every member, resolved or not), so the panel reports the re-grain size -
+    /// NOT the whole-graph node count.
+    pub total: usize,
+    /// The MARKED-UNRESOLVED members (spec 55 c1 honesty rule), set only under [`Lens::Files`]: a
+    /// bare cross-file placeholder member whose name resolves to MORE THAN ONE definition (or to
+    /// none) cannot be attributed to a single defining file, so it is surfaced here - each carrying
+    /// its SORTED candidate definition ids - rather than folded into the WRONG file bucket its
+    /// (referencing-file) id would encode. Ordered by member id. Empty (and omitted from the JSON)
+    /// under [`Lens::Code`] / [`Lens::Concepts`] and for a fully-resolvable FILES re-grain, so those
+    /// bodies stay lean.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unresolved: Vec<UnresolvedMember>,
+    /// The member ids flagged SHARED (spec 55 c2): a member realizing MORE THAN ONE concept folds
+    /// under its PRIMARY concept (criterion 1, so it appears ONCE) and is listed here, so the panel
+    /// marks a multi-bucket member rather than silently duplicating or hiding it - the re-projection's
+    /// twin of the drill's per-node `shared` flag. Sorted by member id. Always empty (and omitted from
+    /// the JSON) under [`Lens::Code`] (a node carries at most one community) and [`Lens::Files`] (files
+    /// never share), so those bodies stay lean.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub shared: Vec<String>,
+    /// The full BUCKET count when a WIDE re-grain was capped to [`CLUSTER_RENDER_BUDGET`] (spec 55 c2):
+    /// the largest buckets are kept (ties by key), the cross-bucket edges are pruned to the kept set,
+    /// and this carries M so the panel captions "showing N of M". Absent (`None`, omitted from the
+    /// JSON) for an at/under-budget re-grain, so a present `truncated` unambiguously means the cell was
+    /// capped - mirroring [`Neighborhood::truncated`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncated: Option<usize>,
+    /// The documented empty-CELL message (spec 55 c2), set under a DERIVED lens when the member set
+    /// folds into NO community/concept bucket: [`REPROJECT_NO_COMMUNITY`] under [`Lens::Code`],
+    /// [`REPROJECT_NO_CONCEPT`] under [`Lens::Concepts`]. The criterion-1 kind-fallback clusters still
+    /// render, so this caption is ADDITIVE - the defined-but-empty cell is explained, never blanked.
+    /// Absent (`None`, omitted from the JSON) under [`Lens::Files`] (a file re-grain always resolves)
+    /// and whenever any member DID fold into a derived bucket.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub empty_state: Option<String>,
+}
+
+/// One MARKED-UNRESOLVED member of a FILES re-projection (spec 55 c1): a bare cross-file placeholder
+/// whose entity-name has NOT exactly one definition, so it cannot be honestly attributed to a single
+/// defining file. `candidates` carries the SORTED ids of the definitions sharing the name (empty when
+/// the name is defined nowhere the graph knows) - the frontier a human re-seeds on, never a silent
+/// wrong attribution. Mirrors the directed-call view's frontier honesty (spec 52), applied to
+/// re-projection.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct UnresolvedMember {
+    /// The bare placeholder member's id (the call target in its referencing file's namespace).
+    pub id: String,
+    /// The SORTED ids of the code-entity definitions sharing the member's entity-name: MORE THAN ONE
+    /// (the ambiguous case) or ZERO (defined nowhere the graph knows).
+    pub candidates: Vec<String>,
 }
 
 /// One node in the run-tree SPINE (spec 30 c3): the run projected as
@@ -776,29 +1134,318 @@ pub const CLUSTER_ROOT: &str = "(root)";
 /// never mistaken for one. The fold is a pure, total function of `(id, kind)`, so a given graph folds
 /// to one stable set of buckets (the determinism the exploration view relies on).
 pub fn cluster_key(id: &str, kind: &str) -> String {
-    // Reduce a path-bearing id to the file path it names by stripping a code-entity `::name` suffix,
-    // then a rationale / doc-section `#...` suffix. A plain path id survives both untouched.
+    match file_of(id) {
+        // A file-bearing id clusters by the file's DIRECTORY (its module); a directory-less repo-root
+        // file -> `(root)`.
+        Some(file) => match file.rsplit_once('/') {
+            Some((dir, _)) if !dir.is_empty() => dir.to_string(),
+            _ => CLUSTER_ROOT.to_string(),
+        },
+        // Every other node is a dev-loop node with no path id: cluster by its KIND.
+        None => kind.to_string(),
+    }
+}
+
+/// The FILE PATH a node id names, or `None` when the id names no file (a dev-loop node - a decision /
+/// finding / unit / community / concept). The single file-naming authority [`cluster_key`] (which
+/// folds to the file's DIRECTORY) and the subject-by-lens FILES re-projection (which folds to the
+/// FILE itself, spec 55 c1) both read.
+///
+/// An id is reduced to a file path by stripping a code-entity `::name` suffix, then a rationale /
+/// doc-section `#...` suffix (a plain path id survives both untouched). The reduced path names a file
+/// iff its LAST segment carries an extension: a `.` with a non-empty stem AND a non-empty suffix - so
+/// a dotfile like `.gitignore` (whose only `.` is leading) is NOT a file, and a dev-loop id like
+/// `plan-critique` (no extension) never is either. A file path contains neither `::` nor `#`, so the
+/// splits leave a plain path untouched. Pure and total.
+fn file_of(id: &str) -> Option<&str> {
     let file = id.split_once("::").map_or(id, |(f, _)| f);
     let file = file.split_once('#').map_or(file, |(f, _)| f);
-
-    // The id names a file iff its LAST path segment carries an extension: a `.` with a non-empty
-    // stem AND a non-empty suffix (so a dotfile like `.gitignore` - whose only `.` is leading - is
-    // NOT treated as an extensioned path, and a dev-loop id like `plan-critique` never is either).
     let last_segment = file.rsplit_once('/').map_or(file, |(_, seg)| seg);
     let names_a_file = last_segment
         .rsplit_once('.')
         .is_some_and(|(stem, ext)| !stem.is_empty() && !ext.is_empty());
+    names_a_file.then_some(file)
+}
 
-    if names_a_file {
-        // Cluster by the file's DIRECTORY (its module); a directory-less repo-root file -> `(root)`.
-        return match file.rsplit_once('/') {
-            Some((dir, _)) if !dir.is_empty() => dir.to_string(),
-            _ => CLUSTER_ROOT.to_string(),
-        };
+/// The entity-name SUFFIX of a `<file>::<name>` id (the part after the first `::`), or the whole id
+/// when it carries no `::`. The in-memory twin of the pinned `substr(id, instr(id, '::') + 2)`
+/// expression the store's cross-file name resolution uses (spec 52), so the FILES re-projection's
+/// bare-node resolution (spec 55 c1) matches a bare placeholder to the DEFINITIONS sharing its name.
+fn name_suffix(id: &str) -> &str {
+    match id.find("::") {
+        Some(i) => &id[i + 2..],
+        None => id,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The overview/drill LENS (spec 53 c4): the bucket key is PLUGGABLE. `lens=files` is the default
+// spec-42 directory/kind fold ([`cluster_key`]), byte-identical to today and to a `lens`-absent
+// request. `lens=code` buckets a node by its DERIVED coupling-community membership at a resolution
+// grain - the SAME overview/drill folds, a different key - so the middle-altitude view groups the
+// graph by how the code WORKS TOGETHER, not where it sits on disk. There is ONE fold authority: both
+// aggregations consume [`Buckets`], never a second parallel fold reconciled after the fact.
+// ---------------------------------------------------------------------------
+
+/// The default community-detection resolution grain, as its canonical string. The detection pass
+/// defaults to resolution `1.0`, whose `f64` display is `1`, so its communities are `community/1/<n>`
+/// (spec 53). The [`Lens::Code`] view reads THIS grain when a request omits `resolution=`.
+pub const DEFAULT_COMMUNITY_RESOLUTION: &str = "1";
+
+/// The documented empty-state message the [`Lens::Code`] overview carries when the selected
+/// resolution grain has NO derived community assignments (the offline detection pass never ran at
+/// that grain): the panel shows this instead of an error or a bare kind-bucket view, so an underived
+/// code lens degrades gracefully to a prompt to run the derivation (spec 53 c4).
+pub const CODE_LENS_UNDERIVED: &str = "code lens not derived yet - run `rigger graph communities`";
+
+/// The default concept-derivation resolution grain, as its canonical string. The offline
+/// intent-derivation pass defaults to resolution `1.0`, whose `f64` display is `1`, so its concepts
+/// are `concept/1/<n>` (spec 54). The [`Lens::Concepts`] view reads THIS grain when a request omits
+/// `resolution=`.
+pub const DEFAULT_CONCEPT_RESOLUTION: &str = "1";
+
+/// The documented empty-state message the [`Lens::Concepts`] overview carries when the selected
+/// resolution grain has NO derived concept assignments (the offline intent-derivation pass never ran
+/// at that grain): the panel shows this instead of an error or a bare kind-bucket view, so an
+/// underived concepts lens degrades gracefully to a prompt to run the derivation (spec 54 c3).
+pub const CONCEPTS_LENS_UNDERIVED: &str = "concepts not derived yet - run `rigger graph concepts`";
+
+/// The documented empty-CELL message a [`Lens::Code`] RE-PROJECTION (spec 55 c2) carries when the
+/// selected subject's member set folds into NO coupling community - the members exist, but none is
+/// part of any derived community at this grain. Distinct from [`CODE_LENS_UNDERIVED`] (the whole-graph
+/// "the offline pass never ran" prompt): a re-projection cell is empty when THIS subject's members
+/// carry no membership, whether or not the grain is derived elsewhere, so the panel captions the
+/// defined-but-empty cell rather than showing a bare kind-bucket fold with no explanation.
+pub const REPROJECT_NO_COMMUNITY: &str = "no derived communities";
+
+/// The documented empty-CELL message a [`Lens::Concepts`] RE-PROJECTION (spec 55 c2) carries when the
+/// selected subject's member set realizes NO concept - the [`Lens::Concepts`] twin of
+/// [`REPROJECT_NO_COMMUNITY`]. The kind-fallback clusters criterion 1 ships still render; this message
+/// is additive, so a "not part of any concept" caption never hides the members it re-grains.
+pub const REPROJECT_NO_CONCEPT: &str = "not part of any concept";
+
+/// The overview/drill bucket lens (spec 53 c4): how a graph node folds to its super-node bucket.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Lens {
+    /// The DEFAULT fold (spec 42): a node buckets by its file's DIRECTORY (module) or its KIND, via
+    /// [`cluster_key`]. Byte-identical to a `lens`-absent request.
+    Files,
+    /// The CODE fold (spec 53): a node with a live `IN_COMMUNITY` membership at `resolution` buckets
+    /// by its coupling COMMUNITY (its `community/<resolution>/<n>` id); a membership-less node keeps
+    /// its KIND bucket (so the view stays whole-graph). The `resolution` grain string selects which
+    /// derived grain to read.
+    Code {
+        /// The resolution grain to read, as the community id's grain segment (e.g. `1`, `1.5`).
+        resolution: String,
+    },
+    /// The CONCEPTS fold (spec 54): a node with a live `REALIZES` membership at `resolution` buckets
+    /// by its intent CONCEPT (its `concept/<resolution>/<n>` id) - the idea the docs and code realize,
+    /// grouped across directory lines; a membership-less node keeps its KIND bucket (so the view stays
+    /// whole-graph). A node realizing MORE THAN ONE concept folds under its PRIMARY (the largest
+    /// concept by member count, ties by lexicographically-smallest id) and is flagged `shared` -
+    /// counted once, never silently duplicated. The `resolution` grain string selects which derived
+    /// grain to read.
+    Concepts {
+        /// The resolution grain to read, as the concept id's grain segment (e.g. `1`, `1.5`).
+        resolution: String,
+    },
+}
+
+impl Lens {
+    /// Resolve the lens from the `/api/graph` selector params: `lens=code` selects the code fold and
+    /// `lens=concepts` the concepts fold, each at `resolution=` (defaulting to the derivation's
+    /// default grain - [`DEFAULT_COMMUNITY_RESOLUTION`] / [`DEFAULT_CONCEPT_RESOLUTION`] - when absent
+    /// or empty); every other value - `lens=files`, an unknown lens, or an absent one - resolves to
+    /// [`Lens::Files`], the byte-identical default. Total and infallible, so a hostile selector can
+    /// never error the route; it just falls back to the files view.
+    pub fn from_query(lens: Option<&str>, resolution: Option<&str>) -> Lens {
+        match lens {
+            Some("code") => Lens::Code {
+                resolution: resolution
+                    .filter(|r| !r.is_empty())
+                    .unwrap_or(DEFAULT_COMMUNITY_RESOLUTION)
+                    .to_string(),
+            },
+            Some("concepts") => Lens::Concepts {
+                resolution: resolution
+                    .filter(|r| !r.is_empty())
+                    .unwrap_or(DEFAULT_CONCEPT_RESOLUTION)
+                    .to_string(),
+            },
+            _ => Lens::Files,
+        }
+    }
+}
+
+/// The bucket resolver for one `(graph, lens)` (spec 53 c4): the SINGLE authority mapping a node to
+/// its super-node bucket key - or `None` to EXCLUDE it from the fold - that both the overview and the
+/// drill consume. Built ONCE per request, so the code lens scans the live `IN_COMMUNITY` memberships
+/// a single time.
+struct Buckets<'g> {
+    lens: &'g Lens,
+    /// A node id -> its single bucket super-node id: under [`Lens::Code`] the `community/<r>/<n>` it
+    /// lives in (at most one live membership per grain, per the spec 53 c3 fold); under
+    /// [`Lens::Concepts`] the PRIMARY `concept/<r>/<n>` it realizes (the largest concept it realizes,
+    /// ties by lexicographically-smallest id, when it realizes more than one). Empty under
+    /// [`Lens::Files`], and empty under a derived-lens grain with NO assignments - the empty-state
+    /// signal [`Buckets::underived`] reads.
+    membership: BTreeMap<&'g str, &'g str>,
+    /// The member nodes carrying MORE THAN ONE live `REALIZES` membership at this grain (spec 54 c3):
+    /// each folds under its PRIMARY concept above and is FLAGGED `shared` in the drill, so a
+    /// multi-concept member appears once, never silently duplicated. Always empty under
+    /// [`Lens::Files`] and [`Lens::Code`] (a node carries at most one community).
+    shared: BTreeSet<&'g str>,
+}
+
+impl<'g> Buckets<'g> {
+    /// Build the resolver. Under [`Lens::Code`], index every live `IN_COMMUNITY` edge whose target
+    /// carries the selected grain's `community/<resolution>/` prefix (a substring equality on the id,
+    /// never a wildcard match). Under [`Lens::Concepts`], index every live `REALIZES` edge to a
+    /// `concept/<resolution>/` target, then fold each member to its PRIMARY concept (the largest
+    /// concept by member count, ties by smallest id) and record the members that realize more than one
+    /// as `shared`. A no-op under [`Lens::Files`].
+    fn new(graph: &'g Graph, lens: &'g Lens) -> Self {
+        let mut membership: BTreeMap<&str, &str> = BTreeMap::new();
+        let mut shared: BTreeSet<&str> = BTreeSet::new();
+        match lens {
+            Lens::Files => {}
+            Lens::Code { resolution } => {
+                let prefix = format!("community/{resolution}/");
+                for e in &graph.edges {
+                    if e.valid_to.is_none()
+                        && e.rel == REL_IN_COMMUNITY
+                        && e.to.starts_with(&prefix)
+                    {
+                        membership.insert(e.from.as_str(), e.to.as_str());
+                    }
+                }
+            }
+            Lens::Concepts { resolution } => {
+                // Every live `<member> --REALIZES--> concept/<resolution>/<n>` membership, grouped per
+                // member. The derivation records at most one membership per grain, but a later
+                // model-assisted refinement may realize a member under several concepts, so index them
+                // ALL and fold honestly rather than trust a single-membership assumption.
+                let prefix = format!("concept/{resolution}/");
+                let mut realized: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+                for e in &graph.edges {
+                    if e.valid_to.is_none() && e.rel == REL_REALIZES && e.to.starts_with(&prefix) {
+                        realized
+                            .entry(e.from.as_str())
+                            .or_default()
+                            .insert(e.to.as_str());
+                    }
+                }
+                // Each concept's member count, to pick a multi-concept member's PRIMARY bucket: the
+                // largest concept, ties by lexicographically-smallest id.
+                let mut size: BTreeMap<&str, usize> = BTreeMap::new();
+                for concepts in realized.values() {
+                    for c in concepts {
+                        *size.entry(*c).or_default() += 1;
+                    }
+                }
+                for (node, concepts) in &realized {
+                    let primary = concepts
+                        .iter()
+                        .copied()
+                        .max_by(|a, b| {
+                            let sa = size.get(a).copied().unwrap_or(0);
+                            let sb = size.get(b).copied().unwrap_or(0);
+                            // Larger member count wins; on a tie the lexicographically-SMALLER id wins
+                            // (so `b.cmp(a)` makes the smaller `a` compare greater).
+                            sa.cmp(&sb).then_with(|| b.cmp(a))
+                        })
+                        .expect("a realized member has at least one concept");
+                    membership.insert(node, primary);
+                    if concepts.len() > 1 {
+                        shared.insert(node);
+                    }
+                }
+            }
+        }
+        Buckets {
+            lens,
+            membership,
+            shared,
+        }
     }
 
-    // Every other node is a dev-loop node with no path id: cluster by its KIND.
-    kind.to_string()
+    /// The bucket key a node folds to, or `None` to EXCLUDE it. Under [`Lens::Files`] every node
+    /// folds by [`cluster_key`] (never excluded). Under [`Lens::Code`] / [`Lens::Concepts`] a member
+    /// folds by its (primary) super-node id; the super-node itself ([`KIND_COMMUNITY`] /
+    /// [`KIND_CONCEPT`]) is EXCLUDED (it IS a bucket, not a member, so it never inflates a bucket's
+    /// member count or dominant kind); every other membership-less node keeps its KIND bucket.
+    fn key(&self, node: &Node) -> Option<String> {
+        match self.lens {
+            Lens::Files => Some(cluster_key(&node.id, &node.kind)),
+            Lens::Code { .. } | Lens::Concepts { .. } => {
+                if let Some(bucket) = self.membership.get(node.id.as_str()) {
+                    Some((*bucket).to_string())
+                } else if self.excludes_super_node(&node.kind) {
+                    None
+                } else {
+                    Some(node.kind.clone())
+                }
+            }
+        }
+    }
+
+    /// The super-node KIND this lens EXCLUDES from the member fold (it IS a bucket, not a member):
+    /// [`KIND_COMMUNITY`] under [`Lens::Code`], [`KIND_CONCEPT`] under [`Lens::Concepts`]. Excludes
+    /// nothing under [`Lens::Files`].
+    fn excludes_super_node(&self, kind: &str) -> bool {
+        match self.lens {
+            Lens::Files => false,
+            Lens::Code { .. } => kind == KIND_COMMUNITY,
+            Lens::Concepts { .. } => kind == KIND_CONCEPT,
+        }
+    }
+
+    /// A derived lens at the selected grain has NO assignments: the documented empty state (the
+    /// offline pass never ran at this resolution). Always `false` under [`Lens::Files`].
+    fn underived(&self) -> bool {
+        matches!(self.lens, Lens::Code { .. } | Lens::Concepts { .. }) && self.membership.is_empty()
+    }
+
+    /// The documented empty-state message for this lens when [`Buckets::underived`]: the derivation
+    /// prompt for the active derived lens. `None` under [`Lens::Files`] (never underived).
+    fn underived_message(&self) -> Option<&'static str> {
+        match self.lens {
+            Lens::Files => None,
+            Lens::Code { .. } => Some(CODE_LENS_UNDERIVED),
+            Lens::Concepts { .. } => Some(CONCEPTS_LENS_UNDERIVED),
+        }
+    }
+
+    /// The documented empty-CELL message for a RE-PROJECTION whose member set folds into NO derived
+    /// bucket (spec 55 c2): [`REPROJECT_NO_COMMUNITY`] under [`Lens::Code`], [`REPROJECT_NO_CONCEPT`]
+    /// under [`Lens::Concepts`], `None` under [`Lens::Files`] (a file re-grain always resolves).
+    /// Distinct from [`underived_message`]: a re-projection cell is empty when THIS subject's members
+    /// carry no membership, independent of whether the grain is derived for the graph at large.
+    fn no_membership_message(&self) -> Option<&'static str> {
+        match self.lens {
+            Lens::Files => None,
+            Lens::Code { .. } => Some(REPROJECT_NO_COMMUNITY),
+            Lens::Concepts { .. } => Some(REPROJECT_NO_CONCEPT),
+        }
+    }
+
+    /// The super-node KIND whose deterministic `label` attr names a bucket cluster under this lens:
+    /// [`KIND_COMMUNITY`] (a coupling community) under [`Lens::Code`], [`KIND_CONCEPT`] (a derived
+    /// concept) under [`Lens::Concepts`]. `None` under [`Lens::Files`], where a bucket key already
+    /// names its module / kind and no label is attached.
+    fn label_kind(&self) -> Option<&'static str> {
+        match self.lens {
+            Lens::Files => None,
+            Lens::Code { .. } => Some(KIND_COMMUNITY),
+            Lens::Concepts { .. } => Some(KIND_CONCEPT),
+        }
+    }
+
+    /// Whether `id` carries MORE THAN ONE live concept membership at this grain (spec 54 c3): a shared
+    /// member the drill flags. Always `false` under [`Lens::Files`] and [`Lens::Code`].
+    fn is_shared(&self, id: &str) -> bool {
+        self.shared.contains(id)
+    }
 }
 
 /// Fold the WHOLE graph into its clustered overview (spec 42 c2): the default KG view that renders a
@@ -811,16 +1458,96 @@ pub fn cluster_key(id: &str, kind: &str) -> String {
 /// nothing from the store and adds no event type. Bounded by the module / kind count, never the node
 /// count, so it renders at any graph size; an empty graph yields an empty overview (zero clusters,
 /// zero total), never an error.
-pub fn clustered_overview(graph: &Graph) -> ClusterOverview {
-    // Fold every node into its cluster bucket, remembering each node's cluster (so edges can be
-    // classified) and, per bucket, the member count and a kind histogram (to pick the dominant kind).
-    // A `BTreeMap` keeps the buckets - and each bucket's kind histogram - in sorted order, so the
-    // overview is deterministic and the dominant-kind tie resolves to the smallest kind by iteration.
+///
+/// The bucket key is the pluggable [`Lens`] (spec 53 c4): [`Lens::Files`] is the default fold above
+/// (byte-identical to today and to a `lens`-absent request); [`Lens::Code`] buckets each member node
+/// by its coupling COMMUNITY at a resolution grain - the SAME aggregation over a different key - so a
+/// community super-node is sized by member count, coloured by its dominant member kind, and labelled
+/// by the community node's deterministic label, while membership-less nodes keep their kind buckets.
+/// A code grain with NO derived assignments returns the [`CODE_LENS_UNDERIVED`] empty state.
+pub fn clustered_overview(graph: &Graph, lens: &Lens) -> ClusterOverview {
+    let buckets = Buckets::new(graph, lens);
+
+    // The documented empty state (spec 53 c4 / spec 54 c3): a derived lens whose selected resolution
+    // grain has NO assignments. Return an empty overview carrying the lens's derivation prompt, so the
+    // panel says "run `rigger graph communities`" / "run `rigger graph concepts`" instead of showing
+    // an error or a bare kind-bucket view. `total` still reports the whole graph size.
+    if buckets.underived() {
+        return ClusterOverview {
+            clusters: Vec::new(),
+            edges: Vec::new(),
+            total: graph.nodes.len(),
+            empty_state: buckets.underived_message().map(str::to_string),
+        };
+    }
+
+    // Fold the WHOLE graph through the shared bucket fold: every node folds by the lens's
+    // [`Buckets::key`], and cross-bucket edges weight the super-edges. `total` reports the whole node
+    // count; a derived overview is not the empty state (handled above).
+    let bucket_label = bucket_label_index(graph, &buckets);
+    let (clusters, edges) = fold_buckets(
+        graph.nodes.iter(),
+        &graph.edges,
+        |n| buckets.key(n),
+        &bucket_label,
+    );
+    ClusterOverview {
+        clusters,
+        edges,
+        total: graph.nodes.len(),
+        empty_state: None,
+    }
+}
+
+/// Index each bucket super-node's deterministic display `label` attr, so a bucket cluster can name
+/// its subsystem / idea instead of its opaque id: a coupling community under [`Lens::Code`] (folded
+/// by spec 53 c3), a derived concept under [`Lens::Concepts`] (spec 54). Empty under [`Lens::Files`]
+/// (no super-node bucket exists there) and for the FILES re-projection (a file names itself). Read by
+/// the shared [`fold_buckets`].
+fn bucket_label_index<'g>(graph: &'g Graph, buckets: &Buckets<'g>) -> BTreeMap<&'g str, &'g str> {
+    match buckets.label_kind() {
+        Some(super_kind) => graph
+            .nodes
+            .iter()
+            .filter(|n| n.kind == super_kind)
+            .filter_map(|n| {
+                n.attrs
+                    .get("label")
+                    .filter(|l| !l.is_empty())
+                    .map(|l| (n.id.as_str(), l.as_str()))
+            })
+            .collect(),
+        None => BTreeMap::new(),
+    }
+}
+
+/// The SINGLE bucket-fold authority the whole-graph overview ([`clustered_overview`]) and the
+/// subject re-projection ([`reproject`]) both consume - implemented ONCE over the shared abstraction,
+/// never a second parallel fold. Fold each node `key_of` yields a bucket key for into a [`Cluster`]
+/// carrying its MEMBER COUNT and DOMINANT member kind (ties -> the lexicographically-smallest kind),
+/// attach the bucket's display `label` when `bucket_label` names one, and weight the SYMMETRIC
+/// cross-bucket [`ClusterEdge`]s over `edges`.
+///
+/// A node `key_of` maps to `None` is EXCLUDED (a lens super-node, or a FILES re-projection member the
+/// honesty rule could not resolve to one file). An edge is followed only when currently valid and
+/// BOTH endpoints fall in the folded set (so a member-restricted fold naturally drops edges leaving
+/// the member set); an intra-bucket edge (or self-loop) adds no weight; the pair is canonicalized
+/// (smaller key first) so an `a -> b` and a `b -> a` graph edge fold into one weighted super-edge.
+/// Deterministic by construction (`BTreeMap` folds), so clusters sort by key, each bucket's dominant
+/// kind resolves the tie to the smallest kind, and edges sort by `(from, to)`.
+fn fold_buckets<'g>(
+    nodes: impl Iterator<Item = &'g Node>,
+    edges: &[Edge],
+    key_of: impl Fn(&Node) -> Option<String>,
+    bucket_label: &BTreeMap<&str, &str>,
+) -> (Vec<Cluster>, Vec<ClusterEdge>) {
     let mut node_cluster: BTreeMap<&str, String> = BTreeMap::new();
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
-    let mut kind_hist: BTreeMap<String, BTreeMap<&str, usize>> = BTreeMap::new();
-    for n in &graph.nodes {
-        let key = cluster_key(&n.id, &n.kind);
+    let mut kind_hist: BTreeMap<String, BTreeMap<&'g str, usize>> = BTreeMap::new();
+    for n in nodes {
+        let Some(key) = key_of(n) else {
+            continue; // excluded from the member fold (a super-node / an unresolvable member)
+        };
         node_cluster.insert(n.id.as_str(), key.clone());
         *counts.entry(key.clone()).or_default() += 1;
         *kind_hist
@@ -830,10 +1557,9 @@ pub fn clustered_overview(graph: &Graph) -> ClusterOverview {
             .or_default() += 1;
     }
 
-    // Each bucket becomes a Cluster whose kind is its DOMINANT member kind: the kind with the highest
-    // member count, ties broken by the lexicographically-smallest kind. The histogram iterates in
-    // sorted kind order, so replacing only on a STRICTLY-greater count keeps the first (smallest) kind
-    // on a tie - the deterministic colour the spec requires by construction.
+    // Each bucket becomes a Cluster whose kind is its DOMINANT member kind: the highest-count kind,
+    // ties broken by the lexicographically-smallest kind (the histogram iterates in sorted kind
+    // order, so replacing only on a STRICTLY-greater count keeps the first/smallest kind on a tie).
     let clusters: Vec<Cluster> = counts
         .into_iter()
         .map(|(key, count)| {
@@ -846,21 +1572,21 @@ pub fn clustered_overview(graph: &Graph) -> ClusterOverview {
                     dominant = kind;
                 }
             }
+            let label = bucket_label.get(key.as_str()).map(|l| l.to_string());
             Cluster {
                 key,
                 count,
                 kind: dominant.to_string(),
+                label,
             }
         })
         .collect();
 
-    // Every currently-valid edge whose two endpoints are known nodes in DIFFERENT clusters weights a
-    // symmetric cluster edge. The endpoint pair is canonicalized (smaller cluster key first) so an
-    // `a -> b` and a `b -> a` graph edge fold into one weighted edge; an intra-cluster edge (both
-    // endpoints in one cluster, self-loops included) is skipped, and an invalidated edge counts for
-    // nothing (matching the currently-valid view the rest of the KG panel reads).
+    // Every currently-valid edge whose two endpoints are known FOLDED nodes in DIFFERENT clusters
+    // weights a symmetric cluster edge; an endpoint outside the folded set (e.g. a member-set fold's
+    // edge to a non-member) has no cluster to weight, and an intra-cluster edge adds none.
     let mut weights: BTreeMap<(String, String), usize> = BTreeMap::new();
-    for e in &graph.edges {
+    for e in edges {
         if e.valid_to.is_some() {
             continue;
         }
@@ -868,10 +1594,10 @@ pub fn clustered_overview(graph: &Graph) -> ClusterOverview {
             node_cluster.get(e.from.as_str()),
             node_cluster.get(e.to.as_str()),
         ) else {
-            continue; // an endpoint that is not a known graph node has no cluster to weight
+            continue;
         };
         if a == b {
-            continue; // an intra-cluster edge (or self-loop) adds no cross-cluster weight
+            continue;
         }
         let pair = if a <= b {
             (a.clone(), b.clone())
@@ -880,16 +1606,12 @@ pub fn clustered_overview(graph: &Graph) -> ClusterOverview {
         };
         *weights.entry(pair).or_default() += 1;
     }
-    let edges: Vec<ClusterEdge> = weights
+    let cluster_edges: Vec<ClusterEdge> = weights
         .into_iter()
         .map(|((from, to), weight)| ClusterEdge { from, to, weight })
         .collect();
 
-    ClusterOverview {
-        clusters,
-        edges,
-        total: graph.nodes.len(),
-    }
+    (clusters, cluster_edges)
 }
 
 /// The RENDER BUDGET a drilled cluster is capped to (spec 42 c3). A cluster with at most this many
@@ -917,12 +1639,21 @@ pub const CLUSTER_RENDER_BUDGET: usize = 60;
 /// (no node folds to it) yields an empty drill, never an error - the graceful degradation the panel
 /// relies on. `seed` echoes the drilled cluster `key` and `depth` is 0 (a cluster is not a
 /// hop-bounded walk), so the panel labels the drill and its "<- overview" back link.
-pub fn cluster_detail(graph: &Graph, key: &str) -> Neighborhood {
-    // The cluster's members: every node folding to `key`, keyed by id for a deterministic, deduped set.
+///
+/// The membership is the pluggable [`Lens`] (spec 53 c4): the SAME drill over a different bucket key.
+/// Under [`Lens::Code`], drilling a `community/<r>/<n>` key yields exactly that community's member
+/// nodes and the coupling edges AMONG them (the community super-node is not a member, and a
+/// membership spoke to it is not an intra-community edge, so neither renders); drilling a kind key
+/// yields that kind's membership-less nodes.
+pub fn cluster_detail(graph: &Graph, key: &str, lens: &Lens) -> Neighborhood {
+    let buckets = Buckets::new(graph, lens);
+    // The cluster's members: every node the lens folds to `key`, keyed by id for a deterministic,
+    // deduped set. A node the lens EXCLUDES (a community super-node under the code lens) is never a
+    // member of any bucket.
     let members: BTreeSet<&str> = graph
         .nodes
         .iter()
-        .filter(|n| cluster_key(&n.id, &n.kind) == key)
+        .filter(|n| buckets.key(n).as_deref() == Some(key))
         .map(|n| n.id.as_str())
         .collect();
     let total = members.len();
@@ -975,6 +1706,8 @@ pub fn cluster_detail(graph: &Graph, key: &str) -> Neighborhood {
             to: e.to.clone(),
             rel: e.rel.clone(),
             tier: e.tier.clone(),
+            // A neighborhood / drill edge is never a directed-call back edge (spec 52 c4).
+            back: false,
         })
         .collect();
 
@@ -1002,6 +1735,12 @@ pub fn cluster_detail(graph: &Graph, key: &str) -> Neighborhood {
                     label: node_label(n),
                     degree: d,
                     god: d > GOD_NODE_DEGREE_THRESHOLD,
+                    // A neighborhood / drill node carries no directed-call layer or frontier (spec 52 c4).
+                    layer: None,
+                    frontier: None,
+                    // A concepts-lens drill flags a member that realizes MORE THAN ONE concept (spec 54
+                    // c3); every other lens leaves this false (the resolver's `shared` set is empty).
+                    shared: buckets.is_shared(n.id.as_str()),
                 }
             })
         })
@@ -1017,6 +1756,262 @@ pub fn cluster_detail(graph: &Graph, key: &str) -> Neighborhood {
         path: Vec::new(),
         explain: None,
         truncated,
+        // A cluster drill is not a directed-call view (spec 52 c4).
+        dir: None,
+        referenced_not_called: Vec::new(),
+    }
+}
+
+/// Re-grain a SELECTED subject at a lens's altitude, in place (spec 55 c1): the SUBJECT x LENS
+/// re-projection. Rather than switching to a whole-graph overview, this resolves the subject's MEMBER
+/// SET at its own grain and re-buckets that set under the requested lens - so a concept flipped to the
+/// Code lens shows its members grouped by coupling community, and flipped to Files shows the DISTINCT
+/// DEFINING FILES those members resolve to. The two controls compose freely; a single entity is its
+/// own member set, so the instrument composes rather than modes.
+///
+/// The MEMBER SET is read at the subject's grain from its OWN node kind: a [`KIND_CONCEPT`] resolves
+/// to the nodes that `REALIZES` it; a [`KIND_COMMUNITY`] to the nodes `IN_COMMUNITY` it; a
+/// [`KIND_FILE`] to the entities it `CONTAINS`; any other node (a single code entity / doc) is its own
+/// singleton set; an unknown subject is the empty set (the documented empty cell, spec 55 c2). The
+/// RE-BUCKET is the shared [`fold_buckets`] authority: coupling community under [`Lens::Code`],
+/// derived concept under [`Lens::Concepts`], and the DISTINCT DEFINING FILE under [`Lens::Files`].
+///
+/// Under [`Lens::Files`] the fold resolves CROSS-GRAIN honestly ([`Reprojection::unresolved`]): a
+/// member that is a real definition (or a doc / file path) folds under its own file; a BARE cross-file
+/// placeholder (no `name` attr) resolves by name-suffix to the DEFINITION sharing its name - EXACTLY
+/// ONE folds under that definition's file, MORE THAN ONE (or zero) is surfaced as a marked-unresolved
+/// entry carrying the sorted candidate ids, never a wrong attribution to the referencing file its id
+/// encodes. A pure read over the already-projected graph: no store touch, no new event type, and
+/// deterministic by construction.
+pub fn reproject(graph: &Graph, subject: &str, lens: &Lens) -> Reprojection {
+    let members = member_set(graph, subject);
+    let mut re = match lens {
+        Lens::Files => reproject_files(graph, subject, &members),
+        Lens::Code { .. } | Lens::Concepts { .. } => {
+            reproject_derived(graph, subject, lens, &members)
+        }
+    };
+    // Spec 55 c2, the WIDE cell: cap the bucket list to the render budget UNIFORMLY across lenses, so
+    // a re-grain over a huge subject (e.g. a concept whose members span hundreds of files) renders at
+    // any size. `total` (the member-set size) is untouched; `truncated` carries the full bucket count.
+    re.truncated = cap_clusters(&mut re.clusters, &mut re.edges);
+    re
+}
+
+/// Cap a re-projection's bucket list to [`CLUSTER_RENDER_BUDGET`] (spec 55 c2, the WIDE cell): keep
+/// the LARGEST buckets (ties broken by key ascending, for a pick stable across polls), and PRUNE every
+/// cross-bucket edge that touches a dropped bucket so none dangles. Returns `Some(full bucket count)`
+/// for the panel's "showing N of M" caption when the cap fired, `None` when the re-grain already fit.
+/// The kept buckets keep their by-key sort order ([`fold_buckets`] emits them sorted), so the capped
+/// body is deterministic. Mirrors the [`cluster_detail`] drill's degree cap, at the bucket grain.
+fn cap_clusters(clusters: &mut Vec<Cluster>, edges: &mut Vec<ClusterEdge>) -> Option<usize> {
+    let total = clusters.len();
+    if total <= CLUSTER_RENDER_BUDGET {
+        return None;
+    }
+    // The kept keys: the budget's worth of largest buckets, ties by key ascending. Collected as owned
+    // strings so the immutable borrow ends before the retains below mutate `clusters` / `edges`.
+    let kept: BTreeSet<String> = {
+        let mut ranked: Vec<&Cluster> = clusters.iter().collect();
+        ranked.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.key.cmp(&b.key)));
+        ranked
+            .into_iter()
+            .take(CLUSTER_RENDER_BUDGET)
+            .map(|c| c.key.clone())
+            .collect()
+    };
+    clusters.retain(|c| kept.contains(&c.key));
+    edges.retain(|e| kept.contains(&e.from) && kept.contains(&e.to));
+    Some(total)
+}
+
+/// The subject's MEMBER SET at its own grain (spec 55 c1), as the member NODES (so the fold can read
+/// each member's kind / attrs). Dispatched on the SUBJECT'S node kind: a concept's `REALIZES`
+/// members, a community's `IN_COMMUNITY` members, a file's `CONTAINS` entities, else the subject's own
+/// singleton set; an unknown subject (absent from the graph) is empty. Deterministic - members come
+/// out in ascending-id order - and deduped.
+fn member_set<'g>(graph: &'g Graph, subject: &str) -> Vec<&'g Node> {
+    let by_id: BTreeMap<&str, &Node> = graph.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+    let mut ids: BTreeSet<&str> = BTreeSet::new();
+    match by_id.get(subject).map(|n| n.kind.as_str()) {
+        // A concept re-grains to the members that REALIZE it (spec 54).
+        Some(KIND_CONCEPT) => {
+            for e in &graph.edges {
+                if e.valid_to.is_none() && e.rel == REL_REALIZES && e.to == subject {
+                    ids.insert(e.from.as_str());
+                }
+            }
+        }
+        // A coupling community re-grains to its IN_COMMUNITY members (spec 53).
+        Some(KIND_COMMUNITY) => {
+            for e in &graph.edges {
+                if e.valid_to.is_none() && e.rel == REL_IN_COMMUNITY && e.to == subject {
+                    ids.insert(e.from.as_str());
+                }
+            }
+        }
+        // A file re-grains to the entities it CONTAINS (spec 29a).
+        Some(KIND_FILE) => {
+            for e in &graph.edges {
+                if e.valid_to.is_none() && e.rel == REL_CONTAINS && e.from == subject {
+                    ids.insert(e.to.as_str());
+                }
+            }
+        }
+        // A single entity (a code entity / doc / any other node) is its own member set.
+        Some(_) => {
+            ids.insert(subject);
+        }
+        // An unknown subject has no member set (the documented empty cell, spec 55 c2).
+        None => {}
+    }
+    ids.into_iter()
+        .filter_map(|id| by_id.get(id).copied())
+        .collect()
+}
+
+/// Re-bucket a member set under a DERIVED lens ([`Lens::Code`] / [`Lens::Concepts`]): fold each
+/// member by its coupling community / derived concept through the shared [`fold_buckets`] authority,
+/// restricted to the member set so cross-bucket edges among members weight the super-edges. `total`
+/// is the member-set size, not the whole graph.
+fn reproject_derived(graph: &Graph, subject: &str, lens: &Lens, members: &[&Node]) -> Reprojection {
+    let buckets = Buckets::new(graph, lens);
+    let bucket_label = bucket_label_index(graph, &buckets);
+    let (clusters, edges) = fold_buckets(
+        members.iter().copied(),
+        &graph.edges,
+        |n| buckets.key(n),
+        &bucket_label,
+    );
+    // Spec 55 c2, the EMPTY cell: when NO member folds into a derived (community/concept) bucket, the
+    // cell is defined-but-empty. The kind-fallback clusters above still render (criterion 1, nothing
+    // dropped); this message is the additive caption the panel shows. A single member with a derived
+    // membership makes the cell full and clears the message.
+    let has_derived_bucket = members
+        .iter()
+        .any(|m| buckets.membership.contains_key(m.id.as_str()));
+    let empty_state = (!has_derived_bucket)
+        .then(|| buckets.no_membership_message().map(str::to_string))
+        .flatten();
+    // Spec 55 c2, the SHARED member: a member realizing MORE THAN ONE concept folds under its PRIMARY
+    // bucket above (appears once) and is flagged here. `members` is ascending-id ordered (member_set),
+    // so the flagged list is sorted by construction; only the concepts lens ever populates it.
+    let shared: Vec<String> = members
+        .iter()
+        .filter(|m| buckets.is_shared(m.id.as_str()))
+        .map(|m| m.id.clone())
+        .collect();
+    Reprojection {
+        subject: subject.to_string(),
+        clusters,
+        edges,
+        total: members.len(),
+        unresolved: Vec::new(),
+        shared,
+        // The wide-cell cap runs once, uniformly, in `reproject`.
+        truncated: None,
+        empty_state,
+    }
+}
+
+/// Re-bucket a member set under [`Lens::Files`] to its DISTINCT DEFINING FILES, resolving cross-grain
+/// honestly (spec 55 c1). Each member is resolved to a file key, or surfaced as marked-unresolved:
+///
+/// - a member that IS a definition (a `name` attr) or a doc / file-path node folds under its OWN
+///   file ([`file_of`]);
+/// - a BARE cross-file code-entity placeholder (no `name` attr) resolves by name-suffix over the
+///   DEFINITION nodes sharing its name: EXACTLY ONE folds under that definition's file; MORE THAN ONE
+///   (or zero) is marked-unresolved with the sorted candidate ids;
+/// - a member with no file identity at all (a rare dev-loop node) keeps its KIND bucket, mirroring
+///   the derived lens - nothing is silently dropped.
+///
+/// The resolved keys feed the shared [`fold_buckets`] authority (no bucket label under files), so the
+/// file buckets are sized, dominant-kind coloured, and cross-file coupling edges weighted exactly as
+/// every other lens. `total` is the member-set size (resolved or not).
+fn reproject_files(graph: &Graph, subject: &str, members: &[&Node]) -> Reprojection {
+    // Index every code-entity DEFINITION (a `name` attr) by its entity-name suffix, for the
+    // conservative cross-file resolution - the in-memory twin of the store's `definitions_with_suffix`
+    // (spec 52). Each candidate list is sorted + deduped for a deterministic frontier.
+    let mut defs_by_suffix: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for n in &graph.nodes {
+        if n.kind == KIND_CODE_ENTITY && n.attrs.contains_key("name") {
+            defs_by_suffix
+                .entry(name_suffix(&n.id))
+                .or_default()
+                .push(n.id.as_str());
+        }
+    }
+    for cands in defs_by_suffix.values_mut() {
+        cands.sort_unstable();
+        cands.dedup();
+    }
+
+    // Resolve each member to a file key (or mark it unresolved). `resolved` is member-id -> file key
+    // the fold reads back; `unresolved` collects the marked-unresolved frontiers.
+    let mut resolved: BTreeMap<&str, String> = BTreeMap::new();
+    let mut unresolved: Vec<UnresolvedMember> = Vec::new();
+    for m in members {
+        let is_bare = m.kind == KIND_CODE_ENTITY && !m.attrs.contains_key("name");
+        if is_bare {
+            // A bare cross-file placeholder resolves by name-suffix; the honesty rule decides.
+            let cands = defs_by_suffix
+                .get(name_suffix(&m.id))
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            match cands {
+                [only] => {
+                    if let Some(file) = file_of(only) {
+                        resolved.insert(m.id.as_str(), file.to_string());
+                        continue;
+                    }
+                    // A definition whose id names no file cannot attribute one: unresolved.
+                    unresolved.push(UnresolvedMember {
+                        id: m.id.clone(),
+                        candidates: vec![(*only).to_string()],
+                    });
+                }
+                _ => unresolved.push(UnresolvedMember {
+                    id: m.id.clone(),
+                    candidates: cands.iter().map(|c| (*c).to_string()).collect(),
+                }),
+            }
+            continue;
+        }
+        // A definition / doc / file-path member folds under its OWN file; a member with no file
+        // identity keeps its kind bucket (never silently dropped).
+        match file_of(&m.id) {
+            Some(file) => {
+                resolved.insert(m.id.as_str(), file.to_string());
+            }
+            None => {
+                resolved.insert(m.id.as_str(), m.kind.clone());
+            }
+        }
+    }
+
+    // Fold the resolved members into their file (or kind) buckets through the shared authority; a
+    // member marked unresolved has no key, so it is excluded from every bucket and edge. Files name
+    // themselves, so there is no bucket label.
+    let empty_label: BTreeMap<&str, &str> = BTreeMap::new();
+    let (clusters, edges) = fold_buckets(
+        members.iter().copied(),
+        &graph.edges,
+        |n| resolved.get(n.id.as_str()).cloned(),
+        &empty_label,
+    );
+    unresolved.sort_by(|a, b| a.id.cmp(&b.id));
+    Reprojection {
+        subject: subject.to_string(),
+        clusters,
+        edges,
+        total: members.len(),
+        unresolved,
+        // A files re-grain always resolves a member (to a file, its kind, or the unresolved sidecar)
+        // and never shares, so the spec 55 c2 empty-cell message and shared flag never apply here; the
+        // wide-cell cap runs once, uniformly, in `reproject`.
+        shared: Vec::new(),
+        truncated: None,
+        empty_state: None,
     }
 }
 
@@ -1029,12 +2024,27 @@ pub fn cluster_detail(graph: &Graph, key: &str) -> Neighborhood {
 /// empty graph yields an empty neighborhood (never an error), the graceful degradation the spec's
 /// KG-feature-off / empty-graph case requires.
 pub fn neighborhood(graph: &Graph, seed: &str, depth: i64) -> Neighborhood {
-    // Reached-node set (the seed itself is always in it, matching `subgraph`'s CTE seed row), and a
+    neighborhood_of(graph, std::slice::from_ref(&seed.to_string()), seed, depth)
+}
+
+/// The multi-seed core of [`neighborhood`]: the seeded BFS over `seeds` (each seed is initially
+/// reached, so the walk fans out from ALL of them at once), returning the reached nodes and the
+/// tier-tagged edges among them, with `echo_seed` recorded as the response's `seed`. This is the
+/// single traversal authority; the single-seed [`neighborhood`] is the one-element case. The
+/// re-pointed run-tree click (spec 43) uses it to seed from a unit's several decision/finding
+/// content nodes at once - the unit id itself being no longer a node - and still echo the unit id
+/// the client asked for.
+fn neighborhood_of(graph: &Graph, seeds: &[String], echo_seed: &str, depth: i64) -> Neighborhood {
+    // Reached-node set (each seed is always in it, matching `subgraph`'s CTE seed rows), and a
     // BFS frontier of only the nodes newly reached at the previous hop, so `depth` bounds the number
     // of hops exactly as the recursive CTE's `depth < ?` does.
     let mut reached: BTreeSet<String> = BTreeSet::new();
-    reached.insert(seed.to_string());
-    let mut frontier: Vec<String> = vec![seed.to_string()];
+    let mut frontier: Vec<String> = Vec::new();
+    for seed in seeds {
+        if reached.insert(seed.clone()) {
+            frontier.push(seed.clone());
+        }
+    }
     let mut hops = 0;
     while hops < depth && !frontier.is_empty() {
         let mut next: Vec<String> = Vec::new();
@@ -1066,6 +2076,8 @@ pub fn neighborhood(graph: &Graph, seed: &str, depth: i64) -> Neighborhood {
             to: e.to.clone(),
             rel: e.rel.clone(),
             tier: e.tier.clone(),
+            // A neighborhood / drill edge is never a directed-call back edge (spec 52 c4).
+            back: false,
         })
         .collect();
 
@@ -1094,12 +2106,17 @@ pub fn neighborhood(graph: &Graph, seed: &str, depth: i64) -> Neighborhood {
                 label: node_label(n),
                 degree: d,
                 god: d > GOD_NODE_DEGREE_THRESHOLD,
+                // A plain neighborhood node carries no directed-call layer or frontier (spec 52 c4).
+                layer: None,
+                frontier: None,
+                // A plain neighborhood is not a lens fold, so no node is a shared concept member.
+                shared: false,
             }
         })
         .collect();
 
     Neighborhood {
-        seed: seed.to_string(),
+        seed: echo_seed.to_string(),
         depth,
         nodes,
         edges,
@@ -1109,6 +2126,10 @@ pub fn neighborhood(graph: &Graph, seed: &str, depth: i64) -> Neighborhood {
         explain: None,
         // A seeded neighborhood is a COMPLETE node set (never capped); only `cluster_detail` sets this.
         truncated: None,
+        // A plain neighborhood is not a directed-call view (spec 52 c4): no direction, no
+        // referenced-but-not-called sidecar. Absent, these keep the neighborhood byte-identical.
+        dir: None,
+        referenced_not_called: Vec::new(),
     }
 }
 
@@ -1141,6 +2162,78 @@ pub fn explain(graph: &Graph, node: &str) -> Option<Explanation> {
         node: node.to_string(),
         sources,
     })
+}
+
+/// The RATIONALE of a single node (spec 55, the rationale overlay data path): the decisions,
+/// findings, and lessons attached to `node` through the live knowledge edges - a `decision` that
+/// `GOVERNS` it, or a `finding` / `lesson` that is `ABOUT` it - as CONTENT-only [`RationaleLeaf`]s.
+///
+/// A leaf is the SOURCE of a currently-valid (`valid_to` unset) edge whose TARGET is `node`, whose
+/// relation is [`REL_GOVERNS`] or [`REL_ABOUT`], and whose source node is a [`KIND_DECISION`],
+/// [`KIND_FINDING`], or [`KIND_LESSON`]. Both filters are load-bearing:
+///   - restricting the relation to `GOVERNS`/`ABOUT` excludes a `SUPERSEDES` edge, so a decision that
+///     supersedes `node` is NOT reported as `node`'s rationale;
+///   - restricting the kind to decision/finding/lesson excludes a `handbook-rule`, which also reuses
+///     `GOVERNS` for its rule-governs-code edge (see [`crate::contextgraph::REL_GOVERNS`]) - the
+///     overlay is the dev-loop's design MEMORY (decisions/findings/lessons), not the ingested
+///     handbook rules the intent layer carries.
+///
+/// Leaves are DEDUPED by id and sorted by `(kind, id)` - kind first (so decisions, then findings,
+/// then lessons), id within a kind - so the same graph yields a byte-identical list every request
+/// (spec 55 "deterministically ordered"). A node with no attached decision/finding/lesson returns an
+/// EMPTY vec (the "nodes without rationale return none" case). Pure over the already-projected
+/// `graph`, like [`explain`] and the rest of the KG panel.
+pub fn node_rationale(graph: &Graph, node: &str) -> Vec<RationaleLeaf> {
+    // Collect the SOURCE of every live GOVERNS/ABOUT edge into `node` whose source node is a
+    // decision / finding / lesson. Keyed by id in a `BTreeMap` so a leaf reached by two edges (a
+    // decision that governs the node twice) is counted once.
+    let mut leaves: BTreeMap<String, RationaleLeaf> = BTreeMap::new();
+    for e in &graph.edges {
+        if e.valid_to.is_some() || e.to != node {
+            continue; // only LIVE edges that TARGET this node
+        }
+        if e.rel != REL_GOVERNS && e.rel != REL_ABOUT {
+            continue; // excludes SUPERSEDES / DECIDED / ... - only the rationale attachments
+        }
+        let Some(src) = graph.nodes.iter().find(|n| n.id == e.from) else {
+            continue;
+        };
+        if src.kind != KIND_DECISION && src.kind != KIND_FINDING && src.kind != KIND_LESSON {
+            continue; // excludes a handbook-rule (also GOVERNS) and any other kind
+        }
+        leaves
+            .entry(src.id.clone())
+            .or_insert_with(|| RationaleLeaf {
+                id: src.id.clone(),
+                kind: src.kind.clone(),
+                // CONTENT only: the summary attr. A finding's `by`/`unit` are deliberately not read.
+                summary: src.attrs.get("summary").cloned().unwrap_or_default(),
+            });
+    }
+    let mut leaves: Vec<RationaleLeaf> = leaves.into_values().collect();
+    leaves.sort_by(|a, b| a.kind.cmp(&b.kind).then_with(|| a.id.cmp(&b.id)));
+    leaves
+}
+
+/// The RATIONALE OVERLAY BATCH (spec 55): the per-node rationale for a set of visible `nodes`, in one
+/// pass over the graph. The requested ids are DEDUPED and iterated in sorted order (so the response
+/// is deterministic regardless of the request's id order or repeats), and only the nodes that carry
+/// AT LEAST ONE leaf appear - "the visible nodes that have any" - so the client badges exactly those.
+/// Each node's leaves come from [`node_rationale`]. Pure over the already-projected `graph`.
+pub fn rationale_batch(graph: &Graph, nodes: &[String]) -> Vec<NodeRationale> {
+    // Dedup + deterministically order the requested ids (a `BTreeSet`), then attach each node's
+    // leaves, keeping ONLY the nodes that carry any (the client badges only those).
+    let requested: BTreeSet<&str> = nodes.iter().map(String::as_str).collect();
+    requested
+        .into_iter()
+        .filter_map(|id| {
+            let leaves = node_rationale(graph, id);
+            (!leaves.is_empty()).then(|| NodeRationale {
+                node: id.to_string(),
+                leaves,
+            })
+        })
+        .collect()
 }
 
 /// Compute the QUERY-PATH between two selected nodes (spec 30 c6): the shortest chain of node ids
@@ -1200,20 +2293,254 @@ pub fn path(graph: &Graph, from: &str, to: &str) -> Vec<String> {
 /// the route's error handling uniform with [`state_json`].
 pub fn graph_json(
     graph: &Graph,
-    seed: &str,
+    requested_seed: &str,
+    effective_seeds: &[String],
     depth: i64,
     from: Option<&str>,
     to: Option<&str>,
 ) -> Result<String, serde_json::Error> {
-    let mut n = neighborhood(graph, seed, depth);
+    // `effective_seeds` is the seed the client asked for (a single-element slice) UNLESS the route
+    // re-pointed a run-tree unit click off the (now-absent) unit node onto that unit's content nodes
+    // (spec 43); either way the response echoes `requested_seed`, the id the client selected.
+    let mut n = neighborhood_of(graph, effective_seeds, requested_seed, depth);
     if let (Some(from), Some(to)) = (from, to) {
         n.path = path(graph, from, to);
     }
     // The seed's provenance (spec 30 c7): the events/decisions that produced the selected node,
     // riding the existing response so `explain(<seed>)` needs no new route param. Absent (omitted)
-    // when the seed is not a graph node - graceful, never an error.
-    n.explain = explain(graph, seed);
+    // when the seed is not a graph node (a re-pointed unit id is not) - graceful, never an error.
+    n.explain = explain(graph, requested_seed);
     serde_json::to_string(&n)
+}
+
+// ---------------------------------------------------------------------------
+// The DIRECTED-CALL views (spec 52 c4): `/api/graph?view=calls&dir=down|up|both`. A second seeded
+// branch beside the neighborhood, dispatching to the store-side directed traversal
+// `Projection::calls` through the SAME spec-45 lazy direct-projection provider - never the state
+// poll, never a second traversal implementation. The response reuses the [`Neighborhood`] shape with
+// the additive `layer`/`frontier`/`back`/`referenced_not_called`/`dir` fields, so the layered
+// left-to-right renderer draws it; an absent `view` keeps the neighborhood byte-identical.
+// ---------------------------------------------------------------------------
+
+/// The direction of a `view=calls` request (spec 52 c4): the execution path (`Down` - callees),
+/// the call sites (`Up` - callers), or the flow through a centered seed (`Both`). Parsed from the
+/// `dir=` query param, defaulting to the execution path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CallDir {
+    Down,
+    Up,
+    Both,
+}
+
+/// Parse the `dir=` query value into a [`CallDir`] (spec 52 c4). `up` and `both` select those
+/// directions; every other value - including an absent param and an unrecognized string - defaults
+/// to `down` (the execution path, "what does this call"), so the view is always well-defined.
+fn parse_call_dir(dir: Option<&str>) -> CallDir {
+    match dir {
+        Some("up") => CallDir::Up,
+        Some("both") => CallDir::Both,
+        _ => CallDir::Down,
+    }
+}
+
+/// Map one directed-traversal [`CallGraph`] node into a [`NeighborhoodNode`] the layered renderer
+/// draws (spec 52 c4). `sign` is the LAYER x-ordinate multiplier: `+1` for a DOWN (callee) walk so
+/// the seed sits at the LEFT, `-1` for an UP (caller) walk so it sits at the RIGHT; the seed itself
+/// is layer 0 either way. The multi-candidate `frontier` marker rides through verbatim, and `degree`
+/// is filled later from the merged edge set (a call node is never a god-node - the DAG is drawn by
+/// layer, not by hub degree).
+fn call_node_view(cn: &crate::contextgraph::CallNode, sign: i64) -> NeighborhoodNode {
+    NeighborhoodNode {
+        id: cn.node.id.clone(),
+        kind: cn.node.kind.clone(),
+        label: node_label(&cn.node),
+        degree: 0,
+        god: false,
+        layer: Some(sign * cn.layer),
+        frontier: cn.frontier.clone(),
+        // A directed-call node is not a lens fold, so it is never a shared concept member.
+        shared: false,
+    }
+}
+
+/// Map one directed-traversal [`CallGraph`] edge into a [`NeighborhoodEdge`] (spec 52 c4), carrying
+/// the recursion `back` marker the renderer draws as a distinct return arc.
+fn call_edge_view(ce: &crate::contextgraph::CallEdge) -> NeighborhoodEdge {
+    NeighborhoodEdge {
+        from: ce.edge.from.clone(),
+        to: ce.edge.to.clone(),
+        rel: ce.edge.rel.clone(),
+        tier: ce.edge.tier.clone(),
+        back: ce.back,
+    }
+}
+
+/// A file that references the seed's name but never calls it (spec 52 c4 - the UP sidecar), as a
+/// flat [`NeighborhoodNode`] with no traversal metadata (it is not a walked node - no layer, no
+/// frontier, no degree).
+fn ref_node_view(n: &Node) -> NeighborhoodNode {
+    NeighborhoodNode {
+        id: n.id.clone(),
+        kind: n.kind.clone(),
+        label: node_label(n),
+        degree: 0,
+        god: false,
+        layer: None,
+        frontier: None,
+        // A referenced-not-called sidecar node is not a lens fold, so never a shared concept member.
+        shared: false,
+    }
+}
+
+/// Build the `view=calls` response body (spec 52 c4) from the directed traversal's `CallGraph`(s) as
+/// a [`Neighborhood`]-shaped view the layered left-to-right renderer draws. `down` is the callee walk
+/// (present for `dir=down` and `dir=both`), `up` the caller walk (present for `dir=up` and
+/// `dir=both`); the direction echoed on the body is inferred from which are present.
+///
+/// LAYERS are the SIGNED x-ordinate: a callee sits at `+hop` (so a DOWN walk draws the seed at the
+/// LEFT), a caller at `-hop` (so an UP walk draws the seed at the RIGHT), the seed at 0 - so a
+/// `dir=both` walk lays both flows around ONE centered seed in a SINGLE node array the existing SVG
+/// emitter draws with no per-node side flag. When a node appears on BOTH sides (a mutual call), the
+/// DOWN/callee placement wins (first-writer), so an id is drawn once; edges dedup by
+/// `(from, to, rel)`. Nodes emit in `(layer, id)` order and edges in `(from, to, rel)` order, so the
+/// same traversal yields a byte-identical body across polls. The UP `referenced_not_called` sidecar
+/// rides through; a DOWN-only walk carries none.
+fn calls_view(
+    down: Option<&CallGraph>,
+    up: Option<&CallGraph>,
+    seed: &str,
+    depth: i64,
+) -> Neighborhood {
+    let dir = match (down.is_some(), up.is_some()) {
+        (true, true) => "both",
+        (false, true) => "up",
+        _ => "down",
+    };
+
+    // Merge the nodes into one id-keyed map: DOWN (callee, +layer) first so a mutual-call node keeps
+    // its callee placement; UP (caller, -layer) fills only ids the DOWN side did not already place.
+    let mut node_by_id: BTreeMap<String, NeighborhoodNode> = BTreeMap::new();
+    if let Some(cg) = down {
+        for cn in &cg.nodes {
+            node_by_id
+                .entry(cn.node.id.clone())
+                .or_insert_with(|| call_node_view(cn, 1));
+        }
+    }
+    if let Some(cg) = up {
+        for cn in &cg.nodes {
+            node_by_id
+                .entry(cn.node.id.clone())
+                .or_insert_with(|| call_node_view(cn, -1));
+        }
+    }
+
+    // Merge the edges, deduped by (from, to, rel) so a mutual call drawn from both walks is one edge.
+    let mut edge_by_key: BTreeMap<(String, String, String), NeighborhoodEdge> = BTreeMap::new();
+    for cg in [down, up].into_iter().flatten() {
+        for ce in &cg.edges {
+            edge_by_key
+                .entry((
+                    ce.edge.from.clone(),
+                    ce.edge.to.clone(),
+                    ce.edge.rel.clone(),
+                ))
+                .or_insert_with(|| call_edge_view(ce));
+        }
+    }
+    let edges: Vec<NeighborhoodEdge> = edge_by_key.into_values().collect();
+
+    // The honest in-view degree of each node (incident merged edges, a self-loop once) - the same
+    // measure the neighborhood reports, so a node's degree is of what the panel actually draws.
+    let mut degree: BTreeMap<&str, usize> = BTreeMap::new();
+    for e in &edges {
+        *degree.entry(e.from.as_str()).or_default() += 1;
+        if e.to != e.from {
+            *degree.entry(e.to.as_str()).or_default() += 1;
+        }
+    }
+    let mut nodes: Vec<NeighborhoodNode> = node_by_id.into_values().collect();
+    for n in &mut nodes {
+        n.degree = degree.get(n.id.as_str()).copied().unwrap_or(0);
+    }
+    // Emit in (layer, id) order: the renderer places x by layer, and a stable order keeps the body
+    // byte-identical across polls. A call node always carries a layer, so the unwrap_or is unreached.
+    nodes.sort_by(|a, b| {
+        a.layer
+            .unwrap_or(0)
+            .cmp(&b.layer.unwrap_or(0))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+
+    // The "referenced but not called" sidecar is an UP-direction concept; carry it from the UP walk,
+    // as flat FILE nodes (already sorted by id by the traversal).
+    let referenced_not_called: Vec<NeighborhoodNode> = up
+        .map(|cg| cg.referenced_not_called.iter().map(ref_node_view).collect())
+        .unwrap_or_default();
+
+    Neighborhood {
+        seed: seed.to_string(),
+        depth,
+        nodes,
+        edges,
+        path: Vec::new(),
+        explain: None,
+        truncated: None,
+        dir: Some(dir.to_string()),
+        referenced_not_called,
+    }
+}
+
+/// Dispatch a `/api/graph?view=calls` request to the store-side directed traversal (spec 52 c4),
+/// returning `Some(Response)` for a call view and `None` for every other `/api/graph` request (so
+/// the caller falls through to the byte-identical neighborhood / overview / drill path).
+///
+/// The traversal runs through `calls_provider` - the SAME spec-45 lazy direct-projection provider
+/// the whole-graph views use, opened only on a graph request, never on the state poll - so this
+/// never materializes a second traversal. `dir=` picks the direction (default `down`); `depth=` is
+/// clamped like the neighborhood ([`DEFAULT_GRAPH_DEPTH`] / [`MAX_GRAPH_DEPTH`]); `tier=` is the
+/// confidence FLOOR passed straight to the traversal ([`TIER_INFERRED`] by default, excluding the
+/// unresolved `ambiguous` tier until the caller opts it in). The `seed` is percent-decoded like the
+/// neighborhood seed (a code-entity id carries `::` and `/`); an empty or missing seed degrades to
+/// an empty view (the traversal seeds on real nodes only), never an error. `instance` is the
+/// spec-50 attach selector threaded to the provider so the walk opens the SELECTED instance's store.
+fn calls_route<G>(instance: Option<&str>, target: &str, calls_provider: &G) -> Option<Response>
+where
+    G: Fn(Option<&str>, &[String], Direction, i64, &str) -> CallGraph,
+{
+    if query_param(target, "view").map(percent_decode).as_deref() != Some("calls") {
+        return None;
+    }
+    let seed = query_param(target, "seed")
+        .map(percent_decode)
+        .unwrap_or_default();
+    let seeds = [seed.clone()];
+    let depth = query_param(target, "depth")
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(DEFAULT_GRAPH_DEPTH)
+        .clamp(0, MAX_GRAPH_DEPTH);
+    // The confidence FLOOR: the traversal maps an absent / unrecognized value to the resolvable
+    // `inferred` floor itself, so passing the raw `tier=` (or the default) is safe.
+    let floor = query_param(target, "tier")
+        .map(percent_decode)
+        .unwrap_or_else(|| TIER_INFERRED.to_string());
+    let dir = parse_call_dir(query_param(target, "dir").map(percent_decode).as_deref());
+
+    let down = matches!(dir, CallDir::Down | CallDir::Both)
+        .then(|| calls_provider(instance, &seeds, Direction::Down, depth, &floor));
+    let up = matches!(dir, CallDir::Up | CallDir::Both)
+        .then(|| calls_provider(instance, &seeds, Direction::Up, depth, &floor));
+
+    let view = calls_view(down.as_ref(), up.as_ref(), &seed, depth);
+    // Serializing these plain view DTOs cannot realistically fail; degrade a serialization error to
+    // a 500 with the same shape the neighborhood route uses, so the panel never sees a torn body.
+    match serde_json::to_string(&view) {
+        Ok(body) => Some(Response::json(200, body)),
+        Err(e) => Some(Response::text(
+            500,
+            &format!("dash: calls projection failed: {e}"),
+        )),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1655,27 +2982,117 @@ fn spec_of(unit_id: &str) -> String {
     }
 }
 
-/// The node ids to seed the context subgraph with: every unit, decision, and finding id
-/// named in the run's own events. Seeding by the ids the run actually produced (rather
-/// than a blast-radius file walk) lets the subgraph return their authoritative nodes and
-/// the valid SUPERSEDES edges among them at a shallow depth, independent of whether the
-/// run emitted the file-touch edges that would otherwise connect them.
+/// The node ids to seed the RUN-SCOPED context subgraph the dash pre-fetches on open: every decision
+/// and finding the run produced, plus the files those decisions GOVERN and those findings are ABOUT.
+/// De-noise (spec 43): the graph no longer carries a KIND_UNIT node, so a unit-id seed would land
+/// nowhere; this pre-fetch therefore enumerates the content and file nodes the run actually produced
+/// (which remain in the graph). Seeding by the ids the run actually produced (rather than a
+/// blast-radius file walk) lets the subgraph return their authoritative nodes and the valid
+/// SUPERSEDES edges among them at a shallow depth, independent of whether the run emitted the file
+/// edges that connect them. The per-UNIT click re-point (a run-tree unit click lands on that unit's
+/// content) is the route's job, via [`repoint_seed`] / [`unit_seeds`] over this same pre-fetched
+/// graph, so both seed views share ONE derivation ([`event_seed_ids`]) and never drift.
 pub fn graph_seeds(events: &[Event]) -> Vec<String> {
-    use crate::contextgraph::{TYPE_DECISION_MADE, TYPE_REVIEW_FINDING, TYPE_UNIT_STARTED};
     let mut seeds: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for e in events {
-        let key = match e.type_.as_str() {
-            TYPE_DECISION_MADE | TYPE_REVIEW_FINDING => "id",
-            TYPE_UNIT_STARTED => "unit",
-            _ => continue,
+        for id in event_seed_ids(e) {
+            seeds.insert(id);
+        }
+    }
+    seeds.into_iter().collect()
+}
+
+/// The seed ids a single content event contributes to a context subgraph: the content node's own
+/// id (a decision / finding) plus the files it GOVERNS / is ABOUT. De-noise (spec 43): a unit is no
+/// longer a graph node, so a content event contributes its content id and the files it concerns,
+/// never a unit id. The ONE derivation both the run-scoped [`graph_seeds`] pre-fetch and the
+/// unit-scoped [`unit_seeds`] click re-point share, so the two seed views never drift.
+fn event_seed_ids(e: &Event) -> Vec<String> {
+    use crate::contextgraph::{TYPE_DECISION_MADE, TYPE_REVIEW_FINDING};
+    let files_key = match e.type_.as_str() {
+        TYPE_DECISION_MADE => "governs",
+        TYPE_REVIEW_FINDING => "about",
+        _ => return Vec::new(),
+    };
+    let mut ids: Vec<String> = Vec::new();
+    // The content node id (the decision / finding itself) - always a graph node.
+    if let Some(id) = field_str(e, "id") {
+        if !id.is_empty() {
+            ids.push(id);
+        }
+    }
+    // The files it concerns - the code the unit produced. A raw path that never became a canonical
+    // node contributes nothing when a consumer filters to real nodes, so it is harmless; the file
+    // is reached anyway via the content node's GOVERNS / ABOUT edge.
+    for f in field_str_array(e, files_key) {
+        if !f.is_empty() {
+            ids.push(f);
+        }
+    }
+    ids
+}
+
+/// The seed ids for ONE unit's content (spec 43, the run-tree click-to-seed re-point): the
+/// decisions that unit's agents made and the findings drawn about it, plus the files each concerns.
+/// A unit is no longer a graph node, so the run-tree's click - which passes the unit id - must
+/// re-point onto these content nodes (which remain). BOTH a `DecisionMade` and a `ReviewFinding` are
+/// attributed to their unit the SAME single way: by the emitting spawn stamped in `meta`
+/// (`spawn::unit_of` of the `META_SPAWN` value, exactly the id `rigger emit --spawn` records - a
+/// reviewer emits its finding through that same path, so the stamp is always present). As production
+/// emits it a finding carries NO `unit` event field; the `$.unit` disposition-expiry keys on is the
+/// finding NODE's attribute the adjudication fold stamps (and the integration fold reads to expire
+/// it), not a field on the raw event. Deterministically ordered (a sorted set).
+pub fn unit_seeds(events: &[Event], unit: &str) -> Vec<String> {
+    use crate::contextgraph::{TYPE_DECISION_MADE, TYPE_REVIEW_FINDING};
+    let mut seeds: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for e in events {
+        // A decision and a finding are both content the unit's spawns emitted, so both attribute to
+        // the unit by their emitting spawn's `meta.spawn` - one derivation, never a second parallel
+        // one keyed on an event field production does not carry.
+        let belongs = match e.type_.as_str() {
+            TYPE_DECISION_MADE | TYPE_REVIEW_FINDING => {
+                e.meta
+                    .get(crate::conductor::META_SPAWN)
+                    .and_then(|s| crate::spawn::unit_of(s))
+                    == Some(unit)
+            }
+            _ => false,
         };
-        if let Some(id) = field_str(e, key) {
-            if !id.is_empty() {
+        if belongs {
+            for id in event_seed_ids(e) {
                 seeds.insert(id);
             }
         }
     }
     seeds.into_iter().collect()
+}
+
+/// Resolve a `/api/graph` seed to the EFFECTIVE seed set the neighborhood BFS walks (spec 43, the
+/// click-to-seed re-point):
+///
+/// - A seed that IS a node in the pre-fetched `graph` (a content or code node the operator clicked)
+///   is returned unchanged - the spec 30 seeded panel, so a normal node click never regresses.
+/// - A seed that is NOT a node is a run-tree UNIT click (the unit node was de-noised away, spec 43):
+///   re-point it onto that unit's content nodes ([`unit_seeds`]), keeping ONLY the ones that are
+///   real nodes in the graph. Filtering to present nodes is the canonicalization guard
+///   (arch-u43c1-graphseeds-raw-vs-canonical-path): a raw, uncanonicalized file path that never
+///   became a node is dropped rather than seeded best-effort, and its file is still reached through
+///   the content node's GOVERNS / ABOUT edge.
+/// - When that yields nothing (a genuinely unknown seed, no unit content in the graph), fall back to
+///   the seed itself so the neighborhood degrades to the graceful empty the panel already handles.
+pub fn repoint_seed(events: &[Event], graph: &Graph, seed: &str) -> Vec<String> {
+    if graph.nodes.iter().any(|n| n.id == seed) {
+        return vec![seed.to_string()];
+    }
+    let repointed: Vec<String> = unit_seeds(events, seed)
+        .into_iter()
+        .filter(|id| graph.nodes.iter().any(|n| &n.id == id))
+        .collect();
+    if repointed.is_empty() {
+        vec![seed.to_string()]
+    } else {
+        repointed
+    }
 }
 
 /// A generic feed view of one event: position, type, and a bounded, per-type-agnostic
@@ -1700,6 +3117,21 @@ fn field_str(e: &Event, key: &str) -> Option<String> {
         .get(key)?
         .as_str()
         .map(str::to_string)
+}
+
+/// Read a top-level array-of-strings field from an event's JSON payload (best-effort). An absent
+/// field, a non-array value, or non-string elements yield an empty vec.
+fn field_str_array(e: &Event, key: &str) -> Vec<String> {
+    serde_json::from_slice::<serde_json::Value>(&e.data)
+        .ok()
+        .and_then(|v| v.get(key).cloned())
+        .and_then(|v| v.as_array().cloned())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn now_unix() -> u64 {
@@ -1857,15 +3289,19 @@ impl Response {
     }
 
     /// Write this response as HTTP/1.1 with `Connection: close`, so a bare client knows
-    /// the body ends at the connection close (no keep-alive bookkeeping).
+    /// the body ends at the connection close (no keep-alive bookkeeping). Every response
+    /// carries the [`DASH_HEADER`] marker so a second `rigger dash` invocation can recognize
+    /// an already-serving singleton on the port (spec 50, criterion 1).
     fn write_to(&self, w: &mut impl Write) -> io::Result<()> {
         let header = format!(
             "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n\
-             Cache-Control: no-store\r\nConnection: close\r\n\r\n",
+             {}: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
             self.status,
             self.reason(),
             self.content_type,
             self.body.len(),
+            DASH_HEADER,
+            env!("CARGO_PKG_VERSION"),
         );
         w.write_all(header.as_bytes())?;
         w.write_all(&self.body)?;
@@ -1889,6 +3325,7 @@ pub fn route(
     configured_max_retries: u32,
     run_branch: &str,
     base: &str,
+    instances: &[InstanceView],
 ) -> Response {
     if method != "GET" {
         return Response::text(
@@ -1900,6 +3337,11 @@ pub fn route(
     let path = target.split('?').next().unwrap_or(target);
     match path {
         "/" | "/index.html" => Response::html(200, live_page()),
+        // The LANDING list (spec 50, criterion 3): every registered rigger instance the operator
+        // can attach to, read from the machine-global registry by the server's `instances`
+        // provider. A registry projection, independent of any single instance's store - so it
+        // serves even before this dash's own run has created a store.
+        "/api/instances" => Response::json(200, instances_json(instances)),
         "/api/state" => {
             match state_json(
                 events,
@@ -1932,6 +3374,10 @@ pub fn route(
         //   * a non-empty `seed` -> the spec 30 seeded neighborhood, UNCHANGED. A spec-30 request never
         //     carries `cluster=`, so it always falls through to this branch; the c4 dispatch cannot
         //     regress the seeded panel.
+        // The overview and drill bucket key is the pluggable `lens=` (spec 53 c4): `lens=code` folds
+        // by coupling community at `resolution=` (default grain otherwise); an absent / other `lens`
+        // is `Lens::Files`, byte-identical to today. The lens rides only the overview and drill (both
+        // are whole-graph folds); the seeded neighborhood is a walk from a single node and takes none.
         // The seed branch is verbatim spec 30: `seed` is percent-decoded (the client encodes an id that
         // may carry `#` / `::` / `/`); `depth` defaults to two hops and is clamped so a hostile value
         // cannot make the walk churn; `tier=` is accepted but NOT filtered here (the neighborhood ships
@@ -1940,14 +3386,56 @@ pub fn route(
         // shortest QUERY-PATH rides the body when BOTH are present; and the body carries the seed's
         // EXPLAIN provenance (spec 30 c7), all built by `graph_json` over the neighborhood.
         "/api/graph" => {
+            // The RATIONALE OVERLAY batch (spec 55): `explain=<id>[,<id>...]` returns the decisions,
+            // findings, and lessons attached to each requested node (content only, deterministically
+            // ordered), for the visible nodes that carry any - the overlay's data path, in ONE
+            // request. A distinct response shape from the neighborhood / overview / drill below,
+            // served over the SAME lazy whole-graph provider this arm already reads (never the state
+            // poll). The ids are comma-separated, each `encodeURIComponent`d by the client (an id
+            // carries `#` / `::` / `/`), so the list is split on `,` FIRST and each piece is
+            // percent-decoded. Checked before the lens/seed dispatch, and taken ONLY when `explain=`
+            // is present, so every existing `/api/graph` view stays byte-identical.
+            if let Some(raw_explain) = query_param(target, "explain") {
+                let ids: Vec<String> = raw_explain
+                    .split(',')
+                    .filter(|s| !s.is_empty())
+                    .map(percent_decode)
+                    .collect();
+                let batch = RationaleBatch {
+                    nodes: rationale_batch(graph, &ids),
+                };
+                return match serde_json::to_string(&batch) {
+                    Ok(body) => Response::json(200, body),
+                    Err(e) => {
+                        Response::text(500, &format!("dash: rationale projection failed: {e}"))
+                    }
+                };
+            }
+            // The overview/drill bucket lens (spec 53 c4), resolved from `lens=` + `resolution=`.
+            // Absent / unknown `lens` -> `Lens::Files` (byte-identical), so a spec-30/42 request is
+            // untouched. The seeded neighborhood below is lens-independent and ignores it.
+            let lens = Lens::from_query(
+                query_param(target, "lens").map(percent_decode).as_deref(),
+                query_param(target, "resolution")
+                    .map(percent_decode)
+                    .as_deref(),
+            );
             let body = if let Some(raw_cluster) = query_param(target, "cluster") {
-                serde_json::to_string(&cluster_detail(graph, &percent_decode(raw_cluster)))
+                serde_json::to_string(&cluster_detail(graph, &percent_decode(raw_cluster), &lens))
             } else {
                 let seed = query_param(target, "seed")
                     .map(percent_decode)
                     .unwrap_or_default();
                 if seed.is_empty() {
-                    serde_json::to_string(&clustered_overview(graph))
+                    serde_json::to_string(&clustered_overview(graph, &lens))
+                } else if query_param(target, "lens").is_some() {
+                    // SUBJECT x LENS re-projection (spec 55 c1): a non-empty seed WITH an explicit
+                    // `lens=` re-grains THAT subject's member set at the chosen altitude, in place -
+                    // NOT a whole-graph overview and NOT the seeded neighborhood. The composition
+                    // fires only when a lens is explicitly present, so a lens-ABSENT seed request
+                    // stays the byte-identical spec-30 seeded neighborhood below (spec 55 c4's
+                    // composition-absent back-compat).
+                    serde_json::to_string(&reproject(graph, &seed, &lens))
                 } else {
                     let depth = query_param(target, "depth")
                         .and_then(|v| v.parse::<i64>().ok())
@@ -1955,7 +3443,11 @@ pub fn route(
                         .clamp(0, MAX_GRAPH_DEPTH);
                     let from = query_param(target, "from").map(percent_decode);
                     let to = query_param(target, "to").map(percent_decode);
-                    graph_json(graph, &seed, depth, from.as_deref(), to.as_deref())
+                    // De-noise (spec 43): a run-tree unit click passes a unit id, which is no longer
+                    // a graph node. Re-point it onto that unit's content nodes so the click lands on
+                    // a real neighborhood; a seed that already resolves to a node is unchanged.
+                    let seeds = repoint_seed(events, graph, &seed);
+                    graph_json(graph, &seed, &seeds, depth, from.as_deref(), to.as_deref())
                 }
             };
             match body {
@@ -2019,29 +3511,97 @@ fn parse_request_line(line: &str) -> Option<(String, String)> {
 /// Serve the dash on `addr` until the process is stopped, re-reading fresh projection
 /// inputs from `provider` on each request (the run advances while the dash watches).
 ///
+/// Two providers, split by cadence (spec 45, criterion 1): `provider` yields the cheap
+/// run-scoped inputs (events, the run-seeded graph, progress, liveness) every `/api/*`
+/// request rides - including the 1.5s state poll - while `graph_provider` opens the
+/// projection and reads the whole graph LAZILY, consulted ONLY on a `/api/graph` request.
+/// So the state poll never triggers a whole-graph read; the overview/drill/neighborhood
+/// views read the projection directly through their own provider.
+///
 /// One connection at a time, synchronously: loopback single-operator traffic needs no
 /// concurrency, and a serial loop keeps the sqlite reads and the whole server free of any
-/// async runtime. Only the `/api/*` paths consult `provider`; the static page and the
+/// async runtime. Only the `/api/*` paths consult a provider; the static page and the
 /// method/not-found guards need no store read, so the page still serves before a run has
 /// created the store.
-pub fn serve<F>(
+// The four injected providers plus the three run-context values put this one over clippy's
+// arg-count altitude (as the `route` dispatch already is); the providers are the composition
+// root's concretions and belong at this seam, so the lint is allowed rather than the seam bundled.
+#[allow(clippy::too_many_arguments)]
+pub fn serve<F, G, H, I>(
     addr: SocketAddr,
     provider: F,
+    graph_provider: G,
+    calls_provider: I,
+    instances_provider: H,
     configured_max_retries: u32,
     run_branch: &str,
     base: &str,
 ) -> io::Result<()>
 where
-    F: Fn() -> Result<DashInputs, String>,
+    F: Fn(Option<&str>) -> Result<DashInputs, String>,
+    G: Fn(Option<&str>) -> Graph,
+    H: Fn() -> Vec<InstanceView>,
+    I: Fn(Option<&str>, &[String], Direction, i64, &str) -> CallGraph,
 {
     let listener = TcpListener::bind(addr)?;
+    serve_on(
+        listener,
+        provider,
+        graph_provider,
+        calls_provider,
+        instances_provider,
+        configured_max_retries,
+        run_branch,
+        base,
+    )
+}
+
+/// Serve the dash on an ALREADY-BOUND `listener` - the singleton-aware entrypoint (spec 50,
+/// criterion 1). `cmd_dash` binds the fixed address itself via [`bind_singleton`] (so the
+/// AddrInUse that decides the singleton short-circuit is seen BEFORE this accept loop), then
+/// hands the bound listener here. [`serve`] is the thin wrapper that binds `addr` and delegates,
+/// preserving its existing bind-internally contract for callers that pass an address.
+///
+/// Identical serving semantics to [`serve`]: one connection at a time over the same
+/// cadence-split providers, re-reading fresh projection inputs each request.
+///
+/// The ATTACH flow (spec 50, criterion 3) rides the SAME per-request providers: a request
+/// carrying `?instance=<id>` is served against THAT registered instance's stores (the
+/// providers open them read-only per request); an absent selector keeps serving the dash's own
+/// local project (backward compatible). The `instances_provider` reads the machine-global
+/// registry for the `/api/instances` landing list.
+#[allow(clippy::too_many_arguments)]
+pub fn serve_on<F, G, H, I>(
+    listener: TcpListener,
+    provider: F,
+    graph_provider: G,
+    calls_provider: I,
+    instances_provider: H,
+    configured_max_retries: u32,
+    run_branch: &str,
+    base: &str,
+) -> io::Result<()>
+where
+    F: Fn(Option<&str>) -> Result<DashInputs, String>,
+    G: Fn(Option<&str>) -> Graph,
+    H: Fn() -> Vec<InstanceView>,
+    I: Fn(Option<&str>, &[String], Direction, i64, &str) -> CallGraph,
+{
     let bound = listener.local_addr()?;
     eprintln!("rigger dash: serving on http://{bound}/ (read-only; Ctrl-C to stop)");
     for stream in listener.incoming() {
         match stream {
             Ok(s) => {
-                if let Err(e) = handle_conn(s, &provider, configured_max_retries, run_branch, base)
-                {
+                if let Err(e) = handle_conn(
+                    s,
+                    &provider,
+                    &graph_provider,
+                    &calls_provider,
+                    &instances_provider,
+                    configured_max_retries,
+                    run_branch,
+                    base,
+                ) {
                     eprintln!("rigger dash: connection error: {e}");
                 }
             }
@@ -2054,15 +3614,32 @@ where
 /// Read one request, route it, and write the response. Splits the store read from the
 /// pure [`route`] so a `provider` failure degrades only the `/api/*` paths (to `500`),
 /// never the static page.
-fn handle_conn<F>(
+///
+/// The graph is sourced by cadence (spec 45, criterion 1): every `/api/*` path reads the
+/// cheap run-scoped inputs from `provider`, but a `/api/graph` request additionally opens
+/// the whole-graph projection through `graph_provider` (consulted HERE and nowhere else),
+/// so the state poll never rides a whole-graph read.
+///
+/// Which STORE the run/graph providers read is chosen HERE from the request's `?instance=<id>`
+/// selector (spec 50, criterion 3): present, they open that registered instance's stores;
+/// absent, the dash's own local project. `/api/instances` is served from the separate
+/// `instances_provider` (the registry landing) and needs no store read at all.
+#[allow(clippy::too_many_arguments)]
+fn handle_conn<F, G, H, I>(
     stream: TcpStream,
     provider: &F,
+    graph_provider: &G,
+    calls_provider: &I,
+    instances_provider: &H,
     configured_max_retries: u32,
     run_branch: &str,
     base: &str,
 ) -> io::Result<()>
 where
-    F: Fn() -> Result<DashInputs, String>,
+    F: Fn(Option<&str>) -> Result<DashInputs, String>,
+    G: Fn(Option<&str>) -> Graph,
+    H: Fn() -> Vec<InstanceView>,
+    I: Fn(Option<&str>, &[String], Direction, i64, &str) -> CallGraph,
 {
     // Bound how long a slow or broken client can hold the single serving slot.
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
@@ -2086,21 +3663,68 @@ where
     let response = match parse_request_line(request_line.trim_end()) {
         None => Response::text(400, "bad request"),
         Some((method, target)) => {
-            let needs_data = method == "GET" && target.starts_with("/api/");
-            if needs_data {
-                match provider() {
-                    Ok((events, graph, progress, liveness)) => route(
-                        &method,
-                        &target,
-                        &events,
-                        &graph,
-                        &progress,
-                        &liveness,
-                        configured_max_retries,
-                        run_branch,
-                        base,
-                    ),
-                    Err(e) => Response::text(500, &format!("dash: reading the store failed: {e}")),
+            let path = target.split('?').next().unwrap_or(&target);
+            // The selected instance to ATTACH to (spec 50, criterion 3), decoded like a seed id
+            // (the id is opaque). Absent/empty means the dash's own local project. Threaded to the
+            // store providers so a per-request open lands on the right instance's stores.
+            let instance = query_param(&target, "instance").map(percent_decode);
+            let instance = instance.as_deref().filter(|s| !s.is_empty());
+            if method == "GET" && path == "/api/instances" {
+                // The LANDING list is a registry projection - no per-instance store read.
+                let instances = instances_provider();
+                route(
+                    &method,
+                    &target,
+                    &[],
+                    &Graph::default(),
+                    &[],
+                    &HashMap::new(),
+                    configured_max_retries,
+                    run_branch,
+                    base,
+                    &instances,
+                )
+            } else if method == "GET" && target.starts_with("/api/") {
+                // The DIRECTED-CALL views (spec 52 c4) dispatch to the store-side traversal through
+                // the SAME lazy provider - checked BEFORE the polled read so a `view=calls` request
+                // opens only the calls provider, never the whole-graph read. `calls_route` returns
+                // `None` for every other `/api/graph` request (and every non-graph path), so those
+                // fall through to the byte-identical neighborhood / overview / drill path below.
+                if let Some(resp) = (path == "/api/graph")
+                    .then(|| calls_route(instance, &target, calls_provider))
+                    .flatten()
+                {
+                    resp
+                } else {
+                    match provider(instance) {
+                        Ok((events, polled_graph, progress, liveness)) => {
+                            // The whole-graph views (only `/api/graph`) read the projection through
+                            // the SEPARATE lazy provider, opened HERE and never on the state poll;
+                            // every other `/api/*` path keeps the cheap run-seeded graph the polled
+                            // provider yields (spec 45, criterion 1). Both open the SELECTED
+                            // instance's store (spec 50, criterion 3).
+                            let graph = if path == "/api/graph" {
+                                graph_provider(instance)
+                            } else {
+                                polled_graph
+                            };
+                            route(
+                                &method,
+                                &target,
+                                &events,
+                                &graph,
+                                &progress,
+                                &liveness,
+                                configured_max_retries,
+                                run_branch,
+                                base,
+                                &[],
+                            )
+                        }
+                        Err(e) => {
+                            Response::text(500, &format!("dash: reading the store failed: {e}"))
+                        }
+                    }
                 }
             } else {
                 // The page, 404, and the 405 read-only guard need no projection input.
@@ -2114,6 +3738,7 @@ where
                     configured_max_retries,
                     run_branch,
                     base,
+                    &[],
                 )
             }
         }
@@ -2272,9 +3897,9 @@ mod supervised_lifecycle {
 mod tests {
     use super::*;
     use crate::contextgraph::{
-        Edge, Node, KIND_AGENT, KIND_CODE_ENTITY, KIND_DESIGN_DOC, KIND_FILE, KIND_RATIONALE,
-        KIND_UNIT, REL_DECIDED, REL_GOVERNS, REL_REFERENCES, TIER_AMBIGUOUS, TIER_EXTRACTED,
-        TIER_INFERRED,
+        Edge, Node, KIND_AGENT, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_DESIGN_DOC, KIND_FILE,
+        KIND_RATIONALE, KIND_UNIT, REL_CALLS, REL_DECIDED, REL_GOVERNS, REL_IN_COMMUNITY,
+        REL_REFERENCES, TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED,
     };
     use crate::eventstore::Event;
 
@@ -2305,6 +3930,129 @@ mod tests {
         ])
     }
 
+    fn local_instance(project: &str, root: &str, hb: u64) -> crate::registry::Instance {
+        crate::registry::Instance {
+            project: project.to_string(),
+            root: root.to_string(),
+            store: crate::registry::StoreIdentity::Local {
+                path: format!("{root}/.rigger/events.db"),
+            },
+            heartbeat_ms: hb,
+        }
+    }
+
+    /// The landing projection (spec 50 c3): registry entries become sorted, credential-free
+    /// [`InstanceView`] rows. Order is deterministic (by project then root) regardless of the
+    /// registry's filesystem order, the `id` round-trips the registry entry's stable id (so the
+    /// client can echo it back on `?instance=`), and a shared endpoint is carried VERBATIM from
+    /// the already-redacted registry - the view never re-derives a label from a raw connection.
+    #[test]
+    fn instance_views_project_a_sorted_credential_free_landing() {
+        let shared = crate::registry::Instance {
+            project: "alpha".to_string(),
+            root: "/home/dev/alpha".to_string(),
+            // Already redacted at registration - the view must carry exactly this, no credential.
+            store: crate::registry::StoreIdentity::Shared {
+                endpoint: "kurrentdb://db.example:2113".to_string(),
+            },
+            heartbeat_ms: 4_000,
+        };
+        // Registry order is unspecified; hand them in reverse of the expected sort.
+        let insts = vec![
+            local_instance("beta", "/home/dev/beta", 5_000),
+            shared.clone(),
+        ];
+        let views = instance_views(&insts, 9_000);
+
+        assert_eq!(
+            views.iter().map(|v| v.project.as_str()).collect::<Vec<_>>(),
+            vec!["alpha", "beta"],
+            "the landing is sorted by project, not by the registry's filesystem order"
+        );
+        let a = &views[0];
+        assert_eq!(
+            a.id,
+            shared.id(),
+            "the id round-trips the registry entry id"
+        );
+        assert_eq!(a.kind, "shared");
+        assert_eq!(
+            a.store, "kurrentdb://db.example:2113",
+            "the shared endpoint is carried verbatim from the redacted registry entry"
+        );
+        assert_eq!(a.age_secs, 5, "age is (now - heartbeat) in whole seconds");
+        let b = &views[1];
+        assert_eq!(b.kind, "local");
+        assert!(
+            b.store.ends_with("/.rigger/events.db"),
+            "a local instance labels with its sqlite path: {}",
+            b.store
+        );
+
+        // Not one field of the serialized landing carries a credential fragment.
+        let body = instances_json(&views);
+        for secret in ["password", "admin", "hunter2", "user:"] {
+            assert!(
+                !body.contains(secret),
+                "landing must be credential-free: {body}"
+            );
+        }
+    }
+
+    /// The landing's freshness clock never goes negative (spec 50 c3): under clock skew an instance's
+    /// heartbeat stamp can be AHEAD of the reader's `now`, and `age_secs` is a `saturating_sub`, so it
+    /// FLOORS at 0 (the "live" sentinel the page renders) rather than underflowing. The sorted-landing
+    /// test only exercises PAST heartbeats; this pins the future-heartbeat edge.
+    #[test]
+    fn instance_view_age_floors_at_zero_for_a_future_heartbeat() {
+        // heartbeat_ms strictly AFTER now (now=1_000ms, heartbeat=9_000ms - 8s in the future).
+        let insts = vec![local_instance("alpha", "/home/dev/alpha", 9_000)];
+        let views = instance_views(&insts, 1_000);
+        assert_eq!(
+            views[0].age_secs, 0,
+            "a future heartbeat floors age at 0 (saturating_sub), never an underflow"
+        );
+    }
+
+    /// `/api/instances` (spec 50 c3): the landing route renders the supplied instance list as a
+    /// JSON array the page reads to populate its instance picker. It is a GET-only read like every
+    /// other `/api/*` path, and needs no run/graph inputs (they are empty here) - the landing is a
+    /// registry projection, independent of any single instance's store.
+    #[test]
+    fn api_instances_route_renders_the_landing_list() {
+        let views = instance_views(
+            &[
+                local_instance("alpha", "/home/dev/alpha", 1_000),
+                local_instance("beta", "/home/dev/beta", 1_000),
+            ],
+            1_000,
+        );
+        let r = route(
+            "GET",
+            "/api/instances",
+            &[],
+            &Graph::default(),
+            &[],
+            &HashMap::new(),
+            3,
+            "rigger-run",
+            "origin/main",
+            &views,
+        );
+        assert_eq!(r.status, 200);
+        assert_eq!(r.content_type, "application/json");
+        let body = String::from_utf8(r.body).unwrap();
+        assert!(body.contains("\"instances\""), "wraps the list: {body}");
+        assert!(
+            body.contains("alpha") && body.contains("beta"),
+            "lists every registered instance: {body}"
+        );
+        assert!(
+            body.contains(&views[0].id),
+            "carries the attach selector id: {body}"
+        );
+    }
+
     #[test]
     fn root_serves_the_embedded_page_with_the_placeholder_resolved() {
         let r = route(
@@ -2317,6 +4065,7 @@ mod tests {
             3,
             "rigger-run",
             "origin/main",
+            &[],
         );
         assert_eq!(r.status, 200);
         assert_eq!(r.content_type, "text/html; charset=utf-8");
@@ -2436,6 +4185,223 @@ mod tests {
         drop(held);
     }
 
+    /// Spec 50, criterion 1 (fixed address, no free-port search): `bind_singleton` binds the
+    /// EXACT requested address when it is free, and NEVER drifts to another port when the port
+    /// is held by an UNRELATED (non-dash) process - that is a genuine conflict surfaced as an
+    /// `AddrInUse` error, the deliberate opposite of `free_port_from`'s search-upward behavior.
+    #[test]
+    fn bind_singleton_binds_the_exact_port_and_never_searches() {
+        // A free ephemeral port (learn it, release it): `bind_singleton` returns `Bound` on
+        // exactly that address, never a drifted one.
+        let free = TcpListener::bind(("127.0.0.1", 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let addr = SocketAddr::from(([127, 0, 0, 1], free));
+        match bind_singleton(addr) {
+            Ok(SingletonBind::Bound(listener)) => assert_eq!(
+                listener.local_addr().unwrap().port(),
+                free,
+                "bind_singleton must bind the EXACT requested port, never drift to another"
+            ),
+            other => panic!("a free port must yield Bound on that exact port, got {other:?}"),
+        }
+
+        // A port HELD by an unrelated listener that never emits the dash header: a genuine
+        // conflict -> AddrInUse, never a silent drift and never a false AlreadyServing.
+        let held = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let held_addr = SocketAddr::from(([127, 0, 0, 1], held.local_addr().unwrap().port()));
+        match bind_singleton(held_addr) {
+            Err(e) => assert_eq!(
+                e.kind(),
+                io::ErrorKind::AddrInUse,
+                "a non-dash holder is a genuine conflict surfaced as AddrInUse, got {e:?}"
+            ),
+            Ok(other) => panic!("a non-dash holder must be a genuine conflict, not {other:?}"),
+        }
+        drop(held);
+    }
+
+    /// Spec 50, criterion 1 (singleton): when a rigger dash is ALREADY serving the address,
+    /// `bind_singleton` short-circuits to `AlreadyServing(addr)` - recognizing it by the
+    /// [`DASH_HEADER`] response header - instead of binding a second port. This is the behavior
+    /// a second `rigger dash` invocation relies on to report the existing address and exit clean.
+    /// Serialized with the other real-serving dash tests (the spec-44 discipline): this test
+    /// brings a REAL dash up and polls it ready, and under a fully parallel suite the readiness
+    /// window flakes on load - one dash-serving test at a time keeps the probe deterministic.
+    #[test]
+    #[serial_test::serial(dash_default_port)]
+    fn bind_singleton_short_circuits_on_an_already_serving_rigger_dash() {
+        use std::time::Instant;
+
+        // Bring a REAL dash up on an ephemeral port and wait until it answers as a dash.
+        let port = TcpListener::bind(("127.0.0.1", 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let addr = SocketAddr::from(([127, 0, 0, 1], port));
+        let provider = |_instance: Option<&str>| -> Result<DashInputs, String> {
+            Ok((Vec::new(), Graph::default(), Vec::new(), HashMap::new()))
+        };
+        let graph_provider = |_instance: Option<&str>| Graph::default();
+        let instances_provider = Vec::new;
+        let calls_provider =
+            |_: Option<&str>, _: &[String], _: crate::contextgraph::Direction, _: i64, _: &str| {
+                crate::contextgraph::CallGraph::default()
+            };
+        std::thread::spawn(move || {
+            let _ = serve(
+                addr,
+                provider,
+                graph_provider,
+                calls_provider,
+                instances_provider,
+                3,
+                "rigger-run",
+                "origin/main",
+            );
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !dash_serving_on(port) {
+            assert!(
+                Instant::now() < deadline,
+                "the dash never came up on port {port} within the deadline"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        // The port is now held by a genuine rigger dash: bind_singleton must NOT bind a second
+        // one - it reports the existing address.
+        match bind_singleton(addr) {
+            Ok(SingletonBind::AlreadyServing(reported)) => assert_eq!(
+                reported, addr,
+                "the reported address must be the fixed address the singleton already serves"
+            ),
+            other => {
+                panic!("an already-serving rigger dash must short-circuit to AlreadyServing, got {other:?}")
+            }
+        }
+    }
+
+    /// Spec 50, criterion 1: `dash_serving_on` recognizes ONLY a rigger dash (by its
+    /// [`DASH_HEADER`]). A raw listener that answers WITHOUT that header is not mistaken for a
+    /// dash, so a genuine conflict with an unrelated process is never swallowed as a false
+    /// singleton short-circuit.
+    #[test]
+    fn dash_serving_on_is_false_for_a_non_dash_listener() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for mut s in listener.incoming().flatten() {
+                // A well-formed HTTP reply that carries NO dash header - any unrelated
+                // process holding the port.
+                let _ = s.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi",
+                );
+            }
+        });
+        assert!(
+            !dash_serving_on(port),
+            "a non-dash listener must not be recognized as a rigger dash"
+        );
+    }
+
+    /// Spec 50, criterion 1 + spec 19c (a hang always surfaces loud, never a stall): `dash_serving_on`
+    /// must be bounded in WALL CLOCK against a holder that DRIBBLES bytes - one byte slower than any
+    /// per-read timeout while NEVER sending a newline. A probe that bounds only each `read()` (so every
+    /// byte resets the timeout) and caps only LINES would spin forever here: `read_line` never returns
+    /// (no `\n`) so the line cap never fires. The probe carries an OVERALL deadline and a total-byte
+    /// cap, so it returns `false` within a hard bound. The probe runs on a worker thread guarded by a
+    /// `recv_timeout`, so a regression to the unbounded loop fails LOUD (the recv times out) instead of
+    /// hanging the whole suite.
+    #[test]
+    fn dash_serving_on_is_bounded_against_a_byte_dribbling_holder() {
+        use std::sync::mpsc;
+        use std::time::Instant;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for mut s in listener.incoming().flatten() {
+                // A plausible status-line start, then an endless newline-less dribble: one byte
+                // every 100ms, faster than any single per-read timeout expires but never a `\n`.
+                if s.write_all(b"HTTP/1.1 200 OK\r\nX-Filler: ").is_err() {
+                    continue;
+                }
+                let _ = s.flush();
+                loop {
+                    if s.write_all(b"a").is_err() || s.flush().is_err() {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+        });
+
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let start = Instant::now();
+            let served = dash_serving_on(port);
+            let _ = tx.send((served, start.elapsed()));
+        });
+        match rx.recv_timeout(Duration::from_secs(2)) {
+            Ok((served, elapsed)) => {
+                assert!(
+                    !served,
+                    "a dribbling non-dash holder must never be recognized as a rigger dash"
+                );
+                assert!(
+                    elapsed < Duration::from_secs(2),
+                    "dash_serving_on must be bounded against a dribbler; it took {elapsed:?}"
+                );
+            }
+            Err(_) => panic!(
+                "dash_serving_on HUNG against a byte-dribbling holder - it never returned within 2s \
+                 (the per-read-only timeout never bounds a newline-less dribble)"
+            ),
+        }
+    }
+
+    /// Spec 50, criterion 1 (cold-race loser): when two dashes bind the fixed address at once, the
+    /// winner binds and the LOSER hits `AddrInUse`. Even when the loser probes during the winner's
+    /// bind-THEN-accept window (the port is bound but the winner has not entered its accept loop yet),
+    /// the probe's read budget spans that short window, so the loser resolves to a clean
+    /// `AlreadyServing` - never the loud `AddrInUse` a genuine unrelated-process conflict raises.
+    #[test]
+    fn bind_singleton_cold_race_loser_resolves_across_the_accept_window() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let addr = SocketAddr::from(([127, 0, 0, 1], port));
+        // WINNER: holds the fixed port but only begins accepting/answering after a short delay -
+        // the bind-then-accept window a just-bound dash has before its serve loop runs. It then
+        // answers as a real dash would, carrying the DASH_HEADER marker.
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            for mut s in listener.incoming().flatten() {
+                let _ = s.write_all(
+                    format!("HTTP/1.1 200 OK\r\n{DASH_HEADER}: probe\r\nConnection: close\r\n\r\n")
+                        .as_bytes(),
+                );
+            }
+        });
+        // LOSER: bind_singleton hits AddrInUse (the winner holds the port) and probes. The probe's
+        // read budget (well over the 100ms window) sees the header once the winner starts serving,
+        // so the loser resolves cleanly rather than surfacing a spurious AddrInUse.
+        match bind_singleton(addr) {
+            Ok(SingletonBind::AlreadyServing(reported)) => assert_eq!(
+                reported, addr,
+                "a cold-race loser must resolve to the exact address the winner already serves"
+            ),
+            other => panic!(
+                "a cold-race loser probing inside the winner's accept window must be AlreadyServing, \
+                 not {other:?}"
+            ),
+        }
+    }
+
     /// Spec 19b c2 (responsive redesign): the page BODY must never scroll horizontally at
     /// narrow OR wide widths, and the decision history must wrap long text instead of pushing
     /// the body wide. Visual responsiveness is outside the gate set (rule 4), so this is a
@@ -2479,6 +4445,54 @@ mod tests {
         assert!(
             page.contains("overflow-wrap: anywhere"),
             "decision/finding text must wrap (overflow-wrap: anywhere), not scroll horizontally"
+        );
+    }
+
+    /// Spec 50 c3, the LANDING VIEW's operator-facing WIRING - the criterion-3 deliverable the
+    /// backend endpoint/resolver only ENABLE. The done-when is "the dash's landing view LISTS
+    /// registered instances, and SELECTING one serves THAT instance's run and graph views," so the
+    /// served page must actually CONSUME the registry: fetch GET `/api/instances`, render the list,
+    /// and thread the selected `?instance=<id>` into its store-reading polls. The cli wire-contract
+    /// test pins the JSON the endpoint SHIPS; this pins that the page is not left un-wired (the exact
+    /// regression that shipped criterion 3 with a complete backend but a dead-ended UI). Structural
+    /// string-pins on the live page's JS, mirroring the sibling one-screen/layout page tests.
+    #[test]
+    fn the_landing_view_lists_instances_and_threads_the_attach_selector() {
+        let page = live_page();
+
+        // The page FETCHES the landing list from the registry projection, and renders it into a
+        // container, tracking which instance is selected.
+        assert!(
+            page.contains("fetch(\"/api/instances\""),
+            "the page must fetch the landing list from /api/instances"
+        );
+        assert!(
+            page.contains("id=\"instances\"") && page.contains("selectedInstance"),
+            "the page must render the instances list into a container and track the selection"
+        );
+        assert!(
+            page.contains("function renderInstances") && page.contains("data-instance"),
+            "the page must render selectable instance rows (data-instance carries the attach id)"
+        );
+
+        // It THREADS the selected instance into the STORE-READING polls via the apiUrl helper (which
+        // appends `instance=<id>`), so selecting an instance switches the run and graph views to it.
+        assert!(
+            page.contains("function apiUrl") && page.contains("instance=\" + encodeURIComponent"),
+            "the page must thread ?instance=<id> onto its store-reading API calls"
+        );
+        assert!(
+            page.contains("apiUrl(\"/api/state\")")
+                && page.contains("apiUrl(\"/api/events")
+                && page.contains("apiUrl(\"/api/graph"),
+            "each store-reading poll (state/events/graph) must go through apiUrl (attach-threaded)"
+        );
+
+        // The registry landing itself is NEVER threaded - it lists every instance regardless of the
+        // current selection (a threaded /api/instances would only ever show the attached one).
+        assert!(
+            !page.contains("apiUrl(\"/api/instances"),
+            "the /api/instances landing list must not be threaded with the attach selector"
         );
     }
 
@@ -2692,6 +4706,7 @@ mod tests {
             3,
             "rigger-run",
             "origin/main",
+            &[],
         );
         assert_eq!(r.status, 200);
         assert_eq!(r.content_type, "application/json");
@@ -3037,6 +5052,7 @@ mod tests {
                     3,
                     "rigger-run",
                     "origin/main",
+                    &[],
                 );
                 assert_eq!(
                     r.status, 405,
@@ -3058,6 +5074,7 @@ mod tests {
             3,
             "rigger-run",
             "origin/main",
+            &[],
         );
         assert_eq!(r.status, 404);
     }
@@ -3303,7 +5320,7 @@ mod tests {
             ],
         };
 
-        let overview = clustered_overview(&graph);
+        let overview = clustered_overview(&graph, &Lens::Files);
 
         // `total` is the FULL node count, independent of the cluster count.
         assert_eq!(overview.total, 7, "total carries every node in the graph");
@@ -3317,16 +5334,19 @@ mod tests {
                     key: "decision".to_string(),
                     count: 2,
                     kind: KIND_DECISION.to_string(),
+                    label: None,
                 },
                 Cluster {
                     key: "docs".to_string(),
                     count: 3,
                     kind: KIND_DESIGN_DOC.to_string(),
+                    label: None,
                 },
                 Cluster {
                     key: "src".to_string(),
                     count: 2,
                     kind: KIND_CODE_ENTITY.to_string(),
+                    label: None,
                 },
             ],
             "each cluster_key bucket folds to a counted, dominant-kind Cluster; the src tie resolves to the smallest kind"
@@ -3433,7 +5453,7 @@ mod tests {
         let g = Graph { nodes, edges };
 
         // --- OVER-BUDGET DRILL: `src/big` (b+2 members, capped to b) ---
-        let big = cluster_detail(&g, "src/big");
+        let big = cluster_detail(&g, "src/big", &Lens::Files);
         assert_eq!(
             big.seed, "src/big",
             "the drill echoes the drilled cluster key as its seed"
@@ -3501,7 +5521,7 @@ mod tests {
         assert!(!spoke_view.god);
 
         // --- UNDER-BUDGET DRILL: `src/small` (7 members, whole) ---
-        let small = cluster_detail(&g, "src/small");
+        let small = cluster_detail(&g, "src/small", &Lens::Files);
         assert_eq!(
             small.truncated, None,
             "an at/under-budget cluster renders WHOLE - truncated omitted"
@@ -3539,7 +5559,7 @@ mod tests {
         );
 
         // --- DEV-LOOP KIND DRILL: `decision` (folds by kind) ---
-        let decisions = cluster_detail(&g, KIND_DECISION);
+        let decisions = cluster_detail(&g, KIND_DECISION, &Lens::Files);
         assert_eq!(decisions.truncated, None);
         let dec_ids: std::collections::BTreeSet<&str> =
             decisions.nodes.iter().map(|n| n.id.as_str()).collect();
@@ -3550,8 +5570,459 @@ mod tests {
         );
 
         // --- GRACEFUL: an unknown cluster key drills to an empty result, never a panic ---
-        let empty = cluster_detail(&g, "no/such/module");
+        let empty = cluster_detail(&g, "no/such/module", &Lens::Files);
         assert!(empty.nodes.is_empty() && empty.edges.is_empty() && empty.truncated.is_none());
+    }
+
+    /// Spec 53 c4 - the CODE LENS VIEW: with `lens=code` the SAME overview/drill folds bucket every
+    /// node carrying a live `IN_COMMUNITY` membership by its coupling COMMUNITY (a subsystem grouped
+    /// ACROSS directory lines), sizing the community super-node by member count, colouring it by its
+    /// dominant member kind, and labelling it with the community node's deterministic `label`;
+    /// currently-valid coupling edges that cross two communities weight a symmetric cross-edge (an
+    /// intra-community edge and the membership spokes to the excluded super-node add none); a
+    /// membership-LESS node keeps its KIND bucket (so the view stays whole-graph); a community drills
+    /// to exactly its members; a resolution grain with NO derived assignments returns the documented
+    /// empty state (never an error); and `Lens::Files` is byte-identical to the spec-42 directory/kind
+    /// fold (no `label`, no `empty_state`). This test OWNS the lens plumbing; it does not own detection
+    /// (c1), the grain/supersession (c2), or the fold recording (c3).
+    #[test]
+    fn code_lens_buckets_members_by_community_keeps_kind_buckets_and_reports_underived_grain() {
+        let ce = |id: &str| Node {
+            id: id.to_string(),
+            kind: KIND_CODE_ENTITY.to_string(),
+            attrs: BTreeMap::new(),
+        };
+        let community = |id: &str, label: &str| Node {
+            id: id.to_string(),
+            kind: KIND_COMMUNITY.to_string(),
+            attrs: BTreeMap::from([("label".to_string(), label.to_string())]),
+        };
+        let plain = |id: &str, kind: &str| Node {
+            id: id.to_string(),
+            kind: kind.to_string(),
+            attrs: BTreeMap::new(),
+        };
+        let edge = |from: &str, to: &str, rel: &str, tier: &str| Edge {
+            from: from.to_string(),
+            to: to.to_string(),
+            rel: rel.to_string(),
+            valid_from: 0,
+            valid_to: None,
+            source: 0,
+            tier: tier.to_string(),
+        };
+
+        // Two coupling communities, each a pair of code entities in DIFFERENT directories that call
+        // each other (proving the grouping crosses directory lines - the whole point of the code
+        // lens): community/1/0 = {foo, bar}, community/1/1 = {baz, qux}. Plus the two derived
+        // KIND_COMMUNITY super-nodes (each with a deterministic label attr) and two membership-LESS
+        // nodes (a decision and a design-doc) that must keep their KIND buckets under the code lens.
+        let foo = "src/one/a.rs::foo";
+        let bar = "src/two/b.rs::bar";
+        let baz = "src/three/c.rs::baz";
+        let qux = "src/four/d.rs::qux";
+        let graph = Graph {
+            nodes: vec![
+                ce(foo),
+                ce(bar),
+                ce(baz),
+                ce(qux),
+                community("community/1/0", "foo"),
+                community("community/1/1", "baz"),
+                plain("d1", KIND_DECISION),
+                plain("docs/x.md", KIND_DESIGN_DOC),
+            ],
+            edges: vec![
+                // Live memberships at grain 1 (the fold's IN_COMMUNITY spokes).
+                edge(foo, "community/1/0", REL_IN_COMMUNITY, TIER_INFERRED),
+                edge(bar, "community/1/0", REL_IN_COMMUNITY, TIER_INFERRED),
+                edge(baz, "community/1/1", REL_IN_COMMUNITY, TIER_INFERRED),
+                edge(qux, "community/1/1", REL_IN_COMMUNITY, TIER_INFERRED),
+                // Intra-community coupling (adds NO cross-community weight).
+                edge(foo, bar, REL_CALLS, TIER_EXTRACTED),
+                edge(baz, qux, REL_CALLS, TIER_EXTRACTED),
+                // Cross-community coupling, twice -> one symmetric weight-2 cross edge.
+                edge(foo, baz, REL_CALLS, TIER_EXTRACTED),
+                edge(bar, qux, REL_CALLS, TIER_EXTRACTED),
+            ],
+        };
+
+        // --- CODE LENS OVERVIEW at the default grain (resolution "1") ---
+        let code = Lens::Code {
+            resolution: DEFAULT_COMMUNITY_RESOLUTION.to_string(),
+        };
+        let overview = clustered_overview(&graph, &code);
+        assert_eq!(
+            overview.total, 8,
+            "total carries every graph node, community super-nodes included"
+        );
+        assert_eq!(
+            overview.empty_state, None,
+            "a derived grain is not the empty state"
+        );
+        assert_eq!(
+            overview.clusters,
+            vec![
+                // Each community super-node: sized by MEMBER count (2), coloured by dominant member
+                // kind, labelled by its community node's deterministic `label`. The excluded
+                // KIND_COMMUNITY node never inflates the count or the dominant kind.
+                Cluster {
+                    key: "community/1/0".to_string(),
+                    count: 2,
+                    kind: KIND_CODE_ENTITY.to_string(),
+                    label: Some("foo".to_string()),
+                },
+                Cluster {
+                    key: "community/1/1".to_string(),
+                    count: 2,
+                    kind: KIND_CODE_ENTITY.to_string(),
+                    label: Some("baz".to_string()),
+                },
+                // Membership-less nodes KEEP their KIND buckets (not their directory buckets), so the
+                // code lens stays whole-graph.
+                Cluster {
+                    key: KIND_DECISION.to_string(),
+                    count: 1,
+                    kind: KIND_DECISION.to_string(),
+                    label: None,
+                },
+                Cluster {
+                    key: KIND_DESIGN_DOC.to_string(),
+                    count: 1,
+                    kind: KIND_DESIGN_DOC.to_string(),
+                    label: None,
+                },
+            ],
+            "code lens buckets members by community (sized, dominant-kind, labelled) and keeps kind buckets for membership-less nodes"
+        );
+        assert_eq!(
+            overview.edges,
+            vec![ClusterEdge {
+                from: "community/1/0".to_string(),
+                to: "community/1/1".to_string(),
+                weight: 2,
+            }],
+            "only cross-community coupling edges weight the super-edge; intra-community edges and the membership spokes to the excluded super-node add none"
+        );
+
+        // --- CODE LENS DRILL: a community drills to exactly its members (the excluded super-node is
+        // not a member; the membership spokes are not intra-community edges) ---
+        let drill = cluster_detail(&graph, "community/1/0", &code);
+        assert_eq!(
+            drill.seed, "community/1/0",
+            "the drill echoes the community key"
+        );
+        assert_eq!(drill.truncated, None);
+        let members: std::collections::BTreeSet<&str> =
+            drill.nodes.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(
+            members,
+            [foo, bar].into_iter().collect(),
+            "the community drills to exactly its member code entities: {drill:?}"
+        );
+        assert_eq!(
+            drill.edges.len(),
+            1,
+            "only the intra-community coupling edge (foo->bar) renders; the membership spoke and the cross-community edge do not"
+        );
+        assert!(
+            drill.edges.iter().all(|e| e.rel == REL_CALLS
+                && members.contains(e.from.as_str())
+                && members.contains(e.to.as_str())),
+            "every drill edge is intra-community coupling: {drill:?}"
+        );
+
+        // --- UNDERIVED GRAIN: resolution "2" has no assignments -> the documented empty state ---
+        let underived = clustered_overview(
+            &graph,
+            &Lens::Code {
+                resolution: "2".to_string(),
+            },
+        );
+        assert!(
+            underived.clusters.is_empty() && underived.edges.is_empty(),
+            "an underived grain folds no communities: {underived:?}"
+        );
+        assert_eq!(
+            underived.empty_state.as_deref(),
+            Some(CODE_LENS_UNDERIVED),
+            "an underived grain carries the documented empty-state message, never an error"
+        );
+
+        // --- LENS=FILES is byte-identical to the spec-42 directory/kind fold (no label, no
+        // empty_state); a membership-less node buckets by its DIRECTORY here, not its kind ---
+        let files = clustered_overview(&graph, &Lens::Files);
+        assert_eq!(files.total, 8);
+        assert_eq!(files.empty_state, None, "files lens carries no empty state");
+        assert!(
+            files.clusters.iter().all(|c| c.label.is_none()),
+            "the files fold attaches no community label"
+        );
+        let file_keys: Vec<&str> = files.clusters.iter().map(|c| c.key.as_str()).collect();
+        assert_eq!(
+            file_keys,
+            vec![
+                KIND_COMMUNITY,
+                KIND_DECISION,
+                "docs",
+                "src/four",
+                "src/one",
+                "src/three",
+                "src/two",
+            ],
+            "the files lens folds by directory/kind (the community nodes bucket by their kind, the design-doc by its directory): {files:?}"
+        );
+
+        // The lens-selector parser: `lens=code` (default grain when resolution absent), an explicit
+        // grain, and any other/absent lens value -> the byte-identical Files default.
+        assert_eq!(
+            Lens::from_query(Some("code"), None),
+            Lens::Code {
+                resolution: DEFAULT_COMMUNITY_RESOLUTION.to_string()
+            }
+        );
+        assert_eq!(
+            Lens::from_query(Some("code"), Some("1.5")),
+            Lens::Code {
+                resolution: "1.5".to_string()
+            }
+        );
+        assert_eq!(Lens::from_query(None, None), Lens::Files);
+        assert_eq!(Lens::from_query(Some("files"), None), Lens::Files);
+        assert_eq!(Lens::from_query(Some("bogus"), Some("9")), Lens::Files);
+    }
+
+    /// The CONCEPTS LENS VIEW (spec 54 c3): `lens=concepts` buckets every `REALIZES`-carrying node by
+    /// its intent CONCEPT through the SAME overview/drill folds - the idea the docs and code realize,
+    /// grouped across directory lines. A node realizing MORE THAN ONE concept folds under its PRIMARY
+    /// (the largest concept by member count, ties by lexicographically-smallest id) and is flagged
+    /// `shared` - counted once, never silently duplicated; a membership-less node keeps its KIND
+    /// bucket (so the view stays whole-graph); the `KIND_CONCEPT` super-node is a bucket, not a
+    /// member, so it is excluded; an underived grain carries the documented empty state; and the files
+    /// lens stays byte-identical. This is the criterion-3 fold behaviour driven inside-out.
+    #[test]
+    fn concepts_lens_buckets_members_by_concept_with_primary_shared_and_empty_state() {
+        let ce = |id: &str| Node {
+            id: id.to_string(),
+            kind: KIND_CODE_ENTITY.to_string(),
+            attrs: BTreeMap::new(),
+        };
+        let doc = |id: &str| Node {
+            id: id.to_string(),
+            kind: KIND_DESIGN_DOC.to_string(),
+            attrs: BTreeMap::new(),
+        };
+        let concept = |id: &str, label: &str| Node {
+            id: id.to_string(),
+            kind: KIND_CONCEPT.to_string(),
+            attrs: BTreeMap::from([("label".to_string(), label.to_string())]),
+        };
+        let plain = |id: &str, kind: &str| Node {
+            id: id.to_string(),
+            kind: kind.to_string(),
+            attrs: BTreeMap::new(),
+        };
+        let edge = |from: &str, to: &str, rel: &str, tier: &str| Edge {
+            from: from.to_string(),
+            to: to.to_string(),
+            rel: rel.to_string(),
+            valid_from: 0,
+            valid_to: None,
+            source: 0,
+            tier: tier.to_string(),
+        };
+
+        // Two derived concepts, each grouping a DOC with the CODE it governs across directory lines
+        // (the whole point of the lens): concept/1/0 "the graph" = {docs/kg.md, graph::build,
+        // store::append} (size 3, the LARGER); concept/1/1 "the review" = {docs/review.md, graph::build}
+        // (size 2, the SMALLER). `graph::build` REALIZES BOTH - a SHARED member whose PRIMARY is the
+        // larger concept/1/0 (by size, not the tie-break). Plus the two KIND_CONCEPT super-nodes (each
+        // labelled) and TWO membership-less nodes (an unattached code entity + a decision) that keep
+        // their KIND buckets. One cross-concept doc reference weights the super-edge; one intra-concept
+        // GOVERNS edge adds none.
+        let kg = "docs/kg.md";
+        let review = "docs/review.md";
+        let build = "src/graph/index.rs::build";
+        let append = "src/store/log.rs::append";
+        let helper = "src/util/misc.rs::helper";
+        let graph = Graph {
+            nodes: vec![
+                doc(kg),
+                doc(review),
+                ce(build),
+                ce(append),
+                ce(helper),
+                concept("concept/1/0", "the graph"),
+                concept("concept/1/1", "the review"),
+                plain("d1", KIND_DECISION),
+            ],
+            edges: vec![
+                // Live REALIZES memberships at grain 1 (member --REALIZES--> concept).
+                edge(kg, "concept/1/0", REL_REALIZES, TIER_INFERRED),
+                edge(build, "concept/1/0", REL_REALIZES, TIER_INFERRED),
+                edge(append, "concept/1/0", REL_REALIZES, TIER_INFERRED),
+                edge(review, "concept/1/1", REL_REALIZES, TIER_INFERRED),
+                // The SHARED member: build also realizes the smaller concept/1/1.
+                edge(build, "concept/1/1", REL_REALIZES, TIER_INFERRED),
+                // One CROSS-concept doc reference (kg in c0, review in c1) -> one weight-1 super-edge.
+                edge(kg, review, REL_REFERENCES, TIER_INFERRED),
+                // One INTRA-concept edge (kg and append both in c0) -> adds NO cross weight.
+                edge(kg, append, REL_GOVERNS, TIER_INFERRED),
+            ],
+        };
+
+        let concepts = Lens::Concepts {
+            resolution: DEFAULT_CONCEPT_RESOLUTION.to_string(),
+        };
+
+        // --- OVERVIEW: buckets by concept, shared member counted ONCE under its primary ---
+        let overview = clustered_overview(&graph, &concepts);
+        assert_eq!(
+            overview.total, 8,
+            "total carries every graph node, the excluded concept super-nodes included"
+        );
+        assert_eq!(
+            overview.empty_state, None,
+            "a derived grain is not the empty state"
+        );
+        assert_eq!(
+            overview.clusters,
+            vec![
+                // The unattached code entity keeps its KIND bucket (not its directory).
+                Cluster {
+                    key: KIND_CODE_ENTITY.to_string(),
+                    count: 1,
+                    kind: KIND_CODE_ENTITY.to_string(),
+                    label: None,
+                },
+                // concept/1/0 (the larger): {kg.md, build, append} = 3 members, dominant kind
+                // code-entity (build + append), labelled by the concept node's label.
+                Cluster {
+                    key: "concept/1/0".to_string(),
+                    count: 3,
+                    kind: KIND_CODE_ENTITY.to_string(),
+                    label: Some("the graph".to_string()),
+                },
+                // concept/1/1 (the smaller): the SHARED build folds under its primary c0, so c1 counts
+                // ONLY its sole non-shared member docs/review.md.
+                Cluster {
+                    key: "concept/1/1".to_string(),
+                    count: 1,
+                    kind: KIND_DESIGN_DOC.to_string(),
+                    label: Some("the review".to_string()),
+                },
+                // The membership-less decision keeps its KIND bucket.
+                Cluster {
+                    key: KIND_DECISION.to_string(),
+                    count: 1,
+                    kind: KIND_DECISION.to_string(),
+                    label: None,
+                },
+            ],
+            "concepts lens folds members by concept (primary bucket, shared counted once), keeps kind buckets for the unattached nodes, and labels each concept: {overview:?}"
+        );
+        assert_eq!(
+            overview.edges,
+            vec![ClusterEdge {
+                from: "concept/1/0".to_string(),
+                to: "concept/1/1".to_string(),
+                weight: 1,
+            }],
+            "only the cross-concept doc reference weights the super-edge; the intra-concept edge and the REALIZES spokes to the excluded super-node add none: {overview:?}"
+        );
+
+        // --- DRILL c0: exactly its primary members, the SHARED member flagged ---
+        let drill0 = cluster_detail(&graph, "concept/1/0", &concepts);
+        assert_eq!(
+            drill0.seed, "concept/1/0",
+            "the drill echoes the concept key"
+        );
+        let members0: BTreeMap<&str, bool> = drill0
+            .nodes
+            .iter()
+            .map(|n| (n.id.as_str(), n.shared))
+            .collect();
+        assert_eq!(
+            members0,
+            BTreeMap::from([(kg, false), (build, true), (append, false)]),
+            "concept/1/0 drills to exactly {{kg, build, append}}; the multi-concept build carries shared=true, the single-concept members shared=false: {drill0:?}"
+        );
+        assert_eq!(
+            drill0.edges.len(),
+            1,
+            "only the intra-concept kg->append edge renders; the REALIZES spokes and the cross-concept reference do not: {drill0:?}"
+        );
+
+        // --- DRILL c1: the shared build appears ONCE (under its primary c0), never here ---
+        let drill1 = cluster_detail(&graph, "concept/1/1", &concepts);
+        let members1: BTreeSet<&str> = drill1.nodes.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(
+            members1,
+            [review].into_iter().collect::<BTreeSet<&str>>(),
+            "concept/1/1 drills to ONLY its non-shared member docs/review.md; the shared build appears once, under its primary c0: {drill1:?}"
+        );
+        assert!(
+            drill1.nodes.iter().all(|n| !n.shared),
+            "review realizes only one concept, so it is not shared: {drill1:?}"
+        );
+
+        // --- UNDERIVED grain: resolution 2 has no assignments -> the documented empty state ---
+        let underived = clustered_overview(
+            &graph,
+            &Lens::Concepts {
+                resolution: "2".to_string(),
+            },
+        );
+        assert!(
+            underived.clusters.is_empty() && underived.edges.is_empty(),
+            "an underived concepts grain folds no concepts: {underived:?}"
+        );
+        assert_eq!(
+            underived.total, 8,
+            "the empty state still reports the whole graph size"
+        );
+        assert_eq!(
+            underived.empty_state.as_deref(),
+            Some(CONCEPTS_LENS_UNDERIVED),
+            "an underived concepts grain carries the documented empty-state message, never an error"
+        );
+
+        // --- FILES lens byte-identical: no label, no empty_state, membership-less code buckets by
+        // its DIRECTORY (not its kind), the concept super-nodes bucket by their kind ---
+        let files = clustered_overview(&graph, &Lens::Files);
+        assert_eq!(files.total, 8);
+        assert_eq!(files.empty_state, None, "files lens carries no empty state");
+        assert!(
+            files.clusters.iter().all(|c| c.label.is_none()),
+            "the files fold attaches no concept label: {files:?}"
+        );
+        assert!(
+            files.clusters.iter().any(|c| c.key == "src/graph"),
+            "under the files lens graph::build buckets by its directory src/graph, not by concept: {files:?}"
+        );
+
+        // --- THE PUBLIC SELECTOR: lens=concepts is a total, infallible parse ---
+        assert_eq!(
+            Lens::from_query(Some("concepts"), None),
+            Lens::Concepts {
+                resolution: DEFAULT_CONCEPT_RESOLUTION.to_string()
+            },
+            "lens=concepts with no resolution selects the default concept grain"
+        );
+        assert_eq!(
+            Lens::from_query(Some("concepts"), Some("")),
+            Lens::Concepts {
+                resolution: DEFAULT_CONCEPT_RESOLUTION.to_string()
+            },
+            "an empty resolution still defaults to the default concept grain"
+        );
+        assert_eq!(
+            Lens::from_query(Some("concepts"), Some("1.5")),
+            Lens::Concepts {
+                resolution: "1.5".to_string()
+            },
+            "an explicit resolution grain is honoured verbatim"
+        );
     }
 
     /// A small tier-tagged fixture graph: a chain seed `a` -[extracted]- `b` -[inferred]- `c`
@@ -3607,6 +6078,7 @@ mod tests {
             3,
             "rigger-run",
             "origin/main",
+            &[],
         );
         assert_eq!(r.status, 200, "the KG route answers 200");
         assert_eq!(r.content_type, "application/json", "self-contained JSON");
@@ -3694,6 +6166,7 @@ mod tests {
             3,
             "rigger-run",
             "origin/main",
+            &[],
         );
         assert_eq!(r.status, 200);
         let body: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
@@ -3731,6 +6204,7 @@ mod tests {
                 3,
                 "rigger-run",
                 "origin/main",
+                &[],
             );
             assert_eq!(r.status, 200, "{label}: never a 500/404");
             assert_eq!(r.content_type, "application/json", "{label}");
@@ -3760,6 +6234,7 @@ mod tests {
                 3,
                 "rigger-run",
                 "origin/main",
+                &[],
             );
             assert_eq!(
                 r.status, 405,
@@ -3826,6 +6301,7 @@ mod tests {
                 3,
                 "rigger-run",
                 "origin/main",
+                &[],
             );
             assert_eq!(r.status, 200, "{target} answers 200");
             assert_eq!(r.content_type, "application/json", "{target} is JSON");
@@ -3942,6 +6418,7 @@ mod tests {
                 3,
                 "rigger-run",
                 "origin/main",
+                &[],
             );
             // A well-formed response, never the 500 projection-error path: the panel gets JSON.
             assert_eq!(
@@ -4196,6 +6673,7 @@ mod tests {
             3,
             "rigger-run",
             "origin/main",
+            &[],
         );
         assert_eq!(r.status, 200);
         let body: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
@@ -4233,6 +6711,7 @@ mod tests {
             3,
             "rigger-run",
             "origin/main",
+            &[],
         );
         assert_eq!(r2.status, 200);
         let body2: serde_json::Value = serde_json::from_slice(&r2.body).unwrap();
@@ -4379,6 +6858,7 @@ mod tests {
             3,
             "rigger-run",
             "origin/main",
+            &[],
         );
         assert_eq!(r.status, 200);
         let body: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
@@ -4424,6 +6904,7 @@ mod tests {
             3,
             "rigger-run",
             "origin/main",
+            &[],
         );
         let body2: serde_json::Value = serde_json::from_slice(&r2.body).unwrap();
         assert!(
@@ -4433,17 +6914,265 @@ mod tests {
     }
 
     #[test]
-    fn graph_seeds_enumerate_unit_decision_and_finding_ids() {
+    fn graph_seeds_enumerate_decisions_findings_and_their_files_never_units() {
+        // De-noise (spec 43): a unit is not a graph node, so its id is NEVER seeded - a unit seed
+        // would land nowhere. The seed set is the decisions and findings the run produced plus the
+        // files they GOVERN / are ABOUT: the content and code that remain in the graph.
         let events = vec![
             ev("UnitStarted", r#"{"unit":"u1"}"#),
-            ev("DecisionMade", r#"{"id":"d1","summary":"x"}"#),
-            ev("ReviewFinding", r#"{"id":"f1","by":"sdet"}"#),
+            ev(
+                "DecisionMade",
+                r#"{"id":"d1","summary":"x","governs":["a.rs"]}"#,
+            ),
+            ev(
+                "ReviewFinding",
+                r#"{"id":"f1","by":"sdet","about":["b.rs"]}"#,
+            ),
             ev("GateVerdict", r#"{"gate":"g","pass":true}"#),
         ];
         let seeds = graph_seeds(&events);
         assert_eq!(
             seeds,
-            vec!["d1".to_string(), "f1".to_string(), "u1".to_string()]
+            vec![
+                "a.rs".to_string(),
+                "b.rs".to_string(),
+                "d1".to_string(),
+                "f1".to_string(),
+            ],
+            "seeds are decisions + findings + the files they concern, never the unit id"
+        );
+        assert!(
+            !seeds.contains(&"u1".to_string()),
+            "a unit id is never a graph seed (it is not a node)"
+        );
+    }
+
+    #[test]
+    fn a_units_seed_lands_on_the_neighborhood_of_its_decisions_and_files() {
+        // Spec 43 criterion 5 (the click-to-seed re-point): with the KIND_UNIT node gone, seeding
+        // the graph from a unit's run - through the re-pointed graph_seeds - must STILL return a
+        // NON-EMPTY, real neighborhood (the unit's decisions and the files they produced), not an
+        // empty result. Fold a small run (a unit, and a decision it made governing a file) into a
+        // real projection, then seed it with graph_seeds output and confirm a live neighborhood.
+        use crate::contextgraph::sqlite::Projector;
+        use crate::contextgraph::Projection;
+        let run = positioned(vec![
+            ev(
+                "UnitStarted",
+                r#"{"unit":"u1","criterion":"c","agent":"impl","needs":[]}"#,
+            ),
+            ev(
+                "DecisionMade",
+                r#"{"id":"d1","summary":"use the shared authority","governs":["combat.rs"],"supersedes":""}"#,
+            ),
+        ]);
+        let p = Projector::open(":memory:", "test").unwrap();
+        for e in &run {
+            p.apply(e).unwrap();
+        }
+        let seeds = graph_seeds(&run);
+        assert!(
+            !seeds.contains(&"u1".to_string()),
+            "the unit id is not a seed - it was re-pointed to the decisions/files"
+        );
+        let g = p.subgraph(&seeds, 2).unwrap();
+        assert!(
+            !g.nodes.is_empty(),
+            "the re-pointed unit seed lands on a real, non-empty neighborhood, not an empty result"
+        );
+        assert!(
+            g.nodes.iter().any(|n| n.id == "d1"),
+            "the unit's decision is in the seeded neighborhood"
+        );
+        assert!(
+            g.nodes.iter().any(|n| n.id == "combat.rs"),
+            "the file the unit's decision produced is in the seeded neighborhood"
+        );
+        assert!(
+            !g.nodes.iter().any(|n| n.id == "u1"),
+            "no KIND_UNIT node exists (the machinery is gone); the seed landed via the decision/file"
+        );
+    }
+
+    #[test]
+    fn the_run_tree_click_to_seed_route_lands_a_unit_on_a_real_neighborhood() {
+        // Spec 43 criterion 5, the INTERACTIVE half (adj-u43c1-click-to-seed): the run-tree renders
+        // a unit node whose data-seed IS the unit id, and clicking it drives
+        // `GET /api/graph?seed=<unit>`. With the KIND_UNIT node de-noised away a raw unit-id seed
+        // resolves to no node, so the ROUTE must re-point it onto that unit's decisions/findings
+        // (its content nodes, which remain in the graph) and return a NON-EMPTY neighborhood - never
+        // the empty panel the raw unit seed would otherwise yield. This drives the ACTUAL route the
+        // click crosses, which the graph_seeds-only tests never touch (adj-u43c1-click-to-seed).
+        use crate::contextgraph::sqlite::Projector;
+        use crate::contextgraph::Projection;
+
+        // A run's events in production shape: the unit, a decision its implementer emitted and a
+        // finding a reviewer drew ABOUT the unit - BOTH stamped with their emitting spawn (`u1`'s
+        // implementer / `u1`'s sdet lens), exactly as `rigger emit --spawn` records them. The finding
+        // carries no `$.unit` field; its unit is the `meta.spawn` stamp, as in production.
+        let run = positioned(vec![
+            ev(
+                "UnitStarted",
+                r#"{"unit":"u1","criterion":"c","agent":"impl","needs":[]}"#,
+            ),
+            ev(
+                "DecisionMade",
+                r#"{"id":"d1","summary":"use the shared authority","governs":["combat.rs"],"supersedes":""}"#,
+            )
+            .with_meta(crate::conductor::META_SPAWN, "u1/implementer#0"),
+            ev(
+                "ReviewFinding",
+                r#"{"id":"f1","by":"sdet","summary":"y","about":["render.rs"]}"#,
+            )
+            .with_meta(crate::conductor::META_SPAWN, "u1/lens:sdet#0"),
+        ]);
+
+        // Fold the run and pre-fetch its subgraph EXACTLY as the dash does (graph_seeds -> subgraph
+        // depth 2), so the route sees the same in-memory graph production serves.
+        let p = Projector::open(":memory:", "test").unwrap();
+        for e in &run {
+            p.apply(e).unwrap();
+        }
+        let graph = p.subgraph(&graph_seeds(&run), 2).unwrap();
+        assert!(
+            !graph.nodes.iter().any(|n| n.id == "u1"),
+            "no KIND_UNIT node exists - the click-to-seed must re-point off the (gone) unit node"
+        );
+
+        let r = route(
+            "GET",
+            "/api/graph?seed=u1",
+            &run,
+            &graph,
+            &[],
+            &HashMap::new(),
+            3,
+            "rigger-run",
+            "origin/main",
+            &[],
+        );
+        assert_eq!(r.status, 200, "the KG route answers 200 for a unit click");
+        let body: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
+        let ids: std::collections::BTreeSet<&str> = body["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| n["id"].as_str().unwrap())
+            .collect();
+        assert!(
+            !ids.is_empty(),
+            "the re-pointed unit click lands on a real, non-empty neighborhood, not an empty panel: {body}"
+        );
+        assert!(
+            ids.contains("d1"),
+            "the unit's decision is in the clicked neighborhood: {body}"
+        );
+        assert!(
+            ids.contains("combat.rs"),
+            "the file the unit's decision governs is reached canonically via its GOVERNS edge: {body}"
+        );
+        assert!(
+            ids.contains("f1"),
+            "the unit's finding is in the clicked neighborhood: {body}"
+        );
+        assert!(
+            !ids.contains("u1"),
+            "the unit id itself is never a node; the click landed via the unit's decisions/findings"
+        );
+    }
+
+    #[test]
+    fn unit_seeds_scope_content_to_the_owning_unit() {
+        // A decision AND a finding are both attributed to their unit by the emitting spawn
+        // (meta.spawn) - the production shape a reviewer's `rigger emit --spawn` records, which
+        // carries no `$.unit` event field. unit_seeds returns ONLY the named unit's content ids +
+        // files (sorted), never another unit's - so a run-tree click on `uA` never drags in `uB`'s
+        // neighborhood.
+        let events = positioned(vec![
+            ev(
+                "DecisionMade",
+                r#"{"id":"dA","summary":"x","governs":["a.rs"]}"#,
+            )
+            .with_meta(crate::conductor::META_SPAWN, "uA/implementer#0"),
+            ev(
+                "DecisionMade",
+                r#"{"id":"dB","summary":"y","governs":["b.rs"]}"#,
+            )
+            .with_meta(crate::conductor::META_SPAWN, "uB/implementer#0"),
+            ev(
+                "ReviewFinding",
+                r#"{"id":"fA","by":"sdet","summary":"z","about":["c.rs"]}"#,
+            )
+            .with_meta(crate::conductor::META_SPAWN, "uA/lens:sdet#0"),
+            ev(
+                "ReviewFinding",
+                r#"{"id":"fB","by":"sdet","summary":"z","about":["d.rs"]}"#,
+            )
+            .with_meta(crate::conductor::META_SPAWN, "uB/lens:sdet#0"),
+        ]);
+        assert_eq!(
+            unit_seeds(&events, "uA"),
+            vec![
+                "a.rs".to_string(),
+                "c.rs".to_string(),
+                "dA".to_string(),
+                "fA".to_string(),
+            ],
+            "uA's seeds are its decision + governed file and its finding + about file, sorted"
+        );
+        let s_b = unit_seeds(&events, "uB");
+        assert!(
+            s_b.contains(&"dB".to_string()) && s_b.contains(&"fB".to_string()),
+            "uB's seeds carry uB's own content"
+        );
+        assert!(
+            !s_b.contains(&"dA".to_string()) && !s_b.contains(&"fA".to_string()),
+            "uB's seeds never include uA's content"
+        );
+        // A decision with no emitting-spawn stamp is attributed to no unit.
+        let unstamped = vec![ev("DecisionMade", r#"{"id":"d0","governs":["x.rs"]}"#)];
+        assert!(
+            unit_seeds(&unstamped, "uA").is_empty(),
+            "a decision with no meta.spawn stamp is attributed to no unit"
+        );
+    }
+
+    #[test]
+    fn repoint_seed_passes_a_known_node_and_re_points_a_unit_id() {
+        // repoint_seed decides ONLY on node membership (it never walks edges), so an edgeless graph
+        // holding just the content nodes is enough to pin its three arms.
+        let mk = |id: &str, kind: &str| Node {
+            id: id.to_string(),
+            kind: kind.to_string(),
+            attrs: BTreeMap::new(),
+        };
+        let graph = Graph {
+            nodes: vec![mk("dA", KIND_DECISION), mk("a.rs", "file")],
+            edges: Vec::new(),
+        };
+        let events = vec![ev(
+            "DecisionMade",
+            r#"{"id":"dA","summary":"x","governs":["a.rs"]}"#,
+        )
+        .with_meta(crate::conductor::META_SPAWN, "uA/implementer#0")];
+
+        // A seed that IS a node is returned unchanged - the spec 30 seeded panel, no regression.
+        assert_eq!(
+            repoint_seed(&events, &graph, "dA"),
+            vec!["dA".to_string()],
+            "a known node seed is passed through untouched"
+        );
+        // A unit id (not a node) re-points onto the unit's content nodes present in the graph.
+        assert_eq!(
+            repoint_seed(&events, &graph, "uA"),
+            vec!["a.rs".to_string(), "dA".to_string()],
+            "a unit-id seed re-points onto the unit's decision and its governed file node"
+        );
+        // A genuinely unknown seed with no unit content falls back to itself (graceful empty).
+        assert_eq!(
+            repoint_seed(&events, &graph, "nope"),
+            vec!["nope".to_string()],
+            "an unknown seed with no unit content degrades to itself, not a re-point"
         );
     }
 
@@ -4600,7 +7329,7 @@ mod tests {
 
         // The same shape of read cmd_dash's provider performs (store -> run events).
         let db_for_provider = db_str.clone();
-        let provider = move || -> Result<DashInputs, String> {
+        let provider = move |_instance: Option<&str>| -> Result<DashInputs, String> {
             let backend = Store::open(&db_for_provider).map_err(|e| e.to_string())?;
             let store = Namespaced::new(&backend, "proj-dash");
             let events = store
@@ -4611,9 +7340,25 @@ mod tests {
 
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let addr = listener.local_addr().unwrap();
+        let graph_provider = |_instance: Option<&str>| Graph::default();
+        let calls_provider =
+            |_: Option<&str>, _: &[String], _: crate::contextgraph::Direction, _: i64, _: &str| {
+                crate::contextgraph::CallGraph::default()
+            };
+        let instances_provider = Vec::new;
         let server = std::thread::spawn(move || {
             let (conn, _) = listener.accept().unwrap();
-            handle_conn(conn, &provider, 3, "rigger-run", "origin/main").unwrap();
+            handle_conn(
+                conn,
+                &provider,
+                &graph_provider,
+                &calls_provider,
+                &instances_provider,
+                3,
+                "rigger-run",
+                "origin/main",
+            )
+            .unwrap();
         });
 
         let mut client = TcpStream::connect(addr).unwrap();
@@ -4644,14 +7389,38 @@ mod tests {
         use std::io::{Read, Write};
         use std::net::{TcpListener, TcpStream};
 
-        let provider = || -> Result<DashInputs, String> {
+        let provider = |_instance: Option<&str>| -> Result<DashInputs, String> {
             panic!("a non-GET request must never read the store");
+        };
+        let graph_provider = |_instance: Option<&str>| -> Graph {
+            panic!("a non-GET request must never open the graph projection");
+        };
+        let calls_provider = |_: Option<&str>,
+                              _: &[String],
+                              _: crate::contextgraph::Direction,
+                              _: i64,
+                              _: &str|
+         -> crate::contextgraph::CallGraph {
+            panic!("a non-GET request must never open the calls projection");
+        };
+        let instances_provider = || -> Vec<InstanceView> {
+            panic!("a non-GET request must never read the instance registry");
         };
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let addr = listener.local_addr().unwrap();
         let server = std::thread::spawn(move || {
             let (conn, _) = listener.accept().unwrap();
-            handle_conn(conn, &provider, 3, "rigger-run", "origin/main").unwrap();
+            handle_conn(
+                conn,
+                &provider,
+                &graph_provider,
+                &calls_provider,
+                &instances_provider,
+                3,
+                "rigger-run",
+                "origin/main",
+            )
+            .unwrap();
         });
 
         let mut client = TcpStream::connect(addr).unwrap();
@@ -4665,6 +7434,129 @@ mod tests {
         assert!(
             resp.starts_with("HTTP/1.1 405"),
             "a write method is refused read-only:\n{resp}"
+        );
+    }
+
+    /// Spec 45, criterion 1 (the PROVIDER SPLIT): `/api/graph` reads through a SEPARATE,
+    /// lazy graph provider that is opened ONLY when a graph request arrives - a `/api/state`
+    /// (or `/api/events`) request must NEVER consult it, so the 1.5s state poll no longer
+    /// rides a whole-graph read. A spy graph provider counts each time it is consulted:
+    /// after `/api/state` and `/api/events` the count stays 0; a `/api/graph` request opens it
+    /// exactly once and the served body is derived from the graph the provider yields (not the
+    /// polled tuple's run-seeded graph). This drives the real `serve` -> `handle_conn` -> `route`
+    /// socket path, so it proves the split at the served boundary the pure `route` test is blind to.
+    #[test]
+    fn the_graph_provider_is_consulted_only_on_graph_requests_not_the_state_poll() {
+        use std::io::{Read, Write};
+        use std::net::{TcpListener, TcpStream};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        // The polled provider: the cheap run-scoped inputs `/api/state` and `/api/events` ride.
+        // Its graph slot is the run-seeded slice (here empty); it is what the decisions/findings
+        // panel reads, and it must be the ONLY graph the state poll touches.
+        let provider = |_instance: Option<&str>| -> Result<DashInputs, String> {
+            Ok((Vec::new(), Graph::default(), Vec::new(), HashMap::new()))
+        };
+
+        // The SEPARATE whole-graph provider: it counts every consultation and yields a fixture
+        // graph carrying one node, so a graph request produces a graph-derived body while the
+        // count proves it was opened ONLY on that request.
+        let hits = Arc::new(AtomicUsize::new(0));
+        let hits_for_provider = Arc::clone(&hits);
+        let graph_provider = move |_instance: Option<&str>| -> Graph {
+            hits_for_provider.fetch_add(1, Ordering::SeqCst);
+            Graph {
+                nodes: vec![Node {
+                    id: "seed-node".to_string(),
+                    kind: KIND_UNIT.to_string(),
+                    attrs: BTreeMap::new(),
+                }],
+                edges: Vec::new(),
+            }
+        };
+
+        // A call view is not exercised here (no request carries `view=calls`), so the calls
+        // provider must never be consulted; a plain empty walk keeps the wiring complete.
+        let calls_provider =
+            |_: Option<&str>, _: &[String], _: crate::contextgraph::Direction, _: i64, _: &str| {
+                crate::contextgraph::CallGraph::default()
+            };
+        let instances_provider = Vec::new;
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        // A bounded accept loop (three requests) so the server thread joins deterministically.
+        let server = std::thread::spawn(move || {
+            for _ in 0..3 {
+                let (conn, _) = listener.accept().unwrap();
+                handle_conn(
+                    conn,
+                    &provider,
+                    &graph_provider,
+                    &calls_provider,
+                    &instances_provider,
+                    3,
+                    "rigger-run",
+                    "origin/main",
+                )
+                .unwrap();
+            }
+        });
+
+        let get = |path: &str| -> String {
+            let mut client = TcpStream::connect(addr).unwrap();
+            client
+                .write_all(format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes())
+                .unwrap();
+            let mut resp = String::new();
+            client.read_to_string(&mut resp).unwrap();
+            resp
+        };
+
+        // The state poll must NOT open the whole-graph projection.
+        let state = get("/api/state");
+        assert!(
+            state.starts_with("HTTP/1.1 200 OK"),
+            "the state poll is served: {state}"
+        );
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            0,
+            "a /api/state request must NOT consult the whole-graph provider"
+        );
+
+        // Nor must the events feed.
+        let events = get("/api/events");
+        assert!(
+            events.starts_with("HTTP/1.1 200 OK"),
+            "the events feed is served: {events}"
+        );
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            0,
+            "a /api/events request must NOT consult the whole-graph provider"
+        );
+
+        // A graph request DOES consult it - exactly once - and the body is graph-derived.
+        let graph = get("/api/graph?seed=seed-node&depth=1");
+        server.join().unwrap();
+        assert!(
+            graph.starts_with("HTTP/1.1 200 OK"),
+            "the graph route is served: {graph}"
+        );
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            1,
+            "a /api/graph request opens the whole-graph projection exactly once"
+        );
+        let body = graph
+            .split("\r\n\r\n")
+            .nth(1)
+            .expect("a graph response body");
+        assert!(
+            body.contains("seed-node"),
+            "the graph body is derived from the graph provider's projection, not the polled \
+             run-seeded graph: {body}"
         );
     }
 
@@ -4763,77 +7655,862 @@ mod tests {
     }
 
     #[test]
-    fn should_reap_on_idle_reaps_on_completion_or_stale_liveness_but_never_on_a_live_or_starting_run(
-    ) {
-        let stale = Duration::from_secs(900);
-        let fresh = Some(Duration::from_secs(5));
-        let gone_stale = Some(Duration::from_secs(1_000));
+    fn should_reap_singleton_reaps_only_when_no_registered_instance_is_live() {
+        // Spec 50, criterion 5: the machine-level singleton reaps itself ONLY when nothing is
+        // registered-and-alive - and never before it has seen its first live instance (the
+        // startup-race guard, the direct analogue of spec 39's `run_started`).
 
-        // A run that has not started yet (empty log is vacuously terminal): a just-spawned dash
-        // must KEEP serving, never reap on its first poll.
+        // Startup: the ensuring run has not yet written its registry entry, so the watcher reads
+        // ZERO live instances on its first polls. It must NOT reap before that entry lands.
         assert!(
-            !should_reap_on_idle(false, true, false, None, stale),
-            "a not-yet-started run's dash must not reap"
-        );
-
-        // A started run mid-flight, wave parked but no worker has touched a marker yet
-        // (heartbeat None, not terminal): the dash is coming up on a live run - keep serving.
-        assert!(
-            !should_reap_on_idle(true, false, false, None, stale),
-            "a starting run (parked wave, no heartbeat yet) must not reap"
+            !should_reap_singleton(0, false),
+            "a just-ensured singleton that has not yet seen any live instance must not reap"
         );
 
-        // THE GATING CASE (unbounded run, between waves): started + spawn-level terminal + NO
-        // heartbeat, but NOT unit-level settled (a wave's results are in yet the conductor has not
-        // integrated them, or later-wave units are still pending). An unbounded run has NO marker
-        // to consult, so a reap keyed on `terminal` alone would exit the dash MID-RUN here. The
-        // `run_settled` gate is what keeps it serving until the run genuinely completes.
+        // A live instance is registered (this project's run, or any other's): keep serving.
         assert!(
-            !should_reap_on_idle(true, true, false, None, stale),
-            "an unbounded run that is only transiently terminal between waves (not settled) must \
-             not reap - this is the mid-run reap the settled gate prevents"
+            !should_reap_singleton(1, true),
+            "one live registered instance keeps the singleton serving"
+        );
+        // The multi-instance headline: one project's run ending while ANOTHER's is still live
+        // leaves the count > 0, so the singleton survives.
+        assert!(
+            !should_reap_singleton(2, true),
+            "several live instances keep the singleton serving"
         );
 
-        // A live run with a FRESH heartbeat, even when the log reads terminal in an inter-step
-        // gap (the next wave is not parked yet): a worker touched a marker seconds ago, so the
-        // run is between steps, NOT idle - keep serving. This is the inter-step false-positive
-        // the done-flag alone would trip.
+        // Every registered instance's heartbeat has aged past the idle window (so `read_live`
+        // pruned them all) and the watcher HAS seen a live instance before: a quiet machine ->
+        // reap.
         assert!(
-            !should_reap_on_idle(true, true, false, fresh, stale),
-            "a fresh heartbeat means a live run between steps - must not reap"
-        );
-        assert!(
-            !should_reap_on_idle(true, false, false, fresh, stale),
-            "a fresh heartbeat on a non-terminal run must not reap"
+            should_reap_singleton(0, true),
+            "no live instance, after at least one was seen, reaps the singleton"
         );
 
-        // Normal completion: the run is started + spawn-terminal + unit-settled (every unit
-        // integrated) and its `agent-live` markers were reclaimed by the final step's teardown
-        // (heartbeat None) -> reap. This is genuine completion for both bounded (markers reclaimed)
-        // and unbounded (never had markers) runs.
+        // A count > 0 that was never marked seen cannot occur in the watcher (a non-empty read
+        // flips the flag first), but the decision stays safe: a positive count never reaps.
         assert!(
-            should_reap_on_idle(true, true, true, None, stale),
-            "a completed run (every unit terminal) whose heartbeat is None must reap"
+            !should_reap_singleton(1, false),
+            "a positive live count never reaps regardless of the seen flag"
+        );
+    }
+
+    /// Spec 52 c5 (the RENDERING): the served page carries the DIRECTED-CALL layered layout - the
+    /// left-to-right DAG behind the SHARED SVG emitter (a barycenter within-layer sweep), the SVG
+    /// ARROWHEAD marker definition (which the page did not have before), the DISTINCT back-edge
+    /// rendering (a curved return arc), and the FRONTIER expand-and-reseed wiring - plus the entry
+    /// affordance that offers the two directed queries from a code-entity node. Visual layout is
+    /// outside the gate set (rule 4), so this is a STRUCTURAL guard on the JS that delivers the
+    /// rendering, mirroring the sibling exploration-viz page tests: it pins the mechanisms so a later
+    /// edit cannot drop the arrowheads, the back-edge distinction, the layered layout, or the
+    /// frontier re-seed.
+    #[test]
+    fn the_page_carries_the_directed_call_layered_render() {
+        let page = live_page();
+
+        // The LAYERED layout behind the shared emitter: x by server layer, a within-layer barycenter
+        // sweep (average of neighbour positions) - not a second force-layout copy.
+        assert!(
+            page.contains("function layeredLayout"),
+            "the page must carry the layered left-to-right call layout",
+        );
+        assert!(
+            page.contains("barycenter") || page.contains("bary"),
+            "the layered layout must order within-layer nodes by a barycenter sweep",
+        );
+        // The layered layout is drawn through the SAME kgSvg emitter (an injected layout callback),
+        // never a second SVG emitter reimplementing circles/lines.
+        assert!(
+            page.contains("layout: layeredLayout"),
+            "the calls view must reuse the shared kgSvg emitter with an injected layered layout",
         );
 
-        // A crashed / wedged run that never reached a clean fixpoint but whose heartbeat has
-        // gone stale (no worker touched a marker within the bound) -> reap, the backstop. The
-        // `Some(age)` arm is independent of `run_settled`: a stale heartbeat is itself the
-        // liveness-died signal.
+        // Direction is DRAWN: an SVG arrowhead marker definition (new to the page) and a marker-end
+        // on the forward edges.
         assert!(
-            should_reap_on_idle(true, false, false, gone_stale, stale),
-            "a non-terminal run whose heartbeat went stale must reap (crashed-run backstop)"
-        );
-        // A terminal run whose markers were not reclaimed but have aged past the bound -> reap.
-        assert!(
-            should_reap_on_idle(true, true, false, gone_stale, stale),
-            "a terminal run whose stale heartbeat markers linger must still reap"
+            page.contains("<marker") && page.contains("marker-end"),
+            "the page must define an SVG arrowhead marker and apply it to directed edges",
         );
 
-        // Exactly-at-the-bound is NOT yet stale (strictly greater): still serving.
+        // BACK edges (recursion) render DISTINCTLY: a curved return arc (a path with a quadratic
+        // segment) carrying a distinguishing class, not just another straight line.
         assert!(
-            !should_reap_on_idle(true, false, false, Some(stale), stale),
-            "a heartbeat exactly at the bound is not yet stale"
+            page.contains("kgline back"),
+            "a back edge must carry a distinguishing class so recursion reads distinctly",
+        );
+        assert!(
+            page.contains("edgeBack"),
+            "the emitter must render a back edge as a distinct curved arc via edgeBack",
+        );
+
+        // FRONTIERS are ACTIONABLE: a frontier node carries its candidates and expands on click, and
+        // choosing a candidate RE-SEEDS the call view on it.
+        assert!(
+            page.contains("data-frontier") && page.contains("data-candidates"),
+            "a multi-candidate frontier node must carry its candidate ids for the expand",
+        );
+        assert!(
+            page.contains("data-candidate") && page.contains("function seedCalls"),
+            "choosing a frontier candidate must re-seed the directed-call view on it",
+        );
+
+        // The call views are REACHABLE from a code-entity node: the neighborhood offers the two
+        // directed queries (execution path / call sites) beside it, wired through the delegated
+        // listener the exploration views already share.
+        assert!(
+            page.contains("data-calls-down") && page.contains("data-calls-up"),
+            "a code-entity node must offer the two directed queries (execution path / call sites)",
+        );
+        assert!(
+            page.contains("view=calls"),
+            "the page must fetch the directed-call views from the c4 route",
+        );
+        assert!(
+            page.contains("function renderKgCalls"),
+            "the page must carry the directed-call renderer",
+        );
+
+        // HIGH FAN-OUT within a layer caps at the render budget with a "+K more" note, so a
+        // widely-called function does not overplot its layer into an unreadable smear.
+        assert!(
+            page.contains("LAYER_FANOUT_BUDGET") && page.contains("held back"),
+            "a layer over the render budget must cap with a '+K more' held-back note",
+        );
+    }
+
+    /// Spec 52 c4 (the ROUTE): the `/api/graph?view=calls&dir=down|up|both` dispatch. These are the
+    /// implementer's inside-out unit tests over the pure builder [`calls_view`] and the dispatch
+    /// [`calls_route`] - the CallGraph -> Neighborhood-shaped mapping (signed layers, frontier, back,
+    /// the UP sidecar, the `dir=both` merge) and the param parse / provider dispatch / byte-identical
+    /// fall-through. The traversal itself is spec 52 c1/c3, proven at the store; here we own only the
+    /// route's presentation of it.
+    mod calls_route_c4 {
+        use super::*;
+        use crate::contextgraph::sqlite::Projector;
+        use crate::contextgraph::{
+            CallEdge, CallGraph, CallNode, Direction, Projection, REL_CALLS,
+            TYPE_CODE_ENTITY_EXTRACTED, TYPE_EDGE_INFERRED,
+        };
+
+        /// One reached call node with a store-side (non-negative) hop `layer` and an optional
+        /// multi-candidate `frontier`, as the traversal returns it.
+        fn cnode(id: &str, layer: i64, frontier: Option<Vec<String>>) -> CallNode {
+            CallNode {
+                node: Node {
+                    id: id.to_string(),
+                    kind: KIND_CODE_ENTITY.to_string(),
+                    attrs: BTreeMap::new(),
+                },
+                layer,
+                frontier,
+            }
+        }
+
+        /// One CALLS edge with the recursion `back` marker.
+        fn cedge(from: &str, to: &str, back: bool) -> CallEdge {
+            CallEdge {
+                edge: Edge {
+                    from: from.to_string(),
+                    to: to.to_string(),
+                    rel: REL_CALLS.to_string(),
+                    valid_from: 0,
+                    valid_to: None,
+                    source: 0,
+                    tier: TIER_INFERRED.to_string(),
+                },
+                back,
+            }
+        }
+
+        fn file_node(id: &str) -> Node {
+            Node {
+                id: id.to_string(),
+                kind: KIND_FILE.to_string(),
+                attrs: BTreeMap::new(),
+            }
+        }
+
+        fn layer_of(v: &Neighborhood, id: &str) -> Option<i64> {
+            v.nodes.iter().find(|n| n.id == id).and_then(|n| n.layer)
+        }
+        fn ids(v: &Neighborhood) -> Vec<String> {
+            v.nodes.iter().map(|n| n.id.clone()).collect()
+        }
+
+        /// Fold a code definition into a Projector, exactly as the store-side periphery tests do, so
+        /// the dispatch test drives the REAL `Projection::calls` through a store-backed provider.
+        fn apply_def(p: &Projector, pos: u64, file: &str, name: &str, line: u32, fresh: bool) {
+            let payload = serde_json::json!({
+                "file": file, "name": name, "kind": "function", "line": line, "lang": "rust",
+                "fresh": fresh,
+            });
+            let mut e = Event::new(
+                TYPE_CODE_ENTITY_EXTRACTED,
+                serde_json::to_vec(&payload).unwrap(),
+            );
+            e.position = pos;
+            p.apply(&e).unwrap();
+        }
+        fn apply_call(p: &Projector, pos: u64, file: &str, name: &str, caller: &str) {
+            let payload = serde_json::json!({
+                "file": file, "name": name, "lang": "rust", "caller": caller,
+            });
+            let mut e = Event::new(TYPE_EDGE_INFERRED, serde_json::to_vec(&payload).unwrap());
+            e.position = pos;
+            p.apply(&e).unwrap();
+        }
+
+        /// DOWN: the callee layers stay POSITIVE (seed at the left), the frontier candidate ids ride
+        /// through verbatim, a recursion edge keeps its back marker, and the nodes emit in (layer, id)
+        /// order. The DOWN execution path carries NO referenced-but-not-called sidecar.
+        #[test]
+        fn calls_view_down_signs_callees_positive_and_carries_frontier_and_back() {
+            let down = CallGraph {
+                nodes: vec![
+                    cnode("f.rs::s", 0, None),
+                    cnode("f.rs::a", 1, None),
+                    cnode(
+                        "f.rs::fr",
+                        1,
+                        Some(vec!["a.rs::t".to_string(), "b.rs::t".to_string()]),
+                    ),
+                ],
+                edges: vec![
+                    cedge("f.rs::s", "f.rs::a", false),
+                    cedge("f.rs::s", "f.rs::fr", false),
+                    cedge("f.rs::a", "f.rs::s", true), // recursion: a back edge
+                ],
+                referenced_not_called: Vec::new(),
+            };
+            let v = calls_view(Some(&down), None, "f.rs::s", 5);
+
+            assert_eq!(
+                v.dir.as_deref(),
+                Some("down"),
+                "the body echoes the direction"
+            );
+            assert!(
+                v.referenced_not_called.is_empty(),
+                "a DOWN walk carries no referenced-but-not-called sidecar",
+            );
+            // Callees are POSITIVE, seed 0 - so the renderer draws the seed at the LEFT.
+            assert_eq!(layer_of(&v, "f.rs::s"), Some(0));
+            assert_eq!(layer_of(&v, "f.rs::a"), Some(1));
+            assert_eq!(layer_of(&v, "f.rs::fr"), Some(1));
+            // The frontier candidate ids ride through verbatim on the frontier node.
+            let fr = v.nodes.iter().find(|n| n.id == "f.rs::fr").unwrap();
+            assert_eq!(
+                fr.frontier,
+                Some(vec!["a.rs::t".to_string(), "b.rs::t".to_string()]),
+            );
+            assert_eq!(
+                v.nodes.iter().filter(|n| n.frontier.is_some()).count(),
+                1,
+                "exactly the one multi-candidate node is a frontier",
+            );
+            // The recursion edge is marked back; the forward edges are not.
+            let back = |from: &str, to: &str| {
+                v.edges
+                    .iter()
+                    .find(|e| e.from == from && e.to == to)
+                    .map(|e| e.back)
+            };
+            assert_eq!(back("f.rs::a", "f.rs::s"), Some(true));
+            assert_eq!(back("f.rs::s", "f.rs::a"), Some(false));
+            // Nodes emit in (layer, id) order: layer 0 (s), then layer 1 id-sorted (a, fr).
+            assert_eq!(ids(&v), vec!["f.rs::s", "f.rs::a", "f.rs::fr"]);
+        }
+
+        /// UP: the caller layers are NEGATED (so the renderer draws the seed at the RIGHT), and the
+        /// referenced-but-not-called sidecar rides through as flat FILE nodes.
+        #[test]
+        fn calls_view_up_negates_callers_and_carries_the_referenced_sidecar() {
+            let up = CallGraph {
+                nodes: vec![cnode("a.rs::t", 0, None), cnode("b.rs::c", 1, None)],
+                edges: vec![cedge("b.rs::c", "a.rs::t", false)],
+                referenced_not_called: vec![file_node("d.rs")],
+            };
+            let v = calls_view(None, Some(&up), "a.rs::t", 5);
+
+            assert_eq!(v.dir.as_deref(), Some("up"));
+            assert_eq!(layer_of(&v, "a.rs::t"), Some(0), "the seed stays at 0");
+            assert_eq!(
+                layer_of(&v, "b.rs::c"),
+                Some(-1),
+                "a caller is NEGATED so the seed draws at the right",
+            );
+            let refd: Vec<&str> = v
+                .referenced_not_called
+                .iter()
+                .map(|n| n.id.as_str())
+                .collect();
+            assert_eq!(
+                refd,
+                vec!["d.rs"],
+                "the UP sidecar carries the import-only file"
+            );
+            assert!(
+                v.referenced_not_called.iter().all(|n| n.kind == KIND_FILE),
+                "every sidecar entry is a FILE node",
+            );
+            // (layer, id) order: the caller (-1) sorts before the seed (0).
+            assert_eq!(ids(&v), vec!["b.rs::c", "a.rs::t"]);
+            // The caller edge keeps the real CALLS direction onto the seed.
+            assert_eq!(
+                v.edges
+                    .iter()
+                    .map(|e| (e.from.as_str(), e.to.as_str()))
+                    .collect::<Vec<_>>(),
+                vec![("b.rs::c", "a.rs::t")],
+            );
+        }
+
+        /// BOTH: the seed is centered at 0, callees to the RIGHT (positive), callers to the LEFT
+        /// (negative), the shared seed deduped to ONE node, edges deduped by (from, to, rel), and the
+        /// UP sidecar carried - one "flow through this function" body from the two walks.
+        #[test]
+        fn calls_view_both_centers_the_seed_with_callees_right_and_callers_left() {
+            let down = CallGraph {
+                nodes: vec![cnode("m.rs::s", 0, None), cnode("m.rs::callee", 1, None)],
+                edges: vec![cedge("m.rs::s", "m.rs::callee", false)],
+                referenced_not_called: Vec::new(),
+            };
+            let up = CallGraph {
+                nodes: vec![cnode("m.rs::s", 0, None), cnode("m.rs::caller", 1, None)],
+                edges: vec![cedge("m.rs::caller", "m.rs::s", false)],
+                referenced_not_called: vec![file_node("z.rs")],
+            };
+            let v = calls_view(Some(&down), Some(&up), "m.rs::s", 5);
+
+            assert_eq!(v.dir.as_deref(), Some("both"));
+            assert_eq!(layer_of(&v, "m.rs::s"), Some(0), "the seed is centered");
+            assert_eq!(
+                layer_of(&v, "m.rs::callee"),
+                Some(1),
+                "a callee sits to the RIGHT (positive)",
+            );
+            assert_eq!(
+                layer_of(&v, "m.rs::caller"),
+                Some(-1),
+                "a caller sits to the LEFT (negative)",
+            );
+            assert_eq!(
+                v.nodes.iter().filter(|n| n.id == "m.rs::s").count(),
+                1,
+                "the shared seed is deduped to a single node across the two walks",
+            );
+            // Both edges are present, deduped by (from, to, rel), in (from, to, rel) order.
+            assert_eq!(
+                v.edges
+                    .iter()
+                    .map(|e| (e.from.as_str(), e.to.as_str()))
+                    .collect::<Vec<_>>(),
+                vec![("m.rs::caller", "m.rs::s"), ("m.rs::s", "m.rs::callee")],
+            );
+            assert_eq!(
+                v.referenced_not_called
+                    .iter()
+                    .map(|n| n.id.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["z.rs"],
+                "the UP sidecar rides through on a both walk",
+            );
+            // (layer, id) order: caller(-1), seed(0), callee(1).
+            assert_eq!(ids(&v), vec!["m.rs::caller", "m.rs::s", "m.rs::callee"]);
+        }
+
+        /// A plain neighborhood is BYTE-IDENTICAL after the additive fields (spec 52 c4 constraint):
+        /// none of `layer` / `frontier` / `back` / `dir` / `referenced_not_called` serialize when a
+        /// view is not a call view, so the serialized neighborhood carries exactly its original keys.
+        #[test]
+        fn a_plain_neighborhood_omits_every_additive_call_field() {
+            let graph = Graph {
+                nodes: vec![
+                    Node {
+                        id: "a".to_string(),
+                        kind: KIND_UNIT.to_string(),
+                        attrs: BTreeMap::new(),
+                    },
+                    Node {
+                        id: "b".to_string(),
+                        kind: KIND_UNIT.to_string(),
+                        attrs: BTreeMap::new(),
+                    },
+                ],
+                edges: vec![Edge {
+                    from: "a".to_string(),
+                    to: "b".to_string(),
+                    rel: REL_REFERENCES.to_string(),
+                    valid_from: 0,
+                    valid_to: None,
+                    source: 0,
+                    tier: TIER_EXTRACTED.to_string(),
+                }],
+            };
+            let body = graph_json(&graph, "a", &["a".to_string()], 1, None, None).unwrap();
+            for absent in [
+                "\"layer\"",
+                "\"frontier\"",
+                "\"back\"",
+                "\"dir\"",
+                "referenced_not_called",
+            ] {
+                assert!(
+                    !body.contains(absent),
+                    "a plain neighborhood must not serialize the additive call field {absent}: {body}",
+                );
+            }
+        }
+
+        /// The dispatch: `view=calls` runs the store-side traversal through the provider and returns
+        /// its layered body; an absent `view` DECLINES (so `handle_conn` falls through to the
+        /// byte-identical neighborhood). Drives the REAL `Projection::calls` through a store-backed
+        /// provider closure, so it proves the route wired the direction/seed onto the traversal.
+        #[test]
+        fn calls_route_runs_the_traversal_for_view_calls_and_declines_otherwise() {
+            let p = Projector::open(":memory:", "test").unwrap();
+            apply_def(&p, 1, "src/a.rs", "callee", 1, true);
+            apply_def(&p, 2, "src/c.rs", "caller", 1, true);
+            apply_call(&p, 3, "src/c.rs", "callee", "caller");
+            let cp = |_inst: Option<&str>,
+                      seed: &[String],
+                      dir: Direction,
+                      depth: i64,
+                      floor: &str|
+             -> CallGraph {
+                p.calls(seed, dir, depth, floor).unwrap_or_default()
+            };
+
+            // No view=calls: the dispatch declines so the neighborhood path runs unchanged.
+            assert!(
+                calls_route(None, "/api/graph?seed=src/c.rs::caller&depth=2", &cp).is_none(),
+                "a request with no view=calls is not a call view",
+            );
+
+            // view=calls&dir=down: the DOWN walk resolves the cross-file callee onto its definition.
+            let resp = calls_route(
+                None,
+                "/api/graph?view=calls&dir=down&seed=src%2Fc.rs%3A%3Acaller&depth=5",
+                &cp,
+            )
+            .expect("view=calls dispatches to the traversal");
+            assert_eq!(resp.status, 200);
+            let v: serde_json::Value = serde_json::from_slice(&resp.body).unwrap();
+            assert_eq!(v["dir"], "down");
+            assert_eq!(
+                v["seed"], "src/c.rs::caller",
+                "the body echoes the decoded seed"
+            );
+            let node_ids: Vec<&str> = v["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|n| n["id"].as_str().unwrap())
+                .collect();
+            assert!(
+                node_ids.contains(&"src/c.rs::caller") && node_ids.contains(&"src/a.rs::callee"),
+                "the DOWN walk resolved the cross-file callee onto its definition: {node_ids:?}",
+            );
+            let callee = v["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|n| n["id"] == "src/a.rs::callee")
+                .unwrap();
+            assert_eq!(
+                callee["layer"], 1,
+                "the callee sits at layer 1 (seed at the left)"
+            );
+        }
+
+        /// `depth=` is clamped and `tier=` is the floor (defaulting to `inferred`): a spy provider
+        /// records the (depth, floor) the route passed it, so the clamp / default is pinned without a
+        /// store. `dir` defaults to `down`, so a bare `view=calls` calls the provider once.
+        #[test]
+        fn calls_route_clamps_depth_and_defaults_the_tier_floor() {
+            use std::cell::RefCell;
+            let seen: RefCell<Vec<(i64, String)>> = RefCell::new(Vec::new());
+            let cp = |_inst: Option<&str>,
+                      _seed: &[String],
+                      _dir: Direction,
+                      depth: i64,
+                      floor: &str|
+             -> CallGraph {
+                seen.borrow_mut().push((depth, floor.to_string()));
+                CallGraph::default()
+            };
+
+            // Absent depth -> the neighborhood default; absent tier -> the resolvable inferred floor.
+            let _ = calls_route(None, "/api/graph?view=calls&seed=x", &cp);
+            assert_eq!(
+                seen.borrow()[0],
+                (DEFAULT_GRAPH_DEPTH, TIER_INFERRED.to_string()),
+            );
+
+            // An over-large depth is clamped to the ceiling; an explicit tier is the floor verbatim.
+            seen.borrow_mut().clear();
+            let _ = calls_route(
+                None,
+                "/api/graph?view=calls&seed=x&depth=9999&tier=ambiguous",
+                &cp,
+            );
+            assert_eq!(seen.borrow()[0], (MAX_GRAPH_DEPTH, "ambiguous".to_string()));
+        }
+
+        /// `dir=both` calls the provider TWICE (once per direction) and merges; `dir=down` / `dir=up`
+        /// call it once each - so the route asks the traversal for exactly the sides it draws.
+        #[test]
+        fn calls_route_walks_both_directions_for_dir_both() {
+            use std::cell::RefCell;
+            let dirs: RefCell<Vec<Direction>> = RefCell::new(Vec::new());
+            let cp = |_inst: Option<&str>,
+                      _seed: &[String],
+                      dir: Direction,
+                      _depth: i64,
+                      _floor: &str|
+             -> CallGraph {
+                dirs.borrow_mut().push(dir);
+                CallGraph::default()
+            };
+            let _ = calls_route(None, "/api/graph?view=calls&dir=both&seed=x", &cp);
+            assert_eq!(
+                *dirs.borrow(),
+                vec![Direction::Down, Direction::Up],
+                "dir=both walks BOTH the callees and the callers",
+            );
+        }
+    }
+}
+
+/// Spec 55, criterion 3 - the RATIONALE OVERLAY DATA PATH. Inside-out unit tests over the pure
+/// [`node_rationale`] / [`rationale_batch`] surface and the `/api/graph?explain=` route branch: the
+/// per-node query returns the decisions/findings/lessons attached to a node (CONTENT only,
+/// deterministically ordered), a node with no rationale returns none, and the batch endpoint covers a
+/// set of visible nodes in one request. This criterion OWNS the overlay data. The served-boundary
+/// proof (one real HTTP GET over `dash::serve`) lives in `tests/rationale_overlay_data.rs`.
+#[cfg(test)]
+mod rationale_overlay_c3 {
+    use super::*;
+    use crate::contextgraph::{Edge, KIND_CODE_ENTITY, KIND_FILE, KIND_HANDBOOK_RULE};
+
+    /// A node with the given kind and optional `summary` (a decision / finding / lesson content
+    /// node carries a summary; a plain file / entity target does not).
+    fn node(id: &str, kind: &str, summary: &str) -> Node {
+        Node {
+            id: id.to_string(),
+            kind: kind.to_string(),
+            attrs: if summary.is_empty() {
+                BTreeMap::new()
+            } else {
+                BTreeMap::from([("summary".to_string(), summary.to_string())])
+            },
+        }
+    }
+
+    /// A finding content node carrying the run-machinery attribution (`by` reviewer + `unit`)
+    /// ALONGSIDE its `summary`, so a test can prove the leaf drops the machinery and keeps only the
+    /// content.
+    fn finding_node(id: &str, summary: &str, by: &str, unit: &str) -> Node {
+        Node {
+            id: id.to_string(),
+            kind: KIND_FINDING.to_string(),
+            attrs: BTreeMap::from([
+                ("summary".to_string(), summary.to_string()),
+                ("by".to_string(), by.to_string()),
+                ("unit".to_string(), unit.to_string()),
+            ]),
+        }
+    }
+
+    fn edge(from: &str, to: &str, rel: &str, valid_to: Option<i64>) -> Edge {
+        Edge {
+            from: from.to_string(),
+            to: to.to_string(),
+            rel: rel.to_string(),
+            valid_from: 0,
+            valid_to,
+            source: 0,
+            tier: TIER_INFERRED.to_string(),
+        }
+    }
+
+    /// The fixture. A target file `shared.rs` carries four live rationale leaves through
+    /// `GOVERNS` (decisions) / `ABOUT` (finding, lesson) edges, laid out so the deterministic
+    /// `(kind, id)` order is DISCRIMINATING:
+    ///
+    /// - two decisions `dz` and `da` (added `dz` first) prove the id-secondary sort within a kind;
+    /// - a finding `a-find` whose id is lexicographically SMALLER than either decision id proves the
+    ///   kind-primary sort (id-only ordering would float `a-find` to the front);
+    /// - a lesson `l1`.
+    ///
+    /// Three NON-leaves also point at `shared.rs`, one per exclusion rule: a `handbook-rule` `hb`
+    /// (GOVERNS, wrong kind), an INVALIDATED decision `dgone` (a superseded governing edge), and -
+    /// separately - a superseding decision `dnew --SUPERSEDES--> dz` (so `node_rationale(dz)` proves
+    /// SUPERSEDES is not rationale). The code entity `shared.rs::foo` carries ONE leaf (`da` governs
+    /// it), and `other.rs` carries NONE.
+    fn rationale_graph() -> Graph {
+        Graph {
+            nodes: vec![
+                node("shared.rs", KIND_FILE, ""),
+                node("shared.rs::foo", KIND_CODE_ENTITY, ""),
+                node("other.rs", KIND_FILE, ""),
+                node("dz", KIND_DECISION, "decision zed"),
+                node("da", KIND_DECISION, "decision ay"),
+                node("dnew", KIND_DECISION, "the superseding decision"),
+                node("dgone", KIND_DECISION, "the superseded governing decision"),
+                finding_node(
+                    "a-find",
+                    "the finding content",
+                    "lens:architecture-reviewer",
+                    "u7",
+                ),
+                node("l1", KIND_LESSON, "the lesson content"),
+                node("hb", KIND_HANDBOOK_RULE, "the handbook rule"),
+            ],
+            edges: vec![
+                edge("dz", "shared.rs", REL_GOVERNS, None),
+                edge("da", "shared.rs", REL_GOVERNS, None),
+                edge("a-find", "shared.rs", REL_ABOUT, None),
+                edge("l1", "shared.rs", REL_ABOUT, None),
+                // Non-leaves incident to shared.rs, one per exclusion rule.
+                edge("hb", "shared.rs", REL_GOVERNS, None), // handbook rule: wrong kind
+                edge("dgone", "shared.rs", REL_GOVERNS, Some(5)), // invalidated governing edge
+                // A superseding decision points AT dz (so dz's own rationale query sees only this).
+                edge("dnew", "dz", REL_SUPERSEDES, None),
+                // shared.rs::foo carries exactly one leaf.
+                edge("da", "shared.rs::foo", REL_GOVERNS, None),
+            ],
+        }
+    }
+
+    fn ids(leaves: &[RationaleLeaf]) -> Vec<String> {
+        leaves.iter().map(|l| l.id.clone()).collect()
+    }
+    fn kinds(leaves: &[RationaleLeaf]) -> Vec<String> {
+        leaves.iter().map(|l| l.kind.clone()).collect()
+    }
+
+    /// The per-node query returns the decisions/findings/lessons attached to a node, deterministically
+    /// ordered by `(kind, id)` - kind first (decisions, then findings, then lessons), id within a
+    /// kind. The fixture is laid out so this ONE assertion is load-bearing for BOTH sort keys.
+    #[test]
+    fn node_rationale_returns_attached_leaves_ordered_by_kind_then_id() {
+        let g = rationale_graph();
+        let leaves = node_rationale(&g, "shared.rs");
+        assert_eq!(
+            ids(&leaves),
+            vec!["da", "dz", "a-find", "l1"],
+            "leaves sort by (kind, id): decisions (da<dz) before findings before lessons - NOT by \
+             id alone (which would float a-find first)"
+        );
+        assert_eq!(
+            kinds(&leaves),
+            vec!["decision", "decision", "finding", "lesson"],
+            "each leaf carries its node kind"
+        );
+    }
+
+    /// A leaf carries the CONTENT only - id, kind, summary - and NEVER the finding's run-machinery
+    /// attribution (`by` reviewer / `unit`). Pinned as the exact serialized shape so a regression that
+    /// leaked `by`/`unit` onto the wire reddens.
+    #[test]
+    fn a_finding_leaf_carries_content_only_never_the_by_or_unit_machinery() {
+        let g = rationale_graph();
+        let leaves = node_rationale(&g, "shared.rs");
+        let find = leaves
+            .iter()
+            .find(|l| l.id == "a-find")
+            .expect("the finding is a leaf of shared.rs");
+        assert_eq!(
+            find.summary, "the finding content",
+            "the leaf keeps the content summary"
+        );
+        let json = serde_json::to_string(find).expect("a leaf serializes");
+        assert_eq!(
+            json, r#"{"id":"a-find","kind":"finding","summary":"the finding content"}"#,
+            "the leaf is content-only on the wire: id/kind/summary, no by/unit machinery"
+        );
+        assert!(
+            !json.contains("architecture-reviewer")
+                && !json.contains("\"by\"")
+                && !json.contains("\"unit\"")
+                && !json.contains("u7"),
+            "no builder-agent attribution surfaces: {json}"
+        );
+    }
+
+    /// The kind filter excludes a `handbook-rule` even though it reuses `GOVERNS`, and the relation
+    /// filter excludes a `SUPERSEDES` edge, so a superseding decision is not reported as its target's
+    /// rationale.
+    #[test]
+    fn a_handbook_rule_and_a_supersedes_edge_are_not_rationale() {
+        let g = rationale_graph();
+        let shared = node_rationale(&g, "shared.rs");
+        assert!(
+            !shared.iter().any(|l| l.id == "hb"),
+            "a handbook-rule that GOVERNS the node is NOT a decision/finding/lesson leaf: {shared:?}"
+        );
+        // dz is superseded by dnew (dnew --SUPERSEDES--> dz); the only edge INTO dz is that
+        // SUPERSEDES edge, so dz's rationale is empty - a superseding decision is not rationale.
+        assert!(
+            node_rationale(&g, "dz").is_empty(),
+            "a SUPERSEDES edge is not a rationale attachment"
+        );
+    }
+
+    /// An INVALIDATED (superseded) governing edge is not live rationale: `dgone` GOVERNS `shared.rs`
+    /// on an edge whose `valid_to` is set, so it never appears.
+    #[test]
+    fn an_invalidated_edge_is_not_live_rationale() {
+        let g = rationale_graph();
+        let leaves = node_rationale(&g, "shared.rs");
+        assert!(
+            !leaves.iter().any(|l| l.id == "dgone"),
+            "a decision reaching the node only through an invalidated edge is not live rationale: \
+             {leaves:?}"
+        );
+    }
+
+    /// A node with no attached decision/finding/lesson returns NONE (empty) - "nodes without
+    /// rationale return none".
+    #[test]
+    fn a_node_without_rationale_returns_none() {
+        let g = rationale_graph();
+        assert!(
+            node_rationale(&g, "other.rs").is_empty(),
+            "a node with no attached decision/finding/lesson has no rationale"
+        );
+        assert!(
+            node_rationale(&g, "not-a-node").is_empty(),
+            "an unknown id has no rationale (graceful, never an error)"
+        );
+    }
+
+    /// The batch covers a SET of visible nodes in one call and keeps ONLY the nodes that carry any
+    /// rationale, ordered by node id. `other.rs` (no rationale) is absent; `shared.rs` and
+    /// `shared.rs::foo` are present with their leaves.
+    #[test]
+    fn the_batch_covers_the_visible_set_and_keeps_only_nodes_with_rationale() {
+        let g = rationale_graph();
+        let batch = rationale_batch(
+            &g,
+            &[
+                "other.rs".to_string(),
+                "shared.rs".to_string(),
+                "shared.rs::foo".to_string(),
+            ],
+        );
+        assert_eq!(
+            batch.iter().map(|n| n.node.clone()).collect::<Vec<_>>(),
+            vec!["shared.rs", "shared.rs::foo"],
+            "only nodes with rationale appear, ordered by node id (other.rs is dropped)"
+        );
+        assert_eq!(
+            ids(&batch[0].leaves),
+            vec!["da", "dz", "a-find", "l1"],
+            "shared.rs carries its four ordered leaves"
+        );
+        assert_eq!(
+            ids(&batch[1].leaves),
+            vec!["da"],
+            "shared.rs::foo carries its one leaf"
+        );
+    }
+
+    /// The batch is DETERMINISTIC regardless of the request's id order and repeats: a shuffled,
+    /// duplicated request yields a byte-identical response.
+    #[test]
+    fn the_batch_is_deterministic_across_request_order_and_dedups() {
+        let g = rationale_graph();
+        let ordered = rationale_batch(&g, &["shared.rs".to_string(), "shared.rs::foo".to_string()]);
+        let shuffled = rationale_batch(
+            &g,
+            &[
+                "shared.rs::foo".to_string(),
+                "shared.rs".to_string(),
+                "shared.rs".to_string(), // a repeat must not double the node
+                "other.rs".to_string(),
+            ],
+        );
+        assert_eq!(
+            serde_json::to_string(&RationaleBatch { nodes: ordered }).unwrap(),
+            serde_json::to_string(&RationaleBatch { nodes: shuffled }).unwrap(),
+            "the batch dedups and sorts, so id order/repeats do not change the bytes"
+        );
+    }
+
+    /// Drive the `route` in-process: `GET /api/graph?explain=<ids>` returns the rationale batch as a
+    /// 200 JSON body in ONE request, covering the visible set. A percent-encoded id (`::` -> `%3A%3A`)
+    /// proves the split-then-decode of the comma-separated list.
+    #[test]
+    fn the_explain_route_returns_the_batch_in_one_request() {
+        let g = rationale_graph();
+        let resp = route(
+            "GET",
+            "/api/graph?explain=shared.rs,shared.rs%3A%3Afoo,other.rs",
+            &[],
+            &g,
+            &[],
+            &HashMap::new(),
+            3,
+            "rigger-run",
+            "origin/main",
+            &[],
+        );
+        assert_eq!(resp.status, 200, "the explain route answers 200");
+        assert!(
+            resp.content_type.contains("application/json"),
+            "the batch is JSON: {}",
+            resp.content_type
+        );
+        let body = String::from_utf8(resp.body).expect("a utf8 body");
+        let json: serde_json::Value =
+            serde_json::from_str(&body).expect("the explain body is valid JSON");
+        let nodes = json["nodes"].as_array().expect("a nodes array");
+        let got: Vec<&str> = nodes.iter().map(|n| n["node"].as_str().unwrap()).collect();
+        assert_eq!(
+            got,
+            vec!["shared.rs", "shared.rs::foo"],
+            "the encoded id decodes to shared.rs::foo and other.rs (no rationale) is dropped: {json}"
+        );
+        // The content crosses the wire and the machinery does not.
+        assert!(
+            body.contains("the finding content") && body.contains("the lesson content"),
+            "leaf content is served: {body}"
+        );
+        assert!(
+            !body.contains("architecture-reviewer") && !body.contains("\"by\""),
+            "no builder-agent attribution is served: {body}"
+        );
+    }
+
+    /// Additive guarantee: with `explain=` ABSENT, `/api/graph` is the existing view - the seeded
+    /// neighborhood carries a `seed` and NO rationale `leaves`, and the branch fires ONLY on
+    /// `explain=`.
+    #[test]
+    fn an_absent_explain_leaves_the_graph_route_unchanged() {
+        let g = rationale_graph();
+        let resp = route(
+            "GET",
+            "/api/graph?seed=shared.rs&depth=1",
+            &[],
+            &g,
+            &[],
+            &HashMap::new(),
+            3,
+            "rigger-run",
+            "origin/main",
+            &[],
+        );
+        assert_eq!(resp.status, 200);
+        let body = String::from_utf8(resp.body).expect("a utf8 body");
+        assert!(
+            body.contains("\"seed\""),
+            "an explain-less request is the seeded neighborhood: {body}"
+        );
+        assert!(
+            !body.contains("\"leaves\""),
+            "the neighborhood carries no rationale batch: {body}"
         );
     }
 }

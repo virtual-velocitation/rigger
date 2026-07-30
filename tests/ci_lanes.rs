@@ -221,3 +221,30 @@ fn install_nolock_job_runs_a_fresh_unlocked_install_and_executes_the_binary() {
          a non-working binary still fails CI)",
     );
 }
+
+/// The dedicated `kurrentdb` CI job must stay CONSISTENT with the retired feature (spec
+/// 47). The adapter is compiled into every build now, so the job carries no
+/// `--features kurrentdb` / `-F kurrentdb`: passing the retired feature would make cargo
+/// reject the command as an unknown feature and break CI. The job must still run the
+/// adapter's contract test (`eventstore::kurrentdb`) against a real KurrentDB - that
+/// container-backed proxy-fidelity check is the reason the job exists, so a change that
+/// drops the feature flag must not also gut the test it guards. Like the rest of this
+/// file it parses the committed workflow, so an inconsistency fails at `cargo test` time.
+#[test]
+fn kurrentdb_job_carries_no_retired_feature_flag_and_still_runs_the_contract_test() {
+    let wf = workflow_yaml();
+    let script = job_run_scripts(&wf, "kurrentdb");
+
+    assert!(
+        !script.contains("--features kurrentdb") && !script.contains("-F kurrentdb"),
+        "the `kurrentdb` CI job must NOT pass the retired `kurrentdb` cargo feature (spec 47): the \
+         feature no longer exists, so cargo would reject the command as an unknown feature.\n\
+         Script was:\n{script}"
+    );
+    assert!(
+        script.contains("eventstore::kurrentdb"),
+        "the `kurrentdb` CI job must still run the adapter's contract test (`eventstore::kurrentdb`) \
+         against a real KurrentDB - the container-backed proxy-fidelity check the job exists for.\n\
+         Script was:\n{script}"
+    );
+}
