@@ -4227,7 +4227,11 @@ mod tests {
     /// `bind_singleton` short-circuits to `AlreadyServing(addr)` - recognizing it by the
     /// [`DASH_HEADER`] response header - instead of binding a second port. This is the behavior
     /// a second `rigger dash` invocation relies on to report the existing address and exit clean.
+    /// Serialized with the other real-serving dash tests (the spec-44 discipline): this test
+    /// brings a REAL dash up and polls it ready, and under a fully parallel suite the readiness
+    /// window flakes on load - one dash-serving test at a time keeps the probe deterministic.
     #[test]
+    #[serial_test::serial(dash_default_port)]
     fn bind_singleton_short_circuits_on_an_already_serving_rigger_dash() {
         use std::time::Instant;
 
