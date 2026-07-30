@@ -269,6 +269,46 @@
   .kgrefd { margin-top: 6px; }
   .kgrefd h3 { font-size: 12px; margin: 4px 0; color: var(--dim); }
   .kgcap { font-size: 11px; color: var(--warn); padding: 2px 2px; }
+  /* The unified-inspector header (spec 55 c4): a static toolbar above the panel carrying the
+     SUBJECT-STICKY lens control and the rationale-OVERLAY toggle, so neither rides the re-rendered
+     view bodies (the additive/byte-identical guarantee). */
+  .kghead { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px;
+    font-size: 12px; color: var(--muted); margin: 0 0 8px; overflow-wrap: anywhere; }
+  .kghead b { color: var(--ink); }
+  .kgsubjectlens[hidden] { display: none; }
+  .kgtoggle { color: var(--accent); text-decoration: none; cursor: pointer; margin-left: auto;
+    border: 1px solid var(--line); border-radius: 4px; padding: 1px 7px; white-space: nowrap; }
+  .kgtoggle:hover { text-decoration: underline; }
+  .kgtoggle.active { color: var(--ink); border-color: var(--accent); font-weight: 600; }
+  /* The RATIONALE OVERLAY badge-and-expand (spec 55 c4): a native <details> per node that carries
+     rationale - the <summary> is the "why - N" count, the body lists each leaf as its own native
+     <details> (a one-line preview that expands to the full content). Rendered ONLY when the overlay
+     is on AND the node has leaves, so a node is byte-identical with the overlay off. */
+  .kgbadge { display: inline-block; margin-left: 6px; vertical-align: baseline; }
+  .kgbadge > summary { display: inline; cursor: pointer; list-style: none; color: var(--accent);
+    font-size: 11px; border: 1px solid var(--accent); border-radius: 8px; padding: 0 6px; }
+  .kgbadge > summary::-webkit-details-marker { display: none; }
+  .kgbadge[open] > summary { color: var(--ink); }
+  .kgleaves { margin: 4px 0 2px 12px; border-left: 1px solid var(--line); padding-left: 8px; }
+  .kgleaf { font-size: 12px; margin: 2px 0; }
+  .kgleaf > summary { cursor: pointer; color: var(--muted); }
+  .kgleaf.k-decision > summary { color: #f472b6; }
+  .kgleaf.k-finding > summary { color: #f87171; }
+  .kgleaf.k-lesson > summary { color: #34d399; }
+  .kgleaf-body { color: var(--ink); font-size: 12px; margin: 2px 0 4px 12px; overflow-wrap: anywhere; }
+  /* The overlay's companion "why" section for the SVG views (drill/calls/re-projection), where a
+     circle cannot hold an inline badge: the visible nodes that carry rationale, each badge-and-expand.
+     Empty (nothing rendered) when the overlay is off or no visible node has rationale. */
+  .kgwhy-notes { margin-top: 8px; }
+  .kgwhy-notes h3 { font-size: 12px; margin: 4px 0; color: var(--dim); }
+  .kgwhy-node { font-size: 12px; padding: 2px 0; overflow-wrap: anywhere; }
+  /* The re-projection honesty markers (spec 55 c1/c2): the documented empty-cell message, the marked
+     -unresolved members (multi-candidate / undefined), and the shared-membership list - so a re-grained
+     cell is explained, never confidently wrong. */
+  .kgempty-cell { font-size: 12px; color: var(--warn); padding: 4px 2px; }
+  .kgunresolved { margin-top: 6px; }
+  .kgunresolved h3 { font-size: 12px; margin: 4px 0; color: var(--dim); }
+  .kgsharedlist { font-size: 11px; color: var(--dim); padding: 3px 2px; overflow-wrap: anywhere; }
 </style>
 </head>
 <body>
@@ -290,6 +330,16 @@
 <main>
   <section class="view" id="kg">
     <h2>Knowledge graph - the unified graph (code, design, decisions)</h2>
+    <!-- The unified-inspector header (spec 55 c4): the SUBJECT-STICKY lens control and the rationale
+         OVERLAY toggle live here, a STATIC sibling ABOVE #kgpanel - never touched by the view
+         renderers that swap #kgpanel's innerHTML, so with the seed+lens composition absent and the
+         overlay off every existing view (overview/drill/neighborhood/calls) renders byte-identical.
+         #kgsubjectlens is hidden until a node is focused (a subject is set); the overlay toggle is
+         always present. -->
+    <div class="kghead" id="kghead">
+      <span class="kgsubjectlens" id="kgsubjectlens" hidden></span>
+      <a href="#" class="kgtoggle" id="kgoverlaytoggle" data-overlay="1" title="reveal the decisions, findings, and lessons attached to each node">rationale overlay: off</a>
+    </div>
     <div class="kg" id="kgpanel">
       <div class="empty">the unified knowledge graph renders here for exploration; hover or click a node to highlight it, shift-click a second to trace the path between them</div>
     </div>
@@ -639,6 +689,218 @@ const KG_TIERS = ["extracted", "inferred", "ambiguous"];
 const kgTiers = new Set(KG_TIERS);
 let kgLast = null;
 
+// ---------------------------------------------------------------------------------------------------
+// The UNIFIED INSPECTOR client seam (spec 55 c4): a SUBJECT (whatever is focused) times a LENS (the
+// altitude), with a rationale OVERLAY that answers "why is this here". The controls live in the static
+// #kghead (a sibling above #kgpanel), so with the seed+lens composition absent and the overlay off
+// every existing view (overview / drill / neighborhood / calls) renders BYTE-IDENTICAL.
+// ---------------------------------------------------------------------------------------------------
+
+// The FOCUSED SUBJECT for the subject-sticky lens re-request: the node currently in focus (set by
+// seedGraph / reprojectSubject, cleared by loadKgOverview). While set, #kgsubjectlens is revealed and
+// a lens flip RE-REQUESTS this subject under the new lens (a re-projection), not the whole-graph view.
+let kgSubject = null;
+// The rationale OVERLAY toggle (off by default): when on, each rendered node that carries rationale
+// shows a "why - N" badge that expands to its decisions/findings/lessons. Off renders nothing extra,
+// so every view is byte-identical with the overlay off (progressive disclosure).
+let kgOverlay = false;
+// The last rationale batch, keyed node id -> its leaves (from GET /api/graph?explain=). Repopulated
+// whenever the overlay is on and a view (re-)renders; empty when the overlay is off.
+let kgRationale = {};
+// The current view's fetched body, so toggling the overlay re-renders the SAME view in place (with or
+// without badges) without a re-fetch. Set at the top of each renderer alongside kgMode.
+let kgViewData = null;
+
+// Reflect the overlay toggle's on/off state on its static affordance (the label + the active ring).
+function syncOverlayToggle() {
+  const t = el("kgoverlaytoggle");
+  if (!t) return;
+  t.textContent = "rationale overlay: " + (kgOverlay ? "on" : "off");
+  t.className = "kgtoggle" + (kgOverlay ? " active" : "");
+}
+
+// Reveal the SUBJECT-STICKY lens control when a subject is focused, hide it otherwise (spec 55 c4).
+// While shown it carries the files/code/concepts tabs (data-lens, subject-sticky through onLensPick)
+// and a whole-graph CLEAR (data-kgclear). A static element, so revealing it never touches a view body.
+function syncSubjectLens() {
+  const box = el("kgsubjectlens");
+  if (!box) return;
+  if (!kgSubject) { box.hidden = true; box.innerHTML = ""; return; }
+  box.hidden = false;
+  const tab = (id, text) => '<a href="#" class="kglens' + (kgLens === id ? " active" : "")
+    + '" data-lens="' + id + '">' + text + '</a>';
+  box.innerHTML = 'subject <b>' + esc(kgSubject) + '</b> &middot; lens: '
+    + tab("files", "files") + tab("code", "code") + tab("concepts", "concepts")
+    + ' &middot; <a href="#" class="kgback" data-kgclear="1">whole graph</a>';
+}
+
+// The SUBJECT-STICKY lens dispatch (spec 55 c4): ONE lens picker serves the overview's inline selector
+// AND the subject-lens header. When a subject is focused, flipping the lens RE-REQUESTS that subject
+// under the new lens (a re-projection, seed+lens); with no subject it reloads the whole-graph overview
+// under the new lens (the byte-identical spec-53 behavior).
+function onLensPick(lens) {
+  kgLens = lens;
+  if (kgSubject) reprojectSubject(kgSubject);
+  else loadKgOverview();
+}
+
+// SUBJECT x LENS re-projection (spec 55 c4 client seam): re-request the SAME subject under the current
+// lens - GET /api/graph?seed=<id>&lens=<lens> - which re-grains that subject's member set IN PLACE
+// (NOT a whole-graph overview, NOT the lens-absent neighborhood). The c1 route re-projects only when
+// lens= is explicitly present, so this composition fires exactly here; a lens-absent seed request stays
+// the byte-identical spec-30 neighborhood. A static export / failed fetch degrades to a message.
+async function reprojectSubject(subject) {
+  kgSubject = subject;
+  kgSeed = null;
+  syncSubjectLens();
+  if (!LIVE) {
+    el("kgpanel").innerHTML = '<div class="kgseed">subject <b>' + esc(subject) + '</b></div>'
+      + '<div class="empty">the subject re-projection is available in the live dash (this is a static export)</div>';
+    return;
+  }
+  try {
+    const rp = await (await fetch(apiUrl("/api/graph?seed=" + encodeURIComponent(subject)
+      + "&lens=" + kgLens + "&resolution=" + encodeURIComponent(kgResolution)), { cache: "no-store" })).json();
+    await overlayFor(rp.nodes);
+    renderReprojection(rp);
+  } catch (e) {
+    el("kgpanel").innerHTML = '<div class="empty">the subject re-projection is unavailable</div>';
+  }
+}
+
+// Draw a SUBJECT x LENS re-projection (the /api/graph?seed=&lens= body, spec 55 c1/c2): the subject's
+// member set re-bucketed at the chosen altitude, drawn by the SAME super-node emitter the overview uses
+// (each bucket a data-cluster drill handle). Surfaces the honesty markers the body carries - the
+// documented empty-CELL message, the wide-cell "showing N of M" caption, the marked-unresolved members
+// (multi-candidate / undefined), and the shared-membership flag - so a re-grained cell is explained,
+// never confidently wrong. An empty member set degrades to a message, never an error.
+function renderReprojection(rp) {
+  kgMode = "reproject";
+  kgViewData = rp;
+  const subject = (rp && rp.subject) || kgSubject || "";
+  const clusters = (rp && rp.clusters) || [];
+  const total = (rp && rp.total) || 0;
+  const back = '<a class="kgback" href="#" data-kgclear="1">&larr; whole graph</a>';
+  const trunc = (rp && rp.truncated)
+    ? ' &middot; showing ' + clusters.length + ' of ' + rp.truncated + ' buckets'
+    : '';
+  const toolbar = '<div class="kgtoolbar">' + back + ' &middot; ' + lensControls()
+    + ' &middot; subject <b>' + esc(subject) + '</b> (' + total + ' member' + (total === 1 ? '' : 's') + trunc + ')</div>';
+  // The documented empty-CELL message (spec 55 c2): a derived lens with no community/concept bucket.
+  const emptyCell = (rp && rp.empty_state) ? '<div class="kgempty-cell">' + esc(rp.empty_state) + '</div>' : '';
+  // The marked-UNRESOLVED members (spec 55 c1 honesty): a bare cross-file member the graph cannot
+  // attribute to a single defining file - each with its candidate count, never a wrong attribution.
+  const unresolved = (rp && rp.unresolved) || [];
+  const unresolvedSection = unresolved.length
+    ? '<div class="kgunresolved"><h3>unresolved (' + unresolved.length + ')</h3>'
+      + unresolved.map(u => '<div class="kgnode" data-seed="' + esc(u.id) + '"><span class="tlabel">'
+        + esc(u.id) + '</span><span class="kgkind">' + (u.candidates || []).length + ' candidate'
+        + ((u.candidates || []).length === 1 ? '' : 's') + '</span></div>').join("")
+      + '</div>' : '';
+  // The SHARED-membership flag (spec 55 c2): members realizing more than one concept, folded once.
+  const shared = (rp && rp.shared) || [];
+  const sharedSection = shared.length
+    ? '<div class="kgsharedlist">shared members (fold once, realize multiple concepts): '
+      + shared.map(s => esc(s)).join(", ") + '</div>' : '';
+  if (!clusters.length) {
+    el("kgpanel").innerHTML = toolbar
+      + (emptyCell || '<div class="empty">this subject has no members under this lens</div>')
+      + unresolvedSection + sharedSection;
+    return;
+  }
+  const dims = kgDims();
+  const nodes = clusters.map(c => ({ id: c.key, count: c.count, kind: c.kind, label: c.label }));
+  const edges = ((rp && rp.edges) || []).map(e => ({ from: e.from, to: e.to, weight: e.weight }));
+  const maxCount = clusters.reduce((m, c) => Math.max(m, c.count), 1);
+  const maxW = edges.reduce((m, e) => Math.max(m, e.weight), 1);
+  const svg = kgSvg(nodes, edges, dims.w, dims.h, {
+    radius: n => 7 + 22 * (Math.sqrt(n.count) / Math.sqrt(maxCount)),
+    fill: n => kindColor(n.kind),
+    nodeClass: () => "kgcluster",
+    nodeAttrs: n => ' data-cluster="' + esc(n.id) + '"',
+    label: n => (n.label || n.id) + " (" + n.count + ")",
+    edgeWidth: e => 0.6 + 4 * (e.weight / maxW)
+  });
+  el("kgpanel").innerHTML = toolbar + emptyCell + svg + unresolvedSection + sharedSection + overlayNotes(nodes);
+  bindKgView();
+}
+
+// Fetch the rationale for a view's nodes when the overlay is ON (a no-op when off), so a freshly
+// fetched view carries its badges without a second round-trip. Best-effort inside loadRationale.
+async function overlayFor(nodes) {
+  if (kgOverlay) await loadRationale(nodes || []);
+}
+
+// Batch-fetch the rationale for the visible nodes over the c3 data path - GET /api/graph?explain=
+// <id>[,<id>...] in ONE request - and key it by node id (spec 55 c4). Only nodes carrying a decision /
+// finding / lesson come back, so the client badges exactly those and no others. A static export /
+// empty node set / failed fetch leaves the overlay empty, never an error.
+async function loadRationale(nodes) {
+  kgRationale = {};
+  const ids = (nodes || []).map(n => n.id).filter(Boolean);
+  if (!LIVE || !ids.length) return;
+  try {
+    const body = await (await fetch(apiUrl("/api/graph?explain="
+      + ids.map(encodeURIComponent).join(",")), { cache: "no-store" })).json();
+    (body.nodes || []).forEach(nr => { kgRationale[nr.node] = nr.leaves || []; });
+  } catch (e) { /* the overlay is best-effort; no badges on failure */ }
+}
+
+// The per-node RATIONALE BADGE (spec 55 c4): a native <details> "why - N" that expands to the node's
+// leaves, each leaf its own native <details> (a one-line preview -> the full content, the disclosure
+// pattern the decisions region uses). Rendered ONLY when the overlay is ON and the node carries
+// rationale, so a node is BYTE-IDENTICAL with the overlay off (zero cost / zero clutter when off).
+// Machinery-free: only the leaf CONTENT (kind + summary) surfaces, never a builder persona.
+function rationaleBadge(id) {
+  if (!kgOverlay) return "";
+  const leaves = kgRationale[id];
+  if (!leaves || !leaves.length) return "";
+  const body = leaves.map(lf =>
+    '<details class="kgleaf k-' + esc(lf.kind) + '">'
+    + '<summary>' + esc(lf.kind) + ' &middot; ' + esc(preview(lf.summary)) + '</summary>'
+    + '<div class="kgleaf-body">' + esc(lf.summary) + '</div></details>').join("");
+  return '<details class="kgbadge" data-explain="' + esc(id) + '">'
+    + '<summary>why &middot; ' + leaves.length + '</summary>'
+    + '<div class="kgleaves">' + body + '</div></details>';
+}
+
+// The overlay's companion "why" section for the SVG views (drill / calls / re-projection), where a
+// circle cannot carry an inline badge: the visible nodes that carry rationale, each a badge-and-expand.
+// Empty (nothing rendered) when the overlay is off or no visible node has rationale - so the SVG views
+// stay byte-identical with the overlay off.
+function overlayNotes(nodes) {
+  if (!kgOverlay) return "";
+  const withR = (nodes || []).filter(n => (kgRationale[n.id] || []).length);
+  if (!withR.length) return "";
+  return '<div class="kgwhy-notes"><h3>rationale (why)</h3>'
+    + withR.map(n => '<div class="kgwhy-node"><span class="tlabel">' + esc(n.label || n.id) + '</span>'
+      + rationaleBadge(n.id) + '</div>').join("") + '</div>';
+}
+
+// Toggle the rationale overlay (spec 55 c4): flip the flag, reflect it on the toggle, (re)load the
+// current view's rationale when turning ON (clear it when OFF), then re-render the SAME view IN PLACE
+// so the badges appear / disappear without a re-fetch of the view itself.
+async function setOverlay(on) {
+  kgOverlay = on;
+  syncOverlayToggle();
+  const nodes = (kgViewData && kgViewData.nodes) || [];
+  if (on) await loadRationale(nodes);
+  else kgRationale = {};
+  rerenderCurrentView();
+}
+
+// Re-render the CURRENT KG view in place from its cached body (used by the overlay toggle). Mirrors the
+// renderer the view was drawn by, so a toggle never changes WHICH view is shown - only whether its
+// nodes carry badges.
+function rerenderCurrentView() {
+  if (!kgViewData) return;
+  if (kgMode === "overview") renderKgOverview(kgViewData);
+  else if (kgMode === "drill") renderKgDrill(kgViewData);
+  else if (kgMode === "calls") renderKgCalls(kgViewData);
+  else if (kgMode === "reproject") renderReprojection(kgViewData);
+  else renderGraph(kgViewData);
+}
+
 function tierClass(t) { return "tier tier-" + String(t || "extracted"); }
 
 // Draw a seeded neighborhood (the /api/graph body): the reachable nodes (each clickable to re-seed)
@@ -652,6 +914,10 @@ function renderGraph(g) {
   // Cache the last-rendered neighborhood so a tier toggle re-filters the DRAWN edges without a
   // re-fetch (spec 30 c7) - the body is unchanged, only the client's visible-tier set moved.
   kgLast = g;
+  // Record which view is current + its body so the overlay toggle can re-render it in place (spec 55
+  // c4). These are state-only assignments; they do NOT change this view's rendered output.
+  kgMode = "seed";
+  kgViewData = g;
   const nodes = g.nodes || [];
   const edges = g.edges || [];
   // The query-path (spec 30 c6): the shortest chain of node ids between the two selected nodes, and
@@ -703,6 +969,9 @@ function renderGraph(g) {
     + '<span class="tlabel">' + esc(n.label || n.id) + '</span>'
     + '<span class="kgkind">' + esc(n.kind) + '</span>'
     + (n.god ? '<span class="kggod" title="high-degree hub">god-node &middot; deg ' + esc(n.degree || 0) + '</span>' : '')
+    // The rationale-overlay badge (spec 55 c4): empty unless the overlay is ON and this node carries
+    // rationale, so a node renders byte-identical with the overlay off.
+    + rationaleBadge(n.id)
     + '</div>'
   ).join("") || '<div class="empty">none</div>';
   // c7 TIER FILTER: draw only the edges whose tier is currently VISIBLE (kgTiers). The god-node
@@ -739,6 +1008,10 @@ function renderGraph(g) {
 // percent-decodes it back). A failed/absent fetch degrades to a message, never an error.
 async function seedGraph(seed) {
   kgSeed = seed;
+  // FOCUS this node as the subject (spec 55 c4): reveal the subject-sticky lens control so a lens flip
+  // re-projects THIS subject. State-only; the neighborhood render below stays byte-identical.
+  kgSubject = seed;
+  syncSubjectLens();
   if (!LIVE) {
     // The exported static snapshot has no server to query; the KG neighborhood is a live-only view.
     el("kgpanel").innerHTML = '<div class="kgseed">selected <b>' + esc(seed) + '</b></div>'
@@ -748,6 +1021,7 @@ async function seedGraph(seed) {
   try {
     const g = await (await fetch(apiUrl("/api/graph?seed=" + encodeURIComponent(seed) + "&depth=2"),
       { cache: "no-store" })).json();
+    await overlayFor(g.nodes);
     renderGraph(g);
   } catch (e) {
     el("kgpanel").innerHTML = '<div class="empty">the knowledge-graph neighborhood is unavailable</div>';
@@ -766,6 +1040,7 @@ async function pathTo(target) {
     const g = await (await fetch(apiUrl("/api/graph?seed=" + encodeURIComponent(kgSeed) + "&depth=2"
       + "&from=" + encodeURIComponent(kgSeed) + "&to=" + encodeURIComponent(target)),
       { cache: "no-store" })).json();
+    await overlayFor(g.nodes);
     renderGraph(g);
   } catch (e) {
     el("kgpanel").innerHTML = '<div class="empty">the knowledge-graph neighborhood is unavailable</div>';
@@ -1078,6 +1353,7 @@ function bindKgView() {
 // degrades to an empty-graph message, never an error.
 function renderKgOverview(ov) {
   kgMode = "overview";
+  kgViewData = ov;
   const clusters = (ov && ov.clusters) || [];
   const total = (ov && ov.total) || 0;
   const controls = lensControls();
@@ -1143,6 +1419,7 @@ function lensControls() {
 // `shared`, so the marker never appears and the drill stays byte-identical.
 function renderKgDrill(nb) {
   kgMode = "drill";
+  kgViewData = nb;
   const nodes = (nb && nb.nodes) || [];
   const edges = (nb && nb.edges) || [];
   const key = (nb && nb.seed) || "";
@@ -1174,15 +1451,19 @@ function renderKgDrill(nb) {
     label: n => n.shared ? (n.label || n.id) + " [shared]" : (n.label || n.id),
     edgeWidth: () => 1.2
   });
-  el("kgpanel").innerHTML = toolbar + svg;
+  // The rationale-overlay companion "why" section (spec 55 c4): empty (byte-identical) when the overlay
+  // is off; when on, the drilled members that carry rationale, each a badge-and-expand.
+  el("kgpanel").innerHTML = toolbar + svg + overlayNotes(nodes);
   bindKgView();
 }
 
 // Load the whole-graph clustered OVERVIEW - the DEFAULT KG view (spec 42 c5). Fetches the no-argument
 // /api/graph route (the c4 default). A static export has no server, so it says so; a failed fetch
-// degrades to a message. The panel never throws.
+// degrades to a message. The panel never throws. It also CLEARS the focused subject (spec 55 c4): the
+// whole-graph overview is the subject-less altitude, so the subject-sticky lens control is re-hidden.
 async function loadKgOverview() {
   kgSeed = null;
+  kgSubject = null; syncSubjectLens();
   if (!LIVE) {
     el("kgpanel").innerHTML =
       '<div class="empty">the whole-graph explorer is available in the live dash (this is a static export)</div>';
@@ -1218,6 +1499,7 @@ async function drillCluster(key) {
       ? "&lens=" + kgLens + "&resolution=" + encodeURIComponent(kgResolution)
       : "";
     const nb = await (await fetch(apiUrl("/api/graph?cluster=" + encodeURIComponent(key) + q), { cache: "no-store" })).json();
+    await overlayFor(nb.nodes);
     renderKgDrill(nb);
   } catch (e) {
     el("kgpanel").innerHTML = '<div class="empty">the cluster is unavailable</div>';
@@ -1250,6 +1532,7 @@ async function seedCalls(seed, dir) {
   try {
     const cg = await (await fetch(apiUrl("/api/graph?view=calls&seed=" + encodeURIComponent(seed)
       + "&dir=" + encodeURIComponent(kgCallsDir) + "&depth=6"), { cache: "no-store" })).json();
+    await overlayFor(cg.nodes);
     renderKgCalls(cg);
   } catch (e) {
     el("kgpanel").innerHTML = '<div class="empty">the directed-call view is unavailable</div>';
@@ -1264,6 +1547,7 @@ async function seedCalls(seed, dir) {
 // re-seeds the neighborhood. An empty walk degrades to a message, never an error.
 function renderKgCalls(cg) {
   kgMode = "calls";
+  kgViewData = cg;
   const nodes = (cg && cg.nodes) || [];
   const edges = (cg && cg.edges) || [];
   const seed = (cg && cg.seed) || "";
@@ -1334,7 +1618,9 @@ function renderKgCalls(cg) {
         + esc(n.label || n.id) + '</span><span class="kgkind">' + esc(n.kind) + '</span></div>').join("")
       + '</div>'
     : "";
-  el("kgpanel").innerHTML = head + capNote + svg + refSection;
+  // The rationale-overlay companion "why" section (spec 55 c4): empty (byte-identical) when the overlay
+  // is off; when on, the SHOWN call nodes that carry rationale, each a badge-and-expand.
+  el("kgpanel").innerHTML = head + capNote + svg + refSection + overlayNotes(shown);
   bindKgView();
 }
 
@@ -1370,9 +1656,15 @@ function wireSelectToSeed() {
       // view on it; and a node's data-seed SEEDS the spec 30 neighborhood (unchanged).
       const back = ev.target.closest("[data-kgback]");
       if (back) { ev.preventDefault(); loadKgOverview(); return; }
-      // The overview LENS selector (spec 53 c4): switch the bucket key and re-load the overview.
+      // The re-projection's "whole graph" CLEAR (spec 55 c4): clears the focused subject and returns to
+      // the overview - the same target as data-kgback, distinct handle so it reads as "clear subject".
+      const clearIn = ev.target.closest("[data-kgclear]");
+      if (clearIn) { ev.preventDefault(); loadKgOverview(); return; }
+      // The LENS selector (spec 53 c4 + spec 55 c4): switch the bucket key. onLensPick is subject-STICKY
+      // - with a focused subject it RE-REQUESTS that subject under the new lens (a re-projection); with
+      // no subject it re-loads the whole-graph overview (the byte-identical spec-53 behavior).
       const lens = ev.target.closest("[data-lens]");
-      if (lens && lens.dataset.lens) { ev.preventDefault(); kgLens = lens.dataset.lens; loadKgOverview(); return; }
+      if (lens && lens.dataset.lens) { ev.preventDefault(); onLensPick(lens.dataset.lens); return; }
       const cluster = ev.target.closest("[data-cluster]");
       if (cluster && cluster.dataset.cluster) { drillCluster(cluster.dataset.cluster); return; }
       // Directed-call entry (spec 52 c5): the two queries a code-entity node offers, and the third
@@ -1395,6 +1687,19 @@ function wireSelectToSeed() {
         else seedGraph(hit.dataset.seed);
       }
     });
+  });
+  // The unified-inspector HEADER dispatch (spec 55 c4): ONE delegated click on the STATIC #kghead, so
+  // the subject-sticky lens tabs, the whole-graph clear, and the rationale-overlay toggle work even
+  // while the panel below shows a subject (the header is never swapped by a view render). A data-lens
+  // flip re-requests the subject under the new lens (onLensPick); data-kgclear returns to the overview;
+  // data-overlay flips the rationale overlay.
+  el("kghead").addEventListener("click", ev => {
+    const overlay = ev.target.closest("[data-overlay]");
+    if (overlay) { ev.preventDefault(); setOverlay(!kgOverlay); return; }
+    const clear = ev.target.closest("[data-kgclear]");
+    if (clear) { ev.preventDefault(); loadKgOverview(); return; }
+    const lens = ev.target.closest("[data-lens]");
+    if (lens && lens.dataset.lens) { ev.preventDefault(); onLensPick(lens.dataset.lens); return; }
   });
   // c7 TIER FILTER: one delegated CHANGE listener on the stable KG panel container, so a tier-checkbox
   // toggle re-filters the DRAWN edges over the LAST neighborhood body (no re-fetch) and it SURVIVES the
@@ -1505,6 +1810,12 @@ async function poll() {
 // Attach the select-to-seed / drill / back / instance-select listeners once, on the stable containers,
 // before the first render/poll so an exploration or attach click works from the first painted panel.
 wireSelectToSeed();
+
+// Initialize the unified-inspector header (spec 55 c4): the subject-lens hidden (no subject yet) and
+// the rationale-overlay toggle reading "off", so the static controls are coherent before the first
+// paint. Both are no-ops on their view bodies (the additive guarantee).
+syncSubjectLens();
+syncOverlayToggle();
 
 // Paint the landing strip immediately (the "this dash" chip, plus any prior list) so the picker is
 // present before the first /api/instances fetch lands; the live poll then fills in the instances.
