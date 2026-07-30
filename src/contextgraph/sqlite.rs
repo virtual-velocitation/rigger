@@ -3005,6 +3005,281 @@ mod tests {
     }
 
     #[test]
+    fn a_concept_rerun_supersedes_only_its_grain_through_the_real_derivation_pipeline() {
+        // Spec 54 RE-RUN SUPERSESSION (this unit OWNS the concept lifecycle claim; the community
+        // sibling `a_fresh_rerun_supersedes_only_its_own_resolution_grain` proves the mirror over
+        // hand-built CommunityAssigned events). Unlike that sibling - and unlike the c1 fold-periphery
+        // tests that hand-build events - this drives the REAL concepts pipeline end to end
+        // (`intent_layer` -> `derive` -> `events` -> fold) over a CHANGED intent layer at the SAME
+        // resolution, so the concept arm's edge-retire is LOAD-BEARING: a member MOVES from
+        // concept/1/1 to concept/1/0, and only the retire keeps it from ending with two live r=1
+        // memberships.
+        //
+        // Mutation teeth, TWO independent mechanisms (this unit's diff is test-only; production stays
+        // byte-identical):
+        //   (a) RETIRE FIRES (d-u54c4-teeth-mutation-proven): neutralize the concept arm's
+        //       `if c.fresh { UPDATE edges SET valid_to ... }` (e.g. its WHERE -> `WHERE 1=0`) and this
+        //       reddens for the RIGHT reason - the mover then shows TWO live r=1 memberships
+        //       [concept/1/0, concept/1/1] and no retired concept/1/1 row.
+        //   (b) PREFIX BOUNDARY (d-u54c4-rerun2-adjacent-prefix-isolation): the retire scopes by
+        //       `format!("concept/{res}/")` at sqlite.rs:1495, and the TRAILING SLASH is the sole guard
+        //       that an r=1 re-run (prefix "concept/1/") does not bleed into ADJACENT-numeric grains
+        //       (concept/10/*, concept/11/*). Drop that slash (prefix -> "concept/1") and
+        //       `substr("concept/10/0",1,9) == "concept/1"` matches, so the re-run retires the r=10/r=11
+        //       grains' edges AND drops their now-memberless concept nodes - reddening the byte-identical
+        //       isolation assertions below. This is the ISOLATION half of the d54-c4 charter this unit
+        //       OWNS ("leaving other resolutions untouched"); it mirrors the community sibling
+        //       `a_firing_rerun_supersedes_only_its_own_resolution_grain` (community/1/ vs community/10/).
+        //       A NON-adjacent control (r=2, concept/2/*) alone is VACUOUS here: "concept/1" never
+        //       prefix-matches "concept/2" whether or not the slash is present.
+        use crate::concepts::{derive, events, intent_layer, Derivation};
+
+        // Two DISJOINT intent regions, each a design doc SPECIFYING its own files. Region A's doc has
+        // the lexicographically-smallest id, so it is `concept/1/0`; region B's doc is `concept/1/1`
+        // (groups are numbered by ascending representative). `b2_in_a` rewires ONE file (`src/b2.rs`)
+        // from region B's doc onto region A's doc - how the mover crosses grains at the SAME
+        // resolution: a genuine re-derivation, not a relabelled event.
+        fn two_region_intent(b2_in_a: bool) -> Graph {
+            let doc = |id: &str, title: &str| {
+                let mut attrs = BTreeMap::new();
+                attrs.insert("title".to_string(), title.to_string());
+                Node {
+                    id: id.to_string(),
+                    kind: KIND_DESIGN_DOC.to_string(),
+                    attrs,
+                }
+            };
+            let file = |id: &str| Node {
+                id: id.to_string(),
+                kind: KIND_FILE.to_string(),
+                attrs: BTreeMap::new(),
+            };
+            let spec = |from: &str, to: &str| Edge {
+                from: from.to_string(),
+                to: to.to_string(),
+                rel: REL_SPECIFIES.to_string(),
+                valid_from: 0,
+                valid_to: None,
+                source: 0,
+                tier: TIER_EXTRACTED.to_string(),
+            };
+            let nodes = vec![
+                doc("docs/a.md", "Region A"),
+                doc("docs/b.md", "Region B"),
+                file("src/a1.rs"),
+                file("src/a2.rs"),
+                file("src/b1.rs"),
+                file("src/b2.rs"),
+            ];
+            let mut edges = vec![
+                spec("docs/a.md", "src/a1.rs"),
+                spec("docs/a.md", "src/a2.rs"),
+                spec("docs/b.md", "src/b1.rs"),
+            ];
+            // The mover: originally region B's doc specifies it; after the change region A's doc does.
+            edges.push(spec(
+                if b2_in_a { "docs/a.md" } else { "docs/b.md" },
+                "src/b2.rs",
+            ));
+            Graph { nodes, edges }
+        }
+
+        // Stamp a pass's events with unique ascending positions (fold idempotency is per-position) and
+        // ONE increasing valid_from per pass, so the re-run's retire stamps a valid_to that strictly
+        // post-dates the edges it retires (a clean bi-temporal order, not merely a non-null marker).
+        fn stamped(evs: Vec<Event>, base_pos: u64, secs: u64) -> Vec<Event> {
+            evs.into_iter()
+                .enumerate()
+                .map(|(i, mut e)| {
+                    e.position = base_pos + i as u64;
+                    e.valid_from = UNIX_EPOCH + std::time::Duration::from_secs(secs);
+                    e
+                })
+                .collect()
+        }
+
+        let membership =
+            |d: &Derivation| -> BTreeMap<String, String> { d.members.iter().cloned().collect() };
+
+        // Original r=1 derivation: the mover starts in concept/1/1 (region B).
+        let g1 = two_region_intent(false);
+        let d1 = derive(&g1, &intent_layer(&g1), 1.0);
+        let m1 = membership(&d1);
+        assert_eq!(
+            m1["docs/a.md"], "concept/1/0",
+            "region A's doc is concept/1/0"
+        );
+        assert_eq!(
+            m1["docs/b.md"], "concept/1/1",
+            "region B's doc is concept/1/1"
+        );
+        assert_eq!(
+            m1["src/b2.rs"], "concept/1/1",
+            "the mover starts in concept/1/1"
+        );
+
+        // Coexisting isolation controls over the SAME original layer, each a DIFFERENT resolution grain
+        // the r=1 re-run must leave byte-identical. `format!("{res}")` renders 2.0/10.0/11.0 as
+        // "2"/"10"/"11" (matching the id-grain segment the retire scopes by), so:
+        //   - r=2 (concept/2/*): the NON-adjacent numeric control. "concept/1" never prefix-matches
+        //     "concept/2", so this holds whether or not the retire prefix carries its trailing slash -
+        //     the WEAK guarantee (per-resolution scoping in general, NOT the boundary this unit owns).
+        //   - r=10 and r=11 (concept/10/*, concept/11/*): the ADJACENT-numeric controls. These are the
+        //     LOAD-BEARING proof of the retire's trailing-slash prefix boundary (see mutation teeth (b)
+        //     on this test): drop the slash and "concept/1" bleeds into concept/10//concept/11/,
+        //     reddening their assertions below.
+        let d2 = derive(&g1, &intent_layer(&g1), 2.0);
+        let d10 = derive(&g1, &intent_layer(&g1), 10.0);
+        let d11 = derive(&g1, &intent_layer(&g1), 11.0);
+        for (res, d) in [(2.0_f64, &d2), (10.0, &d10), (11.0, &d11)] {
+            assert!(
+                !events(d).is_empty(),
+                "the r={res} isolation grain is non-empty, so its events fire"
+            );
+        }
+
+        let p = Projector::open(":memory:", "test").unwrap();
+        p.apply_batch(&stamped(events(&d1), 1, 1_000)).unwrap();
+        p.apply_batch(&stamped(events(&d2), 1_000, 1_500)).unwrap();
+        p.apply_batch(&stamped(events(&d10), 2_000, 1_600)).unwrap();
+        p.apply_batch(&stamped(events(&d11), 3_000, 1_700)).unwrap();
+
+        // A grain's REALIZES edges across its member nodes, read RAW (retired rows included) and keyed
+        // by the grain's own `concept/<res>/` id prefix - the exact substring the retire scopes by.
+        let grain_realizes = |p: &Projector,
+                              members: &[(String, String)],
+                              prefix: &str|
+         -> Vec<(String, String, Option<i64>)> {
+            let mut rows: Vec<(String, String, Option<i64>)> = members
+                .iter()
+                .map(|(node, _)| node.clone())
+                .collect::<BTreeSet<String>>()
+                .into_iter()
+                .flat_map(|node| {
+                    edges_from(p, &node)
+                        .into_iter()
+                        .filter(|(to, rel, _)| rel == REL_REALIZES && to.starts_with(prefix))
+                        .map(move |(to, _rel, vt)| (node.clone(), to, vt))
+                })
+                .collect();
+            rows.sort();
+            rows
+        };
+        // The grain's LIVE concept super-nodes. The retire's node-drop half (sqlite.rs:1513 DELETE FROM
+        // nodes) is scoped by the SAME `concept/<res>/` prefix, so the boundary must hold for nodes too
+        // - dropping the slash would DELETE the concept/10//concept/11/ super-nodes once their edges
+        // bleed-retire. Mirrors the community sibling's node-side check (`grain_community_nodes`).
+        let grain_concept_nodes = |p: &Projector, prefix: &str| -> Vec<String> {
+            let mut ids: Vec<String> = p
+                .whole()
+                .unwrap()
+                .nodes
+                .into_iter()
+                .filter(|n| n.kind == KIND_CONCEPT && n.id.starts_with(prefix))
+                .map(|n| n.id)
+                .collect();
+            ids.sort();
+            ids
+        };
+
+        let r2_before = grain_realizes(&p, &d2.members, "concept/2/");
+        let r10_edges_before = grain_realizes(&p, &d10.members, "concept/10/");
+        let r10_nodes_before = grain_concept_nodes(&p, "concept/10/");
+        let r11_edges_before = grain_realizes(&p, &d11.members, "concept/11/");
+        let r11_nodes_before = grain_concept_nodes(&p, "concept/11/");
+        for (what, empty) in [
+            ("r=2 edges", r2_before.is_empty()),
+            ("r=10 edges", r10_edges_before.is_empty()),
+            ("r=10 concept nodes", r10_nodes_before.is_empty()),
+            ("r=11 edges", r11_edges_before.is_empty()),
+            ("r=11 concept nodes", r11_nodes_before.is_empty()),
+        ] {
+            assert!(
+                !empty,
+                "precondition: the {what} isolation grain folded a non-empty live layer \
+                 (else the boundary guard below is vacuous)"
+            );
+        }
+
+        // Re-derive r=1 over the CHANGED layer (the fresh boundary): the mover crosses to concept/1/0.
+        let g2 = two_region_intent(true);
+        let d1b = derive(&g2, &intent_layer(&g2), 1.0);
+        let m1b = membership(&d1b);
+        assert_eq!(
+            m1b["src/b2.rs"], "concept/1/0",
+            "after the change the mover derives into concept/1/0"
+        );
+        p.apply_batch(&stamped(events(&d1b), 4_000, 3_000)).unwrap();
+
+        // === RE-RUN SUPERSESSION, asserted on the mover via the edges_from RAW read ===
+        let mover: Vec<(String, Option<i64>)> = edges_from(&p, "src/b2.rs")
+            .into_iter()
+            .filter(|(_to, rel, _)| rel == REL_REALIZES)
+            .map(|(to, _rel, vt)| (to, vt))
+            .collect();
+
+        // The prior concept/1/1 membership is RETIRED (valid_to set) - kept in the table, not deleted.
+        assert!(
+            mover
+                .iter()
+                .any(|(to, vt)| to == "concept/1/1" && vt.is_some()),
+            "the mover's prior concept/1/1 membership is retired (valid_to set), not deleted; got {mover:?}"
+        );
+        assert!(
+            !mover
+                .iter()
+                .any(|(to, vt)| to == "concept/1/1" && vt.is_none()),
+            "no live concept/1/1 membership survives for the mover; got {mover:?}"
+        );
+        // Exactly ONE live r=1 membership remains: the new concept/1/0 grain.
+        let live_r1: Vec<&String> = mover
+            .iter()
+            .filter(|(to, vt)| to.starts_with("concept/1/") && vt.is_none())
+            .map(|(to, _)| to)
+            .collect();
+        assert_eq!(
+            live_r1,
+            vec![&"concept/1/0".to_string()],
+            "the re-run leaves the mover exactly one live r=1 membership, the new concept/1/0; got {mover:?}"
+        );
+
+        // === ISOLATION: every OTHER resolution grain is byte-identical across the r=1 re-run ===
+        // The NON-adjacent control (holds regardless of the trailing slash - the weak guarantee).
+        assert_eq!(
+            grain_realizes(&p, &d2.members, "concept/2/"),
+            r2_before,
+            "the resolution-2.0 grain stays byte-identical across a resolution-1.0 re-run"
+        );
+        // The ADJACENT-numeric controls - the LOAD-BEARING proof of the retire's trailing-slash prefix
+        // boundary (mutation teeth (b)): both the edge retire (sqlite.rs:1495) AND the node drop
+        // (sqlite.rs:1513) must exclude concept/10//concept/11/. Dropping the slash reddens these.
+        assert_eq!(
+            grain_realizes(&p, &d10.members, "concept/10/"),
+            r10_edges_before,
+            "the ADJACENT concept/10/ grain's REALIZES edges are untouched by the r=1 re-run - the \
+             `concept/1/` retire prefix's trailing slash excludes concept/10/ (drop the slash and \
+             this reddens)"
+        );
+        assert_eq!(
+            grain_concept_nodes(&p, "concept/10/"),
+            r10_nodes_before,
+            "the ADJACENT concept/10/ grain's concept super-nodes survive the r=1 re-run - the \
+             node-drop half of the retire also respects the trailing-slash boundary"
+        );
+        assert_eq!(
+            grain_realizes(&p, &d11.members, "concept/11/"),
+            r11_edges_before,
+            "the ADJACENT concept/11/ grain's REALIZES edges are untouched by the r=1 re-run (the \
+             same trailing-slash boundary, one adjacent grain further out)"
+        );
+        assert_eq!(
+            grain_concept_nodes(&p, "concept/11/"),
+            r11_nodes_before,
+            "the ADJACENT concept/11/ grain's concept super-nodes survive the r=1 re-run"
+        );
+    }
+
+    #[test]
     fn code_extraction_events_fold_into_a_file_container_entities_and_structural_edges() {
         // Criterion 1: a source file's extraction EMITS CodeEntityExtracted (one per definition)
         // and EdgeInferred (one per reference); the ALWAYS-compiled fold turns them into a file
