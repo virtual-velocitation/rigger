@@ -25,10 +25,10 @@
 use std::collections::HashMap;
 
 use rigger::contextgraph::{
-    Edge, Graph, Node, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_FILE, REL_CONTAINS,
-    REL_IN_COMMUNITY, REL_REALIZES,
+    Edge, Graph, Node, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_DECISION, KIND_FILE,
+    REL_CONTAINS, REL_IN_COMMUNITY, REL_REALIZES,
 };
-use rigger::dash::{reproject, route, Cluster, Lens};
+use rigger::dash::{reproject, route, Cluster, Lens, UnresolvedMember};
 
 // --- fixture helpers ----------------------------------------------------------------------------
 
@@ -467,5 +467,106 @@ fn served_reproject_fires_for_a_file_subject_and_cluster_drill_takes_precedence(
     assert!(
         drill.get("subject").is_none() && drill.get("clusters").is_none(),
         "a cluster= drill is NOT a re-projection: the c1 branch never hijacks it: {drill}"
+    );
+}
+
+// --- the FILES honesty sentinels: a ZERO-candidate bare member + a NO-file-identity member ----------
+//
+// `reproject_files` resolves a BARE placeholder by name-suffix over the definitions: EXACTLY ONE
+// auto-resolves and MORE THAN ONE is marked-unresolved with its candidates - both arms are covered by
+// the mechanics periphery (`helper` -> one, `run` -> two) and the serialize contract above. TWO
+// resolution arms remain that no fixture in either suite hits, yet each is a documented honesty
+// guarantee ("nothing silently dropped") that a regression would break green:
+//  - the ZERO-candidate bare member: a call target whose name matches NO definition anywhere (an
+//    external / not-yet-extracted symbol - an EVERYDAY case). It must be marked unresolved with an
+//    EMPTY candidate frontier, never dropped and never mis-attributed to the file its id references;
+//  - the NO-file-identity member: a non-bare member whose id names no file (a non-code singleton
+//    subject, e.g. a decision node). Under files it keeps its KIND bucket - the files-lens twin of the
+//    derived-lens kind fallback the single-entity test proves for `code`.
+
+const UNMATCHED_CONCEPT: &str = "concept/7/0";
+const EXTERNAL_BARE: &str = "src/caller.rs::external_symbol";
+
+/// A concept whose one member is a bare placeholder whose name matches NO definition anywhere.
+fn unmatched_bare_graph() -> Graph {
+    Graph {
+        nodes: vec![
+            node(UNMATCHED_CONCEPT, KIND_CONCEPT, Some("the idea")),
+            bare(EXTERNAL_BARE),
+        ],
+        edges: vec![edge(EXTERNAL_BARE, UNMATCHED_CONCEPT, REL_REALIZES)],
+    }
+}
+
+/// A bare member whose name resolves to ZERO definitions is marked-unresolved with an EMPTY candidate
+/// frontier - the honest "unknown" signal (a call to an external / not-yet-extracted symbol). It is
+/// counted in `total`, folds to NO file bucket, and is NEVER attributed to the referencing file its id
+/// encodes; the empty frontier crosses the wire as `[]`, not an omitted key.
+#[test]
+fn a_bare_member_with_no_matching_definition_is_unresolved_with_an_empty_frontier() {
+    let re = reproject(&unmatched_bare_graph(), UNMATCHED_CONCEPT, &Lens::Files);
+
+    assert_eq!(
+        re.total, 1,
+        "the one member counts even when it resolves to nothing: {re:?}"
+    );
+    assert!(
+        re.clusters.is_empty(),
+        "an unresolvable bare member folds to NO file bucket (never mis-attributed to its referencing file): {re:?}"
+    );
+    assert_eq!(
+        re.unresolved,
+        vec![UnresolvedMember {
+            id: EXTERNAL_BARE.to_string(),
+            candidates: vec![],
+        }],
+        "a bare member matching no definition is marked unresolved with an EMPTY frontier, never dropped: {re:?}"
+    );
+    // The wire contract: `unresolved` is PRESENT and the empty frontier serializes as `[]`, not omitted.
+    let body = serde_json::to_value(&re).expect("Reprojection serializes to JSON");
+    assert_eq!(
+        body["unresolved"][0]["candidates"].as_array().map(Vec::len),
+        Some(0),
+        "the empty frontier crosses the wire as an empty array, not an omitted key: {body}"
+    );
+    // The honesty exclusion: the referencing file the id encodes is NEVER a bucket.
+    assert!(
+        !re.clusters.iter().any(|c| c.key == "src/caller.rs"),
+        "the referencing file the bare id encodes is never a bucket: {re:?}"
+    );
+}
+
+const DECISION_SUBJECT: &str = "d-u55c1-a-decision-node";
+
+/// A single NON-code subject whose id names no file (a decision node) is its own singleton member set.
+/// Under the FILES lens it has no file identity, so it keeps its KIND bucket - the files-lens twin of
+/// the derived-lens kind fallback - rather than being dropped or mis-attributed. Flipping to files
+/// never empties a panel a code lens would fill.
+#[test]
+fn a_singleton_subject_with_no_file_identity_keeps_its_kind_bucket_under_files() {
+    let graph = Graph {
+        nodes: vec![node(DECISION_SUBJECT, KIND_DECISION, None)],
+        edges: vec![],
+    };
+
+    let re = reproject(&graph, DECISION_SUBJECT, &Lens::Files);
+    assert_eq!(
+        re.subject, DECISION_SUBJECT,
+        "the singleton echoes its subject"
+    );
+    assert_eq!(re.total, 1, "a single entity is a member set of one");
+    assert_eq!(
+        re.clusters,
+        vec![Cluster {
+            key: KIND_DECISION.to_string(),
+            count: 1,
+            kind: KIND_DECISION.to_string(),
+            label: None,
+        }],
+        "a member with no file identity keeps its KIND bucket under files, never dropped: {re:?}"
+    );
+    assert!(
+        re.unresolved.is_empty(),
+        "a non-bare member is resolved (to its kind), so it is never marked unresolved: {re:?}"
     );
 }
