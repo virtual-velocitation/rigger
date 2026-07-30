@@ -26,7 +26,7 @@ use std::collections::HashMap;
 
 use rigger::contextgraph::{
     Edge, Graph, Node, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_DECISION, KIND_FILE,
-    REL_CONTAINS, REL_IN_COMMUNITY, REL_REALIZES,
+    REL_CONTAINS, REL_GOVERNS, REL_IN_COMMUNITY, REL_REALIZES,
 };
 use rigger::dash::{reproject, route, Cluster, Lens, UnresolvedMember};
 
@@ -66,6 +66,18 @@ fn node(id: &str, kind: &str, label: Option<&str>) -> Node {
     if let Some(l) = label {
         n.attrs.insert("label".to_string(), l.to_string());
     }
+    n
+}
+
+/// A decision node carrying the `summary` attr the rationale fold reads (the CONTENT the overlay
+/// echoes), so a `GOVERNS`/`ABOUT` edge from it into a node makes that node carry a rationale leaf.
+fn decision(id: &str, summary: &str) -> Node {
+    let mut n = Node {
+        id: id.to_string(),
+        kind: KIND_DECISION.to_string(),
+        attrs: Default::default(),
+    };
+    n.attrs.insert("summary".to_string(), summary.to_string());
     n
 }
 
@@ -568,5 +580,97 @@ fn a_singleton_subject_with_no_file_identity_keeps_its_kind_bucket_under_files()
     assert!(
         re.unresolved.is_empty(),
         "a non-bare member is resolved (to its kind), so it is never marked unresolved: {re:?}"
+    );
+}
+
+// --- the ROUTE COMPOSITION seam: `explain=` (the rationale overlay) precedes the c1 re-projection ----
+//
+// The `/api/graph` route folds SEVERAL response shapes behind one path. When the c1 re-projection arm
+// (a non-empty `seed=` WITH an explicit `lens=`) was inserted, the route already carried an
+// `explain=<id>[,<id>...]` rationale-overlay arm that returns FIRST and short-circuits the rest. The
+// two arms COMPOSE: `explain=` is answered before the seed/lens dispatch is even reached, so a request
+// that carries BOTH `explain=` and `seed=`+`lens=` is served the rationale batch, NOT a re-projection -
+// neither arm supersedes the other, they are ordered. No single-function fixture guards this ordering;
+// only the served route composes the two arms, so only a route-level periphery test can prove the c1
+// insertion did not hijack (or get hijacked by) the overlay it sits beneath. Removing `explain=` from
+// the SAME request must fall through to the re-projection, proving the composition is a true either/or
+// keyed on the presence of `explain=`, not an accident of fixture shape.
+
+const RATIONALE_DECISION: &str = "d-why-mod";
+
+/// A `seed=`+`lens=` request that ALSO carries `explain=<seed>` is served the RATIONALE OVERLAY batch,
+/// not the re-projection: the overlay arm precedes the c1 seed/lens dispatch and short-circuits it. The
+/// identical request with `explain=` removed falls through to the re-projection - so the two route arms
+/// compose as an either/or keyed on `explain=`, and the c1 insertion neither hijacks nor is hijacked by
+/// the overlay it sits beneath.
+#[test]
+fn served_explain_overlay_takes_precedence_over_the_reprojection_when_both_are_present() {
+    // The file-over-code fixture (whose file subject re-projects to two communities) PLUS a decision
+    // that GOVERNS the file subject, so `explain=<file>` has a non-empty rationale to return.
+    let mut graph = file_over_code_graph();
+    graph
+        .nodes
+        .push(decision(RATIONALE_DECISION, "why mod.rs exists"));
+    graph
+        .edges
+        .push(edge(RATIONALE_DECISION, FILE_SUBJECT, REL_GOVERNS));
+
+    // BOTH `explain=` and `seed=`+`lens=` present: the overlay arm wins. The body is a RationaleBatch
+    // (a `nodes` array of per-node rationale), carrying NEITHER the re-projection's `subject` nor its
+    // `clusters` - so the seed/lens dispatch was never reached.
+    let both = served_json(
+        &graph,
+        "/api/graph?explain=src%2Fpkg%2Fmod.rs&seed=src%2Fpkg%2Fmod.rs&lens=code",
+    );
+    assert!(
+        both.get("subject").is_none() && both.get("clusters").is_none(),
+        "explain= precedes the c1 re-projection: an explain+seed+lens request is NOT served a \
+         re-projection (no subject / clusters key): {both}"
+    );
+    let nodes = both["nodes"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the overlay batch carries a `nodes` array: {both}"));
+    assert_eq!(
+        nodes.len(),
+        1,
+        "exactly the one requested node that carries rationale appears: {both}"
+    );
+    assert_eq!(
+        nodes[0]["node"].as_str(),
+        Some(FILE_SUBJECT),
+        "the overlay echoes the explained node: {both}"
+    );
+    let leaves = nodes[0]["leaves"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the explained node carries its rationale leaves: {both}"));
+    assert_eq!(
+        leaves[0]["id"].as_str(),
+        Some(RATIONALE_DECISION),
+        "the leaf is the governing decision: {both}"
+    );
+
+    // The SAME request with `explain=` removed falls through to the c1 re-projection: now the body IS a
+    // Reprojection (subject + clusters), NOT the overlay - proving the composition is keyed on the
+    // PRESENCE of `explain=`, and that removing it restores the re-projection arm unchanged.
+    let reproj = served_json(&graph, "/api/graph?seed=src%2Fpkg%2Fmod.rs&lens=code");
+    assert_eq!(
+        reproj["subject"].as_str(),
+        Some(FILE_SUBJECT),
+        "with explain= gone, the same seed+lens re-projects the subject: {reproj}"
+    );
+    let keys: Vec<&str> = reproj["clusters"]
+        .as_array()
+        .expect("clusters array")
+        .iter()
+        .map(|c| c["key"].as_str().expect("cluster key is a string"))
+        .collect();
+    assert_eq!(
+        keys,
+        vec![COMM_ALPHA, COMM_BETA],
+        "the re-projection buckets the file's contained entities by community: {reproj}"
+    );
+    assert!(
+        reproj.get("nodes").is_none(),
+        "the re-projection is NOT the overlay batch (no nodes array): {reproj}"
     );
 }
