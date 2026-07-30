@@ -34,6 +34,24 @@
   .release code { background: var(--panel); border: 1px solid var(--line);
     border-radius: 4px; padding: 1px 5px; }
   .release code.pr { display: inline-block; margin-top: 4px; color: var(--accent); }
+  /* LANDING strip (spec 50 c3): the instance picker. One row of selectable chips; the chip list
+     scrolls INSIDE its own container (overflow-x: auto) so any number of instances stays one row
+     and never widens the page. */
+  .landing { display: flex; align-items: center; gap: 10px; padding: 8px 20px;
+    border-bottom: 1px solid var(--line); }
+  .landing-label { flex: 0 0 auto; color: var(--muted); font-size: 12px; letter-spacing: 0.04em; }
+  .instances { flex: 1 1 auto; min-width: 0; display: flex; gap: 8px; overflow-x: auto; }
+  .inst { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+    background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 999px;
+    padding: 3px 10px; font: inherit; font-size: 12px; white-space: nowrap; }
+  .inst:hover { border-color: var(--accent); }
+  .inst.active { border-color: var(--accent); background: rgba(110, 168, 254, 0.14); color: var(--accent); }
+  .inst-name { font-weight: 600; }
+  .inst-kind { text-transform: uppercase; font-size: 10px; letter-spacing: 0.06em; }
+  .inst-kind.k-shared { color: var(--warn); }
+  .inst-kind.k-local { color: var(--ok); }
+  .inst-age { color: var(--muted); }
+  header .attached { color: var(--accent); margin-left: 8px; }
   /* The content shell: a width-reflowing grid with NO fixed max-width cap, so it fills the
      whole viewport (as many columns as fit) and collapses to one column when narrow - no dead
      space at wide widths, no page-level horizontal scroll. auto-fit packs the view sections into
@@ -212,6 +230,14 @@
   .kgtoolbar b { color: var(--ink); }
   .kgback { color: var(--accent); text-decoration: none; cursor: pointer; }
   .kgback:hover { text-decoration: underline; }
+  /* The overview LENS selector (spec 53 c4 / spec 54 c3): pick the bucket key - `files`
+     (directory/kind, the default), `code` (coupling communities), or `concepts` (derived intent
+     concepts); the resolution input is visible only under a derived lens (`code` / `concepts`). */
+  .kglens { color: var(--muted); text-decoration: none; cursor: pointer; padding: 0 3px; }
+  .kglens:hover { text-decoration: underline; }
+  .kglens.active { color: var(--ink); font-weight: 600; }
+  .kgres { width: 3.2em; font: inherit; color: var(--ink); background: var(--panel);
+    border: 1px solid var(--line); border-radius: 3px; padding: 0 3px; }
   .kgsvg { display: block; width: 100%; overflow: hidden; background: rgba(110, 168, 254, 0.03);
     border: 1px solid var(--line); border-radius: 6px; cursor: grab; touch-action: none; user-select: none; }
   .kgsvg:active { cursor: grabbing; }
@@ -222,7 +248,67 @@
   .kgcluster circle { opacity: 0.9; }
   /* A GOD-NODE (a high-degree hub the drill flags) gets a warning ring so a hub reads at a glance. */
   .kggodnode circle { stroke: var(--warn); stroke-width: 2; }
+  /* A SHARED concept member (spec 54 c3: it realizes MORE THAN ONE concept, folded under its primary
+     bucket) gets a dashed accent ring so a human drilling a concept SEES the multi-concept membership
+     the fold flagged - never a silently-deduplicated node. Defined after the god ring so a node that is
+     both a hub and multi-concept reads as shared (the honesty marker wins the ring). */
+  .kgshared circle { stroke: var(--accent); stroke-width: 2; stroke-dasharray: 3 2; }
   .kglabel { fill: var(--ink); font-size: 10px; text-anchor: middle; pointer-events: none; }
+  /* Directed-call views (spec 52 c5). The arrowhead fill; a BACK edge (recursion) is a dashed accent
+     arc so it reads apart from the solid forward edges; a FRONTIER node (a multi-candidate hop) gets
+     an accent ring so it stands out as the actionable "choose a definition" node. */
+  .kgarrowhead { fill: var(--dim); }
+  .kgline.back { stroke: var(--warn); stroke-dasharray: 4 3; opacity: 0.85; }
+  .kgcall circle { stroke: var(--panel); stroke-width: 1; }
+  .kgcall.frontier circle { stroke: var(--warn); stroke-width: 2; stroke-dasharray: 3 2; }
+  .kgcalls-offer { padding: 4px 2px; font-size: 12px; color: var(--dim); }
+  .kgcalls-offer a { color: var(--accent); text-decoration: none; margin: 0 4px; }
+  .kgfrontier:not(:empty) { padding: 6px 2px; }
+  .kgfr-head { font-size: 12px; color: var(--dim); margin-bottom: 3px; }
+  .kgfr-cand { display: block; color: var(--accent); text-decoration: none; font-size: 12px; padding: 1px 0; }
+  .kgrefd { margin-top: 6px; }
+  .kgrefd h3 { font-size: 12px; margin: 4px 0; color: var(--dim); }
+  .kgcap { font-size: 11px; color: var(--warn); padding: 2px 2px; }
+  /* The unified-inspector header (spec 55 c4): a static toolbar above the panel carrying the
+     SUBJECT-STICKY lens control and the rationale-OVERLAY toggle, so neither rides the re-rendered
+     view bodies (the additive/byte-identical guarantee). */
+  .kghead { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px;
+    font-size: 12px; color: var(--muted); margin: 0 0 8px; overflow-wrap: anywhere; }
+  .kghead b { color: var(--ink); }
+  .kgsubjectlens[hidden] { display: none; }
+  .kgtoggle { color: var(--accent); text-decoration: none; cursor: pointer; margin-left: auto;
+    border: 1px solid var(--line); border-radius: 4px; padding: 1px 7px; white-space: nowrap; }
+  .kgtoggle:hover { text-decoration: underline; }
+  .kgtoggle.active { color: var(--ink); border-color: var(--accent); font-weight: 600; }
+  /* The RATIONALE OVERLAY badge-and-expand (spec 55 c4): a native <details> per node that carries
+     rationale - the <summary> is the "why - N" count, the body lists each leaf as its own native
+     <details> (a one-line preview that expands to the full content). Rendered ONLY when the overlay
+     is on AND the node has leaves, so a node is byte-identical with the overlay off. */
+  .kgbadge { display: inline-block; margin-left: 6px; vertical-align: baseline; }
+  .kgbadge > summary { display: inline; cursor: pointer; list-style: none; color: var(--accent);
+    font-size: 11px; border: 1px solid var(--accent); border-radius: 8px; padding: 0 6px; }
+  .kgbadge > summary::-webkit-details-marker { display: none; }
+  .kgbadge[open] > summary { color: var(--ink); }
+  .kgleaves { margin: 4px 0 2px 12px; border-left: 1px solid var(--line); padding-left: 8px; }
+  .kgleaf { font-size: 12px; margin: 2px 0; }
+  .kgleaf > summary { cursor: pointer; color: var(--muted); }
+  .kgleaf.k-decision > summary { color: #f472b6; }
+  .kgleaf.k-finding > summary { color: #f87171; }
+  .kgleaf.k-lesson > summary { color: #34d399; }
+  .kgleaf-body { color: var(--ink); font-size: 12px; margin: 2px 0 4px 12px; overflow-wrap: anywhere; }
+  /* The overlay's companion "why" section for the SVG views (drill/calls/re-projection), where a
+     circle cannot hold an inline badge: the visible nodes that carry rationale, each badge-and-expand.
+     Empty (nothing rendered) when the overlay is off or no visible node has rationale. */
+  .kgwhy-notes { margin-top: 8px; }
+  .kgwhy-notes h3 { font-size: 12px; margin: 4px 0; color: var(--dim); }
+  .kgwhy-node { font-size: 12px; padding: 2px 0; overflow-wrap: anywhere; }
+  /* The re-projection honesty markers (spec 55 c1/c2): the documented empty-cell message, the marked
+     -unresolved members (multi-candidate / undefined), and the shared-membership list - so a re-grained
+     cell is explained, never confidently wrong. */
+  .kgempty-cell { font-size: 12px; color: var(--warn); padding: 4px 2px; }
+  .kgunresolved { margin-top: 6px; }
+  .kgunresolved h3 { font-size: 12px; margin: 4px 0; color: var(--dim); }
+  .kgsharedlist { font-size: 11px; color: var(--dim); padding: 3px 2px; overflow-wrap: anywhere; }
 </style>
 </head>
 <body>
@@ -231,10 +317,29 @@
   <span class="meta" id="mode"></span>
   <span class="meta" id="clock"></span>
 </header>
+<!-- LANDING view (spec 50 c3): ONE dash, any instance. The strip lists every registered rigger
+     instance on this machine; selecting one attaches the run and graph views to THAT instance's
+     stores. The rows are rendered client-side from GET /api/instances and the selection threads
+     ?instance=<id> into the store polls - so an operator sees and switches between every project
+     from one place, instead of a dash per project. -->
+<nav id="landing" class="landing" aria-label="registered instances">
+  <span class="landing-label">instances</span>
+  <div class="instances" id="instances"></div>
+</nav>
 <div id="release" class="release" hidden></div>
 <main>
   <section class="view" id="kg">
     <h2>Knowledge graph - the unified graph (code, design, decisions)</h2>
+    <!-- The unified-inspector header (spec 55 c4): the SUBJECT-STICKY lens control and the rationale
+         OVERLAY toggle live here, a STATIC sibling ABOVE #kgpanel - never touched by the view
+         renderers that swap #kgpanel's innerHTML, so with the seed+lens composition absent and the
+         overlay off every existing view (overview/drill/neighborhood/calls) renders byte-identical.
+         #kgsubjectlens is hidden until a node is focused (a subject is set); the overlay toggle is
+         always present. -->
+    <div class="kghead" id="kghead">
+      <span class="kgsubjectlens" id="kgsubjectlens" hidden></span>
+      <a href="#" class="kgtoggle" id="kgoverlaytoggle" data-overlay="1" title="reveal the decisions, findings, and lessons attached to each node">rationale overlay: off</a>
+    </div>
     <div class="kg" id="kgpanel">
       <div class="empty">the unified knowledge graph renders here for exploration; hover or click a node to highlight it, shift-click a second to trace the path between them</div>
     </div>
@@ -330,6 +435,38 @@ const LIVE = EMBEDDED_STATE === null;
 // is keyed by the stable decision id (mirrored onto each <details> as data-did), so every render
 // re-opens what the operator opened. The poll is untouched; the decisions render participates in it.
 const expandedDecisions = new Set();
+
+// ATTACH SELECTOR (spec 50 c3): which registered instance the run/graph views are showing. The
+// source of truth is the page's OWN `?instance=` query param, so a selection is shareable, survives
+// a reload, and is exactly the selector the server reads. Empty means the dash's OWN local project
+// (backward compatible - today's single-project dash). Read defensively: a non-browser realm (the
+// page-script test harness) has no `location`/`URLSearchParams`, so it degrades to "" instead of
+// throwing at load and taking the whole script down with it.
+let selectedInstance = (function () {
+  try { return new URLSearchParams(location.search).get("instance") || ""; }
+  catch (_) { return ""; }
+})();
+// The last-fetched landing list, kept so re-marking the active chip on select and the attach label
+// need no re-fetch.
+let lastInstances = [];
+
+// Thread the attached instance onto a store-reading API path so every run/graph poll (/api/state,
+// /api/events, /api/graph) lands on the SELECTED instance's stores (spec 50 c3). /api/instances is a
+// registry projection and is NEVER threaded - it lists every instance regardless of the selection.
+function apiUrl(path) {
+  if (!selectedInstance) return path;
+  const sep = path.includes("?") ? "&" : "?";
+  return path + sep + "instance=" + encodeURIComponent(selectedInstance);
+}
+
+// A badge for the mode line naming the attached instance, so it is always clear WHICH project the
+// run/graph views show (empty for the dash's own local project).
+function attachLabel() {
+  if (!selectedInstance) return "";
+  const inst = lastInstances.find(i => i.id === selectedInstance);
+  return ' <span class="attached">attached: '
+    + esc(inst ? (inst.project || inst.root) : selectedInstance) + '</span>';
+}
 
 function esc(s) {
   return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({
@@ -536,6 +673,14 @@ function renderFeed(events) {
 // uses): render() never touches el("kgpanel").
 let kgSeed = null;
 
+// The overview/drill LENS (spec 53 c4 / spec 54 c3): `files` is the default directory/kind fold
+// (byte-identical to the server's `lens`-absent view); `code` buckets by coupling community and
+// `concepts` by derived intent concept, each at `kgResolution` (the grain the server reads). Persist
+// across overview/drill so a "<- overview" back link returns to the chosen lens. The panel survives
+// the 1.5s poll like every KG view (render() never touches kgpanel).
+let kgLens = "files";
+let kgResolution = "1";
+
 // The three confidence tiers (spec 29a) the c7 filter toggles, in precise->ambiguous order.
 const KG_TIERS = ["extracted", "inferred", "ambiguous"];
 // c7 tier filter: the set of currently-VISIBLE tiers (all shown by default) and the last-rendered
@@ -543,6 +688,218 @@ const KG_TIERS = ["extracted", "inferred", "ambiguous"];
 // re-fetch and the toggle survives the 1.5s live poll (render() never touches kgpanel).
 const kgTiers = new Set(KG_TIERS);
 let kgLast = null;
+
+// ---------------------------------------------------------------------------------------------------
+// The UNIFIED INSPECTOR client seam (spec 55 c4): a SUBJECT (whatever is focused) times a LENS (the
+// altitude), with a rationale OVERLAY that answers "why is this here". The controls live in the static
+// #kghead (a sibling above #kgpanel), so with the seed+lens composition absent and the overlay off
+// every existing view (overview / drill / neighborhood / calls) renders BYTE-IDENTICAL.
+// ---------------------------------------------------------------------------------------------------
+
+// The FOCUSED SUBJECT for the subject-sticky lens re-request: the node currently in focus (set by
+// seedGraph / reprojectSubject, cleared by loadKgOverview). While set, #kgsubjectlens is revealed and
+// a lens flip RE-REQUESTS this subject under the new lens (a re-projection), not the whole-graph view.
+let kgSubject = null;
+// The rationale OVERLAY toggle (off by default): when on, each rendered node that carries rationale
+// shows a "why - N" badge that expands to its decisions/findings/lessons. Off renders nothing extra,
+// so every view is byte-identical with the overlay off (progressive disclosure).
+let kgOverlay = false;
+// The last rationale batch, keyed node id -> its leaves (from GET /api/graph?explain=). Repopulated
+// whenever the overlay is on and a view (re-)renders; empty when the overlay is off.
+let kgRationale = {};
+// The current view's fetched body, so toggling the overlay re-renders the SAME view in place (with or
+// without badges) without a re-fetch. Set at the top of each renderer alongside kgMode.
+let kgViewData = null;
+
+// Reflect the overlay toggle's on/off state on its static affordance (the label + the active ring).
+function syncOverlayToggle() {
+  const t = el("kgoverlaytoggle");
+  if (!t) return;
+  t.textContent = "rationale overlay: " + (kgOverlay ? "on" : "off");
+  t.className = "kgtoggle" + (kgOverlay ? " active" : "");
+}
+
+// Reveal the SUBJECT-STICKY lens control when a subject is focused, hide it otherwise (spec 55 c4).
+// While shown it carries the files/code/concepts tabs (data-lens, subject-sticky through onLensPick)
+// and a whole-graph CLEAR (data-kgclear). A static element, so revealing it never touches a view body.
+function syncSubjectLens() {
+  const box = el("kgsubjectlens");
+  if (!box) return;
+  if (!kgSubject) { box.hidden = true; box.innerHTML = ""; return; }
+  box.hidden = false;
+  const tab = (id, text) => '<a href="#" class="kglens' + (kgLens === id ? " active" : "")
+    + '" data-lens="' + id + '">' + text + '</a>';
+  box.innerHTML = 'subject <b>' + esc(kgSubject) + '</b> &middot; lens: '
+    + tab("files", "files") + tab("code", "code") + tab("concepts", "concepts")
+    + ' &middot; <a href="#" class="kgback" data-kgclear="1">whole graph</a>';
+}
+
+// The SUBJECT-STICKY lens dispatch (spec 55 c4): ONE lens picker serves the overview's inline selector
+// AND the subject-lens header. When a subject is focused, flipping the lens RE-REQUESTS that subject
+// under the new lens (a re-projection, seed+lens); with no subject it reloads the whole-graph overview
+// under the new lens (the byte-identical spec-53 behavior).
+function onLensPick(lens) {
+  kgLens = lens;
+  if (kgSubject) reprojectSubject(kgSubject);
+  else loadKgOverview();
+}
+
+// SUBJECT x LENS re-projection (spec 55 c4 client seam): re-request the SAME subject under the current
+// lens - GET /api/graph?seed=<id>&lens=<lens> - which re-grains that subject's member set IN PLACE
+// (NOT a whole-graph overview, NOT the lens-absent neighborhood). The c1 route re-projects only when
+// lens= is explicitly present, so this composition fires exactly here; a lens-absent seed request stays
+// the byte-identical spec-30 neighborhood. A static export / failed fetch degrades to a message.
+async function reprojectSubject(subject) {
+  kgSubject = subject;
+  kgSeed = null;
+  syncSubjectLens();
+  if (!LIVE) {
+    el("kgpanel").innerHTML = '<div class="kgseed">subject <b>' + esc(subject) + '</b></div>'
+      + '<div class="empty">the subject re-projection is available in the live dash (this is a static export)</div>';
+    return;
+  }
+  try {
+    const rp = await (await fetch(apiUrl("/api/graph?seed=" + encodeURIComponent(subject)
+      + "&lens=" + kgLens + "&resolution=" + encodeURIComponent(kgResolution)), { cache: "no-store" })).json();
+    await overlayFor(rp.nodes);
+    renderReprojection(rp);
+  } catch (e) {
+    el("kgpanel").innerHTML = '<div class="empty">the subject re-projection is unavailable</div>';
+  }
+}
+
+// Draw a SUBJECT x LENS re-projection (the /api/graph?seed=&lens= body, spec 55 c1/c2): the subject's
+// member set re-bucketed at the chosen altitude, drawn by the SAME super-node emitter the overview uses
+// (each bucket a data-cluster drill handle). Surfaces the honesty markers the body carries - the
+// documented empty-CELL message, the wide-cell "showing N of M" caption, the marked-unresolved members
+// (multi-candidate / undefined), and the shared-membership flag - so a re-grained cell is explained,
+// never confidently wrong. An empty member set degrades to a message, never an error.
+function renderReprojection(rp) {
+  kgMode = "reproject";
+  kgViewData = rp;
+  const subject = (rp && rp.subject) || kgSubject || "";
+  const clusters = (rp && rp.clusters) || [];
+  const total = (rp && rp.total) || 0;
+  const back = '<a class="kgback" href="#" data-kgclear="1">&larr; whole graph</a>';
+  const trunc = (rp && rp.truncated)
+    ? ' &middot; showing ' + clusters.length + ' of ' + rp.truncated + ' buckets'
+    : '';
+  const toolbar = '<div class="kgtoolbar">' + back + ' &middot; ' + lensControls()
+    + ' &middot; subject <b>' + esc(subject) + '</b> (' + total + ' member' + (total === 1 ? '' : 's') + trunc + ')</div>';
+  // The documented empty-CELL message (spec 55 c2): a derived lens with no community/concept bucket.
+  const emptyCell = (rp && rp.empty_state) ? '<div class="kgempty-cell">' + esc(rp.empty_state) + '</div>' : '';
+  // The marked-UNRESOLVED members (spec 55 c1 honesty): a bare cross-file member the graph cannot
+  // attribute to a single defining file - each with its candidate count, never a wrong attribution.
+  const unresolved = (rp && rp.unresolved) || [];
+  const unresolvedSection = unresolved.length
+    ? '<div class="kgunresolved"><h3>unresolved (' + unresolved.length + ')</h3>'
+      + unresolved.map(u => '<div class="kgnode" data-seed="' + esc(u.id) + '"><span class="tlabel">'
+        + esc(u.id) + '</span><span class="kgkind">' + (u.candidates || []).length + ' candidate'
+        + ((u.candidates || []).length === 1 ? '' : 's') + '</span></div>').join("")
+      + '</div>' : '';
+  // The SHARED-membership flag (spec 55 c2): members realizing more than one concept, folded once.
+  const shared = (rp && rp.shared) || [];
+  const sharedSection = shared.length
+    ? '<div class="kgsharedlist">shared members (fold once, realize multiple concepts): '
+      + shared.map(s => esc(s)).join(", ") + '</div>' : '';
+  if (!clusters.length) {
+    el("kgpanel").innerHTML = toolbar
+      + (emptyCell || '<div class="empty">this subject has no members under this lens</div>')
+      + unresolvedSection + sharedSection;
+    return;
+  }
+  const dims = kgDims();
+  const nodes = clusters.map(c => ({ id: c.key, count: c.count, kind: c.kind, label: c.label }));
+  const edges = ((rp && rp.edges) || []).map(e => ({ from: e.from, to: e.to, weight: e.weight }));
+  const maxCount = clusters.reduce((m, c) => Math.max(m, c.count), 1);
+  const maxW = edges.reduce((m, e) => Math.max(m, e.weight), 1);
+  const svg = kgSvg(nodes, edges, dims.w, dims.h, {
+    radius: n => 7 + 22 * (Math.sqrt(n.count) / Math.sqrt(maxCount)),
+    fill: n => kindColor(n.kind),
+    nodeClass: () => "kgcluster",
+    nodeAttrs: n => ' data-cluster="' + esc(n.id) + '"',
+    label: n => (n.label || n.id) + " (" + n.count + ")",
+    edgeWidth: e => 0.6 + 4 * (e.weight / maxW)
+  });
+  el("kgpanel").innerHTML = toolbar + emptyCell + svg + unresolvedSection + sharedSection + overlayNotes(nodes);
+  bindKgView();
+}
+
+// Fetch the rationale for a view's nodes when the overlay is ON (a no-op when off), so a freshly
+// fetched view carries its badges without a second round-trip. Best-effort inside loadRationale.
+async function overlayFor(nodes) {
+  if (kgOverlay) await loadRationale(nodes || []);
+}
+
+// Batch-fetch the rationale for the visible nodes over the c3 data path - GET /api/graph?explain=
+// <id>[,<id>...] in ONE request - and key it by node id (spec 55 c4). Only nodes carrying a decision /
+// finding / lesson come back, so the client badges exactly those and no others. A static export /
+// empty node set / failed fetch leaves the overlay empty, never an error.
+async function loadRationale(nodes) {
+  kgRationale = {};
+  const ids = (nodes || []).map(n => n.id).filter(Boolean);
+  if (!LIVE || !ids.length) return;
+  try {
+    const body = await (await fetch(apiUrl("/api/graph?explain="
+      + ids.map(encodeURIComponent).join(",")), { cache: "no-store" })).json();
+    (body.nodes || []).forEach(nr => { kgRationale[nr.node] = nr.leaves || []; });
+  } catch (e) { /* the overlay is best-effort; no badges on failure */ }
+}
+
+// The per-node RATIONALE BADGE (spec 55 c4): a native <details> "why - N" that expands to the node's
+// leaves, each leaf its own native <details> (a one-line preview -> the full content, the disclosure
+// pattern the decisions region uses). Rendered ONLY when the overlay is ON and the node carries
+// rationale, so a node is BYTE-IDENTICAL with the overlay off (zero cost / zero clutter when off).
+// Machinery-free: only the leaf CONTENT (kind + summary) surfaces, never a builder persona.
+function rationaleBadge(id) {
+  if (!kgOverlay) return "";
+  const leaves = kgRationale[id];
+  if (!leaves || !leaves.length) return "";
+  const body = leaves.map(lf =>
+    '<details class="kgleaf k-' + esc(lf.kind) + '">'
+    + '<summary>' + esc(lf.kind) + ' &middot; ' + esc(preview(lf.summary)) + '</summary>'
+    + '<div class="kgleaf-body">' + esc(lf.summary) + '</div></details>').join("");
+  return '<details class="kgbadge" data-explain="' + esc(id) + '">'
+    + '<summary>why &middot; ' + leaves.length + '</summary>'
+    + '<div class="kgleaves">' + body + '</div></details>';
+}
+
+// The overlay's companion "why" section for the SVG views (drill / calls / re-projection), where a
+// circle cannot carry an inline badge: the visible nodes that carry rationale, each a badge-and-expand.
+// Empty (nothing rendered) when the overlay is off or no visible node has rationale - so the SVG views
+// stay byte-identical with the overlay off.
+function overlayNotes(nodes) {
+  if (!kgOverlay) return "";
+  const withR = (nodes || []).filter(n => (kgRationale[n.id] || []).length);
+  if (!withR.length) return "";
+  return '<div class="kgwhy-notes"><h3>rationale (why)</h3>'
+    + withR.map(n => '<div class="kgwhy-node"><span class="tlabel">' + esc(n.label || n.id) + '</span>'
+      + rationaleBadge(n.id) + '</div>').join("") + '</div>';
+}
+
+// Toggle the rationale overlay (spec 55 c4): flip the flag, reflect it on the toggle, (re)load the
+// current view's rationale when turning ON (clear it when OFF), then re-render the SAME view IN PLACE
+// so the badges appear / disappear without a re-fetch of the view itself.
+async function setOverlay(on) {
+  kgOverlay = on;
+  syncOverlayToggle();
+  const nodes = (kgViewData && kgViewData.nodes) || [];
+  if (on) await loadRationale(nodes);
+  else kgRationale = {};
+  rerenderCurrentView();
+}
+
+// Re-render the CURRENT KG view in place from its cached body (used by the overlay toggle). Mirrors the
+// renderer the view was drawn by, so a toggle never changes WHICH view is shown - only whether its
+// nodes carry badges.
+function rerenderCurrentView() {
+  if (!kgViewData) return;
+  if (kgMode === "overview") renderKgOverview(kgViewData);
+  else if (kgMode === "drill") renderKgDrill(kgViewData);
+  else if (kgMode === "calls") renderKgCalls(kgViewData);
+  else if (kgMode === "reproject") renderReprojection(kgViewData);
+  else renderGraph(kgViewData);
+}
 
 function tierClass(t) { return "tier tier-" + String(t || "extracted"); }
 
@@ -557,6 +914,10 @@ function renderGraph(g) {
   // Cache the last-rendered neighborhood so a tier toggle re-filters the DRAWN edges without a
   // re-fetch (spec 30 c7) - the body is unchanged, only the client's visible-tier set moved.
   kgLast = g;
+  // Record which view is current + its body so the overlay toggle can re-render it in place (spec 55
+  // c4). These are state-only assignments; they do NOT change this view's rendered output.
+  kgMode = "seed";
+  kgViewData = g;
   const nodes = g.nodes || [];
   const edges = g.edges || [];
   // The query-path (spec 30 c6): the shortest chain of node ids between the two selected nodes, and
@@ -573,12 +934,22 @@ function renderGraph(g) {
   // A "<- overview" back link (spec 42 c5) closes the exploration round-trip: the seeded neighborhood
   // is the leaf of overview -> drill -> seed, so it carries the same data-kgback handle back to the
   // whole-graph overview. The delegated listener already routes data-kgback; this only adds the affordance.
+  // The DIRECTED-CALL entry (spec 52 c5): a code-entity node (a `<file>::<name>` id) is a function,
+  // so it offers the two directed queries beside its neighborhood - "execution path" (what it calls,
+  // transitively) and "call sites" (who calls it) - routed by the shared delegated listener. Absent
+  // for a non-code node (a decision / file / doc has no call graph).
+  const callsOffer = (g.seed && g.seed.indexOf("::") >= 0)
+    ? '<div class="kgcalls-offer">directed calls: '
+      + '<a href="#" data-calls-down="' + esc(g.seed) + '">execution path &rarr;</a> '
+      + '<a href="#" data-calls-up="' + esc(g.seed) + '">&larr; call sites</a> '
+      + '<a href="#" data-calls-both="' + esc(g.seed) + '">flow (both)</a></div>'
+    : '';
   const head = '<div class="kgtoolbar"><a class="kgback" href="#" data-kgback="1">&larr; overview</a></div>'
     + '<div class="kgseed">neighborhood of <b>' + esc(g.seed || "")
     + '</b> (depth ' + esc(g.depth || 0) + ')'
     + (path.length ? ' &middot; path <b>' + esc(path[0]) + '</b> &rarr; <b>' + esc(path[path.length - 1])
         + '</b> (' + esc(path.length - 1) + ' hop' + (path.length - 1 === 1 ? '' : 's') + ')' : '')
-    + '</div>';
+    + '</div>' + callsOffer;
   if (!nodes.length && !edges.length) {
     el("kgpanel").innerHTML = head
       + '<div class="empty">no knowledge-graph neighborhood for this node</div>';
@@ -598,6 +969,9 @@ function renderGraph(g) {
     + '<span class="tlabel">' + esc(n.label || n.id) + '</span>'
     + '<span class="kgkind">' + esc(n.kind) + '</span>'
     + (n.god ? '<span class="kggod" title="high-degree hub">god-node &middot; deg ' + esc(n.degree || 0) + '</span>' : '')
+    // The rationale-overlay badge (spec 55 c4): empty unless the overlay is ON and this node carries
+    // rationale, so a node renders byte-identical with the overlay off.
+    + rationaleBadge(n.id)
     + '</div>'
   ).join("") || '<div class="empty">none</div>';
   // c7 TIER FILTER: draw only the edges whose tier is currently VISIBLE (kgTiers). The god-node
@@ -634,6 +1008,10 @@ function renderGraph(g) {
 // percent-decodes it back). A failed/absent fetch degrades to a message, never an error.
 async function seedGraph(seed) {
   kgSeed = seed;
+  // FOCUS this node as the subject (spec 55 c4): reveal the subject-sticky lens control so a lens flip
+  // re-projects THIS subject. State-only; the neighborhood render below stays byte-identical.
+  kgSubject = seed;
+  syncSubjectLens();
   if (!LIVE) {
     // The exported static snapshot has no server to query; the KG neighborhood is a live-only view.
     el("kgpanel").innerHTML = '<div class="kgseed">selected <b>' + esc(seed) + '</b></div>'
@@ -641,8 +1019,9 @@ async function seedGraph(seed) {
     return;
   }
   try {
-    const g = await (await fetch("/api/graph?seed=" + encodeURIComponent(seed) + "&depth=2",
+    const g = await (await fetch(apiUrl("/api/graph?seed=" + encodeURIComponent(seed) + "&depth=2"),
       { cache: "no-store" })).json();
+    await overlayFor(g.nodes);
     renderGraph(g);
   } catch (e) {
     el("kgpanel").innerHTML = '<div class="empty">the knowledge-graph neighborhood is unavailable</div>';
@@ -658,9 +1037,10 @@ async function pathTo(target) {
   if (!kgSeed || kgSeed === target) { seedGraph(target); return; }
   if (!LIVE) { seedGraph(target); return; }
   try {
-    const g = await (await fetch("/api/graph?seed=" + encodeURIComponent(kgSeed) + "&depth=2"
-      + "&from=" + encodeURIComponent(kgSeed) + "&to=" + encodeURIComponent(target),
+    const g = await (await fetch(apiUrl("/api/graph?seed=" + encodeURIComponent(kgSeed) + "&depth=2"
+      + "&from=" + encodeURIComponent(kgSeed) + "&to=" + encodeURIComponent(target)),
       { cache: "no-store" })).json();
+    await overlayFor(g.nodes);
     renderGraph(g);
   } catch (e) {
     el("kgpanel").innerHTML = '<div class="empty">the knowledge-graph neighborhood is unavailable</div>';
@@ -835,18 +1215,40 @@ function forceLayout(nodes, edges, width, height) {
   return fitToBox(out, ids, 0, 0, width, height);
 }
 
-// Emit the SVG for a graph: the force layout places the nodes, then we draw one <line> per edge, and
+// Emit the SVG for a graph: a layout places the nodes, then we draw one edge per <line>/<path> and
 // one <g><circle><text></g> per node - all inside a single #kgzoom group the pan/zoom transforms. The
 // caller supplies per-node radius/colour/class/label and the select handle (data-cluster on a cluster
-// super-node, data-seed on a member), so ONE emitter serves both the overview and the drill.
+// super-node, data-seed on a member), so ONE emitter serves the overview, the drill, AND the directed
+// -call DAG (spec 52 c5). The DIRECTION is drawn from three optional opts the exploration views omit
+// (so their output is unchanged): `opts.layout` swaps the force layout for another position map (the
+// left-to-right layered layout); `opts.marker` adds an SVG ARROWHEAD marker definition and points the
+// forward edges at it; and `opts.edgeBack(e)` renders a recursion edge as a DISTINCT curved return
+// arc instead of a straight line. With none supplied the emitter draws exactly as before.
 function kgSvg(nodes, edges, width, height, opts) {
-  const pos = forceLayout(nodes, edges, width, height);
+  const pos = (opts.layout || forceLayout)(nodes, edges, width, height);
+  // The arrowhead marker (spec 52 c5): defined ONLY when the caller asks for direction, so the
+  // exploration views (no marker) emit no <defs> and stay byte-identical. Forward directed edges
+  // then carry marker-end so the callee end draws an arrowhead.
+  const defs = opts.marker
+    ? '<defs><marker id="kgarrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6"'
+      + ' orient="auto-start-reverse"><path d="M0,0 L8,4 L0,8 z" class="kgarrowhead"/></marker></defs>'
+    : "";
+  const arrow = opts.marker ? ' marker-end="url(#kgarrow)"' : "";
   const lines = edges.map(e => {
     const a = pos[e.from], b = pos[e.to];
     if (!a || !b) return "";
     const sw = opts.edgeWidth ? opts.edgeWidth(e) : 1;
+    // A BACK edge (recursion / mutual call, spec 52 c5) draws as a curved return arc through a
+    // perpendicular control point, with a distinguishing class, so it reads apart from a forward
+    // edge; every other edge stays the straight <line> the exploration views emit.
+    if (opts.edgeBack && opts.edgeBack(e)) {
+      const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2 - 34;
+      return '<path class="kgline back" d="M' + a.x.toFixed(1) + ',' + a.y.toFixed(1) + ' Q'
+        + mx.toFixed(1) + ',' + my.toFixed(1) + ' ' + b.x.toFixed(1) + ',' + b.y.toFixed(1)
+        + '" fill="none" stroke-width="' + sw.toFixed(2) + '"' + arrow + '/>';
+    }
     return '<line class="kgline" x1="' + a.x.toFixed(1) + '" y1="' + a.y.toFixed(1)
-      + '" x2="' + b.x.toFixed(1) + '" y2="' + b.y.toFixed(1) + '" stroke-width="' + sw.toFixed(2) + '"/>';
+      + '" x2="' + b.x.toFixed(1) + '" y2="' + b.y.toFixed(1) + '" stroke-width="' + sw.toFixed(2) + '"' + arrow + '/>';
   }).join("");
   const circles = nodes.map(n => {
     const q = pos[n.id];
@@ -855,13 +1257,62 @@ function kgSvg(nodes, edges, width, height, opts) {
     const cls = opts.nodeClass ? opts.nodeClass(n) : "kgdot";
     const attrs = opts.nodeAttrs ? opts.nodeAttrs(n) : "";
     const fill = opts.fill ? ' fill="' + esc(opts.fill(n)) + '"' : "";
+    // An optional native SVG <title> (hover tooltip), emitted ONLY when the caller supplies opts.title
+    // AND it returns a non-empty string - so every view that does not ask for one stays byte-identical.
+    const tip = opts.title ? opts.title(n) : "";
+    const titleEl = tip ? '<title>' + esc(tip) + '</title>' : "";
     return '<g class="kgn ' + cls + '"' + attrs + ' transform="translate(' + q.x.toFixed(1) + ','
-      + q.y.toFixed(1) + ')"><circle r="' + r.toFixed(1) + '"' + fill + '/>'
+      + q.y.toFixed(1) + ')">' + titleEl + '<circle r="' + r.toFixed(1) + '"' + fill + '/>'
       + '<text class="kglabel" y="' + (r + 11).toFixed(1) + '">' + esc(opts.label(n)) + '</text></g>';
   }).join("");
   return '<svg class="kgsvg" width="100%" height="' + height + '" viewBox="0 0 ' + width + ' ' + height
-    + '" preserveAspectRatio="xMidYMid meet">'
+    + '" preserveAspectRatio="xMidYMid meet">' + defs
     + '<g id="kgzoom">' + lines + circles + '</g></svg>';
+}
+
+// The DIRECTED-CALL layered layout (spec 52 c5): a left-to-right DAG position map for `kgSvg`, keyed
+// off the SERVER-provided signed `layer` (callees positive so the seed draws at the LEFT, callers
+// negative so it draws at the RIGHT, the seed 0 - centered for a `both` walk). x is the layer mapped
+// across the width; within a layer, nodes order by a ONE-PASS BARYCENTER sweep (each node's y is the
+// average of its already-placed neighbours' y, so an edge crosses as little as possible) and then
+// space evenly. Deterministic: layers and within-layer ties break by id, so the same graph lays out
+// identically every poll. A drop-in `opts.layout` for kgSvg, never a second graph-drawing engine.
+function layeredLayout(nodes, edges, width, height) {
+  const pad = 44;
+  const byLayer = {};
+  nodes.forEach(n => { const L = Number(n.layer || 0); (byLayer[L] = byLayer[L] || []).push(n.id); });
+  const layers = Object.keys(byLayer).map(Number).sort((a, b) => a - b);
+  if (!layers.length) return {};
+  const minL = layers[0], maxL = layers[layers.length - 1];
+  const span = (maxL - minL) || 1;
+  const xOf = L => (layers.length === 1) ? width / 2 : pad + ((L - minL) / span) * (width - 2 * pad);
+  // Undirected adjacency, so a barycenter can average neighbours in either direction.
+  const nb = {};
+  nodes.forEach(n => { nb[n.id] = []; });
+  edges.forEach(e => { if (nb[e.from] && nb[e.to]) { nb[e.from].push(e.to); nb[e.to].push(e.from); } });
+  const pos = {};
+  const yOf = {};
+  const place = (ids, L) => {
+    ids.forEach((id, i) => {
+      const y = height * (i + 1) / (ids.length + 1);
+      pos[id] = { x: xOf(L), y: y };
+      yOf[id] = y;
+    });
+  };
+  // The first layer seeds a stable id-sorted order; each later layer orders by the barycenter of its
+  // already-placed neighbours (id as the deterministic tiebreak), then spaces evenly.
+  place(byLayer[layers[0]].slice().sort(), layers[0]);
+  for (let k = 1; k < layers.length; k++) {
+    const L = layers[k];
+    const barycenter = id => {
+      const placed = nb[id].filter(m => yOf[m] !== undefined);
+      if (!placed.length) return height / 2;
+      return placed.reduce((s, m) => s + yOf[m], 0) / placed.length;
+    };
+    const ids = byLayer[L].slice().sort((a, b) => (barycenter(a) - barycenter(b)) || (a < b ? -1 : 1));
+    place(ids, L);
+  }
+  return pos;
 }
 
 // PAN + ZOOM over the drawn graph: scroll zooms toward the cursor and drag pans, both by transforming
@@ -902,15 +1353,28 @@ function bindKgView() {
 // degrades to an empty-graph message, never an error.
 function renderKgOverview(ov) {
   kgMode = "overview";
+  kgViewData = ov;
   const clusters = (ov && ov.clusters) || [];
   const total = (ov && ov.total) || 0;
+  const controls = lensControls();
+  // The documented CODE-LENS EMPTY STATE (spec 53 c4): the selected resolution grain has no derived
+  // community (the offline detection pass never ran at it). Show the server's prompt, not an error,
+  // and keep the lens selector so the operator can switch back to files or another grain.
+  if (ov && ov.empty_state) {
+    el("kgpanel").innerHTML = '<div class="kgtoolbar">' + controls + '</div>'
+      + '<div class="empty">' + esc(ov.empty_state) + '</div>';
+    return;
+  }
   if (!clusters.length) {
-    el("kgpanel").innerHTML = '<div class="kgtoolbar">whole-graph overview</div>'
+    el("kgpanel").innerHTML = '<div class="kgtoolbar">' + controls + '</div>'
       + '<div class="empty">empty graph - nothing to explore yet</div>';
     return;
   }
   const dims = kgDims();
-  const nodes = clusters.map(c => ({ id: c.key, count: c.count, kind: c.kind }));
+  // A code-lens community super-node carries its deterministic display `label` (its highest-degree
+  // member); every other bucket names itself by `key`. The files lens carries no label, so `n.label`
+  // is undefined there and the key is used - byte-identical to before.
+  const nodes = clusters.map(c => ({ id: c.key, count: c.count, kind: c.kind, label: c.label }));
   const edges = ((ov && ov.edges) || []).map(e => ({ from: e.from, to: e.to, weight: e.weight }));
   const maxCount = clusters.reduce((m, c) => Math.max(m, c.count), 1);
   const maxW = edges.reduce((m, e) => Math.max(m, e.weight), 1);
@@ -919,23 +1383,43 @@ function renderKgOverview(ov) {
     fill: n => kindColor(n.kind),
     nodeClass: () => "kgcluster",
     nodeAttrs: n => ' data-cluster="' + esc(n.id) + '"',
-    label: n => n.id + " (" + n.count + ")",
+    label: n => (n.label || n.id) + " (" + n.count + ")",
     edgeWidth: e => 0.6 + 4 * (e.weight / maxW)
   });
-  const toolbar = '<div class="kgtoolbar">' + total + " node" + (total === 1 ? "" : "s")
+  const toolbar = '<div class="kgtoolbar">' + controls + ' &middot; ' + total + " node" + (total === 1 ? "" : "s")
     + " in " + clusters.length + " cluster" + (clusters.length === 1 ? "" : "s")
     + " - click a cluster to drill in</div>";
   el("kgpanel").innerHTML = toolbar + svg;
   bindKgView();
 }
 
+// The overview toolbar's LENS selector (spec 53 c4): `files` (the default directory/kind fold) and
+// `code` (coupling communities), plus - only under `code` - a resolution grain input. The delegated
+// kgpanel click routes `data-lens` (switch lens) and the delegated change routes `data-lens-res`
+// (switch grain), each re-loading the overview; the active lens is marked.
+function lensControls() {
+  const tab = (id, text) => '<a href="#" class="kglens' + (kgLens === id ? " active" : "")
+    + '" data-lens="' + id + '">' + text + '</a>';
+  let res = "";
+  if (kgLens === "code" || kgLens === "concepts") {
+    res = ' &middot; resolution <input class="kgres" type="text" spellcheck="false" '
+      + 'value="' + esc(kgResolution) + '" data-lens-res="1" title="the derived grain to read">';
+  }
+  return 'lens: ' + tab("files", "files") + tab("code", "code") + tab("concepts", "concepts") + res;
+}
+
 // The cluster DRILL (spec 42 c5): a cluster's member nodes, each a select-to-seed handle (data-seed)
 // that hands off to the spec 30 seeded neighborhood; god-nodes (high-degree hubs the drill flagged) are
 // emphasized; a "<- overview" back link (data-kgback) returns to the overview; and when the drill was
 // capped the toolbar captions "showing the N most-connected of M". An empty cluster degrades to a
-// message, never an error.
+// message, never an error. Under the CONCEPTS lens (spec 54 c3) a member that realizes MORE THAN ONE
+// concept arrives flagged `shared` (it folds under its primary bucket, counted once): the drill
+// SURFACES that to the human - a `kgshared` distinguishing ring, a `[shared]` label tag, and a hover
+// <title> - so honest membership is met end-to-end, not just on the wire. Every other lens sends no
+// `shared`, so the marker never appears and the drill stays byte-identical.
 function renderKgDrill(nb) {
   kgMode = "drill";
+  kgViewData = nb;
   const nodes = (nb && nb.nodes) || [];
   const edges = (nb && nb.edges) || [];
   const key = (nb && nb.seed) || "";
@@ -955,27 +1439,44 @@ function renderKgDrill(nb) {
   const svg = kgSvg(nodes, edges, dims.w, dims.h, {
     radius: n => (n.god ? 9 : 5) + 6 * (Math.sqrt(n.degree || 0) / Math.sqrt(maxDeg)),
     fill: n => kindColor(n.kind),
-    nodeClass: n => n.god ? "kgmember kggodnode" : "kgmember",
+    // Flag classes mirror the god-node pattern: a hub keeps its `kggodnode` ring, and a multi-concept
+    // member (spec 54 c3 `shared`) gains `kgshared` so the concepts drill never hides shared membership.
+    nodeClass: n => "kgmember" + (n.god ? " kggodnode" : "") + (n.shared ? " kgshared" : ""),
+    // The hover tooltip explaining a shared member; single-concept members (and every other lens) get
+    // no title, so the node stays byte-identical.
+    title: n => n.shared ? "shared member: realizes multiple concepts (folded under its primary bucket)" : "",
     nodeAttrs: n => ' data-seed="' + esc(n.id) + '"',
-    label: n => n.label || n.id,
+    // A shared member's label carries a plain-text [shared] tag so a human reads the multi-concept
+    // membership without hovering; a single-concept member's label is unchanged.
+    label: n => n.shared ? (n.label || n.id) + " [shared]" : (n.label || n.id),
     edgeWidth: () => 1.2
   });
-  el("kgpanel").innerHTML = toolbar + svg;
+  // The rationale-overlay companion "why" section (spec 55 c4): empty (byte-identical) when the overlay
+  // is off; when on, the drilled members that carry rationale, each a badge-and-expand.
+  el("kgpanel").innerHTML = toolbar + svg + overlayNotes(nodes);
   bindKgView();
 }
 
 // Load the whole-graph clustered OVERVIEW - the DEFAULT KG view (spec 42 c5). Fetches the no-argument
 // /api/graph route (the c4 default). A static export has no server, so it says so; a failed fetch
-// degrades to a message. The panel never throws.
+// degrades to a message. The panel never throws. It also CLEARS the focused subject (spec 55 c4): the
+// whole-graph overview is the subject-less altitude, so the subject-sticky lens control is re-hidden.
 async function loadKgOverview() {
   kgSeed = null;
+  kgSubject = null; syncSubjectLens();
   if (!LIVE) {
     el("kgpanel").innerHTML =
       '<div class="empty">the whole-graph explorer is available in the live dash (this is a static export)</div>';
     return;
   }
   try {
-    const ov = await (await fetch("/api/graph", { cache: "no-store" })).json();
+    // The lens rides the query (spec 53 c4 / spec 54 c3): `lens=<code|concepts>&resolution=<grain>`
+    // under a derived lens; the files lens sends no lens param, so the request - and the response -
+    // stay byte-identical.
+    const q = (kgLens === "code" || kgLens === "concepts")
+      ? "?lens=" + kgLens + "&resolution=" + encodeURIComponent(kgResolution)
+      : "";
+    const ov = await (await fetch(apiUrl("/api/graph" + q), { cache: "no-store" })).json();
     renderKgOverview(ov);
   } catch (e) {
     el("kgpanel").innerHTML = '<div class="empty">the knowledge graph is unavailable</div>';
@@ -992,11 +1493,150 @@ async function drillCluster(key) {
     return;
   }
   try {
-    const nb = await (await fetch("/api/graph?cluster=" + encodeURIComponent(key), { cache: "no-store" })).json();
+    // Carry the lens (spec 53 c4 / spec 54 c3) so a code community / concept drills to its members
+    // through the SAME route; the files lens sends no lens param and the drill is byte-identical.
+    const q = (kgLens === "code" || kgLens === "concepts")
+      ? "&lens=" + kgLens + "&resolution=" + encodeURIComponent(kgResolution)
+      : "";
+    const nb = await (await fetch(apiUrl("/api/graph?cluster=" + encodeURIComponent(key) + q), { cache: "no-store" })).json();
+    await overlayFor(nb.nodes);
     renderKgDrill(nb);
   } catch (e) {
     el("kgpanel").innerHTML = '<div class="empty">the cluster is unavailable</div>';
   }
+}
+
+// ---------------------------------------------------------------------------------------------------
+// DIRECTED-CALL views (spec 52 c5): the execution path ("what does this call, transitively", dir=down)
+// and the call sites ("who calls this", dir=up) of a code entity, as a LAYERED left-to-right DAG. The
+// same kgSvg emitter draws it (an injected layered layout + arrowheads + back-edge arcs); a multi-
+// candidate cross-file hop comes back a FRONTIER the human re-seeds on, never a guess. Reached from a
+// code-entity neighborhood (renderGraph offers the two directed queries) and from a chosen frontier
+// candidate; the panel survives the 1.5s poll like every KG view (render() never touches kgpanel).
+// ---------------------------------------------------------------------------------------------------
+
+// The direction of the currently-shown call view, so a frontier re-seed continues the SAME walk.
+let kgCallsDir = "down";
+
+// Fetch and draw a directed-call view of `seed` in `dir` (down|up|both) from the c4 route. Keeps the
+// shared `kgSeed` in sync so the rest of the panel wiring has a current seed. A static export / failed
+// fetch degrades to a message; the panel never throws.
+async function seedCalls(seed, dir) {
+  kgCallsDir = dir || "down";
+  kgSeed = seed;
+  if (!LIVE) {
+    el("kgpanel").innerHTML = '<div class="kgseed">selected <b>' + esc(seed) + '</b></div>'
+      + '<div class="empty">the directed-call views are available in the live dash (this is a static export)</div>';
+    return;
+  }
+  try {
+    const cg = await (await fetch(apiUrl("/api/graph?view=calls&seed=" + encodeURIComponent(seed)
+      + "&dir=" + encodeURIComponent(kgCallsDir) + "&depth=6"), { cache: "no-store" })).json();
+    await overlayFor(cg.nodes);
+    renderKgCalls(cg);
+  } catch (e) {
+    el("kgpanel").innerHTML = '<div class="empty">the directed-call view is unavailable</div>';
+  }
+}
+
+// Draw a directed-call DAG (the c4 `view=calls` body): the layered left-to-right graph through the
+// shared kgSvg emitter (server `layer` -> x, barycenter -> within-layer y, arrowheads on the forward
+// edges, curved arcs on the back edges), a toolbar that switches direction, a place for a frontier's
+// expanded candidate list, and - for an UP walk - the flat "referenced but not called" who-uses list
+// beside the traversed DAG. A frontier node carries its candidates for the expand; a plain call node
+// re-seeds the neighborhood. An empty walk degrades to a message, never an error.
+function renderKgCalls(cg) {
+  kgMode = "calls";
+  kgViewData = cg;
+  const nodes = (cg && cg.nodes) || [];
+  const edges = (cg && cg.edges) || [];
+  const seed = (cg && cg.seed) || "";
+  const dir = (cg && cg.dir) || "down";
+  const refd = (cg && cg.referenced_not_called) || [];
+  const dirLabel = dir === "up" ? "call sites (who calls this)"
+    : dir === "both" ? "flow through this function"
+    : "execution path (what this calls)";
+  const back = '<a class="kgback" href="#" data-kgback="1">&larr; overview</a>';
+  const switcher = ' &middot; <a href="#" data-calls-down="' + esc(seed) + '">execution path</a>'
+    + ' <a href="#" data-calls-up="' + esc(seed) + '">call sites</a>'
+    + ' <a href="#" data-calls-both="' + esc(seed) + '">flow (both)</a>';
+  const head = '<div class="kgtoolbar">' + back + ' &middot; ' + esc(dirLabel) + ' of <b>'
+    + esc(seed) + '</b>' + switcher + '</div>'
+    + '<div id="kgfrontier" class="kgfrontier"></div>';
+  if (!nodes.length) {
+    el("kgpanel").innerHTML = head + '<div class="empty">no calls for this node in this direction</div>';
+    return;
+  }
+  const dims = kgDims();
+  // HIGH FAN-OUT cap (spec 52 c5): a single layer with more callees/callers than the render budget
+  // would overplot into an unreadable smear, so each layer keeps its first budget nodes (id-sorted,
+  // deterministic) and a "+K more" caption reports the rest the layer holds back; an edge to a
+  // held-back node is dropped so no line dangles. Re-seeding on a shown node reaches the rest, so
+  // nothing is lost - only deferred. A within-budget DAG renders whole (heldBack === 0, no caption).
+  const LAYER_FANOUT_BUDGET = 24;
+  const perLayer = {};
+  nodes.forEach(n => { const L = Number(n.layer || 0); (perLayer[L] = perLayer[L] || []).push(n); });
+  let shown = [], heldBack = 0;
+  Object.keys(perLayer).forEach(L => {
+    const grp = perLayer[L].slice().sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    if (grp.length > LAYER_FANOUT_BUDGET) {
+      shown = shown.concat(grp.slice(0, LAYER_FANOUT_BUDGET));
+      heldBack += grp.length - LAYER_FANOUT_BUDGET;
+    } else {
+      shown = shown.concat(grp);
+    }
+  });
+  const shownIds = {};
+  shown.forEach(n => { shownIds[n.id] = true; });
+  const shownEdges = edges.filter(e => shownIds[e.from] && shownIds[e.to]);
+  const capNote = heldBack
+    ? '<div class="kgcap">+' + heldBack + ' more held back (a layer exceeded the render budget of '
+      + LAYER_FANOUT_BUDGET + ' - re-seed on a node to expand it)</div>'
+    : "";
+  const svg = kgSvg(shown, shownEdges, dims.w, dims.h, {
+    layout: layeredLayout,
+    marker: true,
+    edgeBack: e => !!e.back,
+    radius: n => n.frontier ? 8 : 6,
+    fill: n => kindColor(n.kind),
+    // A frontier node is visually distinct and carries its candidate ids for the click-to-expand; a
+    // resolved call node re-seeds the neighborhood (data-seed), the same handle the drill uses.
+    nodeClass: n => n.frontier ? "kgcall frontier" : "kgcall",
+    nodeAttrs: n => n.frontier
+      ? ' data-frontier="1" data-candidates="' + esc((n.frontier || []).join("|")) + '"'
+      : ' data-seed="' + esc(n.id) + '"',
+    label: n => n.frontier
+      ? (n.label || n.id) + " (" + (n.frontier || []).length + " candidates)"
+      : (n.label || n.id),
+    edgeWidth: () => 1.2
+  });
+  // The UP "referenced but not called" sidecar: files that import/use the seed's name but call it
+  // from no function - each a data-seed handle back into the neighborhood. Empty for a down walk.
+  const refSection = refd.length
+    ? '<div class="kgrefd"><h3>referenced but not called</h3>'
+      + refd.map(n => '<div class="kgnode" data-seed="' + esc(n.id) + '"><span class="tlabel">'
+        + esc(n.label || n.id) + '</span><span class="kgkind">' + esc(n.kind) + '</span></div>').join("")
+      + '</div>'
+    : "";
+  // The rationale-overlay companion "why" section (spec 55 c4): empty (byte-identical) when the overlay
+  // is off; when on, the SHOWN call nodes that carry rationale, each a badge-and-expand.
+  el("kgpanel").innerHTML = head + capNote + svg + refSection + overlayNotes(shown);
+  bindKgView();
+}
+
+// Expand a clicked FRONTIER node (spec 52 c5): a multi-candidate cross-file hop the walk did NOT
+// descend. Render its candidate definitions into the frontier slot, each a data-candidate handle;
+// choosing one RE-SEEDS the directed-call view on that definition (seedCalls), so the human picks the
+// definition and the graph never guesses. `raw` is the `|`-joined candidate ids the node carried.
+function showFrontierChoices(raw) {
+  const box = el("kgfrontier");
+  if (!box) return;
+  const cands = String(raw || "").split("|").filter(Boolean);
+  if (!cands.length) { box.innerHTML = ""; return; }
+  box.innerHTML = '<div class="kgfr-head">this name has ' + cands.length
+    + ' definitions - choose one to continue the walk:</div>'
+    + cands.map(c => '<a class="kgfr-cand" href="#" data-candidate="' + esc(c) + '">'
+      + esc(c) + '</a>').join("");
 }
 
 // Wire select-to-seed ONCE (not per render): one delegated click listener on each stable container
@@ -1008,20 +1648,67 @@ async function drillCluster(key) {
 function wireSelectToSeed() {
   ["tree", "kgpanel"].forEach(id => {
     el(id).addEventListener("click", ev => {
-      // Three-way exploration dispatch (spec 42 c5), most-specific handle first, so ONE delegated
+      // Exploration dispatch (spec 42 c5 + spec 52 c5), most-specific handle first, so ONE delegated
       // listener on the stable container survives the innerHTML swaps that destroy the individual
       // nodes: a "<- overview" back link returns to the clustered overview; a cluster super-node
-      // DRILLS to its members; and a node's data-seed SEEDS the spec 30 neighborhood (unchanged).
+      // DRILLS to its members; the two DIRECTED-CALL affordances open the execution-path / call-sites
+      // DAG; a clicked FRONTIER node EXPANDS its candidates and a chosen CANDIDATE re-seeds the call
+      // view on it; and a node's data-seed SEEDS the spec 30 neighborhood (unchanged).
       const back = ev.target.closest("[data-kgback]");
       if (back) { ev.preventDefault(); loadKgOverview(); return; }
+      // The re-projection's "whole graph" CLEAR (spec 55 c4): clears the focused subject and returns to
+      // the overview - the same target as data-kgback, distinct handle so it reads as "clear subject".
+      const clearIn = ev.target.closest("[data-kgclear]");
+      if (clearIn) { ev.preventDefault(); loadKgOverview(); return; }
+      // The LENS selector (spec 53 c4 + spec 55 c4): switch the bucket key. onLensPick is subject-STICKY
+      // - with a focused subject it RE-REQUESTS that subject under the new lens (a re-projection); with
+      // no subject it re-loads the whole-graph overview (the byte-identical spec-53 behavior).
+      const lens = ev.target.closest("[data-lens]");
+      if (lens && lens.dataset.lens) { ev.preventDefault(); onLensPick(lens.dataset.lens); return; }
       const cluster = ev.target.closest("[data-cluster]");
       if (cluster && cluster.dataset.cluster) { drillCluster(cluster.dataset.cluster); return; }
+      // Directed-call entry (spec 52 c5): the two queries a code-entity node offers, and the third
+      // "flow (both)" affordance - each opens the layered DAG in that direction.
+      const cdown = ev.target.closest("[data-calls-down]");
+      if (cdown && cdown.dataset.callsDown) { ev.preventDefault(); seedCalls(cdown.dataset.callsDown, "down"); return; }
+      const cup = ev.target.closest("[data-calls-up]");
+      if (cup && cup.dataset.callsUp) { ev.preventDefault(); seedCalls(cup.dataset.callsUp, "up"); return; }
+      const cboth = ev.target.closest("[data-calls-both]");
+      if (cboth && cboth.dataset.callsBoth) { ev.preventDefault(); seedCalls(cboth.dataset.callsBoth, "both"); return; }
+      // A chosen frontier candidate re-seeds the SAME-direction walk on that definition; a frontier
+      // node click expands its candidate list (the human picks, the graph never guesses).
+      const cand = ev.target.closest("[data-candidate]");
+      if (cand && cand.dataset.candidate) { ev.preventDefault(); seedCalls(cand.dataset.candidate, kgCallsDir); return; }
+      const front = ev.target.closest("[data-frontier]");
+      if (front) { ev.preventDefault(); showFrontierChoices(front.dataset.candidates); return; }
+      // A click INSIDE a rationale-overlay badge (spec 55 c4) is the badge's OWN native <details>
+      // disclosure - never an exploration handle. In the neighborhood view the badge is rendered
+      // INSIDE the node's div.kgnode[data-seed] (renderGraph), so without this guard a click on the
+      // "why - N" summary (or any leaf summary within it) would match the data-seed branch below and
+      // RE-SEED, destroying the just-opened disclosure. Returning early WITHOUT preventDefault lets
+      // the native <details> toggle proceed (the design's "NO JS click handler" disclosure), so the
+      // badge expands and the neighborhood is left in place. The badge carries data-explain and
+      // nothing else here does, so this catches the badge summary AND its nested leaf summaries.
+      if (ev.target.closest("[data-explain]")) return;
       const hit = ev.target.closest("[data-seed]");
       if (hit && hit.dataset.seed) {
         if (ev.shiftKey) pathTo(hit.dataset.seed);
         else seedGraph(hit.dataset.seed);
       }
     });
+  });
+  // The unified-inspector HEADER dispatch (spec 55 c4): ONE delegated click on the STATIC #kghead, so
+  // the subject-sticky lens tabs, the whole-graph clear, and the rationale-overlay toggle work even
+  // while the panel below shows a subject (the header is never swapped by a view render). A data-lens
+  // flip re-requests the subject under the new lens (onLensPick); data-kgclear returns to the overview;
+  // data-overlay flips the rationale overlay.
+  el("kghead").addEventListener("click", ev => {
+    const overlay = ev.target.closest("[data-overlay]");
+    if (overlay) { ev.preventDefault(); setOverlay(!kgOverlay); return; }
+    const clear = ev.target.closest("[data-kgclear]");
+    if (clear) { ev.preventDefault(); loadKgOverview(); return; }
+    const lens = ev.target.closest("[data-lens]");
+    if (lens && lens.dataset.lens) { ev.preventDefault(); onLensPick(lens.dataset.lens); return; }
   });
   // c7 TIER FILTER: one delegated CHANGE listener on the stable KG panel container, so a tier-checkbox
   // toggle re-filters the DRAWN edges over the LAST neighborhood body (no re-fetch) and it SURVIVES the
@@ -1032,30 +1719,116 @@ function wireSelectToSeed() {
       if (box.checked) kgTiers.add(box.dataset.tier);
       else kgTiers.delete(box.dataset.tier);
       if (kgLast) renderGraph(kgLast);
+      return;
     }
+    // The code-lens RESOLUTION grain (spec 53 c4): a changed grain re-loads the overview at it; an
+    // empty value falls back to the default grain (never an empty request).
+    const res = ev.target.closest("[data-lens-res]");
+    if (res) { kgResolution = (res.value || "").trim() || "1"; loadKgOverview(); }
+  });
+  // The LANDING picker (spec 50 c3): ONE delegated click on the stable instances strip, so selecting
+  // a chip attaches the run/graph views to that instance and survives the renderInstances innerHTML
+  // swaps that destroy the individual chips.
+  el("instances").addEventListener("click", ev => {
+    const chip = ev.target.closest("[data-instance]");
+    if (chip) selectInstance(chip.dataset.instance);
   });
 }
 
-async function poll() {
+// Draw the LANDING list (spec 50 c3): one selectable chip per registered instance, plus a "this dash"
+// chip to detach back to the dash's own local project, with the active one marked. Each chip consumes
+// the six wire keys - id (the attach selector on data-instance), project (the label), kind (a
+// local/shared tag), store + root (the hover title), and age_secs (freshness) - so selecting a chip
+// serves THAT instance's run and graph views.
+function renderInstances(instances) {
+  const local = '<button type="button" class="inst' + (selectedInstance ? '' : ' active')
+    + '" data-instance="" title="the dash\'s own local project">'
+    + '<span class="inst-name">this dash</span></button>';
+  const chips = (instances || []).map(i => {
+    const active = i.id === selectedInstance ? ' active' : '';
+    const age = i.age_secs === 0 ? 'live' : (i.age_secs + 's');
+    return '<button type="button" class="inst' + active + '" data-instance="' + esc(i.id) + '"'
+      + ' title="' + esc(i.root + ' - ' + i.store) + '">'
+      + '<span class="inst-name">' + esc(i.project) + '</span>'
+      + '<span class="inst-kind k-' + esc(i.kind) + '">' + esc(i.kind) + '</span>'
+      + '<span class="inst-age">' + esc(age) + '</span>'
+      + '</button>';
+  }).join("");
+  el("instances").innerHTML = local + chips;
+}
+
+// Load and render the landing list from the registry projection at GET /api/instances (NEVER threaded
+// with ?instance= - it lists all of them). Best-effort: a failed fetch keeps the last-rendered list.
+async function loadInstances() {
+  if (!LIVE) return;
   try {
-    const s = await (await fetch("/api/state", { cache: "no-store" })).json();
-    // Tail the event feed incrementally through the second endpoint.
+    const body = await (await fetch("/api/instances", { cache: "no-store" })).json();
+    lastInstances = body.instances || [];
+    renderInstances(lastInstances);
+  } catch (_) { /* keep the last-rendered list */ }
+}
+
+// SELECT an instance to attach to (or "" for the dash's own local project). The choice is recorded on
+// the page URL (shareable, survives reload - the same ?instance= the server reads), then the run and
+// graph views switch to it IMMEDIATELY. These direct calls do NOT reschedule the poll, so the single
+// self-rescheduling poll loop is never doubled.
+function selectInstance(id) {
+  const next = id || "";
+  if (next === selectedInstance) return;
+  selectedInstance = next;
+  // Record the choice on the page URL so it is shareable and survives reload. Guarded: a non-browser
+  // realm (the page-script test harness) has no `location`/`URL`/`history`, so the selection still
+  // takes effect (state + views) without the URL breadcrumb rather than throwing.
+  try {
+    const url = new URL(location.href);
+    if (selectedInstance) url.searchParams.set("instance", selectedInstance);
+    else url.searchParams.delete("instance");
+    history.replaceState(null, "", url);
+  } catch (_) { /* no browser URL/history in this realm */ }
+  renderInstances(lastInstances);
+  refreshRun();
+  loadKgOverview();
+}
+
+// Fetch and render ONE run snapshot from the ATTACHED instance's stores (or the local project when
+// none is selected). It does NOT reschedule - `poll` owns the loop and `selectInstance` calls this
+// for an immediate switch, so the single poll loop can never be doubled.
+async function refreshRun() {
+  try {
+    const s = await (await fetch(apiUrl("/api/state"), { cache: "no-store" })).json();
+    // Tail the event feed incrementally through the second endpoint (also attached).
     try {
-      const ev = await (await fetch("/api/events?since=0", { cache: "no-store" })).json();
+      const ev = await (await fetch(apiUrl("/api/events?since=0"), { cache: "no-store" })).json();
       s.events = ev.events || [];
     } catch (_) { /* feed is best-effort */ }
     render(s);
-    el("mode").innerHTML = '<span class="live">live</span>';
+    el("mode").innerHTML = '<span class="live">live</span>' + attachLabel();
   } catch (e) {
-    el("mode").innerHTML = '<span class="stale">disconnected</span>';
-  } finally {
-    if (LIVE) setTimeout(poll, POLL_MS);
+    el("mode").innerHTML = '<span class="stale">disconnected</span>' + attachLabel();
   }
 }
 
-// Attach the select-to-seed / drill / back listeners once, on the stable containers, before the first
-// render/poll so an exploration click works from the first painted panel.
+async function poll() {
+  await refreshRun();
+  // Refresh the landing list each tick so instances that come and go (and their freshness ages)
+  // stay current; best-effort, and it never throws (loadInstances swallows its own errors).
+  await loadInstances();
+  if (LIVE) setTimeout(poll, POLL_MS);
+}
+
+// Attach the select-to-seed / drill / back / instance-select listeners once, on the stable containers,
+// before the first render/poll so an exploration or attach click works from the first painted panel.
 wireSelectToSeed();
+
+// Initialize the unified-inspector header (spec 55 c4): the subject-lens hidden (no subject yet) and
+// the rationale-overlay toggle reading "off", so the static controls are coherent before the first
+// paint. Both are no-ops on their view bodies (the additive guarantee).
+syncSubjectLens();
+syncOverlayToggle();
+
+// Paint the landing strip immediately (the "this dash" chip, plus any prior list) so the picker is
+// present before the first /api/instances fetch lands; the live poll then fills in the instances.
+renderInstances(lastInstances);
 
 // The drag PAN handlers live on `window`, installed ONCE, so a drag that leaves the svg still tracks
 // (mousedown binds per render on the fresh svg in bindKgView; move/up track globally until release).

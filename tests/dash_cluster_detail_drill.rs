@@ -33,7 +33,7 @@
 use std::collections::BTreeMap;
 
 use rigger::contextgraph::{Edge, Graph, Node, KIND_CODE_ENTITY, REL_REFERENCES, TIER_EXTRACTED};
-use rigger::dash::{cluster_detail, neighborhood, CLUSTER_RENDER_BUDGET};
+use rigger::dash::{cluster_detail, neighborhood, Lens, CLUSTER_RENDER_BUDGET};
 
 /// A code entity `cl/f.rs::<name>` - every such id folds (via `cluster_key`) to the module bucket
 /// `cl`, so a set of them forms one drillable cluster with the key `"cl"`.
@@ -73,7 +73,7 @@ fn cluster_detail_and_budget_are_reachable_over_the_public_crate_boundary() {
         nodes: vec![member("only")],
         edges: Vec::new(),
     };
-    let drill = cluster_detail(&g, "cl");
+    let drill = cluster_detail(&g, "cl", &Lens::Files);
     assert_eq!(
         drill.seed, "cl",
         "the drill echoes the drilled cluster key as its seed, so the panel can label it"
@@ -106,7 +106,7 @@ fn cluster_detail_renders_whole_at_budget_and_caps_one_over() {
         nodes: at,
         edges: Vec::new(),
     };
-    let drill_at = cluster_detail(&g_at, "cl");
+    let drill_at = cluster_detail(&g_at, "cl", &Lens::Files);
     assert_eq!(
         drill_at.nodes.len(),
         CLUSTER_RENDER_BUDGET,
@@ -131,7 +131,7 @@ fn cluster_detail_renders_whole_at_budget_and_caps_one_over() {
         nodes: over,
         edges: Vec::new(),
     };
-    let drill_over = cluster_detail(&g_over, "cl");
+    let drill_over = cluster_detail(&g_over, "cl", &Lens::Files);
     assert_eq!(
         drill_over.nodes.len(),
         CLUSTER_RENDER_BUDGET,
@@ -163,8 +163,8 @@ fn cluster_detail_is_a_pure_stable_drill_that_never_dangles_an_edge() {
     let total = nodes.len(); // hub + (budget + 2) spokes = budget + 3 members
     let g = Graph { nodes, edges };
 
-    let first = cluster_detail(&g, "cl");
-    let second = cluster_detail(&g, "cl");
+    let first = cluster_detail(&g, "cl", &Lens::Files);
+    let second = cluster_detail(&g, "cl", &Lens::Files);
     assert_eq!(
         first, second,
         "cluster_detail is a pure function of the graph: repeated drills agree (poll-stable)"
@@ -225,7 +225,7 @@ fn cluster_detail_degrades_gracefully_on_unknown_empty_key_and_empty_graph() {
     };
 
     // UNKNOWN key: no node folds to it, so the drill is empty but well-formed (seed echoed, depth 0).
-    let unknown = cluster_detail(&populated, "no/such/cluster");
+    let unknown = cluster_detail(&populated, "no/such/cluster", &Lens::Files);
     assert!(
         unknown.nodes.is_empty() && unknown.edges.is_empty(),
         "an unknown cluster key yields an empty drill"
@@ -241,7 +241,7 @@ fn cluster_detail_degrades_gracefully_on_unknown_empty_key_and_empty_graph() {
     );
 
     // EMPTY key: totality - no panic, an empty drill.
-    let empty_key = cluster_detail(&populated, "");
+    let empty_key = cluster_detail(&populated, "", &Lens::Files);
     assert!(
         empty_key.nodes.is_empty() && empty_key.edges.is_empty(),
         "an empty key folds to nothing, yielding an empty drill without panicking"
@@ -252,7 +252,7 @@ fn cluster_detail_degrades_gracefully_on_unknown_empty_key_and_empty_graph() {
         nodes: Vec::new(),
         edges: Vec::new(),
     };
-    let none = cluster_detail(&empty_graph, "cl");
+    let none = cluster_detail(&empty_graph, "cl", &Lens::Files);
     assert!(
         none.nodes.is_empty() && none.edges.is_empty() && none.truncated.is_none(),
         "an empty graph yields an empty, untruncated drill for any key"
@@ -282,7 +282,7 @@ fn truncated_serializes_only_when_the_drill_capped_preserving_neighborhood_backc
 
     // An UNDER-budget drill also omits the key, so its JSON shape matches a neighborhood - the SAME
     // renderer draws both, which is the whole point of reusing the Neighborhood shape.
-    let under = serde_json::to_value(cluster_detail(&g, "cl"))
+    let under = serde_json::to_value(cluster_detail(&g, "cl", &Lens::Files))
         .expect("a drill Neighborhood serializes to JSON");
     assert!(
         under.get("truncated").is_none(),
@@ -298,7 +298,7 @@ fn truncated_serializes_only_when_the_drill_capped_preserving_neighborhood_backc
         nodes: big,
         edges: Vec::new(),
     };
-    let over = serde_json::to_value(cluster_detail(&g_big, "cl"))
+    let over = serde_json::to_value(cluster_detail(&g_big, "cl", &Lens::Files))
         .expect("an over-budget drill serializes to JSON");
     assert_eq!(
         over.get("truncated").and_then(|v| v.as_u64()),

@@ -28,7 +28,7 @@ use rigger::contextgraph::{
     Edge, Graph, Node, KIND_CODE_ENTITY, KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, REL_REFERENCES,
     TIER_EXTRACTED,
 };
-use rigger::dash::{clustered_overview, Cluster, ClusterEdge, ClusterOverview};
+use rigger::dash::{clustered_overview, Cluster, ClusterEdge, ClusterOverview, Lens};
 
 /// A graph node with no attributes (the overview reads only its id and kind, never its label).
 fn node(id: &str, kind: &str) -> Node {
@@ -68,7 +68,7 @@ fn clustered_overview_is_reachable_and_folds_nodes_into_counted_dominant_kind_cl
         edges: vec![],
     };
 
-    let overview: ClusterOverview = clustered_overview(&graph);
+    let overview: ClusterOverview = clustered_overview(&graph, &Lens::Files);
 
     assert_eq!(overview.total, 4, "total carries every node in the graph");
     // Clusters are deterministically ordered by key; each carries its member count and dominant kind.
@@ -79,16 +79,19 @@ fn clustered_overview_is_reachable_and_folds_nodes_into_counted_dominant_kind_cl
                 key: "decision".to_string(),
                 count: 1,
                 kind: KIND_DECISION.to_string(),
+                label: None,
             },
             Cluster {
                 key: "docs".to_string(),
                 count: 1,
                 kind: KIND_DESIGN_DOC.to_string(),
+                label: None,
             },
             Cluster {
                 key: "src".to_string(),
                 count: 2,
                 kind: KIND_CODE_ENTITY.to_string(),
+                label: None,
             },
         ],
         "every cluster_key bucket becomes one counted, dominant-kind Cluster"
@@ -119,7 +122,7 @@ fn clustered_overview_breaks_a_dominant_kind_tie_by_smallest_kind_and_is_determi
         edges: vec![],
     };
 
-    let overview = clustered_overview(&graph);
+    let overview = clustered_overview(&graph, &Lens::Files);
     assert_eq!(
         overview.clusters,
         vec![
@@ -127,11 +130,13 @@ fn clustered_overview_breaks_a_dominant_kind_tie_by_smallest_kind_and_is_determi
                 key: "lib".to_string(),
                 count: 3,
                 kind: KIND_FILE.to_string(),
+                label: None,
             },
             Cluster {
                 key: "src".to_string(),
                 count: 2,
                 kind: KIND_CODE_ENTITY.to_string(),
+                label: None,
             },
         ],
         "the majority kind wins (lib -> file); a tie resolves to the smallest kind (src -> code-entity)"
@@ -140,7 +145,7 @@ fn clustered_overview_breaks_a_dominant_kind_tie_by_smallest_kind_and_is_determi
     // Determinism by construction: a second fold of the same graph yields an identical overview.
     assert_eq!(
         overview,
-        clustered_overview(&graph),
+        clustered_overview(&graph, &Lens::Files),
         "clustered_overview is a pure function of the graph: repeated folds agree exactly"
     );
 }
@@ -171,7 +176,7 @@ fn clustered_overview_weights_only_cross_cluster_currently_valid_edges() {
         ],
     };
 
-    let overview = clustered_overview(&graph);
+    let overview = clustered_overview(&graph, &Lens::Files);
     assert_eq!(overview.total, 3, "total counts the three graph nodes");
     assert_eq!(
         overview.edges,
@@ -203,7 +208,8 @@ fn clustered_overview_serializes_to_the_wire_shape_the_kg_panel_reads() {
         ],
         edges: vec![edge("src/a.rs::foo", "docs/x.md", None)],
     };
-    let value = serde_json::to_value(clustered_overview(&graph)).expect("overview serializes");
+    let value = serde_json::to_value(clustered_overview(&graph, &Lens::Files))
+        .expect("overview serializes");
 
     assert_eq!(value["total"], 2, "total is a plain node count on the wire");
     let clusters = value["clusters"].as_array().expect("clusters is an array");
@@ -238,7 +244,7 @@ fn clustered_overview_folds_a_kind_named_directory_into_one_deterministic_cluste
         edges: vec![],
     };
 
-    let overview = clustered_overview(&graph);
+    let overview = clustered_overview(&graph, &Lens::Files);
     assert_eq!(
         overview.clusters,
         vec![Cluster {
@@ -247,6 +253,7 @@ fn clustered_overview_folds_a_kind_named_directory_into_one_deterministic_cluste
             count: 3,
             // Dominant kind over the union: 2 decisions outweigh 1 code-entity.
             kind: KIND_DECISION.to_string(),
+            label: None,
         }],
         "a kind-named directory and dev-loop nodes of that kind fold into one deterministic cluster"
     );
@@ -267,7 +274,7 @@ fn clustered_overview_over_an_empty_graph_is_the_default_empty_overview() {
         edges: vec![],
     };
 
-    let overview = clustered_overview(&graph);
+    let overview = clustered_overview(&graph, &Lens::Files);
 
     assert_eq!(overview.total, 0, "an empty graph has zero nodes in total");
     assert!(

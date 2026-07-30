@@ -23,9 +23,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use kurrentdb::{
-    AppendToStreamOptions, Client, CurrentRevision, EventData, Position as KdbPosition,
-    ReadAllOptions, ReadStreamOptions, RecordedEvent, ResolvedEvent, StreamPosition, StreamState,
-    SubscribeToAllOptions, SubscribeToStreamOptions, SubscriptionFilter,
+    AppendToStreamOptions, Client, ClientSettings, CurrentRevision, EventData,
+    Position as KdbPosition, ReadAllOptions, ReadStreamOptions, RecordedEvent, ResolvedEvent,
+    StreamPosition, StreamState, SubscribeToAllOptions, SubscribeToStreamOptions,
+    SubscriptionFilter,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -53,10 +54,21 @@ pub struct Store {
 
 impl Store {
     /// Connect to KurrentDB, e.g. "kurrentdb://localhost:2113?tls=false".
+    ///
+    /// The connection string is a SECRET wherever it appears (§48, secrets discipline): every error
+    /// this function can surface names WHICH server it concerns for a useful diagnostic, but the
+    /// message is scrubbed through the single [`redact_conn`](super::redact_conn) authority first, so
+    /// the `user:password@` userinfo NEVER reaches an output path. That guards both the diagnostic we
+    /// add (the redacted address) AND anything the underlying parse error might itself echo of the
+    /// raw string. The string handed to the client is the verbatim `conn_string`, untouched -
+    /// redaction lives on the error path only.
     pub fn open(conn_string: &str) -> Result<Self, Error> {
-        let settings = conn_string
-            .parse()
-            .map_err(|e| Error::Backend(format!("kurrentdb: parse connection string: {e}")))?;
+        // Scrub every message that could echo the connection string through the one redaction
+        // authority, so a credential can never leak from a forgotten branch.
+        let backend = |msg: String| Error::Backend(super::redact_conn(&msg));
+        // The connection string is the adapter's ENTIRE topology input; it reaches the client
+        // verbatim through `client_settings`, which injects no topology of its own (§48).
+        let settings = Self::client_settings(conn_string)?;
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
@@ -65,15 +77,33 @@ impl Store {
         // inside the runtime context.
         let client = {
             let _guard = rt.enter();
-            Client::new(settings).map_err(|e| Error::Backend(format!("kurrentdb: client: {e}")))?
+            Client::new(settings)
+                .map_err(|e| backend(format!("kurrentdb: client {conn_string}: {e}")))?
         };
         let store = Store { client, rt };
         // Fail fast on an unreachable server (§8): a trivial $all read forces the
         // lazy gRPC channel to connect now, not on the first append.
         store
             .read_all(0, Direction::Forward, &Filter::default())
-            .map_err(|e| Error::Backend(format!("kurrentdb: connect: {e}")))?;
+            .map_err(|e| backend(format!("kurrentdb: connect to {conn_string}: {e}")))?;
         Ok(store)
+    }
+
+    /// Parse `conn_string` into the client's [`ClientSettings`] VERBATIM (§48, no topology
+    /// opinions). The connection string is the adapter's ENTIRE topology input - host, port, TLS
+    /// mode, credentials, and discovery all ride the string and reach the client through the
+    /// settings this returns. The ONLY transformation is [`str::parse`]: the adapter injects
+    /// nothing of its own - no default host, no localhost fallback, no forced-insecure downgrade,
+    /// no dropped credential - so a centrally hosted deployment's remote, TLS-secured, credentialed
+    /// address is honored exactly. On a parse failure the message is scrubbed through the single
+    /// [`redact_conn`](super::redact_conn) authority, so a credential in the string never reaches
+    /// an output path.
+    fn client_settings(conn_string: &str) -> Result<ClientSettings, Error> {
+        conn_string.parse().map_err(|e| {
+            Error::Backend(super::redact_conn(&format!(
+                "kurrentdb: parse connection string {conn_string}: {e}"
+            )))
+        })
     }
 }
 
@@ -471,5 +501,57 @@ mod tests {
         if let Err(e) = result {
             std::panic::resume_unwind(e);
         }
+    }
+
+    /// Spec 48 - NO TOPOLOGY OPINIONS. The connection string is the adapter's ENTIRE topology
+    /// input: host, port, TLS mode, and credentials all ride the string and reach the client
+    /// VERBATIM through `client_settings` (the exact step `Store::open` uses to turn the string
+    /// into the client's settings). The adapter injects nothing of its own - no default host, no
+    /// localhost fallback, no forced-insecure downgrade, no dropped credential. This drives that
+    /// seam with a REMOTE host, TLS explicitly on, a non-default port, and real credentials - none
+    /// of which a local-container assumption would produce - and asserts every field survives
+    /// unaltered. Hermetic: `client_settings` only parses, so no server or container is needed, and
+    /// it runs identically in both feature lanes.
+    #[test]
+    fn client_settings_pass_host_tls_and_credentials_through_verbatim() {
+        use kurrentdb::Credentials;
+        let conn = "kurrentdb://app:s3cr3t@events.internal.example:2113?tls=true";
+        let settings = Store::client_settings(conn).expect("a well-formed conn parses");
+
+        let hosts = settings.hosts();
+        assert_eq!(
+            hosts.len(),
+            1,
+            "the single named host reaches the client, nothing added"
+        );
+        assert_eq!(
+            hosts[0].host, "events.internal.example",
+            "the remote host reaches the client verbatim - no localhost injected"
+        );
+        assert_eq!(hosts[0].port, 2113, "the port reaches the client verbatim");
+        assert!(
+            settings.is_secure_mode_enabled(),
+            "TLS reaches the client verbatim - no insecure downgrade injected"
+        );
+        assert_eq!(
+            settings.default_authenticated_user(),
+            &Some(Credentials::new("app".to_string(), "s3cr3t".to_string())),
+            "the credentials reach the client verbatim - none dropped or rewritten"
+        );
+    }
+
+    /// Spec 48 - NO TOPOLOGY OPINIONS, the "no insecure assumption injected" clause specifically.
+    /// When the connection string is SILENT on TLS, the adapter adds no opinion of its own: it does
+    /// not append `?tls=false` or otherwise downgrade the connection. The parsed settings keep the
+    /// client's own secure-by-default posture, proving the adapter injects no insecure default. A
+    /// regression that forced insecurity before parsing would flip this assertion to false.
+    #[test]
+    fn client_settings_inject_no_insecure_default_when_the_string_is_silent_on_tls() {
+        let conn = "kurrentdb://events.internal.example:2113";
+        let settings = Store::client_settings(conn).expect("a well-formed conn parses");
+        assert!(
+            settings.is_secure_mode_enabled(),
+            "a TLS-silent conn stays secure - the adapter injects no insecure downgrade"
+        );
     }
 }

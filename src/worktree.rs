@@ -80,6 +80,12 @@ impl Worktree {
     /// `worktree add -b`'d (git refuses to clobber a ref), so we detect it and check
     /// it out instead.
     pub fn create(repo: &str, dir: &str, branch: &str) -> Result<Self, Error> {
+        // SELF-HEAL before any `git worktree add` (spec 51): a lifecycle killed mid
+        // `git worktree remove` can leave a corrupt admin entry (a zero-length `commondir`)
+        // that makes EVERY add below hard-fail; prune the provably-corrupt entry first so
+        // one crashed lifecycle can never permanently wedge the run. A healthy metadata dir
+        // is a no-op, and a healthy registered worktree is never touched.
+        heal_corrupt_worktree_admin(repo);
         if branch_exists(repo, branch) {
             // FAST PATH - adoption by PATH LOOKUP (Gap 12, spec 06). The dir is now
             // DETERMINISTIC (derived from the unit id / stage+attempt, no per-process
@@ -744,6 +750,57 @@ fn clear_worktree_dir(repo: &str, dir: &str) -> Result<(), Error> {
     }
     git(repo, &["worktree", "prune"])?;
     Ok(())
+}
+
+/// Prune PROVABLY-CORRUPT worktree admin entries before a `git worktree add`, so one
+/// crashed worktree lifecycle can never permanently block every later add (spec 51).
+///
+/// A `git worktree remove` (or a bare-directory sweep) killed mid-flight can leave an admin
+/// entry under `<git-common-dir>/worktrees/<name>/` whose `commondir` (or `gitdir`) marker
+/// is truncated to ZERO length. git reads EVERY admin entry up-front on any worktree
+/// command, so a single such entry makes every subsequent `git worktree add` hard-fail
+/// (`fatal: failed to read .git/worktrees/<name>/commondir`, exit 128) - and even
+/// `git worktree list` / `git worktree prune` fail the same way, so git's own prune cannot
+/// recover it and the corrupt entry must be removed off disk directly.
+///
+/// The metadata dir is located via `git rev-parse --git-common-dir`, which does NOT read
+/// the per-worktree admin entries and so still succeeds under the corruption. The healing is
+/// NARROW: only a PROVABLY-corrupt entry is removed - one whose `commondir` OR `gitdir`
+/// marker is missing or zero-length; a healthy registered worktree (both markers present and
+/// non-empty) is never touched. Best-effort and non-failing, mirroring the sweep helpers: a
+/// repo with no linked worktrees (no metadata dir) is a no-op.
+fn heal_corrupt_worktree_admin(repo: &str) {
+    let Ok(common) = run_git(repo, &["rev-parse", "--git-common-dir"]) else {
+        return;
+    };
+    let common = common.trim();
+    let common_path = {
+        let p = std::path::Path::new(common);
+        if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            std::path::Path::new(repo).join(p)
+        }
+    };
+    let Ok(entries) = std::fs::read_dir(common_path.join("worktrees")) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let admin = entry.path();
+        if admin.is_dir() && worktree_admin_is_corrupt(&admin) {
+            let _ = std::fs::remove_dir_all(&admin);
+        }
+    }
+}
+
+/// Whether a worktree admin-entry directory is PROVABLY corrupt: its `commondir` or `gitdir`
+/// marker file is MISSING or ZERO-LENGTH - the exact residue a killed `git worktree remove`
+/// leaves, and precisely what makes git's up-front admin-entry read fail. A healthy entry
+/// always has both markers present and non-empty, so this never flags a live worktree.
+fn worktree_admin_is_corrupt(admin: &std::path::Path) -> bool {
+    ["commondir", "gitdir"]
+        .iter()
+        .any(|marker| std::fs::metadata(admin.join(marker)).map_or(true, |m| m.len() == 0))
 }
 
 /// Tear down any scratch worktree still CHECKED OUT on `branch`, then reclaim its sibling
@@ -2177,6 +2234,225 @@ mod tests {
         assert!(
             !wt_dir.exists(),
             "the worktree dir is removed after its rooted processes are reaped"
+        );
+    }
+
+    #[test]
+    fn create_self_heals_a_corrupt_worktree_admin_entry_and_spares_healthy_ones() {
+        // Spec 51 criterion 4: a lifecycle killed mid-`git worktree remove` can leave a
+        // half-removed admin entry under `<git-common-dir>/worktrees/<name>/` whose
+        // `commondir` marker is truncated to ZERO length. git reads EVERY admin entry
+        // up-front on any worktree command, so one such entry makes EVERY later
+        // `git worktree add` hard-fail (`failed to read .git/worktrees/<name>/commondir`,
+        // exit 128) - and `git worktree prune` does NOT clear it (it hits the same read) -
+        // permanently wedging the run until an operator deletes the entry by hand. `create`
+        // must detect and prune ONLY the provably-corrupt entry before adding, so the next
+        // add succeeds, while leaving a HEALTHY registered worktree completely untouched.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let root = scratch_root(&repo_path, "", None);
+        let admin = repo.path().join(".git").join("worktrees");
+
+        // A HEALTHY worktree whose admin entry the healing must leave completely alone.
+        let healthy_dir = format!("{root}/{UNIT_WORKTREE_PREFIX}healthy");
+        Worktree::create(&repo_path, &healthy_dir, "rigger/u/healthy").unwrap();
+        let healthy_admin = admin.join(format!("{UNIT_WORKTREE_PREFIX}healthy"));
+        assert!(
+            healthy_admin.is_dir(),
+            "precondition: the healthy worktree has a registered admin entry"
+        );
+
+        // A CORRUPT admin entry: register a worktree, then truncate its `commondir` to
+        // zero length - the exact residue a SIGKILL mid `git worktree remove` leaves.
+        let doomed_dir = format!("{root}/{UNIT_WORKTREE_PREFIX}doomed");
+        Worktree::create(&repo_path, &doomed_dir, "rigger/u/doomed").unwrap();
+        let doomed_admin = admin.join(format!("{UNIT_WORKTREE_PREFIX}doomed"));
+        std::fs::write(doomed_admin.join("commondir"), b"").unwrap();
+        assert_eq!(
+            std::fs::metadata(doomed_admin.join("commondir"))
+                .unwrap()
+                .len(),
+            0,
+            "precondition: the doomed entry's commondir is zero-length"
+        );
+        // The corruption blocks git entirely: even enumerating worktrees fails now, which
+        // is why git's own prune cannot recover and self-healing on disk is required.
+        assert!(
+            run_git(
+                &repo_path,
+                &["worktree", "add", &format!("{root}/probe"), "-b", "probe"]
+            )
+            .is_err(),
+            "precondition: the corrupt entry makes a bare `git worktree add` hard-fail"
+        );
+
+        // `create` on a fresh branch must self-heal the corrupt entry and SUCCEED.
+        let new_dir = format!("{root}/{UNIT_WORKTREE_PREFIX}fresh");
+        let created = Worktree::create(&repo_path, &new_dir, "rigger/u/fresh");
+        assert!(
+            created.is_ok(),
+            "create must prune the corrupt admin entry first, then add: {:?}",
+            created.err()
+        );
+        assert!(
+            std::path::Path::new(&new_dir).join(".git").exists(),
+            "the freshly added worktree is a real checkout"
+        );
+
+        // The provably-corrupt entry is gone; the healthy entry is untouched.
+        assert!(
+            !doomed_admin.exists(),
+            "the provably-corrupt admin entry is pruned by the healing"
+        );
+        assert!(
+            healthy_admin.is_dir(),
+            "a healthy registered worktree is NEVER pruned by the healing"
+        );
+        // And git can enumerate again, with the healthy worktree still registered.
+        let list = run_git(&repo_path, &["worktree", "list", "--porcelain"]).unwrap();
+        assert!(
+            list.contains(&healthy_dir),
+            "the healthy worktree stays registered after healing"
+        );
+    }
+
+    #[test]
+    fn create_heals_a_zero_length_gitdir_marker_the_commondir_case_leaves_untested() {
+        // PERIPHERY contract test for the PUBLIC `Worktree::create` self-heal boundary
+        // (spec 51 criterion 4). The implementer's unit test proves the healing for ONE
+        // operand of `worktree_admin_is_corrupt` - a zero-length `commondir`. That helper
+        // deems an entry corrupt when EITHER marker (`commondir` OR `gitdir`) is missing or
+        // zero-length, so the `gitdir` operand is a DISTINCT arm of `create`'s documented
+        // contract that no unit test reaches: had the healing checked `commondir` alone, a
+        // `gitdir`-truncated entry would slip through. A `git worktree remove` killed a step
+        // earlier can truncate `gitdir` just as readily as `commondir`. Unlike a zero-length
+        // `commondir` (which wedges git outright), a zero-length `gitdir` does NOT wedge a
+        // bare `git worktree add`, and a bare add never prunes the stale entry - so the entry
+        // surviving-vs-pruned is the observable that pins the `gitdir` arm, and only
+        // `create`'s explicit healing prunes it. Proven end-to-end through the public
+        // `create`, never by calling the private helper.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let root = scratch_root(&repo_path, "", None);
+        let admin = repo.path().join(".git").join("worktrees");
+
+        // A HEALTHY worktree whose admin entry the healing must leave completely alone.
+        let healthy_dir = format!("{root}/{UNIT_WORKTREE_PREFIX}healthy");
+        Worktree::create(&repo_path, &healthy_dir, "rigger/u/healthy").unwrap();
+        let healthy_admin = admin.join(format!("{UNIT_WORKTREE_PREFIX}healthy"));
+
+        // A doomed entry whose `gitdir` marker (NOT `commondir`) is truncated to zero
+        // length - the residue a SIGKILL mid `git worktree remove` can leave on the OTHER
+        // marker. It is present before the heal and a bare add would never clear it.
+        let doomed_dir = format!("{root}/{UNIT_WORKTREE_PREFIX}doomed");
+        Worktree::create(&repo_path, &doomed_dir, "rigger/u/doomed").unwrap();
+        let doomed_admin = admin.join(format!("{UNIT_WORKTREE_PREFIX}doomed"));
+        std::fs::write(doomed_admin.join("gitdir"), b"").unwrap();
+        assert_eq!(
+            std::fs::metadata(doomed_admin.join("gitdir"))
+                .unwrap()
+                .len(),
+            0,
+            "precondition: the doomed entry's gitdir marker is zero-length"
+        );
+        assert!(
+            doomed_admin.is_dir(),
+            "precondition: the doomed admin entry is present before the heal"
+        );
+
+        // `create` on a fresh branch must prune the gitdir-corrupt entry and SUCCEED.
+        let new_dir = format!("{root}/{UNIT_WORKTREE_PREFIX}fresh");
+        let created = Worktree::create(&repo_path, &new_dir, "rigger/u/fresh");
+        assert!(
+            created.is_ok(),
+            "create must self-heal a zero-length gitdir marker before adding: {:?}",
+            created.err()
+        );
+        assert!(
+            std::path::Path::new(&new_dir).join(".git").exists(),
+            "the freshly added worktree is a real checkout"
+        );
+
+        // The gitdir-corrupt entry is pruned; the healthy entry is untouched.
+        assert!(
+            !doomed_admin.exists(),
+            "the gitdir-corrupt admin entry is pruned by the healing (the `gitdir` operand of \
+             the OR that the commondir case never exercises)"
+        );
+        assert!(
+            healthy_admin.is_dir(),
+            "a healthy registered worktree is NEVER pruned by the healing"
+        );
+        let list = run_git(&repo_path, &["worktree", "list", "--porcelain"]).unwrap();
+        assert!(
+            list.contains(&healthy_dir),
+            "the healthy worktree stays registered after healing"
+        );
+    }
+
+    #[test]
+    fn create_heals_a_fully_missing_marker_not_just_a_truncated_one() {
+        // PERIPHERY contract test for the PUBLIC `Worktree::create` self-heal boundary
+        // (spec 51 criterion 4). The implementer's unit test corrupts a marker by
+        // TRUNCATING it to zero length; `worktree_admin_is_corrupt` also treats a marker
+        // whose metadata read ERRORS - a fully ABSENT file - as corrupt (the
+        // `map_or(true, ..)` arm). A `git worktree remove` killed after it has already
+        // unlinked a marker leaves exactly this residue, so the missing-file branch is a
+        // DISTINCT arm of `create`'s contract that the truncation case leaves untested: had
+        // the healing keyed on `len() == 0` of a readable file alone, a missing marker would
+        // slip through. A bare `git worktree add` tolerates a missing `commondir` and never
+        // prunes the stale entry, so the entry surviving-vs-pruned pins the missing-file arm
+        // and only `create`'s explicit healing removes it.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let root = scratch_root(&repo_path, "", None);
+        let admin = repo.path().join(".git").join("worktrees");
+
+        let healthy_dir = format!("{root}/{UNIT_WORKTREE_PREFIX}healthy");
+        Worktree::create(&repo_path, &healthy_dir, "rigger/u/healthy").unwrap();
+        let healthy_admin = admin.join(format!("{UNIT_WORKTREE_PREFIX}healthy"));
+
+        // A doomed entry whose `commondir` marker is DELETED outright (not truncated).
+        let doomed_dir = format!("{root}/{UNIT_WORKTREE_PREFIX}doomed");
+        Worktree::create(&repo_path, &doomed_dir, "rigger/u/doomed").unwrap();
+        let doomed_admin = admin.join(format!("{UNIT_WORKTREE_PREFIX}doomed"));
+        std::fs::remove_file(doomed_admin.join("commondir")).unwrap();
+        assert!(
+            std::fs::metadata(doomed_admin.join("commondir")).is_err(),
+            "precondition: the doomed entry's commondir marker is fully absent"
+        );
+        assert!(
+            doomed_admin.is_dir(),
+            "precondition: the doomed admin entry is present before the heal"
+        );
+
+        // `create` on a fresh branch must prune the marker-missing entry and SUCCEED.
+        let new_dir = format!("{root}/{UNIT_WORKTREE_PREFIX}fresh");
+        let created = Worktree::create(&repo_path, &new_dir, "rigger/u/fresh");
+        assert!(
+            created.is_ok(),
+            "create must self-heal a MISSING marker before adding: {:?}",
+            created.err()
+        );
+        assert!(
+            std::path::Path::new(&new_dir).join(".git").exists(),
+            "the freshly added worktree is a real checkout"
+        );
+
+        // The marker-missing entry is pruned; the healthy entry is untouched.
+        assert!(
+            !doomed_admin.exists(),
+            "the marker-missing admin entry is pruned by the healing (the metadata-read-fails \
+             arm that the zero-length case never exercises)"
+        );
+        assert!(
+            healthy_admin.is_dir(),
+            "a healthy registered worktree is NEVER pruned by the healing"
+        );
+        let list = run_git(&repo_path, &["worktree", "list", "--porcelain"]).unwrap();
+        assert!(
+            list.contains(&healthy_dir),
+            "the healthy worktree stays registered after healing"
         );
     }
 }
