@@ -5172,8 +5172,8 @@ fn cmd_ground(args: &[String]) -> Res {
     }
     // Honor the project's configured `defaults.grounder` when a config is present;
     // a project with no `.rigger/workflow.yml` yet falls back to the default grounder
-    // (the empty name -> grep, the scaffold default), so an agent can ground before a
-    // workflow is authored rather than hitting a config error.
+    // (the empty name -> symbols, the scaffold default), so an agent can ground before
+    // a workflow is authored rather than hitting a config error.
     let name = config::load(".")
         .map(|cfg| cfg.workflow.defaults.grounder)
         .unwrap_or_default();
@@ -5184,16 +5184,17 @@ fn cmd_ground(args: &[String]) -> Res {
     Ok(())
 }
 
-/// `rigger reindex <file>...` - incrementally re-embed the named files in the
+/// `rigger reindex <file>...` - incrementally re-index the named files in the
 /// project's persisted grounding index. It resolves the grounder from
-/// `defaults.grounder` via [`select_reindex_grounder`] (rooted at `.`) - which, unlike
-/// [`select_grounder`], loads the turbovec store WITHOUT freshening the whole tree, so
-/// the named files are re-embedded exactly ONCE here rather than once by a load-time
-/// freshen and again by the reindex. It then calls [`Grounder::reindex`] on the changed
-/// files, so the turbovec grounder drops each file's old chunks, re-embeds its current
-/// content, and persists the delta to `.rigger/grounding/` - a later `rigger ground`
-/// (and the review tier the workflow runs after a unit lands) then reflects the
-/// just-integrated code WITHOUT re-embedding the whole repo. For the grep / nop
+/// `defaults.grounder` via [`select_reindex_grounder`] (rooted at `.`) - which, after
+/// turbovec's retirement, resolves IDENTICALLY to [`select_grounder`]: the `symbols`
+/// grounder's `open` only LOADS the persisted index (it does not freshen the whole
+/// tree), so the named files are re-parsed exactly ONCE here rather than once by a
+/// load-time freshen and again by the reindex. It then calls [`Grounder::reindex`] on
+/// the changed files, so the `symbols` grounder drops each file's old symbols, re-parses
+/// its current content, and persists the delta to `.rigger/symbols/` - a later `rigger
+/// ground` (and the review tier the workflow runs after a unit lands) then reflects the
+/// just-integrated code WITHOUT re-indexing the whole repo. For the grep / nop
 /// grounders `reindex` is a no-op (they re-read the tree each call), so this command is
 /// harmless there. Files are repo-relative, matching how the grounder records and
 /// grounds them. At least one file is required.
@@ -5202,13 +5203,13 @@ fn cmd_reindex(args: &[String]) -> Res {
         return Err("reindex: expected at least one file: rigger reindex <file>...".into());
     }
     // Same selection path as `cmd_ground`: honor `defaults.grounder` when a config
-    // is present, else the unset default (turbovec). The grounder is rooted at `.`,
-    // so the persisted store it loads/updates is this project's `.rigger/grounding/`.
+    // is present, else the unset default (symbols). The grounder is rooted at `.`,
+    // so the persisted index it loads/updates is this project's `.rigger/symbols/`.
     let name = config::load(".")
         .map(|cfg| cfg.workflow.defaults.grounder)
         .unwrap_or_default();
-    // Use the reindex-specific constructor: it loads the persisted store WITHOUT a
-    // whole-tree freshen, so `reindex` re-embeds ONLY the named files - never those
+    // Use the reindex-specific constructor: it loads the persisted index WITHOUT a
+    // whole-tree freshen, so `reindex` re-parses ONLY the named files - never those
     // files twice (once by a load-time freshen, once by the reindex below).
     let grounder = select_reindex_grounder(&name)?;
     grounder.reindex(".", args);
@@ -8353,7 +8354,7 @@ name: example\n\
 \n\
 defaults:\n  \
 autonomy: auto_notify   # manual | auto_notify | silent\n  \
-grounder: turbovec      # turbovec (default; the real semantic grounder) | grep | nop\n  \
+grounder: symbols       # symbols (default; the structural symbol index) | grep | nop\n  \
 # The spawn-budget circuit-breaker: the hard cap on agent spawns one unattended\n  \
 # run may make. At the cap the breaker emits BudgetExhausted and aborts the run,\n  \
 # so a runaway can never spawn unboundedly. NON-ZERO on purpose - 0 = unlimited.\n  \
@@ -11379,9 +11380,10 @@ mod tests {
             review.adjudicator, "adjudicator",
             "tier 3: the neutral adjudicator gates"
         );
-        // The scaffold sets turbovec EXPLICITLY (visible, not implicit) - it is the
-        // default grounder and the default cargo feature.
-        assert_eq!(cfg.workflow.defaults.grounder, "turbovec");
+        // The scaffold sets symbols EXPLICITLY (visible, not implicit) - it is the
+        // default grounder (the structural symbol index), so a fresh `rigger init`
+        // config grounds and reindexes without hitting the retired-grounder error.
+        assert_eq!(cfg.workflow.defaults.grounder, "symbols");
         // FIX 3: the scaffold ships a NON-ZERO spawn budget so an unattended `rigger
         // run` cannot spawn unboundedly - 0 would be unlimited.
         assert!(
