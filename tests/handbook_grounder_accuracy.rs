@@ -83,6 +83,47 @@ const RETIRED_GROUNDER_FORMS: &[&str] = &[
     "| turbovec",
 ];
 
+/// The handbook index's `Grounding` vocabulary bullet - the single line that both names
+/// `**Grounding**` and points at the `rigger ground` command. This is the front-door definition
+/// an operator reads (README.md links here as "read the handbook"), so it must describe what
+/// `rigger ground` does *today*: the structural symbols pass, not the retired vector/semantic
+/// engine. Returned lowercased. `None` if no such bullet is present.
+fn readme_grounding_bullet() -> Option<String> {
+    let path = repo_root().join("docs").join("handbook").join("README.md");
+    read(&path)
+        .lines()
+        .map(str::to_lowercase)
+        .find(|line| line.contains("**grounding**") && line.contains("`rigger ground`"))
+}
+
+#[test]
+fn handbook_index_defines_grounding_as_structural_not_semantic() {
+    let bullet = readme_grounding_bullet().unwrap_or_else(|| {
+        panic!(
+            "docs/handbook/README.md must carry a `**Grounding**` vocabulary bullet naming \
+             `rigger ground` (spec 57, criterion 4)"
+        )
+    });
+
+    // The retired vector engine did "semantic search over the code"; the shipping default is the
+    // deterministic `symbols` structural pass. A round-4 recheck REJECTed this exact bullet for
+    // still reading "semantic search over the code (`rigger ground`)" - a stale retired-grounder
+    // claim the config-form guard above is structurally blind to (it matches directives, not
+    // prose). This pin guards the prose form so the recurrence cannot slip a fifth time.
+    assert!(
+        !bullet.contains("semantic search"),
+        "docs/handbook/README.md's Grounding bullet must not call `rigger ground` \"semantic \
+         search\" (spec 57, criterion 4): the vector/semantic engine was retired; `rigger ground` \
+         now runs the deterministic STRUCTURAL `symbols` grounder. Mirror the sibling \
+         docs/handbook/tools-and-context.md wording. Found: {bullet:?}"
+    );
+    assert!(
+        bullet.contains("structural"),
+        "docs/handbook/README.md's Grounding bullet must name the STRUCTURAL pass `rigger ground` \
+         actually runs post spec-57 (mirror docs/handbook/tools-and-context.md). Found: {bullet:?}"
+    );
+}
+
 #[test]
 fn handbook_config_example_reproduces_the_repo_grounder_default() {
     let root = repo_root();
