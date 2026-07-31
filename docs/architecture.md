@@ -137,7 +137,7 @@ flowchart TB
     direction LR
     ES["EventStore<br/>sqlite (default) | kurrentdb (server)<br/>selected by store resolution"]
     DR["AgentDriver<br/>cli (claude subprocess, default) | workflow (MCP)"]
-    GR["Grounder<br/>turbovec (default) | symbols | hybrid | grep (explicit opt-out)"]
+    GR["Grounder<br/>symbols (default) | grep | nop (explicit opt-out)"]
   end
 
   subgraph MEM["MEMORY + OBSERVABILITY"]
@@ -164,7 +164,7 @@ chosen by config or cargo feature:*
 |---|---|---|---|---|
 | **EventStore** | `append` / `read_stream` / `read_all` / `subscribe_all` | `sqlite` (embedded, 1 file) | `kurrentdb` (server backend) | **store resolution** (section 5.1.1): a flag, an env var, a secret file, or the committed `store:` selection - never a recompile |
 | **AgentDriver** | `spawn(agent, prompt, opts, emit) -> result` | `cli` (`claude` subprocess) | `workflow` (MCP shim) | the `--driver` flag / config |
-| **Grounder** | `ground(query, k) -> Vec<Ref>` | `turbovec` (semantic; the unset default, shipped in the default build) | `symbols` (structural), `hybrid` (structural+semantic composite), `grep` (self-contained; the explicit light opt-out) | cargo feature + config |
+| **Grounder** | `ground(query, k) -> Vec<Ref>` | `symbols` (structural; the unset default, shipped in the default build) | `grep` (self-contained substring search) and `nop` (the explicit, named-only opt-outs) | cargo feature + config |
 
 ---
 
@@ -215,7 +215,7 @@ dash: on                                    # on (default) | off (suppress the a
 
 defaults:
   autonomy: manual                          # manual | auto_notify | silent
-  grounder: turbovec                        # turbovec (default) | symbols | hybrid | grep (explicit light opt-out)
+  grounder: symbols                         # symbols (default) | grep | nop (explicit opt-out)
 
   # The three-tier review panel, declared ONCE and applied to every implementer
   # unit. Each unit reviews ITSELF with this panel inside its own lifecycle (section 4.1).
@@ -712,7 +712,7 @@ is deduped under can never drift between them. Four properties define it:
 - **Content-keyed skip.** Every event carries a deterministic content key
   `<prefix>/<file>@<hash>#<i>`, a pure function of the batch's bytes (`gc` for code, `gd` for
   design). An unchanged file yields identical keys, so a re-ingest (a `reindex` after a unit
-  integrates, or an incremental `graph build`) **skips** it and re-embeds nothing; a changed
+  integrates, or an incremental `graph build`) **skips** it and re-folds nothing; a changed
   file hashes to new keys and re-emits. Only what changed is re-parsed and re-emitted;
   unchanged files are skipped entirely, so a step never re-processes the whole tree.
 
@@ -741,28 +741,26 @@ agent's files: isolation guards the *files* (worktree), the event stream is the 
 shared decision channel*. The two are orthogonal - the insight that makes live awareness
 safe.
 
-### 5.7 Grounding: hybrid, and pulled rather than pushed
+### 5.7 Grounding: structural, and pulled rather than pushed
 
-Grounding seeds each agent with exactly the code and memory it needs, on three axes:
+Grounding seeds each agent with exactly the code and memory it needs, on two axes:
 
-- **Semantic** - the pluggable `Grounder` trait (`ground(query, k) -> Vec<Ref>`) for fuzzy
-  "find things like this". The default impl is `turbovec`: it ships in the default build
-  (the `turbovec` cargo feature is on by default) and an unset `defaults.grounder` resolves
-  to it, so a workflow that says nothing gets native quantized vector search with embeddings.
-  `grep` (a self-contained literal search, no index, no dependency) is the explicit LIGHT
-  opt-out, reachable ONLY when a workflow writes `grounder: grep` by name. Selecting a
-  grounder NEVER silently degrades to grep: a binary built without the `turbovec` feature
-  raises a LOUD error naming the `defaults.grounder: grep` escape hatch (silently swapping in
-  grep is exactly what once hid turbovec being absent for a whole session), never a quiet
-  fallback.
-- **Structural** - the `symbols` grounder (behind the `symbols` feature): a deterministic,
+- **Structural (the default).** The pluggable `Grounder` trait (`ground(query, k) -> Vec<Ref>`)
+  is served by the `symbols` grounder (behind the `symbols` feature): a deterministic,
   tree-sitter-derived symbol index answering "where is this defined, what references it, what
-  does changing this file reach", serving both a precise/ranked contract for grounding and a
-  safe-superset (`structural union grep`) contract for the conductor's partitioning and
-  review-tier routing, where under-inclusion is a correctness bug.
-- **Relational** - the knowledge graph itself, for the multi-hop questions ("what decisions
-  govern these files, who else touches these nodes") that vector search structurally cannot
-  answer.
+  does changing this file reach". It is the UNSET default - an unset `defaults.grounder`
+  resolves to it and it ships in the default build (the `symbols` cargo feature is on by
+  default) - and it serves both a precise/ranked contract for grounding and a safe-superset
+  (`structural union grep`) contract for the conductor's partitioning and review-tier routing,
+  where under-inclusion is a correctness bug. `grep` (a self-contained literal search, no
+  index, no dependency) and `nop` are the explicit, named-only opt-outs, reachable ONLY when a
+  workflow writes the name. Selecting a grounder NEVER silently degrades to grep: a binary
+  built without the `symbols` feature raises a LOUD error naming the `grounder: grep` escape
+  hatch, never a quiet fallback.
+- **Relational.** The knowledge graph itself, for the multi-hop questions ("what decisions
+  govern these files, who else touches these nodes") that a flat text search structurally
+  cannot answer - the lookup surface every agent reads through the same projection and
+  traversal the human dash reads.
 
 **Grounding is pulled, not pushed.** Only the small, deterministic **intent layer** is
 pushed into an agent's prompt; the large reference bulk is served **on demand** through a
@@ -938,15 +936,15 @@ structurally.
 ## 10. Repo layout & `cargo install` usage  **[AS-BUILT]**
 
 A single Rust crate: a library (`src/lib.rs`) plus a binary (`src/main.rs`), with the ports
-and adapters as modules under `src/`. Two cargo features (`turbovec`, `symbols`) are ON BY
-DEFAULT (`default = ["turbovec", "symbols"]`), so a plain `cargo build` ships both grounders;
-`--no-default-features` is the deliberate LIGHT opt-out that drops them (leaving the
+and adapters as modules under `src/`. One cargo feature (`symbols`) is ON BY
+DEFAULT (`default = ["symbols"]`), so a plain `cargo build` ships the structural grounder;
+`--no-default-features` is the deliberate LIGHT opt-out that drops it (leaving the
 self-contained `grep` grounder). The server event-store backend has **no** feature flag and is
 always in the binary.
 
 ```
 github.com/virtual-velocitation/rigger
-|-- Cargo.toml                   crate "rigger"; features: turbovec, symbols
+|-- Cargo.toml                   crate "rigger"; features: symbols
 |-- src/
 |   |-- lib.rs                   the library: re-exports every module
 |   |-- main.rs                  the CLI binary + the store-resolution authority
@@ -962,16 +960,16 @@ github.com/virtual-velocitation/rigger
 |   |-- ingest.rs                the one parallel, incremental, project-scoped ingest authority
 |   |-- dash.rs registry.rs      the fixed-address dashboard singleton + the instance registry
 |   |-- driver/                  cli.rs (claude subprocess) + workflow.rs (MCP shim)
-|   |-- grounder/                turbovec (default) + symbols (structural) + hybrid + grep (opt-out)
+|   |-- grounder/                symbols (structural; the default) + grep + nop (opt-out)
 |   |-- gate.rs safety.rs ledger.rs config.rs spec.rs worktree.rs sidecar.rs mcpserver.rs
 |-- examples/demo/               a worked example: a fictional project's .rigger config
-|-- .github/workflows/rust.yml   CI: build-test, turbovec, symbols, kurrentdb jobs
+|-- .github/workflows/rust.yml   CI: build-test, install-nolock, kurrentdb jobs
 ```
 
 ```bash
 cargo install --git https://github.com/virtual-velocitation/rigger
-# the plain install above already ships the turbovec + symbols grounders (default features);
-# for a lighter, grep-only build, drop them:
+# the plain install above already ships the symbols structural grounder (default features);
+# for a lighter, grep-only build, drop it:
 cargo install --git https://github.com/virtual-velocitation/rigger --no-default-features
 
 cd my-project
@@ -990,7 +988,7 @@ rigger validate                     # load + validate the workflow + agents
 The server event-store backend is compiled into every build and chosen by **store
 resolution** (section 5.1.1: a flag, the `KURRENTDB_CONN` environment variable, the
 `.rigger/store.conn` secret file, or the committed `store:` selection), never a recompile.
-The semantic and structural grounders are cargo features. Library use (embed the harness)
+The structural grounder is a cargo feature. Library use (embed the harness)
 imports the same modules from the `rigger` crate directly. Storage and the graph live under
 `./.rigger/` (per project, like `.git/`), scoped to the project identity so one backend can
 hold many projects without their data mixing.
@@ -1007,7 +1005,7 @@ Where each responsibility lives, and the design move that keeps it project-agnos
 | `ledger` | per-unit run state | a pure fold over the event log - never a second source of truth |
 | `gate` | the verification library + the per-gate autonomy ratchet | a gate is any command that must exit 0; rigor is config |
 | `safety` | spawn-budget circuit breaker, bounded retry, escalation | every bound is config, never a constant |
-| `grounder` | seeds each agent with exactly the code it needs | pluggable: `turbovec` (semantic; the default), `symbols` (structural), `hybrid` (structural+semantic), `grep` (explicit opt-out) |
+| `grounder` | seeds each agent with exactly the code it needs | pluggable: `symbols` (structural; the default), `grep`, `nop` (explicit opt-outs) |
 | `eventstore` | the append-only log + the two backends + redaction | one trait; the backend is chosen by store resolution, not a recompile |
 | `contextgraph` + `community` + `concepts` | the knowledge graph: code + design + decisions, its derivations, and the directed-call traversal | a rebuildable bi-temporal projection of the log; derivations are event-sourced |
 | `ingest` | the one parallel, incremental, project-scoped source fold | one walk-and-key authority the run and `graph build` share |
@@ -1039,7 +1037,7 @@ Where each responsibility lives, and the design move that keeps it project-agnos
     superseded facts are invalidated, never deleted; retrieval returns a connected subgraph,
     not a chunk dump.
   - R4 PLUGGABLE SEAMS: EventStore (sqlite default | kurrentdb server), AgentDriver (cli
-    default | workflow), Grounder (turbovec default | symbols | hybrid | grep) are traits chosen by
+    default | workflow), Grounder (symbols default | grep | nop) are traits chosen by
     configuration / cargo feature; the core depends only on the traits.
   - R5 ORTHOGONAL ISOLATION: worktree isolation guards FILES; the event stream is the shared
     DECISION channel; live cross-agent awareness never crosses the file boundary.
@@ -1048,8 +1046,8 @@ Where each responsibility lives, and the design move that keeps it project-agnos
   - R7 SELF-CONTAINED PUBLISH: `cargo install`-able; no runtime dependency on an editor or a
     database server in the default configuration. The server event-store backend is compiled
     into every build and selected purely by store resolution (a flag, an environment variable,
-    a per-machine secret file, or the committed `store:` choice); the semantic and structural
-    grounders are cargo features.
+    a per-machine secret file, or the committed `store:` choice); the structural grounder is
+    a cargo feature.
   - R8 CLEAN ARCHITECTURE + DI: ports (EventStore/Projection/AgentDriver/Grounder/gate::Runner)
     are traits; the adapters depend inward; use cases depend only on ports; a single
     composition root (`src/main.rs`) constructs the concrete adapters and injects them. No

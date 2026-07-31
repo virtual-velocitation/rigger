@@ -64,24 +64,39 @@ const CURRENT_SURFACE_TOKENS: &[(&str, &str)] = &[
     ("the directed call-query view", "view=calls"),
     ("the execution-path (forward) call direction", "dir=down"),
     ("the call-sites (reverse) call direction", "dir=up"),
-    // The grounder configuration surface: turbovec is the unset DEFAULT (an unset
-    // `defaults.grounder` resolves to it and it ships in the default build); grep is the
-    // explicit opt-out, reachable only when named. `main::select_grounder` /
-    // `grounder::resolves_to_turbovec` are the resolution authority. The document must name
-    // turbovec as the default so a re-regression to "grep (default)" fails RED (the negative
-    // guard below is the other half of this pin).
+    // The grounder configuration surface (spec 57): `symbols` (the structural grounder) is
+    // the unset DEFAULT - an unset `defaults.grounder` resolves to it and it ships in the
+    // default build; `grep` and `nop` are the explicit, named-only opt-outs. The vector
+    // engine (`turbovec`) and its composite mode (`hybrid`) were RETIRED, so the front-door
+    // document must name `symbols` as the default. `main::select_grounder` /
+    // `grounder::grounder_for` are the resolution authority. A regression to a retired-engine
+    // default or a "grep (default)" inversion fails RED (the negative guard below is the
+    // other half of this pin).
     (
-        "the turbovec-default grounder selection",
-        "turbovec (default)",
+        "the symbols-default grounder selection",
+        "symbols (default)",
     ),
 ];
 
-/// The exact phrasings that call `grep` the default grounder. Every one INVERTS the real
-/// configuration surface (turbovec is the unset default; grep is the explicit, named-only
-/// opt-out), so none may appear in the front-door document. This guard is the negative half
-/// of the grounder-default pin: it is what makes a re-regression at §11 (the module map or
-/// ADR-0001 R4) fail RED even when a correct "turbovec (default)" claim survives elsewhere.
-const GREP_AS_DEFAULT_PHRASINGS: &[&str] = &["grep` (default)", "grep (default)", "grep default"];
+/// Phrasings that name a WRONG default grounder or a RETIRED engine, checked
+/// case-insensitively. `symbols` is the unset default; `grep` and `nop` are the explicit,
+/// named-only opt-outs; the vector engine `turbovec` and its composite mode `hybrid` were
+/// RETIRED (spec 57) and have no place in a description of the system that exists. Each
+/// phrasing INVERTS the real configuration surface, so none may appear in the front-door
+/// document. This guard is the negative half of the grounder-default pin: it makes a
+/// re-regression at §11 (the module map or ADR-0001 R4) - or a stray "grep (default)" claim
+/// or a lingering retired-engine mention anywhere - fail RED even when a correct
+/// "symbols (default)" claim survives elsewhere.
+const WRONG_DEFAULT_OR_RETIRED_PHRASINGS: &[&str] = &[
+    // grep is the explicit opt-out, never the default.
+    "grep` (default)",
+    "grep (default)",
+    "grep default",
+    // the retired vector engine and its composite mode (spec 57) - gone from the front door,
+    // whether named as a default or merely offered as a live grounder choice.
+    "turbovec",
+    "hybrid",
+];
 
 #[test]
 fn architecture_names_the_current_store_and_inspector_surface() {
@@ -105,10 +120,10 @@ fn architecture_names_the_current_store_and_inspector_surface() {
 }
 
 #[test]
-fn architecture_never_calls_grep_the_default_grounder() {
-    let text = architecture_text();
+fn architecture_names_no_retired_or_wrong_default_grounder() {
+    let text = architecture_text().to_lowercase();
 
-    let inversions: Vec<&str> = GREP_AS_DEFAULT_PHRASINGS
+    let inversions: Vec<&str> = WRONG_DEFAULT_OR_RETIRED_PHRASINGS
         .iter()
         .copied()
         .filter(|phrasing| text.contains(phrasing))
@@ -116,11 +131,14 @@ fn architecture_never_calls_grep_the_default_grounder() {
 
     assert!(
         inversions.is_empty(),
-        "docs/architecture.md must not call `grep` the default grounder (spec 56, criterion \
-         1): turbovec is the unset default (an unset `defaults.grounder` resolves to it and it \
-         ships in the default build), and `grep` is the explicit, named-only opt-out. Every \
-         grounder enumeration (the seams diagram, the seams table, the config example, the \
-         module map, and ADR-0001 R4) must name turbovec as the default. Inverting phrasings \
-         still present in the document: {inversions:#?}"
+        "docs/architecture.md must describe the grounder surface that EXISTS (spec 57): \
+         `symbols` is the unset default (an unset `defaults.grounder` resolves to it and it \
+         ships in the default build), and `grep` / `nop` are the explicit, named-only \
+         opt-outs. The vector engine `turbovec` and its `hybrid` composite were RETIRED - they \
+         are neither the default nor a live choice, so the front-door document must not name \
+         them, and must never call `grep` the default. Every grounder enumeration (the seams \
+         diagram, the seams table, the config example, the module map, and ADR-0001 R4) must \
+         name `symbols` as the default. Inverting or retired phrasings still present in the \
+         document: {inversions:#?}"
     );
 }
