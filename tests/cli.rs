@@ -2315,6 +2315,74 @@ fn reindex_via_symbols_grounder_updates_the_persisted_index() {
     );
 }
 
+/// PERIPHERY (integration): a RETIRED grounder (`turbovec` / `vector` / `hybrid`, spec 57)
+/// configured in `defaults.grounder` must make the shipped `rigger ground` binary FAIL
+/// LOUDLY with the migration message, never silently degrade to grep. This drives the whole
+/// operator seam the in-module resolver test cannot see: `.rigger/workflow.yml` ->
+/// `config::load` -> `select_grounder` -> `grounder::grounder_for` -> the process's stderr +
+/// exit code. It is feature-INDEPENDENT: `select_grounder` only intercepts the unset /
+/// `symbols` default for the real grounder, so every retired name falls through to
+/// `grounder_for` in BOTH lanes - hence ungated. The NON-ZERO exit is the discriminating
+/// signal: a silent grep degrade would exit 0, so `!ok` is what keeps this test non-vacuous.
+#[test]
+fn ground_rejects_a_retired_grounder_with_the_migration_error() {
+    let dir = temp_project();
+    let root = dir.path();
+    for name in ["turbovec", "vector", "hybrid"] {
+        write_grounder_workflow(root, name);
+        let (out, err, ok) = run_rigger(root, &["ground", "apply_damage"]);
+        assert!(
+            !ok,
+            "a retired grounder {name:?} must FAIL the process, never silently ground via grep; \
+             stdout: {out:?}, stderr: {err:?}"
+        );
+        let low = err.to_lowercase();
+        assert!(
+            low.contains("retire") && low.contains("symbols"),
+            "the migration error must name the retirement and the symbols default; \
+             grounder {name:?} stderr: {err}"
+        );
+        assert!(
+            !low.contains("feature"),
+            "a retired name is gone for good - not a missing feature to rebuild; \
+             grounder {name:?} stderr: {err}"
+        );
+        assert!(
+            !err.contains("unknown grounder"),
+            "a retired name must not read as a typo; grounder {name:?} stderr: {err}"
+        );
+    }
+}
+
+/// PERIPHERY (integration): an UNKNOWN grounder name makes `rigger ground` fail with a
+/// message advertising the EXACT accepted set (`symbols` (default) / `grep` / `nop`) and
+/// nothing else - not a retired engine, not a silent grep degrade. Same operator seam as
+/// the retired-name test; feature-independent (unknown names route through `grounder_for`
+/// in both lanes), so ungated.
+#[test]
+fn ground_rejects_an_unknown_grounder_naming_only_the_accepted_set() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_grounder_workflow(root, "semantic-embed");
+    let (out, err, ok) = run_rigger(root, &["ground", "apply_damage"]);
+    assert!(
+        !ok,
+        "an unknown grounder must fail the process, never silently ground; stdout: {out:?}"
+    );
+    assert!(
+        err.contains("unknown grounder"),
+        "an unknown name must hit the generic unknown-grounder arm; stderr: {err}"
+    );
+    assert!(
+        err.contains("symbols") && err.contains("grep") && err.contains("nop"),
+        "the unknown-name message must advertise the accepted set; stderr: {err}"
+    );
+    assert!(
+        !err.to_lowercase().contains("turbovec"),
+        "a typo must not advertise a retired engine as a choice; stderr: {err}"
+    );
+}
+
 /// Bad input to `rigger emit` is a clear error on stderr and a non-zero exit, never
 /// a silent success - a workflow agent must be able to tell a malformed emit failed.
 #[test]
