@@ -1212,19 +1212,6 @@ const SUBCOMMANDS: &[&str] = &[
 ];
 
 fn main() {
-    // Point `ort` at a CUDA-enabled ONNX Runtime `.so` to `dlopen` (it is built with
-    // `load-dynamic`) BEFORE anything constructs a grounder, so the turbovec grounder
-    // embeds on the GPU with no user-set env - for both the standalone binary and a
-    // `cargo install`ed one. A no-op when the runtime is not found or the feature is
-    // off; see `rigger::ort_runtime` for the discovery order.
-    //
-    // SAFETY: this is the first statement in `main`, before any thread is spawned, so
-    // mutating the process environment here is sound (no concurrent env reader).
-    #[cfg(feature = "turbovec")]
-    unsafe {
-        rigger::ort_runtime::ensure_dylib_path();
-    }
-
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
         usage();
@@ -1270,9 +1257,6 @@ fn main() {
         }
     };
 
-    // Choose the exit code, but do NOT exit yet: whether the command succeeded or failed,
-    // we must first release the ONNX Runtime / CUDA runtime deterministically (below), so
-    // both paths converge on a single controlled teardown.
     let code = match result {
         Ok(()) => 0,
         Err(e) => {
@@ -1280,38 +1264,6 @@ fn main() {
             1
         }
     };
-
-    // Tear the ONNX Runtime / CUDA runtime down EXPLICITLY, on this (main) thread, before
-    // the process exits, to close the intermittent teardown heap corruption
-    // (upstream pykeio/ort#564: a use-after-free in ORT's CUDA-provider teardown racing
-    // the C `atexit` destructors, `malloc(): ... double linked list corrupted`, SIGABRT).
-    // Releasing the environment here, while the process is healthy and single-threaded,
-    // makes ORT/CUDA teardown run in the upstream-proven `ReleaseSession` -> `ReleaseEnv`
-    // order so the later atexit destructors find already-released state - see `ort_teardown`
-    // for the full rationale and the upstream evidence that a version bump does not fix it
-    // and that explicit release does.
-    //
-    // WHAT THIS COVERS: it runs on BOTH the success and the error path (unlike the old
-    // `libc::_exit(0)` dodge, which covered only success and skipped ALL destructors), it
-    // runs every other destructor normally rather than skipping them, and it is a clean
-    // no-op on any run that never built a GPU/CPU session. After it, the ordinary
-    // `process::exit` runs the remaining Rust/atexit teardown normally.
-    //
-    // WHAT THIS DOES *NOT* CLAIM: it does not remove the buggy upstream code path itself -
-    // pykeio/ort#564 remains open (closed not-planned upstream), so the corrupting CUDA-vs-
-    // atexit teardown code still ships inside ORT. What we do is deprive it of the race by
-    // releasing the environment first, deterministically and single-threaded. The guarantee
-    // is therefore CONDITIONAL, not absolute, and rests on two invariants documented in
-    // `ort_teardown`: (1) the grounder - and thus the `TextEmbedding`/`Session` - is dropped
-    // BEFORE this call, so `ReleaseSession` has already run and only the env remains to
-    // release; and (2) ORT keeps its environment in a leaked `G_ENV` `static` whose `Arc` is
-    // never dropped, so our single `ReleaseEnv` here is the only one and cannot double-free.
-    // If a future ORT release changed either invariant (e.g. began dropping `G_ENV` at exit,
-    // or reordered provider teardown), this mitigation could stop holding and would need
-    // revisiting. It is a robust, scoped mitigation of a live upstream bug - NOT a claim that
-    // the buggy path has been removed entirely.
-    #[cfg(feature = "turbovec")]
-    rigger::ort_teardown::release_ort_runtime();
 
     std::process::exit(code);
 }
@@ -8286,140 +8238,43 @@ fn cmd_prime() -> Res {
     Ok(())
 }
 
-/// Build the grounder named by `defaults.grounder` (§3.2, §5.4, R4). Turbovec is the
-/// DEFAULT grounder: the turbovec names (`vector`/`turbovec`) AND an UNSET / empty
-/// `defaults.grounder` resolve to the real semantic engine. `grep` and `nop` resolve
-/// via `grounder::grounder_for` and are reachable ONLY when named explicitly.
+/// Build the grounder named by `defaults.grounder` (§3.2, §5.4, R4). The structural
+/// `symbols` grounder is the DEFAULT: an UNSET / empty `defaults.grounder` AND the explicit
+/// name `symbols` resolve to it. `grep` and `nop` resolve via `grounder::grounder_for` and
+/// are reachable ONLY when named explicitly.
 ///
-/// When the binary is built WITHOUT the `turbovec` feature, resolving to turbovec is
-/// a LOUD error (a clear message + non-zero exit), never a silent degrade to grep -
-/// that silent degrade is exactly what hid turbovec being absent for a whole session.
-/// Grep runs ONLY when the user writes `grounder: grep`.
-#[cfg(feature = "turbovec")]
-fn select_grounder(name: &str) -> Result<Box<dyn Grounder>, Box<dyn std::error::Error>> {
-    if rigger::grounder::resolves_to_turbovec(name) {
-        // Building the index can fail for a real, distinct reason (e.g. the embedding
-        // model cannot be loaded); that is its OWN loud error, not a grep fallback.
-        // `new` freshens any tree drift on load, which is what the grounding-read paths
-        // (`ground`/`run`/`serve`) want.
-        let tv = rigger::grounder::turbovec::Turbovec::new(".")
-            .map_err(|e| format!("turbovec grounder unavailable: {e}"))?;
-        return Ok(Box::new(tv));
-    }
-    // `symbols` resolves to the real structural grounder when the feature is built (it opens or
-    // builds+persists the index over the repo root); a build WITHOUT the feature falls through to
-    // `grounder_for`, whose `symbols` arm is the loud no-silent-degrade error.
-    #[cfg(feature = "symbols")]
-    if name.trim().eq_ignore_ascii_case("symbols") {
-        return Ok(Box::new(
-            rigger::grounder::symbols::grounder::Symbols::open(".", None),
-        ));
-    }
-    // `hybrid` composes symbols (structural) with turbovec (semantic); with the feature built it
-    // opens BOTH and ranks structure first. Absent turbovec, `Hybrid::open` degrades to exactly
-    // the symbols mode - the degrade lives in ONE authority, so this arm is IDENTICAL in both cfg
-    // lanes. A build WITHOUT the symbols feature falls through to `grounder_for` (loud error).
-    #[cfg(feature = "symbols")]
-    if name.trim().eq_ignore_ascii_case("hybrid") {
-        return Ok(Box::new(
-            rigger::grounder::symbols::hybrid::Hybrid::open(".", None)
-                .map_err(|e| format!("hybrid grounder unavailable: {e}"))?,
-        ));
-    }
-    Ok(rigger::grounder::grounder_for(name, ".")?)
-}
-
-#[cfg(not(feature = "turbovec"))]
-fn select_grounder(name: &str) -> Result<Box<dyn Grounder>, Box<dyn std::error::Error>> {
-    // No turbovec feature compiled in: `grounder_for` returns the loud
-    // "built without the turbovec feature" error for the default / turbovec names,
-    // and resolves grep / nop normally. We never silently degrade to grep.
-    // `symbols` still resolves to the structural grounder when THAT feature is built (it is
-    // independent of turbovec); without it, `grounder_for` returns the loud symbols error.
-    #[cfg(feature = "symbols")]
-    if name.trim().eq_ignore_ascii_case("symbols") {
-        return Ok(Box::new(
-            rigger::grounder::symbols::grounder::Symbols::open(".", None),
-        ));
-    }
-    // `hybrid` resolves via the SAME `Hybrid::open` as the turbovec-on lane; without turbovec it
-    // degrades to exactly the symbols mode (the degrade is intrinsic to `Hybrid`, so this arm does
-    // not differ by cfg lane). Without the symbols feature, `grounder_for` returns the loud error.
-    #[cfg(feature = "symbols")]
-    if name.trim().eq_ignore_ascii_case("hybrid") {
-        return Ok(Box::new(
-            rigger::grounder::symbols::hybrid::Hybrid::open(".", None)
-                .map_err(|e| format!("hybrid grounder unavailable: {e}"))?,
-        ));
-    }
-    Ok(rigger::grounder::grounder_for(name, ".")?)
-}
-
-/// The grounder for `rigger reindex`, which differs from [`select_grounder`] ONLY for
-/// turbovec: it constructs via `Turbovec::new_for_reindex`, which loads the persisted
-/// store WITHOUT freshening tree drift. `reindex` then re-embeds exactly the named
-/// files; using the freshening `new` here would re-embed every drifted file on load and
-/// then the named files AGAIN - a double-embed.
+/// When the binary is built WITHOUT the `symbols` feature, resolving to symbols is a LOUD
+/// error (a clear message + non-zero exit) via `grounder_for`, never a silent degrade to
+/// grep. Grep runs ONLY when the user writes `grounder: grep`.
 ///
-/// EVERY OTHER name resolves IDENTICALLY to [`select_grounder`], and MUST: the two are one
-/// grounder-selection concern, not two authorities to keep in sync by hand. `symbols` resolves
-/// to the SAME real `Symbols::open` here as in `select_grounder` - `Symbols::open` only LOADS
-/// the persisted index (it does not freshen the whole tree the way turbovec's `new` does), so
-/// opening it for a reindex re-parses ONLY the named files and there is no double-work to avoid;
-/// omitting this arm is exactly the parallel-selector drift that made `rigger reindex` under
-/// `defaults.grounder: symbols` return the false `symbols_feature_missing_error` while the
-/// feature was built. grep / nop have no index, so their `reindex` is a no-op.
-#[cfg(feature = "turbovec")]
-fn select_reindex_grounder(name: &str) -> Result<Box<dyn Grounder>, Box<dyn std::error::Error>> {
-    if rigger::grounder::resolves_to_turbovec(name) {
-        let tv = rigger::grounder::turbovec::Turbovec::new_for_reindex(".")
-            .map_err(|e| format!("turbovec grounder unavailable: {e}"))?;
-        return Ok(Box::new(tv));
-    }
-    // `symbols` resolves to the SAME structural grounder `select_grounder` builds (open only loads
-    // the persisted index, so there is no freshen-on-open double-work); a build WITHOUT the feature
-    // falls through to `grounder_for`, whose `symbols` arm is the loud no-silent-degrade error.
+/// This is c2's mechanical default-resolution after turbovec's retirement; c1 is the
+/// authority that PROVES the accepted-name contract (the exact `symbols`/`grep`/`nop` set
+/// and the loud migration error for the retired `turbovec` / `hybrid` names).
+fn select_grounder(name: &str) -> Result<Box<dyn Grounder>, Box<dyn std::error::Error>> {
+    // `symbols` (and the UNSET / empty default) resolve to the real structural grounder when the
+    // feature is built (it opens or builds+persists the index over the repo root); a build WITHOUT
+    // the feature falls through to `grounder_for`, whose `symbols` arm is the loud no-silent-degrade
+    // error.
     #[cfg(feature = "symbols")]
-    if name.trim().eq_ignore_ascii_case("symbols") {
-        return Ok(Box::new(
-            rigger::grounder::symbols::grounder::Symbols::open(".", None),
-        ));
-    }
-    // `hybrid` for reindex opens both axes via the reindex constructors: turbovec loads the
-    // persisted store WITHOUT a whole-tree freshen (`new_for_reindex`), so `reindex` re-embeds only
-    // the named files and never double-embeds. Carried in BOTH cfg lanes exactly like the `symbols`
-    // arm, so `rigger reindex` under `defaults.grounder: hybrid` freshens instead of erroring.
-    #[cfg(feature = "symbols")]
-    if name.trim().eq_ignore_ascii_case("hybrid") {
-        return Ok(Box::new(
-            rigger::grounder::symbols::hybrid::Hybrid::open_for_reindex(".", None)
-                .map_err(|e| format!("hybrid grounder unavailable: {e}"))?,
-        ));
+    {
+        let n = name.trim();
+        if n.is_empty() || n.eq_ignore_ascii_case("symbols") {
+            return Ok(Box::new(
+                rigger::grounder::symbols::grounder::Symbols::open(".", None),
+            ));
+        }
     }
     Ok(rigger::grounder::grounder_for(name, ".")?)
 }
 
-#[cfg(not(feature = "turbovec"))]
+/// The grounder for `rigger reindex`. After turbovec's retirement it resolves IDENTICALLY to
+/// [`select_grounder`]: the only case that ever differed was turbovec (whose freshening `new`
+/// had to be swapped for `new_for_reindex` to avoid a double-embed). The surviving grounders
+/// have no such distinction - `Symbols::open` only LOADS the persisted index (it does not
+/// freshen the whole tree), and grep / nop have no index at all - so there is one selection
+/// authority, not two to keep in sync by hand.
 fn select_reindex_grounder(name: &str) -> Result<Box<dyn Grounder>, Box<dyn std::error::Error>> {
-    // `symbols` resolves identically to `select_grounder` (open only loads the persisted index, so
-    // no freshen-on-open double-work); without the feature, `grounder_for` returns the loud error.
-    #[cfg(feature = "symbols")]
-    if name.trim().eq_ignore_ascii_case("symbols") {
-        return Ok(Box::new(
-            rigger::grounder::symbols::grounder::Symbols::open(".", None),
-        ));
-    }
-    // `hybrid` for reindex without turbovec degrades to exactly the symbols mode via the same
-    // `Hybrid::open_for_reindex` as the turbovec-on lane; without the symbols feature,
-    // `grounder_for` returns the loud error.
-    #[cfg(feature = "symbols")]
-    if name.trim().eq_ignore_ascii_case("hybrid") {
-        return Ok(Box::new(
-            rigger::grounder::symbols::hybrid::Hybrid::open_for_reindex(".", None)
-                .map_err(|e| format!("hybrid grounder unavailable: {e}"))?,
-        ));
-    }
-    Ok(rigger::grounder::grounder_for(name, ".")?)
+    select_grounder(name)
 }
 
 fn git_repo() -> String {
@@ -12112,49 +11967,6 @@ mod tests {
         assert!(
             err.contains("bogus") && err.contains("sqlite") && err.contains("kurrentdb"),
             "an unknown store.backend must be rejected naming the valid values; got: {err}"
-        );
-    }
-
-    /// With the turbovec feature compiled OUT, selecting the DEFAULT grounder (an
-    /// unset name) or an explicit turbovec/vector name FAILS LOUDLY - a clear error
-    /// naming turbovec, the missing feature, and the explicit grep opt-out - and never
-    /// silently degrades to grep. This is the regression guard for the silent degrade
-    /// that hid turbovec being absent for a whole session.
-    #[cfg(not(feature = "turbovec"))]
-    #[test]
-    fn select_grounder_fails_loudly_without_the_turbovec_feature() {
-        for name in ["", "turbovec", "vector"] {
-            let err = select_grounder(name)
-                .err()
-                .unwrap_or_else(|| panic!("{name:?} must fail loudly without the feature"));
-            let msg = err.to_string();
-            assert!(
-                msg.contains("turbovec") && msg.contains("feature") && msg.contains("grep"),
-                "the loud error must name turbovec, the feature, and the grep opt-out; got: {msg}"
-            );
-        }
-        // grep and nop are the explicit-only opt-outs and still resolve fine.
-        assert!(select_grounder("grep").is_ok());
-        assert!(select_grounder("nop").is_ok());
-        // An unknown name is a hard error too, not a silent grep fallback.
-        assert!(select_grounder("bogus").is_err());
-    }
-
-    /// With the turbovec feature compiled IN, grep is still reachable when named
-    /// EXPLICITLY (the deliberate literal-grounder opt-out), and an unknown name is a
-    /// hard error rather than a silent grep fallback. (The turbovec / default path is
-    /// exercised by the grounder's own model-loading test, which downloads weights.)
-    #[cfg(feature = "turbovec")]
-    #[test]
-    fn select_grounder_with_feature_resolves_grep_explicitly_and_rejects_unknown() {
-        assert!(
-            select_grounder("grep").is_ok(),
-            "explicit grep must resolve even with the turbovec feature on"
-        );
-        assert!(select_grounder("nop").is_ok());
-        assert!(
-            select_grounder("bogus-grounder").is_err(),
-            "an unknown grounder name must be a hard error, not a silent grep fallback"
         );
     }
 

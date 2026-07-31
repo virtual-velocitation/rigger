@@ -22204,13 +22204,12 @@ mod tests {
     }
 
     /// spec 17 unit 6 (criterion 6, `plan17-c6`): the two-facet fix, proven in ONE scenario under
-    /// the `hybrid` grounder.
+    /// the real structural `symbols` grounder (the default since turbovec's retirement).
     ///
-    /// (4a) A `BlastRadiusComputed` event IS emitted under `defaults.grounder: hybrid`. `Hybrid`
-    /// composes an inner `Symbols`, so it MUST delegate `index_stamp` to it - a non-empty stamp is
-    /// the structural-active signal `record_blast_radius` keys the audit off. Before the fix `Hybrid`
-    /// inherited the empty-string trait default, so `record_blast_radius` hit its empty-stamp early
-    /// return and NO audit ever emitted for a hybrid run (retention unmeasurable).
+    /// (4a) A `BlastRadiusComputed` event IS emitted under a structural grounder. `Symbols` carries a
+    /// non-empty `index_stamp` (its index content-hash + tag-query version) - the structural-active
+    /// signal `record_blast_radius` keys the audit off - so the audit is NOT skipped by the
+    /// empty-stamp early return that keeps the non-structural grep / nop default silent.
     ///
     /// (4b) The recorded `precise` equals the files that SEEDED the prompt at AND beyond the
     /// truncation cap. The prompt seed is `grounded_seed` - the distinct FILES of `ground(query, k)`,
@@ -22221,15 +22220,12 @@ mod tests {
     /// truncated at k FILES, carrying `x0.rs..x5.rs` - files that never seeded the prompt. The audit
     /// must record the 2-file seed, not the beyond-cap structural rank.
     ///
-    /// Runs under a REAL `Hybrid` in BOTH symbols lanes: the default `turbovec` lane (a real vector
-    /// engine is built, hence `#[file_serial(turbovec_model)]`) and `--features symbols` alone
-    /// (Hybrid degrades to symbols-only, no model). Excluded from `--no-default-features` (no
-    /// `symbols`, no tree-sitter) by the `cfg` gate.
+    /// Runs under a REAL `Symbols` grounder, so it needs the `symbols` feature (tree-sitter); the
+    /// `cfg` gate excludes it from `--no-default-features` (no `symbols`, no tree-sitter).
     #[cfg(feature = "symbols")]
     #[test]
-    #[cfg_attr(feature = "turbovec", serial_test::file_serial(turbovec_model))]
-    fn under_hybrid_the_audit_emits_and_records_the_prompt_seed_as_precise() {
-        use crate::grounder::symbols::hybrid::Hybrid;
+    fn under_symbols_the_audit_emits_and_records_the_prompt_seed_as_precise() {
+        use crate::grounder::symbols::grounder::Symbols;
 
         let dir = tempfile::tempdir().unwrap();
         // `def.rs` DEFINES `target` (the sole definer). `busy.rs` REFERENCES it on 12 LINES, so it
@@ -22251,7 +22247,7 @@ mod tests {
             .unwrap();
         }
         let root = dir.path().to_str().unwrap();
-        let hybrid = Hybrid::open(root, None).expect("hybrid opens");
+        let symbols = Symbols::open(root, None);
 
         // A non-producer stage grounds on its `coverage`, so this grounds every path on `target`.
         let st = Stage {
@@ -22267,7 +22263,7 @@ mod tests {
             driver: &driver,
             gates: &ExecRunner,
             repo: String::new(),
-            grounder: Some(&hybrid),
+            grounder: Some(&symbols),
             graph: None,
             criteria: Vec::new(),
         };
@@ -22292,17 +22288,17 @@ mod tests {
             radius.precise
         );
 
-        // (4a) `Hybrid::index_stamp` delegates to the inner `Symbols` (non-empty), so the audit is
+        // (4a) `Symbols::index_stamp` is non-empty (the structural-active signal), so the audit is
         // NOT skipped by the empty-stamp early return.
         assert!(
-            !hybrid.index_stamp().is_empty(),
-            "Hybrid::index_stamp must delegate to its inner Symbols (a non-empty structural stamp)"
+            !symbols.index_stamp().is_empty(),
+            "Symbols::index_stamp must be a non-empty structural stamp (index hash + tag version)"
         );
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
         let audit = events
             .iter()
             .find(|e| e.type_ == TYPE_BLAST_RADIUS_COMPUTED)
-            .expect("a BlastRadiusComputed audit IS emitted under the hybrid grounder");
+            .expect("a BlastRadiusComputed audit IS emitted under the structural symbols grounder");
 
         // (4b) The recorded `precise` equals the prompt seed, NOT the beyond-cap structural rank.
         let v: Value = serde_json::from_slice(&audit.data).unwrap();

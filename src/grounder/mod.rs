@@ -1,10 +1,7 @@
 //! Grounding gives each agent only the context it needs: the locations relevant
 //! to its task. `Grounder` is the port. `Grep` is the self-contained literal
-//! default; the real turbovec engine (semantic vector search) plugs in behind the
-//! same trait under the `turbovec` feature.
-
-#[cfg(feature = "turbovec")]
-pub mod turbovec;
+//! grounder; the structural `symbols` grounder (spec 15) is the default, plugging
+//! in behind the same trait.
 
 // The structural grounding axis (spec 15): a symbol index projected from the code tree.
 // Declared UNGATED on purpose - the parser-free data model (`symbols::model`) must compile
