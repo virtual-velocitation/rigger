@@ -24,23 +24,29 @@
 //!      embedding index under `.rigger/grounding/`.
 //!
 //! HOW THE POISON PINS BOTH HALVES. Each temp project is seeded with a booby-trapped embedding
-//! index directory under `.rigger/grounding/`, arranged so ANY resurrected embedding read or
-//! write there is caught, no matter how the resurrected code behaves:
+//! index under `.rigger/grounding/`: the two files a pre-retirement run persisted there - the
+//! primary shard (`index.bin`) and its metadata sidecar (`meta.json`) - each stripped to mode
+//! 0o000. Two properties of that seed pin the two halves of the criterion:
 //!
-//!   * A readable-garbage WITNESS file (`meta.json`) gives a byte-for-byte no-WRITE snapshot: if
-//!     any step-seam operation wrote a fresh index beside it (a cold-start rebuild) or rewrote
-//!     it, the snapshot would change. It does not.
-//!   * An UNREADABLE (mode 0o000) primary SHARD file (`index.bin`) is the "errors if opened"
-//!     no-LOAD trap: a resurrected load that enumerated the directory and opened its shards would
-//!     hit EACCES on this file and error. The surviving seam completes normally, so it opened
-//!     nothing under `.rigger/grounding/`.
+//!   * NO READ. Nothing under `.rigger/grounding/` is readable, so a resurrected load can consume
+//!     no retired-index byte: opening either file EACCES-errors. A load only USES the index by
+//!     reading its content, and there is no readable content here to obtain. (The first re-drive
+//!     of this pin left the `meta.json` sidecar readable; a tolerant load could then SUCCESSFULLY
+//!     read that stale sidecar, recognize a retired model, and degrade silently - an unwitnessed
+//!     read of the retired index the header forbids. Making the sidecar unreadable too closes it:
+//!     that successful read is no longer possible.)
+//!   * NO WRITE. A structural fingerprint of the directory - every file's size, mode, and
+//!     (readable) content - is taken before and after each seam operation and must be identical.
+//!     A cold-start rebuild that wrote a fresh readable index, a freshen that rewrote a file, a
+//!     chmod that exposed a trap, or a deletion each changes the fingerprint. None occurs.
 //!
-//! Between the two, every resurrected load path is caught: a STRICT load errors on the
-//! unreadable shard (the seam would fail); a TOLERANT load that treats the garbage as a corrupt
-//! or absent index cold-start REBUILDS one, which WRITES into the (still writable) directory and
-//! trips the byte snapshot. The garbage cannot be read as a VALID index, so there is no third
-//! "loaded cleanly, no error, no write" escape. The surviving symbols seam does neither: its real
-//! target is the SYMBOL index under `.rigger/symbols/`, and it never touches `.rigger/grounding/`.
+//! What this pins, precisely: the seam reads no readable content from, and writes nothing to,
+//! `.rigger/grounding/`. It does NOT (and a black-box periphery test cannot) claim the seam issues
+//! no bare `read_dir`/`exists` syscall against the directory - but such a probe obtains no index
+//! byte and loads nothing, so it is not the embedding-index load or freshen criterion 3 forbids.
+//! The surviving symbols seam does neither read nor write here: its real target is the SYMBOL index
+//! under `.rigger/symbols/`, and it never touches `.rigger/grounding/` - grounding is served from
+//! the symbol index, proven below by a symbol going absent -> present across the freshen.
 
 use rigger::grounder::grounder_for;
 use rigger::grounder::symbols::store;
@@ -53,51 +59,70 @@ use std::path::{Path, PathBuf};
 /// freshen. Relative to a project root.
 const EMBEDDING_INDEX_REL: &str = ".rigger/grounding";
 /// The primary index shard a resurrected load would open first. Seeded UNREADABLE (mode 0o000) so
-/// that opening it errors - the no-LOAD trap.
-const UNREADABLE_SHARD: &str = "index.bin";
-/// A readable sidecar left beside the shard. Seeded with known garbage bytes so the byte-for-byte
-/// snapshot below is the no-WRITE witness.
-const READABLE_WITNESS: &str = "meta.json";
+/// opening it errors.
+const PRIMARY_SHARD: &str = "index.bin";
+/// The metadata sidecar beside the shard (model, dims). Seeded UNREADABLE (mode 0o000) too, so a
+/// tolerant load cannot SUCCESSFULLY read it to recognize a stale model and degrade - no readable
+/// byte remains under `.rigger/grounding/` for any resurrected load to consume.
+const SIDECAR_META: &str = "meta.json";
 
 /// Seed a booby-trapped embedding index under `<root>/.rigger/grounding/`: the artifact a
 /// pre-retirement run would have persisted and freshened on every step, arranged to catch any
-/// resurrected read OR write of it. Writes a readable-garbage WITNESS (`meta.json`, the no-WRITE
-/// byte snapshot) and an UNREADABLE (mode 0o000) primary SHARD (`index.bin`, the no-LOAD trap: a
-/// load that opened it would EACCES-error). The directory itself stays WRITABLE, so a tolerant
-/// cold-start rebuild that wrote a fresh index here would succeed and trip the snapshot rather
-/// than being silently blocked. Returns the seeded directory's readable snapshot for the
-/// before/after comparison, after asserting the trap is actually armed.
-fn seed_embedding_index_poison(root: &Path) -> BTreeMap<String, Vec<u8>> {
+/// resurrected read OR write of it. Writes both files a pre-retirement index carried - the primary
+/// SHARD (`index.bin`) and the metadata SIDECAR (`meta.json`) - then strips ALL permissions from
+/// each (mode 0o000), so NO file here is readable: opening either EACCES-errors, and there is no
+/// readable byte for a resurrected load to consume (the no-READ half). The directory itself stays
+/// WRITABLE, so a tolerant cold-start rebuild that wrote a fresh index here would succeed and trip
+/// the fingerprint rather than being silently blocked (the no-WRITE half). Returns the seeded
+/// directory's fingerprint for the before/after comparison, after asserting each trap is armed.
+fn seed_embedding_index_poison(root: &Path) -> BTreeMap<String, FileFingerprint> {
     let dir = root.join(EMBEDDING_INDEX_REL);
     fs::create_dir_all(&dir).unwrap();
-    // The readable no-WRITE witness: known garbage, so any rewrite or fresh index beside it shows
-    // up in the byte snapshot.
-    fs::write(
-        dir.join(READABLE_WITNESS),
-        br#"{"model":"retired","dims":384,"stale":true}"#,
-    )
-    .unwrap();
-    // The unreadable no-LOAD trap: write garbage, then strip ALL permissions so opening it errors.
-    let shard = dir.join(UNREADABLE_SHARD);
-    fs::write(&shard, b"stale-embedding-index-not-a-real-index\x00\xff").unwrap();
-    fs::set_permissions(&shard, fs::Permissions::from_mode(0o000)).unwrap();
-    // The trap must be armed: opening the shard must actually error for this process, or the
-    // no-LOAD proof would be vacuous.
-    assert!(
-        fs::read(&shard).is_err(),
-        "the no-LOAD trap must be unreadable so a resurrected load that opened it would error"
-    );
-    snapshot_subtree(&dir)
+    for (name, bytes) in [
+        (
+            PRIMARY_SHARD,
+            b"stale-embedding-index-not-a-real-index\x00\xff".as_slice(),
+        ),
+        (
+            SIDECAR_META,
+            br#"{"model":"retired","dims":384,"stale":true}"#.as_slice(),
+        ),
+    ] {
+        let file = dir.join(name);
+        fs::write(&file, bytes).unwrap();
+        // Strip ALL permissions so opening the file errors for this process.
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o000)).unwrap();
+        // The trap must be armed: reading the file must actually error, or the no-READ proof would
+        // be vacuous.
+        assert!(
+            fs::read(&file).is_err(),
+            "the poison file {name} must be unreadable so any resurrected read of it errors"
+        );
+    }
+    fingerprint_subtree(&dir)
 }
 
-/// A byte-for-byte snapshot of every READABLE file under `dir` (recursively), keyed by path
-/// relative to `dir`. An unreadable file (the 0o000 shard) reads as `Err` and is omitted, so the
-/// snapshot is exactly the readable witness set; an absent directory snapshots to the empty map.
-/// Comparing this before and after a step-seam operation proves whether the operation added,
-/// removed, or modified any readable file there - the write the criterion forbids. A resurrected
-/// write that REPLACED the unreadable shard with real (readable) data would newly appear here.
-fn snapshot_subtree(dir: &Path) -> BTreeMap<String, Vec<u8>> {
-    fn walk(base: &Path, cur: &Path, out: &mut BTreeMap<String, Vec<u8>>) {
+/// A structural fingerprint of one file under the poisoned directory: its size, its permission
+/// bits, and its byte content IF the file is readable (`None` when reading it errors - the mode
+/// 0o000 traps stat fine but read as `Err`). Comparing the map of these before and after a seam
+/// operation catches every write the criterion forbids - a fresh readable index (new key, or a
+/// trap's `content` flipping `None` -> `Some`), a rewrite (`len`/`content` change), a chmod that
+/// exposed a trap (`mode` change), or a deletion (key vanishes). Because every seeded file is
+/// unreadable, `content` is `None` for all of them, so the map ALSO witnesses the no-READ half:
+/// there is no readable byte under the directory for a resurrected load to consume.
+#[derive(Debug, PartialEq, Eq)]
+struct FileFingerprint {
+    len: u64,
+    mode: u32,
+    content: Option<Vec<u8>>,
+}
+
+/// A fingerprint of every file under `dir` (recursively), keyed by path relative to `dir`; an
+/// absent directory fingerprints to the empty map. See [`FileFingerprint`]: it records size, mode,
+/// and readable content, so the before/after comparison catches any write even when the file is
+/// unreadable, and simultaneously witnesses that no file here exposes readable bytes.
+fn fingerprint_subtree(dir: &Path) -> BTreeMap<String, FileFingerprint> {
+    fn walk(base: &Path, cur: &Path, out: &mut BTreeMap<String, FileFingerprint>) {
         let entries = match fs::read_dir(cur) {
             Ok(e) => e,
             Err(_) => return,
@@ -106,13 +131,20 @@ fn snapshot_subtree(dir: &Path) -> BTreeMap<String, Vec<u8>> {
             let path = entry.path();
             if path.is_dir() {
                 walk(base, &path, out);
-            } else if let Ok(bytes) = fs::read(&path) {
+            } else if let Ok(meta) = fs::metadata(&path) {
                 let rel = path
                     .strip_prefix(base)
                     .unwrap_or(&path)
                     .to_string_lossy()
                     .into_owned();
-                out.insert(rel, bytes);
+                out.insert(
+                    rel,
+                    FileFingerprint {
+                        len: meta.len(),
+                        mode: meta.permissions().mode(),
+                        content: fs::read(&path).ok(),
+                    },
+                );
             }
         }
     }
@@ -127,23 +159,34 @@ fn symbol_index_path(root: &str) -> PathBuf {
     store::index_path(root)
 }
 
-/// Assert the seeded embedding index is byte-for-byte untouched (no WRITE) and its unreadable
-/// no-LOAD trap is still armed - the check run after each reconstructed step-seam operation. That
-/// the calling seam REACHED this assertion (rather than erroring on the trap) is itself the
-/// no-LOAD proof: a resurrected load that opened the shard would have EACCES-errored first.
-fn assert_grounding_index_untouched(root: &Path, seeded: &BTreeMap<String, Vec<u8>>, ctx: &str) {
+/// Assert a step-seam operation left the seeded embedding index untouched, pinning BOTH halves of
+/// the criterion. NO WRITE: the directory's fingerprint is identical (nothing added, removed,
+/// resized, rewritten, or re-permissioned under `.rigger/grounding/`). NO READ: every file here is
+/// still unreadable, so the seam obtained no retired-index byte to load - a resurrected load that
+/// successfully read a file would have had to expose readable content, which the fingerprint would
+/// show. Run after each reconstructed step-seam operation.
+fn assert_grounding_index_untouched(
+    root: &Path,
+    seeded: &BTreeMap<String, FileFingerprint>,
+    ctx: &str,
+) {
     let dir = root.join(EMBEDDING_INDEX_REL);
+    let now = fingerprint_subtree(&dir);
     assert_eq!(
-        seeded,
-        &snapshot_subtree(&dir),
-        "{ctx}: must not read or write the retired embedding index under {EMBEDDING_INDEX_REL} \
-         (no fresh index written, no witness rewritten, no shard replaced with readable data)"
+        seeded, &now,
+        "{ctx}: no write to the retired embedding index under {EMBEDDING_INDEX_REL} - its \
+         fingerprint must be identical (no fresh index, no rewritten file, no exposed trap, no \
+         deletion)"
     );
-    assert!(
-        fs::read(dir.join(UNREADABLE_SHARD)).is_err(),
-        "{ctx}: the unreadable no-LOAD trap must still be in place - the seam reaching here \
-         without erroring proves it never opened a shard under {EMBEDDING_INDEX_REL}"
-    );
+    // The no-READ witness, stated in its own right: no file under the directory exposes a readable
+    // byte, so the seam read no retired-index content there.
+    for (name, fp) in &now {
+        assert!(
+            fp.content.is_none(),
+            "{ctx}: {name} under {EMBEDDING_INDEX_REL} must stay unreadable so no retired-index \
+             byte is loadable by the step seam"
+        );
+    }
 }
 
 /// BOTH FEATURE LANES. The grounders a `--no-default-features` (feature-off) build still ships -
@@ -173,7 +216,7 @@ fn the_surviving_freshen_never_touches_the_embedding_index() {
     );
 
     // Every grounder a feature-off build can select, freshened over a changed file, leaves the
-    // seeded embedding index byte-for-byte untouched and never opens its unreadable shard.
+    // seeded embedding index fingerprint-identical and every poison file still unreadable.
     for name in ["grep", "nop"] {
         let dir = tempfile::tempdir().unwrap();
         let root_path = dir.path();
@@ -215,14 +258,14 @@ fn the_default_step_grounder_seam_never_reads_or_writes_the_embedding_index() {
     let root = root_path.to_str().unwrap();
 
     // A one-symbol project, plus a booby-trapped embedding index the step seam must ignore
-    // end-to-end (neither reading its unreadable shard nor writing over its witness).
+    // end-to-end (reading neither of its unreadable poison files, writing nothing into the dir).
     fs::write(root_path.join("lib.rs"), "pub fn alpha_symbol_one() {}\n").unwrap();
     let seeded = seed_embedding_index_poison(root_path);
 
     // SEAM 1 - per-step grounder construction. select_grounder resolves the unset default to this
     // exact call. On a cold start it builds the SYMBOL index and persists it under
-    // .rigger/symbols/; a freshen-on-open that loaded the embedding index would open the trap
-    // shard (EACCES) or write a fresh index over the witness.
+    // .rigger/symbols/; a freshen-on-open that loaded the embedding index would open a poison file
+    // (EACCES) or write a fresh readable index into the directory - both caught below.
     let grounder = Symbols::open(root, None);
     assert_grounding_index_untouched(root_path, &seeded, "constructing the default step grounder");
     assert!(
@@ -257,8 +300,8 @@ fn the_default_step_grounder_seam_never_reads_or_writes_the_embedding_index() {
         !grounder.ground("beta_symbol_two", 8).is_empty(),
         "the post-integrate freshen re-parsed the changed file into the SYMBOL index"
     );
-    // ...and never touched the retired embedding index: byte-for-byte the seeded witness with its
-    // no-LOAD trap still armed - no file read-then-rewritten, none added, none removed, no shard
-    // opened. The step sheds that freshen.
+    // ...and never touched the retired embedding index: the directory fingerprint is identical and
+    // every poison file is still unreadable - no readable byte was ever exposed for a load to
+    // consume, nothing was written. The step sheds that freshen.
     assert_grounding_index_untouched(root_path, &seeded, "the post-integrate freshen");
 }
