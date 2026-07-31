@@ -32,10 +32,10 @@ Any agent with `Bash` can drive the shared memory and grounding through the `rig
 ### Grounding (read the code the smart way)
 
 ```
-rigger ground "<query>"            # semantic search over the codebase
+rigger ground "<query>"            # structural search over the codebase
 rigger graph --around <path>       # the context-graph slice governing a file:
                                    # decisions, lessons, peers' touches
-rigger reindex                     # rebuild the semantic index (it also
+rigger reindex                     # rebuild the structural symbol index (it also
                                    # auto-freshens before every ground)
 ```
 
