@@ -52,7 +52,7 @@ use std::ops::ControlFlow;
 use std::path::Path;
 
 /// Build the whole-project index over `root`: walk the tree with the SHARED scoped walk
-/// (`walk_guarded`, the same walk grep, turbovec, and the ingests use, so they never diverge on
+/// (`walk_guarded`, the same walk grep and the ingests use, so they never diverge on
 /// which files count), and for each file whose extension the registry resolves, extract its symbols
 /// under its
 /// normalized relative path. A file whose extension is unregistered is skipped; a file that

@@ -1330,7 +1330,7 @@ rigger dash [--port <n>]    serve the read-only observability page on 127.0.0.1\
 --export <path> writes the equivalent static snapshot\n  \
 rigger ground <query> [k]   print up to k (default 8) repo references the project's\n                              \
 configured grounder finds for <query>, as `file:line: text`\n  \
-rigger reindex <file>...    incrementally re-embed the named files in the project's\n                              \
+rigger reindex <file>...    incrementally re-index the named files in the project's\n                              \
 persisted grounding index (the grounder's reindex), so a\n                              \
 later `rigger ground` reflects just-landed changes\n  \
 rigger symbols-index [dir]  build + persist the structural symbol index over [dir]\n                              \
@@ -1741,8 +1741,7 @@ const STEP_BUSY_TOKEN: &str = "another `rigger step` is already running";
 /// process dies). A NON-blocking `try_lock`: if another step already holds it, refuse fast
 /// and loudly ([`STEP_BUSY_TOKEN`]) rather than blocking - a driver whose courier gets the
 /// refusal backs off and retries, which keeps the run flowing without ever running two
-/// steps (and thus two cross-process ORT/CUDA gate builds) at once. See the call site for
-/// why concurrent steps deadlock the GPU.
+/// steps at once. See the call site for why concurrent steps corrupt the run.
 fn acquire_step_lock() -> Result<std::fs::File, Box<dyn std::error::Error>> {
     use fs2::FileExt;
     let path = Path::new(RIGGER_DIR).join("step.lock");
@@ -1755,8 +1754,8 @@ fn acquire_step_lock() -> Result<std::fs::File, Box<dyn std::error::Error>> {
         .map_err(|_| -> Box<dyn std::error::Error> {
             format!(
                 "rigger step: {STEP_BUSY_TOKEN} in this repo (lock {}). Refusing to run \
-             concurrently: two steps run two `cargo test` gates whose grounder subprocesses \
-             build ORT/CUDA sessions concurrently across processes, which deadlocks the GPU. \
+             concurrently: two steps would race the run-branch checkout and the unit \
+             worktrees branched off HEAD, corrupting the run. \
              Wait for the running step to finish (or kill it) and retry.",
                 path.display()
             )
@@ -1774,16 +1773,14 @@ fn cmd_step(args: &[String]) -> Res {
     let criteria = load_criteria(args.spec.as_deref())?;
     std::fs::create_dir_all(RIGGER_DIR)?;
 
-    // Serialize concurrent `rigger step` invocations (root-cause fix for the ORT/CUDA
-    // GPU deadlock). Two steps at once run two `cargo test` gates whose grounder
-    // subprocesses build ORT/CUDA sessions CONCURRENTLY ACROSS PROCESSES - the documented
-    // heap-corruption/deadlock hazard (Cargo.toml turbovec test-serial note). A single
-    // step's own gate is already serialized internally (the grounder's CONSTRUCT_MU +
-    // the tests' `file_serial`), which is why one gate runs clean; the ONLY source of
-    // cross-process concurrency is OVERLAPPING steps - e.g. a driver re-couriering a step
-    // while the first's minutes-long gate still runs. Held for the whole step and released
-    // when this process exits (even on crash/kill), so a dead step never wedges the run.
-    // The guard binds a name so it is not dropped early.
+    // Serialize concurrent `rigger step` invocations so the run advances ONE step at a time
+    // (spec 51 relies on that invariant). A step checks out the run branch and branches unit
+    // worktrees off HEAD, then integrates units and appends events (see just below); two
+    // steps at once would race that shared checkout/HEAD and interleave their integrations,
+    // corrupting the run. The overlap arises when a driver re-couriers a step while the
+    // first's minutes-long gate still runs. Held for the whole step and released when this
+    // process exits (even on crash/kill), so a dead step never wedges the run. The guard
+    // binds a name so it is not dropped early.
     let _step_lock = acquire_step_lock()?;
 
     // Anchor + check out the run branch before the conductor branches any unit worktree
@@ -14798,8 +14795,8 @@ mod tests {
     }
 
     /// `rigger step` SERIALIZES: while one step holds the lock, a second concurrent step
-    /// REFUSES (with the driver-recognizable busy token) instead of running - the root-cause
-    /// fix for the cross-process ORT/CUDA deadlock two overlapping gate builds cause. And the
+    /// REFUSES (with the driver-recognizable busy token) instead of running - so the run
+    /// advances one step at a time and two steps never race the shared run state. And the
     /// refusal is not permanent: once the first releases, a later step acquires cleanly.
     #[test]
     #[serial_test::serial(cwd)]

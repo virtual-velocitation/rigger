@@ -323,7 +323,7 @@ pub struct ReviewDepth {
     /// it to the structural-width distribution of your repo: set it too low and every unit
     /// exceeds it, collapsing tier routing to all-full and defeating the parallelism the
     /// light tier exists to retain; use `high_risk_paths` for breadth the size signal
-    /// cannot express. On the default / turbovec / grep lane `.safe` equals the capped
+    /// cannot express. On the grep lane `.safe` equals the capped
     /// grounded seed (safe == precise == the pre-unit-3 seed), so there the count is still
     /// the grep-hit spread within the first `k` line-matches and this threshold behaves
     /// exactly as it did before unit 3.

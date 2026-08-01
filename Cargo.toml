@@ -61,13 +61,12 @@ ignore = "0.4"
 uuid = { version = "1", features = ["v4"] }
 thiserror = "2"
 # Cross-process advisory file lock (`flock` under the hood) that SERIALIZES `rigger step`
-# (see `acquire_step_lock`). Two steps running at once run two `cargo test` gates whose
-# grounder subprocesses construct ORT/CUDA sessions CONCURRENTLY ACROSS PROCESSES - the
-# documented heap-corruption/deadlock hazard (see the turbovec test-serial note below). A
-# single step's gate already serializes its own construction, so overlapping steps are the
-# only source of cross-process concurrency. Non-optional: the lock must hold in BOTH feature
-# lanes. `fs2` releases the lock when the file drops OR the process dies (even on kill), so a
-# crashed step never leaves a stale lock wedging the run.
+# (see `acquire_step_lock`) so the run advances ONE step at a time - spec 51 relies on that
+# invariant. A step checks out the run branch and branches unit worktrees off HEAD, then
+# integrates units and appends events; two steps running at once would race that shared
+# checkout/HEAD and interleave their integrations, corrupting the run. Non-optional: the lock
+# must hold in BOTH feature lanes. `fs2` releases the lock when the file drops OR the process
+# dies (even on kill), so a crashed step never leaves a stale lock wedging the run.
 fs2 = "0.4"
 # The KurrentDB EventStore adapter (the trait's server-backed implementation) is
 # part of the product, compiled into EVERY build: the shared-store capability

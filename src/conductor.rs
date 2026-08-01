@@ -527,9 +527,9 @@ fn input_digest(command: &str, tree_sha: &str) -> String {
     if tree_sha.is_empty() {
         return String::new();
     }
-    // FNV-1a over the command bytes - the SAME fixed constants `main::fnv1a_64` and the
-    // turbovec staleness oracle use, so the crate has one stable-hash idiom. The
-    // collision-sensitive input (the tree) rides verbatim, so this 64-bit fold covers
+    // FNV-1a over the command bytes - the SAME fixed constants `main::fnv1a_64` uses, so
+    // the crate has one stable-hash idiom. The collision-sensitive input (the tree) rides
+    // verbatim, so this 64-bit fold covers
     // only the short, config-authored command string.
     const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
     const PRIME: u64 = 0x0000_0100_0000_01b3;
@@ -6364,7 +6364,7 @@ impl RunCtx<'_> {
     /// 3, architecture 5.5.9), keyed per unit + `attempt` so a stepwise/replay driver appends it
     /// exactly once. It rides ONLY when a STRUCTURAL grounder is active - detected by a non-empty
     /// [`Grounder::index_stamp`], the same signal that provides the provenance - so a grep /
-    /// turbovec / nop / no-grounder path emits nothing new and stays byte-for-byte unchanged. When
+    /// nop / no-grounder path emits nothing new and stays byte-for-byte unchanged. When
     /// structural, it is emitted on EVERY path INCLUDING the empty-radius fail-safe (the index, and
     /// so the stamp, is present even when a query grounds to nothing), so "why the full panel?" is
     /// always answerable. The payload carries the unit, both views, the serialize verdict, and the
@@ -6458,8 +6458,8 @@ impl RunCtx<'_> {
         self.ingest_project_into_graph();
         // Spec 29c criterion 1: structural grounding is ONE seeded traversal over the UNIFIED
         // graph, not a separate structural-grounder call stitched together with a graph read. The
-        // grounder still ANSWERS the grounding query and its result SEEDS the traversal (the NL
-        // seeding the spec retains - turbovec resolves a symbol-free query to the files to start
+        // grounder still ANSWERS the grounding query and its result SEEDS the traversal (the
+        // seeding the spec retains - the grounder resolves the query to the files to start
         // from), but those refs are no longer rendered as a parallel "Relevant locations" block:
         // the code neighborhood now comes from the ONE `graph_context` traversal below, alongside
         // the decisions/findings and design-intent nodes about the SAME files. `grounded_seed`
@@ -12010,7 +12010,7 @@ mod tests {
 
         // CLAIM 2: `build_prompt_with_failure` surfaces the code neighborhood FROM the unified
         // traversal, with no separate structural-grounder stitch. The grounder SEEDS the traversal
-        // (the retained NL/turbovec seeding) by grounding the query to `core.rs`, but its ref TEXT
+        // (the retained grounder seeding) by grounding the query to `core.rs`, but its ref TEXT
         // is empty - so if `run_unit` appears in the prompt it can ONLY have come from the graph.
         let st_store = Store::open(":memory:").unwrap();
         let driver = Stub::new();
@@ -21922,7 +21922,7 @@ mod tests {
     }
 
     /// spec 16 unit 3, the symbols-INACTIVE control: a NON-structural grounder (an empty
-    /// `index_stamp`, the grep / turbovec / nop default) records NO `BlastRadiusComputed` event
+    /// `index_stamp`, the grep / nop grounders) records NO `BlastRadiusComputed` event
     /// and drives no retention metric - the shipped default is byte-for-byte unchanged on the
     /// audit dimension. `StubGrounder` inherits the empty default stamp, exactly like the shipped
     /// non-symbols grounders.
