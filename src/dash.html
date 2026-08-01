@@ -555,6 +555,7 @@ function render(state) {
   el("review").innerHTML =
     '<div class="k">approved</div><div>' + esc(metrics.review_approve || 0) + '</div>' +
     '<div class="k">rejected</div><div>' + esc(metrics.review_reject || 0) + '</div>' +
+    '<div class="k">grep fallbacks</div><div>' + esc(metrics.grep_fallbacks || 0) + '</div>' +
     '<div class="k">first-pass yield</div><div>' + pct(metrics.first_pass_yield) +
       ' (' + esc(metrics.first_pass_clean || 0) + '/' + esc(metrics.units_started || 0) + ')</div>' +
     '<div class="k">escalation rate</div><div>' + pct(metrics.escalation_rate) +
