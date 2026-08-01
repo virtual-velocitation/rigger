@@ -15,7 +15,11 @@ use rigger::community;
 use rigger::concepts;
 use rigger::conductor::{self, Deps};
 use rigger::config;
-use rigger::contextgraph::{self, sqlite::Projector, Projection};
+use rigger::contextgraph::{
+    self,
+    sqlite::{Located, Projector},
+    Projection,
+};
 use rigger::dash;
 use rigger::driver::cli;
 use rigger::driver::replay::{spawn_scratch_path, ReplayDriver};
@@ -1295,6 +1299,8 @@ SDK, and drives the loop (one command; run `rigger\n                            
 setup` first - it provisions the driver in .rigger/shim/)\n  \
 rigger serve [opts]         run as an MCP server the driver connects to\n  \
 rigger graph --around <id>  print the context subgraph around a node\n  \
+rigger graph --show <entity> print an entity's definition site + line-numbered body\n                              \
+(the text half of lookup; resolves a full id or a bare name)\n  \
 rigger graph build          fold the project's source into the graph from a cold\n                              \
 checkout (no run required)\n  \
 rigger graph communities    derive the code lens's coupling communities offline and\n                              \
@@ -2989,6 +2995,7 @@ fn cmd_graph(args: &[String]) -> Res {
         return cmd_graph_concepts(&args[1..]);
     }
     let mut around = String::new();
+    let mut show = String::new();
     let mut depth: i64 = 2;
     let mut i = 0;
     while i < args.len() {
@@ -2996,6 +3003,10 @@ fn cmd_graph(args: &[String]) -> Res {
             "--around" => {
                 i += 1;
                 around = args.get(i).cloned().unwrap_or_default();
+            }
+            "--show" => {
+                i += 1;
+                show = args.get(i).cloned().unwrap_or_default();
             }
             "--depth" => {
                 i += 1;
@@ -3005,8 +3016,14 @@ fn cmd_graph(args: &[String]) -> Res {
         }
         i += 1;
     }
+    // `rigger graph --show <entity>` is the TEXT half of lookup (spec 58): the definition site and
+    // body, beside `--around`'s structural neighborhood. Dispatched before the `--around` guard so
+    // a `--show` query needs no `--around`.
+    if !show.is_empty() {
+        return cmd_graph_show(&show);
+    }
     if around.is_empty() {
-        return Err("graph: --around <id> is required".into());
+        return Err("graph: --around <id> or --show <entity> is required".into());
     }
     let gp = Projector::open(&db_path("graph.db"), &project_identity())?;
     let g = gp.subgraph(&[around.clone()], depth)?;
@@ -3021,6 +3038,141 @@ fn cmd_graph(args: &[String]) -> Res {
         println!("  (nothing found; has `rigger run` been run yet?)");
     }
     Ok(())
+}
+
+/// The upper bound on how many body lines `rigger graph --show` prints (spec 58): the definition's
+/// extent, when known, is bounded by the next definition in the file, but a large gap (or the
+/// file's last definition, bounded only by EOF) is clamped to this window so the surface never
+/// dumps an unbounded body.
+const SHOW_MAX_BODY_LINES: u32 = 60;
+
+/// `rigger graph --show <entity>` (spec 58, criterion 1) - the TEXT half of graph lookup, beside
+/// `--around`'s structural neighborhood. It resolves the entity through [`Projector::locate`] (a
+/// full `<file>::<name>` id, or a bare name via the pinned name-suffix match), then:
+///
+/// - ONE match: prints the definition SITE (`file:line`), the entity's KIND and one-hop DEGREE, and
+///   the definition BODY read from the WORKING TREE at that location - line-numbered and bounded by
+///   the next definition in the file (else a clamped window). A missing file or a recorded line
+///   past end-of-file degrades to the site plus a stale-location note, never an error (the recorded
+///   graph facts are still shown; only the body is unavailable).
+/// - MANY matches (an ambiguous bare name): LISTS the sorted candidates, each with its file, and
+///   prints NO body - the graph's honesty rule is never to guess among candidates.
+/// - NONE: a one-line not-found note (never an error), mirroring `--around`'s empty result.
+///
+/// Read-only over the projection and the working tree; deterministic for a given tree and graph.
+fn cmd_graph_show(entity: &str) -> Res {
+    let gp = Projector::open(&db_path("graph.db"), &project_identity())?;
+    match gp.locate(entity)? {
+        Located::None => {
+            println!(
+                "show {entity:?}: no such entity in the graph (has it been built? try `rigger graph build`)"
+            );
+        }
+        Located::Many(cands) => {
+            println!(
+                "show {entity:?}: {} candidates - the name is ambiguous, re-run --show on one id:",
+                cands.len()
+            );
+            for c in &cands {
+                println!("  {}   ({})", c.id, c.file);
+            }
+        }
+        Located::One(site) => print_entity_site(&site),
+    }
+    Ok(())
+}
+
+/// Print one located entity for `rigger graph --show` (spec 58): the site/kind/degree header, then
+/// the line-numbered body read from the working tree - or a stale-location note when the recorded
+/// location no longer resolves to source (a graceful degrade, never an error).
+fn print_entity_site(site: &contextgraph::sqlite::EntitySite) {
+    let kind = if site.kind.is_empty() {
+        "?"
+    } else {
+        site.kind.as_str()
+    };
+    println!("show {}", site.id);
+    println!(
+        "  site: {}:{}   kind {}   degree {}",
+        site.file, site.line, kind, site.degree
+    );
+    match read_definition_body(&site.file, site.line, site.next_def_line) {
+        Some(lines) => {
+            for (n, text) in lines {
+                println!("  {n:>6} | {text}");
+            }
+        }
+        None => println!(
+            "  (source unavailable at {}:{}; the recorded location may be stale)",
+            site.file, site.line
+        ),
+    }
+}
+
+/// Read a definition's body from the WORKING TREE for `rigger graph --show` (spec 58), as
+/// `(1-based line, text)` pairs. The file is read relative to the git top-level (so a `--show`
+/// launched from a subdirectory still finds it), falling back to the cwd outside a git context.
+///
+/// The window is `[start, end]` where `end` is bounded by the next definition in the file (its line
+/// minus one, `next_def_line`), clamped by [`SHOW_MAX_BODY_LINES`] and end-of-file, with trailing
+/// blank lines trimmed so a small definition shows only its own lines. Returns `None` - the caller
+/// degrades to a stale-location note - when the file cannot be read or the recorded `start` line is
+/// `0` or past end-of-file (a drifted or unknown location); it never errors.
+fn read_definition_body(
+    file: &str,
+    start: u32,
+    next_def_line: Option<u32>,
+) -> Option<Vec<(u32, String)>> {
+    if start == 0 {
+        return None;
+    }
+    let root = git_repo();
+    let path = if root.is_empty() {
+        std::path::PathBuf::from(file)
+    } else {
+        std::path::Path::new(&root).join(file)
+    };
+    let text = std::fs::read_to_string(&path).ok()?;
+    let all: Vec<&str> = text.lines().collect();
+    let total = all.len() as u32;
+    if start > total {
+        // The recorded line is past end-of-file: the location drifted. Degrade (site + note).
+        return None;
+    }
+    // Upper bound: the next definition (exclusive), else EOF - each clamped by the max window.
+    let window_cap = start.saturating_add(SHOW_MAX_BODY_LINES).saturating_sub(1);
+    let mut end = next_def_line
+        .map(|n| n.saturating_sub(1))
+        .unwrap_or(total)
+        .min(total)
+        .min(window_cap);
+    if end < start {
+        end = start;
+    }
+    // Trim trailing NON-BODY lines from the window. When the extent is bounded by the NEXT
+    // definition, the lines between this definition's end and that next line are the separator: a
+    // blank, then the next item's doc comment / attributes. Those attach to the FOLLOWING item, so
+    // a definition's body never ENDS with them - a definition's own last line is its code (a
+    // closing brace or a statement), never its successor's doc comment. Trim trailing blank,
+    // line-comment (`//`), and attribute (`#[` / `#!`) lines so a small definition shows only its
+    // own lines instead of bleeding into the next item's preamble.
+    while end > start && is_trailing_non_body(all[(end - 1) as usize]) {
+        end -= 1;
+    }
+    Some(
+        (start..=end)
+            .map(|n| (n, all[(n - 1) as usize].to_string()))
+            .collect(),
+    )
+}
+
+/// Whether `line` is a TRAILING non-body line for the show surface's extent trim (spec 58): blank,
+/// a line comment (`//`), or an attribute (`#[` / `#!`). Such a line, when it TRAILS a definition
+/// whose extent is bounded by the next definition, is the successor's preamble (the doc comment /
+/// attributes that attach to the FOLLOWING item), never part of this definition's body.
+fn is_trailing_non_body(line: &str) -> bool {
+    let t = line.trim_start();
+    t.is_empty() || t.starts_with("//") || t.starts_with("#[") || t.starts_with("#!")
 }
 
 /// `rigger graph build` - fold the project's source into `.rigger/graph.db` from a COLD checkout
