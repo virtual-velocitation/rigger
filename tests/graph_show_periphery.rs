@@ -258,6 +258,188 @@ fn graph_show_bounds_body_at_next_definition_and_trims_trailing_preamble() {
     );
 }
 
+/// NESTED-DEFINITION face: a definition that CONTAINS a nested `fn`/item shows its FULL body past
+/// that nested definition - never truncated to its signature. The graph records the next definition
+/// BY LINE, which for a container is its nested child; bounding by that child would silently print
+/// only the lines before it (just the signature when the child is on the very next line). The show
+/// surface bounds a braced definition by its OWN brace-balanced close instead, so the nested child
+/// is part of the shown body and the extent stops at the definition's own closing brace - never
+/// bleeding into a following sibling. Guards `read_definition_body`'s brace-balanced extent (the fix
+/// for the criterion-1 OUTPUT truncation) through the real CLI, in BOTH feature lanes.
+#[test]
+fn graph_show_shows_full_body_past_nested_definition() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_rigger_dir(root);
+
+    // outer.rs: `outer` (lines 1-6) CONTAINS a nested `helper` (lines 2-4) and calls it (line 5);
+    // then a blank + doc-comment separator, then a top-level `sibling` at line 9. The graph records
+    // outer@1, helper@2 (the next definition by line - nested inside outer), sibling@9. The buggy
+    // bound (next-def-by-line) would truncate outer's body to line 1 alone (`fn outer() {`) because
+    // helper begins on line 2; the brace-balanced bound spans outer's whole body through line 6.
+    std::fs::write(
+        root.join("outer.rs"),
+        "fn outer() {\n\
+         \x20\x20\x20\x20fn helper() {\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20let inner_body = 1;\n\
+         \x20\x20\x20\x20}\n\
+         \x20\x20\x20\x20let outer_body = helper();\n\
+         }\n\
+         \n\
+         // doc for the sibling\n\
+         fn sibling() {\n\
+         \x20\x20\x20\x20let sibling_body = 2;\n\
+         }\n",
+    )
+    .unwrap();
+    {
+        let p = open_graph(root);
+        seed_def(&p, 1, "outer.rs", "outer", "function", 1);
+        seed_def(&p, 2, "outer.rs", "helper", "function", 2);
+        seed_def(&p, 3, "outer.rs", "sibling", "function", 9);
+    }
+
+    // `--show outer`: the FULL body is shown, INCLUDING the nested `helper`, not truncated to the
+    // `fn outer` signature line.
+    let (out, err, ok) = run_rigger(root, &["graph", "--show", "outer"]);
+    assert!(ok, "graph --show outer must succeed; stderr: {err}");
+    assert!(
+        out.contains("fn outer"),
+        "the outer definition's signature is shown; got:\n{out}"
+    );
+    assert!(
+        out.contains("fn helper"),
+        "the NESTED definition is part of the shown body, not truncated away; got:\n{out}"
+    );
+    assert!(
+        out.contains("inner_body"),
+        "the nested definition's own body line is shown inside outer; got:\n{out}"
+    );
+    assert!(
+        out.contains("outer_body"),
+        "outer's body AFTER the nested definition is shown (the extent spans past it); got:\n{out}"
+    );
+    // The extent stops at outer's own closing brace: the following sibling never bleeds in.
+    assert!(
+        !out.contains("fn sibling") && !out.contains("sibling_body"),
+        "the body stops at outer's own closing brace (never bleeds into the sibling); got:\n{out}"
+    );
+    assert!(
+        !out.contains("doc for the sibling"),
+        "the following sibling's preamble is not part of outer's body; got:\n{out}"
+    );
+
+    // `--show helper`: the nested child shows its OWN body (lines 2-4), bounded by its own closing
+    // brace - it does NOT over-extend to outer's tail just because the next definition BY LINE
+    // (`sibling`) lies far below.
+    let (hout, herr, hok) = run_rigger(root, &["graph", "--show", "helper"]);
+    assert!(hok, "graph --show helper must succeed; stderr: {herr}");
+    assert!(
+        hout.contains("fn helper") && hout.contains("inner_body"),
+        "the nested definition shows its own body; got:\n{hout}"
+    );
+    assert!(
+        !hout.contains("outer_body") && !hout.contains("sibling_body"),
+        "the nested definition's extent is its own closing brace, not the parent's tail; got:\n{hout}"
+    );
+}
+
+/// LEXICAL face: the brace-balanced extent counts only STRUCTURAL braces - a `}` inside a string
+/// literal, a line comment, or a char literal does NOT close the body. A naive brace counter would
+/// stop at the first such `}` and silently truncate the body to a fragment; the show surface must
+/// span the whole definition. Guards `brace_balanced_end`'s string / comment / char skipping.
+#[test]
+fn graph_show_extent_ignores_braces_in_strings_comments_and_chars() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_rigger_dir(root);
+
+    // tricky.rs: `tricky` (lines 1-6) whose body carries a `}` inside a string (line 2), inside a
+    // line comment (line 3), and as a `'}'` char literal (line 4) - each a false close a naive
+    // counter would trip on - before its real closing brace at line 6, then a top-level `after`.
+    std::fs::write(
+        root.join("tricky.rs"),
+        "fn tricky() {\n\
+         \x20\x20\x20\x20let s = \"a } brace in a string\";\n\
+         \x20\x20\x20\x20// a } brace in a comment\n\
+         \x20\x20\x20\x20let c = '}';\n\
+         \x20\x20\x20\x20let real_tail = 1;\n\
+         }\n\
+         \n\
+         fn after() {}\n",
+    )
+    .unwrap();
+    {
+        let p = open_graph(root);
+        seed_def(&p, 1, "tricky.rs", "tricky", "function", 1);
+        seed_def(&p, 2, "tricky.rs", "after", "function", 8);
+    }
+
+    let (out, err, ok) = run_rigger(root, &["graph", "--show", "tricky"]);
+    assert!(ok, "graph --show tricky must succeed; stderr: {err}");
+    // The body spans PAST every false-close `}` to the real closing brace at line 6.
+    assert!(
+        out.contains("real_tail"),
+        "the body spans past the string/comment/char braces to its real tail; got:\n{out}"
+    );
+    assert!(
+        out.contains("a } brace in a string") && out.contains("let c = '}';"),
+        "the lines carrying the false-close braces are themselves shown; got:\n{out}"
+    );
+    // The extent stops at tricky's own closing brace and never bleeds into the sibling.
+    assert!(
+        !out.contains("fn after"),
+        "the body stops at tricky's own closing brace (never bleeds into after); got:\n{out}"
+    );
+}
+
+/// BRACE-LESS face: a definition with NO `{ }` body (a `const`, a type alias, a trait-method
+/// declaration) nests nothing, so it is bounded by the NEXT definition in the file and its trailing
+/// separator (the following item's blank/doc-comment preamble) is trimmed. This is the fallback path
+/// the brace-balanced extent does not cover; it keeps the show surface honest for statement-form
+/// definitions. Drives `read_definition_body`'s brace-less bound and `is_trailing_non_body` trim.
+#[test]
+fn graph_show_bounds_brace_less_definition_at_next_and_trims_preamble() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_rigger_dir(root);
+
+    // d.rs: `ALPHA` (line 1, a brace-less const) then a blank + doc-comment separator (attaching to
+    // `BETA`), then `BETA` at line 4. ALPHA has no `{ }` body, so its extent is bounded by the next
+    // definition (line 4); the trailing blank (2) and doc comment (3) are trimmed to ALPHA's own
+    // line 1.
+    std::fs::write(
+        root.join("d.rs"),
+        "const ALPHA: u32 = 1;\n\
+         \n\
+         // doc for beta\n\
+         const BETA: u32 = 2;\n",
+    )
+    .unwrap();
+    {
+        let p = open_graph(root);
+        seed_def(&p, 1, "d.rs", "ALPHA", "const", 1);
+        seed_def(&p, 2, "d.rs", "BETA", "const", 4);
+    }
+
+    let (out, err, ok) = run_rigger(root, &["graph", "--show", "ALPHA"]);
+    assert!(ok, "graph --show ALPHA must succeed; stderr: {err}");
+    assert!(
+        out.contains("const ALPHA"),
+        "the brace-less definition's own line is shown; got:\n{out}"
+    );
+    // Bounded by the next definition, with the trailing separator trimmed: BETA and its preamble
+    // never appear.
+    assert!(
+        !out.contains("const BETA"),
+        "the body is bounded by the next definition (never bleeds into BETA); got:\n{out}"
+    );
+    assert!(
+        !out.contains("doc for beta"),
+        "the trailing separator (BETA's preamble) is trimmed from ALPHA's body; got:\n{out}"
+    );
+}
+
 /// ARG EDGE: `graph` with neither `--around` nor `--show` is a usage error whose message names
 /// BOTH selectors (the show flag joined the existing structural one). Guards the changed guard in
 /// `cmd_graph` through the real CLI.

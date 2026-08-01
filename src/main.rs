@@ -3113,11 +3113,17 @@ fn print_entity_site(site: &contextgraph::sqlite::EntitySite) {
 /// `(1-based line, text)` pairs. The file is read relative to the git top-level (so a `--show`
 /// launched from a subdirectory still finds it), falling back to the cwd outside a git context.
 ///
-/// The window is `[start, end]` where `end` is bounded by the next definition in the file (its line
-/// minus one, `next_def_line`), clamped by [`SHOW_MAX_BODY_LINES`] and end-of-file, with trailing
-/// blank lines trimmed so a small definition shows only its own lines. Returns `None` - the caller
-/// degrades to a stale-location note - when the file cannot be read or the recorded `start` line is
-/// `0` or past end-of-file (a drifted or unknown location); it never errors.
+/// The window is `[start, end]`. A definition with a `{ ... }` body is bounded by its OWN
+/// brace-balanced closing line ([`brace_balanced_end`]), computed from the working-tree read
+/// itself: this is NESTING-aware, so a definition that CONTAINS a nested `fn`/item shows its full
+/// body through its own closing brace rather than truncating at the nested child - which the graph
+/// records only as the next definition BY LINE, with no way to tell a nested child from a following
+/// sibling. A brace-LESS definition (a `const`, a type alias, a trait-method declaration) nests
+/// nothing, so it is bounded by the next definition in the file (`next_def_line`, its line minus
+/// one) with the trailing separator trimmed. Either bound is clamped by [`SHOW_MAX_BODY_LINES`] and
+/// end-of-file. Returns `None` - the caller degrades to a stale-location note - when the file cannot
+/// be read or the recorded `start` line is `0` or past end-of-file (a drifted or unknown location);
+/// it never errors.
 fn read_definition_body(
     file: &str,
     start: u32,
@@ -3139,31 +3145,182 @@ fn read_definition_body(
         // The recorded line is past end-of-file: the location drifted. Degrade (site + note).
         return None;
     }
-    // Upper bound: the next definition (exclusive), else EOF - each clamped by the max window.
+    // The max window: never dump an unbounded body regardless of which bound applies.
     let window_cap = start.saturating_add(SHOW_MAX_BODY_LINES).saturating_sub(1);
-    let mut end = next_def_line
-        .map(|n| n.saturating_sub(1))
-        .unwrap_or(total)
-        .min(total)
-        .min(window_cap);
+    // The search for the definition's OPENING brace stops at the next recorded definition (else
+    // EOF): a `{` before it means the definition is braced (and its extent spans PAST any nested
+    // child to its matching close); none before it means the definition is brace-less.
+    let brace_limit = next_def_line.unwrap_or_else(|| total.saturating_add(1));
+    let mut end = match brace_balanced_end(&all, start, brace_limit, total) {
+        // Braced: bound by the definition's OWN closing brace - nesting-aware, so a contained nested
+        // definition is part of the body, never a truncation point - clamped by the max window.
+        Some(close) => close.min(window_cap),
+        // Brace-less: bound by the next definition (exclusive), clamped by the max window and EOF,
+        // then trim the trailing separator. The lines between a brace-less definition's end and the
+        // next definition are the successor's preamble (a blank, then its doc comment / attributes);
+        // those attach to the FOLLOWING item, so a definition's body never ENDS with them. Trim
+        // trailing blank, line-comment (`//`), and attribute (`#[` / `#!`) lines so a small
+        // definition shows only its own lines instead of bleeding into the next item's preamble.
+        None => {
+            let mut e = next_def_line
+                .map(|n| n.saturating_sub(1))
+                .unwrap_or(total)
+                .min(total)
+                .min(window_cap);
+            if e < start {
+                e = start;
+            }
+            while e > start && is_trailing_non_body(all[(e - 1) as usize]) {
+                e -= 1;
+            }
+            e
+        }
+    };
     if end < start {
         end = start;
-    }
-    // Trim trailing NON-BODY lines from the window. When the extent is bounded by the NEXT
-    // definition, the lines between this definition's end and that next line are the separator: a
-    // blank, then the next item's doc comment / attributes. Those attach to the FOLLOWING item, so
-    // a definition's body never ENDS with them - a definition's own last line is its code (a
-    // closing brace or a statement), never its successor's doc comment. Trim trailing blank,
-    // line-comment (`//`), and attribute (`#[` / `#!`) lines so a small definition shows only its
-    // own lines instead of bleeding into the next item's preamble.
-    while end > start && is_trailing_non_body(all[(end - 1) as usize]) {
-        end -= 1;
     }
     Some(
         (start..=end)
             .map(|n| (n, all[(n - 1) as usize].to_string()))
             .collect(),
     )
+}
+
+/// The 1-based line at which a definition's `{ ... }` body closes - its brace-balanced end -
+/// computed from the working-tree lines for `rigger graph --show` (spec 58). This is the
+/// NESTING-aware extent signal the persisted graph cannot supply: a nested `fn`/item lives INSIDE
+/// the braces, so balancing braces from the definition's first line spans PAST the nested child to
+/// the definition's OWN closing brace, where bounding by the next-definition-BY-LINE would instead
+/// truncate the body at (or before) that child.
+///
+/// Returns `None` when no opening brace is found before `limit` (the next recorded definition's
+/// line, else `total + 1`): such a definition is brace-LESS (a `const`, a type alias, a trait-method
+/// declaration), and the caller bounds it by the next definition instead. Braces inside line and
+/// block comments, string literals (normal, byte, and raw), and char literals are NOT counted, so a
+/// format string `"{}"`, a `// }` comment, an `r#"{ ... }"#` block, or a `'{'` char literal never
+/// opens or closes the body.
+fn brace_balanced_end(all: &[&str], start: u32, limit: u32, total: u32) -> Option<u32> {
+    /// A raw-string opener at byte `i`: an optional `b`, then `r`, then any `#`s, then `"`. Returns
+    /// `(hash_count, opener_len)` so the scan can seek the matching `"###...` terminator. `None` for
+    /// an ordinary identifier byte (e.g. the `r` in `return`, the `b` in `builder`).
+    fn raw_open(bytes: &[u8], i: usize) -> Option<(usize, usize)> {
+        let mut j = i;
+        if bytes.get(j) == Some(&b'b') {
+            j += 1;
+        }
+        if bytes.get(j) != Some(&b'r') {
+            return None;
+        }
+        j += 1;
+        let mut hashes = 0;
+        while bytes.get(j) == Some(&b'#') {
+            hashes += 1;
+            j += 1;
+        }
+        if bytes.get(j) == Some(&b'"') {
+            Some((hashes, j + 1 - i))
+        } else {
+            None
+        }
+    }
+
+    let mut depth: i32 = 0;
+    let mut opened = false;
+    let mut in_block_comment = false;
+    let mut in_string = false;
+    let mut raw_hashes: Option<usize> = None;
+    for idx in (start - 1)..total {
+        // Before any brace has opened, the search for the body is bounded by the next recorded
+        // definition: reaching it without an opening brace means this definition is brace-less.
+        if !opened && idx + 1 >= limit {
+            return None;
+        }
+        let bytes = all[idx as usize].as_bytes();
+        let mut i = 0usize;
+        while i < bytes.len() {
+            if in_block_comment {
+                if bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/') {
+                    in_block_comment = false;
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+                continue;
+            }
+            if let Some(hashes) = raw_hashes {
+                // Inside a raw string: the terminator is `"` followed by exactly `hashes` `#`s.
+                if bytes[i] == b'"' && (0..hashes).all(|k| bytes.get(i + 1 + k) == Some(&b'#')) {
+                    raw_hashes = None;
+                    i += 1 + hashes;
+                } else {
+                    i += 1;
+                }
+                continue;
+            }
+            if in_string {
+                match bytes[i] {
+                    b'\\' => i += 2, // skip the escaped byte (never a body brace)
+                    b'"' => {
+                        in_string = false;
+                        i += 1;
+                    }
+                    _ => i += 1,
+                }
+                continue;
+            }
+            // Outside any string / comment. A raw-string opener takes precedence over the `r`/`b`
+            // identifier bytes and over the bare `"` of a normal string.
+            if let Some((hashes, len)) = raw_open(bytes, i) {
+                raw_hashes = Some(hashes);
+                i += len;
+                continue;
+            }
+            match bytes[i] {
+                b'/' if bytes.get(i + 1) == Some(&b'/') => break, // line comment: rest of line
+                b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                    in_block_comment = true;
+                    i += 2;
+                }
+                b'"' => {
+                    in_string = true;
+                    i += 1;
+                }
+                b'\'' => {
+                    // A char literal (`'x'`, `'\n'`, `'{'`) whose content must be skipped so a brace
+                    // inside is not counted, or a lifetime / label (`'a`), which is a single byte.
+                    if bytes.get(i + 1) == Some(&b'\\') {
+                        // Escaped: skip to the closing quote (its content - including a `\u{..}`
+                        // brace - is ignored).
+                        let mut j = i + 2;
+                        while j < bytes.len() && bytes[j] != b'\'' {
+                            j += 1;
+                        }
+                        i = j + 1;
+                    } else if bytes.get(i + 2) == Some(&b'\'') {
+                        i += 3; // a simple `'x'` char literal
+                    } else {
+                        i += 1; // a lifetime / label, not a char literal
+                    }
+                }
+                b'{' => {
+                    depth += 1;
+                    opened = true;
+                    i += 1;
+                }
+                b'}' => {
+                    depth -= 1;
+                    i += 1;
+                    if opened && depth <= 0 {
+                        return Some(idx + 1);
+                    }
+                }
+                _ => i += 1,
+            }
+        }
+    }
+    // A brace opened but never balanced by end-of-file (a malformed or macro-generated body): bound
+    // at EOF rather than fall back to the next-definition bound, which could truncate at a child.
+    opened.then_some(total)
 }
 
 /// Whether `line` is a TRAILING non-body line for the show surface's extent trim (spec 58): blank,
