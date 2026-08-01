@@ -8618,6 +8618,64 @@ fn docs_ships_graph_hygiene_guidance_to_consumers() {
     }
 }
 
+/// Spec 58, criterion 3 (the habit half ships to CONSUMERS, end to end): the three-verb lookup
+/// guidance is not merely present in an in-process render - it must survive the whole composition
+/// path (docs_context -> render -> write) the real `rigger docs` binary drives, so it reaches the two
+/// consumer-facing files an author commits and ships. Driving the built binary and reading the
+/// WRITTEN skill and handbook proves the "Looking things up" guidance actually LANDS in what
+/// consumers get: the knowledge graph is the lookup surface, its three verbs each carry their
+/// one-line job (`rigger graph --around` structure, `rigger graph --show` text, `rigger peers`
+/// memory), and grep over the project's sources is a fallback worth REPORTING via a `grep-fallback:`
+/// progress line. The implementer's in-process `discipline_carries_three_verb_lookup_guidance` unit
+/// test pins the render output; this periphery layer pins that the write path in the built binary
+/// carries it all the way to the consumer's files - something an in-process render assertion cannot
+/// prove.
+#[test]
+fn docs_ships_three_verb_lookup_guidance_to_consumers() {
+    let proj = temp_project();
+    let root = proj.path();
+
+    let (stdout, stderr, ok) = run_rigger(root, &["docs"]);
+    assert!(ok, "rigger docs must succeed; stderr: {stderr}");
+    assert!(
+        stdout.contains("skills/using-rigger/SKILL.md") && stdout.contains("using-rigger.md"),
+        "rigger docs must report writing both consumer-facing paths; got: {stdout}"
+    );
+
+    let skill = std::fs::read_to_string(root.join("skills/using-rigger/SKILL.md"))
+        .expect("the skill was rendered to disk");
+    let handbook = std::fs::read_to_string(root.join("docs/handbook/using-rigger.md"))
+        .expect("the handbook chapter was rendered to disk");
+
+    // BOTH consumer-facing outputs, as WRITTEN by the built binary, carry the lookup guidance: all
+    // three verbs with their one-line jobs, and the grep-fallback reporting instruction. Both render
+    // from the single `discipline_body` authority, so the skill and the handbook chapter ship the
+    // guidance identically.
+    for (label, out) in [("skill", &skill), ("handbook", &handbook)] {
+        assert!(
+            out.contains("rigger graph --around"),
+            "{label} shipped by `rigger docs` must name the STRUCTURE verb `rigger graph --around`"
+        );
+        assert!(
+            out.contains("rigger graph --show"),
+            "{label} shipped by `rigger docs` must name the TEXT verb `rigger graph --show`"
+        );
+        assert!(
+            out.contains("rigger peers"),
+            "{label} shipped by `rigger docs` must name the MEMORY verb `rigger peers`"
+        );
+        assert!(
+            out.contains("structure") && out.contains("text") && out.contains("memory"),
+            "{label} shipped by `rigger docs` must name each lookup verb's job \
+             (structure/text/memory)"
+        );
+        assert!(
+            out.contains("grep-fallback:") && out.contains("rigger progress"),
+            "{label} shipped by `rigger docs` must carry the grep-fallback reporting instruction"
+        );
+    }
+}
+
 /// Spec 20, unit 2 (the drift GATE, end to end): `rigger validate` FAILS LOUDLY when the
 /// committed `using-rigger` skill or the handbook discipline chapter has drifted from a
 /// fresh render, and PASSES when they are in sync - this is what makes the discipline STAY

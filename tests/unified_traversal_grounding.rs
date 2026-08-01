@@ -514,6 +514,58 @@ fn the_producer_prompt_keeps_the_full_grounding_context_not_the_implement_trim()
     );
 }
 
+/// Spec 58, criterion 3 (the habit half, at the PRODUCER boundary end to end): spec 58 names the
+/// producer/planner alongside the review context - EVERY non-implement spawn's FULL slice gains the
+/// three-verb lookup pointer, not just the trimmed implement slice. The sibling
+/// `the_producer_prompt_keeps_the_full_grounding_context_not_the_implement_trim` proves the producer
+/// KEEPS the full decisions/findings bulk; this proves the SAME producer prompt now ALSO names all
+/// three lookup verbs (structure/text/memory) with the grep-fallback reporting instruction, at the
+/// exact bytes a real producer spawn receives through the `AgentDriver` port during a live `run`. The
+/// implementer's in-process `lookup_pointer_names_all_three_verbs_on_every_slice` pins `graph_context`
+/// at `GroundingSlice::Full`; this pins the wiring all the way to a REAL producer spawn - something an
+/// in-process render assertion cannot prove.
+///
+/// Non-vacuous / mutation-isolating: dropping the `write_lookup_pointer(&mut b)` call from
+/// `graph_context`'s `GroundingSlice::Full` arm reddens every assertion here, while the
+/// implement/sdet-author trim tests (which exercise the peers-pointer path) stay green.
+#[test]
+fn the_producer_prompt_carries_the_three_verb_lookup_pointer() {
+    let graph = Projector::open(":memory:", "test").unwrap();
+
+    // No graph seed is needed: the lookup pointer is a fixed note the Full slice appends
+    // UNCONDITIONALLY, so no spawn is left grepping in the dark even over an empty neighborhood.
+    let prompts = run_and_capture_producer_prompts(&graph);
+    assert!(
+        !prompts.is_empty(),
+        "the producer stage's agent must have been spawned with a prompt"
+    );
+    let prompt = &prompts[0];
+
+    assert!(
+        prompt.contains("rigger graph --around"),
+        "the producer prompt must name the STRUCTURE verb `rigger graph --around`; \
+         prompt was:\n{prompt}"
+    );
+    assert!(
+        prompt.contains("rigger graph --show"),
+        "the producer prompt must name the TEXT verb `rigger graph --show`; prompt was:\n{prompt}"
+    );
+    assert!(
+        prompt.contains("rigger peers"),
+        "the producer prompt must name the MEMORY verb `rigger peers`; prompt was:\n{prompt}"
+    );
+    assert!(
+        prompt.contains("structure") && prompt.contains("text") && prompt.contains("memory"),
+        "the producer prompt must name each lookup verb's job (structure/text/memory); \
+         prompt was:\n{prompt}"
+    );
+    assert!(
+        prompt.contains("grep-fallback:") && prompt.contains("rigger progress"),
+        "the producer prompt must carry the grep-fallback reporting instruction; \
+         prompt was:\n{prompt}"
+    );
+}
+
 /// `git init` a throwaway repo with one empty commit - the committed HEAD an isolated unit worktree
 /// branches from (mirrors the conductor's own scratch repo). A REAL repo is required for the seam
 /// test: the sdet-author spawn only fires for a unit that HAS a worktree (`spawn_sdet_author` skips an
@@ -871,6 +923,84 @@ fn the_review_prompt_keeps_the_full_findings_so_a_lens_finding_reaches_the_adver
         "the adjudicator's review prompt must keep the FULL findings section so a lens finding reaches \
          it (the trim is implement-only; review is not blinded); prompt was:\n{adj}"
     );
+}
+
+/// Spec 58, criterion 3 (the habit half, at the REVIEW boundary end to end): the three-verb lookup
+/// pointer is carried by EVERY spawn's grounding, not just the trimmed implement slice - so the FULL
+/// slice a real reviewer receives must name all three lookup verbs. The sibling
+/// `the_review_prompt_keeps_the_full_findings_so_a_lens_finding_reaches_the_adversary_and_adjudicator`
+/// proves the review tiers KEEP the full findings bulk; this proves the SAME review prompts now ALSO
+/// name all three lookup verbs (structure/text/memory) with the grep-fallback reporting instruction.
+/// The implementer's in-process `lookup_pointer_names_all_three_verbs_on_every_slice` pins
+/// `graph_context` at `GroundingSlice::Full`; this periphery layer pins the pointer all the way to a
+/// REAL review spawn - the lens, the adversary, AND the adjudicator - the exact bytes each receives
+/// through the `AgentDriver` port during a live fan-out `run`. A wiring regression that assembled a
+/// review prompt without the Full-slice pointer would keep the in-process unit test green while
+/// shipping a verb-less prompt to the reviewer; only a test at this boundary catches it.
+///
+/// Non-vacuous / mutation-isolating: dropping the `write_lookup_pointer(&mut b)` call from
+/// `graph_context`'s `GroundingSlice::Full` arm reddens every assertion here (all three review tiers
+/// lose the verbs and the fallback instruction), while the implement/sdet-author trim tests (which
+/// exercise the peers-pointer path) stay green.
+#[test]
+fn the_review_prompt_carries_the_three_verb_lookup_pointer() {
+    let graph = Projector::open(":memory:", "test").unwrap();
+
+    // The finding gives the later tiers something to ground on; this test's subject is the lookup
+    // pointer the Full slice appends, not the finding itself.
+    let finding = json!({
+        "id": "f_lookup",
+        "by": "lens:lens",
+        "unit": "u1",
+        "summary": "a lens finding about the seed file",
+        "about": ["core.rs"],
+    });
+    let prompts = run_and_capture_review_prompts(&graph, finding);
+
+    let prompt_for = |role: &str| -> String {
+        prompts
+            .iter()
+            .find(|(id, _)| id == role)
+            .unwrap_or_else(|| {
+                panic!(
+                    "the {role:?} review tier must have been spawned; spawns were:\n{prompts:#?}"
+                )
+            })
+            .1
+            .clone()
+    };
+
+    // EVERY review tier grounds through the FULL slice, so each must receive all three lookup verbs
+    // (each with its one-line job) and the grep-fallback reporting instruction: the review context
+    // names the graph verbs the SAME as the trimmed implement slice does.
+    for role in ["lens", "adversary", "adj"] {
+        let prompt = prompt_for(role);
+        assert!(
+            prompt.contains("rigger graph --around"),
+            "the {role:?} review prompt must name the STRUCTURE verb `rigger graph --around`; \
+             prompt was:\n{prompt}"
+        );
+        assert!(
+            prompt.contains("rigger graph --show"),
+            "the {role:?} review prompt must name the TEXT verb `rigger graph --show`; \
+             prompt was:\n{prompt}"
+        );
+        assert!(
+            prompt.contains("rigger peers"),
+            "the {role:?} review prompt must name the MEMORY verb `rigger peers`; \
+             prompt was:\n{prompt}"
+        );
+        assert!(
+            prompt.contains("structure") && prompt.contains("text") && prompt.contains("memory"),
+            "the {role:?} review prompt must name each lookup verb's job (structure/text/memory); \
+             prompt was:\n{prompt}"
+        );
+        assert!(
+            prompt.contains("grep-fallback:") && prompt.contains("rigger progress"),
+            "the {role:?} review prompt must carry the grep-fallback reporting instruction; \
+             prompt was:\n{prompt}"
+        );
+    }
 }
 
 /// The code-neighborhood section is prompt-budgeted: a broad neighborhood renders the most-recent
