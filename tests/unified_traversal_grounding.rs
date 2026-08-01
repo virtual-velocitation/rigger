@@ -414,15 +414,22 @@ fn the_implement_prompt_is_trimmed_to_the_intent_layer_with_a_rigger_peers_point
         prompt.contains("the loop discipline rule governing core"),
         "the trimmed implement prompt must KEEP the design-intent section; prompt was:\n{prompt}"
     );
-    // ADDED: a one-line pointer naming BOTH pull tools the reference bulk is now retrievable through.
+    // ADDED: the three-verb lookup pointer (spec 58) naming all three CLI lookup verbs the
+    // reference bulk and the rest of lookup are retrievable through - `rigger peers` (memory),
+    // `rigger graph --around` (structure), `rigger graph --show` (text).
     assert!(
-        prompt.contains("rigger_peers"),
-        "the trimmed implement prompt must point at `rigger_peers` for prior decisions / lessons / \
+        prompt.contains("rigger peers"),
+        "the trimmed implement prompt must point at `rigger peers` for prior decisions / lessons / \
          findings; prompt was:\n{prompt}"
     );
     assert!(
         prompt.contains("rigger graph --around"),
         "the trimmed implement prompt must point at `rigger graph --around` for code navigation; \
+         prompt was:\n{prompt}"
+    );
+    assert!(
+        prompt.contains("rigger graph --show"),
+        "the trimmed implement prompt must point at `rigger graph --show` for source text; \
          prompt was:\n{prompt}"
     );
     // DROPPED: the capped decisions / lessons / findings sections - proven by section header AND by
@@ -680,15 +687,22 @@ fn the_sdet_author_build_seam_spawn_receives_the_trimmed_implement_slice() {
         prompt.contains("the loop discipline rule governing core"),
         "the sdet-author's trimmed prompt must KEEP the design-intent section; prompt was:\n{prompt}"
     );
-    // ADDED: the one-line pointer naming BOTH pull tools the reference bulk is retrievable through.
+    // ADDED: the three-verb lookup pointer (spec 58) naming all three CLI lookup verbs the
+    // reference bulk and the rest of lookup are retrievable through - `rigger peers` (memory),
+    // `rigger graph --around` (structure), `rigger graph --show` (text).
     assert!(
-        prompt.contains("rigger_peers"),
-        "the sdet-author's trimmed prompt must point at `rigger_peers` for prior decisions / lessons \
+        prompt.contains("rigger peers"),
+        "the sdet-author's trimmed prompt must point at `rigger peers` for prior decisions / lessons \
          / findings; prompt was:\n{prompt}"
     );
     assert!(
         prompt.contains("rigger graph --around"),
         "the sdet-author's trimmed prompt must point at `rigger graph --around` for code navigation; \
+         prompt was:\n{prompt}"
+    );
+    assert!(
+        prompt.contains("rigger graph --show"),
+        "the sdet-author's trimmed prompt must point at `rigger graph --show` for source text; \
          prompt was:\n{prompt}"
     );
     // DROPPED: the capped decisions / lessons / findings sections - proven by section header AND by

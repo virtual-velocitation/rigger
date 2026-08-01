@@ -144,6 +144,21 @@ fn discipline_body(ctx: &DocsContext) -> String {
          the next unit and forks the code from the log - fix the loop instead (see below).\n"
     );
 
+    let _ = writeln!(s, "## Looking things up\n");
+    let _ = writeln!(
+        s,
+        "The knowledge graph is the lookup surface - reach for it before grepping the project's \
+         sources. Three verbs answer the three questions you have about the code: `rigger graph \
+         --around <file|entity>` (structure: who calls X, and the caller/callee neighborhood), \
+         `rigger graph --show <entity>` (text: an entity's definition site and its body), and \
+         `rigger peers <file>...` (memory: the prior decisions, findings, and lessons about the \
+         files). Grep over the project's sources is a fallback worth reporting, not a habit: if the \
+         graph could not answer and you fall back to grep, record it with `rigger progress <id> \
+         'grep-fallback: <what the graph did not answer>'` - one line before moving on - so the gap \
+         lands in the event log where it can be measured and closed. Filtering your own build or \
+         gate output is not a fallback and is not reported.\n"
+    );
+
     let _ = writeln!(s, "## Graph hygiene before a large run\n");
     let _ = writeln!(
         s,
@@ -398,6 +413,43 @@ mod tests {
                      (found {banned:?}); a prune reclaims disk, it does not speed a fold"
                 );
             }
+        }
+    }
+
+    /// Spec 58, criterion 3 (the habit half): the shared discipline body carries the same
+    /// three-verb lookup guidance the grounding pointer does - `rigger graph --around` (structure),
+    /// `rigger graph --show` (text), `rigger peers` (memory) - states the rule plainly (the graph
+    /// is the lookup surface; grep on the project's sources is a fallback worth reporting, not a
+    /// habit), and names the fallback-reporting instruction (`grep-fallback:` via `rigger
+    /// progress`). Because BOTH outputs render from `discipline_body`, the skill and the handbook
+    /// chapter carry it identically.
+    #[test]
+    fn discipline_carries_three_verb_lookup_guidance() {
+        let ctx = sentinel_ctx();
+        for (label, out) in [
+            ("skill", render_using_rigger_skill(&ctx)),
+            ("handbook", render_handbook_discipline(&ctx)),
+        ] {
+            assert!(
+                out.contains("rigger graph --around"),
+                "{label} must name the STRUCTURE verb `rigger graph --around`"
+            );
+            assert!(
+                out.contains("rigger graph --show"),
+                "{label} must name the TEXT verb `rigger graph --show`"
+            );
+            assert!(
+                out.contains("rigger peers"),
+                "{label} must name the MEMORY verb `rigger peers`"
+            );
+            assert!(
+                out.contains("structure") && out.contains("text") && out.contains("memory"),
+                "{label} must name each lookup verb's job (structure/text/memory)"
+            );
+            assert!(
+                out.contains("grep-fallback:") && out.contains("rigger progress"),
+                "{label} must carry the grep-fallback reporting instruction"
+            );
         }
     }
 

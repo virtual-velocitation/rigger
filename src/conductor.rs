@@ -6511,10 +6511,10 @@ impl RunCtx<'_> {
         // the pull tools (retrieve precisely on demand), while every OTHER spawn - the REVIEW tiers
         // and the producer/planner - keeps the FULL bulk unchanged.
         match slice {
-            // The trimmed doer slice: OMIT the capped bulk, point at the pull tools instead. The
-            // reference history stays retrievable UNCAPPED through `rigger_peers`, and code
-            // navigation through `rigger graph --around`; the store keeps everything, the implement
-            // prompt just stops pushing the truncated blob.
+            // The trimmed doer slice: OMIT the capped bulk, point at the lookup verbs instead. The
+            // reference history stays retrievable UNCAPPED through `rigger peers` (memory), with
+            // `rigger graph --around` (structure) and `rigger graph --show` (text) for the rest;
+            // the store keeps everything, the implement prompt just stops pushing the truncated blob.
             GroundingSlice::Implement => write_peers_pointer(&mut b),
             // The full slice: every prompt slice is budgeted (Gap 15's principle, extended to all
             // sections by Gap 17): the decisions, lessons, and findings sections each render through
@@ -6532,6 +6532,11 @@ impl RunCtx<'_> {
                 write_capped_decisions(&mut b, &g, seed);
                 write_capped_lessons(&mut b, &g, seed);
                 write_capped_findings(&mut b, &g, seed);
+                // Spec 58: the review context (and the producer/planner) keep the full bulk AND
+                // gain the three-verb lookup pointer - the fallback ledger shows reviewers grep
+                // too, so every spawn's grounding names the graph verbs, not just the trimmed
+                // implement slice.
+                write_lookup_pointer(&mut b);
             }
         }
         b
@@ -7978,21 +7983,45 @@ fn write_capped_findings(b: &mut String, g: &Graph, seed: &[String]) {
     );
 }
 
-/// The one-line pointer the TRIMMED implement slice renders IN PLACE OF the capped
-/// decisions/lessons/findings sections (spec 36). The implement prompt stops PUSHING the large,
-/// ~85%-truncated reference blob and instead names the two pull tools that answer it PRECISELY and
-/// on demand: `rigger_peers`, which returns the prior decisions / lessons / findings scoped to the
-/// blast-radius files UNCAPPED (the store keeps the full history the prompt no longer inlines), and
-/// `rigger graph --around`, which since spec 37 answers code navigation (who-calls-X and the
-/// caller/callee neighborhood). A fixed string with no seed/graph data, so it is deterministic by
+/// The note the TRIMMED implement slice renders IN PLACE OF the capped decisions/lessons/findings
+/// sections (spec 36): the implement prompt stops PUSHING the large, ~85%-truncated reference blob
+/// and says the history is retrievable, not inlined. The three verbs that retrieve it are named by
+/// the shared [`write_lookup_pointer`] appended right after (spec 58), so this note and the pointer
+/// stay one story - `rigger peers` is the memory verb that returns the omitted decisions / lessons
+/// / findings UNCAPPED. A fixed string with no seed/graph data, so it is deterministic by
 /// construction. Hyphens only (a gate rejects U+2014), and it names only first-party tools.
 fn write_peers_pointer(b: &mut String) {
     b.push_str(
         "\nPrior decisions, lessons, and findings about these files are not inlined here to keep \
-         this prompt precise - pull the ones your sub-problem needs, uncapped and scoped to your \
-         blast-radius files, with the `rigger_peers` tool (the full history is retained in the \
-         store, not truncated into this prompt). For code navigation - who-calls-X and the \
-         caller/callee neighborhood of a file or entity - use `rigger graph --around <file|entity>`.\n",
+         this prompt precise - retrieve the ones your sub-problem needs, uncapped and scoped to \
+         your blast-radius files, with the lookup verbs below (the full history is retained in the \
+         store, not truncated into this prompt).\n",
+    );
+    write_lookup_pointer(b);
+}
+
+/// The three-verb LOOKUP pointer EVERY grounding slice carries (spec 58): the knowledge graph is
+/// the lookup surface, and naming its three verbs with their one-line jobs makes reaching for the
+/// graph the path of least resistance rather than grepping the project's sources. `rigger graph
+/// --around` answers STRUCTURE (who-calls-X and the caller/callee neighborhood), `rigger graph
+/// --show` answers TEXT (an entity's definition site and its body), and `rigger peers` answers
+/// MEMORY (the prior decisions, findings, and lessons about the files). Grep over the project's
+/// sources is a fallback worth REPORTING, not a habit: an agent that greps because the graph could
+/// not answer records ONE `grep-fallback:` progress line before moving on, so every such gap lands
+/// in the event log where it can be measured and closed (filtering one's own build or gate output
+/// is not a fallback). Rendered on the IMPLEMENT slice (after the bulk-not-inlined note) and the
+/// FULL/review slice (after the capped bulk) alike, so no spawn is left grepping in the dark. A
+/// fixed string with no seed/graph data, so it is deterministic by construction; hyphens only (a
+/// gate rejects U+2014), and it names only first-party tools.
+fn write_lookup_pointer(b: &mut String) {
+    b.push_str(
+        "\nLook things up in the knowledge graph, not by grepping the project's sources - three \
+         verbs answer it: `rigger graph --around <file|entity>` (structure: callers, callees, \
+         neighbors), `rigger graph --show <entity>` (text: definition site and body), `rigger \
+         peers <file>...` (memory: decisions, findings, lessons). If the graph cannot answer and \
+         you fall back to grep over the project's sources, record it with `rigger progress <id> \
+         'grep-fallback: <what the graph did not answer>'` - one line before moving on - so the \
+         gap is visible in the log; filtering your own build or gate output is not a fallback.\n",
     );
 }
 
@@ -8240,8 +8269,10 @@ enum GroundingSlice {
     /// the capped decisions/lessons/findings bulk OMITTED (spec 36 Workstream A).
     Implement,
     /// The full slice - code neighborhood + design intent + the capped decisions/lessons/findings
-    /// sections, byte-unchanged from before spec 36. Every non-implement spawn renders it: the REVIEW
-    /// tiers (lens/adversary/adjudicator) AND the producer/planner.
+    /// sections + the shared three-verb lookup pointer (spec 58). Every non-implement spawn renders
+    /// it: the REVIEW tiers (lens/adversary/adjudicator) AND the producer/planner. The capped bulk
+    /// is byte-unchanged from before spec 36; spec 58 only APPENDS the lookup pointer, so the
+    /// review context names the graph verbs the same as the trimmed implement slice does.
     Full,
 }
 
@@ -11086,6 +11117,88 @@ mod tests {
             prompt.contains("generic engine pipeline"),
             "the full-slice spawn should be fed the decision governing modifier.rs; prompt \
              was:\n{prompt}"
+        );
+    }
+
+    #[test]
+    fn lookup_pointer_names_all_three_verbs_on_every_slice() {
+        // Spec 58 c3 (the habit half): the grounding tool pointer names the THREE lookup verbs
+        // with their one-line jobs - `rigger graph --around` (structure), `rigger graph --show`
+        // (text), `rigger peers` (memory) - plus the grep-fallback reporting instruction, and it
+        // is carried by EVERY spawn's grounding: the trimmed IMPLEMENT slice AND the full REVIEW
+        // slice alike. Assert both slices, from ONE seeded traversal, carry all three verbs and the
+        // fallback instruction.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("modifier.rs"), "fn modifier() {}\n").unwrap();
+        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+        let mut e = Event::new(
+            contextgraph::TYPE_DECISION_MADE,
+            serde_json::to_vec(&json!({
+                "id": "d1", "summary": "a governing decision", "governs": ["modifier.rs"],
+            }))
+            .unwrap(),
+        );
+        e.position = 1;
+        graph.apply(&e).unwrap();
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent("a"));
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let grep = crate::grounder::Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: Some(&graph),
+            criteria: Vec::new(),
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+        let seed = vec!["modifier.rs".to_string()];
+
+        for (label, slice) in [
+            ("implement", GroundingSlice::Implement),
+            ("review-full", GroundingSlice::Full),
+        ] {
+            let out = ctx.graph_context(&seed, slice);
+            // All three lookup verbs, each with its one-line job.
+            assert!(
+                out.contains("rigger graph --around"),
+                "the {label} pointer must name the STRUCTURE verb; got:\n{out}"
+            );
+            assert!(
+                out.contains("rigger graph --show"),
+                "the {label} pointer must name the TEXT verb `rigger graph --show`; got:\n{out}"
+            );
+            assert!(
+                out.contains("rigger peers"),
+                "the {label} pointer must name the MEMORY verb `rigger peers`; got:\n{out}"
+            );
+            // The jobs are named so the reader knows which verb answers which question.
+            assert!(
+                out.contains("structure") && out.contains("text") && out.contains("memory"),
+                "the {label} pointer must name each verb's job (structure/text/memory); \
+                 got:\n{out}"
+            );
+            // The grep-fallback reporting instruction: a graph miss that forces a grep over the
+            // project's sources is recorded as one `grep-fallback:` progress line.
+            assert!(
+                out.contains("grep-fallback:") && out.contains("rigger progress"),
+                "the {label} pointer must carry the grep-fallback reporting instruction; \
+                 got:\n{out}"
+            );
+        }
+
+        // The FULL (review) slice keeps the capped decisions bulk unchanged - the lookup pointer is
+        // ADDED to it, not a replacement, so a reviewer still sees the governing decisions inline.
+        let full = ctx.graph_context(&seed, GroundingSlice::Full);
+        assert!(
+            full.contains("a governing decision"),
+            "the review slice must still carry the capped decisions bulk; got:\n{full}"
         );
     }
 
