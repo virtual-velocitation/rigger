@@ -3041,9 +3041,9 @@ fn cmd_graph(args: &[String]) -> Res {
 }
 
 /// The upper bound on how many body lines `rigger graph --show` prints (spec 58): the definition's
-/// extent, when known, is bounded by the next definition in the file, but a large gap (or the
-/// file's last definition, bounded only by EOF) is clamped to this window so the surface never
-/// dumps an unbounded body.
+/// extent comes from the grammar's own node boundary, but a very long body is clamped to this window
+/// so the surface never dumps an unbounded body. A clamp is announced with an explicit note (the
+/// omitted-line count), so a bounded body is never mistaken for the whole definition.
 const SHOW_MAX_BODY_LINES: u32 = 60;
 
 /// `rigger graph --show <entity>` (spec 58, criterion 1) - the TEXT half of graph lookup, beside
@@ -3052,9 +3052,11 @@ const SHOW_MAX_BODY_LINES: u32 = 60;
 ///
 /// - ONE match: prints the definition SITE (`file:line`), the entity's KIND and one-hop DEGREE, and
 ///   the definition BODY read from the WORKING TREE at that location - line-numbered and bounded by
-///   the next definition in the file (else a clamped window). A missing file or a recorded line
-///   past end-of-file degrades to the site plus a stale-location note, never an error (the recorded
-///   graph facts are still shown; only the body is unavailable).
+///   the extent the shared multi-grammar symbols authority derives (the grammar's own node
+///   boundary), clamped to a max window. A missing file, a recorded line past end-of-file, a drifted
+///   location the current tree no longer matches, or a build without the extraction grammar degrades
+///   to the site plus an explicit note, never an error (the recorded graph facts are still shown;
+///   only the body is unavailable, and the surface says so).
 /// - MANY matches (an ambiguous bare name): LISTS the sorted candidates, each with its file, and
 ///   prints NO body - the graph's honesty rule is never to guess among candidates.
 /// - NONE: a one-line not-found note (never an error), mirroring `--around`'s empty result.
@@ -3083,54 +3085,89 @@ fn cmd_graph_show(entity: &str) -> Res {
 }
 
 /// Print one located entity for `rigger graph --show` (spec 58): the site/kind/degree header, then
-/// the line-numbered body read from the working tree - or a stale-location note when the recorded
-/// location no longer resolves to source (a graceful degrade, never an error).
+/// the line-numbered body bounded through the shared multi-grammar symbols authority - or an
+/// explicit note (a drifted location, or a build without the extraction grammar) in place of the
+/// body, so the surface is never silently wrong (a graceful degrade, never an error).
 fn print_entity_site(site: &contextgraph::sqlite::EntitySite) {
     let kind = if site.kind.is_empty() {
         "?"
     } else {
         site.kind.as_str()
     };
+    // The definition name is the id's suffix after the first `::` (a file path never contains one),
+    // the twin of the `<file>::<name>` id `locate` resolved - used to match the working-tree extent.
+    let name = site
+        .id
+        .split_once("::")
+        .map(|(_, n)| n)
+        .unwrap_or(site.id.as_str());
     println!("show {}", site.id);
     println!(
         "  site: {}:{}   kind {}   degree {}",
         site.file, site.line, kind, site.degree
     );
-    match read_definition_body(&site.file, site.line, site.next_def_line) {
-        Some(lines) => {
+    match definition_body(&site.file, site.line, name) {
+        ShowBody::Lines {
+            lines,
+            omitted,
+            extent_end,
+        } => {
             for (n, text) in lines {
                 println!("  {n:>6} | {text}");
             }
+            if omitted > 0 {
+                // The extent ran past the max window: print an explicit clamp note (the omitted
+                // count and the extent's true last line) so a bounded body is never read as whole.
+                println!(
+                    "  (body clamped to {SHOW_MAX_BODY_LINES} lines; {omitted} more line(s) omitted, through line {extent_end})"
+                );
+            }
         }
-        None => println!(
-            "  (source unavailable at {}:{}; the recorded location may be stale)",
-            site.file, site.line
-        ),
+        ShowBody::Note(reason) => println!("  ({reason})"),
     }
 }
 
-/// Read a definition's body from the WORKING TREE for `rigger graph --show` (spec 58), as
-/// `(1-based line, text)` pairs. The file is read relative to the git top-level (so a `--show`
-/// launched from a subdirectory still finds it), falling back to the cwd outside a git context.
+/// The outcome of bounding a located definition's body for `rigger graph --show` (spec 58).
+enum ShowBody {
+    /// The line-numbered body window `[start, end]`: `omitted` is how many lines were dropped past
+    /// the [`SHOW_MAX_BODY_LINES`] clamp (`0` when the whole extent fit), and `extent_end` is the
+    /// extent's true last line, so the caller can print an honest clamp note when `omitted > 0`.
+    Lines {
+        lines: Vec<(u32, String)>,
+        omitted: u32,
+        extent_end: u32,
+    },
+    /// No body could be shown; the string is the human reason (a drifted working-tree location, or
+    /// a build compiled without the extraction grammar). Printed in place of the body so the show
+    /// surface degrades honestly, never guessing or silently truncating.
+    Note(String),
+}
+
+/// Bound and read a located definition's body from the WORKING TREE for `rigger graph --show`
+/// (spec 58). The file is read relative to the git top-level (so a `--show` launched from a
+/// subdirectory still finds it), falling back to the cwd outside a git context.
 ///
-/// The window is `[start, end]`. A definition with a `{ ... }` body is bounded by its OWN
-/// brace-balanced closing line ([`brace_balanced_end`]), computed from the working-tree read
-/// itself: this is NESTING-aware, so a definition that CONTAINS a nested `fn`/item shows its full
-/// body through its own closing brace rather than truncating at the nested child - which the graph
-/// records only as the next definition BY LINE, with no way to tell a nested child from a following
-/// sibling. A brace-LESS definition (a `const`, a type alias, a trait-method declaration) nests
-/// nothing, so it is bounded by the next definition in the file (`next_def_line`, its line minus
-/// one) with the trailing separator trimmed. Either bound is clamped by [`SHOW_MAX_BODY_LINES`] and
-/// end-of-file. Returns `None` - the caller degrades to a stale-location note - when the file cannot
-/// be read or the recorded `start` line is `0` or past end-of-file (a drifted or unknown location);
-/// it never errors.
-fn read_definition_body(
-    file: &str,
-    start: u32,
-    next_def_line: Option<u32>,
-) -> Option<Vec<(u32, String)>> {
+/// The extent is derived through the SHARED multi-grammar symbols authority, not a hand-rolled
+/// per-language lexer: [`derive_extent_end`] resolves the file's grammar via the symbols registry
+/// and reads the definition's END line from the grammar's OWN tree-sitter node boundary. So a
+/// braced language's closing brace, a Python block's dedent, a Go backtick raw string, and a JS
+/// single-quote string carrying a lone `{` are all bounded correctly by the parser - including a
+/// signature that itself carries a brace (a struct-destructuring parameter, an `= {}` default) and
+/// a definition that CONTAINS a nested `fn`/item (its extent spans the child, never truncates at
+/// it). The window is `[start, extent]`, clamped by [`SHOW_MAX_BODY_LINES`]; a clamp reports its
+/// omitted-line count so a bounded body is never read as whole.
+///
+/// Returns [`ShowBody::Note`] - the caller prints it in place of the body, never an error - when the
+/// body cannot be shown honestly: the recorded `start` line is `0` or past end-of-file, the file
+/// cannot be read (a drifted or unknown location), the current tree no longer holds a definition of
+/// that name at that line (a stale location), or this build has no extraction grammar (the light,
+/// `--no-default-features` lane). It never GUESSES a body from a structural next-definition bound.
+fn definition_body(file: &str, start: u32, name: &str) -> ShowBody {
+    // A recorded line of 0 never named a real source line: degrade before any read.
     if start == 0 {
-        return None;
+        return ShowBody::Note(format!(
+            "source unavailable at {file}:{start}; the recorded location may be stale"
+        ));
     }
     let root = git_repo();
     let path = if root.is_empty() {
@@ -3138,198 +3175,82 @@ fn read_definition_body(
     } else {
         std::path::Path::new(&root).join(file)
     };
-    let text = std::fs::read_to_string(&path).ok()?;
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return ShowBody::Note(format!(
+            "source unavailable at {file}:{start}; the recorded location may be stale"
+        ));
+    };
     let all: Vec<&str> = text.lines().collect();
     let total = all.len() as u32;
     if start > total {
-        // The recorded line is past end-of-file: the location drifted. Degrade (site + note).
-        return None;
+        // The recorded line is past end-of-file: the location drifted.
+        return ShowBody::Note(format!(
+            "source unavailable at {file}:{start}; the recorded location may be stale"
+        ));
     }
-    // The max window: never dump an unbounded body regardless of which bound applies.
-    let window_cap = start.saturating_add(SHOW_MAX_BODY_LINES).saturating_sub(1);
-    // The search for the definition's OPENING brace stops at the next recorded definition (else
-    // EOF): a `{` before it means the definition is braced (and its extent spans PAST any nested
-    // child to its matching close); none before it means the definition is brace-less.
-    let brace_limit = next_def_line.unwrap_or_else(|| total.saturating_add(1));
-    let mut end = match brace_balanced_end(&all, start, brace_limit, total) {
-        // Braced: bound by the definition's OWN closing brace - nesting-aware, so a contained nested
-        // definition is part of the body, never a truncation point - clamped by the max window.
-        Some(close) => close.min(window_cap),
-        // Brace-less: bound by the next definition (exclusive), clamped by the max window and EOF,
-        // then trim the trailing separator. The lines between a brace-less definition's end and the
-        // next definition are the successor's preamble (a blank, then its doc comment / attributes);
-        // those attach to the FOLLOWING item, so a definition's body never ENDS with them. Trim
-        // trailing blank, line-comment (`//`), and attribute (`#[` / `#!`) lines so a small
-        // definition shows only its own lines instead of bleeding into the next item's preamble.
-        None => {
-            let mut e = next_def_line
-                .map(|n| n.saturating_sub(1))
-                .unwrap_or(total)
-                .min(total)
-                .min(window_cap);
-            if e < start {
-                e = start;
-            }
-            while e > start && is_trailing_non_body(all[(e - 1) as usize]) {
-                e -= 1;
-            }
-            e
-        }
+    // Derive the extent's end line through the ONE multi-grammar authority. A miss (a drifted
+    // location, or a light-lane build with no grammar) is an explicit note, never a guessed body.
+    let extent_end = match derive_extent_end(file, &text, start, name) {
+        Ok(end) => end.min(total),
+        Err(why) => return ShowBody::Note(why),
     };
-    if end < start {
-        end = start;
+    // The max window: never dump an unbounded body. A clamp keeps the extent's true end so the
+    // caller can announce the omitted lines.
+    let window_cap = start.saturating_add(SHOW_MAX_BODY_LINES).saturating_sub(1);
+    let printed_end = extent_end.max(start).min(window_cap);
+    let omitted = extent_end.saturating_sub(printed_end);
+    let lines = (start..=printed_end)
+        .map(|n| (n, all[(n - 1) as usize].to_string()))
+        .collect();
+    ShowBody::Lines {
+        lines,
+        omitted,
+        extent_end,
     }
-    Some(
-        (start..=end)
-            .map(|n| (n, all[(n - 1) as usize].to_string()))
-            .collect(),
-    )
 }
 
-/// The 1-based line at which a definition's `{ ... }` body closes - its brace-balanced end -
-/// computed from the working-tree lines for `rigger graph --show` (spec 58). This is the
-/// NESTING-aware extent signal the persisted graph cannot supply: a nested `fn`/item lives INSIDE
-/// the braces, so balancing braces from the definition's first line spans PAST the nested child to
-/// the definition's OWN closing brace, where bounding by the next-definition-BY-LINE would instead
-/// truncate the body at (or before) that child.
+/// The 1-based, inclusive END line of the definition named `name` at site line `start` in `source`,
+/// derived through the shared multi-grammar symbols authority (spec 58). It resolves the file's
+/// grammar via the symbols registry and reads the extent from [`definition_extents`], the SAME
+/// tree-sitter tag mechanism the code graph is extracted with - so ONE extent authority generalizes
+/// across every ingested grammar rather than a Rust-only brace lexer in this composition root.
 ///
-/// Returns `None` when no opening brace is found before `limit` (the next recorded definition's
-/// line, else `total + 1`): such a definition is brace-LESS (a `const`, a type alias, a trait-method
-/// declaration), and the caller bounds it by the next definition instead. Braces inside line and
-/// block comments, string literals (normal, byte, and raw), and char literals are NOT counted, so a
-/// format string `"{}"`, a `// }` comment, an `r#"{ ... }"#` block, or a `'{'` char literal never
-/// opens or closes the body.
-fn brace_balanced_end(all: &[&str], start: u32, limit: u32, total: u32) -> Option<u32> {
-    /// A raw-string opener at byte `i`: an optional `b`, then `r`, then any `#`s, then `"`. Returns
-    /// `(hash_count, opener_len)` so the scan can seek the matching `"###...` terminator. `None` for
-    /// an ordinary identifier byte (e.g. the `r` in `return`, the `b` in `builder`).
-    fn raw_open(bytes: &[u8], i: usize) -> Option<(usize, usize)> {
-        let mut j = i;
-        if bytes.get(j) == Some(&b'b') {
-            j += 1;
-        }
-        if bytes.get(j) != Some(&b'r') {
-            return None;
-        }
-        j += 1;
-        let mut hashes = 0;
-        while bytes.get(j) == Some(&b'#') {
-            hashes += 1;
-            j += 1;
-        }
-        if bytes.get(j) == Some(&b'"') {
-            Some((hashes, j + 1 - i))
-        } else {
-            None
-        }
-    }
-
-    let mut depth: i32 = 0;
-    let mut opened = false;
-    let mut in_block_comment = false;
-    let mut in_string = false;
-    let mut raw_hashes: Option<usize> = None;
-    for idx in (start - 1)..total {
-        // Before any brace has opened, the search for the body is bounded by the next recorded
-        // definition: reaching it without an opening brace means this definition is brace-less.
-        if !opened && idx + 1 >= limit {
-            return None;
-        }
-        let bytes = all[idx as usize].as_bytes();
-        let mut i = 0usize;
-        while i < bytes.len() {
-            if in_block_comment {
-                if bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/') {
-                    in_block_comment = false;
-                    i += 2;
-                } else {
-                    i += 1;
-                }
-                continue;
-            }
-            if let Some(hashes) = raw_hashes {
-                // Inside a raw string: the terminator is `"` followed by exactly `hashes` `#`s.
-                if bytes[i] == b'"' && (0..hashes).all(|k| bytes.get(i + 1 + k) == Some(&b'#')) {
-                    raw_hashes = None;
-                    i += 1 + hashes;
-                } else {
-                    i += 1;
-                }
-                continue;
-            }
-            if in_string {
-                match bytes[i] {
-                    b'\\' => i += 2, // skip the escaped byte (never a body brace)
-                    b'"' => {
-                        in_string = false;
-                        i += 1;
-                    }
-                    _ => i += 1,
-                }
-                continue;
-            }
-            // Outside any string / comment. A raw-string opener takes precedence over the `r`/`b`
-            // identifier bytes and over the bare `"` of a normal string.
-            if let Some((hashes, len)) = raw_open(bytes, i) {
-                raw_hashes = Some(hashes);
-                i += len;
-                continue;
-            }
-            match bytes[i] {
-                b'/' if bytes.get(i + 1) == Some(&b'/') => break, // line comment: rest of line
-                b'/' if bytes.get(i + 1) == Some(&b'*') => {
-                    in_block_comment = true;
-                    i += 2;
-                }
-                b'"' => {
-                    in_string = true;
-                    i += 1;
-                }
-                b'\'' => {
-                    // A char literal (`'x'`, `'\n'`, `'{'`) whose content must be skipped so a brace
-                    // inside is not counted, or a lifetime / label (`'a`), which is a single byte.
-                    if bytes.get(i + 1) == Some(&b'\\') {
-                        // Escaped: skip to the closing quote (its content - including a `\u{..}`
-                        // brace - is ignored).
-                        let mut j = i + 2;
-                        while j < bytes.len() && bytes[j] != b'\'' {
-                            j += 1;
-                        }
-                        i = j + 1;
-                    } else if bytes.get(i + 2) == Some(&b'\'') {
-                        i += 3; // a simple `'x'` char literal
-                    } else {
-                        i += 1; // a lifetime / label, not a char literal
-                    }
-                }
-                b'{' => {
-                    depth += 1;
-                    opened = true;
-                    i += 1;
-                }
-                b'}' => {
-                    depth -= 1;
-                    i += 1;
-                    if opened && depth <= 0 {
-                        return Some(idx + 1);
-                    }
-                }
-                _ => i += 1,
-            }
-        }
-    }
-    // A brace opened but never balanced by end-of-file (a malformed or macro-generated body): bound
-    // at EOF rather than fall back to the next-definition bound, which could truncate at a child.
-    opened.then_some(total)
+/// Matches on BOTH name and site line (a definition that has moved off `start` no longer matches, so
+/// a drifted location degrades to a note rather than a wrong body); when several definitions share
+/// the name and line, the widest extent (the outermost construct) wins. Returns `Err` with a human
+/// reason - the caller degrades to a note - when no grammar is registered for the file's extension,
+/// the grammar cannot tag it, or the current tree holds no such definition at that line.
+#[cfg(feature = "symbols")]
+fn derive_extent_end(file: &str, source: &str, start: u32, name: &str) -> Result<u32, String> {
+    use rigger::grounder::symbols::{extract, registry};
+    let Some(entry) = registry::for_path(file, None) else {
+        return Err(format!(
+            "no code-extraction grammar is registered for {file}; the body extent is unavailable"
+        ));
+    };
+    let extents = extract::definition_extents(source, &entry.language, entry.tags_query)?;
+    extents
+        .into_iter()
+        .filter(|d| d.name == name && d.start_line == start)
+        .map(|d| d.end_line)
+        .max()
+        .ok_or_else(|| {
+            format!(
+                "no definition named {name:?} at line {start} in the current working tree; the recorded location may be stale"
+            )
+        })
 }
 
-/// Whether `line` is a TRAILING non-body line for the show surface's extent trim (spec 58): blank,
-/// a line comment (`//`), or an attribute (`#[` / `#!`). Such a line, when it TRAILS a definition
-/// whose extent is bounded by the next definition, is the successor's preamble (the doc comment /
-/// attributes that attach to the FOLLOWING item), never part of this definition's body.
-fn is_trailing_non_body(line: &str) -> bool {
-    let t = line.trim_start();
-    t.is_empty() || t.starts_with("//") || t.starts_with("#[") || t.starts_with("#!")
+/// Light-lane [`derive_extent_end`]: a build WITHOUT the `symbols` feature links no grammar, so the
+/// extent cannot be derived. It returns an explicit reason the caller prints as a note - the show
+/// surface stays honest ("the body needs the extraction grammar this build omits") rather than
+/// falling back to a hand-rolled lexer that would mis-read the very grammars the graph ingests.
+#[cfg(not(feature = "symbols"))]
+fn derive_extent_end(_file: &str, _source: &str, _start: u32, _name: &str) -> Result<u32, String> {
+    Err(
+        "the body extent needs the code-extraction grammar; this build was compiled without the `symbols` feature"
+            .to_string(),
+    )
 }
 
 /// `rigger graph build` - fold the project's source into `.rigger/graph.db` from a COLD checkout

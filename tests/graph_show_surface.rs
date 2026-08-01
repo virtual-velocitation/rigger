@@ -10,6 +10,13 @@
 //!   - SHOW BY ID: the full `<file>::<name>` id resolves to the SAME entity and body.
 //!   - AMBIGUOUS NAME: a bare name with several definitions LISTS them (sorted, with files) and
 //!     prints NO body - the call-views honesty rule (never guess among candidates).
+//!
+//! RESOLUTION is feature-lane independent (the code-entity fold is always compiled), so the site
+//! header and the ambiguous listing are asserted in BOTH lanes. The BODY is bounded through the
+//! `symbols` extraction grammar (tree-sitter), so its content is asserted under `symbols`; the
+//! light (`--no-default-features`) lane, which links no grammar, degrades a located entity to the
+//! site plus an explicit extent-unavailable note and NO body - the honesty contract for a feature
+//! lane that cannot derive the extent (asserted by [`assert_light_lane_extent_note`]).
 
 use std::path::Path;
 use std::process::Command;
@@ -92,6 +99,23 @@ fn seed_def(p: &Projector, pos: u64, file: &str, name: &str, kind: &str, line: u
     p.apply(&e).unwrap();
 }
 
+/// In a build WITHOUT the `symbols` feature (the light `--no-default-features` lane), the show
+/// surface cannot derive a body extent (no extraction grammar is linked), so a located entity
+/// degrades to the site header plus an explicit extent-unavailable note and NO line-numbered body -
+/// the honesty contract the fix requires for a feature lane that cannot derive the extent, in place
+/// of a hand-rolled lexer that would mis-read the very grammars the graph ingests.
+#[cfg(not(feature = "symbols"))]
+fn assert_light_lane_extent_note(out: &str) {
+    assert!(
+        out.contains("code-extraction grammar") || out.contains("`symbols` feature"),
+        "the light lane names the missing extraction grammar in the extent note; got:\n{out}"
+    );
+    assert!(
+        !out.contains(" | "),
+        "the light lane prints NO line-numbered body (extent unavailable); got:\n{out}"
+    );
+}
+
 #[test]
 fn graph_show_resolves_by_id_and_name_and_lists_ambiguous_candidates() {
     let dir = temp_project();
@@ -144,11 +168,16 @@ fn graph_show_resolves_by_id_and_name_and_lists_ambiguous_candidates() {
         out.contains("degree"),
         "prints the entity's one-hop DEGREE; got:\n{out}"
     );
+    // The BODY is bounded through the extraction grammar: asserted under `symbols`; the light lane
+    // degrades to the extent-unavailable note with no body.
+    #[cfg(feature = "symbols")]
     assert!(
         out.lines()
             .any(|l| l.contains("fn alpha") && l.contains('1')),
         "the definition BODY is shown, line-numbered with its 1-based line; got:\n{out}"
     );
+    #[cfg(not(feature = "symbols"))]
+    assert_light_lane_extent_note(&out);
 
     // (2) SHOW BY ID: the full `<file>::<name>` id resolves to the SAME entity, and its body is
     //     read from the working tree at the recorded line - a.rs's `shared`, never b.rs's.
@@ -158,20 +187,26 @@ fn graph_show_resolves_by_id_and_name_and_lists_ambiguous_candidates() {
         out_id.contains("a.rs:3"),
         "the full id resolves to shared@a.rs:3; got:\n{out_id}"
     );
-    assert!(
-        out_id.contains("marker_in_a"),
-        "the body read from the working tree at a.rs:3 is shown; got:\n{out_id}"
-    );
+    // Never b.rs's `shared` body, in EITHER lane (the light lane shows no body at all).
     assert!(
         !out_id.contains("marker_in_b"),
         "only a.rs's `shared` body is shown, never b.rs's; got:\n{out_id}"
     );
-    assert!(
-        out_id
-            .lines()
-            .any(|l| l.contains("fn shared") && l.contains('3')),
-        "the body is line-numbered from its recorded line (3); got:\n{out_id}"
-    );
+    #[cfg(feature = "symbols")]
+    {
+        assert!(
+            out_id.contains("marker_in_a"),
+            "the body read from the working tree at a.rs:3 is shown; got:\n{out_id}"
+        );
+        assert!(
+            out_id
+                .lines()
+                .any(|l| l.contains("fn shared") && l.contains('3')),
+            "the body is line-numbered from its recorded line (3); got:\n{out_id}"
+        );
+    }
+    #[cfg(not(feature = "symbols"))]
+    assert_light_lane_extent_note(&out_id);
 
     // (3) AMBIGUOUS NAME: `shared` has two definitions -> LIST both (sorted by id, each with its
     //     file) and print NO body (never guess among candidates).

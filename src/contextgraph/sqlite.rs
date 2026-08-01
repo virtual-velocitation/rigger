@@ -103,10 +103,6 @@ pub struct EntitySite {
     /// The entity's one-hop degree: the count of currently-live edges incident to it, so the reader
     /// knows how connected the entity is.
     pub degree: usize,
-    /// The 1-based line at which the NEXT definition in the SAME file begins - the structural upper
-    /// bound (exclusive) on this entity's body extent, since neither the graph node nor the symbol
-    /// index records a true end line. `None` when this is the file's last definition.
-    pub next_def_line: Option<u32>,
 }
 
 /// One disambiguation candidate for an ambiguous bare name (spec 58): the full node id and its
@@ -383,8 +379,10 @@ impl Projector {
     }
 
     /// Build an [`EntitySite`] from a resolved node: its file (the id prefix), its recorded line and
-    /// kind (attrs), its one-hop live-edge degree, and the next-definition line in the same file
-    /// (the body's structural upper bound). Read-only; used by [`locate`](Projector::locate).
+    /// kind (attrs), and its one-hop live-edge degree. Read-only; used by
+    /// [`locate`](Projector::locate). The body's extent is NOT bounded here: the show surface derives
+    /// it from the working tree through the shared multi-grammar symbols authority (the grammar's own
+    /// node boundary), so the graph adapter carries no structural end-line guess.
     fn site_of(&self, conn: &Connection, node: Node) -> Result<EntitySite, Error> {
         let file = file_prefix(&node.id).to_string();
         let line = node
@@ -398,14 +396,12 @@ impl Projector {
             .cloned()
             .unwrap_or_else(|| node.kind.clone());
         let degree = one_hop_degree(conn, &node.id, &self.project)?;
-        let next_def_line = next_definition_line(conn, &file, line, &self.project)?;
         Ok(EntitySite {
             id: node.id,
             kind,
             file,
             line,
             degree,
-            next_def_line,
         })
     }
 
@@ -1798,33 +1794,6 @@ fn one_hop_degree(conn: &Connection, id: &str, project: &str) -> Result<usize, E
         )
         .map_err(be)?;
     Ok(n as usize)
-}
-
-/// The 1-based line of the NEXT code-entity DEFINITION in `file` after `line`, in `project` (spec
-/// 58) - the structural upper bound (exclusive) on a definition's body extent, since neither the
-/// graph node nor the symbol index records a true end line. `None` when no later definition exists
-/// in the file (the entity is the file's last definition). Filtered to real definitions (a `name`
-/// attr present), matched by the file PREFIX of the id (`substr(id, 1, instr(id, '::') - 1)`), and
-/// read directly off the persisted projection so a given tree + graph is deterministic.
-fn next_definition_line(
-    conn: &Connection,
-    file: &str,
-    line: u32,
-    project: &str,
-) -> Result<Option<u32>, Error> {
-    let next: Option<i64> = conn
-        .query_row(
-            "SELECT MIN(CAST(json_extract(attrs, '$.line') AS INTEGER)) FROM nodes
-              WHERE kind = ?1
-                AND project = ?2
-                AND json_extract(attrs, '$.name') IS NOT NULL
-                AND substr(id, 1, instr(id, '::') - 1) = ?3
-                AND CAST(json_extract(attrs, '$.line') AS INTEGER) > ?4",
-            params![KIND_CODE_ENTITY, project, file, line],
-            |r| r.get(0),
-        )
-        .map_err(be)?;
-    Ok(next.map(|n| n as u32))
 }
 
 /// The confidence rank of an EDGE tier (spec 52 / 29a addendum 6.2): `extracted` (2, the precise
@@ -3512,10 +3481,11 @@ mod tests {
 
     /// spec 58 criterion 1: `locate` is the show surface's single resolution authority. Over the
     /// SAME node/edge tables every graph surface reads, it resolves a full `<file>::<name>` id and a
-    /// unique bare name to the SAME site (carrying kind, one-hop degree, and the next-definition
-    /// extent bound), LISTS the SORTED candidates for an ambiguous bare name (never guessing), and
-    /// returns `None` for an unknown query. The code-entity fold it reads is always compiled, so
-    /// this holds in BOTH feature lanes.
+    /// unique bare name to the SAME site (carrying kind and one-hop degree), LISTS the SORTED
+    /// candidates for an ambiguous bare name (never guessing), and returns `None` for an unknown
+    /// query. The code-entity fold it reads is always compiled, so this holds in BOTH feature lanes.
+    /// The body extent is NOT a resolution concern: the show surface derives it from the working
+    /// tree through the symbols authority, so `EntitySite` carries no structural end-line here.
     #[test]
     fn locate_resolves_by_id_and_name_and_lists_ambiguous_candidates_sorted() {
         let p = Projector::open(":memory:", "test").unwrap();
@@ -3535,19 +3505,11 @@ mod tests {
         assert_eq!(alpha.kind, "function");
         // The only edge incident to alpha is the file's CONTAINS edge -> one-hop degree 1.
         assert_eq!(alpha.degree, 1);
-        // The next definition in a.rs is shared@3, so alpha's body extent is bounded at line 3.
-        assert_eq!(alpha.next_def_line, Some(3));
 
         // The full id resolves to the SAME entity a unique name would.
         match p.locate("a.rs::alpha").unwrap() {
             Located::One(s) => assert_eq!(s, alpha, "the full id and the unique name agree"),
             other => panic!("expected One for a full id, got {other:?}"),
-        }
-
-        // shared@a.rs is the file's LAST definition, so it has no next-definition bound.
-        match p.locate("a.rs::shared").unwrap() {
-            Located::One(s) => assert_eq!(s.next_def_line, None),
-            other => panic!("expected One for a.rs::shared, got {other:?}"),
         }
 
         // An ambiguous bare name lists its candidates, SORTED by id, each with its file.
