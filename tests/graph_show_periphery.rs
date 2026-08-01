@@ -8,7 +8,10 @@
 //!     the line is past end-of-file, or the recorded line is 0 - a location that never named a real
 //!     source line), the site header is still printed with a stale-location note in place of a body,
 //!     and the command EXITS SUCCESS - the recorded graph facts survive a drifted working tree; only
-//!     the body is unavailable.
+//!     the body is unavailable. Two further degrade arms live inside extent derivation (the `symbols`
+//!     lane, past the pre-read guards): the file's EXTENSION has no registered grammar, or the current
+//!     tree holds no definition of that name STARTING at the recorded line (a name/line drift) - both
+//!     degrade to a note with NO body (and never a wrong body from a neighbor at that line).
 //!   - EXTENT: a definition's line-numbered body is bounded by the definition's OWN extent, derived
 //!     through the shared multi-grammar symbols authority (the grammar's own tree-sitter node
 //!     boundary) - so a nested `fn`, a brace inside a string/comment/char, a signature that itself
@@ -812,5 +815,144 @@ fn graph_show_clamps_body_to_the_max_window() {
     assert!(
         out.contains("clamped") && out.contains("62"),
         "a clamp carries an explicit omitted-line note through the extent's true end; got:\n{out}"
+    );
+}
+
+/// UNREGISTERED-GRAMMAR degrade (the symbols lane): a located definition whose file EXTENSION has no
+/// registered extraction grammar cannot have its extent derived - the symbols registry resolves no
+/// grammar for it. The show surface degrades to the site header plus an explicit note (naming the
+/// missing grammar) in place of the body, and EXITS SUCCESS - never an error, never a guessed body.
+/// This is a DISTINCT degrade arm from the light lane: here the build HAS the `symbols` feature and a
+/// present, readable file at a valid line, yet the extent is still unavailable because the extension
+/// is not one the grammar registry covers. It exercises `derive_extent_end`'s `registry::for_path`
+/// -> `None` branch, reachable only in the `symbols` lane (the light lane short-circuits before it).
+/// Only compiled under `symbols`; the extent faces above cover the registered-grammar happy path.
+#[cfg(feature = "symbols")]
+#[test]
+fn graph_show_degrades_when_no_grammar_registered_for_the_file_extension() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_rigger_dir(root);
+
+    // `notes.txt` is present and readable, with a real definition-shaped line at the recorded site
+    // line - so the ONLY reason a body cannot be derived is that `.txt` has no registered grammar
+    // (the registry covers rs/cs/ts/tsx/js/mjs/cjs/jsx/go/py; `.txt` resolves to nothing). The
+    // degrade is thus attributable to the unregistered extension alone, not a missing file or a
+    // drifted line.
+    std::fs::write(
+        root.join("notes.txt"),
+        "define widget as a thing\nwith a second line\n",
+    )
+    .unwrap();
+    {
+        let p = open_graph(root);
+        // A truthful `lang` attr is irrelevant to the extent path: the show surface re-resolves the
+        // grammar from the file EXTENSION, and `.txt` is unregistered regardless of the recorded lang.
+        seed_def_lang(&p, 1, "notes.txt", "widget", "function", 1, "text");
+    }
+
+    let (out, err, ok) = run_rigger(root, &["graph", "--show", "widget"]);
+    assert!(
+        ok,
+        "a file with an unregistered extension degrades gracefully (exit SUCCESS); stderr: {err}"
+    );
+    // The recorded site header survives (resolution is grammar-independent).
+    assert!(
+        out.contains("notes.txt:1"),
+        "the recorded site header is printed for an unregistered-extension file; got:\n{out}"
+    );
+    assert!(
+        out.contains("degree"),
+        "the graph facts (kind/degree) are still printed when the extent is unavailable; got:\n{out}"
+    );
+    // The note names the missing extraction grammar for THIS file, in place of the body - the
+    // distinctive unregistered-grammar phrasing (not a pre-read "source unavailable" note).
+    assert!(
+        out.contains("code-extraction grammar") && out.contains("notes.txt"),
+        "an unregistered-extension file degrades to a note naming the missing grammar; got:\n{out}"
+    );
+    // No body: neither a line-numbered gutter nor the file's own text is shown - never a guess from a
+    // build that cannot bound the extent.
+    assert_eq!(
+        body_line_count(&out),
+        0,
+        "no line-numbered body is printed for an unregistered-extension file; got:\n{out}"
+    );
+    assert!(
+        !out.contains("define widget as a thing"),
+        "the file's text is never shown without a grammar to bound the extent; got:\n{out}"
+    );
+}
+
+/// NAME/LINE-DRIFT degrade (the symbols lane): a definition whose file IS present and whose recorded
+/// line IS a real line of that file, but where the CURRENT working tree holds no definition of that
+/// name STARTING at the recorded line (the code was edited so the definition moved off its recorded
+/// site). `derive_extent_end` matches on BOTH name and site line, so the drifted entity finds no
+/// extent and the surface degrades to a stale-location note with NO body - never a WRONG body lifted
+/// from whatever definition happens to sit at the recorded line. This is a distinct arm from the
+/// missing-file / past-EOF / line-0 degrades (all of which short-circuit BEFORE extent derivation):
+/// here every earlier guard passes and the miss is the `definition_extents` name+start_line filter
+/// returning empty. Reachable only in the `symbols` lane (the light lane never derives an extent).
+#[cfg(feature = "symbols")]
+#[test]
+fn graph_show_degrades_when_no_definition_of_that_name_at_the_recorded_line() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_rigger_dir(root);
+
+    // drift.rs: an UNRELATED `other` really sits at line 1 (with a distinctive body token), and the
+    // queried `moved` really sits at line 3. The graph records `moved` at line 1 (a stale site: the
+    // definition was edited upward since the graph was built). Every pre-extent guard passes - the
+    // file exists, line 1 is a real line, it is not 0 and not past EOF - so the degrade is entirely
+    // the name+start_line filter miss: no definition NAMED `moved` STARTS at line 1.
+    std::fs::write(
+        root.join("drift.rs"),
+        "fn other() {\n\
+         \x20\x20\x20\x20let wrong_body_shown = 1;\n\
+         }\n\
+         fn moved() {\n\
+         \x20\x20\x20\x20let the_real_moved_body = 2;\n\
+         }\n",
+    )
+    .unwrap();
+    {
+        let p = open_graph(root);
+        // Record `moved` at the STALE line 1 (its real current site is line 3).
+        seed_def(&p, 1, "drift.rs", "moved", "function", 1);
+    }
+
+    let (out, err, ok) = run_rigger(root, &["graph", "--show", "moved"]);
+    assert!(
+        ok,
+        "a name/line-drifted location degrades gracefully (exit SUCCESS); stderr: {err}"
+    );
+    // The recorded site header survives (the graph facts stand even when the body cannot be bounded).
+    assert!(
+        out.contains("drift.rs:1"),
+        "the recorded (stale) site header survives the drift; got:\n{out}"
+    );
+    // A stale-location note stands in for the body - the recorded line no longer names that def.
+    // Pin the DISTINCTIVE filter-miss phrasing so this guards the derive_extent_end name+line arm,
+    // not a pre-read guard (missing-file / past-EOF / line-0 notes share the word "stale" but never
+    // say "no definition named ..." - and all three short-circuit before extent derivation anyway).
+    assert!(
+        out.contains("no definition named") && out.contains("stale"),
+        "a name/line drift degrades to the derive-extent stale-location note; got:\n{out}"
+    );
+    // CRITICAL: no WRONG body. The `other` definition that really sits at line 1 must NOT be shown
+    // under the `moved` header - the name+line match is exactly what prevents lifting a neighbor's
+    // body. Nor is the real `moved` body shown (its recorded line is stale).
+    assert!(
+        !out.contains("wrong_body_shown"),
+        "the definition that sits at the recorded line is NOT shown under the drifted entity's header; got:\n{out}"
+    );
+    assert!(
+        !out.contains("the_real_moved_body"),
+        "the drifted definition's own body is not shown from its stale recorded line; got:\n{out}"
+    );
+    assert_eq!(
+        body_line_count(&out),
+        0,
+        "no line-numbered body is printed for a name/line-drifted location; got:\n{out}"
     );
 }
