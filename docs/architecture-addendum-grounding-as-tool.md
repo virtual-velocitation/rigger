@@ -160,7 +160,7 @@ grows from file-scoped peers to a real query set, every tool a thin caller of th
 
 - **Bounded, tier-tagged, provenance-carrying, read-only (§2.4).** Each returns a small, typed
   result the agent composes, not a blob it must skim.
-- **Reuses what exists.** `rigger ground` already resolves NL/symbol → seed files (the vector pass);
+- **Reuses what exists.** `rigger ground` already resolves NL/symbol → seed files (the structural symbols pass);
   `subgraph`/`explain`/path already exist for the dash. This workstream exposes them over MCP, it
   does not reinvent retrieval.
 

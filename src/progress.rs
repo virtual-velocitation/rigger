@@ -5,11 +5,14 @@
 //! `SpawnResult`, `GateVerdict` - so an agent can work for many minutes (grounding,
 //! reading, editing, running gates) with the run stream showing a blackout. This store
 //! closes that blind spot WITHOUT touching the replay-authoritative log: it lives in its
-//! own file (`.rigger/progress.db`, a sibling of `.rigger/graph.db`), so NO run fold - the
-//! ledger, the spawn frontier, the metrics, the conductor, the context graph - can ever
-//! read it, and the run stream, its projections, and replay are byte-identical whether or
-//! not any progress was ever emitted. Agents WRITE it via `rigger progress <id>
-//! "<activity>"`; rigger READS it (unit 2's consolidator) to PRESENT a live per-agent view.
+//! own file (`.rigger/progress.db`, a sibling of `.rigger/graph.db`), so NO run-stream fold -
+//! the ledger, the spawn frontier, [`crate::metrics::project`], the conductor, the context
+//! graph - can ever read it, and the run stream, its projections, and replay are
+//! byte-identical whether or not any progress was ever emitted. Agents WRITE it via `rigger
+//! progress <id> "<activity>"`; rigger READS it for PRESENTATION ONLY - unit 2's consolidator
+//! folds it into the live per-agent view, and [`crate::metrics::grep_fallbacks`] counts this
+//! store's `grep-fallback:` lines for the dash - never in a run-stream fold, so the isolation
+//! that keeps replay byte-identical is preserved.
 
 use std::collections::HashMap;
 use std::time::SystemTime;
@@ -30,6 +33,14 @@ pub const STREAM: &str = "progress";
 /// boundary, not a fold that skips this type.
 pub const TYPE_AGENT_PROGRESS: &str = "AgentProgress";
 
+/// The prefix an agent stamps on a progress line when it fell back to grep over the PROJECT'S
+/// SOURCES because the graph could not answer (spec 58): `rigger progress <id> 'grep-fallback:
+/// <what the graph did not answer>'`. Every such line is a graph-coverage gap recorded IN the
+/// event log; [`crate::metrics::grep_fallbacks`] counts them per run so the fallback rate is
+/// visible run-over-run. It is the single source of truth for what a fallback line looks like,
+/// shared by the writer (the grounding pointer's instruction) and the reader (the metric).
+pub const GREP_FALLBACK_PREFIX: &str = "grep-fallback:";
+
 /// One fine-grained progress report: the spawn it belongs to and a short human line of what
 /// that agent just did (a grep, a build, a commit, a decision). The event's recorded
 /// position and `recorded_at` order a spawn's reports and give each an age, so no explicit
@@ -43,6 +54,14 @@ pub struct AgentProgress {
 }
 
 impl AgentProgress {
+    /// Whether this progress line reports a grep fallback over the project's sources - its
+    /// [`activity`](AgentProgress::activity) begins with [`GREP_FALLBACK_PREFIX`] (a single
+    /// leading run of whitespace tolerated). This is the ONE definition of a fallback line;
+    /// [`crate::metrics::grep_fallbacks`] counts the lines this returns `true` for.
+    pub fn is_grep_fallback(&self) -> bool {
+        self.activity.trim_start().starts_with(GREP_FALLBACK_PREFIX)
+    }
+
     /// Build the appendable event, stamped with the run it belongs to (via [`META_RUN_ID`],
     /// the same key the conductor stamps on run events) so unit 2's consolidator can scope
     /// progress to the current run. An empty `run_id` (no run started yet) carries no stamp.

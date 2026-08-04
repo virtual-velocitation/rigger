@@ -48,7 +48,7 @@ name: rigger-self-hosted
 
 defaults:
   autonomy: auto_notify     # manual | auto_notify | silent
-  grounder: turbovec        # turbovec | grep | nop
+  grounder: symbols         # symbols | grep | nop
   budget: 60                # spawn-cap circuit breaker (see below)
   max_retries: 6            # remediation depth before escalation
   review:                   # the three-tier panel every unit inherits

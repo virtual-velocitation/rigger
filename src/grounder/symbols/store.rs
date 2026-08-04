@@ -39,13 +39,11 @@ fn lock_path(dir: &str) -> PathBuf {
 
 /// A line-ending-normalized content hash: `"a\r\nb\r\n"` and `"a\nb\n"` hash identically, so the
 /// SAME source keys the SAME cache entry whether it was checked out with CRLF (Windows) or LF
-/// (Unix). Uses a fixed-seed FNV-1a - the SAME stable-content-hash discipline the semantic
-/// grounder's `hash_content` deliberately chose over `DefaultHasher` (whose seed the stdlib does
-/// NOT guarantee stable across builds) - so the value is a stable content key across processes,
-/// builds, and machines. (A single crate-level hash primitive shared by every open-coded copy is
-/// the broader cross-cutting refactor already recorded as `arch-u2i-fnv1a-fourth-parallel-copy`;
-/// the semantic grounder's copy is feature-gated and private, so this ungated module cannot call
-/// it and matches its algorithm instead.) It is the content-identity primitive the `symbols`
+/// (Unix). Uses a fixed-seed FNV-1a - deliberately chosen over `DefaultHasher` (whose seed the
+/// stdlib does NOT guarantee stable across builds) - so the value is a stable content key across
+/// processes, builds, and machines. (A single crate-level hash primitive shared by every
+/// open-coded copy is the broader cross-cutting refactor already recorded as
+/// `arch-u2i-fnv1a-fourth-parallel-copy`.) It is the content-identity primitive the `symbols`
 /// grounder's reindex freshening gate keys on to decide a named file is unchanged and skip
 /// re-parsing it.
 pub fn content_hash(src: &str) -> String {
@@ -65,8 +63,8 @@ pub fn content_hash(src: &str) -> String {
 /// snapshot) and [`reindex_under_lock`] (reload-modify-publish) go through, so there is a single
 /// `flock` discipline over the index, not two parallel ones. The lock is an `fs2` exclusive
 /// advisory lock - the project's one cross-process lock authority, non-optional in both feature
-/// lanes, the same `acquire_step_lock` uses (`libc::flock` is confined to the turbovec feature, so
-/// this ungated module cannot reach it). The lock file is created if absent; the lock releases when
+/// lanes, the same `acquire_step_lock` uses, so the ungated store and the step lock share ONE
+/// cross-process lock crate. The lock file is created if absent; the lock releases when
 /// `lock` drops (or the process dies), so a crashed writer never wedges the next one. A write error
 /// is reported over an unlock error.
 fn with_write_lock<F>(dir: &str, write: F) -> Result<(), String>
@@ -122,14 +120,14 @@ pub fn save(idx: &SymbolIndex, dir: &str) -> Result<(), String> {
 /// (2) hands that reloaded base to `mutate` to apply the caller's per-file delta; (3) publishes the
 /// result atomically - all WITHOUT releasing the lock between the reload and the write.
 ///
-/// This mirrors turbovec's `reload_persisted_locked` read-modify-write discipline. A long-lived
+/// This is a reload-modify-write discipline under one continuously-held lock. A long-lived
 /// grounder (held for a whole `rigger run`) whose in-memory index has gone stale because a separate
 /// `rigger reindex` process wrote since can no longer clobber that write with its stale snapshot: it
 /// reloads the peer's bytes first, then layers ONLY its own changed files on top, so both survive.
 ///
 /// When NOTHING is persisted yet, or the on-disk file is unreadable/torn, `base` is kept as-is
-/// (there is nothing safe to adopt; the publish below heals the store) - the same "keep the
-/// in-memory base" fallback turbovec's reload takes. On return `base` holds the freshened,
+/// (there is nothing safe to adopt; the publish below heals the store) - the "keep the
+/// in-memory base" fallback. On return `base` holds the freshened,
 /// persisted state (reloaded base + the caller's delta), so the grounder's next `ground` serves it.
 pub fn reindex_under_lock<F>(base: &mut SymbolIndex, dir: &str, mutate: F) -> Result<(), String>
 where
@@ -148,8 +146,8 @@ where
             *base = disk;
         }
         mutate(base);
-        // Serialize the reloaded+mutated base under the lock (turbovec serializes under its lock
-        // too); a serialization failure aborts with no partial artifact written.
+        // Serialize the reloaded+mutated base under the held lock; a serialization failure aborts
+        // with no partial artifact written.
         let bytes =
             serde_json::to_vec_pretty(base).map_err(|e| format!("symbols: serialize: {e}"))?;
         write_atomic(&path, &bytes)

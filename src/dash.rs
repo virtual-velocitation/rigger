@@ -486,6 +486,11 @@ pub struct MetricsView {
     pub review_approve: u64,
     /// Reviews classified as REJECT by [`metrics::project`] (a loop-back `UnitFailed`).
     pub review_reject: u64,
+    /// `grep-fallback:` progress lines recorded during this run, counted by
+    /// [`metrics::grep_fallbacks`] over the run's progress slice (spec 58): the standing signal
+    /// of how often an agent still reached for grep over the graph. Carried in the
+    /// review-outcomes data so the fallback rate is visible run-over-run.
+    pub grep_fallbacks: u64,
     pub first_pass_yield: f64,
     pub escalation_rate: f64,
     pub gates: Vec<GateView>,
@@ -974,6 +979,9 @@ pub fn build_state(
         units_escalated: m.units_escalated,
         review_approve: m.review_approve,
         review_reject: m.review_reject,
+        // Counted off the SEPARATE progress slice (the same one the live activity view folds),
+        // never the run stream - so the run-stream projections stay byte-identical (spec 58).
+        grep_fallbacks: metrics::grep_fallbacks(progress_events),
         first_pass_yield: m.first_pass_yield(),
         escalation_rate: m.escalation_rate(),
         gates,
@@ -4192,21 +4200,39 @@ mod tests {
     #[test]
     fn bind_singleton_binds_the_exact_port_and_never_searches() {
         // A free ephemeral port (learn it, release it): `bind_singleton` returns `Bound` on
-        // exactly that address, never a drifted one.
-        let free = TcpListener::bind(("127.0.0.1", 0))
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
-        let addr = SocketAddr::from(([127, 0, 0, 1], free));
-        match bind_singleton(addr) {
-            Ok(SingletonBind::Bound(listener)) => assert_eq!(
-                listener.local_addr().unwrap().port(),
-                free,
-                "bind_singleton must bind the EXACT requested port, never drift to another"
-            ),
-            other => panic!("a free port must yield Bound on that exact port, got {other:?}"),
+        // exactly that address, never a drifted one. The learn-release-rebind window is a
+        // TOCTOU under a busy machine (a live dash's poll churn recycles ephemeral ports fast
+        // enough to steal the freed port), so interference retries with a FRESH port - the
+        // assertion is about bind_singleton's behavior on a genuinely free port, not about
+        // winning an OS port race.
+        let mut bound_ok = false;
+        for _ in 0..16 {
+            let free = TcpListener::bind(("127.0.0.1", 0))
+                .unwrap()
+                .local_addr()
+                .unwrap()
+                .port();
+            let addr = SocketAddr::from(([127, 0, 0, 1], free));
+            match bind_singleton(addr) {
+                Ok(SingletonBind::Bound(listener)) => {
+                    assert_eq!(
+                        listener.local_addr().unwrap().port(),
+                        free,
+                        "bind_singleton must bind the EXACT requested port, never drift to another"
+                    );
+                    bound_ok = true;
+                    break;
+                }
+                // The freed port was re-taken in the race window - not our behavior under
+                // test; learn a fresh port and try again.
+                Err(e) if e.kind() == io::ErrorKind::AddrInUse => continue,
+                other => panic!("a free port must yield Bound on that exact port, got {other:?}"),
+            }
         }
+        assert!(
+            bound_ok,
+            "16 straight ephemeral-port races is not interference; investigate"
+        );
 
         // A port HELD by an unrelated listener that never emits the dash header: a genuine
         // conflict -> AddrInUse, never a silent drift and never a false AlreadyServing.
@@ -4264,7 +4290,11 @@ mod tests {
             );
         });
 
-        let deadline = Instant::now() + Duration::from_secs(5);
+        // Condition-based readiness with a LOAD-PROOF bound: under the fully parallel suite
+        // (863 tests saturating every core) the dash thread can starve for many seconds before
+        // it answers, and a tight deadline flakes the whole lane. 60s is a bound on brokenness,
+        // not an expectation - the loop exits the moment the dash answers (typically <100ms).
+        let deadline = Instant::now() + Duration::from_secs(60);
         while !dash_serving_on(port) {
             assert!(
                 Instant::now() < deadline,
@@ -4786,6 +4816,76 @@ mod tests {
         assert!(
             body.contains("grep #12: conductor.rs"),
             "the live activity appears in the emitted state"
+        );
+    }
+
+    #[test]
+    fn state_counts_grep_fallbacks_and_carries_them_in_the_review_outcomes_data() {
+        // Spec 58, criterion 4: `grep-fallback:` progress lines recorded during the run are
+        // counted by the metrics projection and carried in the dash's review-outcomes data.
+        // The count reads the SEPARATE progress slice `build_state` already threads for the
+        // live activity view - not the run stream - so ordinary narration does not count.
+        use crate::spawn::SpawnRequest;
+        let req = SpawnRequest::new("u", "u", "implementer", 0, "do it");
+        let events = positioned(vec![
+            ev("UnitStarted", r#"{"id":"u"}"#),
+            req.to_event().unwrap(),
+        ]);
+        let mkprog = |id: &str, activity: &str| {
+            let ap = progress::AgentProgress {
+                id: id.into(),
+                activity: activity.into(),
+            };
+            Event::new(
+                progress::TYPE_AGENT_PROGRESS,
+                serde_json::to_vec(&ap).unwrap(),
+            )
+        };
+        let progress_events = vec![
+            mkprog(
+                &req.id,
+                "grep-fallback: no --show for effective_max_retries",
+            ),
+            mkprog(&req.id, "cargo build green"), // ordinary narration - not counted
+            mkprog("u/adversary#0", "grep-fallback: quoting Blocker body"),
+        ];
+        let liveness = HashMap::new();
+
+        let state = build_state(
+            &events,
+            &Graph::default(),
+            false,
+            &progress_events,
+            &liveness,
+            3,
+            "rigger-run",
+            "origin/main",
+        )
+        .unwrap();
+        assert_eq!(
+            state.metrics.grep_fallbacks, 2,
+            "the two grep-fallback lines are counted into the review-outcomes data"
+        );
+        assert_eq!(
+            state.metrics.grep_fallbacks,
+            metrics::grep_fallbacks(&progress_events),
+            "the dash carries exactly the metrics projection's count"
+        );
+
+        // And the count serializes into the /api/state body the review-outcomes panel reads.
+        let body = state_json(
+            &events,
+            &Graph::default(),
+            &progress_events,
+            &liveness,
+            3,
+            "rigger-run",
+            "origin/main",
+        )
+        .unwrap();
+        assert!(
+            body.contains("\"grep_fallbacks\":2"),
+            "the fallback count appears in the emitted state"
         );
     }
 

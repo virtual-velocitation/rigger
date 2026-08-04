@@ -40,7 +40,7 @@ that feeds that injection:
 - Do NOT prune the event log — it is the source of truth (§2.1).
 - Do NOT scope grounding to the active run by default — cross-run memory is deliberate;
   the fix is expiry + consolidation + provenance, not amnesia.
-- Do NOT delete `turbovec` — fuzzy natural-language criterion queries need vectors (§2.5).
+- Do NOT re-add a vector/embedding grounder to "fix" natural-language recall - measurement retired it as zero marginal recall over the graph's own structural retrieval (§2.5).
 - Do NOT take on a third-party graph engine/service as a dependency — build the data model natively (§2.5).
 
 ---
@@ -81,13 +81,16 @@ consumers `partition_by_blast_radius`, `partition_wave`, `route_review_tier`,
 grep-superset; any confidence-tier mapping (§6) must keep the wide tier a superset of grep.
 Dropping a reference a safety consumer needs is a correctness regression, not a saving.
 
-### 2.5 Keep vectors for NL retrieval; build the KG data model natively
-Criterion queries ground on spec prose that often names no symbol; graph traversal cannot
-answer them, so `turbovec` stays (or embeddings attach to KG nodes). rigger builds the KG
-*data model* natively — one typed node taxonomy (code + docs + rationale + decisions),
-confidence-tagged edges (`EXTRACTED`/`INFERRED`/`AMBIGUOUS`), community detection — and rejects
-the storage patterns that would compromise it: a `graph.json` source-of-truth, git-union-merge,
-and any non-Rust service dependency (a `cargo install` crate takes none).
+### 2.5 The knowledge graph is the retrieval surface; build its data model natively
+Criterion queries ground on spec prose that often names no symbol. Measurement settled how they
+are served: on a retrieval benchmark the vector-embedding sidecar's hit-set was identical to the
+knowledge graph's own structural retrieval (zero marginal recall), and in a real A/B workload no
+agent invoked it once - so the vector grounder is retired, and the `symbols` structural index plus
+the graph's own traversal is the lookup surface that answers even a symbol-free query. rigger
+builds the KG *data model* natively - one typed node taxonomy (code + docs + rationale +
+decisions), confidence-tagged edges (`EXTRACTED`/`INFERRED`/`AMBIGUOUS`), community detection - and
+rejects the storage patterns that would compromise it: a `graph.json` source-of-truth,
+git-union-merge, and any non-Rust service dependency (a `cargo install` crate takes none).
 
 ---
 
@@ -139,9 +142,9 @@ shares the `RunStarted`-boundary attribution with `reset --runs`.
 stream — decisions, findings, lessons, folded from the event log — and (b) everything
 structurally known about the codebase and project — code entities and their structure, the
 docs, and design rationale.** It is one queryable, rebuildable, event-sourced projection you
-traverse across; the event log stays the source of truth and the `turbovec` vector index stays
-the complementary semantic layer for symbol-free NL queries (§2.5), attached to nodes or
-alongside — not folded into them.
+traverse across; the event log stays the source of truth and the graph's own structural
+retrieval answers symbol-free NL queries (§2.5) - the vector sidecar that once sat alongside was
+retired as zero marginal recall over the graph.
 
 ### 6.1 The node taxonomy — one typed vocabulary for three domains
 
@@ -307,9 +310,10 @@ is grounded on the *design intent*, not just the code and prior decisions.
 - **Event-sourced keeps every invariant.** Rebuildable, superseded-not-deleted, project- and
   run-scoped (§2.1–2.3), auditable across time (§6.4). A mutable `graph.json` on disk would
   forfeit all of that; rigger takes the data model, not that storage engine.
-- **Vectors stay for what graphs cannot do.** A symbol-free criterion query ("where is retry
-  backoff handled") has no node id to seed on; `turbovec` answers it and can seed the traversal.
-  Graph and vectors are complementary layers, not competitors (§2.5).
+- **The graph seeds even a symbol-free query.** A criterion query that names no symbol ("where is
+  retry backoff handled") has no node id to seed on; the knowledge graph's own structural
+  retrieval answers it and seeds the traversal - which is why the vector sidecar, measured at zero
+  marginal recall over exactly this, was retired (§2.5).
 
 **Impact:** ~2000–2400 LOC removed *(est.)* — `symbols` (2,607) folds into the projection, and
 the two-view `BlastRadius` struct + the seed-vs-precise divergence workaround collapse into
@@ -318,7 +322,7 @@ superset, which must stay a grep-superset per §2.4). The hub-percentile heurist
 community detection. And the genuinely new capability: **deterministic design-intent grounding**
 — an agent whose blast radius touches file F traverses `F → GOVERNED_BY → handbook-rule` and
 injects the governing rule by traversal, not embedding luck, attacking the rule-7 /
-spec-authoring failure class. `turbovec` stays for NL retrieval (§2.5).
+spec-authoring failure class. The graph's own structural retrieval serves the symbol-free NL queries too, so no vector sidecar is needed (§2.5).
 
 **Gated on** §2.2 (project-scoping enforced on shared-backend nodes/edges) and §2.3 (run
 provenance) — the two invariants that make a shared, cross-run KG safe.
@@ -373,7 +377,7 @@ Mockup — a new panel in the existing dash:
 │                            │ calls    │ depends_on                                │
 │                     [baseline_units]  [normalize_ws]···explains···(# WHY note)    │
 │                                                                                   │
-│ god nodes (degree):  conductor.rs(128)  main.rs(96)  rule-6(41)  turbovec.rs(33)  │
+│ god nodes (degree):  conductor.rs(128)  main.rs(96)  rule-6(41)  worktree.rs(33)  │
 │ path (harvest_proposed→rule-3):  harvest_proposed ─GOVERNED_BY→ rule-3            │
 │ explain[normalize_ws]  kind=code  CodeEntityExtracted@8102  valid: live  EXTRACTED│
 └───────────────────────────────────────────────────────────────────────────────────┘
