@@ -4272,7 +4272,11 @@ mod tests {
             );
         });
 
-        let deadline = Instant::now() + Duration::from_secs(5);
+        // Condition-based readiness with a LOAD-PROOF bound: under the fully parallel suite
+        // (863 tests saturating every core) the dash thread can starve for many seconds before
+        // it answers, and a tight deadline flakes the whole lane. 60s is a bound on brokenness,
+        // not an expectation - the loop exits the moment the dash answers (typically <100ms).
+        let deadline = Instant::now() + Duration::from_secs(60);
         while !dash_serving_on(port) {
             assert!(
                 Instant::now() < deadline,
