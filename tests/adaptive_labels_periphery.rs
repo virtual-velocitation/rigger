@@ -26,6 +26,15 @@
 //!     bare name drops the display-only `[shared]` tag so it stays a single occurrence; and a force view
 //!     WITHOUT a title falls back to the label as its hover surface.
 //!
+//!   * REAL-DRILL INTEGRATION (the name-less-title seam end-to-end): the regression proof above mirrors
+//!     the concepts drill with a SYNTHETIC inline fixture. This drives the served page's OWN
+//!     `renderKgDrill` - the sole force view that supplies an explicit, generic, NAME-LESS `opts.title` -
+//!     and asserts the rendered SVG's shared-member `<title>` carries the node's BARE name AND the note.
+//!     It closes exactly the seam a decluttered shared member's hover was proven to drop: the real drill's
+//!     `name`/`title`/`label` wiring must NAME the node, never surface the bare note alone, with `[shared]`
+//!     a single occurrence (the spec-54 `count([shared])===1` invariant), and the member stamped a
+//!     `data-nid` (a real force node the live zoom toggles).
+//!
 //! Like the unit test, the proof is a hermetic node `vm` harness that extracts the served page's own
 //! `<script>` and executes its real functions - no npm, no browser - and it SKIPs (not fails) when no
 //! `node` runtime is present (the shim-only lane), while `cargo test` on the always-on lanes runs it.
@@ -391,6 +400,52 @@ const REGRESSION_DRIVER: &str = r##"
 })();
 "##;
 
+/// REAL-DRILL INTEGRATION: drive the served page's OWN `renderKgDrill` - the concepts drill is the sole
+/// force view that supplies an explicit, generic, NAME-LESS `opts.title`, the exact view whose decluttered
+/// shared member was proven to lose its name on hover - and assert its rendered SVG names that member.
+const REAL_DRILL_HOVER_DRIVER: &str = r##"
+;(function(){
+  function count(hay, needle){ var i=0,n=0; while((i=hay.indexOf(needle,i))!==-1){ n++; i+=needle.length; } return n; }
+
+  // The REAL concepts drill (spec 54 c3): three members, of which exactly ONE realizes multiple concepts
+  // and folds here under its primary bucket (shared). Its shared-member title is the production generic,
+  // NAME-LESS note - the precise fixture whose vacuity let the pre-fix hover bug ship. Drive the served
+  // page's OWN renderKgDrill (not a synthetic mirror) so the real name/title/label wiring is under test.
+  var NOTE = "shared member: realizes multiple concepts (folded under its primary bucket)";
+  var CONCEPT_DRILL = { seed: "concept/1/0", depth: 0,
+    nodes: [
+      { id: "docs/store.md", kind: "design-doc", label: "the store", degree: 1, god: false },
+      { id: "src/store/log.rs::append", kind: "code-entity", label: "append", degree: 2, god: false, shared: true },
+      { id: "src/index/build.rs::index", kind: "code-entity", label: "index", degree: 1, god: false }
+    ],
+    edges: [ { from: "src/store/log.rs::append", to: "src/index/build.rs::index", rel: "CALLS", tier: "inferred" } ] };
+
+  renderKgDrill(CONCEPT_DRILL);
+  var html = el("kgpanel")._html;
+
+  // (1) c3 done-when ON THE REAL DRILL: the decluttered shared member's hover carries its BARE NAME
+  //     ("append") followed by the note, so an operator whose on-canvas label is decluttered away can
+  //     still identify the node. This is the assertion the synthetic regression fixture cannot make -
+  //     it proves the ACTUAL renderKgDrill name/title/label wiring composes a NAMING hover.
+  if (html.indexOf("<title>append - " + NOTE + "</title>") === -1)
+    throw new Error("the real concepts drill's shared member must name itself on hover (bare name + note): " + html);
+  // (2) ANTI-REGRESSION (the exact adjudicated defect): the generic note must NOT stand as the WHOLE
+  //     hover - a bare name-less note title is precisely the pre-fix bug that dropped the node's identity.
+  if (html.indexOf("<title>" + NOTE + "</title>") !== -1)
+    throw new Error("the real drill's shared-member hover must NOT be the bare name-less note (pre-fix defect): " + html);
+  // (3) the [shared] display tag stays a SINGLE occurrence - the on-canvas label carries it, the hover's
+  //     bare name drops it - preserving the spec-54 concepts_lens_view_periphery count([shared])===1 invariant.
+  if (count(html, "[shared]") !== 1)
+    throw new Error("the [shared] display tag must stay a single occurrence (never duplicated into the hover): " + html);
+  // (4) the shared member is a real FORCE node - the declutter stamps its data-nid so the live zoom
+  //     handler can toggle its on-canvas label (the hover is the reveal path for a decluttered label).
+  if (html.indexOf('data-nid="src/store/log.rs::append"') === -1)
+    throw new Error("the real drill's shared member must be a force node stamped with data-nid: " + html);
+
+  console.log("OK real-drill-hover");
+})();
+"##;
+
 /// Assert a driver program runs green under node and prints its OK marker.
 fn assert_ok(driver_program: &str, marker: &str) {
     let out = run_node(driver_program);
@@ -455,5 +510,25 @@ fn a_layered_view_stays_byte_identical_and_a_titled_node_still_names_itself_on_h
     assert_ok(
         &program(SHIM_MIN, &[OVERVIEW_JS, REGRESSION_DRIVER].concat()),
         "OK adaptive-labels-regression",
+    );
+}
+
+/// REAL-DRILL INTEGRATION seam: the served page's OWN `renderKgDrill` - the sole force view with an
+/// explicit, generic, NAME-LESS `opts.title` - names its decluttered shared member on hover (bare name +
+/// note), never surfaces the bare note alone, keeps `[shared]` a single occurrence, and stamps the member
+/// a `data-nid`. This drives the real drill end-to-end, closing the exact seam a synthetic fixture leaves
+/// open (a name-containing or titleless fixture passes vacuously against the pre-fix name-dropping hover).
+#[test]
+fn the_real_concepts_drill_names_its_decluttered_shared_member_on_hover() {
+    if !node_available() {
+        eprintln!(
+            "SKIP the_real_concepts_drill_names_its_decluttered_shared_member_on_hover: no `node` runtime \
+             on PATH (present on dev machines and ubuntu-latest CI); install node to run it."
+        );
+        return;
+    }
+    assert_ok(
+        &program(SHIM_MIN, REAL_DRILL_HOVER_DRIVER),
+        "OK real-drill-hover",
     );
 }
