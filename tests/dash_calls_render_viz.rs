@@ -93,11 +93,18 @@ fn the_served_page_ships_the_directed_call_layered_render() {
         "layeredLayout must order within a layer by a barycenter sweep: {layout}"
     );
 
-    // The DIRECTION is an INJECTED opt on the shared emitter, so the exploration views (which pass
-    // none) stay byte-identical: the layout swaps in via `opts.layout`, defaulting to `forceLayout`.
+    // The DIRECTION is an INJECTED opt on the shared emitter, so the DIRECTED-CALL feature does not
+    // disturb the exploration views: the layout swaps in via `opts.layout`, and absent it the emitter
+    // defaults to `forceLayout`. Spec 59 c2 feeds that default branch the per-node radius/label
+    // accessors for density-scaled spacing - an orthogonal change to the exploration layout, so this
+    // pins the INJECTION structure (the ternary's two branches) rather than the pre-c2 spelling.
     assert!(
-        page.contains("opts.layout || forceLayout"),
-        "the shared emitter must take the layout as an opt (default forceLayout) so exploration stays byte-identical"
+        page.contains("? opts.layout(nodes, edges, width, height)"),
+        "the shared emitter must swap in the directed-call layout via opts.layout so it never disturbs exploration"
+    );
+    assert!(
+        page.contains(": forceLayout(nodes, edges, width, height"),
+        "absent opts.layout the shared emitter must default to forceLayout"
     );
 
     // The ARROWHEAD marker (spec 52 c5): an SVG <defs><marker> DEFINED ONLY when the caller asks for

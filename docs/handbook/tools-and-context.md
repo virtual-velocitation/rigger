@@ -32,14 +32,14 @@ Any agent with `Bash` can drive the shared memory and grounding through the `rig
 ### Grounding (read the code the smart way)
 
 ```
-rigger ground "<query>"            # semantic search over the codebase
+rigger ground "<query>"            # structural search over the codebase
 rigger graph --around <path>       # the context-graph slice governing a file:
                                    # decisions, lessons, peers' touches
-rigger reindex                     # rebuild the semantic index (it also
+rigger reindex                     # rebuild the structural symbol index (it also
                                    # auto-freshens before every ground)
 ```
 
-`ground` is the entry point for "where does X live / what couples to Y" questions - use it *before* grep-spelunking. It scopes discovery; exhaustiveness claims ("all call sites") still require an exact grep, and dependency claims require the compiler. The grounder is selected in the workflow (`turbovec` semantic by default; `grep` substring fallback; `nop`), and a missing semantic backend degrades loudly, never silently.
+`ground` is the entry point for "where does X live / what couples to Y" questions - use it *before* grep-spelunking. It scopes discovery; exhaustiveness claims ("all call sites") still require an exact grep, and dependency claims require the compiler. The grounder is selected in the workflow (`symbols` structural by default; `grep` substring opt-out; `nop`), and selecting a grounder that is not built in degrades loudly, never silently.
 
 ### Memory (write and read the shared log)
 

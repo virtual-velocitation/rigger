@@ -15,7 +15,11 @@ use rigger::community;
 use rigger::concepts;
 use rigger::conductor::{self, Deps};
 use rigger::config;
-use rigger::contextgraph::{self, sqlite::Projector, Projection};
+use rigger::contextgraph::{
+    self,
+    sqlite::{Located, Projector},
+    Projection,
+};
 use rigger::dash;
 use rigger::driver::cli;
 use rigger::driver::replay::{spawn_scratch_path, ReplayDriver};
@@ -1212,19 +1216,6 @@ const SUBCOMMANDS: &[&str] = &[
 ];
 
 fn main() {
-    // Point `ort` at a CUDA-enabled ONNX Runtime `.so` to `dlopen` (it is built with
-    // `load-dynamic`) BEFORE anything constructs a grounder, so the turbovec grounder
-    // embeds on the GPU with no user-set env - for both the standalone binary and a
-    // `cargo install`ed one. A no-op when the runtime is not found or the feature is
-    // off; see `rigger::ort_runtime` for the discovery order.
-    //
-    // SAFETY: this is the first statement in `main`, before any thread is spawned, so
-    // mutating the process environment here is sound (no concurrent env reader).
-    #[cfg(feature = "turbovec")]
-    unsafe {
-        rigger::ort_runtime::ensure_dylib_path();
-    }
-
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
         usage();
@@ -1270,9 +1261,6 @@ fn main() {
         }
     };
 
-    // Choose the exit code, but do NOT exit yet: whether the command succeeded or failed,
-    // we must first release the ONNX Runtime / CUDA runtime deterministically (below), so
-    // both paths converge on a single controlled teardown.
     let code = match result {
         Ok(()) => 0,
         Err(e) => {
@@ -1280,38 +1268,6 @@ fn main() {
             1
         }
     };
-
-    // Tear the ONNX Runtime / CUDA runtime down EXPLICITLY, on this (main) thread, before
-    // the process exits, to close the intermittent teardown heap corruption
-    // (upstream pykeio/ort#564: a use-after-free in ORT's CUDA-provider teardown racing
-    // the C `atexit` destructors, `malloc(): ... double linked list corrupted`, SIGABRT).
-    // Releasing the environment here, while the process is healthy and single-threaded,
-    // makes ORT/CUDA teardown run in the upstream-proven `ReleaseSession` -> `ReleaseEnv`
-    // order so the later atexit destructors find already-released state - see `ort_teardown`
-    // for the full rationale and the upstream evidence that a version bump does not fix it
-    // and that explicit release does.
-    //
-    // WHAT THIS COVERS: it runs on BOTH the success and the error path (unlike the old
-    // `libc::_exit(0)` dodge, which covered only success and skipped ALL destructors), it
-    // runs every other destructor normally rather than skipping them, and it is a clean
-    // no-op on any run that never built a GPU/CPU session. After it, the ordinary
-    // `process::exit` runs the remaining Rust/atexit teardown normally.
-    //
-    // WHAT THIS DOES *NOT* CLAIM: it does not remove the buggy upstream code path itself -
-    // pykeio/ort#564 remains open (closed not-planned upstream), so the corrupting CUDA-vs-
-    // atexit teardown code still ships inside ORT. What we do is deprive it of the race by
-    // releasing the environment first, deterministically and single-threaded. The guarantee
-    // is therefore CONDITIONAL, not absolute, and rests on two invariants documented in
-    // `ort_teardown`: (1) the grounder - and thus the `TextEmbedding`/`Session` - is dropped
-    // BEFORE this call, so `ReleaseSession` has already run and only the env remains to
-    // release; and (2) ORT keeps its environment in a leaked `G_ENV` `static` whose `Arc` is
-    // never dropped, so our single `ReleaseEnv` here is the only one and cannot double-free.
-    // If a future ORT release changed either invariant (e.g. began dropping `G_ENV` at exit,
-    // or reordered provider teardown), this mitigation could stop holding and would need
-    // revisiting. It is a robust, scoped mitigation of a live upstream bug - NOT a claim that
-    // the buggy path has been removed entirely.
-    #[cfg(feature = "turbovec")]
-    rigger::ort_teardown::release_ort_runtime();
 
     std::process::exit(code);
 }
@@ -1343,6 +1299,8 @@ SDK, and drives the loop (one command; run `rigger\n                            
 setup` first - it provisions the driver in .rigger/shim/)\n  \
 rigger serve [opts]         run as an MCP server the driver connects to\n  \
 rigger graph --around <id>  print the context subgraph around a node\n  \
+rigger graph --show <entity> print an entity's definition site + line-numbered body\n                              \
+(the text half of lookup; resolves a full id or a bare name)\n  \
 rigger graph build          fold the project's source into the graph from a cold\n                              \
 checkout (no run required)\n  \
 rigger graph communities    derive the code lens's coupling communities offline and\n                              \
@@ -1378,7 +1336,7 @@ rigger dash [--port <n>]    serve the read-only observability page on 127.0.0.1\
 --export <path> writes the equivalent static snapshot\n  \
 rigger ground <query> [k]   print up to k (default 8) repo references the project's\n                              \
 configured grounder finds for <query>, as `file:line: text`\n  \
-rigger reindex <file>...    incrementally re-embed the named files in the project's\n                              \
+rigger reindex <file>...    incrementally re-index the named files in the project's\n                              \
 persisted grounding index (the grounder's reindex), so a\n                              \
 later `rigger ground` reflects just-landed changes\n  \
 rigger symbols-index [dir]  build + persist the structural symbol index over [dir]\n                              \
@@ -1789,8 +1747,7 @@ const STEP_BUSY_TOKEN: &str = "another `rigger step` is already running";
 /// process dies). A NON-blocking `try_lock`: if another step already holds it, refuse fast
 /// and loudly ([`STEP_BUSY_TOKEN`]) rather than blocking - a driver whose courier gets the
 /// refusal backs off and retries, which keeps the run flowing without ever running two
-/// steps (and thus two cross-process ORT/CUDA gate builds) at once. See the call site for
-/// why concurrent steps deadlock the GPU.
+/// steps at once. See the call site for why concurrent steps corrupt the run.
 fn acquire_step_lock() -> Result<std::fs::File, Box<dyn std::error::Error>> {
     use fs2::FileExt;
     let path = Path::new(RIGGER_DIR).join("step.lock");
@@ -1803,8 +1760,8 @@ fn acquire_step_lock() -> Result<std::fs::File, Box<dyn std::error::Error>> {
         .map_err(|_| -> Box<dyn std::error::Error> {
             format!(
                 "rigger step: {STEP_BUSY_TOKEN} in this repo (lock {}). Refusing to run \
-             concurrently: two steps run two `cargo test` gates whose grounder subprocesses \
-             build ORT/CUDA sessions concurrently across processes, which deadlocks the GPU. \
+             concurrently: two steps would race the run-branch checkout and the unit \
+             worktrees branched off HEAD, corrupting the run. \
              Wait for the running step to finish (or kill it) and retry.",
                 path.display()
             )
@@ -1822,16 +1779,14 @@ fn cmd_step(args: &[String]) -> Res {
     let criteria = load_criteria(args.spec.as_deref())?;
     std::fs::create_dir_all(RIGGER_DIR)?;
 
-    // Serialize concurrent `rigger step` invocations (root-cause fix for the ORT/CUDA
-    // GPU deadlock). Two steps at once run two `cargo test` gates whose grounder
-    // subprocesses build ORT/CUDA sessions CONCURRENTLY ACROSS PROCESSES - the documented
-    // heap-corruption/deadlock hazard (Cargo.toml turbovec test-serial note). A single
-    // step's own gate is already serialized internally (the grounder's CONSTRUCT_MU +
-    // the tests' `file_serial`), which is why one gate runs clean; the ONLY source of
-    // cross-process concurrency is OVERLAPPING steps - e.g. a driver re-couriering a step
-    // while the first's minutes-long gate still runs. Held for the whole step and released
-    // when this process exits (even on crash/kill), so a dead step never wedges the run.
-    // The guard binds a name so it is not dropped early.
+    // Serialize concurrent `rigger step` invocations so the run advances ONE step at a time
+    // (spec 51 relies on that invariant). A step checks out the run branch and branches unit
+    // worktrees off HEAD, then integrates units and appends events (see just below); two
+    // steps at once would race that shared checkout/HEAD and interleave their integrations,
+    // corrupting the run. The overlap arises when a driver re-couriers a step while the
+    // first's minutes-long gate still runs. Held for the whole step and released when this
+    // process exits (even on crash/kill), so a dead step never wedges the run. The guard
+    // binds a name so it is not dropped early.
     let _step_lock = acquire_step_lock()?;
 
     // Anchor + check out the run branch before the conductor branches any unit worktree
@@ -3040,6 +2995,7 @@ fn cmd_graph(args: &[String]) -> Res {
         return cmd_graph_concepts(&args[1..]);
     }
     let mut around = String::new();
+    let mut show = String::new();
     let mut depth: i64 = 2;
     let mut i = 0;
     while i < args.len() {
@@ -3047,6 +3003,10 @@ fn cmd_graph(args: &[String]) -> Res {
             "--around" => {
                 i += 1;
                 around = args.get(i).cloned().unwrap_or_default();
+            }
+            "--show" => {
+                i += 1;
+                show = args.get(i).cloned().unwrap_or_default();
             }
             "--depth" => {
                 i += 1;
@@ -3056,8 +3016,14 @@ fn cmd_graph(args: &[String]) -> Res {
         }
         i += 1;
     }
+    // `rigger graph --show <entity>` is the TEXT half of lookup (spec 58): the definition site and
+    // body, beside `--around`'s structural neighborhood. Dispatched before the `--around` guard so
+    // a `--show` query needs no `--around`.
+    if !show.is_empty() {
+        return cmd_graph_show(&show);
+    }
     if around.is_empty() {
-        return Err("graph: --around <id> is required".into());
+        return Err("graph: --around <id> or --show <entity> is required".into());
     }
     let gp = Projector::open(&db_path("graph.db"), &project_identity())?;
     let g = gp.subgraph(&[around.clone()], depth)?;
@@ -3072,6 +3038,219 @@ fn cmd_graph(args: &[String]) -> Res {
         println!("  (nothing found; has `rigger run` been run yet?)");
     }
     Ok(())
+}
+
+/// The upper bound on how many body lines `rigger graph --show` prints (spec 58): the definition's
+/// extent comes from the grammar's own node boundary, but a very long body is clamped to this window
+/// so the surface never dumps an unbounded body. A clamp is announced with an explicit note (the
+/// omitted-line count), so a bounded body is never mistaken for the whole definition.
+const SHOW_MAX_BODY_LINES: u32 = 60;
+
+/// `rigger graph --show <entity>` (spec 58, criterion 1) - the TEXT half of graph lookup, beside
+/// `--around`'s structural neighborhood. It resolves the entity through [`Projector::locate`] (a
+/// full `<file>::<name>` id, or a bare name via the pinned name-suffix match), then:
+///
+/// - ONE match: prints the definition SITE (`file:line`), the entity's KIND and one-hop DEGREE, and
+///   the definition BODY read from the WORKING TREE at that location - line-numbered and bounded by
+///   the extent the shared multi-grammar symbols authority derives (the grammar's own node
+///   boundary), clamped to a max window. A missing file, a recorded line past end-of-file, a drifted
+///   location the current tree no longer matches, or a build without the extraction grammar degrades
+///   to the site plus an explicit note, never an error (the recorded graph facts are still shown;
+///   only the body is unavailable, and the surface says so).
+/// - MANY matches (an ambiguous bare name): LISTS the sorted candidates, each with its file, and
+///   prints NO body - the graph's honesty rule is never to guess among candidates.
+/// - NONE: a one-line not-found note (never an error), mirroring `--around`'s empty result.
+///
+/// Read-only over the projection and the working tree; deterministic for a given tree and graph.
+fn cmd_graph_show(entity: &str) -> Res {
+    let gp = Projector::open(&db_path("graph.db"), &project_identity())?;
+    match gp.locate(entity)? {
+        Located::None => {
+            println!(
+                "show {entity:?}: no such entity in the graph (has it been built? try `rigger graph build`)"
+            );
+        }
+        Located::Many(cands) => {
+            println!(
+                "show {entity:?}: {} candidates - the name is ambiguous, re-run --show on one id:",
+                cands.len()
+            );
+            for c in &cands {
+                println!("  {}   ({})", c.id, c.file);
+            }
+        }
+        Located::One(site) => print_entity_site(&site),
+    }
+    Ok(())
+}
+
+/// Print one located entity for `rigger graph --show` (spec 58): the site/kind/degree header, then
+/// the line-numbered body bounded through the shared multi-grammar symbols authority - or an
+/// explicit note (a drifted location, or a build without the extraction grammar) in place of the
+/// body, so the surface is never silently wrong (a graceful degrade, never an error).
+fn print_entity_site(site: &contextgraph::sqlite::EntitySite) {
+    let kind = if site.kind.is_empty() {
+        "?"
+    } else {
+        site.kind.as_str()
+    };
+    // The definition name is the id's suffix after the first `::` (a file path never contains one),
+    // the twin of the `<file>::<name>` id `locate` resolved - used to match the working-tree extent.
+    let name = site
+        .id
+        .split_once("::")
+        .map(|(_, n)| n)
+        .unwrap_or(site.id.as_str());
+    println!("show {}", site.id);
+    println!(
+        "  site: {}:{}   kind {}   degree {}",
+        site.file, site.line, kind, site.degree
+    );
+    match definition_body(&site.file, site.line, name) {
+        ShowBody::Lines {
+            lines,
+            omitted,
+            extent_end,
+        } => {
+            for (n, text) in lines {
+                println!("  {n:>6} | {text}");
+            }
+            if omitted > 0 {
+                // The extent ran past the max window: print an explicit clamp note (the omitted
+                // count and the extent's true last line) so a bounded body is never read as whole.
+                println!(
+                    "  (body clamped to {SHOW_MAX_BODY_LINES} lines; {omitted} more line(s) omitted, through line {extent_end})"
+                );
+            }
+        }
+        ShowBody::Note(reason) => println!("  ({reason})"),
+    }
+}
+
+/// The outcome of bounding a located definition's body for `rigger graph --show` (spec 58).
+enum ShowBody {
+    /// The line-numbered body window `[start, end]`: `omitted` is how many lines were dropped past
+    /// the [`SHOW_MAX_BODY_LINES`] clamp (`0` when the whole extent fit), and `extent_end` is the
+    /// extent's true last line, so the caller can print an honest clamp note when `omitted > 0`.
+    Lines {
+        lines: Vec<(u32, String)>,
+        omitted: u32,
+        extent_end: u32,
+    },
+    /// No body could be shown; the string is the human reason (a drifted working-tree location, or
+    /// a build compiled without the extraction grammar). Printed in place of the body so the show
+    /// surface degrades honestly, never guessing or silently truncating.
+    Note(String),
+}
+
+/// Bound and read a located definition's body from the WORKING TREE for `rigger graph --show`
+/// (spec 58). The file is read relative to the git top-level (so a `--show` launched from a
+/// subdirectory still finds it), falling back to the cwd outside a git context.
+///
+/// The extent is derived through the SHARED multi-grammar symbols authority, not a hand-rolled
+/// per-language lexer: [`derive_extent_end`] resolves the file's grammar via the symbols registry
+/// and reads the definition's END line from the grammar's OWN tree-sitter node boundary. So a
+/// braced language's closing brace, a Python block's dedent, a Go backtick raw string, and a JS
+/// single-quote string carrying a lone `{` are all bounded correctly by the parser - including a
+/// signature that itself carries a brace (a struct-destructuring parameter, an `= {}` default) and
+/// a definition that CONTAINS a nested `fn`/item (its extent spans the child, never truncates at
+/// it). The window is `[start, extent]`, clamped by [`SHOW_MAX_BODY_LINES`]; a clamp reports its
+/// omitted-line count so a bounded body is never read as whole.
+///
+/// Returns [`ShowBody::Note`] - the caller prints it in place of the body, never an error - when the
+/// body cannot be shown honestly: the recorded `start` line is `0` or past end-of-file, the file
+/// cannot be read (a drifted or unknown location), the current tree no longer holds a definition of
+/// that name at that line (a stale location), or this build has no extraction grammar (the light,
+/// `--no-default-features` lane). It never GUESSES a body from a structural next-definition bound.
+fn definition_body(file: &str, start: u32, name: &str) -> ShowBody {
+    // A recorded line of 0 never named a real source line: degrade before any read.
+    if start == 0 {
+        return ShowBody::Note(format!(
+            "source unavailable at {file}:{start}; the recorded location may be stale"
+        ));
+    }
+    let root = git_repo();
+    let path = if root.is_empty() {
+        std::path::PathBuf::from(file)
+    } else {
+        std::path::Path::new(&root).join(file)
+    };
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return ShowBody::Note(format!(
+            "source unavailable at {file}:{start}; the recorded location may be stale"
+        ));
+    };
+    let all: Vec<&str> = text.lines().collect();
+    let total = all.len() as u32;
+    if start > total {
+        // The recorded line is past end-of-file: the location drifted.
+        return ShowBody::Note(format!(
+            "source unavailable at {file}:{start}; the recorded location may be stale"
+        ));
+    }
+    // Derive the extent's end line through the ONE multi-grammar authority. A miss (a drifted
+    // location, or a light-lane build with no grammar) is an explicit note, never a guessed body.
+    let extent_end = match derive_extent_end(file, &text, start, name) {
+        Ok(end) => end.min(total),
+        Err(why) => return ShowBody::Note(why),
+    };
+    // The max window: never dump an unbounded body. A clamp keeps the extent's true end so the
+    // caller can announce the omitted lines.
+    let window_cap = start.saturating_add(SHOW_MAX_BODY_LINES).saturating_sub(1);
+    let printed_end = extent_end.max(start).min(window_cap);
+    let omitted = extent_end.saturating_sub(printed_end);
+    let lines = (start..=printed_end)
+        .map(|n| (n, all[(n - 1) as usize].to_string()))
+        .collect();
+    ShowBody::Lines {
+        lines,
+        omitted,
+        extent_end,
+    }
+}
+
+/// The 1-based, inclusive END line of the definition named `name` at site line `start` in `source`,
+/// derived through the shared multi-grammar symbols authority (spec 58). It resolves the file's
+/// grammar via the symbols registry and reads the extent from [`definition_extents`], the SAME
+/// tree-sitter tag mechanism the code graph is extracted with - so ONE extent authority generalizes
+/// across every ingested grammar rather than a Rust-only brace lexer in this composition root.
+///
+/// Matches on BOTH name and site line (a definition that has moved off `start` no longer matches, so
+/// a drifted location degrades to a note rather than a wrong body); when several definitions share
+/// the name and line, the widest extent (the outermost construct) wins. Returns `Err` with a human
+/// reason - the caller degrades to a note - when no grammar is registered for the file's extension,
+/// the grammar cannot tag it, or the current tree holds no such definition at that line.
+#[cfg(feature = "symbols")]
+fn derive_extent_end(file: &str, source: &str, start: u32, name: &str) -> Result<u32, String> {
+    use rigger::grounder::symbols::{extract, registry};
+    let Some(entry) = registry::for_path(file, None) else {
+        return Err(format!(
+            "no code-extraction grammar is registered for {file}; the body extent is unavailable"
+        ));
+    };
+    let extents = extract::definition_extents(source, &entry.language, entry.tags_query)?;
+    extents
+        .into_iter()
+        .filter(|d| d.name == name && d.start_line == start)
+        .map(|d| d.end_line)
+        .max()
+        .ok_or_else(|| {
+            format!(
+                "no definition named {name:?} at line {start} in the current working tree; the recorded location may be stale"
+            )
+        })
+}
+
+/// Light-lane [`derive_extent_end`]: a build WITHOUT the `symbols` feature links no grammar, so the
+/// extent cannot be derived. It returns an explicit reason the caller prints as a note - the show
+/// surface stays honest ("the body needs the extraction grammar this build omits") rather than
+/// falling back to a hand-rolled lexer that would mis-read the very grammars the graph ingests.
+#[cfg(not(feature = "symbols"))]
+fn derive_extent_end(_file: &str, _source: &str, _start: u32, _name: &str) -> Result<u32, String> {
+    Err(
+        "the body extent needs the code-extraction grammar; this build was compiled without the `symbols` feature"
+            .to_string(),
+    )
 }
 
 /// `rigger graph build` - fold the project's source into `.rigger/graph.db` from a COLD checkout
@@ -5220,8 +5399,8 @@ fn cmd_ground(args: &[String]) -> Res {
     }
     // Honor the project's configured `defaults.grounder` when a config is present;
     // a project with no `.rigger/workflow.yml` yet falls back to the default grounder
-    // (the empty name -> grep, the scaffold default), so an agent can ground before a
-    // workflow is authored rather than hitting a config error.
+    // (the empty name -> symbols, the scaffold default), so an agent can ground before
+    // a workflow is authored rather than hitting a config error.
     let name = config::load(".")
         .map(|cfg| cfg.workflow.defaults.grounder)
         .unwrap_or_default();
@@ -5232,16 +5411,17 @@ fn cmd_ground(args: &[String]) -> Res {
     Ok(())
 }
 
-/// `rigger reindex <file>...` - incrementally re-embed the named files in the
+/// `rigger reindex <file>...` - incrementally re-index the named files in the
 /// project's persisted grounding index. It resolves the grounder from
-/// `defaults.grounder` via [`select_reindex_grounder`] (rooted at `.`) - which, unlike
-/// [`select_grounder`], loads the turbovec store WITHOUT freshening the whole tree, so
-/// the named files are re-embedded exactly ONCE here rather than once by a load-time
-/// freshen and again by the reindex. It then calls [`Grounder::reindex`] on the changed
-/// files, so the turbovec grounder drops each file's old chunks, re-embeds its current
-/// content, and persists the delta to `.rigger/grounding/` - a later `rigger ground`
-/// (and the review tier the workflow runs after a unit lands) then reflects the
-/// just-integrated code WITHOUT re-embedding the whole repo. For the grep / nop
+/// `defaults.grounder` via [`select_reindex_grounder`] (rooted at `.`) - which, after
+/// turbovec's retirement, resolves IDENTICALLY to [`select_grounder`]: the `symbols`
+/// grounder's `open` only LOADS the persisted index (it does not freshen the whole
+/// tree), so the named files are re-parsed exactly ONCE here rather than once by a
+/// load-time freshen and again by the reindex. It then calls [`Grounder::reindex`] on
+/// the changed files, so the `symbols` grounder drops each file's old symbols, re-parses
+/// its current content, and persists the delta to `.rigger/symbols/` - a later `rigger
+/// ground` (and the review tier the workflow runs after a unit lands) then reflects the
+/// just-integrated code WITHOUT re-indexing the whole repo. For the grep / nop
 /// grounders `reindex` is a no-op (they re-read the tree each call), so this command is
 /// harmless there. Files are repo-relative, matching how the grounder records and
 /// grounds them. At least one file is required.
@@ -5250,13 +5430,13 @@ fn cmd_reindex(args: &[String]) -> Res {
         return Err("reindex: expected at least one file: rigger reindex <file>...".into());
     }
     // Same selection path as `cmd_ground`: honor `defaults.grounder` when a config
-    // is present, else the unset default (turbovec). The grounder is rooted at `.`,
-    // so the persisted store it loads/updates is this project's `.rigger/grounding/`.
+    // is present, else the unset default (symbols). The grounder is rooted at `.`,
+    // so the persisted index it loads/updates is this project's `.rigger/symbols/`.
     let name = config::load(".")
         .map(|cfg| cfg.workflow.defaults.grounder)
         .unwrap_or_default();
-    // Use the reindex-specific constructor: it loads the persisted store WITHOUT a
-    // whole-tree freshen, so `reindex` re-embeds ONLY the named files - never those
+    // Use the reindex-specific constructor: it loads the persisted index WITHOUT a
+    // whole-tree freshen, so `reindex` re-parses ONLY the named files - never those
     // files twice (once by a load-time freshen, once by the reindex below).
     let grounder = select_reindex_grounder(&name)?;
     grounder.reindex(".", args);
@@ -8286,140 +8466,43 @@ fn cmd_prime() -> Res {
     Ok(())
 }
 
-/// Build the grounder named by `defaults.grounder` (§3.2, §5.4, R4). Turbovec is the
-/// DEFAULT grounder: the turbovec names (`vector`/`turbovec`) AND an UNSET / empty
-/// `defaults.grounder` resolve to the real semantic engine. `grep` and `nop` resolve
-/// via `grounder::grounder_for` and are reachable ONLY when named explicitly.
+/// Build the grounder named by `defaults.grounder` (§3.2, §5.4, R4). The structural
+/// `symbols` grounder is the DEFAULT: an UNSET / empty `defaults.grounder` AND the explicit
+/// name `symbols` resolve to it. `grep` and `nop` resolve via `grounder::grounder_for` and
+/// are reachable ONLY when named explicitly.
 ///
-/// When the binary is built WITHOUT the `turbovec` feature, resolving to turbovec is
-/// a LOUD error (a clear message + non-zero exit), never a silent degrade to grep -
-/// that silent degrade is exactly what hid turbovec being absent for a whole session.
-/// Grep runs ONLY when the user writes `grounder: grep`.
-#[cfg(feature = "turbovec")]
-fn select_grounder(name: &str) -> Result<Box<dyn Grounder>, Box<dyn std::error::Error>> {
-    if rigger::grounder::resolves_to_turbovec(name) {
-        // Building the index can fail for a real, distinct reason (e.g. the embedding
-        // model cannot be loaded); that is its OWN loud error, not a grep fallback.
-        // `new` freshens any tree drift on load, which is what the grounding-read paths
-        // (`ground`/`run`/`serve`) want.
-        let tv = rigger::grounder::turbovec::Turbovec::new(".")
-            .map_err(|e| format!("turbovec grounder unavailable: {e}"))?;
-        return Ok(Box::new(tv));
-    }
-    // `symbols` resolves to the real structural grounder when the feature is built (it opens or
-    // builds+persists the index over the repo root); a build WITHOUT the feature falls through to
-    // `grounder_for`, whose `symbols` arm is the loud no-silent-degrade error.
-    #[cfg(feature = "symbols")]
-    if name.trim().eq_ignore_ascii_case("symbols") {
-        return Ok(Box::new(
-            rigger::grounder::symbols::grounder::Symbols::open(".", None),
-        ));
-    }
-    // `hybrid` composes symbols (structural) with turbovec (semantic); with the feature built it
-    // opens BOTH and ranks structure first. Absent turbovec, `Hybrid::open` degrades to exactly
-    // the symbols mode - the degrade lives in ONE authority, so this arm is IDENTICAL in both cfg
-    // lanes. A build WITHOUT the symbols feature falls through to `grounder_for` (loud error).
-    #[cfg(feature = "symbols")]
-    if name.trim().eq_ignore_ascii_case("hybrid") {
-        return Ok(Box::new(
-            rigger::grounder::symbols::hybrid::Hybrid::open(".", None)
-                .map_err(|e| format!("hybrid grounder unavailable: {e}"))?,
-        ));
-    }
-    Ok(rigger::grounder::grounder_for(name, ".")?)
-}
-
-#[cfg(not(feature = "turbovec"))]
-fn select_grounder(name: &str) -> Result<Box<dyn Grounder>, Box<dyn std::error::Error>> {
-    // No turbovec feature compiled in: `grounder_for` returns the loud
-    // "built without the turbovec feature" error for the default / turbovec names,
-    // and resolves grep / nop normally. We never silently degrade to grep.
-    // `symbols` still resolves to the structural grounder when THAT feature is built (it is
-    // independent of turbovec); without it, `grounder_for` returns the loud symbols error.
-    #[cfg(feature = "symbols")]
-    if name.trim().eq_ignore_ascii_case("symbols") {
-        return Ok(Box::new(
-            rigger::grounder::symbols::grounder::Symbols::open(".", None),
-        ));
-    }
-    // `hybrid` resolves via the SAME `Hybrid::open` as the turbovec-on lane; without turbovec it
-    // degrades to exactly the symbols mode (the degrade is intrinsic to `Hybrid`, so this arm does
-    // not differ by cfg lane). Without the symbols feature, `grounder_for` returns the loud error.
-    #[cfg(feature = "symbols")]
-    if name.trim().eq_ignore_ascii_case("hybrid") {
-        return Ok(Box::new(
-            rigger::grounder::symbols::hybrid::Hybrid::open(".", None)
-                .map_err(|e| format!("hybrid grounder unavailable: {e}"))?,
-        ));
-    }
-    Ok(rigger::grounder::grounder_for(name, ".")?)
-}
-
-/// The grounder for `rigger reindex`, which differs from [`select_grounder`] ONLY for
-/// turbovec: it constructs via `Turbovec::new_for_reindex`, which loads the persisted
-/// store WITHOUT freshening tree drift. `reindex` then re-embeds exactly the named
-/// files; using the freshening `new` here would re-embed every drifted file on load and
-/// then the named files AGAIN - a double-embed.
+/// When the binary is built WITHOUT the `symbols` feature, resolving to symbols is a LOUD
+/// error (a clear message + non-zero exit) via `grounder_for`, never a silent degrade to
+/// grep. Grep runs ONLY when the user writes `grounder: grep`.
 ///
-/// EVERY OTHER name resolves IDENTICALLY to [`select_grounder`], and MUST: the two are one
-/// grounder-selection concern, not two authorities to keep in sync by hand. `symbols` resolves
-/// to the SAME real `Symbols::open` here as in `select_grounder` - `Symbols::open` only LOADS
-/// the persisted index (it does not freshen the whole tree the way turbovec's `new` does), so
-/// opening it for a reindex re-parses ONLY the named files and there is no double-work to avoid;
-/// omitting this arm is exactly the parallel-selector drift that made `rigger reindex` under
-/// `defaults.grounder: symbols` return the false `symbols_feature_missing_error` while the
-/// feature was built. grep / nop have no index, so their `reindex` is a no-op.
-#[cfg(feature = "turbovec")]
-fn select_reindex_grounder(name: &str) -> Result<Box<dyn Grounder>, Box<dyn std::error::Error>> {
-    if rigger::grounder::resolves_to_turbovec(name) {
-        let tv = rigger::grounder::turbovec::Turbovec::new_for_reindex(".")
-            .map_err(|e| format!("turbovec grounder unavailable: {e}"))?;
-        return Ok(Box::new(tv));
-    }
-    // `symbols` resolves to the SAME structural grounder `select_grounder` builds (open only loads
-    // the persisted index, so there is no freshen-on-open double-work); a build WITHOUT the feature
-    // falls through to `grounder_for`, whose `symbols` arm is the loud no-silent-degrade error.
+/// This is c2's mechanical default-resolution after turbovec's retirement; c1 is the
+/// authority that PROVES the accepted-name contract (the exact `symbols`/`grep`/`nop` set
+/// and the loud migration error for the retired `turbovec` / `hybrid` names).
+fn select_grounder(name: &str) -> Result<Box<dyn Grounder>, Box<dyn std::error::Error>> {
+    // `symbols` (and the UNSET / empty default) resolve to the real structural grounder when the
+    // feature is built (it opens or builds+persists the index over the repo root); a build WITHOUT
+    // the feature falls through to `grounder_for`, whose `symbols` arm is the loud no-silent-degrade
+    // error.
     #[cfg(feature = "symbols")]
-    if name.trim().eq_ignore_ascii_case("symbols") {
-        return Ok(Box::new(
-            rigger::grounder::symbols::grounder::Symbols::open(".", None),
-        ));
-    }
-    // `hybrid` for reindex opens both axes via the reindex constructors: turbovec loads the
-    // persisted store WITHOUT a whole-tree freshen (`new_for_reindex`), so `reindex` re-embeds only
-    // the named files and never double-embeds. Carried in BOTH cfg lanes exactly like the `symbols`
-    // arm, so `rigger reindex` under `defaults.grounder: hybrid` freshens instead of erroring.
-    #[cfg(feature = "symbols")]
-    if name.trim().eq_ignore_ascii_case("hybrid") {
-        return Ok(Box::new(
-            rigger::grounder::symbols::hybrid::Hybrid::open_for_reindex(".", None)
-                .map_err(|e| format!("hybrid grounder unavailable: {e}"))?,
-        ));
+    {
+        let n = name.trim();
+        if n.is_empty() || n.eq_ignore_ascii_case("symbols") {
+            return Ok(Box::new(
+                rigger::grounder::symbols::grounder::Symbols::open(".", None),
+            ));
+        }
     }
     Ok(rigger::grounder::grounder_for(name, ".")?)
 }
 
-#[cfg(not(feature = "turbovec"))]
+/// The grounder for `rigger reindex`. After turbovec's retirement it resolves IDENTICALLY to
+/// [`select_grounder`]: the only case that ever differed was turbovec (whose freshening `new`
+/// had to be swapped for `new_for_reindex` to avoid a double-embed). The surviving grounders
+/// have no such distinction - `Symbols::open` only LOADS the persisted index (it does not
+/// freshen the whole tree), and grep / nop have no index at all - so there is one selection
+/// authority, not two to keep in sync by hand.
 fn select_reindex_grounder(name: &str) -> Result<Box<dyn Grounder>, Box<dyn std::error::Error>> {
-    // `symbols` resolves identically to `select_grounder` (open only loads the persisted index, so
-    // no freshen-on-open double-work); without the feature, `grounder_for` returns the loud error.
-    #[cfg(feature = "symbols")]
-    if name.trim().eq_ignore_ascii_case("symbols") {
-        return Ok(Box::new(
-            rigger::grounder::symbols::grounder::Symbols::open(".", None),
-        ));
-    }
-    // `hybrid` for reindex without turbovec degrades to exactly the symbols mode via the same
-    // `Hybrid::open_for_reindex` as the turbovec-on lane; without the symbols feature,
-    // `grounder_for` returns the loud error.
-    #[cfg(feature = "symbols")]
-    if name.trim().eq_ignore_ascii_case("hybrid") {
-        return Ok(Box::new(
-            rigger::grounder::symbols::hybrid::Hybrid::open_for_reindex(".", None)
-                .map_err(|e| format!("hybrid grounder unavailable: {e}"))?,
-        ));
-    }
-    Ok(rigger::grounder::grounder_for(name, ".")?)
+    select_grounder(name)
 }
 
 fn git_repo() -> String {
@@ -8498,7 +8581,7 @@ name: example\n\
 \n\
 defaults:\n  \
 autonomy: auto_notify   # manual | auto_notify | silent\n  \
-grounder: turbovec      # turbovec (default; the real semantic grounder) | grep | nop\n  \
+grounder: symbols       # symbols (default; the structural symbol index) | grep | nop\n  \
 # The spawn-budget circuit-breaker: the hard cap on agent spawns one unattended\n  \
 # run may make. At the cap the breaker emits BudgetExhausted and aborts the run,\n  \
 # so a runaway can never spawn unboundedly. NON-ZERO on purpose - 0 = unlimited.\n  \
@@ -11524,9 +11607,10 @@ mod tests {
             review.adjudicator, "adjudicator",
             "tier 3: the neutral adjudicator gates"
         );
-        // The scaffold sets turbovec EXPLICITLY (visible, not implicit) - it is the
-        // default grounder and the default cargo feature.
-        assert_eq!(cfg.workflow.defaults.grounder, "turbovec");
+        // The scaffold sets symbols EXPLICITLY (visible, not implicit) - it is the
+        // default grounder (the structural symbol index), so a fresh `rigger init`
+        // config grounds and reindexes without hitting the retired-grounder error.
+        assert_eq!(cfg.workflow.defaults.grounder, "symbols");
         // FIX 3: the scaffold ships a NON-ZERO spawn budget so an unattended `rigger
         // run` cannot spawn unboundedly - 0 would be unlimited.
         assert!(
@@ -12112,49 +12196,6 @@ mod tests {
         assert!(
             err.contains("bogus") && err.contains("sqlite") && err.contains("kurrentdb"),
             "an unknown store.backend must be rejected naming the valid values; got: {err}"
-        );
-    }
-
-    /// With the turbovec feature compiled OUT, selecting the DEFAULT grounder (an
-    /// unset name) or an explicit turbovec/vector name FAILS LOUDLY - a clear error
-    /// naming turbovec, the missing feature, and the explicit grep opt-out - and never
-    /// silently degrades to grep. This is the regression guard for the silent degrade
-    /// that hid turbovec being absent for a whole session.
-    #[cfg(not(feature = "turbovec"))]
-    #[test]
-    fn select_grounder_fails_loudly_without_the_turbovec_feature() {
-        for name in ["", "turbovec", "vector"] {
-            let err = select_grounder(name)
-                .err()
-                .unwrap_or_else(|| panic!("{name:?} must fail loudly without the feature"));
-            let msg = err.to_string();
-            assert!(
-                msg.contains("turbovec") && msg.contains("feature") && msg.contains("grep"),
-                "the loud error must name turbovec, the feature, and the grep opt-out; got: {msg}"
-            );
-        }
-        // grep and nop are the explicit-only opt-outs and still resolve fine.
-        assert!(select_grounder("grep").is_ok());
-        assert!(select_grounder("nop").is_ok());
-        // An unknown name is a hard error too, not a silent grep fallback.
-        assert!(select_grounder("bogus").is_err());
-    }
-
-    /// With the turbovec feature compiled IN, grep is still reachable when named
-    /// EXPLICITLY (the deliberate literal-grounder opt-out), and an unknown name is a
-    /// hard error rather than a silent grep fallback. (The turbovec / default path is
-    /// exercised by the grounder's own model-loading test, which downloads weights.)
-    #[cfg(feature = "turbovec")]
-    #[test]
-    fn select_grounder_with_feature_resolves_grep_explicitly_and_rejects_unknown() {
-        assert!(
-            select_grounder("grep").is_ok(),
-            "explicit grep must resolve even with the turbovec feature on"
-        );
-        assert!(select_grounder("nop").is_ok());
-        assert!(
-            select_grounder("bogus-grounder").is_err(),
-            "an unknown grounder name must be a hard error, not a silent grep fallback"
         );
     }
 
@@ -14984,8 +15025,8 @@ mod tests {
     }
 
     /// `rigger step` SERIALIZES: while one step holds the lock, a second concurrent step
-    /// REFUSES (with the driver-recognizable busy token) instead of running - the root-cause
-    /// fix for the cross-process ORT/CUDA deadlock two overlapping gate builds cause. And the
+    /// REFUSES (with the driver-recognizable busy token) instead of running - so the run
+    /// advances one step at a time and two steps never race the shared run state. And the
     /// refusal is not permanent: once the first releases, a later step acquires cleanly.
     #[test]
     #[serial_test::serial(cwd)]

@@ -414,15 +414,22 @@ fn the_implement_prompt_is_trimmed_to_the_intent_layer_with_a_rigger_peers_point
         prompt.contains("the loop discipline rule governing core"),
         "the trimmed implement prompt must KEEP the design-intent section; prompt was:\n{prompt}"
     );
-    // ADDED: a one-line pointer naming BOTH pull tools the reference bulk is now retrievable through.
+    // ADDED: the three-verb lookup pointer (spec 58) naming all three CLI lookup verbs the
+    // reference bulk and the rest of lookup are retrievable through - `rigger peers` (memory),
+    // `rigger graph --around` (structure), `rigger graph --show` (text).
     assert!(
-        prompt.contains("rigger_peers"),
-        "the trimmed implement prompt must point at `rigger_peers` for prior decisions / lessons / \
+        prompt.contains("rigger peers"),
+        "the trimmed implement prompt must point at `rigger peers` for prior decisions / lessons / \
          findings; prompt was:\n{prompt}"
     );
     assert!(
         prompt.contains("rigger graph --around"),
         "the trimmed implement prompt must point at `rigger graph --around` for code navigation; \
+         prompt was:\n{prompt}"
+    );
+    assert!(
+        prompt.contains("rigger graph --show"),
+        "the trimmed implement prompt must point at `rigger graph --show` for source text; \
          prompt was:\n{prompt}"
     );
     // DROPPED: the capped decisions / lessons / findings sections - proven by section header AND by
@@ -503,6 +510,58 @@ fn the_producer_prompt_keeps_the_full_grounding_context_not_the_implement_trim()
         prompt.contains("Findings other reviewers have already raised")
             && prompt.contains("PRODUCER_FINDING_MARKER"),
         "the producer prompt must keep the FULL findings section (the trim is implement-only); \
+         prompt was:\n{prompt}"
+    );
+}
+
+/// Spec 58, criterion 3 (the habit half, at the PRODUCER boundary end to end): spec 58 names the
+/// producer/planner alongside the review context - EVERY non-implement spawn's FULL slice gains the
+/// three-verb lookup pointer, not just the trimmed implement slice. The sibling
+/// `the_producer_prompt_keeps_the_full_grounding_context_not_the_implement_trim` proves the producer
+/// KEEPS the full decisions/findings bulk; this proves the SAME producer prompt now ALSO names all
+/// three lookup verbs (structure/text/memory) with the grep-fallback reporting instruction, at the
+/// exact bytes a real producer spawn receives through the `AgentDriver` port during a live `run`. The
+/// implementer's in-process `lookup_pointer_names_all_three_verbs_on_every_slice` pins `graph_context`
+/// at `GroundingSlice::Full`; this pins the wiring all the way to a REAL producer spawn - something an
+/// in-process render assertion cannot prove.
+///
+/// Non-vacuous / mutation-isolating: dropping the `write_lookup_pointer(&mut b)` call from
+/// `graph_context`'s `GroundingSlice::Full` arm reddens every assertion here, while the
+/// implement/sdet-author trim tests (which exercise the peers-pointer path) stay green.
+#[test]
+fn the_producer_prompt_carries_the_three_verb_lookup_pointer() {
+    let graph = Projector::open(":memory:", "test").unwrap();
+
+    // No graph seed is needed: the lookup pointer is a fixed note the Full slice appends
+    // UNCONDITIONALLY, so no spawn is left grepping in the dark even over an empty neighborhood.
+    let prompts = run_and_capture_producer_prompts(&graph);
+    assert!(
+        !prompts.is_empty(),
+        "the producer stage's agent must have been spawned with a prompt"
+    );
+    let prompt = &prompts[0];
+
+    assert!(
+        prompt.contains("rigger graph --around"),
+        "the producer prompt must name the STRUCTURE verb `rigger graph --around`; \
+         prompt was:\n{prompt}"
+    );
+    assert!(
+        prompt.contains("rigger graph --show"),
+        "the producer prompt must name the TEXT verb `rigger graph --show`; prompt was:\n{prompt}"
+    );
+    assert!(
+        prompt.contains("rigger peers"),
+        "the producer prompt must name the MEMORY verb `rigger peers`; prompt was:\n{prompt}"
+    );
+    assert!(
+        prompt.contains("structure") && prompt.contains("text") && prompt.contains("memory"),
+        "the producer prompt must name each lookup verb's job (structure/text/memory); \
+         prompt was:\n{prompt}"
+    );
+    assert!(
+        prompt.contains("grep-fallback:") && prompt.contains("rigger progress"),
+        "the producer prompt must carry the grep-fallback reporting instruction; \
          prompt was:\n{prompt}"
     );
 }
@@ -680,15 +739,22 @@ fn the_sdet_author_build_seam_spawn_receives_the_trimmed_implement_slice() {
         prompt.contains("the loop discipline rule governing core"),
         "the sdet-author's trimmed prompt must KEEP the design-intent section; prompt was:\n{prompt}"
     );
-    // ADDED: the one-line pointer naming BOTH pull tools the reference bulk is retrievable through.
+    // ADDED: the three-verb lookup pointer (spec 58) naming all three CLI lookup verbs the
+    // reference bulk and the rest of lookup are retrievable through - `rigger peers` (memory),
+    // `rigger graph --around` (structure), `rigger graph --show` (text).
     assert!(
-        prompt.contains("rigger_peers"),
-        "the sdet-author's trimmed prompt must point at `rigger_peers` for prior decisions / lessons \
+        prompt.contains("rigger peers"),
+        "the sdet-author's trimmed prompt must point at `rigger peers` for prior decisions / lessons \
          / findings; prompt was:\n{prompt}"
     );
     assert!(
         prompt.contains("rigger graph --around"),
         "the sdet-author's trimmed prompt must point at `rigger graph --around` for code navigation; \
+         prompt was:\n{prompt}"
+    );
+    assert!(
+        prompt.contains("rigger graph --show"),
+        "the sdet-author's trimmed prompt must point at `rigger graph --show` for source text; \
          prompt was:\n{prompt}"
     );
     // DROPPED: the capped decisions / lessons / findings sections - proven by section header AND by
@@ -859,6 +925,84 @@ fn the_review_prompt_keeps_the_full_findings_so_a_lens_finding_reaches_the_adver
     );
 }
 
+/// Spec 58, criterion 3 (the habit half, at the REVIEW boundary end to end): the three-verb lookup
+/// pointer is carried by EVERY spawn's grounding, not just the trimmed implement slice - so the FULL
+/// slice a real reviewer receives must name all three lookup verbs. The sibling
+/// `the_review_prompt_keeps_the_full_findings_so_a_lens_finding_reaches_the_adversary_and_adjudicator`
+/// proves the review tiers KEEP the full findings bulk; this proves the SAME review prompts now ALSO
+/// name all three lookup verbs (structure/text/memory) with the grep-fallback reporting instruction.
+/// The implementer's in-process `lookup_pointer_names_all_three_verbs_on_every_slice` pins
+/// `graph_context` at `GroundingSlice::Full`; this periphery layer pins the pointer all the way to a
+/// REAL review spawn - the lens, the adversary, AND the adjudicator - the exact bytes each receives
+/// through the `AgentDriver` port during a live fan-out `run`. A wiring regression that assembled a
+/// review prompt without the Full-slice pointer would keep the in-process unit test green while
+/// shipping a verb-less prompt to the reviewer; only a test at this boundary catches it.
+///
+/// Non-vacuous / mutation-isolating: dropping the `write_lookup_pointer(&mut b)` call from
+/// `graph_context`'s `GroundingSlice::Full` arm reddens every assertion here (all three review tiers
+/// lose the verbs and the fallback instruction), while the implement/sdet-author trim tests (which
+/// exercise the peers-pointer path) stay green.
+#[test]
+fn the_review_prompt_carries_the_three_verb_lookup_pointer() {
+    let graph = Projector::open(":memory:", "test").unwrap();
+
+    // The finding gives the later tiers something to ground on; this test's subject is the lookup
+    // pointer the Full slice appends, not the finding itself.
+    let finding = json!({
+        "id": "f_lookup",
+        "by": "lens:lens",
+        "unit": "u1",
+        "summary": "a lens finding about the seed file",
+        "about": ["core.rs"],
+    });
+    let prompts = run_and_capture_review_prompts(&graph, finding);
+
+    let prompt_for = |role: &str| -> String {
+        prompts
+            .iter()
+            .find(|(id, _)| id == role)
+            .unwrap_or_else(|| {
+                panic!(
+                    "the {role:?} review tier must have been spawned; spawns were:\n{prompts:#?}"
+                )
+            })
+            .1
+            .clone()
+    };
+
+    // EVERY review tier grounds through the FULL slice, so each must receive all three lookup verbs
+    // (each with its one-line job) and the grep-fallback reporting instruction: the review context
+    // names the graph verbs the SAME as the trimmed implement slice does.
+    for role in ["lens", "adversary", "adj"] {
+        let prompt = prompt_for(role);
+        assert!(
+            prompt.contains("rigger graph --around"),
+            "the {role:?} review prompt must name the STRUCTURE verb `rigger graph --around`; \
+             prompt was:\n{prompt}"
+        );
+        assert!(
+            prompt.contains("rigger graph --show"),
+            "the {role:?} review prompt must name the TEXT verb `rigger graph --show`; \
+             prompt was:\n{prompt}"
+        );
+        assert!(
+            prompt.contains("rigger peers"),
+            "the {role:?} review prompt must name the MEMORY verb `rigger peers`; \
+             prompt was:\n{prompt}"
+        );
+        assert!(
+            prompt.contains("structure") && prompt.contains("text") && prompt.contains("memory"),
+            "the {role:?} review prompt must name each lookup verb's job (structure/text/memory); \
+             prompt was:\n{prompt}"
+        );
+        assert!(
+            prompt.contains("grep-fallback:") && prompt.contains("rigger progress"),
+            "the {role:?} review prompt must carry the grep-fallback reporting instruction; \
+             prompt was:\n{prompt}"
+        );
+    }
+}
+
 /// The code-neighborhood section is prompt-budgeted: a broad neighborhood renders the most-recent
 /// definitions verbatim and collapses the remainder into ONE visible elision note, so a large file's
 /// extracted definitions can never blow the prompt. This guards a load-bearing render behavior the
@@ -1025,112 +1169,6 @@ fn a_spawn_prompt_with_no_extracted_definitions_renders_no_code_neighborhood_hea
     assert!(
         !prompt.contains("Code neighborhood of these files"),
         "an empty code neighborhood must render no bare header; prompt was:\n{prompt}"
-    );
-}
-
-/// Spec 29c criterion 4: `turbovec` NL retrieval is RETAINED and COMPLEMENTARY to the unified graph.
-/// The 29c collapse (criterion 1) retired the separate structural-grounder "Relevant locations"
-/// stitch, but it KEPT the vector grounder as the NL SEEDER: a symbol-free query - English prose with
-/// no code identifier to seed a graph node id on - still resolves through the REAL vector index, and
-/// the files it resolves SEED the ONE unified-graph traversal that composes the prompt. Graph and
-/// vectors are layers, not competitors.
-///
-/// This pins BOTH halves at the PUBLIC boundary with the REAL `Turbovec` engine (never a stub - so
-/// "resolves via the vector index" is proven by the vector index actually resolving it, not assumed):
-///
-///  (1) RETAINED / via the vector index: `Turbovec::ground` resolves the English query
-///      "how is damage dealt to an enemy" - natural-language prose, not a code identifier - to
-///      `combat.rs`, ranking the damage code above the rendering code by embedding similarity. (This
-///      is the exact corpus + query the turbovec unit test `grounds_semantically` pins, so the
-///      ranking is deterministic here too.)
-///
-///  (2) COMPLEMENTARY / its result SEEDS the unified traversal: driving the SAME real `Turbovec`
-///      through the public `conductor::run` grounding path, with the stage's grounding query being
-///      that symbol-free NL query, the spawn's prompt carries the graph neighborhood the ONE seeded
-///      traversal surfaces for `combat.rs` - a decision the run folded ABOUT that file. The decision
-///      text appears NOWHERE in the query or the repo source, so its presence in the prompt can only
-///      be the seeded traversal reaching `combat.rs` - which happened because turbovec's NL result is
-///      what seeded it.
-///
-/// Non-vacuous (mutation-checked): had the collapse dropped turbovec as the seeder (an empty seed),
-/// `graph_context` would traverse nothing and the neighborhood marker would be absent - flipping
-/// assertion (2); if turbovec did not resolve the symbol-free query via the vector index, assertion
-/// (1) would fail. This does NOT re-prove the traversal itself (criterion 1) or the tier filters
-/// (criterion 2) - it owns only vector-retention and the vector->traversal seam.
-///
-/// `turbovec`-gated (the vector index IS the `turbovec` feature; the light `--no-default-features`
-/// lane has no vector index to retain) and `#[file_serial(turbovec_model)]` on the shared model key,
-/// so no two embedding-model constructions ever overlap across test binaries (the documented
-/// heap-corruption trigger).
-#[cfg(feature = "turbovec")]
-#[test]
-#[serial_test::file_serial(turbovec_model)]
-fn turbovec_nl_retrieval_is_retained_and_seeds_the_unified_traversal() {
-    use rigger::grounder::turbovec::Turbovec;
-
-    // A tiny repo whose two files differ only in MEANING: `combat.rs` deals damage, `render.rs`
-    // draws. A symbol-free English query must pick `combat.rs` semantically, through the vector index.
-    let repo = tempfile::tempdir().unwrap();
-    std::fs::write(
-        repo.path().join("combat.rs"),
-        "fn apply_damage(target: &mut Entity, amount: f32) {\n    target.health -= amount;\n}\n",
-    )
-    .unwrap();
-    std::fs::write(
-        repo.path().join("render.rs"),
-        "fn draw_sprite(sprite: &Sprite, x: f32, y: f32) {\n    // upload to the gpu\n}\n",
-    )
-    .unwrap();
-
-    let tv = Turbovec::new(repo.path().to_str().unwrap())
-        .expect("the real turbovec engine must construct over the tiny repo");
-
-    // A symbol-free NL query: English prose with no code identifier to seed a graph node id on. The
-    // conductor grounds a plain unit stage on its `coverage`, so this same query drives production.
-    let query = "how is damage dealt to an enemy";
-
-    // (1) RETAINED, via the vector index: the query resolves to `combat.rs`, ranked above
-    // `render.rs`. This is the vector grounder answering an NL query - the retrieval 29c retains.
-    let refs = tv.ground(query, 8);
-    assert_eq!(
-        refs.first().map(|r| r.file.as_str()),
-        Some("combat.rs"),
-        "the symbol-free NL query must resolve via the vector index, ranking the damage code \
-         above the rendering code; got {refs:?}"
-    );
-
-    // The unified graph the run populates: a DESIGN-INTENT node bound ABOUT `combat.rs` - the file
-    // turbovec resolves the query to. Its title is a marker that appears NOWHERE in the query or the
-    // repo source, so surfacing it in the prompt can ONLY be the seeded traversal reaching
-    // `combat.rs`. Design intent (not a decision) is the marker because spec 36 keeps the design
-    // intent on the trimmed implement prompt this run assembles, while it trims the decisions bulk.
-    let graph = Projector::open(":memory:", "test").unwrap();
-    let mut pos = 0u64;
-    fold_design_intent(
-        &graph,
-        &mut pos,
-        KIND_HANDBOOK_RULE,
-        "docs/handbook/combat.md",
-        "the design note that governs the combat file",
-        REL_GOVERNS,
-        "combat.rs",
-    );
-
-    // (2) COMPLEMENTARY, seeds the unified traversal: drive the SAME real turbovec through the public
-    // `conductor::run` grounding path. `grounded_seed` resolves `query` through turbovec to
-    // `combat.rs`, `graph_context` seeds the ONE `subgraph` traversal on it, and the prompt carries
-    // that file's graph neighborhood - proving turbovec's NL result seeded the unified traversal.
-    let prompts = run_and_capture_prompts_grounded(&graph, &tv, query);
-    assert!(
-        !prompts.is_empty(),
-        "the stage's agent must have been spawned with a prompt"
-    );
-    let prompt = &prompts[0];
-    assert!(
-        prompt.contains("the design note that governs the combat file"),
-        "turbovec's NL result must SEED the unified traversal: the prompt must surface the graph \
-         neighborhood (the design intent about combat.rs) the one seeded traversal reaches via the \
-         turbovec-resolved file; prompt was:\n{prompt}"
     );
 }
 

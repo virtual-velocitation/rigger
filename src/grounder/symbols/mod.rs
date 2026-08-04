@@ -42,13 +42,6 @@ pub mod registry;
 #[cfg(feature = "symbols")]
 pub mod grounder;
 
-/// The `hybrid` grounder (unit 5): composes the structural [`grounder::Symbols`] with turbovec's
-/// semantic engine - structural matches first, the vector pass fills the recall a name match
-/// misses. Confined to the `symbols` feature (it needs the index); the turbovec half is gated
-/// WITHIN it, so absent turbovec it is exactly the `symbols` mode.
-#[cfg(feature = "symbols")]
-pub mod hybrid;
-
 #[cfg(feature = "symbols")]
 use crate::grounder::symbols::model::{Lang, SymbolIndex};
 #[cfg(feature = "symbols")]
@@ -59,7 +52,7 @@ use std::ops::ControlFlow;
 use std::path::Path;
 
 /// Build the whole-project index over `root`: walk the tree with the SHARED scoped walk
-/// (`walk_guarded`, the same walk grep, turbovec, and the ingests use, so they never diverge on
+/// (`walk_guarded`, the same walk grep and the ingests use, so they never diverge on
 /// which files count), and for each file whose extension the registry resolves, extract its symbols
 /// under its
 /// normalized relative path. A file whose extension is unregistered is skipped; a file that

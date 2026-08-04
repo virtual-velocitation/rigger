@@ -1,10 +1,7 @@
 //! Grounding gives each agent only the context it needs: the locations relevant
 //! to its task. `Grounder` is the port. `Grep` is the self-contained literal
-//! default; the real turbovec engine (semantic vector search) plugs in behind the
-//! same trait under the `turbovec` feature.
-
-#[cfg(feature = "turbovec")]
-pub mod turbovec;
+//! grounder; the structural `symbols` grounder (spec 15) is the default, plugging
+//! in behind the same trait.
 
 // The structural grounding axis (spec 15): a symbol index projected from the code tree.
 // Declared UNGATED on purpose - the parser-free data model (`symbols::model`) must compile
@@ -24,10 +21,9 @@ pub mod design;
 use std::ops::ControlFlow;
 use std::path::Path;
 
-/// The ONE scoped directory-walk skeleton EVERY walk shares: grep's `ground` (this module),
-/// turbovec's `collect_files` (the `turbovec` feature), the code-ingest `build_index`, and the
-/// design-ingest `project_batches`. They differ ONLY in the per-file LEAF ACTION they pass as
-/// `on_file` - grep searches lines, turbovec collects `(rel, content)`, the ingests extract
+/// The ONE scoped directory-walk skeleton EVERY walk shares: grep's `ground` (this module), the
+/// code-ingest `build_index`, and the design-ingest `project_batches`. They differ ONLY in the
+/// per-file LEAF ACTION they pass as `on_file` - grep searches lines, the ingests extract
 /// symbols / design intent. Factoring the walk here (always compiled, in `mod.rs`) means the
 /// scope can never drift between them, so ingest and grounding cover exactly the same file set.
 ///
@@ -138,12 +134,12 @@ pub trait Grounder: Send + Sync {
     fn ground(&self, query: &str, k: usize) -> Vec<Ref>;
 
     /// Re-index the given files after a unit integrates, so the next agent grounds
-    /// on the accepted code (turbovec reindexDelta). The default is a no-op - grep
-    /// re-reads the tree each time and needs no index.
+    /// on the accepted code (the `symbols` grounder freshens the changed files). The
+    /// default is a no-op - grep re-reads the tree each time and needs no index.
     fn reindex(&self, _src_dir: &str, _files: &[String]) {}
 
     /// The two-view blast radius of `query` (architecture 5.5.1, spec 16). The DEFAULT impl - the
-    /// one a grep / turbovec / nop grounder inherits - returns this grounder's OWN top-`k` radius
+    /// one a grep / nop grounder inherits - returns this grounder's OWN top-`k` radius
     /// (the distinct files it grounds, in ground order) as BOTH views and never serializes. So a
     /// non-symbols grounder's blast radius is EXACTLY its grep/top-k radius: `precise == safe`, no
     /// hub composition, no extra work. This is what keeps unit 3's symbols-inactive `grounded_seed`
@@ -169,7 +165,7 @@ pub trait Grounder: Send + Sync {
     /// produced this grounder's radii, so a recorded radius reconstructs which index state
     /// grounded it and staleness is answerable ("why the full panel?"). It is ALSO the
     /// structural-active signal unit 3's conductor keys the audit off: the DEFAULT (grep /
-    /// turbovec / nop - no structural cross-reference index) returns an EMPTY stamp, so the
+    /// nop - no structural cross-reference index) returns an EMPTY stamp, so the
     /// conductor emits NO audit event and drives NO retention metric on that path, keeping the
     /// shipped default byte-for-byte unchanged. Only the `symbols` grounder overrides this to a
     /// non-empty `<index-content-hash>/<grammar-tags-version>` stamp.
@@ -187,91 +183,77 @@ impl Grounder for Nop {
     }
 }
 
-/// Whether a configured grounder name resolves to the turbovec (semantic) engine:
-/// the explicit `"turbovec"` / `"vector"` aliases, OR an UNSET / empty name - because
-/// turbovec is the default grounder (§3.2, R4). Grep is reachable ONLY when the user
-/// writes `grounder: grep` explicitly; it is never the silent default.
-pub fn resolves_to_turbovec(name: &str) -> bool {
+/// Whether a configured grounder name is a RETIRED engine (spec 57): the vector-embedding engine
+/// (`"turbovec"` and its `"vector"` alias) and the `"hybrid"` mode whose whole purpose was
+/// composing those vectors onto the structural symbols index. The retention question was settled by
+/// measurement - the vector index's retrieval hit-set was identical to the knowledge graph's own
+/// structural retrieval, and it was invoked zero times across an A/B workload - so the engine left
+/// the tree. These names are no longer accepted: [`grounder_for`] rejects them with a migration
+/// error ([`retired_grounder_error`]), never a silent degrade to grep. An UNSET / empty name is NOT
+/// retired - it resolves to the `symbols` default.
+pub fn is_retired_grounder(name: &str) -> bool {
     matches!(
         name.trim().to_lowercase().as_str(),
-        "" | "turbovec" | "vector"
+        "turbovec" | "vector" | "hybrid"
     )
 }
 
-/// The loud error returned when the configured / default grounder is turbovec but
-/// this binary was built WITHOUT the `turbovec` feature. Selecting a grounder must
-/// NEVER silently degrade to grep - that is exactly what hid turbovec being absent
-/// for a whole session - so this is surfaced to the caller, which fails the process.
-pub fn turbovec_feature_missing_error(name: &str) -> String {
-    let shown = if name.trim().is_empty() {
-        "<unset, defaults to turbovec>".to_string()
-    } else {
-        format!("{name:?}")
-    };
+/// The loud MIGRATION error returned when a RETIRED grounder name (`turbovec` / `vector` /
+/// `hybrid`) is configured (spec 57). Selecting a grounder must NEVER silently degrade, so a
+/// request for a retired engine is REJECTED with a message that names the retirement AND the
+/// surviving default (`symbols`) - so an operator carrying an old config is pointed straight at the
+/// new truth instead of guessing. The structural `symbols` grounder is now the default and the
+/// lookup surface; `grep` and `nop` remain explicit opt-ins.
+pub fn retired_grounder_error(name: &str) -> String {
     format!(
-        "grounder {shown} is configured/default but this binary was built without the \
-         turbovec feature; rebuild with the default features (and install OpenBLAS), or \
-         set `defaults.grounder: grep` explicitly to use the literal grep grounder"
+        "grounder {name:?} was retired: the structural `symbols` grounder is now the default and \
+         the lookup surface. Set `defaults.grounder: symbols` (or leave it unset), or choose \
+         `grep` / `nop` explicitly."
     )
 }
 
-/// The loud error returned when `defaults.grounder: symbols` is configured but this binary was
-/// built WITHOUT the `symbols` feature (the structural index and its grammars). Selecting a
-/// grounder must NEVER silently degrade to grep - the same no-silent-degrade rule as turbovec -
-/// so this is surfaced to the caller, which fails the process. When the feature IS built,
-/// `main::select_grounder` resolves `symbols` to the real `Symbols` grounder BEFORE delegating
-/// here, so this arm is reached only by a feature-off binary (or a direct call).
+/// The loud error returned when the `symbols` grounder is selected - by the explicit name OR the
+/// UNSET / empty default, since `symbols` is the default - but this binary was built WITHOUT the
+/// `symbols` feature (the structural index and its grammars). Selecting a grounder must NEVER
+/// silently degrade to grep (a configured grounder never quietly becomes something else), so this
+/// is surfaced to the caller, which fails the process. When the feature IS built,
+/// `main::select_grounder` resolves the default / `symbols` to the real `Symbols` grounder BEFORE
+/// delegating here, so this arm is reached only by a feature-off binary (or a direct call).
 pub fn symbols_feature_missing_error() -> String {
-    "grounder \"symbols\" is configured but this binary was built without the symbols feature; \
-     rebuild with the default features, or set `defaults.grounder: grep` explicitly to use the \
-     literal grep grounder"
-        .to_string()
-}
-
-/// The loud error returned when `defaults.grounder: hybrid` is configured but this binary was
-/// built WITHOUT the `symbols` feature. Hybrid COMPOSES the structural symbol index with semantic
-/// search, so it needs the `symbols` feature (with turbovec absent it degrades to exactly the
-/// symbols mode - but never below it); a build without `symbols` cannot provide it at all. Selecting
-/// a grounder must NEVER silently degrade to grep - the same no-silent-degrade rule as turbovec and
-/// symbols - so this is surfaced to the caller, which fails the process. When the feature IS built,
-/// `main::select_grounder` / `select_reindex_grounder` resolve `hybrid` to the real `Hybrid`
-/// grounder BEFORE delegating here, so this arm is reached only by a feature-off binary. The message
-/// names `hybrid`, the missing `symbols` feature, and the explicit `grep` escape hatch - it must
-/// NEVER be the generic `unknown grounder` message, which would misdescribe a supported config as a
-/// typo.
-pub fn hybrid_feature_missing_error() -> String {
-    "grounder \"hybrid\" is configured but this binary was built without the symbols feature that \
-     hybrid composes; rebuild with the default features, or set `defaults.grounder: grep` \
-     explicitly to use the literal grep grounder"
+    "grounder \"symbols\" (the default) is selected but this binary was built without the symbols \
+     feature; rebuild with the default features, or set `defaults.grounder: grep` explicitly to \
+     use the literal grep grounder"
         .to_string()
 }
 
 /// Select a grounder by the configured `defaults.grounder` name, rooted at `root`
-/// (§3.2, §5.4, R4). This is the FEATURE-INDEPENDENT part of the choice and the
-/// grep-only build's resolver:
+/// (§3.2, §5.4, R4). This is the FEATURE-INDEPENDENT part of the choice and the single
+/// name-contract authority (spec 57): the accepted-name set is EXACTLY `symbols` / `grep` / `nop`.
 /// - `"nop"` -> [`Nop`];
 /// - `"grep"` -> [`Grep`] (the literal grounder, reachable ONLY when named explicitly);
-/// - the turbovec names (`"turbovec"` / `"vector"`) AND the UNSET / empty default
-///   resolve to turbovec, which is the default grounder. When the `turbovec` feature
-///   is built, `src/main.rs::select_grounder` handles these names before delegating
-///   here; when it is NOT built, this function returns a LOUD error rather than
-///   silently degrading to grep.
-/// - any other (unknown) name is a hard error - never a silent grep fallback.
+/// - the UNSET / empty default AND the explicit name `"symbols"` resolve to the structural
+///   `symbols` grounder, which is the DEFAULT and the lookup surface. When the `symbols` feature is
+///   built, `src/main.rs::select_grounder` wires the real grounder before delegating here; here
+///   (feature-independent) they are a LOUD feature-missing error, never a silent grep degrade.
+/// - the RETIRED names (`"turbovec"` / `"vector"` / `"hybrid"`, spec 57) are REJECTED with a
+///   migration error naming the retirement and the `symbols` default - never a silent grep fallback
+///   and never the generic `unknown grounder` message (which would misread a retired config as a
+///   typo).
+/// - any other (unknown) name is a hard error advertising the exact accepted set - never a silent
+///   grep fallback.
 pub fn grounder_for(name: &str, root: &str) -> Result<Box<dyn Grounder>, String> {
     match name.trim().to_lowercase().as_str() {
         "nop" => Ok(Box::new(Nop)),
         "grep" => Ok(Box::new(Grep { root: root.into() })),
-        _ if resolves_to_turbovec(name) => Err(turbovec_feature_missing_error(name)),
-        // `symbols` resolves to the real grounder in `select_grounder` when the feature is built;
-        // here (the feature-independent resolver) it is a LOUD error, never a silent grep degrade.
-        "symbols" => Err(symbols_feature_missing_error()),
-        // `hybrid` resolves to the real composite grounder in `select_grounder` when the `symbols`
-        // feature is built; here (the feature-off resolver) it must give the SAME actionable
-        // feature-missing error as `symbols`, never the generic `unknown grounder` message (which
-        // would misdescribe a supported config as a typo) and never a silent grep degrade.
-        "hybrid" => Err(hybrid_feature_missing_error()),
+        // The UNSET / empty default and the explicit `symbols` name resolve to the structural
+        // default; `select_grounder` wires the real grounder when the feature is built, so here (the
+        // feature-independent resolver) they are the loud feature-missing error, never a silent grep.
+        "" | "symbols" => Err(symbols_feature_missing_error()),
+        // The retired vector engine and its symbols-composite are rejected with a migration error
+        // (retirement + symbols default), never a silent grep degrade and never `unknown grounder`.
+        _ if is_retired_grounder(name) => Err(retired_grounder_error(name)),
         other => Err(format!(
-            "unknown grounder {other:?}; valid names are turbovec (default), symbols, hybrid, grep, nop"
+            "unknown grounder {other:?}; valid names are symbols (default), grep, nop"
         )),
     }
 }
@@ -290,9 +272,9 @@ impl Grounder for Grep {
         let needle = query.to_lowercase();
         let mut refs = Vec::new();
         // The scope (the project's own ignore rules, the always-excluded dotdirs, and root
-        // confinement) lives in the SHARED `walk_guarded` skeleton - the same one the ingests and
-        // turbovec's `collect_files` use - so no walk can drift from another; this walk's ONLY leaf
-        // action is to search each file's lines, stopping once it has `k` hits.
+        // confinement) lives in the SHARED `walk_guarded` skeleton - the same one the ingests
+        // use - so no walk can drift from another; this walk's ONLY leaf action is to search
+        // each file's lines, stopping once it has `k` hits.
         let _ = walk_guarded(Path::new(&self.root), &mut |path| {
             search_file(path, &self.root, &needle, k, &mut refs);
             // Stop the whole walk once we have collected the requested k hits - the
@@ -547,36 +529,56 @@ mod tests {
         );
     }
 
+    /// `is_retired_grounder` matches EXACTLY the retired names (`turbovec` / `vector` / `hybrid`),
+    /// case-insensitively and whitespace-trimmed - and NOTHING else. The UNSET / empty default is
+    /// NOT retired (it is the `symbols` default), and neither are the accepted `symbols` / `grep` /
+    /// `nop` names. This is the single predicate `grounder_for` keys its migration-error arm off.
     #[test]
-    fn unset_and_turbovec_names_resolve_to_turbovec_not_grep() {
-        // The empty / unset default and the turbovec aliases all resolve to turbovec
-        // - grep is NEVER the silent default. In a grep-only build (this crate test
-        // runs without the turbovec feature in the lib's own context), grounder_for
-        // FAILS LOUDLY for them instead of degrading to grep.
-        for name in ["", "  ", "turbovec", "vector", "TurboVec", "VECTOR"] {
+    fn is_retired_grounder_matches_only_the_retired_names() {
+        for name in [
+            "turbovec",
+            "vector",
+            "hybrid",
+            "TurboVec",
+            "VECTOR",
+            "  Hybrid ",
+        ] {
             assert!(
-                resolves_to_turbovec(name),
-                "{name:?} must resolve to turbovec (the default grounder)"
+                is_retired_grounder(name),
+                "{name:?} is a retired grounder name"
             );
         }
-        // grep / nop are NOT turbovec; they are explicit-only opt-ins.
-        assert!(!resolves_to_turbovec("grep"));
-        assert!(!resolves_to_turbovec("nop"));
+        // The unset default and every accepted name are NOT retired.
+        for name in ["", "  ", "symbols", "SYMBOLS", "grep", "nop"] {
+            assert!(
+                !is_retired_grounder(name),
+                "{name:?} is the default or an accepted name, not retired"
+            );
+        }
     }
 
+    /// A retired name (`turbovec` / `vector` / `hybrid`) yields the MIGRATION error, not the old
+    /// "rebuild with the feature" message and not a silent grep degrade: it names the retirement AND
+    /// the `symbols` default, so an operator on an old config is pointed at the new truth. Holds in
+    /// BOTH feature lanes (the resolver is feature-independent), so it is ungated.
     #[test]
-    fn grounder_for_fails_loudly_when_turbovec_is_unavailable() {
-        // grounder_for is the grep-only resolver: the unset default and the turbovec
-        // names must be a LOUD error here (the feature is not compiled into this
-        // resolver), never a silent grep. The message must name turbovec, the missing
-        // feature, and the explicit grep escape hatch.
-        for name in ["", "turbovec", "vector"] {
+    fn retired_names_give_the_migration_error_naming_the_symbols_default() {
+        for name in ["turbovec", "vector", "hybrid"] {
             let err = grounder_for(name, "/tmp")
                 .err()
-                .unwrap_or_else(|| panic!("{name:?} must be a loud error without the feature"));
+                .unwrap_or_else(|| panic!("{name:?} must be a loud migration error, never grep"));
+            let low = err.to_lowercase();
             assert!(
-                err.contains("turbovec") && err.contains("feature") && err.contains("grep"),
-                "the loud error must name turbovec, the feature, and the grep opt-out; got: {err}"
+                low.contains("retire") && low.contains("symbols"),
+                "the migration error must name the retirement and the symbols default; got: {err}"
+            );
+            assert!(
+                !low.contains("feature"),
+                "a retired name is gone for good - not a missing feature to rebuild; got: {err}"
+            );
+            assert!(
+                !err.contains("unknown grounder"),
+                "a retired name must not read as a typo; got: {err}"
             );
         }
         // An unknown name is ALSO a hard error, not a silent grep fallback.
@@ -586,11 +588,11 @@ mod tests {
         assert!(grounder_for("nop", "/tmp").is_ok());
     }
 
-    /// The feature-INDEPENDENT resolver never returns a `Symbols` grounder: `symbols` is a LOUD
-    /// error here (naming the feature), never a silent grep degrade - the same rule as turbovec.
-    /// When the `symbols` feature IS built, `main::select_grounder` intercepts the name first; this
-    /// arm is the feature-off behavior. It holds identically in BOTH feature lanes (this resolver
-    /// is feature-independent), so the test is ungated.
+    /// The feature-INDEPENDENT resolver never returns a `Symbols` grounder: `symbols` (and the unset
+    /// default) is a LOUD error here (naming the feature), never a silent grep degrade. When the
+    /// `symbols` feature IS built, `main::select_grounder` intercepts it first; this arm is the
+    /// feature-off behavior. It holds identically in BOTH feature lanes (this resolver is
+    /// feature-independent), so the test is ungated.
     #[test]
     fn symbols_without_the_feature_is_a_loud_error_not_a_grep_fallback() {
         let err = grounder_for("symbols", ".")
@@ -604,32 +606,106 @@ mod tests {
         );
     }
 
-    /// `defaults.grounder: hybrid` on a binary built WITHOUT the `symbols` feature must yield the
-    /// ACTIONABLE feature-missing error, NOT the misleading generic `unknown grounder` message.
-    /// Hybrid composes the structural symbol index with semantic search, so it needs the `symbols`
-    /// feature; when that feature is absent both `select_grounder` cfg lanes fall through to this
-    /// feature-independent resolver, whose `hybrid` arm must fail LOUDLY - naming `hybrid`, the
-    /// missing `symbols` feature, and the explicit `grep` escape hatch - never silently degrade to
-    /// grep and never emit `unknown grounder`. Like the `symbols` sibling test, this holds in BOTH
+    /// `defaults.grounder: hybrid` is RETIRED (spec 57): hybrid's whole purpose was composing the
+    /// vector engine onto symbols, and the vector engine is gone. So it must yield the MIGRATION
+    /// error (retirement + symbols default), NOT the old "rebuild with the symbols feature" message
+    /// and NOT the generic `unknown grounder` message (which would misread a retired config as a
+    /// typo). Case-insensitive and whitespace-trimmed like every other resolver name. Holds in BOTH
     /// feature lanes (the resolver is feature-independent), so it is ungated.
     #[test]
-    fn hybrid_without_the_feature_is_the_actionable_feature_error_not_unknown_grounder() {
-        let err = grounder_for("hybrid", ".")
-            .err()
-            .expect("hybrid must be a loud error in the feature-independent resolver");
+    fn hybrid_is_retired_and_gives_the_migration_error_not_a_feature_or_typo_error() {
+        for name in ["hybrid", "  Hybrid "] {
+            let err = grounder_for(name, ".")
+                .err()
+                .expect("hybrid is retired - a loud migration error, never grep");
+            let low = err.to_lowercase();
+            assert!(
+                low.contains("retire") && low.contains("symbols"),
+                "hybrid's error must name the retirement and the symbols default; got: {err}"
+            );
+            assert!(
+                !low.contains("feature"),
+                "hybrid is retired, not a missing feature to rebuild; got: {err}"
+            );
+            assert!(
+                !err.contains("unknown grounder"),
+                "hybrid must NOT read as a typo; got: {err}"
+            );
+        }
+    }
+
+    /// Spec 57 (DEFAULT GROUNDER, criterion 1) - the selection surface contract, driven through the
+    /// single feature-independent resolver `grounder_for`:
+    /// - the DEFAULT is the structural `symbols` grounder: an UNSET / empty `defaults.grounder` and
+    ///   the explicit `symbols` name resolve to the SAME symbols branch, never the retired turbovec
+    ///   engine and never a silent grep degrade;
+    /// - the retired names (`turbovec` / `vector` / `hybrid`) are REJECTED with a migration error
+    ///   naming the retirement AND the symbols default, never the generic `unknown grounder` message;
+    /// - the accepted-name set is EXACTLY `symbols` / `grep` / `nop`, and the unknown-name message
+    ///   advertises exactly that set (no retired name).
+    ///
+    /// It is ungated: `grounder_for` is feature-independent, so it holds identically in both lanes.
+    #[test]
+    fn default_grounder_selection_and_retired_names_contract() {
+        // The default IS symbols: unset and the explicit name resolve to the same symbols branch
+        // (a loud feature-missing error in this feature-independent resolver, wired to the real
+        // grounder in `select_grounder`) - never turbovec, never a silent grep degrade.
+        for name in ["", "  ", "symbols", "SYMBOLS", " Symbols "] {
+            let err = grounder_for(name, ".").err().unwrap_or_else(|| {
+                panic!("{name:?} resolves to the symbols default (loud without the feature)")
+            });
+            assert!(
+                err.to_lowercase().contains("symbols"),
+                "the unset/symbols default must name symbols; got: {err}"
+            );
+            assert!(
+                !err.to_lowercase().contains("turbovec"),
+                "the default is symbols, not the retired turbovec engine; got: {err}"
+            );
+        }
+
+        // The retired names error with a MIGRATION message (retirement + symbols default), never a
+        // silent grep degrade and never the generic unknown-grounder message.
+        for name in ["turbovec", "vector", "hybrid", "TurboVec", " Hybrid "] {
+            let err = grounder_for(name, ".").err().unwrap_or_else(|| {
+                panic!("{name:?} must be rejected, never silently degrade to grep")
+            });
+            let low = err.to_lowercase();
+            assert!(
+                low.contains("retire"),
+                "a retired name's error must name the retirement; got: {err}"
+            );
+            assert!(
+                low.contains("symbols"),
+                "a retired name's error must name the symbols default; got: {err}"
+            );
+            assert!(
+                !err.contains("unknown grounder"),
+                "a retired name must not hit the generic unknown-grounder arm; got: {err}"
+            );
+        }
+
+        // The accepted-name set is EXACTLY symbols / grep / nop.
+        assert!(grounder_for("grep", ".").is_ok());
+        assert!(grounder_for("nop", ".").is_ok());
+        for rejected in ["turbovec", "hybrid", "vector", "bogus", "sem", "embed"] {
+            assert!(
+                grounder_for(rejected, ".").is_err(),
+                "{rejected:?} is not an accepted name"
+            );
+        }
+        let unknown = grounder_for("bogus-grounder", ".").err().unwrap();
         assert!(
-            err.to_lowercase().contains("hybrid")
-                && err.contains("feature")
-                && err.contains("symbols")
-                && err.contains("grep"),
-            "the loud error must name hybrid, the missing symbols feature, and the grep opt-out; \
-             got: {err}"
+            unknown.contains("unknown grounder"),
+            "a typo hits the unknown arm; got: {unknown}"
         );
         assert!(
-            !err.contains("unknown grounder"),
-            "hybrid must NOT hit the generic unknown-grounder arm; got: {err}"
+            unknown.contains("symbols") && unknown.contains("grep") && unknown.contains("nop"),
+            "the unknown-name message lists the accepted set; got: {unknown}"
         );
-        // Case-insensitive and whitespace-trimmed, exactly like the other resolver names.
-        assert!(grounder_for("  Hybrid ", ".").is_err());
+        assert!(
+            !unknown.contains("turbovec") && !unknown.contains("hybrid"),
+            "the unknown-name message must not advertise retired names; got: {unknown}"
+        );
     }
 }

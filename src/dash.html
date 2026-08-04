@@ -254,6 +254,9 @@
      both a hub and multi-concept reads as shared (the honesty marker wins the ring). */
   .kgshared circle { stroke: var(--accent); stroke-width: 2; stroke-dasharray: 3 2; }
   .kglabel { fill: var(--ink); font-size: 10px; text-anchor: middle; pointer-events: none; }
+  /* Adaptive labels (spec 59 c3): a node the declutter has not admitted at the current zoom draws as a
+     bare dot - its label is hidden until a deeper zoom reveals it (or the hover <title> names it). */
+  .kgn.kg-nolabel .kglabel { display: none; }
   /* Directed-call views (spec 52 c5). The arrowhead fill; a BACK edge (recursion) is a dashed accent
      arc so it reads apart from the solid forward edges; a FRONTIER node (a multi-candidate hop) gets
      an accent ring so it stands out as the actionable "choose a definition" node. */
@@ -555,6 +558,7 @@ function render(state) {
   el("review").innerHTML =
     '<div class="k">approved</div><div>' + esc(metrics.review_approve || 0) + '</div>' +
     '<div class="k">rejected</div><div>' + esc(metrics.review_reject || 0) + '</div>' +
+    '<div class="k">grep fallbacks</div><div>' + esc(metrics.grep_fallbacks || 0) + '</div>' +
     '<div class="k">first-pass yield</div><div>' + pct(metrics.first_pass_yield) +
       ' (' + esc(metrics.first_pass_clean || 0) + '/' + esc(metrics.units_started || 0) + ')</div>' +
     '<div class="k">escalation rate</div><div>' + pct(metrics.escalation_rate) +
@@ -1171,12 +1175,23 @@ function frComponent(ids, adj, w, h) {
 }
 
 // The deterministic layout for a WHOLE drawing: split into connected components (union-find); a single
-// connected graph is force-laid then stretched to fill the panel; a disconnected graph lays out each
-// component and SHELF-PACKS the pieces (rows, left to right, wrapping) so they tile the panel. Returns
+// connected graph is force-laid then stretched to fill the canvas; a disconnected graph lays out each
+// component and SHELF-PACKS the pieces (rows, left to right, wrapping) so they tile the canvas. Returns
 // a map id -> {x, y} with FINITE positions for every node.
-function forceLayout(nodes, edges, width, height) {
+//
+// DENSITY-SCALED SPACING (spec 59 c2): the canvas is not the raw panel but the panel grown by
+// kgSpread(nodes, ..., radiusOf, labelOf) - so it spreads with the node count AND the total label area
+// instead of compressing every density into the panel's centre. The larger canvas also lifts the FR
+// repulsion (k = sqrt(canvasArea / n) inside frComponent), so denser and wider-labelled graphs push
+// apart harder. The enlarged canvas is then CENTRED on the panel (a pure translation) so the reset
+// pan/zoom view opens on the MIDDLE of the drawing; the panel pans and zooms, so a canvas larger than
+// the viewport is fine - clarity beats fitting. `radiusOf`/`labelOf` are optional: absent them the
+// factor is 1 and the layout is the panel-sized one as before (the layered layout never routes here).
+function forceLayout(nodes, edges, width, height, radiusOf, labelOf) {
   const ids = nodes.map(n => n.id);
   if (!ids.length) return {};
+  const f = kgSpread(nodes, width, height, radiusOf, labelOf);
+  const cw = width * f, ch = height * f;             // the density-scaled canvas
   const idset = {};
   ids.forEach(id => { idset[id] = true; });
   const inGraph = edges.filter(e => idset[e.from] && idset[e.to]);
@@ -1187,32 +1202,214 @@ function forceLayout(nodes, edges, width, height) {
   const comps = {};
   ids.forEach(id => { const r = ufFind(parent, id); (comps[r] = comps[r] || []).push(id); });
   const compList = Object.keys(comps).sort().map(r => comps[r].slice().sort());
+  let laid;
   if (compList.length === 1) {
-    return fitToBox(frComponent(compList[0], adjAll, width, height), compList[0], 0, 0, width, height);
+    laid = fitToBox(frComponent(compList[0], adjAll, cw, ch), compList[0], 0, 0, cw, ch);
+  } else {
+    // Disconnected: pack each component's box into shelves (rows) so the pieces tile the canvas.
+    const out = {};
+    const boxes = compList.map(cids => ({
+      ids: cids,
+      side: Math.max(64, Math.min(Math.min(cw, ch), 44 * Math.sqrt(cids.length)))
+    }));
+    let curX = 0, curY = 0, shelfH = 0;
+    boxes.forEach(box => {
+      if (curX + box.side > cw && curX > 0) { curX = 0; curY += shelfH; shelfH = 0; }
+      const bset = {};
+      box.ids.forEach(id => { bset[id] = true; });
+      const localAdj = adjAll.filter(e => bset[e[0]] && bset[e[1]]);
+      const fitted = fitToBox(frComponent(box.ids, localAdj, box.side, box.side),
+        box.ids, curX, curY, box.side, box.side);
+      box.ids.forEach(id => { out[id] = fitted[id]; });
+      curX += box.side;
+      shelfH = Math.max(shelfH, box.side);
+    });
+    // Fill the canvas: the shelf-packed pieces are laid out from the top-left, so stretch the whole
+    // packing to fill the (density-scaled) canvas instead of clumping in a corner. This scales node
+    // CENTRES only (radii are fixed in kgSvg), so it spreads the clusters and relieves label overlap
+    // without distorting the circles. Applies to the whole-graph overview and to a disconnected drill.
+    laid = fitToBox(out, ids, 0, 0, cw, ch);
   }
-  // Disconnected: pack each component's box into shelves (rows) so the pieces tile the panel.
-  const out = {};
-  const boxes = compList.map(cids => ({
-    ids: cids,
-    side: Math.max(64, Math.min(Math.min(width, height), 44 * Math.sqrt(cids.length)))
-  }));
-  let curX = 0, curY = 0, shelfH = 0;
-  boxes.forEach(box => {
-    if (curX + box.side > width && curX > 0) { curX = 0; curY += shelfH; shelfH = 0; }
-    const bset = {};
-    box.ids.forEach(id => { bset[id] = true; });
-    const localAdj = adjAll.filter(e => bset[e[0]] && bset[e[1]]);
-    const fitted = fitToBox(frComponent(box.ids, localAdj, box.side, box.side),
-      box.ids, curX, curY, box.side, box.side);
-    box.ids.forEach(id => { out[id] = fitted[id]; });
-    curX += box.side;
-    shelfH = Math.max(shelfH, box.side);
+  // Centre the enlarged canvas on the panel so the reset pan/zoom view opens on the MIDDLE of the
+  // drawing (pan/zoom reaches the rest). A pure translation, so the extent and every pairwise distance
+  // are unchanged; a no-op when f === 1 (the panel-sized layout, offsets zero).
+  const offx = (width - cw) / 2, offy = (height - ch) / 2;
+  if (offx !== 0 || offy !== 0) {
+    ids.forEach(id => { laid[id].x += offx; laid[id].y += offy; });
+  }
+  return laid;
+}
+
+// --- Collision-free SEPARATION pass (spec 59 c1) ------------------------------------------------
+// The label is PART OF the node: a node's collision body is its circle (radius r, centred on the
+// node) UNION its label box (the text that hangs below the circle). We estimate the label box from
+// its character count and the .kglabel font metrics (10px, text-anchor middle, baseline at y = r+11)
+// and enclose the circle and the label in one axis-aligned box. After the force pass a deterministic
+// separation pass displaces every overlapping pair apart - stable id order, accumulated per pass,
+// fixed iteration bound - until no two bodies intersect. It is pure arithmetic over the position map
+// (no randomness) and may push the drawing past the viewBox: a layout larger than the panel is fine
+// because the panel already pans and zooms, and clarity beats fitting.
+const KG_LABEL_CHAR_W = 6.2;   // advance width per glyph at the 10px .kglabel font (px)
+const KG_LABEL_H = 13;         // the label line-box height (px)
+const KG_LABEL_GAP = 2;        // circle bottom to label-box top (the text baseline sits at y = r+11)
+const KG_BODY_PAD = 2;         // a hair of margin so separated bodies read as distinct, not tangent
+const KG_SEP_RELAX = 0.9;      // over-relaxation of the pairwise push (0.5 exactly clears a pair; >0.5
+                               // over-shoots to expand a dense clump in far fewer sweeps - a standard
+                               // SOR accelerator, deterministic, stable below 1.0)
+const KG_SEP_MAX_PASSES = 2000; // the fixed iteration bound; the pass exits early once a full sweep
+                                // finds no overlap, so it is deterministic and bounded either way.
+                                // A 160-node overview (the Code lens's real density) fully declusters
+                                // well within it; smaller graphs settle in a handful of sweeps
+const KG_EXTENT_SPREAD = 4;     // density-scaled spacing (spec 59 c2): the force canvas grows to this
+                                // many times the total collision-body area, so on average each body
+                                // owns a cell ~KG_EXTENT_SPREAD its own size - about one body-width of
+                                // whitespace between neighbours, room for the edges to read as lines
+
+// The label box footprint (half-width and height) from the label's character count and font metrics.
+// The whole node (circle + label) is the collision body, so an empty label still leaves the circle.
+function kgLabelDims(label) {
+  const chars = label ? String(label).length : 0;
+  return { halfW: (chars * KG_LABEL_CHAR_W) / 2, h: KG_LABEL_H };
+}
+
+// A node's collision body as an axis-aligned box enclosing BOTH its circle (radius r, centred at
+// x, y) AND its label box (centred horizontally, hanging below the circle). Asymmetric in y because
+// the label only hangs below. Reused by the adaptive-label disjoint-box check (spec 59 c3).
+function kgNodeBody(x, y, r, label) {
+  const lab = kgLabelDims(label);
+  const hw = Math.max(r, lab.halfW) + KG_BODY_PAD;
+  return {
+    x0: x - hw,
+    x1: x + hw,
+    y0: y - r - KG_BODY_PAD,
+    y1: y + r + KG_LABEL_GAP + lab.h + KG_BODY_PAD,
+  };
+}
+
+// The density SPREAD factor (spec 59 c2): how much larger than the panel the force canvas must be so
+// the nodes AND their labels have room. The DEMAND is the total collision-body area (circle + label
+// box, the same kgNodeBody geometry the separation pass and the renderer use) summed over all nodes -
+// so it grows with BOTH the node count and the total label area. The canvas area is KG_EXTENT_SPREAD
+// times that demand, and the factor is the sqrt of the canvas-to-panel area ratio, floored at 1 so a
+// sparse graph keeps the panel and is never shrunk below it. Pure arithmetic, hence deterministic.
+// Absent accessors (a bare structural call, e.g. the c1 separation harness, or the layered layout that
+// never routes here) return 1, so those callers lay out on the panel exactly as before.
+function kgSpread(nodes, width, height, radiusOf, labelOf) {
+  if (!radiusOf || !labelOf || !nodes.length) return 1;
+  let demand = 0;
+  nodes.forEach(n => {
+    const b = kgNodeBody(0, 0, radiusOf(n), labelOf(n));
+    demand += (b.x1 - b.x0) * (b.y1 - b.y0);
   });
-  // Fill the panel: the shelf-packed pieces are laid out from the top-left, so stretch the whole
-  // packing to fill the viewBox instead of clumping in a corner. This scales node CENTRES only (radii
-  // are fixed in kgSvg), so it spreads the clusters out and relieves label overlap without distorting
-  // the circles. Applies to the whole-graph overview and to a disconnected-file drill alike.
-  return fitToBox(out, ids, 0, 0, width, height);
+  return Math.max(1, Math.sqrt((demand * KG_EXTENT_SPREAD) / (width * height)));
+}
+
+// The SEPARATION pass: displace overlapping collision bodies apart until none intersect. `radiusOf`
+// and `labelOf` yield each node's circle radius and label string, so the SAME geometry the renderer
+// draws governs the collision. Mutates and returns `pos`. Deterministic: nodes sort by id, each pass
+// accumulates the push from every overlapping pair then applies them together (independent of pair
+// order), and the pass count is bounded.
+function kgSeparate(pos, nodes, radiusOf, labelOf) {
+  // Precompute each node's collision-body extents ONCE - they are fixed while only positions move, so
+  // the hot loop stays allocation-free (a per-pair body object per pass is millions of short-lived
+  // allocations at density). `hw` is the body half-width; `up`/`down` are its reach above/below the
+  // centre. Derived from kgNodeBody at the origin, so the SAME geometry the renderer draws governs it.
+  const items = nodes.filter(n => pos[n.id]).map(n => {
+    const b = kgNodeBody(0, 0, radiusOf(n), labelOf(n));
+    return { id: n.id, p: pos[n.id], hw: b.x1, up: -b.y0, down: b.y1 };
+  }).sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const m = items.length;
+  if (m < 2) return pos;
+  for (let pass = 0; pass < KG_SEP_MAX_PASSES; pass++) {
+    let moved = false;
+    // A sweep in fixed id order, resolving each overlapping pair immediately so the next pair sees the
+    // updated positions (a Gauss-Seidel relaxation - it settles the residual tail far faster than
+    // deferring every push to the end of the sweep). Deterministic: the order and arithmetic are fixed.
+    for (let i = 0; i < m; i++) {
+      const A = items[i], pa = A.p;
+      for (let j = i + 1; j < m; j++) {
+        const B = items[j], pb = B.p;
+        const ox = (A.hw + B.hw) - Math.abs(pa.x - pb.x);   // x bodies are symmetric about the centre
+        if (ox <= 0) continue;
+        const oy = Math.min(pa.y + A.down, pb.y + B.down) - Math.max(pa.y - A.up, pb.y - B.up);
+        if (oy <= 0) continue;                     // disjoint on an axis -> the bodies do not overlap
+        moved = true;
+        // Push the pair apart along the axis of LEAST penetration, moving each node by the (over-
+        // relaxed) penetration plus a +0.5 strict-gap epsilon; an id tie-break fixes the direction
+        // when the centres coincide, so the resolution is fully deterministic.
+        if (ox <= oy) {
+          const dir = (pa.x < pb.x || (pa.x === pb.x && A.id < B.id)) ? -1 : 1;
+          const s = ox * KG_SEP_RELAX + 0.5;
+          pa.x += dir * s; pb.x -= dir * s;
+        } else {
+          const dir = (pa.y < pb.y || (pa.y === pb.y && A.id < B.id)) ? -1 : 1;
+          const s = oy * KG_SEP_RELAX + 0.5;
+          pa.y += dir * s; pb.y -= dir * s;
+        }
+      }
+    }
+    if (!moved) break;                             // a clean sweep: every body is disjoint
+  }
+  return pos;
+}
+
+// ADAPTIVE LABELS (spec 59 c3): declutter by importance, reveal on zoom. At a given effective screen
+// SCALE the visible-label set is chosen so the drawn labels' collision bodies (the SAME kgNodeBody
+// geometry the separation pass and the renderer use) are pairwise DISJOINT, biased to the nodes that
+// MATTER - the largest (a high-degree proxy) first, lexicographic id tie-break. Each node carries a
+// reveal THRESHOLD: the smallest effective scale at which its body clears every MORE-IMPORTANT node's
+// body. Zooming raises the effective scale, so more thresholds are crossed and more labels appear -
+// a MONOTONE reveal (a deeper zoom's visible set is a superset of a shallower one's) that is DISJOINT at
+// every scale (a label shows only once it clears every more-important label) and DETERMINISTIC (pure
+// arithmetic over the position map, fixed importance/tie-break order - the same graph + scale selects
+// the identical set on every poll).
+
+// The minimal effective scale at which two fixed-size bodies (centred at their scale-multiplied
+// positions) become DISJOINT. As the scale grows the centres separate while the bodies stay fixed, so
+// beyond this scale they never overlap again. They are disjoint when EITHER axis clears, so it is the
+// smaller of the two per-axis clearing scales; coincident centres never separate (Infinity). Each item
+// carries hw (body half-width) and up/down (its reach above/below the centre) from kgNodeBody.
+function kgClearScale(a, b) {
+  const dx = a.p.x - b.p.x, dy = a.p.y - b.p.y;
+  const sx = dx !== 0 ? (a.hw + b.hw) / Math.abs(dx) : Infinity;
+  let sy = Infinity;
+  if (dy < 0) sy = (a.down + b.up) / (-dy);        // a's body sits above b's, so a.down vs b.up
+  else if (dy > 0) sy = (b.down + a.up) / dy;      // b's body sits above a's, so b.down vs a.up
+  return Math.min(sx, sy);
+}
+
+// Each node's reveal THRESHOLD: the smallest effective scale at which its body clears EVERY
+// more-important node's body. Importance is node SIZE (radius, a high-degree proxy) descending, with a
+// lexicographic id tie-break, so the top node has no constraint (threshold 0 - always labelled). Bodies
+// are the fixed kgNodeBody at the origin (hw, up, down), so the SAME geometry the renderer draws governs
+// the declutter. Pure and deterministic. Absent accessors or fewer than two positioned nodes leave
+// every threshold 0 (nothing to declutter).
+function kgLabelThresholds(nodes, pos, radiusOf, labelOf) {
+  const items = nodes.filter(n => pos[n.id]).map(n => {
+    const b = kgNodeBody(0, 0, radiusOf(n), labelOf(n));
+    return { id: n.id, r: radiusOf(n), p: pos[n.id], hw: b.x1, up: -b.y0, down: b.y1 };
+  }).sort((a, b) => (b.r - a.r) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const thr = {};
+  for (let i = 0; i < items.length; i++) {
+    let t = 0;
+    for (let j = 0; j < i; j++) {
+      const s = kgClearScale(items[i], items[j]);
+      if (s > t) t = s;
+    }
+    thr[items[i].id] = t;
+  }
+  return thr;
+}
+
+// The VISIBLE-LABEL SET at an effective screen scale: every node whose reveal threshold the scale has
+// crossed. Disjoint by construction (a node only crosses once it clears every more-important body) and
+// monotone in the scale (a deeper zoom is a superset). This is the ONE declutter authority - the render
+// stamps each force node's id (data-nid) and the zoom handler recomputes this set at the live scale.
+function kgVisibleLabels(nodes, pos, scale, radiusOf, labelOf) {
+  const thr = kgLabelThresholds(nodes, pos, radiusOf, labelOf);
+  const vis = {};
+  Object.keys(thr).forEach(id => { if (thr[id] <= scale) vis[id] = true; });
+  return vis;
 }
 
 // Emit the SVG for a graph: a layout places the nodes, then we draw one edge per <line>/<path> and
@@ -1225,7 +1422,25 @@ function forceLayout(nodes, edges, width, height) {
 // forward edges at it; and `opts.edgeBack(e)` renders a recursion edge as a DISTINCT curved return
 // arc instead of a straight line. With none supplied the emitter draws exactly as before.
 function kgSvg(nodes, edges, width, height, opts) {
-  const pos = (opts.layout || forceLayout)(nodes, edges, width, height);
+  // The force path is DENSITY-SCALED (spec 59 c2): forceLayout takes the per-node radius/label
+  // accessors so its canvas (and thus its repulsion) grows with the node count and the total label
+  // area. The layered call-DAG (opts.layout) keeps its own within-layer spacing, so it is called with
+  // the bare 4-arg signature and never scales.
+  const pos = opts.layout
+    ? opts.layout(nodes, edges, width, height)
+    : forceLayout(nodes, edges, width, height, opts.radius, opts.label);
+  // SEPARATION pass (spec 59 c1): only the force-laid views. The label is part of the node, so
+  // displace overlapping circle+label bodies apart until none intersect - deterministic, and it may
+  // push the drawing past the viewBox (pan/zoom handles it). The layered call-DAG (opts.layout) keeps
+  // its own layout, which already spaces nodes within a layer, so it is left untouched here.
+  if (!opts.layout) kgSeparate(pos, nodes, opts.radius, opts.label);
+  // ADAPTIVE LABELS (spec 59 c3): the force-laid views declutter their labels by importance and reveal
+  // more on zoom. Record the laid-out position map + the radius/label accessors + the viewBox width so
+  // the live zoom handler (kgApplyLabels) can recompute the visible set at the CURRENT effective scale.
+  // The layered call-DAG keeps every label (its own within-layer layout is readable by construction), so
+  // it clears the state and stays byte-identical.
+  const declutter = !opts.layout;
+  kgLabelState = declutter ? { nodes: nodes, pos: pos, radius: opts.radius, label: opts.label, width: width } : null;
   // The arrowhead marker (spec 52 c5): defined ONLY when the caller asks for direction, so the
   // exploration views (no marker) emit no <defs> and stay byte-identical. Forward directed edges
   // then carry marker-end so the callee end draws an arrowhead.
@@ -1257,11 +1472,22 @@ function kgSvg(nodes, edges, width, height, opts) {
     const cls = opts.nodeClass ? opts.nodeClass(n) : "kgdot";
     const attrs = opts.nodeAttrs ? opts.nodeAttrs(n) : "";
     const fill = opts.fill ? ' fill="' + esc(opts.fill(n)) + '"' : "";
-    // An optional native SVG <title> (hover tooltip), emitted ONLY when the caller supplies opts.title
-    // AND it returns a non-empty string - so every view that does not ask for one stays byte-identical.
     const tip = opts.title ? opts.title(n) : "";
-    const titleEl = tip ? '<title>' + esc(tip) + '</title>' : "";
-    return '<g class="kgn ' + cls + '"' + attrs + ' transform="translate(' + q.x.toFixed(1) + ','
+    // The HOVER SURFACE (spec 59 c3): a force-laid node ALWAYS names itself on hover, so a decluttered
+    // (hidden) label is one hover away - even for a node that carries an explicit tooltip (the concepts
+    // drill's shared-member note, which does not name the node). The hover is the node's BARE name
+    // (opts.name, falling back to opts.label) followed by any explicit tooltip note, so an explicit tip
+    // AUGMENTS the name, never suppresses it. The bare name deliberately drops any display-only tag the
+    // label carries (the concepts drill's [shared]), so that tag stays a single occurrence per node. A
+    // layered view (no declutter, labels always drawn) keeps the opts.title-only surface and stays
+    // byte-identical.
+    const name = opts.name ? opts.name(n) : opts.label(n);
+    const hover = declutter ? (tip ? name + " - " + tip : name) : tip;
+    const titleEl = hover ? '<title>' + esc(hover) + '</title>' : "";
+    // A force node carries its id (data-nid) so the zoom handler can toggle its label; a layered node
+    // omits it and stays byte-identical.
+    const nid = declutter ? ' data-nid="' + esc(n.id) + '"' : "";
+    return '<g class="kgn ' + cls + '"' + nid + attrs + ' transform="translate(' + q.x.toFixed(1) + ','
       + q.y.toFixed(1) + ')">' + titleEl + '<circle r="' + r.toFixed(1) + '"' + fill + '/>'
       + '<text class="kglabel" y="' + (r + 11).toFixed(1) + '">' + esc(opts.label(n)) + '</text></g>';
   }).join("");
@@ -1321,9 +1547,37 @@ function layeredLayout(nodes, edges, width, height) {
 // so a drag that leaves the svg still tracks.
 let kgView = { k: 1, x: 0, y: 0 };
 let kgDrag = null;
+// The last force view's laid-out positions + accessors (set by kgSvg, null on a layered view): the
+// adaptive-label declutter (spec 59 c3) recomputes its visible set from this at the live zoom.
+let kgLabelState = null;
 function applyKgView() {
   const g = el("kgpanel").querySelector("#kgzoom");
   if (g) g.setAttribute("transform", "translate(" + kgView.x + "," + kgView.y + ") scale(" + kgView.k + ")");
+  kgApplyLabels();
+}
+// ADAPTIVE LABELS live toggle (spec 59 c3): recompute the visible-label set at the CURRENT effective
+// screen scale - the viewBox-to-panel FIT (rendered width / graph width) times the zoom factor - and
+// draw only those labels, hiding the rest (.kg-nolabel) as bare dots. The hover <title> still names
+// every node, so a hidden label is one hover away. Cheap (O(n^2) over <=160 nodes) and deterministic:
+// kgVisibleLabels is the single declutter authority. A no-op on a layered view (no state) or before a
+// force view has rendered.
+function kgApplyLabels() {
+  const st = kgLabelState;
+  if (!st) return;
+  const panel = el("kgpanel");
+  const svg = panel.querySelector("svg");
+  if (!svg) return;
+  const screenW = (svg.getBoundingClientRect && svg.getBoundingClientRect().width) || svg.clientWidth || st.width;
+  const fit = st.width ? screenW / st.width : 1;
+  const eff = fit * kgView.k;
+  const vis = kgVisibleLabels(st.nodes, st.pos, eff, st.radius, st.label);
+  const nodes = panel.querySelectorAll("#kgzoom .kgn");
+  nodes.forEach(node => {
+    const id = node.dataset ? node.dataset.nid : node.getAttribute("data-nid");
+    if (id === undefined || id === null || id === "") return;
+    if (vis[id]) node.classList.remove("kg-nolabel");
+    else node.classList.add("kg-nolabel");
+  });
 }
 function bindKgView() {
   kgView = { k: 1, x: 0, y: 0 };               // a fresh render resets the view
@@ -1446,6 +1700,10 @@ function renderKgDrill(nb) {
     // no title, so the node stays byte-identical.
     title: n => n.shared ? "shared member: realizes multiple concepts (folded under its primary bucket)" : "",
     nodeAttrs: n => ' data-seed="' + esc(n.id) + '"',
+    // The BARE identity kgSvg folds into the hover surface (spec 59 c3): the node's name WITHOUT the
+    // [shared] display tag, so a decluttered shared member still names itself on hover (its title note
+    // does not name it) while the [shared] tag stays a single occurrence in the on-canvas label.
+    name: n => n.label || n.id,
     // A shared member's label carries a plain-text [shared] tag so a human reads the multi-concept
     // membership without hovering; a single-concept member's label is unchanged.
     label: n => n.shared ? (n.label || n.id) + " [shared]" : (n.label || n.id),
