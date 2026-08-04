@@ -1216,6 +1216,97 @@ function forceLayout(nodes, edges, width, height) {
   return fitToBox(out, ids, 0, 0, width, height);
 }
 
+// --- Collision-free SEPARATION pass (spec 59 c1) ------------------------------------------------
+// The label is PART OF the node: a node's collision body is its circle (radius r, centred on the
+// node) UNION its label box (the text that hangs below the circle). We estimate the label box from
+// its character count and the .kglabel font metrics (10px, text-anchor middle, baseline at y = r+11)
+// and enclose the circle and the label in one axis-aligned box. After the force pass a deterministic
+// separation pass displaces every overlapping pair apart - stable id order, accumulated per pass,
+// fixed iteration bound - until no two bodies intersect. It is pure arithmetic over the position map
+// (no randomness) and may push the drawing past the viewBox: a layout larger than the panel is fine
+// because the panel already pans and zooms, and clarity beats fitting.
+const KG_LABEL_CHAR_W = 6.2;   // advance width per glyph at the 10px .kglabel font (px)
+const KG_LABEL_H = 13;         // the label line-box height (px)
+const KG_LABEL_GAP = 2;        // circle bottom to label-box top (the text baseline sits at y = r+11)
+const KG_BODY_PAD = 2;         // a hair of margin so separated bodies read as distinct, not tangent
+const KG_SEP_RELAX = 0.9;      // over-relaxation of the pairwise push (0.5 exactly clears a pair; >0.5
+                               // over-shoots to expand a dense clump in far fewer sweeps - a standard
+                               // SOR accelerator, deterministic, stable below 1.0)
+const KG_SEP_MAX_PASSES = 2000; // the fixed iteration bound; the pass exits early once a full sweep
+                                // finds no overlap, so it is deterministic and bounded either way.
+                                // A 160-node overview (the Code lens's real density) fully declusters
+                                // well within it; smaller graphs settle in a handful of sweeps
+
+// The label box footprint (half-width and height) from the label's character count and font metrics.
+// The whole node (circle + label) is the collision body, so an empty label still leaves the circle.
+function kgLabelDims(label) {
+  const chars = label ? String(label).length : 0;
+  return { halfW: (chars * KG_LABEL_CHAR_W) / 2, h: KG_LABEL_H };
+}
+
+// A node's collision body as an axis-aligned box enclosing BOTH its circle (radius r, centred at
+// x, y) AND its label box (centred horizontally, hanging below the circle). Asymmetric in y because
+// the label only hangs below. Reused by the adaptive-label disjoint-box check (spec 59 c3).
+function kgNodeBody(x, y, r, label) {
+  const lab = kgLabelDims(label);
+  const hw = Math.max(r, lab.halfW) + KG_BODY_PAD;
+  return {
+    x0: x - hw,
+    x1: x + hw,
+    y0: y - r - KG_BODY_PAD,
+    y1: y + r + KG_LABEL_GAP + lab.h + KG_BODY_PAD,
+  };
+}
+
+// The SEPARATION pass: displace overlapping collision bodies apart until none intersect. `radiusOf`
+// and `labelOf` yield each node's circle radius and label string, so the SAME geometry the renderer
+// draws governs the collision. Mutates and returns `pos`. Deterministic: nodes sort by id, each pass
+// accumulates the push from every overlapping pair then applies them together (independent of pair
+// order), and the pass count is bounded.
+function kgSeparate(pos, nodes, radiusOf, labelOf) {
+  // Precompute each node's collision-body extents ONCE - they are fixed while only positions move, so
+  // the hot loop stays allocation-free (a per-pair body object per pass is millions of short-lived
+  // allocations at density). `hw` is the body half-width; `up`/`down` are its reach above/below the
+  // centre. Derived from kgNodeBody at the origin, so the SAME geometry the renderer draws governs it.
+  const items = nodes.filter(n => pos[n.id]).map(n => {
+    const b = kgNodeBody(0, 0, radiusOf(n), labelOf(n));
+    return { id: n.id, p: pos[n.id], hw: b.x1, up: -b.y0, down: b.y1 };
+  }).sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const m = items.length;
+  if (m < 2) return pos;
+  for (let pass = 0; pass < KG_SEP_MAX_PASSES; pass++) {
+    let moved = false;
+    // A sweep in fixed id order, resolving each overlapping pair immediately so the next pair sees the
+    // updated positions (a Gauss-Seidel relaxation - it settles the residual tail far faster than
+    // deferring every push to the end of the sweep). Deterministic: the order and arithmetic are fixed.
+    for (let i = 0; i < m; i++) {
+      const A = items[i], pa = A.p;
+      for (let j = i + 1; j < m; j++) {
+        const B = items[j], pb = B.p;
+        const ox = (A.hw + B.hw) - Math.abs(pa.x - pb.x);   // x bodies are symmetric about the centre
+        if (ox <= 0) continue;
+        const oy = Math.min(pa.y + A.down, pb.y + B.down) - Math.max(pa.y - A.up, pb.y - B.up);
+        if (oy <= 0) continue;                     // disjoint on an axis -> the bodies do not overlap
+        moved = true;
+        // Push the pair apart along the axis of LEAST penetration, moving each node by the (over-
+        // relaxed) penetration plus a +0.5 strict-gap epsilon; an id tie-break fixes the direction
+        // when the centres coincide, so the resolution is fully deterministic.
+        if (ox <= oy) {
+          const dir = (pa.x < pb.x || (pa.x === pb.x && A.id < B.id)) ? -1 : 1;
+          const s = ox * KG_SEP_RELAX + 0.5;
+          pa.x += dir * s; pb.x -= dir * s;
+        } else {
+          const dir = (pa.y < pb.y || (pa.y === pb.y && A.id < B.id)) ? -1 : 1;
+          const s = oy * KG_SEP_RELAX + 0.5;
+          pa.y += dir * s; pb.y -= dir * s;
+        }
+      }
+    }
+    if (!moved) break;                             // a clean sweep: every body is disjoint
+  }
+  return pos;
+}
+
 // Emit the SVG for a graph: a layout places the nodes, then we draw one edge per <line>/<path> and
 // one <g><circle><text></g> per node - all inside a single #kgzoom group the pan/zoom transforms. The
 // caller supplies per-node radius/colour/class/label and the select handle (data-cluster on a cluster
@@ -1227,6 +1318,11 @@ function forceLayout(nodes, edges, width, height) {
 // arc instead of a straight line. With none supplied the emitter draws exactly as before.
 function kgSvg(nodes, edges, width, height, opts) {
   const pos = (opts.layout || forceLayout)(nodes, edges, width, height);
+  // SEPARATION pass (spec 59 c1): only the force-laid views. The label is part of the node, so
+  // displace overlapping circle+label bodies apart until none intersect - deterministic, and it may
+  // push the drawing past the viewBox (pan/zoom handles it). The layered call-DAG (opts.layout) keeps
+  // its own layout, which already spaces nodes within a layer, so it is left untouched here.
+  if (!opts.layout) kgSeparate(pos, nodes, opts.radius, opts.label);
   // The arrowhead marker (spec 52 c5): defined ONLY when the caller asks for direction, so the
   // exploration views (no marker) emit no <defs> and stay byte-identical. Forward directed edges
   // then carry marker-end so the callee end draws an arrowhead.
