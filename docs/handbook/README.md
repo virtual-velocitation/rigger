@@ -27,5 +27,5 @@ Rigger turns a spec into integrated code by running a team of agents over shared
 - **Review panel** - the three-tier check on every unit: expert lenses in parallel, then an adversary who reviews *the lenses*, then an adjudicator whose verdict gates integration.
 - **Ledger** - the run's durable state, itself a projection of the event log. A resumed run re-reads it; state never lives in a conversation.
 - **Context graph** - the bi-temporal projection of the event log: decisions, files, lessons, and their relationships, queryable by "what governs the files I am about to touch."
-- **Grounding** - the pre-work retrieval step: semantic search over the code (`rigger ground`) plus the graph slice around the target files (`rigger graph --around`).
+- **Grounding** - the pre-work retrieval step: structural symbol search over the code (`rigger ground`, the deterministic `symbols` index) plus the graph slice around the target files (`rigger graph --around`).
 - **Autonomy** - per-gate policy: `manual` (a human decides), `auto_notify` (runs, passes silently, logged), `silent` (invisible). Gates ratchet their own autonomy up on clean passes and demote themselves on failure.

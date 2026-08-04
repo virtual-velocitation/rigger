@@ -337,7 +337,7 @@ impl Grounder for Symbols {
     /// the CURRENT in-memory index unioned with the grammar / tag-query version, as
     /// `<index-content-hash>/<grammar-tags-version>`. The `symbols` grounder is STRUCTURAL, so it
     /// returns a NON-EMPTY stamp - the signal unit 3's conductor keys the audit + retention metric
-    /// off (a grep / turbovec / nop grounder inherits the empty default and emits neither). The
+    /// off (a grep / nop grounder inherits the empty default and emits neither). The
     /// hash is over the COMPACT `serde_json::to_string` of the `BTreeMap`-backed index. Because the
     /// index is `BTreeMap`-backed it serializes in sorted-key order, so this is DETERMINISTIC: the
     /// SAME index state yields the SAME stamp across processes, and a reindex that changes the graph

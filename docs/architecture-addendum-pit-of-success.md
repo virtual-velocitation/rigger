@@ -91,10 +91,10 @@ _Code:_ `DEFAULT_BASE_REF` (`src/main.rs`), `parse_step_args`, `Worktree::ensure
 A unit's grounding inherits the decisions, findings, and lessons recorded by earlier
 work on the same files. That cross-run memory is what stops each run from starting
 amnesiac — re-deriving settled architecture and, worse, *violating* constraints an
-earlier run established. Example from this codebase: the decision that
-`select_grounder` intercepts the `hybrid` grounder only under `cfg(feature = symbols)`
-must remain visible to a later run editing the same file, or that later run silently
-breaks the symbols-off contract.
+earlier run established. Example from this codebase: the decision that selecting a grounder
+whose cargo feature is not built in raises a LOUD error naming the `grounder: grep` opt-out,
+never a silent degrade to grep, must remain visible to a later run editing that selection path,
+or that later run silently reintroduces the fallback the contract forbids.
 
 Scoping grounding to the active run by default would throw this away to solve a
 narrower problem — stale findings from a *dead* run surfacing in a healthy one. That

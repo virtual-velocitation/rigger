@@ -889,6 +889,27 @@ fn field_str_vec(e: &Event, key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Count the `grep-fallback:` progress lines in `progress_events` - the recorded
+/// graph-coverage gaps (spec 58): each is an agent reporting it fell back to grep over the
+/// project's sources because the graph could not answer. The fallback rate is the standing
+/// signal of whether the graph is the whole lookup surface, so this metric surfaces it in the
+/// dash run-over-run.
+///
+/// A read over the SEPARATE progress store, NOT the run stream: it takes the progress slice
+/// the caller already scoped to the run (the same slice [`crate::progress::consolidate`]
+/// reads), so [`project`] and the replay-authoritative run-stream folds stay byte-identical
+/// whether or not any progress was emitted. Non-`AgentProgress` events on the slice are
+/// ignored; the fallback predicate is [`crate::progress::AgentProgress::is_grep_fallback`],
+/// the one definition shared with the writer.
+pub fn grep_fallbacks(progress_events: &[Event]) -> u64 {
+    progress_events
+        .iter()
+        .filter(|e| e.type_ == crate::progress::TYPE_AGENT_PROGRESS)
+        .filter_map(|e| serde_json::from_slice::<crate::progress::AgentProgress>(&e.data).ok())
+        .filter(crate::progress::AgentProgress::is_grep_fallback)
+        .count() as u64
+}
+
 // ---------------------------------------------------------------------------
 // Canary metrics (spec 13, unit 5): the loop's only RECALL read-model.
 // ---------------------------------------------------------------------------
@@ -2275,5 +2296,49 @@ mod tests {
         assert_eq!(d.current_run.as_deref(), Some("r3"));
         assert_eq!(d.changes.len(), 1);
         assert_eq!(d.changes[0].alias, "opus");
+    }
+
+    fn prog(id: &str, activity: &str) -> Event {
+        let ap = crate::progress::AgentProgress {
+            id: id.to_string(),
+            activity: activity.to_string(),
+        };
+        Event::new(
+            crate::progress::TYPE_AGENT_PROGRESS,
+            serde_json::to_vec(&ap).unwrap(),
+        )
+    }
+
+    #[test]
+    fn grep_fallbacks_counts_only_the_grep_fallback_lines_in_the_progress_slice() {
+        // Spec 58, criterion 4: `grep-fallback:` progress lines are the recorded graph-coverage
+        // gaps; the metric counts exactly those over the run's progress slice. The count reads
+        // the SEPARATE progress store (never the run-stream fold), so it takes the slice the
+        // caller already scoped to the run. Ordinary progress narration and non-AgentProgress
+        // events do not count; a leading space before the prefix still counts.
+        let slice = vec![
+            prog(
+                "u1/implementer#0",
+                "grep-fallback: no --show for effective_max_retries",
+            ),
+            prog("u1/implementer#0", "cargo build green"), // ordinary narration - not a fallback
+            prog(
+                "u2/implementer#0",
+                "  grep-fallback: quoting Blocker body, graph gave structure only",
+            ),
+            // A non-AgentProgress event on the slice is ignored (defensive; the store is typed).
+            ev("SomethingElse", r#"{"id":"x"}"#),
+            prog("u2/adversary#0", "grep-fallbacked earlier"), // no colon prefix - not a fallback
+        ];
+        assert_eq!(
+            grep_fallbacks(&slice),
+            2,
+            "exactly the two `grep-fallback:` lines are counted"
+        );
+        assert_eq!(
+            grep_fallbacks(&[]),
+            0,
+            "an empty progress slice counts zero fallbacks"
+        );
     }
 }

@@ -71,6 +71,50 @@ pub struct PruneStats {
     pub superseded_edges: usize,
 }
 
+/// The resolution of a `rigger graph --show <entity>` query (spec 58, the TEXT half of lookup).
+/// [`Projector::locate`] resolves the query exactly the way the graph's other surfaces do - a full
+/// `<file>::<name>` node id, or a bare name matched by the pinned name-suffix expression - and
+/// returns one of three honest outcomes, never a guess among candidates.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Located {
+    /// Exactly one entity resolved: its definition site and graph facts, from which the CLI reads
+    /// the line-numbered body out of the working tree.
+    One(EntitySite),
+    /// An ambiguous bare name (several definitions share it): the SORTED candidate sites the caller
+    /// picks from. The show surface prints these and NO body (the call-views honesty rule).
+    Many(Vec<Candidate>),
+    /// Nothing in the graph matched the query.
+    None,
+}
+
+/// A single located code entity (spec 58): where its definition lives and how it sits in the graph,
+/// so the show surface can print the site header and bound the body it reads from the working tree.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EntitySite {
+    /// The full `<file>::<name>` node id.
+    pub id: String,
+    /// The definition kind (`function`, `type`, ...), from the node's `kind` attr; falls back to
+    /// the node's graph kind when a bare placeholder carries no definition attr.
+    pub kind: String,
+    /// The definition's file (the id prefix before `::`) - the working-tree path the body reads.
+    pub file: String,
+    /// The 1-based line of the definition site, from the node's `line` attr (`0` when unknown).
+    pub line: u32,
+    /// The entity's one-hop degree: the count of currently-live edges incident to it, so the reader
+    /// knows how connected the entity is.
+    pub degree: usize,
+}
+
+/// One disambiguation candidate for an ambiguous bare name (spec 58): the full node id and its
+/// file. [`Projector::locate`] returns these SORTED by id, so the listing is deterministic.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Candidate {
+    /// The candidate's full `<file>::<name>` node id.
+    pub id: String,
+    /// The candidate's file (the id prefix before `::`).
+    pub file: String,
+}
+
 impl Projector {
     /// Open (or create) the graph at `path`, scoped to `project` - the plain project string
     /// that namespaces this project's streams (`project_identity` / `StoreLocation::identity`).
@@ -292,6 +336,73 @@ impl Projector {
             .map_err(be)?;
         tx.commit().map_err(be)?;
         Ok(moved)
+    }
+
+    /// Resolve a `rigger graph --show <entity>` query to a located entity, a candidate list, or
+    /// nothing (spec 58, criterion 1). It serves from the SAME node/edge tables every graph surface
+    /// reads - reusing [`node_row`] and the pinned [`definitions_with_suffix`] name-suffix match -
+    /// so the show surface never forks a second resolution authority.
+    ///
+    /// Resolution order (the graph's existing surface convention): an EXACT node-id match first, so
+    /// a full `<file>::<name>` id resolves directly; only on a miss is the input treated as a BARE
+    /// name and matched by the pinned name-suffix expression over code-entity DEFINITION nodes.
+    /// Zero candidates -> [`Located::None`]; exactly one -> [`Located::One`] (its site); more than
+    /// one -> [`Located::Many`] the SORTED candidates, never a guess among them.
+    ///
+    /// Read-only over the projection; a missing / drifted working-tree location is NOT this method's
+    /// concern (it reports the recorded graph site) - the CLI reads and, if stale, degrades the body.
+    pub fn locate(&self, entity: &str) -> Result<Located, Error> {
+        let conn = self.conn.lock().unwrap();
+        // Exact id first: a full `<file>::<name>` id resolves directly to its node.
+        if let Some(node) = node_row(&conn, entity, &self.project)? {
+            return Ok(Located::One(self.site_of(&conn, node)?));
+        }
+        // Else a bare name: the pinned name-suffix match over definition nodes (sorted by id).
+        let cands = definitions_with_suffix(&conn, entity, &self.project)?;
+        match cands.as_slice() {
+            [] => Ok(Located::None),
+            [only] => {
+                let node = node_row(&conn, only, &self.project)?.ok_or_else(|| {
+                    Error(format!("locate: candidate {only:?} vanished between reads"))
+                })?;
+                Ok(Located::One(self.site_of(&conn, node)?))
+            }
+            many => Ok(Located::Many(
+                many.iter()
+                    .map(|id| Candidate {
+                        file: file_prefix(id).to_string(),
+                        id: id.clone(),
+                    })
+                    .collect(),
+            )),
+        }
+    }
+
+    /// Build an [`EntitySite`] from a resolved node: its file (the id prefix), its recorded line and
+    /// kind (attrs), and its one-hop live-edge degree. Read-only; used by
+    /// [`locate`](Projector::locate). The body's extent is NOT bounded here: the show surface derives
+    /// it from the working tree through the shared multi-grammar symbols authority (the grammar's own
+    /// node boundary), so the graph adapter carries no structural end-line guess.
+    fn site_of(&self, conn: &Connection, node: Node) -> Result<EntitySite, Error> {
+        let file = file_prefix(&node.id).to_string();
+        let line = node
+            .attrs
+            .get("line")
+            .and_then(|l| l.parse::<u32>().ok())
+            .unwrap_or(0);
+        let kind = node
+            .attrs
+            .get("kind")
+            .cloned()
+            .unwrap_or_else(|| node.kind.clone());
+        let degree = one_hop_degree(conn, &node.id, &self.project)?;
+        Ok(EntitySite {
+            id: node.id,
+            kind,
+            file,
+            line,
+            degree,
+        })
     }
 
     /// The DOWN direction of [`Projection::calls`] (spec 52 criterion 1): the execution path out of
@@ -1658,6 +1769,31 @@ fn name_suffix(id: &str) -> &str {
         Some(i) => &id[i + 2..],
         None => id,
     }
+}
+
+/// The file prefix of a `<file>::<name>` id (spec 58): everything BEFORE the first `::` - the twin
+/// of [`name_suffix`]. A file path never contains `::`, so this is exactly the definition's file.
+/// An id with no `::` (never a code-entity id) is returned whole.
+fn file_prefix(id: &str) -> &str {
+    match id.find("::") {
+        Some(i) => &id[..i],
+        None => id,
+    }
+}
+
+/// The one-hop degree of a node (spec 58): the count of currently-LIVE edges (`valid_to IS NULL`)
+/// incident to `id` in `project`, in either direction. Read-only; the show surface prints it so a
+/// reader knows how connected the entity is. A fresh / isolated node yields `0`.
+fn one_hop_degree(conn: &Connection, id: &str, project: &str) -> Result<usize, Error> {
+    let n: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM edges
+              WHERE valid_to IS NULL AND project = ?2 AND (from_id = ?1 OR to_id = ?1)",
+            params![id, project],
+            |r| r.get(0),
+        )
+        .map_err(be)?;
+    Ok(n as usize)
 }
 
 /// The confidence rank of an EDGE tier (spec 52 / 29a addendum 6.2): `extracted` (2, the precise
@@ -3341,6 +3477,58 @@ mod tests {
             "a REFERENCES edge ties the file to the referenced symbol; got {:?}",
             g.edges
         );
+    }
+
+    /// spec 58 criterion 1: `locate` is the show surface's single resolution authority. Over the
+    /// SAME node/edge tables every graph surface reads, it resolves a full `<file>::<name>` id and a
+    /// unique bare name to the SAME site (carrying kind and one-hop degree), LISTS the SORTED
+    /// candidates for an ambiguous bare name (never guessing), and returns `None` for an unknown
+    /// query. The code-entity fold it reads is always compiled, so this holds in BOTH feature lanes.
+    /// The body extent is NOT a resolution concern: the show surface derives it from the working
+    /// tree through the symbols authority, so `EntitySite` carries no structural end-line here.
+    #[test]
+    fn locate_resolves_by_id_and_name_and_lists_ambiguous_candidates_sorted() {
+        let p = Projector::open(":memory:", "test").unwrap();
+        // a.rs defines alpha@1 then shared@3; b.rs defines a second shared@1.
+        apply_code_entity(&p, 1, "a.rs", "alpha", "function", 1, "rust");
+        apply_code_entity(&p, 2, "a.rs", "shared", "function", 3, "rust");
+        apply_code_entity(&p, 3, "b.rs", "shared", "function", 1, "rust");
+
+        // A unique bare name resolves to One, with its site facts.
+        let alpha = match p.locate("alpha").unwrap() {
+            Located::One(s) => s,
+            other => panic!("expected One for a unique name, got {other:?}"),
+        };
+        assert_eq!(alpha.id, "a.rs::alpha");
+        assert_eq!(alpha.file, "a.rs");
+        assert_eq!(alpha.line, 1);
+        assert_eq!(alpha.kind, "function");
+        // The only edge incident to alpha is the file's CONTAINS edge -> one-hop degree 1.
+        assert_eq!(alpha.degree, 1);
+
+        // The full id resolves to the SAME entity a unique name would.
+        match p.locate("a.rs::alpha").unwrap() {
+            Located::One(s) => assert_eq!(s, alpha, "the full id and the unique name agree"),
+            other => panic!("expected One for a full id, got {other:?}"),
+        }
+
+        // An ambiguous bare name lists its candidates, SORTED by id, each with its file.
+        match p.locate("shared").unwrap() {
+            Located::Many(cands) => {
+                let ids: Vec<&str> = cands.iter().map(|c| c.id.as_str()).collect();
+                assert_eq!(
+                    ids,
+                    ["a.rs::shared", "b.rs::shared"],
+                    "candidates are sorted by id"
+                );
+                assert_eq!(cands[0].file, "a.rs");
+                assert_eq!(cands[1].file, "b.rs");
+            }
+            other => panic!("expected Many for an ambiguous name, got {other:?}"),
+        }
+
+        // An unknown query resolves to None (never an error).
+        assert_eq!(p.locate("does_not_exist").unwrap(), Located::None);
     }
 
     #[test]
