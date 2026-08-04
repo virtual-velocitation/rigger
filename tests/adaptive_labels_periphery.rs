@@ -20,9 +20,11 @@
 //!   * REGRESSION (the byte-identity boundary): a force view SETS `kgLabelState` and stamps `data-nid`;
 //!     a LAYERED view (`opts.layout`) must CLEAR the state, stamp no `data-nid`, and - given no explicit
 //!     `opts.title` - emit no auto `<title>`, so the layered call-DAG render stays byte-identical. Plus
-//!     the hover-title PRECEDENCE: when a caller supplies an explicit `opts.title`, that tooltip wins
-//!     verbatim over the auto label (a single occurrence per node), and a force view WITHOUT a title
-//!     falls back to the label as its hover surface.
+//!     the HOVER-NAMES-EVERY-NODE contract (spec 59 c3 done-when): a decluttered force node ALWAYS names
+//!     itself on hover EVEN when it carries an explicit tooltip - the hover is the node's BARE name
+//!     (`opts.name`) followed by the tooltip note, so a name-less note never suppresses the name; the
+//!     bare name drops the display-only `[shared]` tag so it stays a single occurrence; and a force view
+//!     WITHOUT a title falls back to the label as its hover surface.
 //!
 //! Like the unit test, the proof is a hermetic node `vm` harness that extracts the served page's own
 //! `<script>` and executes its real functions - no npm, no browser - and it SKIPs (not fails) when no
@@ -348,28 +350,41 @@ const REGRESSION_DRIVER: &str = r##"
   if ((layeredSvg.match(/<title>/g) || []).length !== 0)
     throw new Error("a layered render with no opts.title must emit no auto <title>");
 
-  // HOVER-TITLE PRECEDENCE: an explicit opts.title wins verbatim over the auto label, exactly once per
-  // node - and the auto label must NOT also leak as a <title>.
+  // HOVER NAMES EVERY FORCE NODE (spec 59 c3 done-when): a decluttered force node ALWAYS names itself
+  // on hover, EVEN when it carries an explicit tooltip. This mirrors the REAL concepts drill exactly:
+  // the on-canvas display label carries a [shared] tag, the BARE identity is exposed via opts.name, and
+  // the explicit title is the production NAME-LESS note (it never contains the node's own name). So the
+  // hover must carry the node's BARE name AND the note - the operator can identify a node whose canvas
+  // label is decluttered away - while the [shared] display tag stays a SINGLE occurrence (the bare name
+  // in the hover drops it), so this does not regress the spec-54 count([shared])===1 invariant.
+  var NOTE = "shared member: realizes multiple concepts (folded under its primary bucket)";
   var titledSvg = kgSvg(spec.nodes, spec.edges, KG_W, KG_H, {
     radius: spec.radiusOf, fill: function(){ return "#888"; },
-    nodeClass: function(){ return "kgcluster"; }, label: spec.labelOf,
-    title: function(n){ return n.label + " [shared]"; }
+    nodeClass: function(){ return "kgcluster"; },
+    label: function(n){ return n.label + " [shared]"; },   // the on-canvas display label carries the tag
+    name: function(n){ return n.label; },                  // the BARE identity kgSvg folds into the hover
+    title: function(){ return NOTE; }                      // the REAL name-LESS generic tooltip
   });
   spec.nodes.forEach(function(n){
-    var tip = n.label + " [shared]";
-    if (titledSvg.indexOf("<title>" + tip + "</title>") === -1)
-      throw new Error("explicit opts.title must win as the hover surface: missing " + tip);
-    if (titledSvg.indexOf("<title>" + spec.labelOf(n) + "</title>") !== -1)
-      throw new Error("the auto label must not leak as a <title> when an explicit title is set: " + spec.labelOf(n));
+    // the hover carries the node's BARE name AND the note, so a titled node still identifies itself.
+    if (titledSvg.indexOf("<title>" + n.label + " - " + NOTE + "</title>") === -1)
+      throw new Error("a titled force node's hover must carry its BARE name AND the note: missing " + n.label);
+    // the pre-fix defect: the explicit note must NOT be the WHOLE hover (that suppressed the name); a
+    // bare-note title with nothing before it is exactly the regression this asserts is gone.
+    if (titledSvg.indexOf("<title>" + NOTE + "</title>") !== -1)
+      throw new Error("an explicit tooltip must NOT suppress the node name on hover (bare note found)");
   });
+  // the [shared] display tag stays a SINGLE occurrence per node - the on-canvas label carries it, the
+  // hover (bare name) does not - so the count still matches the spec-54 concepts_lens_view_periphery invariant.
   var shared = (titledSvg.match(/\[shared\]/g) || []).length;
   if (shared !== spec.nodes.length)
-    throw new Error("the explicit tooltip tag must appear once per node: got " + shared + " for " + spec.nodes.length);
+    throw new Error("the [shared] display tag must appear once per node (never duplicated into the hover): got "
+      + shared + " for " + spec.nodes.length);
 
-  // FALLBACK: a force view with NO explicit title falls back to the label as its hover surface.
+  // FALLBACK: a titleless force view still names every node - its hover is the display label.
   spec.nodes.forEach(function(n){
     if (forceSvg.indexOf("<title>" + spec.labelOf(n) + "</title>") === -1)
-      throw new Error("a titleless force view must fall back to the label on hover: " + spec.labelOf(n));
+      throw new Error("a titleless force view must name every node on hover (the label): " + spec.labelOf(n));
   });
 
   console.log("OK adaptive-labels-regression");
@@ -426,13 +441,14 @@ fn the_declutter_holds_its_contract_at_the_edges_and_across_scales() {
 }
 
 /// REGRESSION boundary: a layered view clears the declutter state and stays byte-identical (no
-/// data-nid, no auto title), and an explicit opts.title wins over the auto label on hover.
+/// data-nid, no auto title), and a titled force node still NAMES itself on hover (bare name + note),
+/// never suppressed by the explicit tooltip, with the [shared] display tag a single occurrence.
 #[test]
-fn a_layered_view_stays_byte_identical_and_an_explicit_title_wins() {
+fn a_layered_view_stays_byte_identical_and_a_titled_node_still_names_itself_on_hover() {
     if !node_available() {
         eprintln!(
-            "SKIP a_layered_view_stays_byte_identical_and_an_explicit_title_wins: no `node` runtime on \
-             PATH (present on dev machines and ubuntu-latest CI); install node to run it."
+            "SKIP a_layered_view_stays_byte_identical_and_a_titled_node_still_names_itself_on_hover: no \
+             `node` runtime on PATH (present on dev machines and ubuntu-latest CI); install node to run it."
         );
         return;
     }

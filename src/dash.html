@@ -1473,13 +1473,16 @@ function kgSvg(nodes, edges, width, height, opts) {
     const attrs = opts.nodeAttrs ? opts.nodeAttrs(n) : "";
     const fill = opts.fill ? ' fill="' + esc(opts.fill(n)) + '"' : "";
     const tip = opts.title ? opts.title(n) : "";
-    // The HOVER SURFACE (spec 59 c3): a force-laid node names its label on hover, so a decluttered
-    // (hidden) label is one hover away. A node that already carries an explicit tooltip (only the
-    // concepts drill's shared-member note) keeps THAT tooltip verbatim - it identifies the node, and the
-    // human-readable [shared] label tag must stay a single occurrence - so the label-hover is added only
-    // where there is no explicit tooltip. A layered view keeps the opts.title-only behavior and stays
+    // The HOVER SURFACE (spec 59 c3): a force-laid node ALWAYS names itself on hover, so a decluttered
+    // (hidden) label is one hover away - even for a node that carries an explicit tooltip (the concepts
+    // drill's shared-member note, which does not name the node). The hover is the node's BARE name
+    // (opts.name, falling back to opts.label) followed by any explicit tooltip note, so an explicit tip
+    // AUGMENTS the name, never suppresses it. The bare name deliberately drops any display-only tag the
+    // label carries (the concepts drill's [shared]), so that tag stays a single occurrence per node. A
+    // layered view (no declutter, labels always drawn) keeps the opts.title-only surface and stays
     // byte-identical.
-    const hover = tip ? tip : (declutter ? opts.label(n) : "");
+    const name = opts.name ? opts.name(n) : opts.label(n);
+    const hover = declutter ? (tip ? name + " - " + tip : name) : tip;
     const titleEl = hover ? '<title>' + esc(hover) + '</title>' : "";
     // A force node carries its id (data-nid) so the zoom handler can toggle its label; a layered node
     // omits it and stays byte-identical.
@@ -1697,6 +1700,10 @@ function renderKgDrill(nb) {
     // no title, so the node stays byte-identical.
     title: n => n.shared ? "shared member: realizes multiple concepts (folded under its primary bucket)" : "",
     nodeAttrs: n => ' data-seed="' + esc(n.id) + '"',
+    // The BARE identity kgSvg folds into the hover surface (spec 59 c3): the node's name WITHOUT the
+    // [shared] display tag, so a decluttered shared member still names itself on hover (its title note
+    // does not name it) while the [shared] tag stays a single occurrence in the on-canvas label.
+    name: n => n.label || n.id,
     // A shared member's label carries a plain-text [shared] tag so a human reads the multi-concept
     // membership without hovering; a single-concept member's label is unchanged.
     label: n => n.shared ? (n.label || n.id) + " [shared]" : (n.label || n.id),
