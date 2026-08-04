@@ -1172,12 +1172,23 @@ function frComponent(ids, adj, w, h) {
 }
 
 // The deterministic layout for a WHOLE drawing: split into connected components (union-find); a single
-// connected graph is force-laid then stretched to fill the panel; a disconnected graph lays out each
-// component and SHELF-PACKS the pieces (rows, left to right, wrapping) so they tile the panel. Returns
+// connected graph is force-laid then stretched to fill the canvas; a disconnected graph lays out each
+// component and SHELF-PACKS the pieces (rows, left to right, wrapping) so they tile the canvas. Returns
 // a map id -> {x, y} with FINITE positions for every node.
-function forceLayout(nodes, edges, width, height) {
+//
+// DENSITY-SCALED SPACING (spec 59 c2): the canvas is not the raw panel but the panel grown by
+// kgSpread(nodes, ..., radiusOf, labelOf) - so it spreads with the node count AND the total label area
+// instead of compressing every density into the panel's centre. The larger canvas also lifts the FR
+// repulsion (k = sqrt(canvasArea / n) inside frComponent), so denser and wider-labelled graphs push
+// apart harder. The enlarged canvas is then CENTRED on the panel (a pure translation) so the reset
+// pan/zoom view opens on the MIDDLE of the drawing; the panel pans and zooms, so a canvas larger than
+// the viewport is fine - clarity beats fitting. `radiusOf`/`labelOf` are optional: absent them the
+// factor is 1 and the layout is the panel-sized one as before (the layered layout never routes here).
+function forceLayout(nodes, edges, width, height, radiusOf, labelOf) {
   const ids = nodes.map(n => n.id);
   if (!ids.length) return {};
+  const f = kgSpread(nodes, width, height, radiusOf, labelOf);
+  const cw = width * f, ch = height * f;             // the density-scaled canvas
   const idset = {};
   ids.forEach(id => { idset[id] = true; });
   const inGraph = edges.filter(e => idset[e.from] && idset[e.to]);
@@ -1188,32 +1199,42 @@ function forceLayout(nodes, edges, width, height) {
   const comps = {};
   ids.forEach(id => { const r = ufFind(parent, id); (comps[r] = comps[r] || []).push(id); });
   const compList = Object.keys(comps).sort().map(r => comps[r].slice().sort());
+  let laid;
   if (compList.length === 1) {
-    return fitToBox(frComponent(compList[0], adjAll, width, height), compList[0], 0, 0, width, height);
+    laid = fitToBox(frComponent(compList[0], adjAll, cw, ch), compList[0], 0, 0, cw, ch);
+  } else {
+    // Disconnected: pack each component's box into shelves (rows) so the pieces tile the canvas.
+    const out = {};
+    const boxes = compList.map(cids => ({
+      ids: cids,
+      side: Math.max(64, Math.min(Math.min(cw, ch), 44 * Math.sqrt(cids.length)))
+    }));
+    let curX = 0, curY = 0, shelfH = 0;
+    boxes.forEach(box => {
+      if (curX + box.side > cw && curX > 0) { curX = 0; curY += shelfH; shelfH = 0; }
+      const bset = {};
+      box.ids.forEach(id => { bset[id] = true; });
+      const localAdj = adjAll.filter(e => bset[e[0]] && bset[e[1]]);
+      const fitted = fitToBox(frComponent(box.ids, localAdj, box.side, box.side),
+        box.ids, curX, curY, box.side, box.side);
+      box.ids.forEach(id => { out[id] = fitted[id]; });
+      curX += box.side;
+      shelfH = Math.max(shelfH, box.side);
+    });
+    // Fill the canvas: the shelf-packed pieces are laid out from the top-left, so stretch the whole
+    // packing to fill the (density-scaled) canvas instead of clumping in a corner. This scales node
+    // CENTRES only (radii are fixed in kgSvg), so it spreads the clusters and relieves label overlap
+    // without distorting the circles. Applies to the whole-graph overview and to a disconnected drill.
+    laid = fitToBox(out, ids, 0, 0, cw, ch);
   }
-  // Disconnected: pack each component's box into shelves (rows) so the pieces tile the panel.
-  const out = {};
-  const boxes = compList.map(cids => ({
-    ids: cids,
-    side: Math.max(64, Math.min(Math.min(width, height), 44 * Math.sqrt(cids.length)))
-  }));
-  let curX = 0, curY = 0, shelfH = 0;
-  boxes.forEach(box => {
-    if (curX + box.side > width && curX > 0) { curX = 0; curY += shelfH; shelfH = 0; }
-    const bset = {};
-    box.ids.forEach(id => { bset[id] = true; });
-    const localAdj = adjAll.filter(e => bset[e[0]] && bset[e[1]]);
-    const fitted = fitToBox(frComponent(box.ids, localAdj, box.side, box.side),
-      box.ids, curX, curY, box.side, box.side);
-    box.ids.forEach(id => { out[id] = fitted[id]; });
-    curX += box.side;
-    shelfH = Math.max(shelfH, box.side);
-  });
-  // Fill the panel: the shelf-packed pieces are laid out from the top-left, so stretch the whole
-  // packing to fill the viewBox instead of clumping in a corner. This scales node CENTRES only (radii
-  // are fixed in kgSvg), so it spreads the clusters out and relieves label overlap without distorting
-  // the circles. Applies to the whole-graph overview and to a disconnected-file drill alike.
-  return fitToBox(out, ids, 0, 0, width, height);
+  // Centre the enlarged canvas on the panel so the reset pan/zoom view opens on the MIDDLE of the
+  // drawing (pan/zoom reaches the rest). A pure translation, so the extent and every pairwise distance
+  // are unchanged; a no-op when f === 1 (the panel-sized layout, offsets zero).
+  const offx = (width - cw) / 2, offy = (height - ch) / 2;
+  if (offx !== 0 || offy !== 0) {
+    ids.forEach(id => { laid[id].x += offx; laid[id].y += offy; });
+  }
+  return laid;
 }
 
 // --- Collision-free SEPARATION pass (spec 59 c1) ------------------------------------------------
@@ -1236,6 +1257,10 @@ const KG_SEP_MAX_PASSES = 2000; // the fixed iteration bound; the pass exits ear
                                 // finds no overlap, so it is deterministic and bounded either way.
                                 // A 160-node overview (the Code lens's real density) fully declusters
                                 // well within it; smaller graphs settle in a handful of sweeps
+const KG_EXTENT_SPREAD = 4;     // density-scaled spacing (spec 59 c2): the force canvas grows to this
+                                // many times the total collision-body area, so on average each body
+                                // owns a cell ~KG_EXTENT_SPREAD its own size - about one body-width of
+                                // whitespace between neighbours, room for the edges to read as lines
 
 // The label box footprint (half-width and height) from the label's character count and font metrics.
 // The whole node (circle + label) is the collision body, so an empty label still leaves the circle.
@@ -1256,6 +1281,24 @@ function kgNodeBody(x, y, r, label) {
     y0: y - r - KG_BODY_PAD,
     y1: y + r + KG_LABEL_GAP + lab.h + KG_BODY_PAD,
   };
+}
+
+// The density SPREAD factor (spec 59 c2): how much larger than the panel the force canvas must be so
+// the nodes AND their labels have room. The DEMAND is the total collision-body area (circle + label
+// box, the same kgNodeBody geometry the separation pass and the renderer use) summed over all nodes -
+// so it grows with BOTH the node count and the total label area. The canvas area is KG_EXTENT_SPREAD
+// times that demand, and the factor is the sqrt of the canvas-to-panel area ratio, floored at 1 so a
+// sparse graph keeps the panel and is never shrunk below it. Pure arithmetic, hence deterministic.
+// Absent accessors (a bare structural call, e.g. the c1 separation harness, or the layered layout that
+// never routes here) return 1, so those callers lay out on the panel exactly as before.
+function kgSpread(nodes, width, height, radiusOf, labelOf) {
+  if (!radiusOf || !labelOf || !nodes.length) return 1;
+  let demand = 0;
+  nodes.forEach(n => {
+    const b = kgNodeBody(0, 0, radiusOf(n), labelOf(n));
+    demand += (b.x1 - b.x0) * (b.y1 - b.y0);
+  });
+  return Math.max(1, Math.sqrt((demand * KG_EXTENT_SPREAD) / (width * height)));
 }
 
 // The SEPARATION pass: displace overlapping collision bodies apart until none intersect. `radiusOf`
@@ -1317,7 +1360,13 @@ function kgSeparate(pos, nodes, radiusOf, labelOf) {
 // forward edges at it; and `opts.edgeBack(e)` renders a recursion edge as a DISTINCT curved return
 // arc instead of a straight line. With none supplied the emitter draws exactly as before.
 function kgSvg(nodes, edges, width, height, opts) {
-  const pos = (opts.layout || forceLayout)(nodes, edges, width, height);
+  // The force path is DENSITY-SCALED (spec 59 c2): forceLayout takes the per-node radius/label
+  // accessors so its canvas (and thus its repulsion) grows with the node count and the total label
+  // area. The layered call-DAG (opts.layout) keeps its own within-layer spacing, so it is called with
+  // the bare 4-arg signature and never scales.
+  const pos = opts.layout
+    ? opts.layout(nodes, edges, width, height)
+    : forceLayout(nodes, edges, width, height, opts.radius, opts.label);
   // SEPARATION pass (spec 59 c1): only the force-laid views. The label is part of the node, so
   // displace overlapping circle+label bodies apart until none intersect - deterministic, and it may
   // push the drawing past the viewBox (pan/zoom handles it). The layered call-DAG (opts.layout) keeps
