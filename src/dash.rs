@@ -4229,7 +4229,10 @@ mod tests {
                 other => panic!("a free port must yield Bound on that exact port, got {other:?}"),
             }
         }
-        assert!(bound_ok, "16 straight ephemeral-port races is not interference; investigate");
+        assert!(
+            bound_ok,
+            "16 straight ephemeral-port races is not interference; investigate"
+        );
 
         // A port HELD by an unrelated listener that never emits the dash header: a genuine
         // conflict -> AddrInUse, never a silent drift and never a false AlreadyServing.
