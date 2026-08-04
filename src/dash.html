@@ -254,6 +254,9 @@
      both a hub and multi-concept reads as shared (the honesty marker wins the ring). */
   .kgshared circle { stroke: var(--accent); stroke-width: 2; stroke-dasharray: 3 2; }
   .kglabel { fill: var(--ink); font-size: 10px; text-anchor: middle; pointer-events: none; }
+  /* Adaptive labels (spec 59 c3): a node the declutter has not admitted at the current zoom draws as a
+     bare dot - its label is hidden until a deeper zoom reveals it (or the hover <title> names it). */
+  .kgn.kg-nolabel .kglabel { display: none; }
   /* Directed-call views (spec 52 c5). The arrowhead fill; a BACK edge (recursion) is a dashed accent
      arc so it reads apart from the solid forward edges; a FRONTIER node (a multi-candidate hop) gets
      an accent ring so it stands out as the actionable "choose a definition" node. */
@@ -1350,6 +1353,65 @@ function kgSeparate(pos, nodes, radiusOf, labelOf) {
   return pos;
 }
 
+// ADAPTIVE LABELS (spec 59 c3): declutter by importance, reveal on zoom. At a given effective screen
+// SCALE the visible-label set is chosen so the drawn labels' collision bodies (the SAME kgNodeBody
+// geometry the separation pass and the renderer use) are pairwise DISJOINT, biased to the nodes that
+// MATTER - the largest (a high-degree proxy) first, lexicographic id tie-break. Each node carries a
+// reveal THRESHOLD: the smallest effective scale at which its body clears every MORE-IMPORTANT node's
+// body. Zooming raises the effective scale, so more thresholds are crossed and more labels appear -
+// a MONOTONE reveal (a deeper zoom's visible set is a superset of a shallower one's) that is DISJOINT at
+// every scale (a label shows only once it clears every more-important label) and DETERMINISTIC (pure
+// arithmetic over the position map, fixed importance/tie-break order - the same graph + scale selects
+// the identical set on every poll).
+
+// The minimal effective scale at which two fixed-size bodies (centred at their scale-multiplied
+// positions) become DISJOINT. As the scale grows the centres separate while the bodies stay fixed, so
+// beyond this scale they never overlap again. They are disjoint when EITHER axis clears, so it is the
+// smaller of the two per-axis clearing scales; coincident centres never separate (Infinity). Each item
+// carries hw (body half-width) and up/down (its reach above/below the centre) from kgNodeBody.
+function kgClearScale(a, b) {
+  const dx = a.p.x - b.p.x, dy = a.p.y - b.p.y;
+  const sx = dx !== 0 ? (a.hw + b.hw) / Math.abs(dx) : Infinity;
+  let sy = Infinity;
+  if (dy < 0) sy = (a.down + b.up) / (-dy);        // a's body sits above b's, so a.down vs b.up
+  else if (dy > 0) sy = (b.down + a.up) / dy;      // b's body sits above a's, so b.down vs a.up
+  return Math.min(sx, sy);
+}
+
+// Each node's reveal THRESHOLD: the smallest effective scale at which its body clears EVERY
+// more-important node's body. Importance is node SIZE (radius, a high-degree proxy) descending, with a
+// lexicographic id tie-break, so the top node has no constraint (threshold 0 - always labelled). Bodies
+// are the fixed kgNodeBody at the origin (hw, up, down), so the SAME geometry the renderer draws governs
+// the declutter. Pure and deterministic. Absent accessors or fewer than two positioned nodes leave
+// every threshold 0 (nothing to declutter).
+function kgLabelThresholds(nodes, pos, radiusOf, labelOf) {
+  const items = nodes.filter(n => pos[n.id]).map(n => {
+    const b = kgNodeBody(0, 0, radiusOf(n), labelOf(n));
+    return { id: n.id, r: radiusOf(n), p: pos[n.id], hw: b.x1, up: -b.y0, down: b.y1 };
+  }).sort((a, b) => (b.r - a.r) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const thr = {};
+  for (let i = 0; i < items.length; i++) {
+    let t = 0;
+    for (let j = 0; j < i; j++) {
+      const s = kgClearScale(items[i], items[j]);
+      if (s > t) t = s;
+    }
+    thr[items[i].id] = t;
+  }
+  return thr;
+}
+
+// The VISIBLE-LABEL SET at an effective screen scale: every node whose reveal threshold the scale has
+// crossed. Disjoint by construction (a node only crosses once it clears every more-important body) and
+// monotone in the scale (a deeper zoom is a superset). This is the ONE declutter authority - the render
+// stamps each force node's id (data-nid) and the zoom handler recomputes this set at the live scale.
+function kgVisibleLabels(nodes, pos, scale, radiusOf, labelOf) {
+  const thr = kgLabelThresholds(nodes, pos, radiusOf, labelOf);
+  const vis = {};
+  Object.keys(thr).forEach(id => { if (thr[id] <= scale) vis[id] = true; });
+  return vis;
+}
+
 // Emit the SVG for a graph: a layout places the nodes, then we draw one edge per <line>/<path> and
 // one <g><circle><text></g> per node - all inside a single #kgzoom group the pan/zoom transforms. The
 // caller supplies per-node radius/colour/class/label and the select handle (data-cluster on a cluster
@@ -1372,6 +1434,13 @@ function kgSvg(nodes, edges, width, height, opts) {
   // push the drawing past the viewBox (pan/zoom handles it). The layered call-DAG (opts.layout) keeps
   // its own layout, which already spaces nodes within a layer, so it is left untouched here.
   if (!opts.layout) kgSeparate(pos, nodes, opts.radius, opts.label);
+  // ADAPTIVE LABELS (spec 59 c3): the force-laid views declutter their labels by importance and reveal
+  // more on zoom. Record the laid-out position map + the radius/label accessors + the viewBox width so
+  // the live zoom handler (kgApplyLabels) can recompute the visible set at the CURRENT effective scale.
+  // The layered call-DAG keeps every label (its own within-layer layout is readable by construction), so
+  // it clears the state and stays byte-identical.
+  const declutter = !opts.layout;
+  kgLabelState = declutter ? { nodes: nodes, pos: pos, radius: opts.radius, label: opts.label, width: width } : null;
   // The arrowhead marker (spec 52 c5): defined ONLY when the caller asks for direction, so the
   // exploration views (no marker) emit no <defs> and stay byte-identical. Forward directed edges
   // then carry marker-end so the callee end draws an arrowhead.
@@ -1403,11 +1472,19 @@ function kgSvg(nodes, edges, width, height, opts) {
     const cls = opts.nodeClass ? opts.nodeClass(n) : "kgdot";
     const attrs = opts.nodeAttrs ? opts.nodeAttrs(n) : "";
     const fill = opts.fill ? ' fill="' + esc(opts.fill(n)) + '"' : "";
-    // An optional native SVG <title> (hover tooltip), emitted ONLY when the caller supplies opts.title
-    // AND it returns a non-empty string - so every view that does not ask for one stays byte-identical.
     const tip = opts.title ? opts.title(n) : "";
-    const titleEl = tip ? '<title>' + esc(tip) + '</title>' : "";
-    return '<g class="kgn ' + cls + '"' + attrs + ' transform="translate(' + q.x.toFixed(1) + ','
+    // The HOVER SURFACE (spec 59 c3): a force-laid node names its label on hover, so a decluttered
+    // (hidden) label is one hover away. A node that already carries an explicit tooltip (only the
+    // concepts drill's shared-member note) keeps THAT tooltip verbatim - it identifies the node, and the
+    // human-readable [shared] label tag must stay a single occurrence - so the label-hover is added only
+    // where there is no explicit tooltip. A layered view keeps the opts.title-only behavior and stays
+    // byte-identical.
+    const hover = tip ? tip : (declutter ? opts.label(n) : "");
+    const titleEl = hover ? '<title>' + esc(hover) + '</title>' : "";
+    // A force node carries its id (data-nid) so the zoom handler can toggle its label; a layered node
+    // omits it and stays byte-identical.
+    const nid = declutter ? ' data-nid="' + esc(n.id) + '"' : "";
+    return '<g class="kgn ' + cls + '"' + nid + attrs + ' transform="translate(' + q.x.toFixed(1) + ','
       + q.y.toFixed(1) + ')">' + titleEl + '<circle r="' + r.toFixed(1) + '"' + fill + '/>'
       + '<text class="kglabel" y="' + (r + 11).toFixed(1) + '">' + esc(opts.label(n)) + '</text></g>';
   }).join("");
@@ -1467,9 +1544,37 @@ function layeredLayout(nodes, edges, width, height) {
 // so a drag that leaves the svg still tracks.
 let kgView = { k: 1, x: 0, y: 0 };
 let kgDrag = null;
+// The last force view's laid-out positions + accessors (set by kgSvg, null on a layered view): the
+// adaptive-label declutter (spec 59 c3) recomputes its visible set from this at the live zoom.
+let kgLabelState = null;
 function applyKgView() {
   const g = el("kgpanel").querySelector("#kgzoom");
   if (g) g.setAttribute("transform", "translate(" + kgView.x + "," + kgView.y + ") scale(" + kgView.k + ")");
+  kgApplyLabels();
+}
+// ADAPTIVE LABELS live toggle (spec 59 c3): recompute the visible-label set at the CURRENT effective
+// screen scale - the viewBox-to-panel FIT (rendered width / graph width) times the zoom factor - and
+// draw only those labels, hiding the rest (.kg-nolabel) as bare dots. The hover <title> still names
+// every node, so a hidden label is one hover away. Cheap (O(n^2) over <=160 nodes) and deterministic:
+// kgVisibleLabels is the single declutter authority. A no-op on a layered view (no state) or before a
+// force view has rendered.
+function kgApplyLabels() {
+  const st = kgLabelState;
+  if (!st) return;
+  const panel = el("kgpanel");
+  const svg = panel.querySelector("svg");
+  if (!svg) return;
+  const screenW = (svg.getBoundingClientRect && svg.getBoundingClientRect().width) || svg.clientWidth || st.width;
+  const fit = st.width ? screenW / st.width : 1;
+  const eff = fit * kgView.k;
+  const vis = kgVisibleLabels(st.nodes, st.pos, eff, st.radius, st.label);
+  const nodes = panel.querySelectorAll("#kgzoom .kgn");
+  nodes.forEach(node => {
+    const id = node.dataset ? node.dataset.nid : node.getAttribute("data-nid");
+    if (id === undefined || id === null || id === "") return;
+    if (vis[id]) node.classList.remove("kg-nolabel");
+    else node.classList.add("kg-nolabel");
+  });
 }
 function bindKgView() {
   kgView = { k: 1, x: 0, y: 0 };               // a fresh render resets the view
