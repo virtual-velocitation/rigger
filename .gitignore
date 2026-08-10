@@ -41,3 +41,4 @@ shim/node_modules/
 # The run's transient scratch root: unit/review worktrees + their build dirs
 # (defaults.workdir / RIGGER_TMPDIR override the location; Gap 14)
 .rigger/tmp
+.rigger/store.conn
