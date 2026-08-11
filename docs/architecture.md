@@ -709,12 +709,32 @@ is deduped under can never drift between them. Four properties define it:
 - **Batched fold.** Each file's whole batch is appended in ONE store append and folded in
   ONE graph transaction (`append_and_fold_batch`), because the measured cold-build throughput
   was transaction-cadence bound, not parse-bound - one transaction per file, not per event.
-- **Content-keyed skip.** Every event carries a deterministic content key
+- **Content-keyed skip, project-scoped.** Every event carries a deterministic content key
   `<prefix>/<file>@<hash>#<i>`, a pure function of the batch's bytes (`gc` for code, `gd` for
-  design). An unchanged file yields identical keys, so a re-ingest (a `reindex` after a unit
-  integrates, or an incremental `graph build`) **skips** it and re-folds nothing; a changed
-  file hashes to new keys and re-emits. Only what changed is re-parsed and re-emitted;
-  unchanged files are skipped entirely, so a step never re-processes the whole tree.
+  design). One predicate (`ingest::project_scoped_replay_keys`, beside the key authority that
+  builds that format) decides what a fresh emit is redundant against, and both sinks - the run's
+  keyed emit and a cold `graph build` - call it rather than carrying their own copy. It applies
+  three rules in order:
+  - **Type first.** Only the four derived index types (`CodeEntityExtracted`, `EdgeInferred`,
+    `DocConceptExtracted`, `DocLinkExtracted`) are eligible. Every other event is passed over
+    whatever its replay key looks like, so no domain event can be dropped by this path and the
+    partition is a property of the code, not of a naming convention.
+  - **Project scope, not run scope.** The eligible keys are read from the WHOLE stream, because a
+    file's content hash does not change because a new run started. A derived index fact is a fact
+    about the project's files; run scoping belongs to keys whose recurrence is a property of one
+    run (unit lifecycle, gate verdicts, breaker trips), and those still seed from the current run's
+    slice. So an unchanged file appends **zero** events on every subsequent run, forever - the log
+    stops re-accumulating a re-derivable index.
+  - **Latest generation per file, never ever-recorded.** A batch is suppressed only when its hash
+    equals the hash of the LATEST batch recorded for that same file. A changed file - **including
+    one reverted to content it held at an earlier recorded generation** - differs from its latest
+    batch, so it re-emits in full and supersedes its prior structural edges. An ever-recorded key
+    set would match the reverted content's old records, re-emit nothing, and strand the graph on a
+    superseded version of that file.
+
+  The net contract: after any mix of skipping and re-ingest, the live graph equals what a cold
+  rebuild from the current tree would produce, and only what changed is ever re-parsed or
+  re-emitted.
 
 ### 5.6 The loop, concretely: emit, project, retrieve
 

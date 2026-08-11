@@ -3289,16 +3289,21 @@ fn cmd_graph_build(_args: &[String]) -> Res {
         }
     };
 
-    // Seed the seen-keys from the existing log's replay keys so a re-build refreshes incrementally
-    // (spec 45: "on an existing one it refreshes incrementally"). This mirrors the run's
-    // `replayed_keys` seeding - the SAME content-keyed dedup, driven from the log rather than a
-    // live run - so an unchanged file's already-recorded key is skipped and only changed files
-    // re-emit.
+    // Seed the seen-keys from the existing log so a re-build refreshes incrementally (spec 45: "on
+    // an existing one it refreshes incrementally"), through the ONE predicate that owns the
+    // content-key format ([`rigger::ingest::project_scoped_replay_keys`]) - the same predicate the
+    // run's `replayed_keys` seeding calls, never a second copy here, so a build and a run can never
+    // disagree about which recorded key a fresh emit is redundant against.
+    //
+    // The predicate is TYPE-FIRST and LATEST-PER-FILE, which is what this seeding used to get
+    // wrong in both directions: it collected EVERY event's replay key with no type test (so a
+    // non-derived key could suppress a derived emit that happened to share its spelling) and it
+    // treated a key as redundant whenever it had EVER been recorded (so a file reverted to content
+    // it held at an earlier generation re-emitted nothing and stranded the graph on the superseded
+    // version). Only the LATEST recorded generation of each file suppresses now.
     let prior = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
-    let mut seen: std::collections::HashSet<String> = prior
-        .iter()
-        .filter_map(|e| e.meta.get(conductor::META_REPLAY_KEY).cloned())
-        .collect();
+    let mut seen: std::collections::HashSet<String> =
+        rigger::ingest::project_scoped_replay_keys(&prior);
 
     // The walk and content key are the shared authority; the cold build's emit SINK appends each
     // file's WHOLE batch to the run stream in ONE append and folds it into the graph in ONE
