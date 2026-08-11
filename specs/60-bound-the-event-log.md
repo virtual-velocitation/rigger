@@ -15,15 +15,20 @@ not change because a new run started.
 
 ## Design
 
-- **Project-scoped ingest dedup** (`src/conductor.rs`): the dedup key set consulted by the ingest
-  emit path is seeded from the WHOLE stream (`all_prior`, already read at run start - no extra
-  store round-trip), not the current-run slice. The partition is by key shape: ingest keys carry
+- **Project-scoped ingest dedup** (`src/conductor.rs`): the dedup consulted by the ingest emit
+  path is project-scoped, derived from the whole stream (`all_prior`, already read at run start
+  - no extra store round-trip), not from the current-run slice. The comparison is LATEST-PER-FILE,
+  not ever-recorded: a file's batch is suppressed only when its content hash equals the hash of
+  the LATEST batch recorded for that same file. The partition is by key shape: ingest keys carry
   the `gc/` / `gd/` prefixes (`src/ingest.rs::key_batch`), every other replay key (unit
   lifecycle, gate verdicts, breaker trips) stays seeded from the current run's slice exactly as
   today. An unchanged file therefore appends ZERO events on every subsequent run forever; a
-  changed file hashes to fresh keys, re-emits its whole batch, and supersedes its prior
-  structural edges by the existing spec-29a mechanism. The misleading comment on
-  `ingest_project_batches` (which claims this behavior already holds) starts telling the truth.
+  changed file - INCLUDING a file reverted to content it held at any earlier point - hashes
+  differently from its latest recorded batch, re-emits its whole batch, and supersedes its prior
+  structural edges by the existing spec-29a mechanism. (An ever-recorded key set would wedge the
+  revert case: the reverted content's keys match old records, nothing re-emits, and the graph
+  stays on the superseded version forever.) The misleading comment on `ingest_project_batches`
+  (which claims project-scoped dedup already holds) starts telling the truth.
 - **Storage-level idempotency guard** (`src/eventstore/`, append seam): defense in depth so a
   regression upstream can never re-bloat the log. Appending an event of one of the four derived
   index types whose replay key is already recorded is a storage no-op (the append reports
@@ -63,8 +68,11 @@ not change because a new run started.
   `cargo test` - on default features AND `--no-default-features`.
 - Fail-safe direction: dedup and compaction may only ever DROP redundant derived-index appends;
   no path may drop, reorder, or rewrite a non-derived event.
-- The graph projection's contract is untouched: after any mix of dedup, compaction, and
-  re-ingest, folding the log yields the same live graph as before.
+- The graph projection's contract is untouched, stated precisely: after any mix of dedup,
+  compaction, and re-ingest, the live graph equals what a cold rebuild from the CURRENT tree
+  would produce. Suppression may only ever skip appends that are redundant AGAINST THE LATEST
+  recorded state per file - it must never leave the graph on a superseded version of any file
+  (the revert case above is part of this contract, not an exception to it).
 
 ## Done when
 
