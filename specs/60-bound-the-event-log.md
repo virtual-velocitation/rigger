@@ -49,11 +49,17 @@ not change because a new run started.
   NOT redundant and MUST append; an ever-recorded test here would re-wedge the revert case
   Global constraint 4 forbids. ONLY the derived types get content identity: domain events
   legitimately repeat (two identical `ReviewFinding`s mean the finding was raised twice), so
-  every non-derived type keeps per-append identity untouched. Implementation may use a lazily
-  created index over the derived types' replay keys or an in-connection seen-set - whatever the
-  store layer makes honest - but the observable contract is the no-op, and a no-op must never
-  cost more than an index seek on a log of any size. Because a suppressed append writes fewer
-  events than it was handed, what the append REPORTS BACK has to say what it actually wrote:
+  every non-derived type keeps per-append identity untouched. THE RECORDED STATE THIS GUARD TESTS
+  IS THE LOG'S, never one connection's or one process's: it asks the SAME latest-per-file question
+  of the replay keys the log ALREADY carries, so a fresh process's first append gets the same
+  answer as a long-lived one's thousandth. An in-connection or in-memory seen-set is NOT an
+  implementation of this guard and does not satisfy the criterion - the duplication it exists to
+  stop is cross-PROCESS (every `rigger step` and every cold `rigger graph build` is its own
+  process, and the sink above already emits a given key at most once WITHIN a run), so a set that
+  starts empty each process defends nothing. The implementation is therefore an index over the
+  derived types' replay keys, created lazily; the observable contract is the no-op, and a no-op
+  must never cost more than an index seek on a log of any size. Because a suppressed append
+  writes fewer events than it was handed, what the append REPORTS BACK has to say what it wrote:
   the one shared append-and-fold authority (`src/ingest.rs::append_and_fold_batch`) derives each
   event's fold position arithmetically as `base = last + 1 - n`, which is only true when all `n`
   events were written, so a short write must be observable at the port or every event in that
@@ -135,9 +141,16 @@ not change because a new run started.
 - [ ] a test proves UNCHANGED-TREE RUNS APPEND NOTHING: a second run (fresh `RunStarted`) over an
   unchanged tree appends zero derived-index events, because the ingest dedup keys are seeded from
   the whole stream rather than the current run's slice. This criterion OWNS the seeding fix at
-  BOTH ingest sinks (the run's keyed emit and the cold graph build), and with it the type-first
-  suppression predicate itself - the predicate IS the seeding fix, so writing it is this
-  criterion's work and no reviewer may charge it to criterion 2. It is the AUTHORITATIVE layer:
+  BOTH ingest sinks, named: the run's keyed emit in `src/conductor.rs` (the `replayed_keys`
+  seeding at run start and the keyed batch emit) AND the cold graph build in `src/main.rs`, which
+  today collects every event's replay key with no type test at all (ever-recorded AND type-blind)
+  and is the larger of the two edits. It owns with them the type-first suppression predicate
+  itself - the predicate IS the seeding fix, so writing it is this criterion's work and no
+  reviewer may charge it to criterion 2. ONE predicate, written ONCE beside the key authority
+  `key_batch` in `src/ingest.rs` and called from both sinks, never copied into either caller,
+  because the `<prefix>/<file>@<hash>#<i>` format is built there and must not drift; adding it
+  there touches no contract of `append_and_fold_batch`, which is criterion 4's and stays so.
+  It is the AUTHORITATIVE layer:
   what this rule lets through is what the log receives on the run path. EXCLUSIONS, so no
   reviewer demands them here: this criterion does NOT own the store-layer guard (criterion 4),
   does NOT own the revert proof (criterion 3), does NOT own the `rigger reset` prose (criterion
@@ -167,8 +180,15 @@ not change because a new run started.
   defense, and with it the honesty of the shared append-and-fold authority under a partially
   suppressed append: what the append reports back must name what was written, so
   `src/ingest.rs::append_and_fold_batch` never folds an event at a position the store did not
-  issue - and `src/ingest.rs` is THIS criterion's file to change; criteria 1 and 3 do not alter
-  that authority's contract. It is the SUBORDINATE layer: the sink rule of criterion 1 decides
+  issue. WHAT THIS CRITERION OWNS IN `src/ingest.rs` IS THAT AUTHORITY, NOT THE FILE:
+  `append_and_fold_batch`'s contract, its signature, and its honesty under a partially suppressed
+  append - and nothing else in that file. Criterion 1 MAY add the one shared type-first,
+  whole-key, latest-per-file predicate beside `key_batch` in `src/ingest.rs`, which is where it
+  belongs (the `<prefix>/<file>@<hash>#<i>` format is BUILT by `key_batch` there, the module
+  exports no parser for it, and the module doc says that key must never fork), and no reviewer
+  may reject criterion 1 for adding it there: a sibling helper beside `key_batch` alters no
+  contract of this authority. Criteria 1 and 3 do not alter that contract; this criterion does
+  not write that predicate. It is the SUBORDINATE layer: the sink rule of criterion 1 decides
   what reaches the store on the run path, and this guard exists so a regression upstream can
   never re-bloat the log. It therefore applies the SAME latest-per-file test (never a wider,
   ever-recorded one), and it proves itself by driving the STORE PORT directly, since a correct
