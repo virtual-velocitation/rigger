@@ -732,9 +732,14 @@ is deduped under can never drift between them. Four properties define it:
     set would match the reverted content's old records, re-emit nothing, and strand the graph on a
     superseded version of that file.
 
-  The net contract: after any mix of skipping and re-ingest, the live graph equals what a cold
-  rebuild from the current tree would produce, and only what changed is ever re-parsed or
-  re-emitted.
+  The net contract, **for every file the tree still holds**: after any mix of skipping and
+  re-ingest, the live graph carries what a cold rebuild from the current tree would derive for that
+  file, and only what changed is ever re-parsed or re-emitted. A file the tree no longer holds is
+  outside it, deliberately: retiring a file's structure is driven by that file's OWN batch
+  (`supersede_file_edges` runs inside the fold of the batch), and the walk emits no batch for a path
+  that is gone - so nothing on the ingest path retires a deleted file's nodes or edges. The
+  projection's only DELETE path is the explicit `Projector::prune` primitive, so shedding a removed
+  file's facts is a deliberate act, never a consequence of the next ingest.
 
 ### 5.6 The loop, concretely: emit, project, retrieve
 

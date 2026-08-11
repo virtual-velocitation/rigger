@@ -77,16 +77,21 @@ pub const TYPE_BLAST_RADIUS_COMPUTED: &str = "BlastRadiusComputed";
 /// so a wide structural change's true width reaches the tier size signal.
 const GROUNDED_SEED_K: usize = 8;
 
-/// The metadata key carrying an event's deterministic REPLAY KEY (spec 04, criterion
-/// 4). A stepwise/replay run re-executes `conductor::run` over recorded history on
-/// EVERY step; an event stamped with a replay key is appended AT MOST ONCE across those
-/// re-runs, so replay appends no duplicate unit-lifecycle event or gate verdict. The
-/// key is a pure function of the run structure (the unit id, a phase or gate token, and
-/// the remediation attempt), never wall clock or randomness, so two step processes
-/// compute the identical key for the identical event and the second recognizes the
-/// first's as a replay. Folds and projections ignore it (like [`contextgraph::META_ACTOR`]);
-/// only [`RunCtx::emit_keyed`] and the gate-verdict replay read it.
-pub const META_REPLAY_KEY: &str = "replay_key";
+/// The metadata key carrying an event's deterministic REPLAY KEY (spec 04, criterion 4),
+/// RE-EXPORTED from [`crate::ingest`], which owns it: that module builds the
+/// `<prefix>/<file>@<hash>#<i>` content key and parses it back in the suppression predicate both
+/// this conductor and a cold `rigger graph build` share, so the name lives beside the key
+/// authority and this module borrows it rather than the other way round. One constant, one
+/// spelling, no direction of dependency from the key authority up into its orchestrator.
+///
+/// What it buys HERE: a stepwise/replay run re-executes [`run`] over recorded history on EVERY
+/// step; an event stamped with a replay key is appended AT MOST ONCE across those re-runs, so
+/// replay appends no duplicate unit-lifecycle event or gate verdict. The key is a pure function of
+/// the run structure (the unit id, a phase or gate token, and the remediation attempt), never wall
+/// clock or randomness, so two step processes compute the identical key for the identical event and
+/// the second recognizes the first's as a replay. Folds and projections ignore it (like
+/// [`contextgraph::META_ACTOR`]); only [`RunCtx::emit_keyed`] and the gate-verdict replay read it.
+pub use crate::ingest::META_REPLAY_KEY;
 
 /// The replay keys under which the spawn-budget breaker records its halt (Gap 13): a run
 /// halts on budget AT MOST ONCE, so the single `BudgetExhausted` + `TaskAborted` pair is
@@ -6598,10 +6603,25 @@ impl RunCtx<'_> {
         // [`emit_keyed_batch`](RunCtx::emit_keyed_batch): a file's WHOLE batch is appended-and-folded
         // through the single mutation authority in ONE store transaction and ONE graph transaction
         // (spec 49's batched-fold cadence, since the measured cold-build throughput was
-        // transaction-cadence bound), keyed so a re-ingest of an UNCHANGED file finds every key
-        // already recorded (seeded into `replayed_keys` at run start) and appends nothing, while a
-        // CHANGED file's batch hashes differently - every key differs, so the whole batch, its `fresh`
-        // head included, re-emits and supersedes the file's prior structural edges by 29a's mechanism.
+        // transaction-cadence bound).
+        //
+        // WHAT A RE-INGEST APPENDS is decided by `replayed_keys`, which is a PARTITION over two
+        // scopes, not one seed (spec 60): every NON-derived key is seeded from THIS run's slice,
+        // because its recurrence is a property of one run, while the four derived index types are
+        // seeded from the WHOLE stream through the ONE shared predicate
+        // ([`crate::ingest::project_scoped_replay_keys`]), because a file's content hash does not
+        // change because a new run started. Inside that project-scoped half only a file's LATEST
+        // recorded generation suppresses:
+        //
+        // - an UNCHANGED file re-hashes to exactly that generation's keys, so its whole batch is
+        //   already recorded and it appends NOTHING - on this run and on every later run, forever;
+        // - a file whose content differs from its latest recorded batch re-emits the batch whole,
+        //   `fresh` head included, and supersedes its prior structural edges by 29a's mechanism.
+        //   That INCLUDES a file REVERTED to content it held at an earlier generation, whose keys
+        //   are byte-identical to records the log still carries: it re-emits not because its keys
+        //   are new but because those records are no longer the file's latest generation. Seeding
+        //   from every key ever recorded would strand the graph on the superseded version instead.
+        //
         // The dedup lock is held only around the key set (released before the append), so a concurrent
         // unit in the wave still appends its own keyed events in parallel.
         crate::ingest::ingest_project_batched(&root, |keyed| {
