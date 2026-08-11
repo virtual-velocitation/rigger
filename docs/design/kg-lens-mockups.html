@@ -1,0 +1,555 @@
+<title>KG Explorer: Lens Mockups</title>
+<style>
+  :root {
+    --bg: #12161f;
+    --canvas: #10141d;
+    --panel: #1d2433;
+    --panel-2: #232c40;
+    --line: rgba(220,228,242,.10);
+    --line-soft: rgba(220,228,242,.05);
+    --ink: #dce4f2;
+    --muted: #939db4;
+    --faint: #5c6680;
+    --fn: #6ca9f5;
+    --type: #45d0a6;
+    --trait: #b58cf0;
+    --concept: #e2a94f;
+    --file: #7e8aa0;
+    --memory: #e07a9a;
+    --bad: #e0706a;
+    --accent: #e2a94f;
+    --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--sans);
+    margin: 0;
+    padding: 48px 24px 96px;
+    line-height: 1.55;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 10px;
+  }
+  h1 {
+    font-size: 30px;
+    font-weight: 650;
+    letter-spacing: -.01em;
+    margin: 0 0 14px;
+    text-wrap: balance;
+  }
+  h2 {
+    font-size: 20px;
+    font-weight: 650;
+    margin: 0 0 6px;
+    text-wrap: balance;
+  }
+  .lede { color: var(--muted); max-width: 68ch; margin: 0 0 8px; }
+  .lede strong { color: var(--ink); font-weight: 600; }
+  section { margin-top: 64px; }
+  .rulebox {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+    margin-top: 24px;
+  }
+  .rulebox > div {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 16px 18px;
+  }
+  .rulebox h3 {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    margin: 0 0 10px;
+    color: var(--muted);
+  }
+  .rulebox h3.ok { color: var(--type); }
+  .rulebox h3.meta { color: var(--concept); }
+  .rulebox h3.never { color: var(--bad); }
+  .rulebox ul { margin: 0; padding-left: 18px; font-size: 13.5px; color: var(--ink); }
+  .rulebox li { margin: 3px 0; }
+  .rulebox li em { color: var(--muted); font-style: normal; }
+  figure { margin: 20px 0 0; }
+  figure svg {
+    display: block;
+    width: 100%;
+    height: auto;
+    background: var(--canvas);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+  }
+  figcaption { font-size: 13px; color: var(--muted); margin-top: 10px; max-width: 78ch; }
+  ol.keys { margin: 14px 0 0; padding: 0; list-style: none; display: grid; gap: 6px; }
+  ol.keys li {
+    font-size: 13.5px;
+    color: var(--muted);
+    padding-left: 30px;
+    position: relative;
+  }
+  ol.keys li strong { color: var(--ink); font-weight: 600; }
+  ol.keys li::before {
+    content: attr(data-n);
+    position: absolute; left: 0; top: 1px;
+    width: 19px; height: 19px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: #12161f;
+    font-family: var(--mono);
+    font-size: 11px; font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+  }
+  /* SVG text roles */
+  .nl  { font-family: var(--mono); font-size: 11px; fill: var(--ink); }
+  .nl2 { font-family: var(--mono); font-size: 11px; fill: var(--muted); }
+  .el  { font-family: var(--mono); font-size: 10px; fill: var(--faint); }
+  .hull-l { font-family: var(--mono); font-size: 10px; letter-spacing: .1em; }
+  .card-t { font-family: var(--mono); font-size: 12.5px; font-weight: 700; fill: var(--ink); }
+  .card-s { font-family: var(--mono); font-size: 10.5px; fill: var(--muted); }
+  .card-k { font-family: var(--mono); font-size: 9px; letter-spacing: .12em; fill: var(--faint); }
+  .chip-t { font-family: var(--mono); font-size: 10px; fill: var(--ink); }
+  .tab-t  { font-family: var(--mono); font-size: 11px; fill: var(--muted); }
+  .tab-on { font-family: var(--mono); font-size: 11px; font-weight: 700; fill: var(--ink); }
+  .ann-n  { font-family: var(--mono); font-size: 11px; font-weight: 700; fill: #12161f; }
+  .leg    { font-family: var(--mono); font-size: 10.5px; fill: var(--muted); }
+  .crumb  { font-family: var(--mono); font-size: 10.5px; fill: var(--muted); }
+  .interactions { margin-top: 20px; display: grid; gap: 10px; }
+  .interactions .row {
+    display: grid; grid-template-columns: 190px 1fr; gap: 16px;
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 12px 18px; font-size: 13.5px;
+  }
+  .interactions .g { font-family: var(--mono); color: var(--concept); font-size: 12px; padding-top: 1px; }
+  .interactions .d { color: var(--muted); }
+  .interactions .d strong { color: var(--ink); font-weight: 600; }
+  @media (max-width: 760px) {
+    .rulebox { grid-template-columns: 1fr; }
+    .interactions .row { grid-template-columns: 1fr; gap: 4px; }
+  }
+</style>
+
+<div class="wrap">
+
+<p class="eyebrow">kg explorer · design direction</p>
+<h1>One lens, one subject. Everything else is metadata.</h1>
+<p class="lede">The defect in the current canvas: it renders the <strong>storage taxonomy</strong> - per-type
+buckets like <code style="font-family:var(--mono);font-size:.92em">code-entity (4280)</code> and per-file
+spokes - as if they were knowledge. The fix is a discipline, applied per lens: the graph shows only the
+lens's <strong>subjects</strong> and the <strong>typed relationships between them</strong>. Files, concepts,
+and memory still exist everywhere, but as <strong>metadata on the node you're inspecting</strong> - in the
+hover card and the subject view - never as nodes competing in the layout.</p>
+
+<div class="rulebox">
+  <div>
+    <h3 class="ok">On the graph · subjects</h3>
+    <ul>
+      <li><strong>Code lens:</strong> functions, types, traits <em>- calls / contains / implements</em></li>
+      <li><strong>Files lens:</strong> files <em>- uses, weighted by coupling</em></li>
+      <li><strong>Concepts lens:</strong> concepts <em>- co-evidence</em></li>
+    </ul>
+  </div>
+  <div>
+    <h3 class="meta">In the card · metadata</h3>
+    <ul>
+      <li>Defining file + line</li>
+      <li>Concepts the node evidences</li>
+      <li>Memory: decisions, findings</li>
+      <li>Degree, community, peers</li>
+    </ul>
+  </div>
+  <div>
+    <h3 class="never">Never rendered</h3>
+    <ul>
+      <li>Schema names as nodes (<em>code-entity, file, decision</em>)</li>
+      <li>Per-type bucket hubs with counts</li>
+      <li>Cross-taxonomy spokes (file → entity)</li>
+    </ul>
+  </div>
+</div>
+
+<section>
+  <p class="eyebrow">lens 1 of 3</p>
+  <h2>Code lens - the code's own structure</h2>
+  <p class="lede">Subjects are entities: functions (circles), types (squares), traits and contracts
+  (diamonds). Edges are directed and labeled. Coupling communities survive as quiet hulls behind the
+  nodes - grouping, not hubs. Hovering <span style="font-family:var(--mono)">emit_keyed_batch</span>
+  raises the metadata card; nothing about files enters the layout.</p>
+
+  <figure>
+  <svg viewBox="0 0 1040 560" role="img" aria-label="Mockup of the code lens: entity nodes with typed directed edges inside two community hulls, and a hover card carrying file, concept, and memory metadata">
+    <defs>
+      <marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0 0 L8 4 L0 8 z" fill="#5c6680"/>
+      </marker>
+      <marker id="arrdim" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+        <path d="M0 0 L8 4 L0 8 z" fill="#3a4356"/>
+      </marker>
+    </defs>
+
+    <!-- chrome -->
+    <rect x="24" y="16" width="60" height="26" rx="13" fill="none"/>
+    <text x="44" y="33" class="tab-t">Files</text>
+    <rect x="96" y="16" width="62" height="26" rx="13" fill="#232c40"/>
+    <text x="113" y="33" class="tab-on">Code</text>
+    <text x="176" y="33" class="tab-t">Concepts</text>
+    <text x="700" y="33" class="tab-t">view: force ● · layers ○</text>
+    <rect x="856" y="14" width="160" height="28" rx="8" fill="none" stroke="rgba(220,228,242,.12)"/>
+    <text x="868" y="32" class="tab-t" fill="#5c6680">find an entity…</text>
+    <line x1="24" y1="56" x2="1016" y2="56" stroke="rgba(220,228,242,.07)"/>
+
+    <!-- hull: ingest & fold -->
+    <rect x="60" y="96" width="470" height="360" rx="52" fill="rgba(69,208,166,.045)" stroke="rgba(69,208,166,.16)"/>
+    <text x="92" y="124" class="hull-l" fill="rgba(69,208,166,.75)">COMMUNITY · INGEST &amp; FOLD</text>
+
+    <!-- hull: dash lifecycle -->
+    <rect x="568" y="286" width="446" height="234" rx="48" fill="rgba(181,140,240,.045)" stroke="rgba(181,140,240,.16)"/>
+    <text x="600" y="314" class="hull-l" fill="rgba(181,140,240,.75)">COMMUNITY · DASH LIFECYCLE</text>
+
+    <!-- edges: ingest community -->
+    <path d="M168 242 Q 222 196 268 178" fill="none" stroke="#3a4356" stroke-width="1.4" marker-end="url(#arr)"/>
+    <text x="200" y="196" class="el">calls</text>
+    <path d="M312 166 Q 368 146 414 138" fill="none" stroke="#3a4356" stroke-width="1.4" marker-end="url(#arr)"/>
+    <text x="348" y="142" class="el">calls</text>
+    <path d="M180 254 Q 250 288 306 306" fill="none" stroke="#3a4356" stroke-width="1.4" marker-end="url(#arr)"/>
+    <text x="222" y="292" class="el">calls</text>
+    <path d="M322 326 Q 268 358 208 378" fill="none" stroke="#3a4356" stroke-width="1.4" marker-end="url(#arr)"/>
+    <text x="250" y="362" class="el">calls</text>
+    <path d="M206 390 Q 280 408 336 404" fill="none" stroke="#3a4356" stroke-width="1.4" marker-end="url(#arr)"/>
+    <text x="258" y="416" class="el">calls</text>
+    <path d="M382 400 Q 428 388 452 372" fill="none" stroke="#3a4356" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#arrdim)"/>
+    <text x="400" y="384" class="el">implements</text>
+
+    <!-- edges: dash community -->
+    <path d="M652 352 Q 700 336 738 330" fill="none" stroke="#3a4356" stroke-width="1.4" marker-end="url(#arr)"/>
+    <text x="682" y="332" class="el">calls</text>
+    <path d="M796 330 Q 848 340 886 352" fill="none" stroke="#3a4356" stroke-width="1.4" marker-end="url(#arr)"/>
+    <text x="828" y="334" class="el">calls</text>
+    <path d="M636 366 Q 660 402 686 424" fill="none" stroke="#3a4356" stroke-width="1.4" marker-end="url(#arr)"/>
+    <text x="628" y="404" class="el">calls</text>
+    <path d="M906 372 Q 890 424 868 452" fill="none" stroke="#3a4356" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#arrdim)"/>
+    <text x="892" y="420" class="el">creates</text>
+    <path d="M632 470 Q 700 486 806 478" fill="none" stroke="#3a4356" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#arrdim)"/>
+    <text x="700" y="496" class="el">reads</text>
+
+    <!-- cross-community coupling edge -->
+    <path d="M612 356 Q 480 400 388 404" fill="none" stroke="rgba(220,228,242,.10)" stroke-width="1.2" marker-end="url(#arrdim)"/>
+    <text x="472" y="418" class="el">reads</text>
+
+    <!-- nodes: ingest -->
+    <circle cx="152" cy="252" r="13" fill="#6ca9f5" stroke="#10141d" stroke-width="2"/>
+    <text x="86" y="282" class="nl">ingest_project_batched</text>
+    <circle cx="292" cy="172" r="11" fill="#6ca9f5" stroke="#10141d" stroke-width="2"/>
+    <text x="262" y="158" class="nl">key_batch</text>
+    <circle cx="432" cy="134" r="10" fill="#6ca9f5" stroke="#10141d" stroke-width="2"/>
+    <text x="392" y="118" class="nl">content_hash</text>
+    <circle cx="192" cy="386" r="11" fill="#6ca9f5" stroke="#10141d" stroke-width="2"/>
+    <text x="100" y="416" class="nl">append_and_fold_batch</text>
+    <rect x="348" y="392" width="24" height="24" rx="7" fill="#45d0a6" stroke="#10141d" stroke-width="2"/>
+    <text x="342" y="440" class="nl">Store</text>
+    <path d="M468 344 L484 360 L468 376 L452 360 z" fill="#b58cf0" stroke="#10141d" stroke-width="2"/>
+    <text x="428" y="332" class="nl">EventStore</text>
+
+    <!-- hovered node: emit_keyed_batch -->
+    <circle cx="336" cy="316" r="19" fill="none" stroke="rgba(226,169,79,.35)" stroke-width="6"/>
+    <circle cx="336" cy="316" r="13" fill="#6ca9f5" stroke="#e2a94f" stroke-width="2"/>
+    <text x="280" y="348" class="nl" font-weight="700">emit_keyed_batch</text>
+
+    <!-- nodes: dash -->
+    <circle cx="636" cy="356" r="12" fill="#6ca9f5" stroke="#10141d" stroke-width="2"/>
+    <text x="606" y="384" class="nl">cmd_dash</text>
+    <circle cx="766" cy="326" r="11" fill="#6ca9f5" stroke="#10141d" stroke-width="2"/>
+    <text x="690" y="308" class="nl">ensure_run_dashboard_at</text>
+    <circle cx="908" cy="358" r="11" fill="#6ca9f5" stroke="#10141d" stroke-width="2"/>
+    <text x="836" y="346" class="nl">spawn_…_detached</text>
+    <circle cx="696" cy="436" r="11" fill="#6ca9f5" stroke="#10141d" stroke-width="2"/>
+    <text x="600" y="462" class="nl">watch_and_self_reap_on_idle</text>
+    <rect x="846" y="456" width="24" height="24" rx="7" fill="#45d0a6" stroke="#10141d" stroke-width="2"/>
+    <text x="820" y="500" class="nl">DashMarker</text>
+    <circle cx="620" cy="474" r="10" fill="#6ca9f5" stroke="#10141d" stroke-width="2"/>
+
+    <!-- hover card -->
+    <line x1="352" y1="308" x2="596" y2="196" stroke="rgba(226,169,79,.4)" stroke-width="1.2" stroke-dasharray="3 3"/>
+    <rect x="596" y="84" width="404" height="182" rx="12" fill="#1d2433" stroke="rgba(220,228,242,.14)"/>
+    <circle cx="620" cy="110" r="6" fill="#6ca9f5"/>
+    <text x="634" y="115" class="card-t">fn emit_keyed_batch</text>
+    <text x="620" y="136" class="card-s">src/conductor.rs:2137 · degree 17 · community: ingest &amp; fold</text>
+    <line x1="614" y1="150" x2="982" y2="150" stroke="rgba(220,228,242,.08)"/>
+    <text x="620" y="168" class="card-k">FILE</text>
+    <rect x="660" y="156" width="130" height="18" rx="9" fill="rgba(126,138,160,.14)" stroke="rgba(126,138,160,.3)"/>
+    <text x="670" y="169" class="chip-t">src/conductor.rs</text>
+    <text x="620" y="196" class="card-k">CONCEPTS</text>
+    <rect x="690" y="184" width="92" height="18" rx="9" fill="rgba(226,169,79,.12)" stroke="rgba(226,169,79,.35)"/>
+    <text x="700" y="197" class="chip-t">keyed dedup</text>
+    <rect x="790" y="184" width="136" height="18" rx="9" fill="rgba(226,169,79,.12)" stroke="rgba(226,169,79,.35)"/>
+    <text x="800" y="197" class="chip-t">replay idempotency</text>
+    <text x="620" y="224" class="card-k">MEMORY</text>
+    <rect x="678" y="212" width="86" height="18" rx="9" fill="rgba(224,122,154,.12)" stroke="rgba(224,122,154,.35)"/>
+    <text x="688" y="225" class="chip-t">2 decisions</text>
+    <rect x="772" y="212" width="72" height="18" rx="9" fill="rgba(224,122,154,.12)" stroke="rgba(224,122,154,.35)"/>
+    <text x="782" y="225" class="chip-t">1 finding</text>
+    <text x="620" y="252" class="card-s" fill="#5c6680">click: focus as subject · shift-click: peers</text>
+
+    <!-- annotations -->
+    <circle cx="596" cy="84" r="10" fill="#e2a94f"/><text x="592" y="88" class="ann-n">1</text>
+    <circle cx="92" cy="96" r="10" fill="#e2a94f"/><text x="88" y="100" class="ann-n">2</text>
+    <circle cx="404" cy="384" r="10" fill="#e2a94f"/><text x="400" y="388" class="ann-n">3</text>
+
+    <!-- legend -->
+    <circle cx="40" cy="530" r="7" fill="#6ca9f5"/><text x="54" y="534" class="leg">function</text>
+    <rect x="122" y="523" width="14" height="14" rx="4" fill="#45d0a6"/><text x="144" y="534" class="leg">type</text>
+    <path d="M196 523 L203 530 L196 537 L189 530 z" fill="#b58cf0"/><text x="211" y="534" class="leg">trait / contract</text>
+    <text x="330" y="534" class="leg" fill="#5c6680">no file nodes · no type buckets · edges typed &amp; directed</text>
+  </svg>
+  <figcaption>Code lens. Real neighborhood from this repo: the ingest/fold path and the dash lifecycle,
+  as coupling communities. The one cross-community edge is the real seam (the dash reads the store).</figcaption>
+  </figure>
+  <ol class="keys">
+    <li data-n="1"><strong>The card is where the other taxonomies live.</strong> File and line, concept chips,
+    and memory counts appear on hover; clicking a chip pivots the relevant lens to it.</li>
+    <li data-n="2"><strong>Communities are hulls, not hubs.</strong> The Leiden grouping tints a region behind
+    its members. Nothing radiates from a bucket node, so density stays local and readable.</li>
+    <li data-n="3"><strong>Edges carry their type.</strong> Solid directed = calls; dashed = structural
+    (implements, contains, creates). The layered calls view keeps its own layout, unchanged.</li>
+  </ol>
+</section>
+
+<section>
+  <p class="eyebrow">lens 2 of 3</p>
+  <h2>Files lens - coupling between files</h2>
+  <p class="lede">Here files are legitimately the subjects. Node size is entity count, edge weight is
+  coupling strength, hulls are directories. The code inside a file is this lens's metadata: the hover
+  card lists the file's top entities and hands off to the code lens.</p>
+
+  <figure>
+  <svg viewBox="0 0 1040 430" role="img" aria-label="Mockup of the files lens: file nodes sized by entity count, weighted uses edges, directory hulls, and a hover card listing the file's top entities">
+    <defs>
+      <marker id="arr2" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0 0 L8 4 L0 8 z" fill="#5c6680"/>
+      </marker>
+    </defs>
+    <rect x="24" y="16" width="60" height="26" rx="13" fill="#232c40"/>
+    <text x="38" y="33" class="tab-on">Files</text>
+    <text x="106" y="33" class="tab-t">Code</text>
+    <text x="176" y="33" class="tab-t">Concepts</text>
+    <line x1="24" y1="56" x2="1016" y2="56" stroke="rgba(220,228,242,.07)"/>
+
+    <!-- directory hull -->
+    <rect x="64" y="220" width="330" height="168" rx="40" fill="rgba(126,138,160,.05)" stroke="rgba(126,138,160,.2)"/>
+    <text x="92" y="248" class="hull-l" fill="rgba(126,138,160,.8)">DIR · src/eventstore/</text>
+
+    <!-- edges (weight = coupling) -->
+    <line x1="470" y1="170" x2="326" y2="150" stroke="#3a4356" stroke-width="3.4"/>
+    <text x="374" y="146" class="el">uses ×41</text>
+    <line x1="470" y1="182" x2="238" y2="292" stroke="#3a4356" stroke-width="2.2"/>
+    <text x="330" y="248" class="el">uses ×18</text>
+    <line x1="286" y1="150" x2="196" y2="120" stroke="#3a4356" stroke-width="1.4"/>
+    <text x="204" y="122" class="el">uses ×6</text>
+    <line x1="238" y1="304" x2="168" y2="330" stroke="#3a4356" stroke-width="1.6"/>
+    <line x1="512" y1="192" x2="620" y2="300" stroke="#3a4356" stroke-width="2.6"/>
+    <text x="556" y="252" class="el">uses ×24</text>
+    <line x1="648" y1="308" x2="800" y2="270" stroke="#3a4356" stroke-width="1.8"/>
+    <text x="706" y="278" class="el">uses ×9</text>
+    <line x1="520" y1="176" x2="792" y2="258" stroke="#3a4356" stroke-width="1.4"/>
+
+    <!-- file nodes -->
+    <rect x="440" y="152" width="76" height="40" rx="10" fill="#26314a" stroke="#54627e"/>
+    <text x="452" y="176" class="nl">conductor</text>
+    <text x="430" y="212" class="nl2">src/conductor.rs · 354</text>
+
+    <rect x="266" y="130" width="60" height="34" rx="9" fill="#26314a" stroke="#e2a94f" stroke-width="1.6"/>
+    <text x="278" y="151" class="nl" font-weight="700">ingest</text>
+    <text x="252" y="184" class="nl2">src/ingest.rs · 13</text>
+
+    <rect x="146" y="98" width="76" height="30" rx="9" fill="#26314a" stroke="#54627e"/>
+    <text x="158" y="117" class="nl">symbols/store</text>
+
+    <rect x="196" y="278" width="66" height="34" rx="9" fill="#26314a" stroke="#54627e"/>
+    <text x="212" y="299" class="nl">sqlite</text>
+    <text x="182" y="330" class="nl2">eventstore/sqlite.rs · 159</text>
+    <rect x="112" y="328" width="52" height="28" rx="8" fill="#26314a" stroke="#54627e"/>
+    <text x="126" y="346" class="nl">mod</text>
+
+    <rect x="586" y="288" width="60" height="38" rx="10" fill="#26314a" stroke="#54627e"/>
+    <text x="602" y="311" class="nl">dash</text>
+    <text x="576" y="346" class="nl2">src/dash.rs · 258</text>
+    <rect x="782" y="242" width="72" height="34" rx="9" fill="#26314a" stroke="#54627e"/>
+    <text x="796" y="263" class="nl">registry</text>
+    <text x="774" y="296" class="nl2">src/registry.rs · 26</text>
+
+    <!-- hover card -->
+    <line x1="330" y1="140" x2="600" y2="120" stroke="rgba(226,169,79,.4)" stroke-width="1.2" stroke-dasharray="3 3"/>
+    <rect x="600" y="76" width="404" height="150" rx="12" fill="#1d2433" stroke="rgba(220,228,242,.14)"/>
+    <rect x="620" y="96" width="12" height="12" rx="3" fill="#7e8aa0"/>
+    <text x="640" y="106" class="card-t">src/ingest.rs</text>
+    <text x="624" y="126" class="card-s">13 entities · 2 concepts · community: ingest &amp; fold</text>
+    <line x1="618" y1="138" x2="986" y2="138" stroke="rgba(220,228,242,.08)"/>
+    <text x="624" y="156" class="card-k">TOP ENTITIES</text>
+    <text x="624" y="176" class="chip-t">ingest_project_batched · key_batch · content_hash</text>
+    <text x="624" y="192" class="chip-t" fill="#939db4">+ 10 more…</text>
+    <text x="624" y="214" class="card-s" fill="#5c6680">click an entity: open it in the code lens</text>
+    <circle cx="600" cy="76" r="10" fill="#e2a94f"/><text x="596" y="80" class="ann-n">1</text>
+  </svg>
+  <figcaption>Files lens. Subjects are files; the code inside them is the card's business. The handoff
+  is the important part - an entity name in the card is a door into the code lens, subject carried over.</figcaption>
+  </figure>
+  <ol class="keys">
+    <li data-n="1"><strong>Lens handoff, subject preserved.</strong> Clicking an entity in the card switches
+    to the code lens focused on that entity - the two taxonomies connect through navigation, not through
+    edges drawn on one canvas.</li>
+  </ol>
+</section>
+
+<section>
+  <p class="eyebrow">lens 3 of 3</p>
+  <h2>Concepts lens - intent, sized by evidence</h2>
+  <p class="lede">Subjects are the derived concepts. Node size is evidence weight; edges join concepts
+  that share evidence. The entities and files behind a concept are the card's metadata, with the same
+  handoff into the code lens.</p>
+
+  <figure>
+  <svg viewBox="0 0 1040 400" role="img" aria-label="Mockup of the concepts lens: concept nodes sized by evidence, co-evidence edges, and a hover card listing the evidencing entities and files">
+    <rect x="24" y="16" width="60" height="26" rx="13" fill="none"/>
+    <text x="44" y="33" class="tab-t">Files</text>
+    <text x="106" y="33" class="tab-t">Code</text>
+    <rect x="164" y="16" width="82" height="26" rx="13" fill="#232c40"/>
+    <text x="178" y="33" class="tab-on">Concepts</text>
+    <line x1="24" y1="56" x2="1016" y2="56" stroke="rgba(220,228,242,.07)"/>
+
+    <!-- edges -->
+    <line x1="218" y1="196" x2="386" y2="150" stroke="#3a4356" stroke-width="2.4"/>
+    <text x="272" y="164" class="el">co-evidenced ×9</text>
+    <line x1="218" y1="212" x2="356" y2="288" stroke="#3a4356" stroke-width="1.6"/>
+    <text x="252" y="262" class="el">×4</text>
+    <line x1="418" y1="146" x2="520" y2="132" stroke="#3a4356" stroke-width="1.4"/>
+    <text x="452" y="128" class="el">×3</text>
+    <line x1="392" y1="296" x2="520" y2="310" stroke="#3a4356" stroke-width="1.4"/>
+    <line x1="668" y1="290" x2="770" y2="252" stroke="#3a4356" stroke-width="2.2"/>
+    <text x="694" y="260" class="el">×7</text>
+    <line x1="792" y1="238" x2="836" y2="180" stroke="#3a4356" stroke-width="1.4"/>
+
+    <!-- concept nodes -->
+    <circle cx="196" cy="204" r="22" fill="rgba(226,169,79,.9)" stroke="#e2a94f" stroke-width="2"/>
+    <text x="120" y="244" class="nl" font-weight="700">replay idempotency</text>
+    <circle cx="402" cy="144" r="15" fill="rgba(226,169,79,.75)" stroke="#10141d" stroke-width="2"/>
+    <text x="356" y="118" class="nl">keyed dedup</text>
+    <circle cx="540" cy="128" r="11" fill="rgba(226,169,79,.6)" stroke="#10141d" stroke-width="2"/>
+    <text x="500" y="102" class="nl">run scoping</text>
+    <circle cx="374" cy="294" r="13" fill="rgba(226,169,79,.65)" stroke="#10141d" stroke-width="2"/>
+    <text x="322" y="330" class="nl">projection fold</text>
+    <circle cx="540" cy="314" r="10" fill="rgba(226,169,79,.55)" stroke="#10141d" stroke-width="2"/>
+    <text x="492" y="348" class="nl">blast radius</text>
+    <circle cx="648" cy="294" r="14" fill="rgba(226,169,79,.7)" stroke="#10141d" stroke-width="2"/>
+    <text x="586" y="328" class="nl">singleton lifecycle</text>
+    <circle cx="784" cy="246" r="11" fill="rgba(226,169,79,.6)" stroke="#10141d" stroke-width="2"/>
+    <text x="756" y="280" class="nl">self-reap</text>
+    <circle cx="844" cy="170" r="10" fill="rgba(226,169,79,.55)" stroke="#10141d" stroke-width="2"/>
+    <text x="800" y="146" class="nl">fail-closed review</text>
+
+    <!-- hover card -->
+    <line x1="214" y1="190" x2="596" y2="150" stroke="rgba(226,169,79,.4)" stroke-width="1.2" stroke-dasharray="3 3"/>
+    <rect x="596" y="76" width="404" height="146" rx="12" fill="#1d2433" stroke="rgba(220,228,242,.14)"/>
+    <circle cx="620" cy="98" r="6" fill="#e2a94f"/>
+    <text x="634" y="103" class="card-t">replay idempotency</text>
+    <text x="620" y="123" class="card-s">evidence: 9 entities · 3 files</text>
+    <line x1="614" y1="135" x2="982" y2="135" stroke="rgba(220,228,242,.08)"/>
+    <text x="620" y="153" class="card-k">TOP EVIDENCE</text>
+    <text x="620" y="173" class="chip-t">emit_keyed_batch · replay_trajectory · META_REPLAY_KEY</text>
+    <text x="620" y="189" class="chip-t" fill="#939db4">src/conductor.rs · src/ingest.rs · src/run.rs</text>
+    <text x="620" y="211" class="card-s" fill="#5c6680">click evidence: open it in the code lens</text>
+  </svg>
+  <figcaption>Concepts lens. The whole point of the derivation is visible at a glance: which intents
+  dominate the codebase, and which co-occur. Code and files stay behind the card.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <p class="eyebrow">drill-down · any lens</p>
+  <h2>Subject view - click a node, get its world</h2>
+  <p class="lede">Clicking a node focuses it as the subject: the canvas re-seeds to its one-hop
+  neighborhood, and the memory rail docks on the right with the decisions and findings that govern it.
+  This is where the run's knowledge attaches to the code - as a rail, never as nodes in the layout.</p>
+
+  <figure>
+  <svg viewBox="0 0 1040 400" role="img" aria-label="Mockup of the subject view: the focused entity centered with its one-hop callers and callees, and a docked memory rail listing decisions and findings">
+    <defs>
+      <marker id="arr3" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0 0 L8 4 L0 8 z" fill="#5c6680"/>
+      </marker>
+    </defs>
+    <text x="24" y="34" class="crumb">code lens ▸ subject: emit_keyed_batch</text>
+    <text x="940" y="34" class="crumb" fill="#5c6680">esc: zoom out</text>
+    <line x1="24" y1="48" x2="1016" y2="48" stroke="rgba(220,228,242,.07)"/>
+
+    <!-- edges -->
+    <path d="M172 150 Q 250 190 306 216" fill="none" stroke="#3a4356" stroke-width="1.6" marker-end="url(#arr3)"/>
+    <text x="216" y="176" class="el">calls</text>
+    <path d="M186 300 Q 250 276 302 248" fill="none" stroke="#3a4356" stroke-width="1.6" marker-end="url(#arr3)"/>
+    <text x="228" y="290" class="el">calls</text>
+    <path d="M394 234 Q 470 234 528 234" fill="none" stroke="#3a4356" stroke-width="1.6" marker-end="url(#arr3)"/>
+    <text x="440" y="224" class="el">calls</text>
+    <path d="M574 252 Q 600 292 618 316" fill="none" stroke="#3a4356" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#arr3)"/>
+    <text x="606" y="290" class="el">writes</text>
+
+    <!-- neighbors -->
+    <circle cx="150" cy="140" r="11" fill="#6ca9f5" stroke="#10141d" stroke-width="2"/>
+    <text x="64" y="118" class="nl">ingest_project_batches</text>
+    <circle cx="166" cy="308" r="11" fill="#6ca9f5" stroke="#10141d" stroke-width="2"/>
+    <text x="116" y="340" class="nl">emit_keyed</text>
+    <circle cx="552" cy="234" r="12" fill="#6ca9f5" stroke="#10141d" stroke-width="2"/>
+    <text x="474" y="270" class="nl">append_and_fold_batch</text>
+    <rect x="616" y="318" width="24" height="24" rx="7" fill="#45d0a6" stroke="#10141d" stroke-width="2"/>
+    <text x="610" y="366" class="nl">Store</text>
+
+    <!-- subject -->
+    <circle cx="348" cy="234" r="26" fill="none" stroke="rgba(226,169,79,.3)" stroke-width="8"/>
+    <circle cx="348" cy="234" r="17" fill="#6ca9f5" stroke="#e2a94f" stroke-width="2.5"/>
+    <text x="280" y="196" class="nl" font-weight="700">emit_keyed_batch</text>
+    <text x="284" y="278" class="nl2">src/conductor.rs:2137</text>
+
+    <!-- memory rail -->
+    <rect x="700" y="64" width="316" height="312" rx="12" fill="#1d2433" stroke="rgba(220,228,242,.14)"/>
+    <text x="720" y="92" class="card-k">MEMORY · GOVERNS THIS SUBJECT</text>
+    <rect x="720" y="106" width="276" height="70" rx="9" fill="rgba(224,122,154,.07)" stroke="rgba(224,122,154,.25)"/>
+    <circle cx="736" cy="126" r="5" fill="#e07a9a"/>
+    <text x="748" y="130" class="card-t" font-size="11.5">decision · spec 49</text>
+    <text x="736" y="150" class="card-s">one store txn + one graph txn per file</text>
+    <text x="736" y="165" class="card-s">batch; cadence was throughput-bound</text>
+    <rect x="720" y="186" width="276" height="70" rx="9" fill="rgba(224,122,154,.07)" stroke="rgba(224,122,154,.25)"/>
+    <circle cx="736" cy="206" r="5" fill="#e07a9a"/>
+    <text x="748" y="210" class="card-t" font-size="11.5">finding · spec 60 · u1</text>
+    <text x="736" y="230" class="card-s">dedup keys were run-scoped; a new run</text>
+    <text x="736" y="245" class="card-s">re-emitted the whole derived index</text>
+    <rect x="720" y="266" width="276" height="52" rx="9" fill="rgba(226,169,79,.06)" stroke="rgba(226,169,79,.25)"/>
+    <circle cx="736" cy="286" r="5" fill="#e2a94f"/>
+    <text x="748" y="290" class="card-t" font-size="11.5">concepts</text>
+    <text x="736" y="308" class="card-s">keyed dedup · replay idempotency</text>
+    <text x="720" y="352" class="card-s" fill="#5c6680">rail scrolls; layout never re-flows for it</text>
+  </svg>
+  <figcaption>Subject view. The graph stays code-only; decisions, findings, and concepts dock in a rail.
+  The rail is the graph's memory made legible without ever becoming layout.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <p class="eyebrow">shared behavior</p>
+  <h2>Interaction model, all lenses</h2>
+  <div class="interactions">
+    <div class="row"><div class="g">hover</div><div class="d"><strong>Metadata card.</strong> File + line, concepts, memory counts, degree. Neighbors highlight; everything else dims.</div></div>
+    <div class="row"><div class="g">click</div><div class="d"><strong>Focus as subject.</strong> Re-seed to the one-hop neighborhood, dock the memory rail.</div></div>
+    <div class="row"><div class="g">card chip click</div><div class="d"><strong>Lens handoff.</strong> A file chip opens the files lens on that file; a concept chip opens the concepts lens; an entity opens the code lens. The subject rides along.</div></div>
+    <div class="row"><div class="g">overview zoom</div><div class="d"><strong>Communities, not buckets.</strong> Zoomed out, hulls collapse to labeled community nodes sized by member count - a knowledge grouping. Storage types are never a grouping key at any zoom.</div></div>
+  </div>
+</section>
+
+</div>
