@@ -30,13 +30,24 @@ not change because a new run started.
   stays on the superseded version forever.) The misleading comment on `ingest_project_batches`
   (which claims project-scoped dedup already holds) starts telling the truth.
 - **Storage-level idempotency guard** (`src/eventstore/`, append seam): defense in depth so a
-  regression upstream can never re-bloat the log. Appending an event of one of the four derived
-  index types whose replay key is already recorded is a storage no-op (the append reports
-  success and writes nothing). ONLY the derived types get content identity: domain events
+  regression upstream can never re-bloat the log. It suppresses on the SAME test the sink uses,
+  never a wider one: appending an event of one of the four derived index types is a storage
+  no-op ONLY when its replay key is already recorded AS THAT FILE'S LATEST GENERATION (the
+  `<prefix>/<file>@<hash>#<i>` key names the file and its content generation, so the store can
+  ask that question of keys the log ALREADY carries - no new event type, no new metadata, no
+  backfill). A key recorded earlier that is no longer the file's latest - the revert case - is
+  NOT redundant and MUST append; an ever-recorded test here would re-wedge the revert case
+  Global constraint 4 forbids. ONLY the derived types get content identity: domain events
   legitimately repeat (two identical `ReviewFinding`s mean the finding was raised twice), so
   every non-derived type keeps per-append identity untouched. Implementation may use a lazily
   created index over the derived types' replay keys or an in-connection seen-set - whatever the
-  store layer makes honest - but the observable contract is the no-op.
+  store layer makes honest - but the observable contract is the no-op, and a no-op must never
+  cost more than an index seek on a log of any size. Because a suppressed append writes fewer
+  events than it was handed, what the append REPORTS BACK has to say what it actually wrote:
+  the one shared append-and-fold authority (`src/ingest.rs::append_and_fold_batch`) derives each
+  event's fold position arithmetically as `base = last + 1 - n`, which is only true when all `n`
+  events were written, so a short write must be observable at the port or every event in that
+  batch folds at a position the store never issued.
 - **Supported compaction** (`src/main.rs`, `rigger reset`): a new `rigger reset --derived` prunes
   the accumulated duplication from an EXISTING bloated log: for each of the four derived types it
   keeps the LATEST event per distinct replay key, deletes the rest, and vacuums, so the file
@@ -83,11 +94,19 @@ not change because a new run started.
   not suppress the current run's own keyed emit (the Gap 11 boundary still holds for unit
   lifecycle), pinned at the same seeding seam.
 - [ ] a test proves the CHANGE PATH: editing one file between runs re-emits exactly that file's
-  batch under its new hash keys and supersedes its prior structural edges; untouched files still
-  append nothing.
+  whole batch and supersedes its prior structural edges, while untouched files still append
+  nothing. A REVERT IS A CHANGE, and this criterion OWNS that proof: a test drives a file BACK
+  to content it held at an earlier RECORDED generation and asserts the live graph then equals a
+  cold rebuild from the current tree (Global constraint 4). No other criterion owns the revert
+  case, so no other unit is asked for that test.
 - [ ] a test proves the STORAGE GUARD: appending a derived-type event with an already-recorded
-  replay key is a storage no-op, while appending an identical-payload domain event (e.g.
-  `ReviewFinding`) still appends a new row. This criterion OWNS the store-layer defense.
+  replay key that is STILL that file's LATEST recorded generation is a storage no-op, while a key
+  the file has since moved past (the revert case) still appends, and an identical-payload domain
+  event (e.g. `ReviewFinding`) still appends a new row. This criterion OWNS the store-layer
+  defense, and with it the honesty of the shared append-and-fold authority under a partially
+  suppressed append: what the append reports back must name what was written, so
+  `src/ingest.rs::append_and_fold_batch` never folds an event at a position the store did not
+  issue.
 - [ ] a test proves COMPACTION: `rigger reset --derived` on a store seeded with duplicated
   derived events keeps the latest event per distinct key, preserves every non-derived event,
   shrinks the file, and leaves a store that `rigger validate` reads clean and whose fold yields
