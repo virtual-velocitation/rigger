@@ -48,6 +48,15 @@ takes (issues #24 and #22). Two defects and one cost problem:
 - **Observable progress** (`src/canary.rs`): the parent prints a per-item line to stdout as
   each item completes (id, verdict correctness, tiers caught, elapsed), so a multi-hour run is
   visibly alive without inspecting child processes.
+- **Per-tier model pinning for measurement runs** (`src/canary.rs`, `src/main.rs`): a repeatable
+  `--model <tier>=<id>` flag (tiers: `lens`, `adversary`, `adjudicator`) overrides the model the
+  named tier's agents resolve for THIS canary run only - config untouched, aliases allowed but
+  ids passed through verbatim so an experiment can pin exact ids. The scorecard header records
+  the binary build, the corpus content hash, and each tier's RESOLVED model id (from the same
+  `model_for_attempt` authority), so an A/B arm is auditable from its scorecard alone. This is
+  the instrument `docs/experiments/2026-08-11-lens-model-ab-protocol.md` pre-registers; the
+  per-item records additionally carry the count of findings each tier raised (the over-flagging
+  measure), alongside the existing attribution.
 - **Per-spawn timing in stats** (`src/metrics.rs` / `src/main.rs::cmd_stats`): per-agent wall
   time becomes derivable from the log: `rigger stats` pairs each recorded spawn request with
   its recorded result by spawn id and reports duration aggregates (per tier/agent: count,
@@ -91,6 +100,11 @@ takes (issues #24 and #22). Two defects and one cost problem:
   aggregated scorecard is identical to a serial run's.
 - [ ] a test proves PROGRESS: each completed item emits a per-item stdout line (id, verdict
   correctness, caught tiers, elapsed) before the final scorecard.
+- [ ] a test proves MODEL PINNING: `--model lens=<id>` resolves the lens tier's agents to the
+  pinned id for the run (other tiers untouched, config file unmodified), and the scorecard
+  header records binary build, corpus hash, and every tier's resolved model id.
+- [ ] a test proves FINDINGS VOLUME: each per-item record carries the count of findings each
+  tier raised, and the scorecard aggregates it per tier.
 - [ ] a test proves SPAWN TIMING: `rigger stats` reports per-agent duration aggregates derived
   by pairing recorded spawn requests with their results by spawn id, with no new event type.
 - [ ] both feature lanes green (fmt, clippy, test on default and `--no-default-features`).
