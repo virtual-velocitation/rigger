@@ -1342,10 +1342,31 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     // log's [`META_REPLAY_KEY`] metadata so a step re-running the conductor over recorded
     // history re-appends none of the keyed unit-lifecycle events it already emitted, and
     // re-reaching an already-run gate replays its recorded verdict.
-    let replayed_keys: HashSet<String> = prior_events
+    //
+    // The set is a PARTITION over two scopes, decided BY EVENT TYPE FIRST (spec 60):
+    //
+    // - RUN-SCOPED (this arm): unit lifecycle, gate verdicts, breaker trips - every key whose
+    //   recurrence is a property of THIS run. Seeded from the current run's slice exactly as
+    //   before, so a prior run's residue can never suppress this run's own keyed emit (the Gap 11
+    //   zombie boundary).
+    // - PROJECT-SCOPED (below): the derived index the project-ingest pass re-derives. A file's
+    //   content hash does not change because a new run started, so scoping those keys to the run
+    //   made every new run re-append the WHOLE index. They are seeded from the WHOLE stream
+    //   instead, via the one predicate that owns the content-key format
+    //   ([`crate::ingest::project_scoped_replay_keys`]) - latest-generation-per-file, never
+    //   ever-recorded, so a file reverted to earlier content still re-emits and supersedes.
+    //
+    // The type test comes first in BOTH arms, so the partition is a property of the code rather
+    // than of the key's spelling: a derived event is excluded here even if its key looks like a
+    // lifecycle key, and a non-derived event is ineligible below even if its key looks like a
+    // content key. `all_prior` is the whole-stream read this function already did - no extra
+    // store round-trip.
+    let mut replayed_keys: HashSet<String> = prior_events
         .iter()
+        .filter(|e| !crate::ingest::is_derived_index_type(&e.type_))
         .filter_map(|e| e.meta.get(META_REPLAY_KEY).cloned())
         .collect();
+    replayed_keys.extend(crate::ingest::project_scoped_replay_keys(&all_prior));
     // Cross-step spawn budget (spec 04, criterion 5 / finding adv-budget-per-step-resets):
     // the authoritative spawn count is DERIVED from the log, not an in-memory counter that
     // resets every step process. Fold the DISTINCT spawn requests already recorded (keyed
@@ -12400,6 +12421,138 @@ mod tests {
             g.nodes.iter().any(|n| n.kind == contextgraph::KIND_CODE_ENTITY
                 && n.attrs.get("name").map(String::as_str) == Some("replacement_symbol")),
             "the re-ingest must fold the changed file's new symbol into the graph; graph was:\n{g:#?}"
+        );
+    }
+
+    /// Spec 60 criterion 1 (UNCHANGED-TREE RUNS APPEND NOTHING): the derived index is a PROJECT
+    /// fact, not a run fact - a file's content hash does not change because a new run started. So a
+    /// SECOND run, under its own fresh `RunStarted` (whose current-run slice carries none of the
+    /// first run's ingest keys), over a BYTE-IDENTICAL tree must append ZERO derived-index events.
+    /// Before the seeding fix the run seeded `replayed_keys` from `current_run(&all_prior)` alone,
+    /// so a new run saw an empty ingest-key set and re-appended the WHOLE derived index - the
+    /// measured payload duplication that grew the log without bound. The proof drives the REAL
+    /// [`run`] entry twice rather than a hand-built context, because the seam under test IS that
+    /// entry's seeding.
+    #[cfg(feature = "symbols")]
+    #[test]
+    fn a_second_run_over_an_unchanged_tree_appends_no_derived_index_event() {
+        let repo = init_repo();
+        let root = repo.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(root.join("specs")).unwrap();
+        // Both ingest halves must have real work to re-emit: a source file drives the `gc` half
+        // (`CodeEntityExtracted` + `EdgeInferred`) and a REAL design doc drives the `gd` half
+        // (`DocConceptExtracted` + `DocLinkExtracted`), so the assertion below covers the whole
+        // derived index rather than one of its two prefixes.
+        std::fs::write(
+            root.join("src/run.rs"),
+            "pub fn seeded_symbol() {}\npub fn caller() { seeded_symbol(); }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("specs/29c-unified-traversal-tiers.md"),
+            include_str!("../specs/29c-unified-traversal-tiers.md"),
+        )
+        .unwrap();
+        let repo_path = root.to_str().unwrap().to_string();
+
+        let st = Store::open(":memory:").unwrap();
+        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+        let driver = Stub::new();
+        // The four derived index types, named here from the graph's own constants rather than
+        // through the production predicate under test - a proof must not inherit the bug it hunts.
+        let derived = |events: &[Event]| -> usize {
+            events
+                .iter()
+                .filter(|e| {
+                    matches!(
+                        e.type_.as_str(),
+                        t if t == contextgraph::TYPE_CODE_ENTITY_EXTRACTED
+                            || t == contextgraph::TYPE_EDGE_INFERRED
+                            || t == contextgraph::TYPE_DOC_CONCEPT_EXTRACTED
+                            || t == contextgraph::TYPE_DOC_LINK_EXTRACTED
+                    )
+                })
+                .count()
+        };
+        let of_type =
+            |events: &[Event], t: &str| -> usize { events.iter().filter(|e| e.type_ == t).count() };
+        let campaign = |unit: &str, criterion: &str| -> Config {
+            let mut cfg = Config::default();
+            cfg.agents.insert("a".into(), agent("a"));
+            cfg.workflow.stages.insert(
+                unit.into(),
+                Stage {
+                    name: unit.into(),
+                    agent: "a".into(),
+                    coverage: criterion.into(),
+                    ..Default::default()
+                },
+            );
+            cfg
+        };
+
+        // Campaign one: the first run walks the tree and records the whole derived index.
+        let cfg1 = campaign("s1", "first criterion");
+        let deps1 = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: Some(&graph),
+            criteria: vec!["first criterion".into()],
+        };
+        run(&cfg1, &deps1).unwrap();
+
+        let after_one = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(
+            of_type(&after_one, contextgraph::TYPE_CODE_ENTITY_EXTRACTED) > 0
+                && of_type(&after_one, contextgraph::TYPE_EDGE_INFERRED) > 0,
+            "sanity: the first run ingests the code half of the derived index"
+        );
+        assert!(
+            of_type(&after_one, contextgraph::TYPE_DOC_CONCEPT_EXTRACTED) > 0
+                && of_type(&after_one, contextgraph::TYPE_DOC_LINK_EXTRACTED) > 0,
+            "sanity: the first run ingests the design half of the derived index"
+        );
+        let first_derived = derived(&after_one);
+
+        // Campaign two over the SAME store and the SAME (untouched) tree. Different criteria, so
+        // `run::ensure_started` MINTS a fresh `RunStarted` instead of adopting - the second run's
+        // current-run slice therefore carries none of the first run's ingest keys, which is exactly
+        // the condition the old run-scoped seeding got wrong.
+        let cfg2 = campaign("s2", "second criterion");
+        let deps2 = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: Some(&graph),
+            criteria: vec!["second criterion".into()],
+        };
+        run(&cfg2, &deps2).unwrap();
+
+        let after_two = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert_eq!(
+            of_type(&after_two, crate::run::TYPE_RUN_STARTED),
+            2,
+            "the second campaign must mint its OWN fresh RunStarted (else the test proves nothing)"
+        );
+        let second_slice = crate::run::current_run(&after_two);
+        assert_eq!(
+            derived(second_slice),
+            0,
+            "an unchanged tree must append ZERO derived-index events on a second run; it appended \
+             {} of them (the first run recorded {first_derived})",
+            derived(second_slice)
+        );
+        // And the log did not grow by the index: the derived slice is exactly what run one recorded.
+        assert_eq!(
+            derived(&after_two),
+            first_derived,
+            "the whole log's derived-index slice must be unchanged by the second run"
         );
     }
 
