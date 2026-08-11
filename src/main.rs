@@ -3263,11 +3263,16 @@ fn derive_extent_end(_file: &str, _source: &str, _start: u32, _name: &str) -> Re
 /// Store lifecycle mirrors the RUN DRIVER, not the couriers: it CREATES the store under the cwd's
 /// `.rigger/` when absent (a cold checkout legitimately has none yet - this command's whole point
 /// is to populate it) rather than the courier walk-up that refuses a missing store. On an EXISTING
-/// store it refreshes incrementally: the seen-key set is seeded from the log's replay keys, so an
-/// unchanged file's content key is already recorded and its batch re-ingests nothing, while a
-/// changed file hashes to new keys and re-emits. The light lane compiles no extraction pass, so
-/// `graph build` there degrades to an empty graph (it still creates the store) and exits 0, never
-/// an error.
+/// store it refreshes incrementally through the ONE shared suppression predicate
+/// ([`rigger::ingest::project_scoped_replay_keys`]) the live run also seeds from, never a second
+/// copy here: the seen-key set holds the keys of each file's LATEST recorded derived-index batch
+/// and nothing else, so an unchanged file's batch is already wholly recorded and re-ingests
+/// nothing, while a file whose content differs from its latest recorded batch re-emits in full.
+/// That includes a file REVERTED to content it held at an earlier generation - its keys are
+/// byte-identical to records the log still carries, and it re-emits precisely because those
+/// records are no longer that file's latest generation. The light lane compiles no extraction
+/// pass, so `graph build` there degrades to an empty graph (it still creates the store) and exits
+/// 0, never an error.
 fn cmd_graph_build(_args: &[String]) -> Res {
     // Bootstrap the store like `run`/`step` do (create-or-open under the cwd's `.rigger/`), NOT the
     // courier `require_store_dir` walk-up that refuses when none exists.

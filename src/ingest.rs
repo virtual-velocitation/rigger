@@ -75,10 +75,14 @@ pub struct IngestStats {
 /// Walk the project tree at `root` and, for every extraction event the code (spec 29a) and
 /// design (spec 29b) passes emit, call `emit(key, event)` with the event's deterministic content
 /// key `<prefix>/<file>@<hash>#<i>` (`gc` for code, `gd` for design). The key is a pure function
-/// of the batch's bytes, so an unchanged file yields identical keys (a caller dedups on them) and
-/// a changed file's batch hashes differently - every key differs, so the whole batch, its `fresh`
-/// head included, re-emits. This function owns only the walk and the keying; the sink decides what
-/// a key MEANS (append-and-fold, or skip a replay), so the mutation authority stays with the caller.
+/// of the batch's bytes ALONE, so the same content always yields the same keys and different
+/// content always yields different ones. A key is therefore a CONTENT GENERATION of a file, not a
+/// mark that the file has been seen: whether a given key is redundant is a question about the
+/// file's LATEST recorded generation ([`project_scoped_replay_keys`] answers it), which is why a
+/// file reverted to content it held earlier re-emits its whole batch even though every one of its
+/// keys is already in the log. This function owns only the walk and the keying; the sink decides
+/// what a key MEANS (append-and-fold, or skip a replay), so the mutation authority stays with the
+/// caller.
 ///
 /// The code half's per-file parse/lower fans across a default-sized worker pool (one worker per
 /// logical core), but the EMIT stays in sorted file-path order - parallelism is observationally
@@ -200,6 +204,26 @@ fn key_batch(
     on_batch(&keyed);
 }
 
+/// The metadata key under which an event carries its deterministic REPLAY KEY (spec 04, criterion
+/// 4): the name a content key is STAMPED under and read back from, so this module owns the wire
+/// form of its key as well as its format.
+///
+/// The key itself is a pure function of what it identifies - for a derived index event, the batch's
+/// own bytes; for a run's lifecycle events, the run structure (unit id, phase or gate token,
+/// remediation attempt) - never wall clock or randomness. An event stamped with one is appended AT
+/// MOST ONCE against whatever key set its sink seeds from, so two processes computing the identical
+/// key for the identical event let the second recognize the first's as a replay. Folds and
+/// projections ignore it, like [`crate::contextgraph::META_ACTOR`].
+///
+/// It is DEFINED HERE, beside [`key_batch`] which builds the `<prefix>/<file>@<hash>#<i>` form and
+/// [`project_scoped_replay_keys`] which parses it back, rather than in the orchestrator that also
+/// stamps it. That predicate is the shared suppression authority BOTH a live run and a cold
+/// `rigger graph build` call, so reading the name out of `crate::conductor` would point this module
+/// UP at the orchestrator and couple every future caller of the predicate to it for a wire-format
+/// fact the orchestrator does not own. `conductor::META_REPLAY_KEY` re-exports this constant, so
+/// there is exactly one name and no second spelling to drift.
+pub const META_REPLAY_KEY: &str = "replay_key";
+
 /// The DERIVED INDEX event types: the re-derivable projection of the project's own sources that
 /// [`key_batch`] above keys, and the ONLY types eligible for project-scoped suppression.
 ///
@@ -284,7 +308,7 @@ pub fn project_scoped_replay_keys(prior: &[Event]) -> std::collections::HashSet<
         if !is_derived_index_type(&e.type_) {
             continue;
         }
-        let Some(key) = e.meta.get(crate::conductor::META_REPLAY_KEY) else {
+        let Some(key) = e.meta.get(META_REPLAY_KEY) else {
             continue;
         };
         let Some((identity, hash)) = derived_key_parts(key) else {
@@ -328,8 +352,7 @@ pub fn ingest_project_batched(
 /// cold rebuild respectively, not here.
 #[cfg(test)]
 mod dedup_tests {
-    use super::project_scoped_replay_keys;
-    use crate::conductor::META_REPLAY_KEY;
+    use super::{derived_key_parts, project_scoped_replay_keys, META_REPLAY_KEY};
     use crate::contextgraph::{
         TYPE_CODE_ENTITY_EXTRACTED, TYPE_DOC_CONCEPT_EXTRACTED, TYPE_EDGE_INFERRED,
         TYPE_REVIEW_FINDING,
@@ -386,6 +409,83 @@ mod dedup_tests {
         assert!(
             project_scoped_replay_keys(&[]).is_empty(),
             "an empty stream suppresses nothing"
+        );
+    }
+
+    #[test]
+    fn two_files_whose_paths_contain_an_at_sign_stay_two_batch_identities() {
+        // The identity/generation split direction is load-bearing and rigger is project-agnostic:
+        // `@` is an ordinary character in a real path (a vendored `pkg@1.2.3/` directory, a scoped
+        // package folder), and only `key_batch`'s OWN trailing `@<hash>` separates identity from
+        // generation. Splitting from the LEFT instead would cut both keys below at their FIRST `@`,
+        // collapsing two different files onto the single identity `gc/vendor/pkg` - and since their
+        // (mis-parsed) generations then differ, the later file would RETIRE the earlier file's keys
+        // and strip them from the suppression set. Two unrelated files must never share one batch
+        // identity, whatever their paths spell.
+        let stream = vec![
+            keyed(TYPE_CODE_ENTITY_EXTRACTED, "gc/vendor/pkg@1.2.3/a.rs@h1#0"),
+            keyed(TYPE_EDGE_INFERRED, "gc/vendor/pkg@1.2.3/a.rs@h1#1"),
+            keyed(TYPE_CODE_ENTITY_EXTRACTED, "gc/vendor/pkg@4.5.6/b.rs@h2#0"),
+        ];
+
+        assert_eq!(
+            project_scoped_replay_keys(&stream),
+            HashSet::from([
+                "gc/vendor/pkg@1.2.3/a.rs@h1#0".to_string(),
+                "gc/vendor/pkg@1.2.3/a.rs@h1#1".to_string(),
+                "gc/vendor/pkg@4.5.6/b.rs@h2#0".to_string(),
+            ]),
+            "every file's own keys survive: no file's batch may retire another file's"
+        );
+
+        // The same rule at the parser: the identity is the WHOLE `<prefix>/<file>` span, so every
+        // `@` and `#` inside the path belongs to the file, never to the generation or the index.
+        assert_eq!(
+            derived_key_parts("gc/vendor/pkg@1.2.3/a.rs@h1#0"),
+            Some(("gc/vendor/pkg@1.2.3/a.rs", "h1")),
+            "identity and generation split from the RIGHT, at the key authority's own separators"
+        );
+        assert_eq!(
+            derived_key_parts("gd/a#1/b@2/c.md@deadbeef#12"),
+            Some(("gd/a#1/b@2/c.md", "deadbeef")),
+            "a path carrying both `@` and `#` still yields the whole path as the identity"
+        );
+    }
+
+    #[test]
+    fn a_key_that_is_not_the_content_key_shape_names_no_generation() {
+        // Rule 2 of the predicate's contract, and the fail-safe direction it encodes: a derived
+        // event whose replay key is not `<prefix>/<file>@<hash>#<i>` names no generation, so it is
+        // passed over and its emit is NEVER suppressed. Each row below is rejected by a DIFFERENT
+        // guard, so the table drives every reject arm rather than the shape as a whole.
+        for key in [
+            "gcsrc/a.rs@h1",     // no `/`: nothing separates the prefix
+            "/src/a.rs@h1#0",    // empty prefix
+            "gc/src/a.rs@h1",    // no `#<i>` tail
+            "gc/src/a.rs@h1#",   // empty index
+            "gc/src/a.rs@h1#0a", // non-digit in the index
+            "gc/src/a.rs@h1#-1", // ditto: a sign is not a digit
+            "gc/src/a.rs#0",     // no `@`: nothing separates the generation
+            "gc/@h1#0",          // empty file
+            "gc/src/a.rs@#0",    // empty generation
+        ] {
+            assert_eq!(
+                derived_key_parts(key),
+                None,
+                "{key:?} is not the content-key shape, so it names no batch identity"
+            );
+            assert!(
+                project_scoped_replay_keys(&[keyed(TYPE_CODE_ENTITY_EXTRACTED, key)]).is_empty(),
+                "{key:?} must suppress nothing - a key we cannot parse re-emits (fail-safe)"
+            );
+        }
+
+        // The positive control, so the table proves a REJECT rather than a parser that says no to
+        // everything: the well-formed shape still yields its identity and generation.
+        assert_eq!(
+            derived_key_parts("gc/src/a.rs@h1#0"),
+            Some(("gc/src/a.rs", "h1")),
+            "the well-formed content key still parses"
         );
     }
 }
