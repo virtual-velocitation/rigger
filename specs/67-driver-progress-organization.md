@@ -1,43 +1,53 @@
-# 67 - The driver's progress tree tells the run's true story
+# 67 - The driver's progress tree groups by lifecycle phase and speaks human
 
-**Goal:** make the /workflows progress display of a rigger run reflect what is actually
-happening. Today it misleads on three counts, all in `workflows/rigger.js` (the embedded
-template `rigger setup` installs, so every consumer sees this): (1) every `rigger step` courier
-is pinned to `phase: 'Plan'` (rigger.js:531 and the global `phase('Plan')` at :484), so a
-mature run shows dozens of "step#N" relay agents accumulating under Plan while the actual
-planning finished hours earlier; (2) `meta.phases` declares Build / Review / Integrate
-(rigger.js:50-55) that no agent can ever populate - workers spawn under runtime
-`"<unit>:<stage>"` phase strings instead - so three declared phases render as permanently empty
-rows; (3) `phaseOf` (rigger.js:179-181) builds the group title as `unit:stage` while the
-conductor sets both halves to the unit id, so every unit group renders with its name duplicated
-(`plan:plan`, `u1-dedup-seeding:u1-dedup-seeding`).
+**Goal:** make the /workflows progress display of a rigger run legible to a human who has NOT
+read the execution plan. Today it fails that reader three ways, all in `workflows/rigger.js`
+(the embedded template `rigger setup` installs, so every consumer sees this): (1) every
+`rigger step` courier is pinned to `phase: 'Plan'` (rigger.js:531 and the global
+`phase('Plan')` at :484), so a mature run shows dozens of "step#N" relay agents under a phase
+that finished hours earlier; (2) workers group under runtime `"<unit>:<stage>"` strings
+(`phaseOf`, rigger.js:179-181) - slugs that are meaningless without inner knowledge of this
+specific plan, forcing the reader all the way into the prompt to learn what an agent is doing -
+while the declared Build / Review / Integrate meta phases sit permanently empty; (3) each row's
+label leads with the same opaque spawn id (`u1-dedup-seeding/lens:sdet#2`) even though the wave
+item already carries a human work sentence (`SpawnRequest.title`, the unit's criterion, on the
+wire since spec 19 - rigger.js:134 accepts it and :321 buries it behind the id).
+
+The clarified target: the GROUPS are the lifecycle meta phases (Plan / Build / Review, plus a
+Drive lane for orchestration relays), and within a phase each row is one terse human sentence
+describing the work, with the role and attempt as suffix - never a slug a human cannot read.
 
 ## Design
 
-- **A dedicated orchestration lane** (`workflows/rigger.js`): the step couriers - the relay
-  agents whose only job is to run `rigger step` and return the wave - spawn under a `Drive`
-  phase (labels stay `step#N`), never under `Plan`. The global `phase('Plan')` marker is
-  retired in favor of explicit per-spawn phases, since every spawn site already passes one.
-- **Plan holds the planners** (`workflows/rigger.js::phaseOf`): wave workers whose unit is the
-  plan or plan-critique stage group under the declared `Plan` title, so the Plan row counts
-  actual planning agents (planner + critique tiers), not relays.
-- **Unit groups render the unit** (`workflows/rigger.js::phaseOf`): when the wave item's unit
-  and stage are equal (the conductor's current contract), the group title is the BARE unit id;
-  when the conductor later distinguishes the stage half, the `unit:stage` form returns
-  automatically. No group title ever repeats its own text.
+- **Meta phases are the groups** (`workflows/rigger.js::phaseOf`): a wave item's phase derives
+  from its ROLE (the deterministic spawn-id format `<stage>/<role>#<attempt>`, spec 18, plus
+  the item's stage fields): plan and plan-critique stages map to `Plan`; the implementer and
+  every authoring role map to `Build`; the three review tiers (lens, adversary, adjudicator)
+  map to `Review`; a role the mapping does not recognize defaults to `Build` (fail-visible in
+  the label, never a dropped row). Per-unit groups are retired.
+- **A dedicated orchestration lane**: the step couriers spawn under `Drive` (labels stay
+  `step#N`); the global `phase('Plan')` marker is retired in favor of explicit per-spawn
+  phases. Sidecar couriers (liveness probes, fault recorders) ride their worker's phase, so
+  they appear beside the work they serve.
+- **Rows speak human** (`workflows/rigger.js`, the label builders): a worker's label is the
+  work sentence first, role and attempt after: `<terse title> · <role>#<attempt>`, where the
+  title is the wave item's `SpawnRequest.title` compressed to one terse line (first sentence,
+  whitespace-normalized, hard length cap with an ASCII ellipsis). Only an untitled spawn falls
+  back to the spawn id. The role token is the human word (`implementer`, `lens:sdet`,
+  `adversary`, `adjudicator`), parsed from the id the conductor already formats.
 - **meta tells the truth** (`workflows/rigger.js` meta block): `meta.phases` declares exactly
-  the two statically-known groups - `Plan` (spec decomposition and its critique) and `Drive`
-  (the courier relay lane) - each with a detail line, and the detail on `Drive` documents that
-  per-unit groups appear dynamically as units start, each holding that unit's whole
-  build-review lifecycle. No declared phase can be permanently empty.
-- **Sidecar couriers stay with their unit** (decided here so no unit has to): the liveness
-  probes and fault couriers that already ride `phase: ph` keep the worker's group - they are
-  about that unit's spawn, and moving them to `Drive` would hide which unit they serve.
+  the four populatable groups - `Plan`, `Build`, `Review`, `Drive` - each with a detail line.
+  `Integrate` is dropped: integration is conductor work that spawns no agent, so it can never
+  populate a group (its detail line moves onto `Review`: an approved unit integrates
+  automatically).
 
 ## Notes (non-criteria)
 
-- Display-only: no conductor, event, wire-shape, or gate change of any kind. The
-  `unit + stage` contract on the wave item is consumed as documented, not altered.
+- Display-only: no conductor, event, wire-shape, or gate change. `SpawnRequest.title` is
+  consumed as already delivered; nothing new rides the wire.
+- The unit a row belongs to remains visible inside its sentence (a criterion sentence names
+  its subject); the grouping dimension changes from unit to lifecycle phase by explicit
+  preference.
 - The installed workflow refreshes through the existing drift-aware `rigger setup` path; the
   in-repo template is the one source of truth (`include_str!` at src/main.rs:129).
 - No new event type is introduced anywhere in this spec.
@@ -55,16 +65,18 @@ conductor sets both halves to the unit id, so every unit group renders with its 
 
 ## Done when
 
-- [ ] a test proves COURIERS RIDE THE DRIVE LANE: every step-courier spawn site in the
-  template passes `phase: 'Drive'` and no spawn site passes the global-marker Plan pin,
-  pinned on the template text the binary embeds. This criterion OWNS the courier lane.
-- [ ] a test proves PLANNERS OWN PLAN: `phaseOf` maps a plan or plan-critique wave item to the
-  declared `Plan` title. This criterion OWNS the planner mapping; the courier lane is
-  criterion 1's, NOT this one's.
-- [ ] a test proves UNIT GROUPS RENDER CLEAN: `phaseOf` yields the bare unit id when unit and
-  stage are equal and `unit:stage` when they differ. This criterion OWNS the group title.
-- [ ] a test proves META MATCHES REALITY: the meta block declares exactly the phases the
-  driver populates statically (`Plan`, `Drive`), and the retired Build/Review/Integrate
-  titles appear nowhere in it.
+- [ ] a test proves the PHASE MAPPING: plan and plan-critique items map to `Plan`, an
+  implementer item to `Build`, and lens / adversary / adjudicator items to `Review`, with an
+  unrecognized role defaulting to `Build` - pinned on the template's mapping function. This
+  criterion OWNS phase derivation; courier placement is criterion 3's, NOT this one's.
+- [ ] a test proves ROWS SPEAK HUMAN: a titled wave item's label renders
+  `<terse title> · <role>#<attempt>` (first sentence, normalized, capped with an ASCII
+  ellipsis) and an untitled item falls back to the spawn id. This criterion OWNS the label.
+- [ ] a test proves COURIERS RIDE THE DRIVE LANE: every step-courier spawn site passes
+  `phase: 'Drive'`, no global phase marker remains, and sidecar couriers pass their worker's
+  phase. This criterion OWNS courier placement.
+- [ ] a test proves META MATCHES REALITY: the meta block declares exactly `Plan`, `Build`,
+  `Review`, `Drive`, and no `Integrate` phase or `unit:stage` group construction survives in
+  the template.
 - [ ] both feature lanes green (fmt, clippy, test on default and `--no-default-features`),
   including `node --check` on the template.
