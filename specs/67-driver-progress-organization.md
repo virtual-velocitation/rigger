@@ -41,9 +41,11 @@ describing the work, with the role and attempt as suffix - never a slug a human 
   into a unit DAG", plan-critique "critique the decomposition"), with a DERIVED fallback for
   roles the map does not know - a custom lens keeps its persona token and renders the generic
   "review:" verb - so a consumer's own reviewer names degrade to something readable, never to
-  a slug. The subject is the wave item's `SpawnRequest.title` compressed to one terse line
-  (first sentence, whitespace-normalized, hard length cap with an ASCII ellipsis); only an
-  untitled spawn falls back to the spawn id.
+  a slug. The subject is the wave item's `SpawnRequest.title` reduced to its FIRST SENTENCE,
+  whitespace-normalized, and passed WHOLE: the driver never truncates and never appends an
+  ellipsis - visual clipping to pane width is the display's job, and a clipped label still
+  carries its full text for any wider surface. Only an untitled spawn falls back to the
+  spawn id.
 - **meta tells the truth** (`workflows/rigger.js` meta block): `meta.phases` declares exactly
   the four populatable groups - `Plan`, `Build`, `Review`, `Drive` - each with a detail line.
   `Integrate` is dropped: integration is conductor work that spawns no agent, so it can never
@@ -79,11 +81,12 @@ describing the work, with the role and attempt as suffix - never a slug a human 
   unrecognized role defaulting to `Build` - pinned on the template's mapping function. This
   criterion OWNS phase derivation; courier placement is criterion 3's, NOT this one's.
 - [ ] a test proves ROWS LEAD WITH THE PERSONA: a titled wave item's label renders
-  `<Persona> - <action phrase>: <terse subject> #<attempt>` (persona title-cased from the
-  id's role half; subject first-sentence, normalized, capped with an ASCII ellipsis), two
-  different tiers of the SAME unit render distinct persona tokens AND distinct action
-  phrases, an unmapped custom lens keeps its persona token with the generic "review:" verb,
-  and an untitled item falls back to the spawn id. This criterion OWNS the label.
+  `<Persona> - <action phrase>: <subject> #<attempt>` (persona title-cased from the id's
+  role half; subject is the title's first sentence, whitespace-normalized, passed whole with
+  no driver-side truncation or ellipsis), two different tiers of the SAME unit render
+  distinct persona tokens AND distinct action phrases, an unmapped custom lens keeps its
+  persona token with the generic "review:" verb, and an untitled item falls back to the
+  spawn id. This criterion OWNS the label.
 - [ ] a test proves COURIERS RIDE THE DRIVE LANE: every step-courier spawn site passes
   `phase: 'Drive'`, no global phase marker remains, and sidecar couriers pass their worker's
   phase. This criterion OWNS courier placement.
