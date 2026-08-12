@@ -8,10 +8,12 @@
 //!  - the inside-out unit tests drive the run's ingest SINK (a conductor test with in-crate spies)
 //!    and the sqlite `Projector::apply_batch` OVERRIDE (in-crate `super::` paths). Nothing there
 //!    drives the shared authority `rigger::ingest::append_and_fold_batch` through its PUBLIC boundary
-//!    as an external consumer would, so nothing pins its documented POSITION-STAMPING contract (a
-//!    single append lands the batch at consecutive positions ending at the returned last, so event
-//!    `i` of an `n`-event batch sits at `last - (n - 1) + i`) nor that its fold is BEST-EFFORT (a
-//!    fold error never fails an append that already landed durably);
+//!    as an external consumer would, so nothing pins its documented POSITION-STAMPING contract
+//!    (every folded event carries the position THE STORE REPORTED for it, taken from the store's own
+//!    per-event report rather than derived from a single "last" value) nor that its fold is
+//!    BEST-EFFORT (a fold error never fails an append that already landed durably). The report's
+//!    other two shapes - a SHORT write, and positions with GAPS - are pinned in
+//!    `tests/store_content_identity_periphery.rs` beside the guard that produces them;
 //!  - the implementer unit-tests only the sqlite Projector's OVERRIDE of `apply_batch`; the trait's
 //!    DEFAULT `apply_batch` - the backend-agnostic contract any other `Projection` inherits - is
 //!    tested nowhere. A backend with no cheaper batch path must still fold every event through
@@ -95,12 +97,12 @@ impl Projection for RecordingProjection {
 }
 
 /// The shared authority `rigger::ingest::append_and_fold_batch` stamps each folded event with the
-/// STORE-ASSIGNED position and folds the whole batch through `apply_batch` - never a per-event
-/// `apply`. Its documented contract ("a single append lands the batch at consecutive positions
-/// ending at the returned last position, so event `i` of an `n`-event batch sits at
-/// `last - (n - 1) + i`") is asserted nowhere in-crate: the conductor sink test only COUNTS append
-/// and fold calls, and the sqlite unit test PRE-SETS positions before folding. This pins the
-/// position math at the crate boundary against a real store's own assignment.
+/// position THE STORE REPORTED for it and folds the whole batch through `apply_batch` - never a
+/// per-event `apply`. Its documented contract (every folded event carries a position the store
+/// issued, derived from the store's own report rather than arithmetic over a single "last" value)
+/// is asserted nowhere else in-crate: the conductor sink test only COUNTS append and fold calls,
+/// and the sqlite unit test PRE-SETS positions before folding. This pins it at the crate boundary
+/// against a real store's own assignment.
 #[test]
 fn append_and_fold_batch_stamps_the_store_assigned_positions_and_never_folds_per_event() {
     let store = Store::open(":memory:").unwrap();
@@ -119,7 +121,7 @@ fn append_and_fold_batch_stamps_the_store_assigned_positions_and_never_folds_per
         .collect();
 
     let cap = CapturingProjection::default();
-    let last = rigger::ingest::append_and_fold_batch(
+    let appended = rigger::ingest::append_and_fold_batch(
         &store,
         Some(&cap as &dyn Projection),
         "main",
@@ -139,22 +141,26 @@ fn append_and_fold_batch_stamps_the_store_assigned_positions_and_never_folds_per
         .map(|e| e.position)
         .collect();
 
-    let n = batch.len() as u64;
-    let expected: Vec<u64> = ((last + 1 - n)..=last).collect();
+    let reported: Vec<u64> = appended.placed().map(|(_, p)| p).collect();
     assert_eq!(
-        store_positions, expected,
-        "the single append lands the batch at CONSECUTIVE positions ending at the returned last"
+        reported, store_positions,
+        "the report names, for every event handed in, the position the store actually holds it at"
+    );
+    assert_eq!(
+        appended.handed(),
+        batch.len(),
+        "the report carries one slot per event handed in"
     );
     assert_eq!(
         *cap.batch_positions.lock().unwrap(),
-        vec![expected.clone()],
-        "append_and_fold_batch folds exactly ONE batch, each event stamped with its store-assigned \
-         position (event i at last-(n-1)+i)"
+        vec![store_positions.clone()],
+        "append_and_fold_batch folds exactly ONE batch, each event stamped with the position the \
+         STORE reported for it"
     );
     assert!(
-        expected[0] > 1,
-        "the fixture advanced the log so the batch base is not the trivial position 1; got base {}",
-        expected[0]
+        store_positions[0] > 1,
+        "the fixture advanced the log so the batch does not start at the trivial position 1; got {}",
+        store_positions[0]
     );
     assert_eq!(
         cap.per_event_applies.load(Ordering::SeqCst),
@@ -163,9 +169,9 @@ fn append_and_fold_batch_stamps_the_store_assigned_positions_and_never_folds_per
          (apply)"
     );
     assert_eq!(
-        last,
-        *store_positions.last().unwrap(),
-        "the returned position is the batch's last durable position"
+        appended.last(),
+        store_positions.last().copied(),
+        "the reported last position is the batch's last durable position"
     );
 }
 
@@ -178,14 +184,16 @@ fn append_and_fold_batch_stamps_the_store_assigned_positions_and_never_folds_per
 fn append_and_fold_batch_is_best_effort_on_fold_error_and_a_no_op_on_an_empty_batch() {
     let store = Store::open(":memory:").unwrap();
 
-    // Empty batch: appends nothing, folds nothing, returns 0, leaves the stream untouched.
+    // Empty batch: appends nothing, folds nothing, reports nothing, leaves the stream untouched.
     let cap0 = CapturingProjection::default();
     let n =
         rigger::ingest::append_and_fold_batch(&store, Some(&cap0 as &dyn Projection), "main", &[])
             .unwrap();
+    assert_eq!(n.handed(), 0, "an empty batch hands the store no events");
     assert_eq!(
-        n, 0,
-        "an empty batch appends nothing and returns position 0"
+        n.last(),
+        None,
+        "an empty batch appends nothing, and reports that as an absence - never a position 0"
     );
     assert!(
         cap0.batch_positions.lock().unwrap().is_empty(),
@@ -208,7 +216,7 @@ fn append_and_fold_batch_is_best_effort_on_fold_error_and_a_no_op_on_an_empty_ba
     let batch: Vec<Event> = (0..2)
         .map(|i| Event::new("Batched", format!("b{i}").into_bytes()))
         .collect();
-    let last = rigger::ingest::append_and_fold_batch(
+    let appended = rigger::ingest::append_and_fold_batch(
         &store,
         Some(&failing as &dyn Projection),
         "main",
@@ -227,9 +235,9 @@ fn append_and_fold_batch_is_best_effort_on_fold_error_and_a_no_op_on_an_empty_ba
         "the batch is durably appended even though its fold errored"
     );
     assert_eq!(
-        stored.iter().map(|e| e.position).max().unwrap(),
-        last,
-        "the returned position is the last durably-appended event, fold error notwithstanding"
+        Some(stored.iter().map(|e| e.position).max().unwrap()),
+        appended.last(),
+        "the reported position is the last durably-appended event, fold error notwithstanding"
     );
 
     // graph = None: appends only, no fold, no panic.
@@ -237,7 +245,7 @@ fn append_and_fold_batch_is_best_effort_on_fold_error_and_a_no_op_on_an_empty_ba
     let batch2: Vec<Event> = (0..2)
         .map(|i| Event::new("Batched", format!("c{i}").into_bytes()))
         .collect();
-    let last2 = rigger::ingest::append_and_fold_batch(&store2, None, "main", &batch2).unwrap();
+    let appended2 = rigger::ingest::append_and_fold_batch(&store2, None, "main", &batch2).unwrap();
     assert_eq!(
         store2
             .read_stream("main", 0, Direction::Forward)
@@ -247,8 +255,9 @@ fn append_and_fold_batch_is_best_effort_on_fold_error_and_a_no_op_on_an_empty_ba
         "graph=None still appends the whole batch"
     );
     assert!(
-        last2 >= 2,
-        "graph=None returns the last appended position; got {last2}"
+        appended2.last().is_some_and(|p| p >= 2),
+        "graph=None still reports the last appended position; got {:?}",
+        appended2.last()
     );
 }
 

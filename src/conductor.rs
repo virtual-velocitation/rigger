@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 
 use crate::config::{AgentDef, Config, Stage};
 use crate::contextgraph::{self, Graph, Projection};
-use crate::eventstore::{Direction, Event, EventStore};
+use crate::eventstore::{Appended, Direction, Event, EventStore};
 use crate::failure::{self, Signal};
 use crate::gate::{self, Gate};
 use crate::grounder::{BlastRadius, Grounder};
@@ -2078,7 +2078,15 @@ impl RunCtx<'_> {
         // stays closed - there is no second append+fold path to drift). The returned position is the
         // appended log position a caller may CITE later (the content-address cache's green-verdict
         // provenance, spec 12 unit 1); the un-citing emit wrappers discard it.
-        self.append_and_fold_batch(std::slice::from_ref(&ev))
+        //
+        // A batch may legitimately place nothing; ONE run-lifecycle event may not - no
+        // content-identity policy reaches its type - so the absence is asked of
+        // [`crate::eventstore::Appended::one`], the same authority every other single-event
+        // append in the codebase asks, and surfaces as the lost write it is.
+        let what = format!("the {} of this run on {STREAM:?}", ev.type_);
+        Ok(self
+            .append_and_fold_batch(std::slice::from_ref(&ev))?
+            .one(&what)?)
     }
 
     /// The conductor's batched event-mutation authority: append a whole slice of already-built
@@ -2088,11 +2096,12 @@ impl RunCtx<'_> {
     /// chokepoint here (spec 06, unit 1), and the batched append-and-fold + position assignment is
     /// the shared [`crate::ingest::append_and_fold_batch`] authority a cold `rigger graph build`
     /// also uses, so the run and a cold build can never fold a file's batch differently.
-    /// [`append_and_fold`](RunCtx::append_and_fold) is the one-event case; returns the last appended
-    /// position.
-    fn append_and_fold_batch(&self, events: &[Event]) -> Result<u64, Error> {
+    /// [`append_and_fold`](RunCtx::append_and_fold) is the one-event case; returns the store's own
+    /// report - one slot per event handed in, `None` where nothing was written (an empty batch, or
+    /// a store that recognised every event as already recorded) - never a fabricated `0`.
+    fn append_and_fold_batch(&self, events: &[Event]) -> Result<Appended, Error> {
         if events.is_empty() {
-            return Ok(0);
+            return Ok(Appended::default());
         }
         // Stamp the run id on every event (spec 06, unit 1) - the one chokepoint every emit path
         // routes through, so unit/status/gate-verdict/spec-defect events are all attributable to
@@ -2598,7 +2607,9 @@ impl RunCtx<'_> {
         // Only a GREEN with a real content address enters the cache, and only if no
         // earlier green already claimed this digest - so the cited source is stable and a
         // red must always re-prove. A cache-hit re-emit carries the same digest, so this
-        // is a no-op for it (the original green stays the source).
+        // is a no-op for it (the original green stays the source). The cited position is
+        // the one the store ISSUED for this verdict: the emit above cannot return any
+        // other, so there is no made-up location to guard against here.
         if pass && !digest.is_empty() {
             self.green_digests
                 .lock()
@@ -12844,7 +12855,7 @@ mod tests {
                 stream: &str,
                 expected: ExpectedRevision,
                 events: &[Event],
-            ) -> Result<crate::eventstore::Position, crate::eventstore::Error> {
+            ) -> Result<crate::eventstore::Appended, crate::eventstore::Error> {
                 self.appends.lock().unwrap().push(events.len());
                 self.inner.append(stream, expected, events)
             }
@@ -27731,6 +27742,46 @@ mod tests {
             0,
             "resume: the fan-out must stay HELD while the gate is mid-review; workers: {:?}",
             d2.calls.lock().unwrap()
+        );
+    }
+    /// THE CONDUCTOR'S ONE-EVENT MUTATION AUTHORITY IS A SINGLE-EVENT APPEND TOO, and it
+    /// is held to the same answer as every other one in the codebase.
+    ///
+    /// It reaches the store through the BATCHED authority, whose absence is a legitimate
+    /// answer (an empty batch, or a batch the content-identity guard suppressed entirely).
+    /// That is not this caller's case: it hands over exactly one event, of a run-lifecycle
+    /// type no content-identity policy can reach, so an absence here means the write was
+    /// LOST - a UnitStatus, a GateVerdict, or a spec-defect record the whole run is
+    /// afterwards steered by, missing from the log the next step replays. So the one-event
+    /// case asks `Appended::one` and the batched case keeps its `Option`: one authority,
+    /// answering the question it was actually asked.
+    #[test]
+    fn the_conductors_one_event_authority_reports_a_write_the_store_lost() {
+        let silent = crate::eventstore::SilentStore;
+        let driver = Stub::new();
+        let cfg = Config::default();
+        let deps = Deps {
+            store: &silent,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+
+        let err = ctx
+            .emit(crate::ledger::TYPE_UNIT_STATUS, json!({"id": "u1"}))
+            .expect_err("a unit status nobody can find was not recorded");
+        let message = err.to_string();
+        assert!(
+            message.contains("nothing"),
+            "the failure says the store wrote nothing rather than driving on: {message}"
+        );
+        assert!(
+            message.contains(crate::ledger::TYPE_UNIT_STATUS),
+            "and names the event that was lost: {message}"
         );
     }
 }

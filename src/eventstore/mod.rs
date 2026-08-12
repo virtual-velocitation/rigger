@@ -16,6 +16,7 @@ pub mod kurrentdb;
 pub mod contract;
 
 use std::collections::BTreeMap;
+use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
@@ -123,6 +124,266 @@ impl Event {
     }
 }
 
+/// What an [`EventStore::append`] actually wrote: ONE entry per event the store was
+/// handed, in the order it was handed them. `Some(position)` is the global
+/// [`Position`] the store ISSUED for that event; `None` is an event the store
+/// recognised as already recorded and did not write.
+///
+/// The report exists because an append may write FEWER events than it was handed (an
+/// adapter may carry a content-identity guard - see [`ContentIdentity`]), and a caller
+/// that folds what it appended has to stamp each event with the position the store
+/// issued. Deriving positions arithmetically from a single "last" value is unsound in
+/// two independent ways: it assumes every handed event was written, and it assumes a
+/// batch lands at CONSECUTIVE positions, which this port has never promised (it
+/// promises DISTINCT, strictly increasing positions - a backend whose positions are
+/// byte offsets satisfies that and is not consecutive).
+///
+/// There is NO in-band sentinel anywhere on this path. An append that wrote nothing
+/// reports it as an explicit absence ([`Appended::last`] is `None`), never as a
+/// fabricated position `0`: the graph projection's applied ledger is keyed BY
+/// position, so a fabricated `0` would permanently mark position 0 applied and swallow
+/// the genuine event recorded there.
+///
+/// The type is a newtype over its per-event slots precisely so no caller can build an
+/// inconsistent report: there is no separate "written" flag to disagree with the
+/// positions, and the count of written events is derived, never stored.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Appended {
+    placements: Vec<Option<Position>>,
+}
+
+impl Appended {
+    /// The report for an append that wrote EVERY event it was handed, at `positions`
+    /// (in input order). This is what every append that suppresses nothing returns.
+    pub fn all(positions: Vec<Position>) -> Self {
+        Appended {
+            placements: positions.into_iter().map(Some).collect(),
+        }
+    }
+
+    /// The report for an append that wrote only some of the events it was handed:
+    /// one slot per handed event, in input order, `None` where the store suppressed.
+    pub fn from_placements(placements: Vec<Option<Position>>) -> Self {
+        Appended { placements }
+    }
+
+    /// The per-event slots, in input order - the shape a caller zips against the batch
+    /// it handed the store.
+    pub fn placements(&self) -> &[Option<Position>] {
+        &self.placements
+    }
+
+    /// The events that were WRITTEN, as `(index into the handed batch, position)`.
+    pub fn placed(&self) -> impl Iterator<Item = (usize, Position)> + '_ {
+        self.placements
+            .iter()
+            .enumerate()
+            .filter_map(|(i, p)| p.map(|p| (i, p)))
+    }
+
+    /// How many of the handed events were written.
+    pub fn written(&self) -> usize {
+        self.placements.iter().filter(|p| p.is_some()).count()
+    }
+
+    /// How many events the store was handed (written and suppressed alike).
+    pub fn handed(&self) -> usize {
+        self.placements.len()
+    }
+
+    /// The position of the LAST event written, or `None` when the append wrote
+    /// nothing at all (an empty batch, or every event suppressed). Positions are
+    /// strictly increasing, so this is also the greatest position written.
+    ///
+    /// This is the BATCH question, and its absence is a legitimate answer: a batch may
+    /// hold nothing to write, or hold only events an adapter's guard recognised. A caller
+    /// that handed over exactly ONE event is asking a different question and asks
+    /// [`Appended::one`] instead.
+    pub fn last(&self) -> Option<Position> {
+        self.placements.iter().rev().find_map(|p| *p)
+    }
+
+    /// The ONE position issued for the ONE event a single-event append handed over, or
+    /// the error a store that did not write it has earned. `what` names the thing being
+    /// recorded, so the failure reads as what the caller asked for rather than as an
+    /// internal type name.
+    ///
+    /// This is the single authority for what an absence MEANS to a caller that appended
+    /// exactly one event: nothing was recorded, and the caller cannot say why. Such a
+    /// caller has no second answer available - it cannot fold, cite, or print a position
+    /// the store never issued - so every one of them reports the absence identically here,
+    /// rather than each deciding for itself whether to fabricate a position, return a
+    /// silent success, discard the report, or explain a cause it cannot know.
+    ///
+    /// A report that does not answer exactly one event fails too: handing back the last of
+    /// several positions would answer a question the caller did not ask.
+    pub fn one(&self, what: &str) -> Result<Position, Error> {
+        // No "event store" prefix: `Error::Backend`'s own Display already opens with one,
+        // and a message that repeats it reads as a stutter to the operator.
+        match self.placements.as_slice() {
+            [Some(p)] => Ok(*p),
+            [] | [None] => Err(Error::Backend(format!(
+                "reported writing nothing for {what}"
+            ))),
+            many => Err(Error::Backend(format!(
+                "answered a single-event append for {what} with {} slots",
+                many.len()
+            ))),
+        }
+    }
+}
+
+/// The content-identity policy an adapter's append guard enforces: WHICH event types
+/// carry content identity, WHERE an event carries its content key, and how that key
+/// splits into the SUBJECT it describes and the content GENERATION it belongs to.
+///
+/// This is CONFIGURATION, injected at the composition root, never vocabulary the store
+/// owns: the event types whose payload is a re-derivable index of the project's own
+/// sources are knowledge of the layer that derives them, and the store is the lower
+/// port. Handing the policy in keeps the store free of any dependency on that layer
+/// and keeps the key format owned by the module that BUILDS it - the store never
+/// parses a key itself, it asks [`ContentIdentity::subject_of`].
+///
+/// A store with no policy configured has no guard and appends everything through,
+/// which is the fail-safe direction: an unconfigured store can only ever write MORE,
+/// never drop.
+#[derive(Clone)]
+pub struct ContentIdentity {
+    meta_key: String,
+    types: Vec<String>,
+    split: ContentKeySplit,
+}
+
+/// How a content key splits, expressed as WHERE the two parts lie in the key rather
+/// than as two strings: `(the byte range of the subject prefix, the byte range of the
+/// content generation)`, both indexing the key handed in.
+///
+/// Ranges, not `&str`, because the obligation is otherwise unstatable. An adapter's
+/// guard has to step past a whole generation in one index seek, which needs the
+/// generation's OFFSET inside the key - and a `fn(&str) -> Option<(&str, &str)>` can
+/// be satisfied by a policy that returns owned or `'static` slices that merely LOOK
+/// right (`Some(("gc/a.rs@", "h1"))` compiles and coerces). The guard would then be
+/// unable to locate the generation, would quietly stop suppressing, and would report
+/// exactly what an unguarded store reports - a guard that has silently stopped
+/// guarding, indistinguishable from a working one. A byte range cannot lie about
+/// where it points, so the type carries the obligation the doc used to carry alone.
+pub type ContentKeySplit = fn(&str) -> Option<(Range<usize>, Range<usize>)>;
+
+impl ContentIdentity {
+    /// Build the policy. `meta_key` is the metadata key an identified event carries
+    /// its content key under; `types` are the event types that carry content identity
+    /// (every other type keeps per-append identity untouched); `split` locates, WITHIN
+    /// a content key, `(the prefix EVERY key naming the same subject begins with, the
+    /// content generation this key belongs to)` and answers `None` for a key that is
+    /// not of the caller's content-key shape.
+    ///
+    /// The ranges `split` returns are CHECKED, never trusted (see
+    /// [`ContentIdentity::split_of`]): a policy whose ranges do not describe a
+    /// well-formed split of the key it was handed is treated as naming no generation
+    /// at all, which appends - the fail-safe direction.
+    pub fn new(
+        meta_key: impl Into<String>,
+        types: impl IntoIterator<Item = impl Into<String>>,
+        split: ContentKeySplit,
+    ) -> Self {
+        ContentIdentity {
+            meta_key: meta_key.into(),
+            types: types.into_iter().map(Into::into).collect(),
+            split,
+        }
+    }
+
+    /// The metadata key an identified event carries its content key under.
+    pub fn meta_key(&self) -> &str {
+        &self.meta_key
+    }
+
+    /// The event types that carry content identity.
+    pub fn types(&self) -> &[String] {
+        &self.types
+    }
+
+    /// Whether `type_` carries content identity - the TYPE half of the test, asked
+    /// FIRST, before any key is looked at, so an event of any other type can never be
+    /// suppressed however its metadata happens to be spelled.
+    pub fn covers(&self, type_: &str) -> bool {
+        self.types.iter().any(|t| t == type_)
+    }
+
+    /// WHERE `key`'s subject prefix and content generation lie within it, or `None`
+    /// when the key is not of the configured content-key shape (in which case it names
+    /// no generation and its append is never suppressed - the fail-safe direction).
+    ///
+    /// Every range the policy hands back is VALIDATED here, once, so no adapter has to
+    /// re-derive the checks and none can skip them. A split is well formed only when:
+    ///
+    /// - the subject STARTS THE KEY (`subject.start == 0`). "Subject prefix" is not a
+    ///   description, it is the property a store's range seek rests on: every key
+    ///   naming one subject is exactly the keys beginning with it, which is what turns
+    ///   "this subject's history" into one bounded range instead of a scan;
+    /// - the generation lies at or after the subject's end and within the key;
+    /// - both ranges are non-inverted and land on character boundaries, so slicing
+    ///   them can never panic on a multi-byte key.
+    ///
+    /// A policy that breaks any of them names no generation, and an event whose key
+    /// names no generation appends. A misconfigured composition root therefore
+    /// DEGRADES to an unguarded store; it can never drop a fact.
+    pub fn split_of(&self, key: &str) -> Option<(Range<usize>, Range<usize>)> {
+        let (subject, generation) = (self.split)(key)?;
+        let well_formed = subject.start == 0
+            && subject.end <= generation.start
+            && generation.start <= generation.end
+            && generation.end <= key.len()
+            && key.is_char_boundary(subject.end)
+            && key.is_char_boundary(generation.start)
+            && key.is_char_boundary(generation.end);
+        well_formed.then_some((subject, generation))
+    }
+
+    /// [`ContentIdentity::split_of`] as the two slices themselves - borrows INTO `key`
+    /// by construction, because they are cut from validated ranges rather than handed
+    /// over by the policy.
+    pub fn subject_of<'k>(&self, key: &'k str) -> Option<(&'k str, &'k str)> {
+        let (subject, generation) = self.split_of(key)?;
+        Some((&key[subject], &key[generation]))
+    }
+}
+
+impl std::fmt::Debug for ContentIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ContentIdentity")
+            .field("meta_key", &self.meta_key)
+            .field("types", &self.types)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The metadata key an adapter stamps on an event it wrote while its content-identity
+/// guard was NOT JUDGING - the guard's own degradation, recorded in the log it guards.
+///
+/// A guard that has stopped defending has to SAY SO, and this is the one place it can
+/// say it durably. Stderr is not a record: the process that degrades is usually a
+/// short-lived one whose output nobody is reading, and the symptom (a log growing
+/// again) shows up days later in a different process. So the fact is written where
+/// every other fact this system reasons about is written - into the log - and it is
+/// written WITHOUT a new event type or a new serialized form: it rides as one extra
+/// metadata pair on events the append was already writing, which `rigger validate`,
+/// any read of the store, and any operator with a SQL prompt can see.
+///
+/// It is stamped ONLY on events of a type the guard COVERS - the derived-index types
+/// the policy names - so a domain event is never rewritten by a store that merely
+/// happened to be unhealthy while it landed.
+pub const META_GUARD_DEGRADED: &str = "content_guard_degraded";
+
+/// [`META_GUARD_DEGRADED`]: the guard had no usable content-key index, so it judged
+/// nothing and every event of a covered type in that append was written through.
+pub const GUARD_DEGRADED_NO_INDEX: &str = "no-index";
+
+/// [`META_GUARD_DEGRADED`]: a subject's latest-generation walk exceeded its step
+/// budget, so its current generation was UNDETERMINED and nothing was suppressed
+/// against it.
+pub const GUARD_DEGRADED_UNDETERMINED: &str = "generations-exceeded";
+
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("event store: concurrency conflict on stream {stream:?}: expected {expected:?}, actual revision {actual}")]
@@ -221,15 +482,37 @@ impl Drop for Subscription {
 /// the convention above.
 pub trait EventStore: Send + Sync {
     /// Append events to the end of a stream under an optimistic-concurrency
-    /// expectation, returning the global position of the last event written. A
-    /// failed expectation yields [`Error::Conflict`] carrying the stream's actual
-    /// current revision.
+    /// expectation, reporting what was ACTUALLY written. A failed expectation yields
+    /// [`Error::Conflict`] carrying the stream's actual current revision.
+    ///
+    /// # The honesty obligation
+    ///
+    /// The returned [`Appended`] carries one slot per event handed in, in input order,
+    /// and every reported position is one the store ITSELF issued - never arithmetic
+    /// an adapter invented. This is a PORT obligation every adapter owes, pinned by
+    /// the backend-agnostic contract suite, because it is what lets a caller fold what
+    /// it appended at the positions the log actually holds it at. An adapter that
+    /// cannot answer where an event landed reports an error, never a guess.
+    ///
+    /// Reported positions are DISTINCT and strictly increasing within one append. They
+    /// are NOT promised to be consecutive: a backend whose global position is a byte
+    /// offset satisfies this port and leaves gaps.
+    ///
+    /// An append of no events writes nothing and reports an empty [`Appended`].
+    ///
+    /// A store may write FEWER events than it was handed when a
+    /// [`ContentIdentity`] policy is configured and an event is already recorded
+    /// under that policy (see [`sqlite::Store::with_content_identity`]); the
+    /// suppressed events report `None` and consume no per-stream revision, so the
+    /// stream advances by exactly the events written. Suppression is confined to the
+    /// configured types: every other event appends per-append, so two identical
+    /// domain events still write two rows.
     fn append(
         &self,
         stream: &str,
         expected: ExpectedRevision,
         events: &[Event],
-    ) -> Result<Position, Error>;
+    ) -> Result<Appended, Error>;
 
     /// Read one stream's events from a per-stream revision (**inclusive**), in a
     /// direction. Backward reads return the same set as a forward read from
@@ -561,6 +844,123 @@ mod redact_tests {
         assert_eq!(
             redact_conn("no rigger store found"),
             "no rigger store found"
+        );
+    }
+}
+
+/// A port that ACCEPTS every append and reports writing nothing - the one answer every
+/// single-event seam has to surface rather than absorb. It lives here, beside the
+/// accessor that decides what that answer means, so each seam's test holds it to the SAME
+/// double instead of to a local one that could drift into a friendlier shape.
+///
+/// Reads answer EMPTY rather than failing: a seam that reads before it appends (a
+/// compare-and-append) must reach its append to be tested at all.
+#[cfg(test)]
+pub(crate) struct SilentStore;
+
+#[cfg(test)]
+impl EventStore for SilentStore {
+    fn append(
+        &self,
+        _stream: &str,
+        _expected: ExpectedRevision,
+        events: &[Event],
+    ) -> Result<Appended, Error> {
+        Ok(Appended::from_placements(vec![None; events.len()]))
+    }
+    fn read_stream(
+        &self,
+        _stream: &str,
+        _from: Revision,
+        _dir: Direction,
+    ) -> Result<Vec<Event>, Error> {
+        Ok(Vec::new())
+    }
+    fn read_all(
+        &self,
+        _from: Position,
+        _dir: Direction,
+        _filter: &Filter,
+    ) -> Result<Vec<Event>, Error> {
+        Ok(Vec::new())
+    }
+    fn subscribe_all(&self, _from: Position, _filter: &Filter) -> Result<Subscription, Error> {
+        Err(Error::Backend(
+            "the silent double answers appends only".into(),
+        ))
+    }
+    fn subscribe_stream(&self, _stream: &str, _from: Revision) -> Result<Subscription, Error> {
+        Err(Error::Backend(
+            "the silent double answers appends only".into(),
+        ))
+    }
+}
+
+/// THE ONE MEANING OF AN ABSENCE ON A SINGLE-EVENT APPEND, tested where it is decided.
+///
+/// Every seam that appends exactly one event reads its report through `Appended::one`, so
+/// these tests pin the answer all of them share. Whether a seam still ASKS it is a
+/// different question, and each seam pins that itself.
+#[cfg(test)]
+mod appended_one_tests {
+    use super::{Appended, Error};
+
+    #[test]
+    fn a_written_event_yields_the_position_the_store_issued() {
+        let report = Appended::all(vec![41]);
+        assert_eq!(
+            report
+                .one("the decision of u1")
+                .expect("the store wrote it"),
+            41,
+            "the accessor hands back the store's own position, never a derived one"
+        );
+    }
+
+    #[test]
+    fn a_store_that_wrote_nothing_is_an_error_naming_what_was_lost() {
+        let report = Appended::from_placements(vec![None]);
+        let err = report
+            .one("the decision of u1")
+            .expect_err("an event nobody can locate has not been recorded");
+        let message = err.to_string();
+        assert!(
+            matches!(err, Error::Backend(_)),
+            "a port that accepted the append and wrote nothing is a backend failure, not a \
+             concurrency conflict: {message}"
+        );
+        assert!(
+            message.contains("nothing"),
+            "the message says the store wrote nothing: {message}"
+        );
+        assert!(
+            message.contains("the decision of u1"),
+            "and names what the caller was recording, so the loss is identifiable: {message}"
+        );
+    }
+
+    #[test]
+    fn an_empty_report_is_the_same_failure_and_never_a_position() {
+        let err = Appended::default()
+            .one("the decision of u1")
+            .expect_err("a report with no slot at all placed no event either");
+        assert!(
+            err.to_string().contains("nothing"),
+            "an empty report and a suppressed slot are the same answer to a one-event \
+             caller: no position was issued"
+        );
+    }
+
+    #[test]
+    fn a_report_answering_more_than_one_event_yields_no_position() {
+        let err = Appended::all(vec![7, 9])
+            .one("the decision of u1")
+            .expect_err("a two-event report does not answer a one-event caller");
+        let message = err.to_string();
+        assert!(
+            !message.contains('9'),
+            "and it must not silently hand back the last of several positions as though it \
+             were the one: {message}"
         );
     }
 }

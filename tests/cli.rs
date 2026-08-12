@@ -8198,16 +8198,132 @@ fn a_run_refuses_to_start_on_an_emit_only_gating_persona_and_starts_on_the_compl
     );
 }
 
-/// A currently-free loopback TCP port, found by binding an ephemeral port and immediately
-/// releasing it, so the spawned `rigger dash` binds successfully (never colliding with a
-/// parallel test or a real dash on `DEFAULT_PORT`) and is therefore a genuinely long-lived
-/// child rather than a process that exits on a bind conflict.
+/// Every loopback port THIS TEST BINARY has already handed out, in the order it handed them
+/// out. A TCP port is a process-global resource, so the record of which ones are already
+/// spoken for is process-global too - there is no caller to inject it into, because the
+/// resource being rationed is not owned by any caller.
+///
+/// It exists because a port a test has been HANDED is not a port the OS considers taken: a
+/// test reads an ephemeral port's number, releases the listener, and only then spawns the
+/// child that binds it, so between those two moments the OS is free to offer the very same
+/// port to a test running on another thread. Both then bind servers on one port: one wins,
+/// and the loser probes the WINNER's server. When the winner is one of this suite's
+/// deliberately silent holders, the loser's probe blocks to its read timeout and reports the
+/// server it spawned "never came up" - a red on an unchanged tree. The ledger closes exactly
+/// that window: a port handed out is never handed out again while its owner is still starting.
+static HANDED_OUT_LOOPBACK_PORTS: std::sync::Mutex<Vec<u16>> = std::sync::Mutex::new(Vec::new());
+
+/// How many ports [`reserved_loopback_listener`] will look at before giving up. Generous: a
+/// probe is only rejected when the OS offers a port this process ALREADY holds a reservation
+/// for, and needing more than this many fresh offers means the ephemeral range is exhausted -
+/// a machine condition a test must report, never quietly hand back a colliding port for.
+const LOOPBACK_PROBE_ATTEMPTS: usize = 128;
+
+/// The reservation decision itself, with the OS held at arm's length: keep asking `probe` for
+/// a port until it offers one absent from `handed_out`, record that one, and answer with it -
+/// or `None` when `attempts` offers were all already reserved.
+///
+/// `probe` yields `(port, holder)`: the port, and the live listener still HOLDING it, so a
+/// rejected offer is dropped (releasing the port) while the accepted one is handed on still
+/// bound. Pure with respect to the network - the caller supplies the binding - so the choice
+/// can be driven with an OS that offers the same port twice, which is the whole failure this
+/// exists to prevent and which no test can provoke from a real one on demand.
+fn reserve_first_unheld<H>(
+    handed_out: &mut Vec<u16>,
+    attempts: usize,
+    mut probe: impl FnMut() -> (u16, H),
+) -> Option<(u16, H)> {
+    (0..attempts).find_map(|_| {
+        let (port, holder) = probe();
+        (!handed_out.contains(&port)).then(|| {
+            handed_out.push(port);
+            (port, holder)
+        })
+    })
+}
+
+/// A bound loopback listener on a port no other test in this binary has been handed - the ONE
+/// authority every ephemeral bind in this file goes through, so no two tests are ever pointed
+/// at the same port (see [`HANDED_OUT_LOOPBACK_PORTS`]). Callers that need the port HELD (a
+/// deliberate non-dash holder) keep the returned listener; [`free_loopback_port`] drops it.
+fn reserved_loopback_listener() -> std::net::TcpListener {
+    // Poisoning carries no meaning here: the ledger is a plain list of numbers, consistent at
+    // every point a panic could unwind through, and a poisoned lock must not turn one test's
+    // failure into a cascade of unrelated ones.
+    let mut handed_out = HANDED_OUT_LOOPBACK_PORTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (_, listener) = reserve_first_unheld(&mut handed_out, LOOPBACK_PROBE_ATTEMPTS, || {
+        let listener =
+            std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind an ephemeral loopback port");
+        let port = listener.local_addr().expect("read the bound port").port();
+        (port, listener)
+    })
+    .unwrap_or_else(|| {
+        panic!(
+            "no loopback port free of this binary's own {} reservation(s) in \
+             {LOOPBACK_PROBE_ATTEMPTS} attempts - the ephemeral range is exhausted",
+            handed_out.len()
+        )
+    });
+    listener
+}
+
+/// A currently-free loopback TCP port, reserved for the caller and then released, so the
+/// server the caller spawns binds successfully (never colliding with a parallel test or a real
+/// dash on `DEFAULT_PORT`) and is therefore a genuinely long-lived child rather than a process
+/// that exits on a bind conflict.
 fn free_loopback_port() -> u16 {
-    std::net::TcpListener::bind(("127.0.0.1", 0))
-        .expect("bind an ephemeral loopback port")
+    reserved_loopback_listener()
         .local_addr()
         .expect("read the bound port")
         .port()
+}
+
+/// AN OS THAT OFFERS ONE PORT TWICE STILL HANDS TWO TESTS TWO PORTS.
+///
+/// The window this closes is not observable from the real network on demand - it needs the OS
+/// to re-offer a port between a test reading its number and the child binding it - so the
+/// choice is driven here against an OS that does exactly that, every time. Without the ledger
+/// both callers are handed `40001`, which is the shape that fails a green suite on an
+/// unchanged tree.
+#[test]
+fn a_loopback_port_already_handed_out_is_never_handed_out_a_second_time() {
+    let offers = [40001u16, 40001, 40002];
+    let mut offered = offers.iter().copied();
+    let mut probe = move || (offered.next().expect("the fixture offers enough ports"), ());
+
+    let mut handed_out = Vec::new();
+    let first = reserve_first_unheld(&mut handed_out, 8, &mut probe).expect("a first port");
+    let second = reserve_first_unheld(&mut handed_out, 8, &mut probe).expect("a second port");
+
+    assert_eq!(first.0, 40001, "the first caller takes the first offer");
+    assert_eq!(
+        second.0, 40002,
+        "the second caller must SKIP the re-offered {} and take the next free port",
+        first.0
+    );
+    assert_eq!(
+        handed_out,
+        vec![40001, 40002],
+        "both reservations are recorded, so a third caller skips them too"
+    );
+}
+
+/// A RESERVATION THAT CANNOT BE MADE IS REPORTED, NEVER FAKED.
+///
+/// Handing back a port the process already reserved would reintroduce the exact collision this
+/// authority exists to prevent, silently - so an exhausted probe answers `None` and the caller
+/// fails loudly instead.
+#[test]
+fn an_exhausted_probe_reserves_nothing_rather_than_re_handing_a_reserved_port() {
+    let mut handed_out = vec![40001u16];
+    let taken = reserve_first_unheld(&mut handed_out, 4, || (40001, ()));
+    assert!(
+        taken.is_none(),
+        "an OS with only an already-reserved port to offer must yield no reservation"
+    );
+    assert_eq!(handed_out, vec![40001], "and must record nothing new");
 }
 
 /// Spec 19b, unit 3 (no orphaned processes): a standalone long-lived `rigger` child - a
@@ -8268,58 +8384,31 @@ fn a_dropped_guard_reaps_a_standalone_rigger_dash() {
     assert_eq!(n, 0, "a reaped `rigger dash` should have its stdout at EOF");
 }
 
-/// A minimal HTTP GET of a `http://127.0.0.1:<port>/` URL over a raw TCP socket (the test
-/// crate has no HTTP client), returning the response BODY on success. The dash answers with
-/// `Connection: close`, so `read_to_string` reads to EOF and terminates. Used to prove an
-/// auto-started dash is genuinely SERVING (not merely that a URL was recorded).
-fn http_get(url: &str) -> Option<String> {
-    use std::io::{Read, Write};
-    use std::time::{Duration, Instant};
-    let hostport = url.strip_prefix("http://")?.trim_end_matches('/');
-    // The dash's URL breadcrumb is written the instant the child is spawned, which can be
-    // BEFORE that child has bound its port - a connect during that startup window is refused.
-    // Retry the connect on a bounded deadline (the same poll-on-deadline pattern the caller
-    // already uses for the dash.url breadcrumb) so a transient connect-refused during startup
-    // is retried, not fatal; a connect that never succeeds within the deadline still fails
-    // LOUD (the safe direction), never a false green.
-    let deadline = Instant::now() + Duration::from_secs(15);
-    let mut stream = loop {
-        match std::net::TcpStream::connect(hostport) {
-            Ok(stream) => break stream,
-            Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
-            Err(_) => return None,
-        }
-    };
-    stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
-    write!(
-        stream,
-        "GET / HTTP/1.1\r\nHost: {hostport}\r\nConnection: close\r\n\r\n"
-    )
-    .ok()?;
-    let mut resp = String::new();
-    stream.read_to_string(&mut resp).ok()?;
-    let body_start = resp.find("\r\n\r\n").map(|i| i + 4).unwrap_or(0);
-    Some(resp[body_start..].to_string())
-}
+/// How long a probe keeps trying to get a complete response out of a just-spawned server
+/// before it gives up and reports that the server never came up.
+const SERVER_READY_SECS: u64 = 15;
 
-/// A minimal HTTP GET of an arbitrary `path` (e.g. `/api/instances`, `/api/state?instance=<id>`)
-/// on a loopback dash at `port`, returning the whole response (status line + headers + body) so a
-/// caller can assert BOTH the `200` status and the body content. Retries the connect on the same
-/// bounded startup deadline as [`http_get`], so a request during the dash's bind window is retried,
-/// never a false failure. `None` only when the dash never came up within the deadline.
-fn http_get_path(port: u16, path: &str) -> Option<String> {
+/// How long ONE attempt waits for the server to answer. Shorter than
+/// [`SERVER_READY_SECS`] on purpose: an attempt that stalls must leave the deadline room
+/// for further attempts, because "answered nothing yet" is what a server still coming up
+/// looks like.
+const ATTEMPT_READ_SECS: u64 = 3;
+
+/// ONE complete HTTP GET attempt of `path` at `hostport` over a raw TCP socket (the test
+/// crate has no HTTP client): connect, send, read to EOF, and answer with the WHOLE response
+/// (status line + headers + body). `None` means this ATTEMPT produced no complete response.
+///
+/// Every way an attempt can come up short is the same one answer - a refused connect, a
+/// failed write, a read that timed out, a peer that closed with nothing, or a reply with no
+/// header terminator - because to a caller probing a server that is still coming up they are
+/// all the same fact, and only [`http_probe`] decides when that stops being acceptable.
+fn http_attempt(hostport: &str, path: &str) -> Option<String> {
     use std::io::{Read, Write};
-    use std::time::{Duration, Instant};
-    let hostport = format!("127.0.0.1:{port}");
-    let deadline = Instant::now() + Duration::from_secs(15);
-    let mut stream = loop {
-        match std::net::TcpStream::connect(&hostport) {
-            Ok(stream) => break stream,
-            Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
-            Err(_) => return None,
-        }
-    };
-    stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
+    use std::time::Duration;
+    let mut stream = std::net::TcpStream::connect(hostport).ok()?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(ATTEMPT_READ_SECS)))
+        .ok()?;
     write!(
         stream,
         "GET {path} HTTP/1.1\r\nHost: {hostport}\r\nConnection: close\r\n\r\n"
@@ -8327,7 +8416,53 @@ fn http_get_path(port: u16, path: &str) -> Option<String> {
     .ok()?;
     let mut resp = String::new();
     stream.read_to_string(&mut resp).ok()?;
-    Some(resp)
+    // A response without a header terminator is not a response: the peer accepted the
+    // connection and closed (or dribbled) without answering, which is a server that has not
+    // finished coming up, NOT a server that answered something unexpected.
+    resp.contains("\r\n\r\n").then_some(resp)
+}
+
+/// Poll `hostport` for `path` until a WHOLE response arrives, on a bounded deadline.
+///
+/// Bringing a server up is not one instant but a sequence - the child is spawned, then binds,
+/// then accepts, then answers - and a probe fired anywhere before the end of it comes back
+/// empty-handed for a reason that says nothing about whether the server works. Retrying only
+/// the CONNECT covers just the first of those steps: the kernel completes a handshake into the
+/// backlog the moment the port is bound, so a connect starts succeeding while the server is
+/// still too busy to answer, and a probe that gave up there reported a healthy server as dead
+/// on a loaded machine. So the whole exchange is what gets retried. A server that never
+/// answers within the deadline still fails LOUD (the safe direction), never a false green.
+fn http_probe(hostport: &str, path: &str) -> Option<String> {
+    use std::time::{Duration, Instant};
+    let deadline = Instant::now() + Duration::from_secs(SERVER_READY_SECS);
+    loop {
+        if let Some(resp) = http_attempt(hostport, path) {
+            return Some(resp);
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// A minimal HTTP GET of a `http://127.0.0.1:<port>/` URL, returning the response BODY on
+/// success. The dash answers with `Connection: close`, so the read runs to EOF and terminates.
+/// Used to prove an auto-started dash is genuinely SERVING (not merely that a URL was
+/// recorded). `None` only when the server never answered within [`http_probe`]'s deadline.
+fn http_get(url: &str) -> Option<String> {
+    let hostport = url.strip_prefix("http://")?.trim_end_matches('/');
+    let resp = http_probe(hostport, "/")?;
+    let body_start = resp.find("\r\n\r\n").map(|i| i + 4).unwrap_or(0);
+    Some(resp[body_start..].to_string())
+}
+
+/// A minimal HTTP GET of an arbitrary `path` (e.g. `/api/instances`, `/api/state?instance=<id>`)
+/// on a loopback dash at `port`, returning the whole response (status line + headers + body) so a
+/// caller can assert BOTH the `200` status and the body content. Polled on the same bounded
+/// startup deadline as [`http_get`]; `None` only when the dash never came up within it.
+fn http_get_path(port: u16, path: &str) -> Option<String> {
+    http_probe(&format!("127.0.0.1:{port}"), path)
 }
 
 /// Spec 19b, unit 1 (always-on dash + discoverability): whenever a driver has a run in
@@ -11633,7 +11768,6 @@ fn dash_attach_to_shared_instance_reads_its_own_store_not_the_dash_process_kurre
 #[test]
 fn dash_on_a_port_held_by_a_non_dash_process_fails_loud_and_never_drifts() {
     use std::io::Read;
-    use std::net::TcpListener;
     use std::process::Stdio;
     use std::time::{Duration, Instant};
 
@@ -11644,7 +11778,7 @@ fn dash_on_a_port_held_by_a_non_dash_process_fails_loud_and_never_drifts() {
     // process squatting the address. Keeping the bound listener in scope holds the port for the
     // whole `rigger dash` run; the singleton probe connects into its backlog, reads nothing, and
     // times out - so the holder is correctly NOT recognized as a dash.
-    let holder = TcpListener::bind(("127.0.0.1", 0)).expect("bind a non-dash holder");
+    let holder = reserved_loopback_listener();
     let port = holder.local_addr().unwrap().port();
 
     let mut dash = Command::new(rigger_bin())
@@ -11937,7 +12071,6 @@ fn every_dash_response_carries_the_rigger_dash_recognition_header() {
 #[test]
 fn the_dash_singleton_probe_stays_bounded_against_a_dribbling_holder() {
     use std::io::{Read, Write};
-    use std::net::TcpListener;
     use std::process::Stdio;
     use std::time::{Duration, Instant};
 
@@ -11945,7 +12078,7 @@ fn the_dash_singleton_probe_stays_bounded_against_a_dribbling_holder() {
     let root = proj.path();
 
     // Bind the port and hold it for the whole run, so `rigger dash`'s bind is a genuine conflict.
-    let holder = TcpListener::bind(("127.0.0.1", 0)).expect("bind a hostile dribbling holder");
+    let holder = reserved_loopback_listener();
     let port = holder.local_addr().unwrap().port();
 
     // A worker that ACCEPTS the one singleton-probe connection (bounded so it never blocks
@@ -12055,7 +12188,6 @@ fn the_dash_singleton_probe_stays_bounded_against_a_dribbling_holder() {
 #[test]
 fn dash_serving_on_recognizes_a_real_dash_and_rejects_a_non_dash_holder() {
     use rigger::dash::dash_serving_on;
-    use std::net::TcpListener;
     use std::process::Stdio;
 
     // Case 1 - a REAL serving `rigger dash`: `dash_serving_on` must recognize it (TRUE).
@@ -12081,7 +12213,7 @@ fn dash_serving_on_recognizes_a_real_dash_and_rejects_a_non_dash_holder() {
     // Case 2 - a NON-dash holder that never answers the probe: `dash_serving_on` must reject it
     // (FALSE), bounded by its own read timeouts (the silent-holder half of the boundedness the
     // dribble test drives). Keeping the listener in scope holds the port for the whole probe.
-    let non_dash = TcpListener::bind(("127.0.0.1", 0)).expect("bind a non-dash holder");
+    let non_dash = reserved_loopback_listener();
     let non_dash_port = non_dash.local_addr().unwrap().port();
     let recognized_non_dash = dash_serving_on(non_dash_port);
 

@@ -426,7 +426,12 @@ const EMITTABLE_TYPES: [&str; 4] = [
     crate::conductor::TYPE_UNIT_PROPOSED,
 ];
 
-/// Returns the appended event's [`Position`], so a caller can report it.
+/// Returns the [`Position`] the store issued for the appended event, so a caller can
+/// report it - or the failure a store that wrote nothing has earned
+/// ([`crate::eventstore::Appended::one`]). The fold below is downstream of that position
+/// and unreachable without it: the graph's applied ledger is keyed BY position, so folding
+/// at a position the store never issued would mark that location applied forever and
+/// swallow the genuine event recorded there.
 pub fn emit_event(
     store: &dyn EventStore,
     stream: &str,
@@ -473,6 +478,7 @@ pub fn emit_event(
 
     let pos = store
         .append(stream, ExpectedRevision::Any, std::slice::from_ref(&event))
+        .and_then(|appended| appended.one(&format!("the {typ} on {stream:?}")))
         .map_err(|e| e.to_string())?;
     // Fold the appended event into the live graph (when wired), so a ReviewFinding
     // or DecisionMade an agent emits becomes retrievable through `graph_context` by
@@ -1305,6 +1311,33 @@ mod tests {
         assert_eq!(
             resp["error"]["code"], -32602,
             "tools/call without params.name is invalid params: {resp}"
+        );
+    }
+    /// AN EMIT THE STORE DID NOT WRITE IS NOT AN EMIT. This is the channel every agent
+    /// records its decisions and findings on, and the whole point of recording them is that
+    /// a CONCURRENT agent reads them; a decision that never landed reads to its author as
+    /// recorded and is invisible to everyone else.
+    ///
+    /// The absence used to come back as `Ok(None)` - a success whose meaning each caller
+    /// decided for itself - so the seam asks the one authority instead. The graph fold is
+    /// downstream of that answer and is unreachable without a position, which is the
+    /// property that keeps the applied ledger from ever marking a location applied that the
+    /// store did not issue.
+    #[test]
+    fn an_emit_the_store_did_not_write_is_reported_as_lost_and_folds_nothing() {
+        let args = json!({
+            "type": crate::contextgraph::TYPE_DECISION_MADE,
+            "data": {"id": "d1", "summary": "a decision"},
+        });
+        let message = emit_event(&crate::eventstore::SilentStore, "run", None, &args)
+            .expect_err("a decision nobody can find was not emitted");
+        assert!(
+            message.contains("nothing"),
+            "the failure says the store wrote nothing: {message}"
+        );
+        assert!(
+            message.contains(crate::contextgraph::TYPE_DECISION_MADE),
+            "and names the event that was lost: {message}"
         );
     }
 }
