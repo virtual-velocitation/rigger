@@ -36,14 +36,27 @@ describing the work, with the role and attempt as suffix - never a slug a human 
   everything after it. The
   PERSONA token comes first (title-cased from the id's role half: `Implementer`, `Lens:SDET`,
   `Adversary`, `Adjudicator`, `Plan-Critique`) so the reader always knows WHO is acting; the
-  action phrase says what that persona does to the unit - the criterion sentence alone would
-  render every tier of one unit identically. Action phrases come from a small role map in the
-  driver (implementer "implement", an sdet lens "prove the tests discriminate", adversary
-  "hunt counterexamples in", adjudicator "rule on the verdict for", plan "decompose the spec
-  into a unit DAG", plan-critique "critique the decomposition"), with a DERIVED fallback for
-  roles the map does not know - a custom lens keeps its persona token and renders the generic
-  "review:" verb - so a consumer's own reviewer names degrade to something readable, never to
-  a slug. The subject is the wave item's `SpawnRequest.title` reduced to its FIRST SENTENCE,
+  action phrase states that persona's MANDATE - what it does to the unit - because the
+  criterion sentence alone would render every tier of one unit identically. The role map in
+  the driver: implementer "implement"; the sdet lens "evaluate testing effectiveness";
+  the architecture lens "evaluate architectural integrity"; adversary "challenge the
+  findings, assumptions, and rigor of <roster>" (its mandate is to DISPROVE the other
+  agents' work - surface assumptions not grounded in reality and quality gaps the tiers
+  passed over - so its verb names refutation, not example-hunting); adjudicator "weigh
+  <roster> and rule"; plan "decompose the spec into a unit DAG"; plan-critique "critique the
+  decomposition". A DERIVED fallback covers roles the map does not know - a custom lens
+  keeps its persona token and renders the generic "review:" verb - so a consumer's own
+  reviewer names degrade to something readable, never to a slug.
+- **Review tiers name their targets** (`src/conductor.rs` review-spawn seam +
+  `workflows/rigger.js`): the `<roster>` in the adversary's and adjudicator's phrases is the
+  actual set of personas whose work that tier judges, stamped by the CONDUCTOR on the
+  review-tier wave item as one additive, optional field (e.g. `reviews:
+  ["lens:sdet","lens:architecture-reviewer"]`; the adjudicator's roster also carries the
+  adversary). The conductor is the only honest source - the `review.tiers` routing varies
+  the lens roster per unit (light vs full panels), and a driver-side guess would miss a
+  lens whose result replayed from a prior step. The field is serde-defaulted and the wave
+  schema is open, so an old driver ignores it and a wave item without it renders the phrase
+  without the parenthetical - graceful in both mix directions, never a wrong roster. The subject is the wave item's `SpawnRequest.title` reduced to its FIRST SENTENCE,
   whitespace-normalized, and passed WHOLE: the driver never truncates and never appends an
   ellipsis - visual clipping to pane width is the display's job, and a clipped label still
   carries its full text for any wider surface. Only an untitled spawn falls back to the
@@ -56,8 +69,10 @@ describing the work, with the role and attempt as suffix - never a slug a human 
 
 ## Notes (non-criteria)
 
-- Display-only: no conductor, event, wire-shape, or gate change. `SpawnRequest.title` is
-  consumed as already delivered; nothing new rides the wire.
+- Display-first with ONE additive exception: the only non-display change is the optional
+  `reviews` roster field the conductor stamps on review-tier spawn requests (serde-defaulted,
+  additive on the existing event payload - not a new event type, not a changed gate or stop
+  path). Everything else consumes `SpawnRequest.title` as already delivered.
 - The unit a row belongs to remains visible inside its sentence (a criterion sentence names
   its subject); the grouping dimension changes from unit to lifecycle phase by explicit
   preference.
@@ -73,7 +88,8 @@ describing the work, with the role and attempt as suffix - never a slug a human 
   `cargo test` - on default features AND `--no-default-features`.
 - The driver stays gate-blind and behavior-identical: only `opts.phase` strings, labels, and
   the meta block change; every spawn, courier retry rule, and stop path is byte-for-byte
-  today's.
+  today's. On the conductor side, the `reviews` stamp is the ONE change: additive, optional,
+  read by nothing in the conductor itself.
 - `node --check` passes on the changed template (the existing JS syntax gate).
 
 ## Done when
@@ -92,6 +108,11 @@ describing the work, with the role and attempt as suffix - never a slug a human 
 - [ ] a test proves COURIERS RIDE THE DRIVE LANE: every step-courier spawn site passes
   `phase: 'Drive'`, no global phase marker remains, and sidecar couriers pass their worker's
   phase. This criterion OWNS courier placement.
+- [ ] a test proves REVIEW TIERS NAME THEIR TARGETS: the conductor stamps the adversary's
+  wave item with the unit's routed lens roster and the adjudicator's with lenses plus
+  adversary, the driver renders the roster inside the action phrase, and a roster-less item
+  (an older conductor) renders the phrase without a parenthetical - never a fabricated or
+  stale roster. This criterion OWNS the roster stamp and its render.
 - [ ] a test proves META MATCHES REALITY: the meta block declares exactly `Plan`, `Build`,
   `Review`, `Drive`, and no `Integrate` phase or `unit:stage` group construction survives in
   the template.
