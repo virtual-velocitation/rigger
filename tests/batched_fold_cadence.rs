@@ -8,10 +8,12 @@
 //!  - the inside-out unit tests drive the run's ingest SINK (a conductor test with in-crate spies)
 //!    and the sqlite `Projector::apply_batch` OVERRIDE (in-crate `super::` paths). Nothing there
 //!    drives the shared authority `rigger::ingest::append_and_fold_batch` through its PUBLIC boundary
-//!    as an external consumer would, so nothing pins its documented POSITION-STAMPING contract (a
-//!    single append lands the batch at consecutive positions ending at the returned last, so event
-//!    `i` of an `n`-event batch sits at `last - (n - 1) + i`) nor that its fold is BEST-EFFORT (a
-//!    fold error never fails an append that already landed durably);
+//!    as an external consumer would, so nothing pins its documented POSITION-STAMPING contract
+//!    (every folded event carries the position THE STORE REPORTED for it, taken from the store's own
+//!    per-event report rather than derived from a single "last" value) nor that its fold is
+//!    BEST-EFFORT (a fold error never fails an append that already landed durably). The report's
+//!    other two shapes - a SHORT write, and positions with GAPS - are pinned in
+//!    `tests/store_content_identity_periphery.rs` beside the guard that produces them;
 //!  - the implementer unit-tests only the sqlite Projector's OVERRIDE of `apply_batch`; the trait's
 //!    DEFAULT `apply_batch` - the backend-agnostic contract any other `Projection` inherits - is
 //!    tested nowhere. A backend with no cheaper batch path must still fold every event through
