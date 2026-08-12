@@ -4259,15 +4259,23 @@ mod tests {
     #[test]
     #[serial_test::serial(dash_default_port)]
     fn bind_singleton_short_circuits_on_an_already_serving_rigger_dash() {
+        use std::sync::mpsc;
         use std::time::Instant;
 
         // Bring a REAL dash up on an ephemeral port and wait until it answers as a dash.
-        let port = TcpListener::bind(("127.0.0.1", 0))
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
-        let addr = SocketAddr::from(([127, 0, 0, 1], port));
+        //
+        // The port is discovered by binding it and is HELD by that same listener all the way into
+        // `serve_on` - it is never released and re-bound. Discovering a port by binding it,
+        // DROPPING the listener and re-binding the number is a time-of-check/time-of-use race:
+        // in the window between the drop and the re-bind, any `bind(0)` on the machine (a sibling
+        // test, or a second agent running this same suite in another worktree) can be handed the
+        // just-freed port. `serve` then fails AddrInUse and this test, which only ever observes
+        // the port, burns its whole deadline and reports a misleading "never came up".
+        // `serve_on` is the same race-free seam production uses: `bind_singleton` returns the
+        // listener it bound (`SingletonBind::Bound`) and the caller serves on THAT listener.
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let port = addr.port();
         let provider = |_instance: Option<&str>| -> Result<DashInputs, String> {
             Ok((Vec::new(), Graph::default(), Vec::new(), HashMap::new()))
         };
@@ -4277,9 +4285,13 @@ mod tests {
             |_: Option<&str>, _: &[String], _: crate::contextgraph::Direction, _: i64, _: &str| {
                 crate::contextgraph::CallGraph::default()
             };
+        // A dash that FAILS instead of serving reports its error here, so the failure surfaces
+        // LOUD and named (spec 19c) rather than as a silent stall that only shows up much later
+        // as an unexplained deadline.
+        let (serve_failed, serve_failure) = mpsc::channel();
         std::thread::spawn(move || {
-            let _ = serve(
-                addr,
+            if let Err(e) = serve_on(
+                listener,
                 provider,
                 graph_provider,
                 calls_provider,
@@ -4287,7 +4299,9 @@ mod tests {
                 3,
                 "rigger-run",
                 "origin/main",
-            );
+            ) {
+                let _ = serve_failed.send(e.to_string());
+            }
         });
 
         // Condition-based readiness with a LOAD-PROOF bound: under the fully parallel suite
@@ -4296,6 +4310,9 @@ mod tests {
         // not an expectation - the loop exits the moment the dash answers (typically <100ms).
         let deadline = Instant::now() + Duration::from_secs(60);
         while !dash_serving_on(port) {
+            if let Ok(e) = serve_failure.try_recv() {
+                panic!("the dash on port {port} failed instead of serving: {e}");
+            }
             assert!(
                 Instant::now() < deadline,
                 "the dash never came up on port {port} within the deadline"
