@@ -16,17 +16,27 @@
 //! no-op there.
 
 use crate::contextgraph::Projection;
-use crate::eventstore::{Event, EventStore, ExpectedRevision, Position};
+use crate::eventstore::{Appended, Event, EventStore, ExpectedRevision};
 
 /// Append a whole batch of events to `stream` in ONE store append and fold them into `graph` in ONE
 /// transaction (via [`Projection::apply_batch`]) - the batched-fold cadence spec 49 needs: one store
 /// transaction per file's batch, not one per event (the measured cold-build throughput was
-/// transaction-cadence bound, not parse-bound). Each event is stamped with its global position
-/// before it folds: a single append lands the batch at CONSECUTIVE positions ending at the returned
-/// last position, so event `i` of an `n`-event batch sits at `last - (n - 1) + i`. The fold is
-/// best-effort - a fold failure never fails the append, which already landed durably in the log,
-/// exactly as the run's per-event `append_and_fold` folds best-effort. Returns the last appended
-/// position (`0` for an empty batch, which appends nothing).
+/// transaction-cadence bound, not parse-bound). The fold is best-effort - a fold failure never fails
+/// the append, which already landed durably in the log, exactly as the run's per-event
+/// `append_and_fold` folds best-effort. Returns the store's own report of what it wrote.
+///
+/// # Every folded event is stamped with the position THE STORE ISSUED
+///
+/// This function folds exactly the events [`Appended::placed`] names, at the positions the store
+/// reported, and it derives no position of its own. It used to compute them arithmetically as
+/// `base = last + 1 - n`, which is unsound twice over: an append may write FEWER events than it was
+/// handed (a store carrying a content-identity guard suppresses an already-recorded derived-index
+/// event), and the port has never promised a batch lands at CONSECUTIVE positions - only distinct,
+/// strictly increasing ones, which a backend whose position is a byte offset satisfies with gaps.
+/// Either way the arithmetic stamps events at positions the store never issued, and the graph's
+/// applied ledger is keyed BY position: a wrong one marks a location applied forever and silently
+/// swallows the genuine event recorded there. A suppressed event needs no fold at all - it folded
+/// when its content was first recorded.
 ///
 /// This is the ONE batched append-and-fold authority both ingest sinks share - the run's keyed emit
 /// and a cold `rigger graph build` - so the batching can never diverge between them. It lives here
@@ -39,26 +49,27 @@ pub fn append_and_fold_batch(
     graph: Option<&dyn Projection>,
     stream: &str,
     events: &[Event],
-) -> Result<Position, crate::eventstore::Error> {
+) -> Result<Appended, crate::eventstore::Error> {
     if events.is_empty() {
-        return Ok(0);
+        return Ok(Appended::default());
     }
-    let last = store.append(stream, ExpectedRevision::Any, events)?;
+    let appended = store.append(stream, ExpectedRevision::Any, events)?;
     if let Some(g) = graph {
-        let n = events.len() as Position;
-        let base = last + 1 - n;
-        let positioned: Vec<Event> = events
-            .iter()
-            .enumerate()
-            .map(|(i, e)| {
-                let mut e = e.clone();
-                e.position = base + i as Position;
-                e
+        let positioned: Vec<Event> = appended
+            .placed()
+            .filter_map(|(i, position)| {
+                events.get(i).map(|e| {
+                    let mut e = e.clone();
+                    e.position = position;
+                    e
+                })
             })
             .collect();
-        let _ = g.apply_batch(&positioned);
+        if !positioned.is_empty() {
+            let _ = g.apply_batch(&positioned);
+        }
     }
-    Ok(last)
+    Ok(appended)
 }
 
 /// What a walk did, reported back to the caller. `batches_emitted` counts the file batches the walk

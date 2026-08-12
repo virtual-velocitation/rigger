@@ -426,13 +426,17 @@ const EMITTABLE_TYPES: [&str; 4] = [
     crate::conductor::TYPE_UNIT_PROPOSED,
 ];
 
-/// Returns the appended event's [`Position`], so a caller can report it.
+/// Returns the appended event's [`Position`], so a caller can report it - or `None` when
+/// the store wrote nothing, which is an answer this seam must be able to give rather
+/// than paper over: the graph's applied ledger is keyed BY position, so folding at a
+/// position the store never issued would mark that location applied forever and swallow
+/// the genuine event recorded there.
 pub fn emit_event(
     store: &dyn EventStore,
     stream: &str,
     graph: Option<&dyn Projection>,
     args: &Value,
-) -> Result<crate::eventstore::Position, String> {
+) -> Result<Option<crate::eventstore::Position>, String> {
     let typ = args
         .get("type")
         .and_then(Value::as_str)
@@ -473,13 +477,14 @@ pub fn emit_event(
 
     let pos = store
         .append(stream, ExpectedRevision::Any, std::slice::from_ref(&event))
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?
+        .last();
     // Fold the appended event into the live graph (when wired), so a ReviewFinding
     // or DecisionMade an agent emits becomes retrievable through `graph_context` by
     // the agents that ground afterwards - the graph is the cross-agent memory the
     // review tiers communicate through. Best-effort: a fold failure must not fail
     // the emit, which already landed durably in the log.
-    if let Some(g) = graph {
+    if let (Some(g), Some(pos)) = (graph, pos) {
         let mut folded = event;
         folded.position = pos;
         let _ = g.apply(&folded);

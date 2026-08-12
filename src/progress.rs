@@ -77,13 +77,14 @@ impl AgentProgress {
 
 /// Record one progress report to the progress `store`, stamped with `run_id`. Append-only
 /// and side-effect-free beyond the one event: a pure write, cheap to call after every
-/// significant step. Returns the global position of the appended event.
+/// significant step. Returns the global position of the appended event, or `None` when
+/// the store wrote nothing - an explicit absence, never a fabricated position.
 pub fn record(
     store: &dyn EventStore,
     run_id: &str,
     id: &str,
     activity: &str,
-) -> Result<Position, Error> {
+) -> Result<Option<Position>, Error> {
     let progress = AgentProgress {
         id: id.to_string(),
         activity: activity.to_string(),
@@ -91,7 +92,9 @@ pub fn record(
     let ev = progress
         .to_event(run_id)
         .map_err(|e| Error::Backend(format!("serialize AgentProgress: {e}")))?;
-    store.append(STREAM, ExpectedRevision::Any, std::slice::from_ref(&ev))
+    Ok(store
+        .append(STREAM, ExpectedRevision::Any, std::slice::from_ref(&ev))?
+        .last())
 }
 
 /// A live per-agent view (spec 14, unit 2): for one in-flight spawn, what stage it is at,
