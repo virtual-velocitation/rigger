@@ -13,13 +13,13 @@ mechanical subset of the recipe as a spec lint every operator can run before lau
 
 ## Design
 
-- **The skill ships via setup** (`src/main.rs`, the `install_skill` seam; `src/docs.rs`): the
-  `planning-a-spec` skill becomes a binary-embedded render exactly like `using-rigger` - one
-  source of truth in the code, written by `rigger docs`, installed (or drift-refreshed) by
-  `rigger setup` at `.claude/skills/planning-a-spec/SKILL.md`, honoring the same per-repo
-  overlay mechanism so a consumer can append project specifics without forking the render. The
-  committed copy in THIS repo becomes the rendered artifact and joins the existing docs-drift
-  gate, so it can never silently disagree with what consumers receive.
+- **The skill ships as a registry entry** (`src/main.rs`, `src/docs.rs`): the `planning-a-spec`
+  skill becomes a binary-embedded render registered in the SKILL REGISTRY spec 68 builds (spec
+  68 runs FIRST; this spec adds an entry and its content, exactly the adding-a-skill path the
+  registry exists to make plumbing-free). One source of truth in the code, written by
+  `rigger docs`, installed (or drift-refreshed) by `rigger setup`, per-repo overlay honored,
+  committed copy drift-gated - all of that is the REGISTRY'S contract, owned by spec 68; this
+  spec owns only the entry and the content.
 - **The guide ships in the handbook** (`src/docs.rs`): `docs/handbook/planning-field-guide.md`
   becomes a rendered handbook page under the same drift gate, cross-linked from
   `authoring-loops.md` (whose rules it operationalizes). Content is the failure catalog as
@@ -35,7 +35,9 @@ mechanical subset of the recipe as a spec lint every operator can run before lau
   - ownership: in a spec with three or more criteria, criteria that carry no ownership
     sentence (no OWNS/owner language inside the checkbox) are listed as twin-risk;
   - open dispositions: draft-smell phrases ("worth considering", "either ... or", "could
-    instead") OUTSIDE a Notes section are listed as re-litigation risk;
+    instead") OUTSIDE a Notes section are listed as re-litigation risk - scanned in prose
+    only, never inside fenced code blocks or inline code spans, so a spec quoting code or
+    shell text cannot false-positive;
   - hygiene: U+2014 em dashes anywhere in the file (the diff gate will fail them later;
     validate says so now).
   Each warning names the criterion and the field-guide class it maps to, so the fix is one
@@ -68,10 +70,11 @@ mechanical subset of the recipe as a spec lint every operator can run before lau
 
 ## Done when
 
-- [ ] a test proves the SKILL INSTALLS: `rigger setup` in a fresh repo writes
-  `.claude/skills/planning-a-spec/SKILL.md` from the binary-embedded render, honors the
-  project overlay, and a rerun is drift-aware (refresh reported, never a destructive clobber).
-  This criterion OWNS the skill's render-and-install path.
+- [ ] a test proves the SKILL IS A REGISTRY ENTRY: the `planning-a-spec` render is enumerated
+  by the skill registry, so `rigger setup` installs it and `rigger docs` renders it through
+  the registry's own paths with no planning-specific install code. This criterion OWNS the
+  entry and its content; the registry mechanics (drift, overlay, non-destructive rerun) are
+  spec 68's, NOT this spec's.
 - [ ] a test proves the HANDBOOK PAGE RENDERS: `rigger docs` writes the planning field guide
   handbook page, `authoring-loops.md` links to it, and the docs-drift gate holds over both.
   This criterion OWNS the guide's render; the skill install is criterion 1's, NOT this one's.

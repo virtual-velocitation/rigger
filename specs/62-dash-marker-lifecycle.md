@@ -37,7 +37,9 @@ last step.
   courier commands that carry agent work (`rigger progress`, `rigger emit`, `rigger result`)
   refresh this project's machine-global registry entry with a fresh heartbeat - a one-shot
   re-stamp through the existing write path, no heartbeat thread, best-effort and warn-only
-  exactly like the driver registration. This makes the code honor the documented registration
+  exactly like the driver registration, including its degrade: a homeless environment (no
+  state home) or an unwritable registry skips the re-stamp silently and never fails, slows,
+  or warns the courier's actual work. This makes the code honor the documented registration
   contract: every invocation that starts or advances a run keeps the instance discoverable, so
   a run whose agents are working keeps its entry alive across an agent phase of any length.
 - **The idle judgment sees agents** (`src/main.rs::watch_and_self_reap_on_idle` seam): before
@@ -61,6 +63,10 @@ last step.
 - Removal-on-exit is intentionally out of scope: the detached singleton outlives its parent by
   design, and the self-heal-on-start plus write-after-bind together make a leftover marker
   harmless (it is reconciled by the next start and never names a process that failed to bind).
+- Platform bound, decided here: holder PID/state discovery reads the proc surface and is a
+  Unix-path feature exactly like the always-on dash itself; a platform without it still gets
+  the held-address report, never a silent exit. The always-serving criterion set is judged on
+  the Unix path.
 - No new event type is introduced anywhere in this spec.
 
 ## Global constraints
