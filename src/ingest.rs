@@ -54,6 +54,20 @@ pub fn append_and_fold_batch(
         return Ok(Appended::default());
     }
     let appended = store.append(stream, ExpectedRevision::Any, events)?;
+    // The port promises ONE slot per event handed in, and this authority folds by ZIPPING
+    // the report against the batch - so a report of a different length is not a smaller
+    // fold, it is a MISALIGNED one: every slot after the discrepancy names a different
+    // event than the store meant, and the graph is then keyed by position onto the wrong
+    // payload. `placed()` cannot see that (an index it cannot answer just yields nothing),
+    // so it is checked here, once, where the zip happens.
+    if appended.handed() != events.len() {
+        return Err(crate::eventstore::Error::Backend(format!(
+            "event store reported {} placement(s) for an append of {} event(s) to \
+             {stream:?}: the report cannot name what was written",
+            appended.handed(),
+            events.len()
+        )));
+    }
     if let Some(g) = graph {
         let positioned: Vec<Event> = appended
             .placed()
