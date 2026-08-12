@@ -316,7 +316,9 @@ pub fn run_canary(
 }
 
 fn append(store: &dyn EventStore, event: Event) -> Result<(), Error> {
-    store.append(STREAM, ExpectedRevision::Any, std::slice::from_ref(&event))?;
+    store
+        .append(STREAM, ExpectedRevision::Any, std::slice::from_ref(&event))?
+        .one(&format!("the {} of this canary batch", event.type_))?;
     Ok(())
 }
 
@@ -915,6 +917,29 @@ mod tests {
             ids,
             vec!["new".to_string()],
             "only the latest run is scoped"
+        );
+    }
+    /// A CANARY SCORE THE STORE DID NOT WRITE IS NOT A SCORE. The batch marker and every
+    /// per-item outcome are the ONLY durable record the canary produces - the returned
+    /// report is for the CLI's summary print and is gone at process exit - so a write this
+    /// seam loses is a measurement that reads as taken and cannot be found afterwards.
+    ///
+    /// The append used to discard its report with `?;`, which kept compiling when the port
+    /// stopped promising a position. It now asks the same authority every other
+    /// single-event seam asks, so the loss surfaces where it happened.
+    #[test]
+    fn a_canary_record_the_store_did_not_write_fails_rather_than_scoring_on() {
+        let event = Event::new(TYPE_UNIT_STATUS, b"{}".to_vec());
+        let err = append(&crate::eventstore::SilentStore, event)
+            .expect_err("a scored outcome nobody can find was not recorded");
+        let message = err.to_string();
+        assert!(
+            message.contains("nothing"),
+            "the failure says the store wrote nothing: {message}"
+        );
+        assert!(
+            message.contains(TYPE_UNIT_STATUS),
+            "and names the record that was lost: {message}"
         );
     }
 }

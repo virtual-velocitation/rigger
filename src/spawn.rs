@@ -399,7 +399,28 @@ pub fn park_in_run(
     if !run_id.is_empty() {
         ev = ev.with_meta(crate::run::META_RUN_ID, run_id);
     }
-    store.append(STREAM, ExpectedRevision::Any, std::slice::from_ref(&ev))
+    one_position(store, &req.id, &ev)
+}
+
+/// The global position of the ONE event `ev` landed at, appended to the spawn stream.
+/// `subject` names WHAT was being recorded - the spawn id - so a failure reads as the
+/// thing the operator asked for rather than as an internal type name.
+///
+/// What an absence means is not decided here: [`crate::eventstore::Appended::one`] decides
+/// it, once, for every single-event append in the codebase. This function only names the subject it
+/// was recording, so the one failure it can raise says what was lost.
+fn one_position(store: &dyn EventStore, subject: &str, ev: &Event) -> Result<Position, Error> {
+    store
+        .append(STREAM, ExpectedRevision::Any, std::slice::from_ref(ev))?
+        .one(&what(&ev.type_, subject))
+}
+
+/// How a spawn-stream write names itself in a failure: the event TYPE, the SUBJECT it was
+/// about, and the stream it was bound for. One phrasing for every seam in this module, so
+/// the compare-and-append half and the plain-append half cannot drift into two vocabularies
+/// for the same loss.
+fn what(type_: &str, subject: &str) -> String {
+    format!("the {type_} of {subject} on {STREAM:?}")
 }
 
 /// Fold the [`TYPE_SPAWN_REQUESTED`] events in `events` into the spawn requests
@@ -638,7 +659,7 @@ pub fn record_result(store: &dyn EventStore, res: &SpawnResult) -> Result<Positi
     let ev = res
         .to_event()
         .map_err(|e| Error::Backend(format!("serialize spawn result {}: {e}", res.id)))?;
-    store.append(STREAM, ExpectedRevision::Any, std::slice::from_ref(&ev))
+    one_position(store, &res.id, &ev)
 }
 
 /// Record `res` to the run's event log ONLY when the spawn has no result yet, as a
@@ -685,7 +706,11 @@ pub fn record_result_if_absent(
             None => ExpectedRevision::NoStream,
         };
         match store.append(STREAM, expected, std::slice::from_ref(&ev)) {
-            Ok(pos) => return Ok(Some(pos)),
+            // `Ok(None)` from THIS function means "a result already stood, so I chose to
+            // write nothing" - the idempotent no-op. A store that wrote nothing is a
+            // different answer entirely, and the shared authority raises it as the failure
+            // it is rather than letting it collapse into the no-op.
+            Ok(appended) => return appended.one(&what(&ev.type_, &res.id)).map(Some),
             // The stream moved under us; re-read and re-decide. If the racing writer
             // recorded THIS id, the re-check returns `None` and nothing is clobbered.
             Err(Error::Conflict { .. }) => continue,
@@ -1376,7 +1401,7 @@ mod tests {
             stream: &str,
             expected: ExpectedRevision,
             events: &[Event],
-        ) -> Result<Position, Error> {
+        ) -> Result<crate::eventstore::Appended, Error> {
             // The concurrent writer: land it once, just before the caller's first
             // append, so the stream head moves under the caller's pinned expectation
             // and the real store returns a genuine Conflict.
