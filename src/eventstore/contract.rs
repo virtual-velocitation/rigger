@@ -23,6 +23,7 @@ pub fn assert_contract(store: &dyn EventStore) {
     nonexistent_stream_reads_empty(store);
     concurrent_appends_to_distinct_streams_get_distinct_positions(store);
     append_reports_every_event_at_the_position_the_store_holds_it(store);
+    append_of_one_event_answers_the_position_the_store_holds_it(store);
     append_of_no_events_reports_nothing(store);
 }
 
@@ -81,6 +82,62 @@ fn append_reports_every_event_at_the_position_the_store_holds_it(store: &dyn Eve
             batch[i].id, at.id
         );
     }
+}
+
+/// THE SINGLE-EVENT QUESTION, which is a DIFFERENT question and belongs beside the batch
+/// obligation rather than in one adapter's tests. Most of what this codebase records is
+/// one event: a progress report, an emitted decision, a spawn result, a run boundary. Each
+/// of those seams asks its report [`super::Appended::one`] and has no second answer
+/// available - it cannot fold, cite, or print a position the store never issued - so
+/// whichever backend is wired, that question must be answerable, and its answer must be a
+/// position the log actually holds THAT event at.
+///
+/// The batch check above cannot stand in for this. A report can satisfy every batch
+/// property - one slot per handed event, distinct and increasing positions, each readable
+/// back - and still come from an adapter whose one-event path answers with a differently
+/// shaped report; `one` refuses a report that does not answer exactly one event, so such
+/// an adapter fails every single-event seam in the binary at runtime while passing every
+/// check that existed before this one. The falsifying half is the same read-back the batch
+/// obligation uses: the position is looked up in what the store HOLDS, so an adapter that
+/// answers a one-event append with a position it did not issue fails here.
+fn append_of_one_event_answers_the_position_the_store_holds_it(store: &dyn EventStore) {
+    let event = Event::new("H-one", vec![7]);
+    let appended = store
+        .append(
+            "c-one",
+            ExpectedRevision::NoStream,
+            std::slice::from_ref(&event),
+        )
+        .expect("the append must succeed");
+
+    assert_eq!(
+        appended.handed(),
+        1,
+        "one event handed in, exactly one slot reported"
+    );
+    let position = appended
+        .one("the one event of the contract suite")
+        .expect("a store that wrote the event must be able to say where it wrote it");
+
+    let held = store
+        .read_stream("c-one", 0, Direction::Forward)
+        .expect("read must succeed");
+    let at = held
+        .iter()
+        .find(|e| e.position == position)
+        .unwrap_or_else(|| {
+            panic!(
+                "the store answered a one-event append with position {position}, but holds no \
+                 event there (the position must be the store's own answer, never arithmetic \
+                 the adapter invented)"
+            )
+        });
+    assert_eq!(
+        at.id, event.id,
+        "the store answered with position {position}, but holds {:?} there rather than the \
+         event it was handed",
+        at.id
+    );
 }
 
 /// An append of no events writes nothing and says so: an empty report, and in

@@ -126,9 +126,13 @@ struct PortDouble {
     /// Whether the double insists its report answers the batch it is handed. False only
     /// for the deliberate liar below.
     exact: bool,
-    /// Whether `read_stream` answers an EMPTY stream instead of refusing. True only for
-    /// the read-then-append seam, whose decision is "no result recorded yet".
+    /// Whether `read_stream` answers instead of refusing. True only for the seams that
+    /// READ before they append; what it answers is [`PortDouble::replayed`].
     reads_empty: bool,
+    /// What `read_stream` replays when it answers at all. Empty for a seam whose decision
+    /// is "nothing recorded yet"; a prior state for a seam that must FIND something and
+    /// then write about it.
+    replayed: Vec<Event>,
 }
 
 impl PortDouble {
@@ -138,6 +142,7 @@ impl PortDouble {
             handed: AtomicUsize::new(0),
             exact: true,
             reads_empty: false,
+            replayed: Vec::new(),
         }
     }
 
@@ -150,17 +155,25 @@ impl PortDouble {
             handed: AtomicUsize::new(0),
             exact: false,
             reads_empty: false,
+            replayed: Vec::new(),
         }
     }
 
     /// A port whose stream is EMPTY and whose append writes nothing - the exact state a
     /// compare-and-append seam must not mistake for "someone else already recorded it".
     fn over_an_empty_stream(report: Vec<Option<Position>>) -> Self {
+        PortDouble::over_a_stream(Vec::new(), report)
+    }
+
+    /// A port that REPLAYS `events` to a read and then writes nothing on the append that
+    /// follows - for a seam whose write is a decision about state it had to read first.
+    fn over_a_stream(events: Vec<Event>, report: Vec<Option<Position>>) -> Self {
         PortDouble {
             report,
             handed: AtomicUsize::new(0),
             exact: true,
             reads_empty: true,
+            replayed: events,
         }
     }
 }
@@ -193,7 +206,7 @@ impl EventStore for PortDouble {
         _dir: Direction,
     ) -> Result<Vec<Event>, StoreError> {
         if self.reads_empty {
-            return Ok(Vec::new());
+            return Ok(self.replayed.clone());
         }
         Err(unreadable())
     }
@@ -1112,6 +1125,203 @@ fn the_park_and_compare_and_append_seams_refuse_a_store_that_wrote_nothing() {
     assert!(
         message.contains("nothing") && message.contains(&result.id),
         "and the failure names what was lost and whose it was: {message}"
+    );
+}
+
+/// THE RUN BOUNDARY, driven through the PUBLIC entries a consumer actually calls.
+///
+/// The two writes this module makes are not ordinary records. A run id is not a local
+/// value: every later `current_run_id`, `current_run_base` and spawn attribution
+/// partitions the WHOLE log against the boundary event these writes record. A store that
+/// wrote nothing, and a caller that handed the id back anyway, gives the rest of the run a
+/// boundary the log does not contain - and nothing downstream re-checks it, so the run
+/// finishes reading a partition that was never there.
+///
+/// Both writes reached the store through a report they discarded, which is why they need
+/// pinning from OUT HERE: a discarded report keeps compiling when the port's answer
+/// changes, so no signature and no in-module read can tell you whether the seam still
+/// looks. The property is a property of the API: no public run entry may hand back an id,
+/// or report a re-pin, for a boundary that was never written.
+///
+/// The re-pin half needs a store that FINDS a live run and then loses the write about it,
+/// so the fixture is minted by the module itself on a real store and replayed - a
+/// hand-built RunStarted would prove only that this test can serialize one.
+#[test]
+fn no_public_run_entry_reports_a_boundary_the_store_never_wrote() {
+    let criteria = ["build the thing".to_string()];
+
+    let silent = PortDouble::new(vec![None]);
+    let message = rigger::run::start_fresh(&silent, &criteria, "hash-A", "base-sha")
+        .expect_err("a run whose boundary was never written has not started")
+        .to_string();
+    assert!(
+        message.contains("nothing"),
+        "the mint reports the lost write rather than handing back a run id for a boundary \
+         the log does not hold: {message}"
+    );
+
+    // The same answer through the entry the CLI actually calls, which mints over an empty
+    // store: a caller that only ever uses the pinned entry must not get a run id either.
+    let silent = PortDouble::over_an_empty_stream(vec![None]);
+    let message =
+        rigger::run::ensure_started_pinned(&silent, &criteria, "hash-A", false, "base-sha")
+            .expect_err("the pinned entry mints on an empty store and inherits the same answer")
+            .to_string();
+    assert!(
+        message.contains("nothing"),
+        "so the mint cannot be laundered through the pinned entry: {message}"
+    );
+
+    // THE RE-PIN. A live run whose definition drifted, rebased: the supersession is
+    // recorded and the run continues under the NEW definition. If that record is lost and
+    // the caller reports `Rebased` anyway, the run replays a definition the log still pins
+    // to the old hash - the silent mid-campaign reconfiguration this pinning exists to
+    // stop, now invisible in the very log that was supposed to show it.
+    let live = Store::open(":memory:").expect("an in-memory store opens");
+    rigger::run::start_fresh(&live, &criteria, "hash-A", "base-sha").expect("a real run mints");
+    let recorded = live
+        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
+        .expect("the boundary reads back");
+    assert_eq!(recorded.len(), 1, "the fixture is one real RunStarted");
+
+    let drifted = PortDouble::over_a_stream(recorded, vec![None]);
+    let message =
+        rigger::run::ensure_started_pinned(&drifted, &criteria, "hash-B", true, "base-sha")
+            .expect_err("a supersession nobody can locate has not superseded anything")
+            .to_string();
+    assert!(
+        message.contains("nothing"),
+        "the re-pin reports the lost write rather than announcing a rebase the log does not \
+         record: {message}"
+    );
+}
+
+/// A driver that must never be reached. The canary opens its batch with a MARKER before it
+/// scores anything, so a run whose very first write is lost has to stop there; a spawn
+/// after that would mean the seam drove on.
+struct NeverSpawns;
+
+impl rigger::conductor::AgentDriver for NeverSpawns {
+    fn spawn(
+        &self,
+        _agent: &rigger::config::AgentDef,
+        _prompt: &str,
+        _opts: &rigger::conductor::SpawnOpts,
+        _emit: &dyn Fn(&str, serde_json::Value) -> Result<(), rigger::conductor::Error>,
+    ) -> Result<rigger::conductor::AgentResult, rigger::conductor::Error> {
+        panic!("the canary must not score anything once its batch marker was lost")
+    }
+}
+
+/// THE CANARY'S RECORD, through the public entry, on a port that wrote nothing.
+///
+/// The canary is a MEASUREMENT, and the events it appends are the only durable trace it
+/// leaves: the returned report is for the command's summary print and is gone at process
+/// exit, so `rigger stats --canary` reads the log or reads nothing. A write this seam lost
+/// is a measurement that reads as taken to whoever watched it run and cannot be found
+/// afterwards - the worst shape a quality signal can take, because it is trusted.
+///
+/// The seam is reachable from out here because both the store and the driver are injected,
+/// which is the point: this is the composition a consumer wires, and the batch marker is
+/// written BEFORE the first spawn, so a driver that refuses to run proves the loss stops
+/// the run rather than being carried past it.
+#[test]
+fn the_canary_records_nothing_it_cannot_find_afterwards() {
+    let silent = PortDouble::new(vec![None]);
+    let panel = rigger::config::ReviewPanel {
+        adjudicator: "adj".into(),
+        ..Default::default()
+    };
+    let outcome = rigger::canary::run_canary(
+        &silent,
+        &NeverSpawns,
+        &rigger::config::Config::default(),
+        &panel,
+        &[],
+    );
+    let message = match outcome {
+        Ok(report) => panic!(
+            "the canary returned batch {} as a measurement, but the log holds no marker for \
+             it - a scorecard that reads as taken and cannot be found afterwards",
+            report.batch
+        ),
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        message.contains("nothing"),
+        "the failure says the store wrote nothing rather than returning a report whose \
+         batch the log does not hold: {message}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Where the guard meets the one-meaning-of-an-absence rule
+// ---------------------------------------------------------------------------
+
+/// THE GUARD MEETS A SINGLE-EVENT APPEND - the one composition the shipped wiring cannot
+/// reach yet and the composition root that configures a policy will.
+///
+/// Every seam that appends exactly one event now reads its report through one authority,
+/// and on an unguarded store the only thing an absence there can mean is a lost write. A
+/// store carrying a content-identity policy has a second way to write nothing, and it is
+/// not a failure: the guard suppresses per EVENT, not per batch, so a lone event that is
+/// already current is a legitimate absence.
+///
+/// The SAFETY half must hold under both, and is what this pins: no position is handed
+/// back for an event the store did not write - above all not the earlier event's, which is
+/// the one fabrication a guarded store could plausibly make - and the log still holds
+/// exactly one copy. Only a periphery test can see this at all: the guard is `eventstore`,
+/// the accessor is the port, and the seams that ask it are five other modules, so no
+/// single module's tests span it.
+///
+/// What the caller is TOLD is recorded here rather than argued. Today a suppression on a
+/// one-event append reaches it as the same failure a lost write does, which is right for
+/// every seam wired today - each records a run-lifecycle type no policy reaches - and is
+/// the obligation whoever configures `with_content_identity` over a stream a single-event
+/// seam writes to inherits. Stated in a test that reds the moment the answer changes,
+/// rather than in prose nothing checks.
+#[test]
+fn a_guarded_store_answers_a_single_event_seam_with_no_position_it_did_not_issue() {
+    let store = guarded();
+    let event = keyed(TYPE_CODE_ENTITY_EXTRACTED, "gc/src/a.rs@h1#0");
+
+    let first = store
+        .append(
+            "guarded-one",
+            ExpectedRevision::Any,
+            std::slice::from_ref(&event),
+        )
+        .expect("the first append succeeds")
+        .one("the extraction of src/a.rs")
+        .expect("the store wrote it and can say where");
+
+    let again = store
+        .append(
+            "guarded-one",
+            ExpectedRevision::Any,
+            std::slice::from_ref(&event),
+        )
+        .expect("a suppressed append is not an append error");
+    assert_eq!(
+        again.written(),
+        0,
+        "the guard recognised the lone event as already recorded"
+    );
+    let message = again
+        .one("the extraction of src/a.rs")
+        .expect_err("a seam whose one event was suppressed is handed no position at all")
+        .to_string();
+    assert!(
+        message.contains("the extraction of src/a.rs"),
+        "and the answer names what the caller was recording, so an operator can tell WHICH \
+         write has no position: {message}"
+    );
+
+    assert_eq!(
+        held_positions(&store, "guarded-one"),
+        vec![first],
+        "the log holds exactly one copy, at the position the first append cited - the guard \
+         suppressed the duplicate and invented nothing to replace it"
     );
 }
 
