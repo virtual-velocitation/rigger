@@ -114,13 +114,19 @@ impl Projection for CapturingProjection {
 ///
 /// It answers appends only. Its reads return an error rather than an empty success,
 /// because a silent empty read would let a test pass by folding nothing for the wrong
-/// reason; nothing on the paths under test reads through it.
+/// reason; nothing on the paths under test reads through it. The one seam that MUST read
+/// before it appends (`record_result_if_absent` reads the stream to decide whether a
+/// result already exists) is served by [`PortDouble::over_an_empty_stream`], which
+/// answers that one read with an empty stream and nothing else.
 struct PortDouble {
     report: Vec<Option<Position>>,
     handed: AtomicUsize,
     /// Whether the double insists its report answers the batch it is handed. False only
     /// for the deliberate liar below.
     exact: bool,
+    /// Whether `read_stream` answers an EMPTY stream instead of refusing. True only for
+    /// the read-then-append seam, whose decision is "no result recorded yet".
+    reads_empty: bool,
 }
 
 impl PortDouble {
@@ -129,6 +135,7 @@ impl PortDouble {
             report,
             handed: AtomicUsize::new(0),
             exact: true,
+            reads_empty: false,
         }
     }
 
@@ -140,6 +147,18 @@ impl PortDouble {
             report,
             handed: AtomicUsize::new(0),
             exact: false,
+            reads_empty: false,
+        }
+    }
+
+    /// A port whose stream is EMPTY and whose append writes nothing - the exact state a
+    /// compare-and-append seam must not mistake for "someone else already recorded it".
+    fn over_an_empty_stream(report: Vec<Option<Position>>) -> Self {
+        PortDouble {
+            report,
+            handed: AtomicUsize::new(0),
+            exact: true,
+            reads_empty: true,
         }
     }
 }
@@ -171,6 +190,9 @@ impl EventStore for PortDouble {
         _from: Revision,
         _dir: Direction,
     ) -> Result<Vec<Event>, StoreError> {
+        if self.reads_empty {
+            return Ok(Vec::new());
+        }
         Err(unreadable())
     }
     fn read_all(
@@ -1041,4 +1063,204 @@ fn the_result_seam_reports_a_store_that_wrote_nothing_as_an_error_naming_what_ha
     // satisfy the contract that matters here - an explicit failure rather than a
     // fabricated position - so the asymmetry is recorded for the reviewing lenses rather
     // than pinned as a promise nobody made.
+}
+
+/// THE OTHER TWO SEAMS THAT HAND BACK A BARE POSITION, held to the same obligation.
+///
+/// `record_result` is not the only run-lifecycle write that must be able to say "the
+/// store wrote nothing": `park_in_run` records the SPAWN REQUEST every later step reads
+/// the frontier from, and `record_result_if_absent` is the death courier's atomic
+/// compare-and-append. Both were rewritten by this criterion to stop deriving a position
+/// and to ask the store instead, so both acquired the same new arm, and neither is
+/// reachable from any policy the composition root could configure - only a
+/// consumer-implemented port gets there.
+///
+/// The `if_absent` half carries the sharper hazard, and it is a hazard of MEANING rather
+/// than of arithmetic. That seam already answers `Ok(None)`, and `Ok(None)` means "a
+/// result was already recorded, so I deliberately wrote nothing" - the idempotent no-op
+/// the courier wants. A store that wrote nothing collapsed into that same answer would
+/// report a LOST write as a successful no-op, and the courier would move on believing a
+/// worker's death was recorded. The two absences must therefore stay distinguishable:
+/// one is a decision, the other is a failure.
+#[test]
+fn the_park_and_compare_and_append_seams_refuse_a_store_that_wrote_nothing() {
+    let request = rigger::spawn::SpawnRequest::new("u1", "build", "impl", 0, "do the thing");
+    let silent = PortDouble::new(vec![None]);
+
+    let err = rigger::spawn::park_in_run(&silent, &request, "run-1")
+        .expect_err("a parked spawn nobody can locate has not been parked");
+    let message = err.to_string();
+    assert!(
+        message.contains("nothing"),
+        "the error says the store wrote nothing rather than citing a position: {message}"
+    );
+    assert!(
+        message.contains(&request.id),
+        "and names the spawn whose park was lost, so the operator knows what is missing: \
+         {message}"
+    );
+
+    // The compare-and-append seam reads first (an empty stream: no result recorded yet),
+    // then appends - and the append writes nothing.
+    let quiet = PortDouble::over_an_empty_stream(vec![None]);
+    let result = rigger::spawn::SpawnResult::ok("u1/impl#0", "done");
+    let outcome = rigger::spawn::record_result_if_absent(&quiet, &result);
+    assert!(
+        outcome.is_err(),
+        "a store that wrote nothing must never be reported as the idempotent no-op - \
+         `Ok(None)` there means a result already exists, so absorbing a lost write into it \
+         tells the death courier a report landed when none did; got {outcome:?}"
+    );
+    let message = outcome.unwrap_err().to_string();
+    assert!(
+        message.contains("nothing") && message.contains(&result.id),
+        "and the failure names what was lost and whose it was: {message}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The operator's surface: the two commands that now print what the store wrote
+// ---------------------------------------------------------------------------
+
+/// A throwaway project the compiled binary will accept: its own git repo (so the store's
+/// project identity resolves exactly as a real project's does), a pinned `project.id` so
+/// the stream this test reads back is the stream the binary wrote to whatever the temp
+/// directory is called, and an INITIALIZED event log - the binary refuses to fabricate one.
+fn cli_project() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("a temp project");
+    let root = dir.path();
+    let _ = std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(root)
+        .status();
+    let rigger_dir = root.join(".rigger");
+    std::fs::create_dir_all(&rigger_dir).expect("create .rigger");
+    std::fs::write(rigger_dir.join("project.id"), "u4-cli-surface").expect("pin the identity");
+    // Opening the store creates the schema the binary then appends to.
+    Store::open(
+        rigger_dir
+            .join("events.db")
+            .to_str()
+            .expect("a utf-8 store path"),
+    )
+    .expect("the event log initializes");
+    dir
+}
+
+/// Run `rigger <args...>` in `root` through the COMPILED binary, returning its stdout.
+fn run_rigger(root: &std::path::Path, args: &[&str]) -> String {
+    let state = tempfile::tempdir().expect("a temp XDG_STATE_HOME");
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_rigger"))
+        .args(args)
+        .current_dir(root)
+        // Never let a short-lived invocation spawn a real dashboard, and never let it
+        // register a phantom instance in the operator's machine-global registry.
+        .env("RIGGER_NO_DASH", "1")
+        .env("XDG_STATE_HOME", state.path())
+        .output()
+        .expect("the rigger binary runs");
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(
+        out.status.success(),
+        "rigger {args:?} failed: {stderr}\n{stdout}"
+    );
+    stdout
+}
+
+/// The position an operator-facing line cites, parsed out of `(position N)`.
+fn cited_position(line: &str) -> Position {
+    line.split_once("(position ")
+        .and_then(|(_, rest)| rest.split(')').next())
+        .and_then(|n| n.trim().parse().ok())
+        .unwrap_or_else(|| panic!("the line must cite a position an operator can use: {line}"))
+}
+
+/// Every position the namespaced `stream` under `root` actually holds, read back the way
+/// the binary reads it.
+fn cli_held(root: &std::path::Path, db: &str, stream: &str) -> Vec<Event> {
+    let backend = Store::open(
+        root.join(".rigger")
+            .join(db)
+            .to_str()
+            .expect("a utf-8 store path"),
+    )
+    .expect("the store opens");
+    let store = Namespaced::new(&backend, "u4-cli-surface");
+    store
+        .read_stream(stream, 0, Direction::Forward)
+        .expect("the stream reads back")
+}
+
+/// THE OPERATOR'S SURFACE, driven through the COMPILED BINARY - the only place the two
+/// commands this criterion rewrote can be seen at all.
+///
+/// `rigger emit` and `rigger progress` no longer receive a position from the seam below
+/// them; they receive an OPTION and print one of two lines. Every library-level test in
+/// this file drives the seam directly, so none of them can see what the command prints,
+/// and printing a position is not decoration: it is the handle an operator (and the
+/// dashboard, and a later citation) uses to find the event in the log. A line citing a
+/// position the log does not hold is worse than no line at all.
+///
+/// So the citation is checked against what the store HOLDS, not against a format: emit
+/// twice and progress once, and every cited position must name the very event the command
+/// wrote. The second emit is the falsifying half - two byte-identical decisions are two
+/// facts at two positions, because the shipped composition root configures no
+/// content-identity policy over the run stream and a domain type is outside every policy
+/// it could configure. A command that printed the first position again would pass a
+/// format check and fail this one.
+#[test]
+fn the_built_binary_cites_only_positions_the_log_actually_holds() {
+    let project = cli_project();
+    let root = project.path();
+    let decision = r#"{"id":"d1","summary":"a decision"}"#;
+
+    let first_out = run_rigger(root, &["emit", TYPE_DECISION_MADE, decision]);
+    let first = cited_position(&first_out);
+    assert!(
+        first_out.contains("folded it into the context graph"),
+        "the emit that wrote reports that it wrote, and where: {first_out}"
+    );
+
+    let second_out = run_rigger(root, &["emit", TYPE_DECISION_MADE, decision]);
+    let second = cited_position(&second_out);
+    assert!(
+        first < second,
+        "two identical decisions are two facts at two positions, never one cited twice: \
+         {first} then {second}"
+    );
+
+    let run = cli_held(root, "events.db", rigger::conductor::STREAM);
+    assert_eq!(
+        run.iter().map(|e| e.position).collect::<Vec<_>>(),
+        vec![first, second],
+        "the log holds exactly the events the two commands claimed to write, at exactly \
+         the positions they cited"
+    );
+    assert!(
+        run.iter().all(|e| e.type_ == TYPE_DECISION_MADE),
+        "and each cited position names the decision that was emitted, not some neighbour"
+    );
+
+    let progress_out = run_rigger(root, &["progress", "u1/impl#0", "did a thing"]);
+    let recorded = cited_position(&progress_out);
+    assert!(
+        progress_out.contains("progress recorded for u1/impl#0"),
+        "the progress line names the spawn it recorded for: {progress_out}"
+    );
+    assert_eq!(
+        cli_held(root, "progress.db", rigger::progress::STREAM)
+            .iter()
+            .map(|e| e.position)
+            .collect::<Vec<_>>(),
+        vec![recorded],
+        "and the SEPARATE progress log holds that one report at the position the command \
+         cited"
+    );
+    assert_eq!(
+        cli_held(root, "events.db", rigger::conductor::STREAM).len(),
+        2,
+        "a progress report is recorded in its own store and never in the run stream, so the \
+         position it cites belongs to a different log and the two can never be confused"
+    );
 }
