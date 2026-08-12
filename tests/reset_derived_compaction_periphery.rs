@@ -24,6 +24,14 @@
 //!      revisions, which is why the sqlite `append` now reads the cursor as `MAX(revision)`. That
 //!      changes an `EventStore` promise every caller depends on - `ExpectedRevision` - so the
 //!      optimistic-concurrency check is exercised at its new edges, not just `Any`.
+//!   5. **The namespace boundary the whole store-MAINTENANCE family shares.** The prune is the
+//!      third prefix-taking maintenance op on the concrete store, beside `has_stream_prefix` and
+//!      `rename_stream_prefix`. `Namespaced::prefix_for` is published so all of them address the
+//!      same boundary; the property that claim is worth is that a project whose streams were
+//!      MOVED by the identity migration is still found and compacted at its new identity.
+//!   6. **The shipped operator-facing artifacts.** The two rendered consumer documents and the
+//!      binary's own usage registry are what an operator actually reads. They are asserted on the
+//!      COMMITTED bytes and on the RUNNING binary, with no render in the loop.
 //!
 //! Plus the command's own flag registry at the edges the composition opened: each mode named at
 //! most once, and the two modes composing in EITHER order.
@@ -31,6 +39,7 @@
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::{PrunedDerived, Store};
 use rigger::eventstore::{Direction, Error, Event, EventStore, ExpectedRevision};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, UNIX_EPOCH};
@@ -642,4 +651,363 @@ fn reset_accepts_each_mode_at_most_once_and_composes_the_two_in_either_order() {
         rigger::ingest::DERIVED_INDEX_TYPES.to_vec(),
         "the composed --derived prune must render the same full accounting it does alone"
     );
+}
+
+// ---------------------------------------------------------------------------------------
+// 6. The namespace boundary the whole store-MAINTENANCE family shares
+// ---------------------------------------------------------------------------------------
+
+/// `Namespaced::prefix_for` is published with a claim that reaches past the prune that needed it:
+/// it is the ONE place the namespace's wire form is written, so that store maintenance and every
+/// namespaced read and write agree on the same boundary, and a change to the form can never leave
+/// a maintenance command addressing streams that no longer exist.
+///
+/// Three prefix-taking maintenance ops now sit on the concrete store - `has_stream_prefix`,
+/// `rename_stream_prefix` (the project-identity migration) and this unit's `prune_derived_index` -
+/// and nothing holds them to that claim by construction: the migration still spells the form at
+/// its own call site. So the PROPERTY the claim is worth is pinned here rather than assumed, at
+/// the one place an operator would ever notice it break: a project whose streams the identity
+/// migration MOVED must still be seen, and still be compacted, at its new identity.
+///
+/// If the prune and the migration ever spoke different boundary languages, a migrated project's
+/// log would silently stop compacting - `reset --derived` would report a clean zero forever while
+/// the duplication it exists to shed kept growing under a name it no longer addresses. That is the
+/// one failure of this command an operator cannot see, because a prune that removes nothing and a
+/// log that holds nothing redundant print the same report.
+#[test]
+fn a_migrated_project_log_is_still_seen_and_compacted_at_its_new_namespace() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("migrated.db");
+    let backend = Store::open(db.to_str().unwrap()).unwrap();
+
+    const LEGACY: &str = "legacy-id";
+    const MINTED: &str = "minted-id";
+    const NEIGHBOUR: &str = "other";
+    const ROUNDS: u64 = 4;
+    seed_namespace(&backend, LEGACY, ROUNDS);
+    seed_namespace(&backend, NEIGHBOUR, ROUNDS);
+
+    let legacy_ns = Namespaced::prefix_for(LEGACY);
+    let minted_ns = Namespaced::prefix_for(MINTED);
+    let before = raw_rows(&db);
+    let legacy_rows = rows_in(&before, &legacy_ns);
+    assert!(
+        !legacy_rows.is_empty(),
+        "the seed must populate the legacy namespace, or nothing below proves anything"
+    );
+
+    // The presence probe and the write path already agree: the streams `Namespaced::new` wrote are
+    // the ones `has_stream_prefix` finds at `prefix_for`, and an identity nothing was written under
+    // is absent rather than incidentally matched.
+    assert!(
+        backend.has_stream_prefix(&legacy_ns).unwrap(),
+        "has_stream_prefix must see the streams Namespaced::new wrote at prefix_for({LEGACY:?})"
+    );
+    assert!(
+        !backend.has_stream_prefix(&minted_ns).unwrap(),
+        "nothing has been written under prefix_for({MINTED:?}) yet"
+    );
+
+    // THE MIGRATION MOVES THE STREAMS - between the same two boundaries the prune speaks.
+    let renamed = backend
+        .rename_stream_prefix(&legacy_ns, &minted_ns)
+        .expect("rename the project's streams onto its minted identity");
+    assert_eq!(
+        renamed, 1,
+        "the seed writes one stream per namespace, so exactly one is moved"
+    );
+    assert!(
+        !backend.has_stream_prefix(&legacy_ns).unwrap(),
+        "the legacy namespace must be empty once the migration has moved its streams"
+    );
+    assert!(
+        backend.has_stream_prefix(&minted_ns).unwrap(),
+        "the minted namespace must hold the moved streams"
+    );
+
+    // The migration MOVED rows, it did not rewrite them: same positions, same revisions, same
+    // bytes, only the stream's prefix differs. The prune partitions BY STREAM, so this is the
+    // precondition under which its per-stream reasoning still holds after a migration.
+    let after_rename = raw_rows(&db);
+    let moved = rows_in(&after_rename, &minted_ns);
+    assert_eq!(
+        moved.len(),
+        legacy_rows.len(),
+        "every row must survive the move"
+    );
+    for (was, now) in legacy_rows.iter().zip(moved.iter()) {
+        assert_eq!(
+            (was.0, &was.2, &was.3, &was.4, &was.5, was.6),
+            (now.0, &now.2, &now.3, &now.4, &now.5, now.6),
+            "the migration must move a row without renumbering or rewriting it"
+        );
+        assert_eq!(
+            now.1,
+            was.1.replacen(&legacy_ns, &minted_ns, 1),
+            "only the namespace prefix of the stream name may change"
+        );
+    }
+
+    // THE PRUNE FOLLOWS THE MIGRATION. At the OLD identity there is nothing left to compact, and
+    // the fail-safe direction holds: an empty namespace is a no-op, never a fallback to the file.
+    let stale = prune_all_types(&backend, &legacy_ns);
+    assert_eq!(
+        stale.total_removed(),
+        0,
+        "a prune at the identity the project no longer uses must remove nothing; got {stale:?}"
+    );
+    assert_eq!(
+        raw_rows(&db),
+        after_rename,
+        "a prune at the vacated identity must leave every row untouched"
+    );
+
+    // At the NEW identity the log is compactable exactly as it was before it moved: both keys keep
+    // their latest recording and every superseded one goes.
+    let pruned = prune_all_types(&backend, &minted_ns);
+    assert_eq!(
+        pruned.total_removed(),
+        2 * (ROUNDS as usize - 1),
+        "a migrated log must still shed the duplication of both keys; got {pruned:?}"
+    );
+
+    let after = raw_rows(&db);
+    for key in [KEY_DEF, KEY_REF] {
+        let kept: Vec<Row> = rows_in(&after, &minted_ns)
+            .into_iter()
+            .filter(|r| replay_key(r).as_deref() == Some(key))
+            .collect();
+        assert_eq!(
+            kept.len(),
+            1,
+            "exactly one recording of {key} must survive at the minted identity"
+        );
+        let latest = moved
+            .iter()
+            .filter(|r| replay_key(r).as_deref() == Some(key))
+            .map(|r| r.0)
+            .max()
+            .expect("the moved namespace holds this key");
+        assert_eq!(
+            kept[0].0, latest,
+            "the survivor must be the latest recording the moved namespace held"
+        );
+    }
+
+    // And the neighbour that never migrated is byte-for-byte untouched by either op.
+    let neighbour_ns = Namespaced::prefix_for(NEIGHBOUR);
+    assert_eq!(
+        rows_in(&after, &neighbour_ns),
+        rows_in(&before, &neighbour_ns),
+        "neither the migration nor the prune may reach a namespace it was not handed"
+    );
+}
+
+// ---------------------------------------------------------------------------------------
+// 7. The shipped operator-facing artifacts: the usage registry and the committed documents
+// ---------------------------------------------------------------------------------------
+
+/// The `reset` modes the binary's usage registry ADVERTISES, read out of the help it actually
+/// prints. Deriving the set from the running binary rather than naming it here is what makes a
+/// third mode covered by the assertions below without anyone editing this test.
+fn advertised_reset_modes(help: &str) -> Vec<String> {
+    let mut modes = BTreeSet::new();
+    for line in help.lines() {
+        if let Some(rest) = line.trim_start().strip_prefix("rigger reset ") {
+            if let Some(mode) = rest.split_whitespace().next() {
+                if let Some(stripped) = mode.strip_prefix("--") {
+                    modes.insert(format!("--{stripped}"));
+                }
+            }
+        }
+    }
+    modes.into_iter().collect()
+}
+
+/// The registry entry for one `rigger reset <mode>`: its own line and the wrapped continuation
+/// lines under it, up to whatever entry comes next.
+fn registry_entry(help: &str, mode: &str) -> String {
+    let opener = format!("rigger reset {mode}");
+    let mut out: Vec<&str> = Vec::new();
+    for line in help.lines() {
+        let trimmed = line.trim_start();
+        if out.is_empty() {
+            if trimmed.starts_with(&opener) {
+                out.push(trimmed);
+            }
+            continue;
+        }
+        if trimmed.starts_with("rigger ") {
+            break;
+        }
+        out.push(trimmed);
+    }
+    assert!(
+        !out.is_empty(),
+        "the usage registry must carry an entry for `{opener}`; got {help:?}"
+    );
+    out.join(" ")
+}
+
+/// The usage registry is the only description of `reset --derived` an operator gets from the
+/// binary itself, and nothing in the crate asserted it before this unit added a second mode to a
+/// command that had exactly one.
+///
+/// Two directions, both driven against the built binary:
+///
+///   - Every mode the registry ADVERTISES is a mode the parser accepts and actually runs. A
+///     registry that documents a flag the binary refuses is worse than no documentation, because
+///     it is the operator's evidence that they typed the right thing.
+///   - A mode the registry does NOT advertise is refused, and the refusal names every advertised
+///     mode - so the parser's own error text and the registry cannot drift into disagreeing about
+///     what this command takes.
+///
+/// The `--derived` entry is additionally held to the two facts that decide whether an operator
+/// reaches for it at all: WHICH store it compacts (the event log, not the graph - they are
+/// different piles with different prunes) and that it COMPOSES with `--runs` rather than replacing
+/// it.
+#[test]
+fn the_usage_registry_advertises_the_derived_prune_and_every_mode_it_advertises_is_real() {
+    let dir = temp_project();
+    let (out, err, ok) = run_rigger(dir.path(), &["--help"]);
+    assert!(ok, "rigger --help must succeed; stderr: {err}\n{out}");
+    let help = format!("{err}{out}");
+
+    let modes = advertised_reset_modes(&help);
+    assert!(
+        modes.iter().any(|m| m == "--derived"),
+        "the usage registry must advertise the mode this unit shipped; it advertises {modes:?}"
+    );
+
+    let derived = registry_entry(&help, "--derived");
+    assert!(
+        derived.contains("EVENT LOG"),
+        "the --derived entry must say WHICH store it compacts, since --runs prunes a different \
+         one; got {derived:?}"
+    );
+    assert!(
+        derived.contains("--runs"),
+        "the --derived entry must say it composes with the mode that was already there; got \
+         {derived:?}"
+    );
+
+    // EVERY ADVERTISED MODE IS REAL. Each runs in its own freshly seeded project so one mode's
+    // prune cannot be what makes the next one look like it worked.
+    for mode in &modes {
+        let project = temp_project();
+        seed_project(project.path(), 3);
+        let (out, err, ok) = run_rigger(project.path(), &["reset", mode]);
+        let said = format!("{err}{out}");
+        assert!(
+            ok,
+            "the registry advertises `rigger reset {mode}`, so the binary must accept it; got \
+             {said:?}"
+        );
+        assert!(
+            !said.contains("expected --runs and/or --derived"),
+            "`rigger reset {mode}` is advertised, so it must not be refused as unrecognized; got \
+             {said:?}"
+        );
+    }
+
+    // AND NOTHING ELSE IS. An unadvertised mode is refused, and the refusal enumerates exactly the
+    // modes the registry advertises, so a mode added to one and not the other cannot go unnoticed.
+    let project = temp_project();
+    seed_project(project.path(), 3);
+    let (out, err, ok) = run_rigger(project.path(), &["reset", "--everything"]);
+    let said = format!("{err}{out}");
+    assert!(
+        !ok,
+        "an unadvertised reset mode must be refused; got {said:?}"
+    );
+    for mode in &modes {
+        assert!(
+            said.contains(mode.as_str()),
+            "the refusal must name every mode the registry advertises ({modes:?}), so the two \
+             cannot disagree about what reset takes; got {said:?}"
+        );
+    }
+}
+
+/// The two documents this unit re-rendered, at the path they ship from.
+const SHIPPED_DOCS: [&str; 2] = [
+    "skills/using-rigger/SKILL.md",
+    "docs/handbook/using-rigger.md",
+];
+
+/// The COMMITTED operator guidance, asserted on the bytes on disk with no render in the loop.
+///
+/// This is not the render test in `src/docs.rs` restated. That test renders `discipline_body` from
+/// a SENTINEL context (a placeholder base ref, port 65531, invented subcommand names); these two
+/// files are rendered from the REAL one. "The sentinel render carries the paragraph" and "the
+/// committed file equals a fresh real render" together still do not give "the committed file
+/// carries the paragraph" - any context-conditional branch in the body satisfies both while the
+/// shipped document says nothing. This unit has already failed at exactly this boundary once: the
+/// body gained the `--derived` paragraph, the render test went green, and both shipped documents
+/// stayed at their pre-change text, so the guidance for a command that deletes from an append-only
+/// log was not actually shipped to anyone.
+///
+/// So the shipped bytes are read directly and held to the four things an operator must know before
+/// running it - WHAT IT KEEPS, WHAT IT COSTS, that the file shrinks, and that the two prunes
+/// compose - plus the proof that these documents were rendered from the real context at all.
+#[test]
+fn the_committed_operator_documents_ship_the_derived_prunes_guidance() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut paragraphs: Vec<(String, String)> = Vec::new();
+
+    for rel in SHIPPED_DOCS {
+        let path = manifest.join(rel);
+        let shipped = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+            panic!(
+                "the operator document {rel} must ship from {}: {e}",
+                path.display()
+            )
+        });
+
+        for (fact, needle) in [
+            ("name the prune", "rigger reset --derived"),
+            ("say which store it compacts", "EVENT LOG"),
+            ("say what it KEEPS", "LATEST event per replay key"),
+            ("say what it costs everything else", "byte-for-byte"),
+            ("say the file actually shrinks", "shrinks on disk"),
+            (
+                "show the two prunes composing",
+                "rigger reset --runs --derived",
+            ),
+        ] {
+            assert!(
+                shipped.contains(needle),
+                "the committed {rel} must {fact} ({needle:?}); an operator reads this file, not a \
+                 fresh render of it"
+            );
+        }
+
+        // The document was rendered from the REAL context, not the sentinel one the render test
+        // uses: the dashboard address it quotes is the port the code actually defaults to.
+        assert!(
+            shipped.contains(&format!("127.0.0.1:{}", rigger::dash::DEFAULT_PORT)),
+            "the committed {rel} must be a render of the real context (dash port {})",
+            rigger::dash::DEFAULT_PORT
+        );
+
+        let paragraph = shipped
+            .lines()
+            .find(|l| l.contains("rigger reset --derived"))
+            .unwrap_or_else(|| panic!("the guidance must be a paragraph in {rel}"))
+            .to_string();
+        paragraphs.push((rel.to_string(), paragraph));
+    }
+
+    // ONE body, two consumers: the skill and the handbook chapter render from the same
+    // `discipline_body`, so the paragraph an operator reads must be the same one whichever
+    // document they opened. Comparing the shipped text is what proves it for the files that
+    // actually ship, rather than for the renderer.
+    let (first_rel, first) = &paragraphs[0];
+    for (rel, paragraph) in &paragraphs[1..] {
+        assert_eq!(
+            paragraph, first,
+            "{rel} and {first_rel} render from one shared discipline body, so their --derived \
+             guidance must not have drifted apart"
+        );
+    }
 }
