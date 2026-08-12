@@ -27,6 +27,20 @@
 //! It OWNS the present-tense accuracy pins (spec 56 criterion 1). Staleness (criterion 2),
 //! document integrity (criterion 3), and both-lanes-green (criterion 4) are pinned by
 //! their own tests and are not this test's concern.
+//!
+//! # The port-signature pin (spec 60)
+//!
+//! The two pins above compare the document against LITERAL tokens written into this file,
+//! which is the right shape for a configuration surface whose names are chosen once. It is
+//! the wrong shape for a PORT the crate asks external adapter authors to implement: the
+//! document renders `EventStore` as as-built Rust, so its rendering can be falsified by any
+//! change to the trait itself, and a literal token here would have to be updated by the
+//! same hand that let the document go stale. The third pin below therefore compares the
+//! document against THE SOURCE: it extracts `EventStore::append`'s return type from
+//! `src/eventstore/mod.rs` and from the document's own snippet and requires them to be the
+//! same text. Nothing in it is a copy of either side, so it stays true across future
+//! changes to the port and fails RED the moment the front door and the code disagree
+//! about the contract a consumer must implement.
 
 use std::path::PathBuf;
 
@@ -37,6 +51,42 @@ fn architecture_text() -> String {
         .join("docs")
         .join("architecture.md");
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
+}
+
+/// The committed event-store port, resolved the same CWD-independent way.
+fn eventstore_source() -> String {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("eventstore")
+        .join("mod.rs");
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
+}
+
+/// The return type `EventStore::append` is declared with inside `text`, extracted rather
+/// than matched: find the trait, then its `append` arm, then the arrow that closes the
+/// arm's signature, and take everything up to the `;` that ends the declaration, with all
+/// whitespace collapsed so a multi-line rendering and a one-line one compare equal.
+///
+/// The same extraction runs over the source and over the document's fenced snippet, which
+/// is what makes the pin below a comparison of two independent renderings rather than a
+/// comparison of either one against a literal in this file.
+fn append_return_type(text: &str) -> String {
+    let trait_at = text
+        .find("pub trait EventStore")
+        .expect("no `pub trait EventStore` declaration to read an append arm out of");
+    let rest = &text[trait_at..];
+    let append_at = rest
+        .find("fn append(")
+        .expect("`EventStore` declares no `fn append(` arm");
+    let rest = &rest[append_at..];
+    let arrow_at = rest
+        .find("->")
+        .expect("`EventStore::append` declares no return type");
+    let rest = &rest[arrow_at + 2..];
+    let end = rest
+        .find(';')
+        .expect("`EventStore::append`'s declaration is not terminated");
+    rest[..end].split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Every (surface, token) the front-door document must name to describe the system as it
@@ -116,6 +166,21 @@ fn architecture_names_the_current_store_and_inspector_surface() {
          per-machine `.rigger/store.conn` secret file) and the graph inspector's real query \
          surface (the three `lens=` names and the directed `view=calls` `dir=` views). \
          Surfaces the document fails to name: {missing:#?}"
+    );
+}
+
+#[test]
+fn architecture_renders_the_event_store_port_the_source_declares() {
+    let declared = append_return_type(&eventstore_source());
+    let rendered = append_return_type(&architecture_text());
+
+    assert_eq!(
+        rendered, declared,
+        "docs/architecture.md renders `EventStore` as AS-BUILT Rust and is where an external \
+         adapter author reads the contract they must implement, so its `append` arm must be \
+         the arm the source declares. The document renders `-> {rendered}`; \
+         src/eventstore/mod.rs declares `-> {declared}`. Re-render the snippet's append arm \
+         and the doc line above it to the contract the code actually ships."
     );
 }
 

@@ -448,10 +448,11 @@ so swapping backends is a configuration change, not an architecture change.
 // src/eventstore/mod.rs
 pub trait EventStore: Send + Sync {
     /// Append events to the end of a stream under an optimistic-concurrency
-    /// expectation, returning the global position of the last event written. A failed
+    /// expectation, reporting what was ACTUALLY written: one slot per event handed in,
+    /// in input order, carrying the position the store itself issued. A failed
     /// expectation yields `Error::Conflict { stream, expected, actual }`.
     fn append(&self, stream: &str, expected: ExpectedRevision, events: &[Event])
-        -> Result<Position, Error>;
+        -> Result<Appended, Error>;
 
     /// Read one stream's events from a per-stream revision, in a direction.
     fn read_stream(&self, stream: &str, from: Revision, dir: Direction)
