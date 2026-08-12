@@ -456,10 +456,13 @@ mod dedup_tests {
     fn a_key_that_is_not_the_content_key_shape_names_no_generation() {
         // Rule 2 of the predicate's contract, and the fail-safe direction it encodes: a derived
         // event whose replay key is not `<prefix>/<file>@<hash>#<i>` names no generation, so it is
-        // passed over and its emit is NEVER suppressed. Each row below is rejected by a DIFFERENT
-        // guard, so the table drives every reject arm rather than the shape as a whole.
+        // passed over and its emit is NEVER suppressed. The rows below cover EVERY reject arm the
+        // parser has, so deleting any ARM fails this test rather than surviving it. They are NOT
+        // one row per arm: a guard testing two conditions needs a row per condition, and two
+        // differently-shaped keys can land on the same arm.
         for key in [
-            "gcsrc/a.rs@h1",     // no `/`: nothing separates the prefix
+            "gcsrca.rs@h1#0",    // no `/` anywhere: the prefix split itself finds no separator
+            "gcsrc/a.rs@h1",     // `gcsrc` parses AS the prefix, so this rejects at the `#` tail
             "/src/a.rs@h1#0",    // empty prefix
             "gc/src/a.rs@h1",    // no `#<i>` tail
             "gc/src/a.rs@h1#",   // empty index

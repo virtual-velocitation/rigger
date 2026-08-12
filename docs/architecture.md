@@ -732,14 +732,30 @@ is deduped under can never drift between them. Four properties define it:
     set would match the reverted content's old records, re-emit nothing, and strand the graph on a
     superseded version of that file.
 
-  The net contract, **for every file the tree still holds**: after any mix of skipping and
-  re-ingest, the live graph carries what a cold rebuild from the current tree would derive for that
-  file, and only what changed is ever re-parsed or re-emitted. A file the tree no longer holds is
-  outside it, deliberately: retiring a file's structure is driven by that file's OWN batch
-  (`supersede_file_edges` runs inside the fold of the batch), and the walk emits no batch for a path
-  that is gone - so nothing on the ingest path retires a deleted file's nodes or edges. The
-  projection's only DELETE path is the explicit `Projector::prune` primitive, so shedding a removed
-  file's facts is a deliberate act, never a consequence of the next ingest.
+  The net contract is stated against the LOG, because the log is the only thing this predicate
+  decides: after any mix of skipping and re-ingest, the log holds each file's LATEST content
+  generation in full, and only what changed is ever re-parsed or re-emitted. Whether the live graph
+  then equals a cold rebuild is a property of the FOLD, not of this rule - suppression withholds
+  only an append whose content the log already records, so it can leave the graph no further behind
+  than the fold already left it. Three cases sit outside the contract by construction, and all three
+  for the same reason: **no batch is folded for the file at all**, so there is no suppression
+  decision in them to blame.
+
+  - **A file the tree no longer holds.** Retiring a file's structure is driven by that file's OWN
+    batch (`supersede_file_edges` runs inside the fold of the batch), and the walk emits no batch for
+    a path that is gone - so nothing on the ingest path retires a deleted file's nodes or edges.
+  - **A file the tree still holds that now extracts to NOTHING** - an ordinary edit that removes its
+    last definition and reference. Both halves of the walk drop a file whose extraction is empty, so
+    again no batch is emitted, no `supersede_file_edges` runs, and that file's prior entities and
+    edges stay live. Skipping is not what strands them: re-appending the whole index would not have
+    retired them either.
+  - **A batch whose APPEND landed but whose FOLD did not.** `append_and_fold_batch` folds
+    best-effort by contract - a fold failure never fails an append that already landed durably - so
+    the log is right and the graph is behind. The append IS recorded, so a later run correctly skips
+    it; healing that half is the append-and-fold authority's obligation, not the skip rule's.
+
+  The projection's only DELETE path is the explicit `Projector::prune` primitive, so shedding a
+  removed file's facts is a deliberate act, never a consequence of the next ingest.
 
 ### 5.6 The loop, concretely: emit, project, retrieve
 

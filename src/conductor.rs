@@ -1881,12 +1881,24 @@ struct RunCtx<'a> {
     /// that never failed). Integrated/escalated units are terminal and skipped before
     /// the lifecycle, so their presence here is harmless.
     prior_attempts: HashMap<String, u32>,
-    /// The set of REPLAY KEYS already present in the run (spec 04, criterion 4): seeded
-    /// at run start from the prior log's [`META_REPLAY_KEY`] metadata, then extended as
-    /// this process emits. [`emit_keyed`](RunCtx::emit_keyed) consults it so a step
-    /// re-running the conductor over recorded history appends each keyed unit-lifecycle
-    /// event AT MOST ONCE - the log stays free of duplicate UnitStarted/green/verified/
-    /// reviewed/ManualReview events no matter how many step processes replay it.
+    /// The set of REPLAY KEYS an emit may be suppressed against. It is a PARTITION over two
+    /// scopes with two different lifetimes, decided BY EVENT TYPE (spec 60), not one set with
+    /// one meaning - so read the half a key belongs to before reading membership.
+    ///
+    /// The RUN-SCOPED half is every NON-derived key (spec 04, criterion 4): seeded at run start
+    /// from THIS run's slice of the prior log's [`META_REPLAY_KEY`] metadata and extended as this
+    /// process emits, so membership means "already emitted in THIS run".
+    /// [`emit_keyed`](RunCtx::emit_keyed) consults it so a step re-running the conductor over
+    /// recorded history appends each keyed unit-lifecycle event AT MOST ONCE - the log stays free
+    /// of duplicate UnitStarted/green/verified/reviewed/ManualReview events no matter how many
+    /// step processes replay it.
+    ///
+    /// The PROJECT-SCOPED half is the four derived index types' content keys, seeded from the
+    /// WHOLE stream through [`crate::ingest::project_scoped_replay_keys`] and holding each file's
+    /// LATEST recorded generation only. Membership there means the opposite of the other half's:
+    /// "already recorded for this project by ANY run", precisely the keys this run has NOT
+    /// emitted. Its sole consumer is [`emit_keyed_batch`](RunCtx::emit_keyed_batch), the ingest
+    /// sink; nothing else may read it as a this-run fact.
     replayed_keys: Mutex<HashSet<String>>,
     /// The recorded gate verdicts keyed by their replay key -> `(pass, evidence)`, seeded
     /// ONCE at run start from the prior log's `GateVerdict` events and extended as this
@@ -6615,12 +6627,20 @@ impl RunCtx<'_> {
         //
         // - an UNCHANGED file re-hashes to exactly that generation's keys, so its whole batch is
         //   already recorded and it appends NOTHING - on this run and on every later run, forever;
-        // - a file whose content differs from its latest recorded batch re-emits the batch whole,
-        //   `fresh` head included, and supersedes its prior structural edges by 29a's mechanism.
-        //   That INCLUDES a file REVERTED to content it held at an earlier generation, whose keys
-        //   are byte-identical to records the log still carries: it re-emits not because its keys
-        //   are new but because those records are no longer the file's latest generation. Seeding
-        //   from every key ever recorded would strand the graph on the superseded version instead.
+        // - a file whose content differs from its latest recorded batch re-emits WHATEVER BATCH THE
+        //   WALK HANDED THIS SINK, whole, `fresh` head included, and supersedes its prior structural
+        //   edges by 29a's mechanism. That INCLUDES a file REVERTED to content it held at an earlier
+        //   generation, whose keys are byte-identical to records the log still carries: it re-emits
+        //   not because its keys are new but because those records are no longer the file's latest
+        //   generation. Seeding from every key ever recorded would strand the graph on the
+        //   superseded version instead.
+        //
+        // Both bullets are claims about what this sink APPENDS, and they reach only files the walk
+        // emits a batch for. A file that now extracts to NOTHING (an ordinary edit removing its last
+        // definition and reference) is dropped by the walk before this sink sees it: no batch means
+        // no supersede, so its prior entities and edges stay live and no skip decision was involved.
+        // And whether an appended batch then FOLDS is `append_and_fold_batch`'s best-effort contract,
+        // not this partition's - a lost fold leaves the log right and the graph behind.
         //
         // The dedup lock is held only around the key set (released before the append), so a concurrent
         // unit in the wave still appends its own keyed events in parallel.

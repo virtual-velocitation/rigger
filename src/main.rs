@@ -3267,10 +3267,15 @@ fn derive_extent_end(_file: &str, _source: &str, _start: u32, _name: &str) -> Re
 /// ([`rigger::ingest::project_scoped_replay_keys`]) the live run also seeds from, never a second
 /// copy here: the seen-key set holds the keys of each file's LATEST recorded derived-index batch
 /// and nothing else, so an unchanged file's batch is already wholly recorded and re-ingests
-/// nothing, while a file whose content differs from its latest recorded batch re-emits in full.
-/// That includes a file REVERTED to content it held at an earlier generation - its keys are
-/// byte-identical to records the log still carries, and it re-emits precisely because those
-/// records are no longer that file's latest generation. The light lane compiles no extraction
+/// nothing, while a file whose content differs from its latest recorded batch re-emits every event
+/// the walk extracted for it. That includes a file REVERTED to content it held at an earlier
+/// generation - its keys are byte-identical to records the log still carries, and it re-emits
+/// precisely because those records are no longer that file's latest generation. Both halves of that
+/// are claims about what this command APPENDS, over the files the walk emits a batch for: a file the
+/// walk hands over NO batch for - one deleted from the tree, or one an ordinary edit emptied of its
+/// last definition and reference - reaches no suppression decision here at all and retires nothing,
+/// and a batch whose append lands but whose fold does not leaves the log right and the graph behind
+/// (`append_and_fold_batch` folds best-effort by contract). The light lane compiles no extraction
 /// pass, so `graph build` there degrades to an empty graph (it still creates the store) and exits
 /// 0, never an error.
 fn cmd_graph_build(_args: &[String]) -> Res {
