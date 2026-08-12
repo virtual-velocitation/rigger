@@ -12662,6 +12662,163 @@ mod tests {
         );
     }
 
+    /// Spec 60 criterion 2 (RUN-SCOPING SURVIVES): the seeding above turned `replayed_keys` into a
+    /// PARTITION over two scopes, and this pins the half criterion 1 widened nothing in - the
+    /// RUN-SCOPED half every non-derived key still lives in. A prior run's non-ingest replay key
+    /// must NEVER suppress this run's own keyed emit: that is the Gap 11 zombie boundary, and
+    /// widening it to the whole stream would silently delete a new run's unit lifecycle (its
+    /// `UnitStarted` would be read as a replay of the PREVIOUS campaign's, so the run would record
+    /// no start, no gate verdict, and the metrics denominators would count a unit that never
+    /// appeared to begin).
+    ///
+    /// It pins the TYPE gate as hard as the key gate, because a key-shape test alone would be
+    /// satisfied by a predicate that sniffed spellings: the fixture's stage id is `gc` - the code
+    /// ingest's own prefix - and its gate id carries an `@`, so the gate-verdict key this run
+    /// really emits is `gc/gate:g@h1#0`, which parses as a `<prefix>/<file>@<hash>#<i>` content key
+    /// in full. The proof shows that shape IS eligible (the same key, re-stamped onto a
+    /// derived-index event, IS returned by the shared predicate) and yet is not taken from the real
+    /// log - so the only thing that spared a `GateVerdict` is its TYPE, whatever its key looks like.
+    ///
+    /// This criterion adds no implementation: the predicate it pins is criterion 1's. It drives the
+    /// real [`run`] entry twice because the seam under test IS that entry's seeding, and it needs
+    /// neither a tree nor a graph (no derived event is involved), so unlike criterion 1's proof it
+    /// is not `symbols`-gated and locks the seam in BOTH feature lanes.
+    #[test]
+    fn a_prior_runs_non_ingest_replay_key_never_suppresses_this_runs_keyed_emit() {
+        // The stage id is the code ingest's OWN prefix and the gate id carries an `@`, so this
+        // run's real gate-verdict key is content-key shaped (asserted below, not assumed). A
+        // suppression rule that read key spellings instead of event types would swallow it.
+        const UNIT: &str = "gc";
+        const GATE: &str = "g@h1";
+        let started_key = format!("{UNIT}/started");
+        let verdict_key = gate_verdict_key(UNIT, 0, GATE);
+
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        // Two campaigns over ONE store, differing ONLY in their criterion - so `ensure_started`
+        // MINTS a second `RunStarted` (a fresh run) while the stage keeps its id, and every
+        // lifecycle key the second run computes collides exactly with the first run's records.
+        // That collision is the whole point: run-scoping is what makes the second run emit anyway.
+        let campaign = |criterion: &str| {
+            let mut cfg = Config::default();
+            cfg.agents.insert("a".into(), agent("a"));
+            cfg.workflow.gates.insert(GATE.into(), gate_def("true"));
+            cfg.workflow.stages.insert(
+                UNIT.into(),
+                Stage {
+                    name: UNIT.into(),
+                    agent: "a".into(),
+                    coverage: criterion.into(),
+                    gates: vec![GATE.into()],
+                    ..Default::default()
+                },
+            );
+            let deps = Deps {
+                store: &st,
+                driver: &driver,
+                gates: &ExecRunner,
+                repo: String::new(),
+                grounder: None,
+                graph: None,
+                criteria: vec![criterion.to_string()],
+            };
+            run(&cfg, &deps).unwrap()
+        };
+        let keyed = |events: &[Event], key: &str, type_: &str| -> usize {
+            events
+                .iter()
+                .filter(|e| {
+                    e.type_ == type_ && e.meta.get(META_REPLAY_KEY).is_some_and(|k| k == key)
+                })
+                .count()
+        };
+        let of_type =
+            |events: &[Event], t: &str| -> usize { events.iter().filter(|e| e.type_ == t).count() };
+
+        let first = campaign("first criterion");
+        assert_eq!(
+            first.units[UNIT].status,
+            ledger::Status::Integrated,
+            "sanity: the first campaign must actually run the unit, else it records no key to \
+             collide with"
+        );
+        let after_one = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert_eq!(
+            keyed(&after_one, &started_key, ledger::TYPE_UNIT_STARTED),
+            1,
+            "sanity: the first run records the unit-lifecycle key {started_key} exactly once"
+        );
+        assert_eq!(
+            keyed(&after_one, &verdict_key, contextgraph::TYPE_GATE_VERDICT),
+            1,
+            "sanity: the first run records the gate-verdict key {verdict_key} exactly once"
+        );
+
+        let second = campaign("second criterion");
+        assert_eq!(
+            second.units[UNIT].status,
+            ledger::Status::Integrated,
+            "the second campaign must run the unit again - a prior run's residue is not this \
+             run's work"
+        );
+        let after_two = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert_eq!(
+            of_type(&after_two, crate::run::TYPE_RUN_STARTED),
+            2,
+            "the second campaign must mint its OWN fresh RunStarted (else the test proves nothing)"
+        );
+
+        // The key gate: BOTH keyed emits recur, and they recur INSIDE the second run's slice - so
+        // the second run genuinely emitted them rather than the log merely still holding the
+        // first run's copies.
+        let second_slice = crate::run::current_run(&after_two);
+        for (key, type_, what) in [
+            (
+                &started_key,
+                ledger::TYPE_UNIT_STARTED,
+                "a unit-lifecycle key",
+            ),
+            (
+                &verdict_key,
+                contextgraph::TYPE_GATE_VERDICT,
+                "a gate-verdict key",
+            ),
+        ] {
+            assert_eq!(
+                keyed(second_slice, key, type_),
+                1,
+                "{what} recorded by a PRIOR run must not suppress this run's own keyed emit: the \
+                 second run emitted no {type_} under {key}"
+            );
+            assert_eq!(
+                keyed(&after_two, key, type_),
+                2,
+                "the log must carry {key} once per run, not one shared copy across runs"
+            );
+        }
+
+        // The type gate. First: this run's OWN gate-verdict key is genuinely content-key shaped -
+        // re-stamped onto a derived-index event, the shared predicate returns it. So the key gate
+        // above says nothing about spellings; the predicate really was offered this key.
+        let as_derived = Event::new(contextgraph::TYPE_EDGE_INFERRED, Vec::new())
+            .with_meta(META_REPLAY_KEY, &verdict_key);
+        assert!(
+            crate::ingest::project_scoped_replay_keys(std::slice::from_ref(&as_derived))
+                .contains(&verdict_key),
+            "the fixture is vacuous unless {verdict_key} really parses as a \
+             <prefix>/<file>@<hash>#<i> content key - fix the fixture, not this assertion"
+        );
+        // And yet: over the REAL log, in which that key belongs to a `GateVerdict`, the predicate
+        // offers nothing at all. Type first - the key never reaches the comparison, so no run's
+        // domain event can be suppressed by the project-scoped half however it is spelled.
+        assert!(
+            crate::ingest::project_scoped_replay_keys(&after_two).is_empty(),
+            "a non-derived event is ineligible for project-scoped suppression whatever its key \
+             looks like; the predicate returned {:?}",
+            crate::ingest::project_scoped_replay_keys(&after_two)
+        );
+    }
+
     /// Spec 49 criterion 2 (BATCHED FOLD CADENCE): the run's ingest sink appends each file's WHOLE
     /// batch in ONE store append and folds it in ONE graph transaction - NOT one append and one
     /// fold per event. The measured cold-build throughput (69 events/s) was transaction-cadence
