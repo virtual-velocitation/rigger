@@ -180,8 +180,9 @@ impl Store {
     ///
     /// `(stream, <content key>, position)` in that order, because that is the shape the
     /// probes ask for: the stream is an equality (the project boundary), the content key
-    /// is an equality for two probes and a half-open RANGE for the third, and the
-    /// position rides along so a key's last recording is read off the index itself.
+    /// is an equality for the recorded probe and a half-open RANGE for the walk's step,
+    /// and the position rides along so a key's last recording is read off the index
+    /// itself rather than out of the table.
     fn content_key_index_ddl(name: &str, meta_key: &str) -> String {
         format!(
             "CREATE INDEX {name} ON events(stream, {}, position)",
@@ -220,7 +221,10 @@ impl Store {
             self.index_ready.store(true, Ordering::SeqCst);
             return true;
         }
-        let built = (|| -> rusqlite::Result<()> {
+        // The build's own Result is deliberately NOT the verdict - a statement that ran is
+        // not an index, and a commit can still fail - so it is discarded and the committed
+        // state is read instead.
+        let _ = (|| -> rusqlite::Result<()> {
             let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
             tx.execute_batch(&format!(
                 "DROP INDEX IF EXISTS {};\n{};",
@@ -228,9 +232,6 @@ impl Store {
             ))?;
             tx.commit()
         })();
-        // The verdict is the COMMITTED state, not the outcome of the statement: a batch
-        // that reported success but was rolled back at commit must not latch readiness.
-        let _ = built;
         let ready = committed_index_ddl(conn, &guard.index_name).as_deref()
             == Some(guard.index_ddl.as_str());
         if ready {
