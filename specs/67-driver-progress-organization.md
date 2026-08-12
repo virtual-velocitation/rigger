@@ -30,8 +30,10 @@ describing the work, with the role and attempt as suffix - never a slug a human 
   phases. Sidecar couriers (liveness probes, fault recorders) ride their worker's phase, so
   they appear beside the work they serve.
 - **Rows lead with the persona, then its verb** (`workflows/rigger.js`, the label builders):
-  a worker's label is `<Persona> - <role action phrase>: <terse subject> #<attempt>`, e.g.
-  `Lens:SDET - prove the tests discriminate: seed ingest dedup keys project-wide... #2`. The
+  a worker's label is `<Persona> - <role action phrase> #<attempt>: <subject>`, e.g.
+  `Lens:SDET - prove the tests discriminate #2: seed ingest dedup keys project-wide`. The
+  metadata cluster (who, doing what, which attempt) sits before the colon; the subject is
+  everything after it. The
   PERSONA token comes first (title-cased from the id's role half: `Implementer`, `Lens:SDET`,
   `Adversary`, `Adjudicator`, `Plan-Critique`) so the reader always knows WHO is acting; the
   action phrase says what that persona does to the unit - the criterion sentence alone would
@@ -81,7 +83,7 @@ describing the work, with the role and attempt as suffix - never a slug a human 
   unrecognized role defaulting to `Build` - pinned on the template's mapping function. This
   criterion OWNS phase derivation; courier placement is criterion 3's, NOT this one's.
 - [ ] a test proves ROWS LEAD WITH THE PERSONA: a titled wave item's label renders
-  `<Persona> - <action phrase>: <subject> #<attempt>` (persona title-cased from the id's
+  `<Persona> - <action phrase> #<attempt>: <subject>` (persona title-cased from the id's
   role half; subject is the title's first sentence, whitespace-normalized, passed whole with
   no driver-side truncation or ellipsis), two different tiers of the SAME unit render
   distinct persona tokens AND distinct action phrases, an unmapped custom lens keeps its
