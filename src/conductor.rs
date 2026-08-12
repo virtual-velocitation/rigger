@@ -1861,9 +1861,21 @@ struct RunCtx<'a> {
     /// (spec 29c criterion 5): the grounding path walks and extracts the tree at most ONCE
     /// per process, so a run whose step builds many prompts pays the walk once, not per
     /// prompt. Durable per-file idempotence (a re-ingest on a later step re-emits only
-    /// changed files) rests on the keyed emit authority, not this flag - this only bounds
-    /// the walk to once per process. Process-local by design: it gates redundant work, never
-    /// correctness, so it need not survive a process (the log + graph already do). Exists only in
+    /// changed files) rests on the keyed emit authority, not this flag.
+    ///
+    /// Within a process the bound is NOT merely a throughput saving, so do not read it as one.
+    /// `ingest_project_into_graph` is reached from `build_prompt_with_failure` - a PER-PROMPT path -
+    /// and [`replayed_keys`](RunCtx::replayed_keys) is EXTENDED by every key the ingest sink appends,
+    /// so a SECOND walk in one process would be weighed against that extended set rather than the
+    /// run-start SEED. Concretely: the seed holds `{A}`, walk 1 emits generation `B` and extends the
+    /// set to `{A, B}`, the tree reverts to `A`, and an unbounded walk 2 finds `A` present and
+    /// suppresses the revert - stranding the graph on `B`, the exact failure the
+    /// latest-generation-per-file seed exists to prevent. Holding the walk to ONE per process is what
+    /// keeps every suppression decision a run takes weighed against the seed.
+    ///
+    /// Process-local is nonetheless right: a fresh process RE-SEEDS latest-generation-per-file from
+    /// the log, so the guarantee is rebuilt rather than carried, and the flag need not survive a
+    /// process (the log + graph already do). Exists only in
     /// the `symbols` lane - the light lane compiles no extraction pass to ingest, so its no-op
     /// `ingest_project_into_graph` reads no guard.
     #[cfg(feature = "symbols")]
@@ -6609,8 +6621,12 @@ impl RunCtx<'_> {
     /// tree is walked at most ONCE per process. The first prompt a process builds triggers the
     /// walk; later prompts in the same process skip it (the graph already reflects the tree). The
     /// per-file idempotence a re-ingest on a LATER step relies on lives in the keyed emit
-    /// authority, not this flag - this only bounds the walk to once per process so a step that
-    /// builds many prompts does not re-walk per prompt.
+    /// authority, not this flag - this bounds the walk to once per process so a step that
+    /// builds many prompts does not re-walk per prompt. That bound is load-bearing, not just a
+    /// saving: it is what keeps a run's suppression decisions weighed against the run-start SEED
+    /// rather than the set the ingest sink extends as it emits (see
+    /// [`ingested`](RunCtx::ingested) for the two-walk sequence that would otherwise suppress a
+    /// revert).
     #[cfg(feature = "symbols")]
     fn ingest_project_into_graph(&self) {
         if self
@@ -6655,22 +6671,30 @@ impl RunCtx<'_> {
         //
         // - an UNCHANGED file re-hashes to exactly that generation's keys, so its whole batch is
         //   already recorded and it appends NOTHING - on this run and on every later run, forever;
-        // - a file whose content differs from its latest recorded batch re-emits WHATEVER BATCH THE
-        //   WALK HANDED THIS SINK, whole. That INCLUDES a file REVERTED to content it held at an
-        //   earlier generation, whose keys are byte-identical to records the log still carries: it
-        //   re-emits not because its keys are new but because those records are no longer the file's
-        //   latest generation. Seeding from every key ever recorded would strand the graph on the
-        //   superseded version instead.
+        // - a file whose content AS THE WALK LOWERED IT differs from its latest recorded batch
+        //   re-emits WHATEVER BATCH THE WALK HANDED THIS SINK, whole. That INCLUDES a file REVERTED
+        //   to content it held at an earlier generation, whose keys are byte-identical to records the
+        //   log still carries: it re-emits not because its keys are new but because those records are
+        //   no longer the file's latest generation. Seeding from every key ever recorded would strand
+        //   the graph on the superseded version instead. The qualifier is load-bearing: the design
+        //   half reads the live tree, but the code half lowers from the PERSISTED symbols index when
+        //   the project has one, so on such a project the decision is taken against what that index
+        //   holds rather than against the file on disk.
         //
         // Both bullets are claims about what this sink APPENDS, and nothing more. What a re-emitted
         // batch RETIRES belongs to the FOLD and covers only the code half: a code batch carries a
         // `fresh` head and 29a's fresh-head mechanism retires that file's prior structural edges as
         // the fold applies it, while a design batch sets no `fresh` head at all, so re-emitting one
         // adds its edges without retiring the ones its earlier generation left live. The two bullets
-        // also reach only files the walk emits a batch for. A file that now extracts to NOTHING (an
-        // ordinary edit removing its last definition and reference) is dropped by the walk before
-        // this sink sees it: no batch means no supersede, so its prior entities and edges stay live
-        // and no skip decision was involved. And whether an appended batch then FOLDS is
+        // also reach only files the walk emits a batch for, measured on WHAT THE WALK LOWERED. A file
+        // the walk lowered to NOTHING (an ordinary edit removing its last definition and reference,
+        // on a walk that saw that edit) is dropped before this sink sees it: no batch means no
+        // supersede, so its prior entities and edges stay live and no skip decision was involved. The
+        // converse holds too and is not symmetric between the halves: the design half reads the live
+        // tree, so a path that is gone is gone to it, while the code half lowers from the persisted
+        // symbols index - so a path the tree has DELETED, or one an edit emptied, still arrives here
+        // as a NON-empty batch and does reach a skip decision while that index lists it. And whether
+        // an appended batch then FOLDS is
         // `append_and_fold_batch`'s best-effort contract, not this partition's - a lost fold leaves
         // the log right and the graph behind.
         //
@@ -12403,10 +12427,16 @@ mod tests {
     }
 
     /// Spec 29c criterion 5 (re-extraction / freshness): a re-ingest on a later grounding pass
-    /// re-extracts ONLY a CHANGED file (its `fresh` batch head superseding its prior edges by 29a's
-    /// mechanism) and leaves an UNCHANGED file alone (it is not re-ingested). The wiring keys each
-    /// file's batch on its content, so an unchanged file's keys are already recorded (append
-    /// nothing) while a changed file's differ (the whole batch, fresh head included, re-emits).
+    /// RE-EMITS a CHANGED file's whole batch (its `fresh` batch head superseding its prior edges by
+    /// 29a's mechanism) and leaves an UNCHANGED file alone. The walk itself re-lowers every file it
+    /// sees; what the content key decides is what is APPENDED, so "re-extracts" here means "re-emits".
+    ///
+    /// The rule that decides it is LATEST-GENERATION-per-file over a set SEEDED from the log, never
+    /// "recorded at any time": a file REVERTED to an earlier generation re-emits too, which is
+    /// criterion 3's proof to own and which nothing here exercises. This test drives ONE process and
+    /// re-enters the walk-and-emit half directly, so the set it weighs against is the IN-MEMORY set
+    /// this process EXTENDED rather than a log seed - see the body comment at the second ingest for
+    /// why the two agree on this fixture.
     #[cfg(feature = "symbols")]
     #[test]
     fn re_ingesting_re_extracts_a_changed_file_and_skips_unchanged_ones() {

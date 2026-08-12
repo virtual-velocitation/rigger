@@ -762,7 +762,10 @@ fn recorded_derived_events(root: &std::path::Path) -> usize {
 /// The contract this diff writes at all three sites it owns (`docs/architecture.md` 5.5, the run
 /// sink's comment in `src/conductor.rs`, and `cmd_graph_build`'s rustdoc in `src/main.rs`) is
 /// LOG-relative and has two halves: after any mix of skipping and re-ingest, the log holds each
-/// file's LATEST content generation IN FULL, and only what changed is ever re-emitted.
+/// file's LATEST content generation AS THE WALK LOWERED IT in full, and only what changed is ever
+/// re-emitted. The fixture below has no persisted symbols index, so the walk's view IS the tree's
+/// here and the qualifier is satisfied trivially - it is carried because the three sites state it,
+/// not because this test distinguishes the two.
 /// Every other test here sees a single content generation per file - a fresh build, a re-build over
 /// a byte-identical tree, or keys pre-claimed before their file was ever ingested - so the half of
 /// the predicate that RETIRES a file's earlier generation when a later one is recorded is driven
