@@ -960,7 +960,7 @@ fn the_content_key_index_is_built_lazily_by_the_first_append_that_could_be_suppr
 // ---------------------------------------------------------------------------
 
 /// The emit seam, on both answers. On a real store it reports the position it wrote and
-/// folds there; on a port that wrote nothing it reports the ABSENCE and folds nowhere.
+/// folds there; on a port that wrote nothing it FAILS and folds nowhere.
 /// The second half is the one that matters: the applied ledger is keyed by position with
 /// `INSERT OR IGNORE`, so a fold at a fabricated `0` marks that location applied forever
 /// and swallows the genuine event recorded there.
@@ -977,7 +977,7 @@ fn the_emit_seam_reports_what_the_store_wrote_and_folds_only_there() {
         .expect("the emit succeeds");
     let held = held_positions(&store, "run");
     assert_eq!(
-        pos,
+        Some(pos),
         held.last().copied(),
         "the seam reports the position the store issued"
     );
@@ -989,11 +989,12 @@ fn the_emit_seam_reports_what_the_store_wrote_and_folds_only_there() {
 
     let silent = PortDouble::new(vec![None]);
     let cap2 = CapturingProjection::default();
-    let none = rigger::mcpserver::emit_event(&silent, "run", Some(&cap2 as &dyn Projection), &args)
-        .expect("a store that wrote nothing is not an emit error");
-    assert_eq!(
-        none, None,
-        "the seam answers with an absence rather than a fabricated position"
+    let message =
+        rigger::mcpserver::emit_event(&silent, "run", Some(&cap2 as &dyn Projection), &args)
+            .expect_err("a decision the store did not write was not emitted");
+    assert!(
+        message.contains("nothing"),
+        "the seam reports the loss rather than a fabricated position: {message}"
     );
     assert!(
         cap2.folded().is_empty(),
@@ -1019,12 +1020,8 @@ fn a_configured_guard_never_reaches_the_spawn_and_progress_seams() {
     let second = rigger::progress::record(&store, "run-1", "u1/impl#0", "the same line")
         .expect("recording the identical line again succeeds");
     assert!(
-        first.is_some() && second.is_some(),
-        "both progress reports were written and say where"
-    );
-    assert!(
         first < second,
-        "two identical progress lines are two facts, at two positions: {first:?} then {second:?}"
+        "two identical progress lines are two facts, at two positions: {first} then {second}"
     );
 
     let result = rigger::spawn::SpawnResult::ok("u1/impl#0", "done");
@@ -1059,14 +1056,10 @@ fn the_result_seam_reports_a_store_that_wrote_nothing_as_an_error_naming_what_ha
         "the error says the store wrote nothing rather than reporting a position: {message}"
     );
     assert!(
-        message.contains("SpawnResult"),
-        "and names the event whose write was lost, so the seam is identifiable: {message}"
+        message.contains("SpawnResult") && message.contains("u1/impl#0"),
+        "and names the event whose write was lost AND whose it was, so the seam is \
+         identifiable: {message}"
     );
-    // OBSERVED, not asserted: this path names the event TYPE and the stream, while its
-    // sibling `record_result_if_absent` names the SPAWN ID ("the result of {id}"). Both
-    // satisfy the contract that matters here - an explicit failure rather than a
-    // fabricated position - so the asymmetry is recorded for the reviewing lenses rather
-    // than pinned as a promise nobody made.
 }
 
 /// THE OTHER TWO SEAMS THAT HAND BACK A BARE POSITION, held to the same obligation.
@@ -1199,12 +1192,13 @@ fn cli_held(root: &std::path::Path, db: &str, stream: &str) -> Vec<Event> {
 /// THE OPERATOR'S SURFACE, driven through the COMPILED BINARY - the only place the two
 /// commands this criterion rewrote can be seen at all.
 ///
-/// `rigger emit` and `rigger progress` no longer receive a position from the seam below
-/// them; they receive an OPTION and print one of two lines. Every library-level test in
-/// this file drives the seam directly, so none of them can see what the command prints,
-/// and printing a position is not decoration: it is the handle an operator (and the
-/// dashboard, and a later citation) uses to find the event in the log. A line citing a
-/// position the log does not hold is worse than no line at all.
+/// `rigger emit` and `rigger progress` print ONE line each: the position the store issued
+/// for the event they wrote. Every library-level test in this file drives the seam
+/// directly, so none of them can see what the command prints, and printing a position is
+/// not decoration: it is the handle an operator (and the dashboard, and a later citation)
+/// uses to find the event in the log. A line citing a position the log does not hold is
+/// worse than no line at all, and a success line for an event that was never written is
+/// worse still - so an absence reaches the operator as a failure, never as a line.
 ///
 /// So the citation is checked against what the store HOLDS, not against a format: emit
 /// twice and progress once, and every cited position must name the very event the command
