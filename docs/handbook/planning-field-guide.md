@@ -106,6 +106,21 @@ the spec, the model, or the panel - misdiagnoses it.
 (they cite checkable facts) and separate infra findings from semantic ones. Fix infra in the
 binary via its own spec; never let it masquerade as review strictness.
 
+### F9 - As-built prose that keeps earning new rejections
+
+A unit whose CODE was ratified burned four consecutive attempts on its DOCUMENTATION: each
+remedial rewrite of an as-built narrative added a fresh universal claim ("no suppression
+decision is involved", "it can leave the graph no further behind", "cases sit outside the
+contract") that the next adversarial round falsified against the code. The adjudicator's own
+post-mortem: the enumeration is where every falsehood came from, and a shorter true section
+clears the bar a longer one has to earn universal-by-universal.
+
+**Countermeasure, at spec time:** when a criterion demands documentation, ask for the RULE
+stated short and pinned by an accuracy test, never an exhaustive enumeration of cases or
+guarantees the section does not owe. Write the bound into the criterion ("re-render the
+paragraph so it states the rule; no new enumeration"). At remediation time the same discipline
+is "prefer deletion to replacement": most falsified prose is a claim nobody asked for.
+
 ## Amending a spec mid-run
 
 Sometimes the panel proves the spec wrong while the run is live (F3 was caught exactly this
