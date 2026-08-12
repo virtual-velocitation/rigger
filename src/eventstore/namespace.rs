@@ -13,7 +13,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use super::{
-    Direction, Error, Event, EventStore, ExpectedRevision, Filter, Position, Revision, Subscription,
+    Appended, Direction, Error, Event, EventStore, ExpectedRevision, Filter, Position, Revision,
+    Subscription,
 };
 
 /// Namespaced wraps an EventStore so all of its data is scoped to one project.
@@ -60,7 +61,9 @@ impl EventStore for Namespaced<'_> {
         stream: &str,
         expected: ExpectedRevision,
         events: &[Event],
-    ) -> Result<Position, Error> {
+    ) -> Result<Appended, Error> {
+        // The report passes through untouched: it describes the events THIS caller
+        // handed in, in the same order, and namespacing renames the stream only.
         self.inner.append(&self.scoped(stream), expected, events)
     }
 

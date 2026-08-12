@@ -399,7 +399,26 @@ pub fn park_in_run(
     if !run_id.is_empty() {
         ev = ev.with_meta(crate::run::META_RUN_ID, run_id);
     }
-    store.append(STREAM, ExpectedRevision::Any, std::slice::from_ref(&ev))
+    one_position(store, &ev)
+}
+
+/// The global position of the ONE event `ev` landed at, appended to the spawn stream.
+///
+/// The run-lifecycle types this module writes are outside every content-identity policy
+/// (the type test is asked FIRST, so no such policy can reach them), which is exactly
+/// why a store reporting that it wrote nothing here is a broken port rather than a case
+/// to absorb: it surfaces as an error naming what happened, never as a fabricated
+/// position that a later citation would carry forward as truth.
+fn one_position(store: &dyn EventStore, ev: &Event) -> Result<Position, Error> {
+    store
+        .append(STREAM, ExpectedRevision::Any, std::slice::from_ref(ev))?
+        .last()
+        .ok_or_else(|| {
+            Error::Backend(format!(
+                "event store reported writing nothing for a {} event on {STREAM:?}",
+                ev.type_
+            ))
+        })
 }
 
 /// Fold the [`TYPE_SPAWN_REQUESTED`] events in `events` into the spawn requests
@@ -638,7 +657,7 @@ pub fn record_result(store: &dyn EventStore, res: &SpawnResult) -> Result<Positi
     let ev = res
         .to_event()
         .map_err(|e| Error::Backend(format!("serialize spawn result {}: {e}", res.id)))?;
-    store.append(STREAM, ExpectedRevision::Any, std::slice::from_ref(&ev))
+    one_position(store, &ev)
 }
 
 /// Record `res` to the run's event log ONLY when the spawn has no result yet, as a
@@ -685,7 +704,17 @@ pub fn record_result_if_absent(
             None => ExpectedRevision::NoStream,
         };
         match store.append(STREAM, expected, std::slice::from_ref(&ev)) {
-            Ok(pos) => return Ok(Some(pos)),
+            // `Some(position)` is "I recorded it, here"; the store answering that it wrote
+            // nothing is not a recorded result, so it is reported as such rather than
+            // dressed up as one.
+            Ok(appended) => {
+                return appended.last().map(Some).ok_or_else(|| {
+                    Error::Backend(format!(
+                        "event store reported writing nothing for the result of {}",
+                        res.id
+                    ))
+                })
+            }
             // The stream moved under us; re-read and re-decide. If the racing writer
             // recorded THIS id, the re-check returns `None` and nothing is clobbered.
             Err(Error::Conflict { .. }) => continue,
@@ -1376,7 +1405,7 @@ mod tests {
             stream: &str,
             expected: ExpectedRevision,
             events: &[Event],
-        ) -> Result<Position, Error> {
+        ) -> Result<crate::eventstore::Appended, Error> {
             // The concurrent writer: land it once, just before the caller's first
             // append, so the stream head moves under the caller's pinned expectation
             // and the real store returns a genuine Conflict.

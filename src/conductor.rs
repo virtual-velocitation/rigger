@@ -2072,12 +2072,14 @@ impl RunCtx<'_> {
     /// expected-revision handling, the position stamp, and the post-append graph fold
     /// live in ONE place and can never silently diverge (finding
     /// arch-emit-keyed-dup-authority).
-    fn append_and_fold(&self, ev: Event) -> Result<u64, Error> {
+    fn append_and_fold(&self, ev: Event) -> Result<Option<u64>, Error> {
         // A single event is the one-event case of the batched authority, so run-id stamping, the
         // append, and the graph fold live in exactly ONE place (finding arch-emit-keyed-dup-authority
         // stays closed - there is no second append+fold path to drift). The returned position is the
         // appended log position a caller may CITE later (the content-address cache's green-verdict
-        // provenance, spec 12 unit 1); the un-citing emit wrappers discard it.
+        // provenance, spec 12 unit 1); the un-citing emit wrappers discard it. It is an OPTION
+        // because "nothing was appended" is a real answer the store can give, and a citable
+        // provenance must never be a position the store did not issue.
         self.append_and_fold_batch(std::slice::from_ref(&ev))
     }
 
@@ -2089,10 +2091,11 @@ impl RunCtx<'_> {
     /// the shared [`crate::ingest::append_and_fold_batch`] authority a cold `rigger graph build`
     /// also uses, so the run and a cold build can never fold a file's batch differently.
     /// [`append_and_fold`](RunCtx::append_and_fold) is the one-event case; returns the last appended
-    /// position.
-    fn append_and_fold_batch(&self, events: &[Event]) -> Result<u64, Error> {
+    /// position, or `None` when the append wrote nothing (an empty batch, or a store that
+    /// recognised every event as already recorded) - never a fabricated `0`.
+    fn append_and_fold_batch(&self, events: &[Event]) -> Result<Option<u64>, Error> {
         if events.is_empty() {
-            return Ok(0);
+            return Ok(None);
         }
         // Stamp the run id on every event (spec 06, unit 1) - the one chokepoint every emit path
         // routes through, so unit/status/gate-verdict/spec-defect events are all attributable to
@@ -2111,7 +2114,8 @@ impl RunCtx<'_> {
             self.deps.graph,
             STREAM,
             &stamped,
-        )?)
+        )?
+        .last())
     }
 
     /// Emit an event, optionally stamping the acting agent in its metadata (the
@@ -2599,7 +2603,9 @@ impl RunCtx<'_> {
         // earlier green already claimed this digest - so the cited source is stable and a
         // red must always re-prove. A cache-hit re-emit carries the same digest, so this
         // is a no-op for it (the original green stays the source).
-        if pass && !digest.is_empty() {
+        // Only a position the store ISSUED may be cited as provenance, so an append that
+        // wrote nothing enters no cache entry rather than citing a made-up location.
+        if let (true, false, Some(pos)) = (pass, digest.is_empty(), pos) {
             self.green_digests
                 .lock()
                 .unwrap()
@@ -12687,7 +12693,7 @@ mod tests {
                 stream: &str,
                 expected: ExpectedRevision,
                 events: &[Event],
-            ) -> Result<crate::eventstore::Position, crate::eventstore::Error> {
+            ) -> Result<crate::eventstore::Appended, crate::eventstore::Error> {
                 self.appends.lock().unwrap().push(events.len());
                 self.inner.append(stream, expected, events)
             }

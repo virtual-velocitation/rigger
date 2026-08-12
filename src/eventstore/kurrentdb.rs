@@ -7,6 +7,11 @@
 //! `valid_from` ride in the event's custom metadata (an envelope), and the
 //! per-stream `revision` maps to KurrentDB's event number.
 //!
+//! This backend implements NO content-identity suppression - it has no index over
+//! event metadata to seek - so it appends every event through, which is the fail-safe
+//! direction; it owns the port's HONESTY obligation in full, and reports positions the
+//! server issued rather than any it could derive.
+//!
 //! ## Boundary normalization
 //!
 //! The [`EventStore`] trait fixes the `from` boundary convention (see its doc):
@@ -32,7 +37,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::{
-    Direction, Error, Event, EventStore, ExpectedRevision, Filter, Position, Revision,
+    Appended, Direction, Error, Event, EventStore, ExpectedRevision, Filter, Position, Revision,
     Subscription, NO_STREAM,
 };
 
@@ -211,15 +216,96 @@ fn to_event(rec: &RecordedEvent, filter: &Filter) -> Option<Event> {
     })
 }
 
+impl Store {
+    /// Read a stream forward from `from` (inclusive revision), stopping once `limit`
+    /// events have been collected. This is the ONE read this adapter drives: the port's
+    /// `read_stream` passes `usize::MAX` (no bound) and the append's position read-back
+    /// passes the batch size, so a read-back after a big append never walks a whole
+    /// stream.
+    fn read_forward(
+        &self,
+        stream: &str,
+        from: Revision,
+        limit: usize,
+    ) -> Result<Vec<Event>, Error> {
+        // `from` is an inclusive lower bound on revision and the direction only
+        // controls order (matching the SQLite sibling and the trait convention),
+        // so a backward read is the forward set reversed. Reading forward from
+        // `from` and reversing honors `from` in both directions; KurrentDB's
+        // native `.backwards()` from End would discard `from` entirely.
+        let opts = ReadStreamOptions::default()
+            .position(stream_position(from))
+            .forwards();
+        self.rt.block_on(async {
+            let mut rs = match self.client.read_stream(stream, &opts).await {
+                Ok(rs) => rs,
+                Err(kurrentdb::Error::ResourceNotFound) => return Ok(Vec::new()),
+                Err(e) => return Err(Error::Backend(format!("kurrentdb: read stream: {e}"))),
+            };
+            let mut out = Vec::new();
+            while out.len() < limit {
+                match rs.next().await {
+                    Ok(Some(ev)) => {
+                        if let Some(rec) = original(&ev) {
+                            if let Some(e) = to_event(rec, &Filter::default()) {
+                                if e.revision >= from {
+                                    out.push(e);
+                                }
+                            }
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(kurrentdb::Error::ResourceNotFound) => break,
+                    Err(e) => return Err(Error::Backend(format!("kurrentdb: read stream: {e}"))),
+                }
+            }
+            Ok::<_, Error>(out)
+        })
+    }
+
+    /// The global positions the server issued for the `n` events a just-committed
+    /// append landed at revisions `first ..= first + n - 1`, read back from the stream.
+    ///
+    /// A read that comes back short is a replica that has not caught up yet, so the
+    /// read is retried within a short bound. If it still cannot be resolved the append
+    /// is reported as an error that SAYS the write landed: fabricating the positions
+    /// instead would stamp a fold at locations the server never issued, and the
+    /// projection's applied ledger is keyed by position - a wrong one is permanent.
+    fn read_back_positions(
+        &self,
+        stream: &str,
+        first: Revision,
+        n: usize,
+    ) -> Result<Vec<Position>, Error> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let got = self.read_forward(stream, first, n)?;
+            if got.len() == n {
+                return Ok(got.into_iter().map(|e| e.position).collect());
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(Error::Backend(format!(
+                    "kurrentdb: append to {stream:?} COMMITTED {n} event(s) at revisions \
+                     {first}..={} but only {} could be read back, so the positions the server \
+                     issued cannot be reported; the events are durable in the log",
+                    first + n as Revision - 1,
+                    got.len()
+                )));
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+}
+
 impl EventStore for Store {
     fn append(
         &self,
         stream: &str,
         expected: ExpectedRevision,
         events: &[Event],
-    ) -> Result<Position, Error> {
+    ) -> Result<Appended, Error> {
         if events.is_empty() {
-            return Ok(0);
+            return Ok(Appended::default());
         }
         let data: Vec<EventData> = events
             .iter()
@@ -240,7 +326,26 @@ impl EventStore for Store {
             .rt
             .block_on(self.client.append_to_stream(stream, &opts, data))
         {
-            Ok(w) => Ok(w.position.commit as Position),
+            // This backend runs no content-identity guard - it has no index over event
+            // metadata to seek - so it APPENDS THROUGH: every handed event is written
+            // and reported written, which is the fail-safe direction (it can only ever
+            // write more, never drop). Only the HONESTY half of the port is owed here,
+            // and it is owed in full: each reported position must be one the server
+            // ISSUED for that event.
+            //
+            // A single-event append gets that for free (the write's own commit
+            // position IS that event's). A multi-event append does not: KurrentDB's
+            // `$all` position is a byte offset, so the earlier events' positions are
+            // not derivable from the last one by any arithmetic. They are READ BACK
+            // from the stream - the batch occupies the `n` revisions ending at
+            // `next_expected_version` - never invented.
+            Ok(w) if events.len() == 1 => Ok(Appended::all(vec![w.position.commit as Position])),
+            Ok(w) => {
+                let n = events.len();
+                let first = (w.next_expected_version as Revision) - (n as Revision - 1);
+                let written = self.read_back_positions(stream, first, n)?;
+                Ok(Appended::all(written))
+            }
             // The server already reports the stream's authoritative current
             // revision in the conflict payload; use it directly rather than
             // racing a second network read that could observe a newer (or, on a
@@ -260,39 +365,7 @@ impl EventStore for Store {
         from: Revision,
         dir: Direction,
     ) -> Result<Vec<Event>, Error> {
-        // `from` is an inclusive lower bound on revision and the direction only
-        // controls order (matching the SQLite sibling and the trait convention),
-        // so a backward read is the forward set reversed. Reading forward from
-        // `from` and reversing honors `from` in both directions; KurrentDB's
-        // native `.backwards()` from End would discard `from` entirely.
-        let opts = ReadStreamOptions::default()
-            .position(stream_position(from))
-            .forwards();
-        let mut out = self.rt.block_on(async {
-            let mut rs = match self.client.read_stream(stream, &opts).await {
-                Ok(rs) => rs,
-                Err(kurrentdb::Error::ResourceNotFound) => return Ok(Vec::new()),
-                Err(e) => return Err(Error::Backend(format!("kurrentdb: read stream: {e}"))),
-            };
-            let mut out = Vec::new();
-            loop {
-                match rs.next().await {
-                    Ok(Some(ev)) => {
-                        if let Some(rec) = original(&ev) {
-                            if let Some(e) = to_event(rec, &Filter::default()) {
-                                if e.revision >= from {
-                                    out.push(e);
-                                }
-                            }
-                        }
-                    }
-                    Ok(None) => break,
-                    Err(kurrentdb::Error::ResourceNotFound) => break,
-                    Err(e) => return Err(Error::Backend(format!("kurrentdb: read stream: {e}"))),
-                }
-            }
-            Ok::<_, Error>(out)
-        })?;
+        let mut out = self.read_forward(stream, from, usize::MAX)?;
         if matches!(dir, Direction::Backward) {
             out.reverse();
         }
