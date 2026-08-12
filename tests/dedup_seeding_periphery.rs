@@ -730,3 +730,163 @@ fn a_domain_events_replay_key_never_suppresses_the_shipped_builds_ingest() {
         "the pre-claimed file's entities must be folded into the graph; got:\n{g}"
     );
 }
+
+/// Every `<prefix>/<file>@<hash>#<i>` key the log has EVER recorded on a derived-index event under
+/// `root` - across generations, so a superseded generation is still in here. This is deliberately
+/// NOT `project_scoped_replay_keys`: that returns the LIVE set (each file's latest generation
+/// only), and the difference between the two is exactly what "only what changed is re-emitted"
+/// and "the log holds the latest generation in full" are claims about.
+#[cfg(feature = "symbols")]
+fn recorded_derived_keys(root: &std::path::Path) -> BTreeSet<String> {
+    read_run_stream(root)
+        .iter()
+        .filter(|e| is_derived_index_type(&e.type_))
+        .filter_map(|e| e.meta.get(rigger::conductor::META_REPLAY_KEY).cloned())
+        .collect()
+}
+
+/// How many derived-index EVENTS the log under `root` carries - counted, not deduplicated by key.
+/// A re-append of a key the log already holds is invisible to the key SET and visible only here, so
+/// "only what changed is re-emitted" has to be measured against this and not against the set.
+#[cfg(feature = "symbols")]
+fn recorded_derived_events(root: &std::path::Path) -> usize {
+    read_run_stream(root)
+        .iter()
+        .filter(|e| is_derived_index_type(&e.type_))
+        .count()
+}
+
+/// INTEGRATION through the SHIPPED binary, over a MIX of skipping and re-ingest - the one shape
+/// this criterion's net contract is stated against and the one shape nothing drove.
+///
+/// The contract this diff writes at all three sites it owns (`docs/architecture.md` 5.5, the run
+/// sink's comment in `src/conductor.rs`, and `cmd_graph_build`'s rustdoc in `src/main.rs`) is
+/// LOG-relative and has two halves: after any mix of skipping and re-ingest, the log holds each
+/// file's LATEST content generation IN FULL, and only what changed is ever re-parsed or re-emitted.
+/// Every other test here sees a single content generation per file - a fresh build, a re-build over
+/// a byte-identical tree, or keys pre-claimed before their file was ever ingested - so the half of
+/// the predicate that RETIRES a file's earlier generation when a later one is recorded is driven
+/// only by hand-spelled keys in the unit layer. That is precisely the boundary this test crosses:
+/// real keys the shipped walk minted, over a tree where one file moved generation and another did
+/// not, read back through the shipped binary's own store.
+///
+/// Both halves fail SILENTLY without it. If the predicate stopped retiring an earlier generation
+/// (it returned every key ever recorded rather than the latest per file), the live set would grow a
+/// stale generation the tree no longer holds; the suite would stay green because no other test ever
+/// records two generations of one file, and a file reverted to earlier content would then be
+/// suppressed forever - the log would look complete while the graph stayed on the superseded
+/// version. If suppression were all-or-nothing rather than per-file, the second build would append
+/// nothing at all and the edited file's new generation would never reach the log.
+#[cfg(feature = "symbols")]
+#[test]
+fn a_mixed_build_holds_every_files_latest_generation_and_re_emits_only_what_changed() {
+    let dir = temp_ingestable_project();
+    let root = dir.path();
+
+    // A second source file, so a later edit to ONE of them is a genuine MIX: one file's batch is
+    // skipped while the other's is re-emitted, in the same build.
+    std::fs::write(
+        root.join("src/beta.rs"),
+        "pub fn beta_helper() {}\npub fn beta_caller() { beta_helper(); }\n",
+    )
+    .unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["graph", "build"]);
+    assert!(
+        ok,
+        "the first graph build must succeed; stderr: {err}; stdout: {out}"
+    );
+    assert!(
+        ingested_count(&out) > 0,
+        "sanity: the first build over a fresh tree must ingest the derived index; got:\n{out}"
+    );
+    let recorded_before = recorded_derived_keys(root);
+    let events_before = recorded_derived_events(root);
+    assert_eq!(
+        recorded_before,
+        minted_keys(root),
+        "sanity: before the edit the log holds exactly the tree's one generation"
+    );
+
+    // Move exactly ONE file's content generation. `beta.rs` and the design doc are untouched, so
+    // their batches must be skipped while `alpha.rs`'s must be re-parsed and re-emitted whole.
+    std::fs::write(
+        root.join("src/alpha.rs"),
+        "pub fn alpha_helper() {}\npub fn alpha_caller() { alpha_helper(); }\npub fn alpha_extra() { alpha_caller(); }\n",
+    )
+    .unwrap();
+    let tree_now = minted_keys(root);
+    assert_ne!(
+        tree_now, recorded_before,
+        "sanity: the edit must move a content generation, else there is no mix to drive"
+    );
+
+    let (out2, err2, ok2) = run_rigger(root, &["graph", "build"]);
+    assert!(
+        ok2,
+        "the build over the edited tree must succeed; stderr: {err2}; stdout: {out2}"
+    );
+    assert!(
+        ingested_count(&out2) > 0,
+        "the edited file's batch must be re-emitted, so the build cannot report nothing; got:\n{out2}"
+    );
+
+    // HALF ONE - only what changed was re-parsed or re-emitted. Every key this build ADDED to the
+    // log must belong to the file that moved; a key appended for an unchanged file would mean the
+    // skip did not happen and the log grows on every build, which is the defect this criterion ends.
+    let recorded_after = recorded_derived_keys(root);
+    let appended: BTreeSet<&String> = recorded_after.difference(&recorded_before).collect();
+    assert!(
+        !appended.is_empty(),
+        "the edited file's new generation must reach the log"
+    );
+    assert!(
+        appended.iter().all(|k| k.contains("alpha.rs")),
+        "only the file whose content changed may be re-emitted; these keys were appended for \
+         unchanged files: {:?}",
+        appended
+            .iter()
+            .filter(|k| !k.contains("alpha.rs"))
+            .collect::<Vec<_>>()
+    );
+    // Measured by EVENT COUNT, because a re-append of a key the log already holds does not change
+    // the key SET at all: an unchanged file whose whole batch is re-appended is invisible to the
+    // assertion above and visible only here. The log may grow by exactly the events carrying keys
+    // it did not already hold, and by nothing else.
+    assert_eq!(
+        recorded_derived_events(root) - events_before,
+        appended.len(),
+        "the log may grow ONLY by the keys it did not already hold; it grew by {} derived events \
+         while only {} of them carry a key the log was missing, so a batch already wholly recorded \
+         was re-appended",
+        recorded_derived_events(root) - events_before,
+        appended.len()
+    );
+
+    // HALF TWO - the log holds each file's LATEST generation in full, and holds no earlier one as
+    // live. The predicate over the log is the shipped read of "what is already recorded", so this
+    // equality is the net contract itself: the edited file's superseded generation is retired, the
+    // skipped files' generations are still there whole, and nothing else is live.
+    let live: BTreeSet<String> = project_scoped_replay_keys(&read_run_stream(root))
+        .into_iter()
+        .collect();
+    assert_eq!(
+        live, tree_now,
+        "after a mix of skipping and re-ingest the live suppression set must be exactly the tree's \
+         latest generation - no retired generation left live, no skipped file's keys dropped"
+    );
+
+    // And the mix settles: a further build over the now-unchanged tree appends nothing at all, so
+    // the re-ingest left the log in the same steady state a cold build reaches.
+    let (out3, err3, ok3) = run_rigger(root, &["graph", "build"]);
+    assert!(
+        ok3,
+        "the settling build must succeed; stderr: {err3}; stdout: {out3}"
+    );
+    assert_eq!(
+        ingested_count(&out3),
+        0,
+        "once the edited file's generation is recorded, a further build must append NOTHING; \
+         got:\n{out3}"
+    );
+}
