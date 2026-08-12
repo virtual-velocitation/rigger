@@ -3263,9 +3263,30 @@ fn derive_extent_end(_file: &str, _source: &str, _start: u32, _name: &str) -> Re
 /// Store lifecycle mirrors the RUN DRIVER, not the couriers: it CREATES the store under the cwd's
 /// `.rigger/` when absent (a cold checkout legitimately has none yet - this command's whole point
 /// is to populate it) rather than the courier walk-up that refuses a missing store. On an EXISTING
-/// store it refreshes incrementally: the seen-key set is seeded from the log's replay keys, so an
-/// unchanged file's content key is already recorded and its batch re-ingests nothing, while a
-/// changed file hashes to new keys and re-emits. The light lane compiles no extraction pass, so
+/// store it refreshes incrementally through the ONE shared suppression predicate
+/// ([`rigger::ingest::project_scoped_replay_keys`]) the live run also seeds from, never a second
+/// copy here. The seen-key set lives in two phases: it is SEEDED with the keys of each file's
+/// LATEST recorded derived-index batch and no earlier one, then EXTENDED with every key this build
+/// appends, retiring nothing - so "latest generation per file" describes the seed, not the set
+/// after the first batch. The SEED is what every suppression decision is taken against, because one
+/// walk hands this command each batch identity (`gc`/`gd` per file) exactly once and this command
+/// walks once. On that seed an unchanged file's batch
+/// is already wholly recorded and re-ingests nothing, while a file whose content AS THE WALK LOWERED
+/// IT differs from its latest recorded batch re-emits every event the walk extracted for it. That
+/// includes a file REVERTED to content it held at an earlier generation - its keys are byte-identical
+/// to records the log still carries, and it re-emits precisely because those records are no longer
+/// that file's latest generation. The qualifier is load-bearing and the two halves differ on it: the
+/// design half reads the LIVE tree, while the code half lowers from the PERSISTED symbols index when
+/// the project has one, so on such a project the decision is taken against what that index holds.
+/// Both halves of that are claims about what this command APPENDS, over the files the walk emits a
+/// batch for: a file the walk hands over NO batch for - one the walk no longer sees, or one whose
+/// extraction the walk lowered to nothing - reaches no suppression decision here at all and retires
+/// nothing, whereas a path the tree has DELETED that the persisted index still lists IS handed over
+/// and does reach one. And a batch whose append lands but whose fold does not leaves the log right
+/// and the graph behind (`append_and_fold_batch` folds best-effort by contract). What a re-emitted batch RETIRES is the FOLD's doing and reaches the code half only:
+/// a code batch carries a `fresh` head whose 29a mechanism supersedes that file's prior structural
+/// edges, while a design batch sets no `fresh` head, so re-emitting one adds edges without retiring
+/// the ones its earlier generation left live. The light lane compiles no extraction pass, so
 /// `graph build` there degrades to an empty graph (it still creates the store) and exits 0, never
 /// an error.
 fn cmd_graph_build(_args: &[String]) -> Res {
@@ -3289,16 +3310,21 @@ fn cmd_graph_build(_args: &[String]) -> Res {
         }
     };
 
-    // Seed the seen-keys from the existing log's replay keys so a re-build refreshes incrementally
-    // (spec 45: "on an existing one it refreshes incrementally"). This mirrors the run's
-    // `replayed_keys` seeding - the SAME content-keyed dedup, driven from the log rather than a
-    // live run - so an unchanged file's already-recorded key is skipped and only changed files
-    // re-emit.
+    // Seed the seen-keys from the existing log so a re-build refreshes incrementally (spec 45: "on
+    // an existing one it refreshes incrementally"), through the ONE predicate that owns the
+    // content-key format ([`rigger::ingest::project_scoped_replay_keys`]) - the same predicate the
+    // run's `replayed_keys` seeding calls, never a second copy here, so a build and a run can never
+    // disagree about which recorded key a fresh emit is redundant against.
+    //
+    // The predicate is TYPE-FIRST and LATEST-PER-FILE, which is what this seeding used to get
+    // wrong in both directions: it collected EVERY event's replay key with no type test (so a
+    // non-derived key could suppress a derived emit that happened to share its spelling) and it
+    // treated a key as redundant whenever it had EVER been recorded (so a file reverted to content
+    // it held at an earlier generation re-emitted nothing and stranded the graph on the superseded
+    // version). Only the LATEST recorded generation of each file suppresses now.
     let prior = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
-    let mut seen: std::collections::HashSet<String> = prior
-        .iter()
-        .filter_map(|e| e.meta.get(conductor::META_REPLAY_KEY).cloned())
-        .collect();
+    let mut seen: std::collections::HashSet<String> =
+        rigger::ingest::project_scoped_replay_keys(&prior);
 
     // The walk and content key are the shared authority; the cold build's emit SINK appends each
     // file's WHOLE batch to the run stream in ONE append and folds it into the graph in ONE
@@ -3314,6 +3340,11 @@ fn cmd_graph_build(_args: &[String]) -> Res {
         // Keep only the not-yet-seen events of this file's batch, stamping each survivor with its
         // replay key (the same content-keyed dedup a run seeds from the log). A batch already wholly
         // recorded (an unchanged file on a re-build) survives to nothing and appends nothing.
+        // `insert` both TESTS and EXTENDS `seen`: every key this build keeps joins the set and no
+        // superseded generation is retired from it, so from here on `seen` is the log-derived seed
+        // PLUS this build's own emissions. That is harmless because the walk yields each batch
+        // identity (`gc`/`gd` per file) once and this command walks once, so no later batch is ever
+        // weighed against a key an earlier one added.
         let survivors: Vec<Event> = keyed
             .iter()
             .filter(|(key, _)| seen.insert(key.clone()))

@@ -709,12 +709,90 @@ is deduped under can never drift between them. Four properties define it:
 - **Batched fold.** Each file's whole batch is appended in ONE store append and folded in
   ONE graph transaction (`append_and_fold_batch`), because the measured cold-build throughput
   was transaction-cadence bound, not parse-bound - one transaction per file, not per event.
-- **Content-keyed skip.** Every event carries a deterministic content key
+- **Content-keyed skip, project-scoped.** Every event carries a deterministic content key
   `<prefix>/<file>@<hash>#<i>`, a pure function of the batch's bytes (`gc` for code, `gd` for
-  design). An unchanged file yields identical keys, so a re-ingest (a `reindex` after a unit
-  integrates, or an incremental `graph build`) **skips** it and re-folds nothing; a changed
-  file hashes to new keys and re-emits. Only what changed is re-parsed and re-emitted;
-  unchanged files are skipped entirely, so a step never re-processes the whole tree.
+  design). One predicate (`ingest::project_scoped_replay_keys`, beside the key authority that
+  builds that format) decides what a fresh emit is redundant against, and both sinks - the run's
+  keyed emit and a cold `graph build` - call it rather than carrying their own copy. It applies
+  three rules in order:
+  - **Type first.** Only the four derived index types (`CodeEntityExtracted`, `EdgeInferred`,
+    `DocConceptExtracted`, `DocLinkExtracted`) are eligible. Every other event is passed over
+    whatever its replay key looks like, so no domain event can be dropped by this path and the
+    partition is a property of the code, not of a naming convention.
+  - **Project scope, not run scope.** The eligible keys are read from the WHOLE stream, because a
+    file's content hash does not change because a new run started. A derived index fact is a fact
+    about the project's files; run scoping belongs to keys whose recurrence is a property of one
+    run (unit lifecycle, gate verdicts, breaker trips), and those still seed from the current run's
+    slice. So an unchanged file appends **zero** events on every subsequent run, forever - the log
+    stops re-accumulating a re-derivable index.
+  - **Latest generation per file, never ever-recorded.** A batch is suppressed only when its hash
+    equals the hash of the LATEST batch recorded for that same file. A changed file - **including
+    one reverted to content it held at an earlier recorded generation** - differs from its latest
+    batch, so it re-emits in full. An ever-recorded key set would match the reverted content's old
+    records, re-emit nothing, and strand the graph on a superseded version of that file. What the
+    re-emitted batch then RETIRES is a different mechanism's doing, not this rule's, and it covers
+    only the code half: a code batch carries a `fresh` head, and the fold's two `fresh` arms are the
+    only callers of `supersede_file_edges`, so the file's prior structural edges are retired by that
+    spec 29a mechanism. The design half sets no `fresh` head at all, so a re-emitted design batch
+    adds its edges without retiring the ones its earlier generation left live.
+
+  The net contract is stated against the LOG, because the log is the only thing this predicate
+  decides: after any mix of skipping and re-ingest, the log holds each file's LATEST content
+  generation **as the walk lowered it** in full, and only what changed is ever re-emitted. That
+  qualifier is load-bearing and the last bullet below is why: the walk's view of a file is not always
+  the tree's. Whether the live graph then equals a cold rebuild is a property of the FOLD, not of
+  this rule - suppression withholds only an append whose content the log already records: it is
+  correct about the LOG, and a lost fold is therefore NOT self-healing by re-ingest, because the
+  skip withholds exactly the re-append that would have re-folded it; only the append-and-fold
+  authority can heal that half. In each case below, the log stays right while the GRAPH or the TREE
+  diverges from it; what follows names some of them and is not a closed enumeration.
+
+  In these three, **no batch is folded for the file at all**. Read "the walk no longer sees it"
+  strictly, because the two halves differ: the design half
+  reads the LIVE tree (`walk_guarded` + a file read per path), so a path that is gone is gone to it,
+  while the code half lowers from a PERSISTED symbols index when the project has one (the last bullet
+  below). A path the tree has deleted that such an index still lists IS handed over as a batch, DOES
+  reach a suppression decision, and is outside these three:
+
+  - **A file the walk no longer sees.** Retiring a file's structure is driven by that file's OWN
+    batch (`supersede_file_edges` runs inside the fold of the batch), and the walk emits no batch for
+    a path it no longer holds - so nothing on the ingest path retires that file's nodes or edges.
+  - **A file the walk still sees that now extracts to NOTHING** - an ordinary edit that removes its
+    last definition and reference. Both halves drop a file whose extraction is empty, so again no
+    batch is emitted, no `supersede_file_edges` runs, and that file's prior entities and edges stay
+    live. "Extracts to nothing" is measured on what the walk lowered, so on a persisted-index project
+    an edit that empties a file leaves the code half emitting the index's batch until the index is
+    refreshed. Skipping is not what strands them: re-appending the whole index would not have
+    retired them either.
+  - **A batch whose APPEND landed but whose FOLD did not.** `append_and_fold_batch` folds
+    best-effort by contract - a fold failure never fails an append that already landed durably - so
+    the log is right and the graph is behind. The append IS recorded, so a later run correctly skips
+    it; healing that half is the append-and-fold authority's obligation, not the skip rule's.
+
+  These two sit outside those three for other reasons:
+
+  - **The design half retires nothing, even when its batch IS folded.** The fold's design arms only
+    ensure nodes and add edges; `supersede_file_edges` is reached from the `fresh` code arms alone.
+    Deleting a section from a design doc therefore re-emits and re-folds that doc's whole batch and
+    still leaves the retired `SPECIFIES` and reference edges live.
+  - **A code walk lowered from a PERSISTED symbols index.** The code half loads a persisted index
+    when the project has one and only builds a fresh one when it does not, and it derives every
+    event from the INDEXED symbols with no read of the file itself. On such a project the batches -
+    and therefore the content the suppression decision is made against - describe what that index
+    holds rather than what the tree currently holds, so a suppression decision IS made and it is made
+    against stale content. This is also why the three above are stated walk-relative: a path the tree
+    no longer holds, or one an edit emptied, still yields a NON-empty batch while the index lists it.
+    Refreshing the index is `rigger reindex`'s job, not this rule's.
+
+  On the INGEST path the projection deletes nothing, so shedding a removed file's facts is a
+  deliberate act (`Projector::prune`), never a consequence of the next ingest. The projection is not
+  delete-free overall, and the distinction is worth stating exactly: besides `prune`'s three deletes,
+  the fold's `CommunityAssigned` and `ConceptDerived` arms each DELETE the super-nodes of their own
+  grain that the same pass just left with no live member (nodes carry no `valid_to`, so removal is
+  the only way to retire one - the same node-removal primitive `prune` uses). Both are scoped by
+  their grain's id prefix and by `KIND_COMMUNITY` / `KIND_CONCEPT` and guarded on having no live
+  member, so neither can reach a file entity or its edges, and neither is reachable from an event of
+  the four derived index types.
 
 ### 5.6 The loop, concretely: emit, project, retrieve
 
