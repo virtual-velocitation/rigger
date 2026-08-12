@@ -49,8 +49,8 @@ use std::collections::BTreeSet;
 /// The stage id is `gc` - the CODE INGEST'S OWN batch prefix - and the gate id carries an `@`, the
 /// content key format's own generation separator. Between them the gate-verdict key this run really
 /// mints parses as a `<prefix>/<file>@<hash>#<i>` content key IN FULL, so nothing but the TYPE test
-/// stands between a lifecycle fact and project-scoped suppression. That the minted key really is
-/// that shape is ASSERTED below off the recorded log, never assumed.
+/// keeps this run's own recorded lifecycle keys out of the project-scoped arm of the seed. That the
+/// minted key really is that shape is ASSERTED below off the recorded log, never assumed.
 const UNIT: &str = "gc";
 const GATE: &str = "g@h1";
 
@@ -216,8 +216,15 @@ fn a_prior_runs_recorded_lifecycle_keys_do_not_suppress_the_next_runs_own_emits(
     }
 }
 
-/// CONTRACT at the crate boundary: the TYPE gate is what spares a lifecycle fact, not the shape of
-/// its key - proved against the keys a REAL RUN MINTS rather than hand-spelled ones.
+/// CONTRACT at the crate boundary: what keeps a lifecycle fact out of the project-scoped ARM OF
+/// THE SEED is its TYPE, not the shape of its key - proved against the keys a REAL RUN MINTS
+/// rather than hand-spelled ones.
+///
+/// The claim stops at that arm, deliberately, because that is where the type test lives
+/// (`ingest::project_scoped_replay_keys` skips a non-derived event before it ever reads that
+/// event's key). What both arms pour into is ONE flat key set, and the suppression DECISION
+/// downstream is a plain membership test on it with no type test of its own - so this pins what
+/// ENTERS the set, and never the stronger claim that a lifecycle emit cannot be suppressed.
 ///
 /// The sibling criterion-1 periphery layer pins the type gate over the full public event vocabulary
 /// with keys the TEST spells. That leaves one thing unproven and it is the thing that makes the
@@ -231,9 +238,9 @@ fn a_prior_runs_recorded_lifecycle_keys_do_not_suppress_the_next_runs_own_emits(
 /// that key, re-stamped onto a DERIVED-index event, IS returned by the public predicate (so the
 /// fixture is not vacuous and the predicate really was offered this key); and over the REAL log, in
 /// which that key belongs to a `GateVerdict`, the predicate returns NOTHING. Type first - the key
-/// never reaches the comparison.
+/// never reaches the shape comparison inside the predicate.
 #[test]
-fn the_keys_a_real_run_mints_are_eligible_in_shape_yet_never_suppressible_by_type() {
+fn the_keys_a_real_run_mints_are_eligible_in_shape_yet_type_keeps_them_out_of_the_seed_arm() {
     let store = Store::open(":memory:").unwrap();
     assert_eq!(campaign(&store, "only criterion"), Status::Integrated);
     let log = read(&store);
