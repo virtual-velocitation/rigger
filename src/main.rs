@@ -3271,16 +3271,19 @@ fn derive_extent_end(_file: &str, _source: &str, _start: u32, _name: &str) -> Re
 /// after the first batch. The SEED is what every suppression decision is taken against, because one
 /// walk hands this command each batch identity (`gc`/`gd` per file) exactly once and this command
 /// walks once. On that seed an unchanged file's batch
-/// is already wholly recorded and re-ingests nothing, while a file whose content differs from its
-/// latest recorded batch re-emits every event the walk extracted for it. That includes a file
-/// REVERTED to content it held at an earlier generation - its keys are byte-identical to records the
-/// log still carries, and it re-emits precisely because those records are no longer that file's
-/// latest generation. Both halves of that are claims about what this command APPENDS, over the files
-/// the walk emits a batch for: a file the walk hands over NO batch for - one deleted from the tree,
-/// or one an ordinary edit emptied of its last definition and reference - reaches no suppression
-/// decision here at all and retires nothing, and a batch whose append lands but whose fold does not
-/// leaves the log right and the graph behind (`append_and_fold_batch` folds best-effort by
-/// contract). What a re-emitted batch RETIRES is the FOLD's doing and reaches the code half only:
+/// is already wholly recorded and re-ingests nothing, while a file whose content AS THE WALK LOWERED
+/// IT differs from its latest recorded batch re-emits every event the walk extracted for it. That
+/// includes a file REVERTED to content it held at an earlier generation - its keys are byte-identical
+/// to records the log still carries, and it re-emits precisely because those records are no longer
+/// that file's latest generation. The qualifier is load-bearing and the two halves differ on it: the
+/// design half reads the LIVE tree, while the code half lowers from the PERSISTED symbols index when
+/// the project has one, so on such a project the decision is taken against what that index holds.
+/// Both halves of that are claims about what this command APPENDS, over the files the walk emits a
+/// batch for: a file the walk hands over NO batch for - one the walk no longer sees, or one whose
+/// extraction the walk lowered to nothing - reaches no suppression decision here at all and retires
+/// nothing, whereas a path the tree has DELETED that the persisted index still lists IS handed over
+/// and does reach one. And a batch whose append lands but whose fold does not leaves the log right
+/// and the graph behind (`append_and_fold_batch` folds best-effort by contract). What a re-emitted batch RETIRES is the FOLD's doing and reaches the code half only:
 /// a code batch carries a `fresh` head whose 29a mechanism supersedes that file's prior structural
 /// edges, while a design batch sets no `fresh` head, so re-emitting one adds edges without retiring
 /// the ones its earlier generation left live. The light lane compiles no extraction pass, so

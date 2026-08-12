@@ -84,6 +84,13 @@ pub struct IngestStats {
 /// what a key MEANS (append-and-fold, or skip a replay), so the mutation authority stays with the
 /// caller.
 ///
+/// "Content" here is the batch this walk LOWERED, which is not always the file on disk, and the two
+/// halves differ: the design half reads the live tree, while the code half reuses the `symbols`
+/// grounder's PERSISTED index when the project has one (see [`walk_batches`]) and derives its events
+/// from the indexed symbols without reading the file. So on such a project the keys track that
+/// index's view - including for a path the tree no longer holds but the index still lists, which
+/// this walk therefore still emits a batch for.
+///
 /// The code half's per-file parse/lower fans across a default-sized worker pool (one worker per
 /// logical core), but the EMIT stays in sorted file-path order - parallelism is observationally
 /// invisible. The returned [`IngestStats`] is informational; existing callers discard it and are

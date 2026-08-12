@@ -738,22 +738,29 @@ is deduped under can never drift between them. Four properties define it:
 
   The net contract is stated against the LOG, because the log is the only thing this predicate
   decides: after any mix of skipping and re-ingest, the log holds each file's LATEST content
-  generation in full, and only what changed is ever re-emitted. Whether the live graph then equals a
-  cold rebuild is a property of the FOLD, not of this rule - suppression withholds only an append
-  whose content the log already records, so it can leave the graph no further behind than the fold
-  already left it. Cases do sit outside the contract, and NOT for one shared reason; what follows
-  names some of them and is not a closed enumeration.
+  generation **as the walk lowered it** in full, and only what changed is ever re-emitted. That
+  qualifier is load-bearing and the last bullet below is why: the walk's view of a file is not always
+  the tree's. Whether the live graph then equals a cold rebuild is a property of the FOLD, not of
+  this rule - suppression withholds only an append whose content the log already records, so it can
+  leave the graph no further behind than the fold already left it. Cases do sit outside the contract,
+  and NOT for one shared reason; what follows names some of them and is not a closed enumeration.
 
   In these three, **no batch is folded for the file at all**, so no suppression decision is involved
-  in them:
+  in them. Read "the walk no longer sees it" strictly, because the two halves differ: the design half
+  reads the LIVE tree (`walk_guarded` + a file read per path), so a path that is gone is gone to it,
+  while the code half lowers from a PERSISTED symbols index when the project has one (the last bullet
+  below). A path the tree has deleted that such an index still lists IS handed over as a batch, DOES
+  reach a suppression decision, and is therefore outside these three:
 
-  - **A file the tree no longer holds.** Retiring a file's structure is driven by that file's OWN
+  - **A file the walk no longer sees.** Retiring a file's structure is driven by that file's OWN
     batch (`supersede_file_edges` runs inside the fold of the batch), and the walk emits no batch for
-    a path that is gone - so nothing on the ingest path retires a deleted file's nodes or edges.
-  - **A file the tree still holds that now extracts to NOTHING** - an ordinary edit that removes its
-    last definition and reference. Both halves of the walk drop a file whose extraction is empty, so
-    again no batch is emitted, no `supersede_file_edges` runs, and that file's prior entities and
-    edges stay live. Skipping is not what strands them: re-appending the whole index would not have
+    a path it no longer holds - so nothing on the ingest path retires that file's nodes or edges.
+  - **A file the walk still sees that now extracts to NOTHING** - an ordinary edit that removes its
+    last definition and reference. Both halves drop a file whose extraction is empty, so again no
+    batch is emitted, no `supersede_file_edges` runs, and that file's prior entities and edges stay
+    live. "Extracts to nothing" is measured on what the walk lowered, so on a persisted-index project
+    an edit that empties a file leaves the code half emitting the index's batch until the index is
+    refreshed. Skipping is not what strands them: re-appending the whole index would not have
     retired them either.
   - **A batch whose APPEND landed but whose FOLD did not.** `append_and_fold_batch` folds
     best-effort by contract - a fold failure never fails an append that already landed durably - so
@@ -767,13 +774,23 @@ is deduped under can never drift between them. Four properties define it:
     Deleting a section from a design doc therefore re-emits and re-folds that doc's whole batch and
     still leaves the retired `SPECIFIES` and reference edges live.
   - **A code walk lowered from a PERSISTED symbols index.** The code half loads a persisted index
-    when the project has one and only builds a fresh one when it does not. On such a project the
-    batches - and therefore the content the suppression decision is made against - describe what
-    that index holds rather than what the tree currently holds, so a suppression decision IS made
-    and it is made against stale content.
+    when the project has one and only builds a fresh one when it does not, and it derives every
+    event from the INDEXED symbols with no read of the file itself. On such a project the batches -
+    and therefore the content the suppression decision is made against - describe what that index
+    holds rather than what the tree currently holds, so a suppression decision IS made and it is made
+    against stale content. This is also why the three above are stated walk-relative: a path the tree
+    no longer holds, or one an edit emptied, still yields a NON-empty batch while the index lists it.
+    Refreshing the index is `rigger reindex`'s job, not this rule's.
 
-  The projection's only DELETE path is the explicit `Projector::prune` primitive, so shedding a
-  removed file's facts is a deliberate act, never a consequence of the next ingest.
+  On the INGEST path the projection deletes nothing, so shedding a removed file's facts is a
+  deliberate act (`Projector::prune`), never a consequence of the next ingest. The projection is not
+  delete-free overall, and the distinction is worth stating exactly: besides `prune`'s three deletes,
+  the fold's `CommunityAssigned` and `ConceptDerived` arms each DELETE the super-nodes of their own
+  grain that the same pass just left with no live member (nodes carry no `valid_to`, so removal is
+  the only way to retire one - the same node-removal primitive `prune` uses). Both are scoped by
+  their grain's id prefix and by `KIND_COMMUNITY` / `KIND_CONCEPT` and guarded on having no live
+  member, so neither can reach a file entity or its edges, and neither is reachable from an event of
+  the four derived index types.
 
 ### 5.6 The loop, concretely: emit, project, retrieve
 
