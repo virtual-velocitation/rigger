@@ -16,6 +16,7 @@ pub mod kurrentdb;
 pub mod contract;
 
 use std::collections::BTreeMap;
+use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
@@ -216,25 +217,45 @@ impl Appended {
 pub struct ContentIdentity {
     meta_key: String,
     types: Vec<String>,
-    subject_of: fn(&str) -> Option<(&str, &str)>,
+    split: ContentKeySplit,
 }
+
+/// How a content key splits, expressed as WHERE the two parts lie in the key rather
+/// than as two strings: `(the byte range of the subject prefix, the byte range of the
+/// content generation)`, both indexing the key handed in.
+///
+/// Ranges, not `&str`, because the obligation is otherwise unstatable. An adapter's
+/// guard has to step past a whole generation in one index seek, which needs the
+/// generation's OFFSET inside the key - and a `fn(&str) -> Option<(&str, &str)>` can
+/// be satisfied by a policy that returns owned or `'static` slices that merely LOOK
+/// right (`Some(("gc/a.rs@", "h1"))` compiles and coerces). The guard would then be
+/// unable to locate the generation, would quietly stop suppressing, and would report
+/// exactly what an unguarded store reports - a guard that has silently stopped
+/// guarding, indistinguishable from a working one. A byte range cannot lie about
+/// where it points, so the type carries the obligation the doc used to carry alone.
+pub type ContentKeySplit = fn(&str) -> Option<(Range<usize>, Range<usize>)>;
 
 impl ContentIdentity {
     /// Build the policy. `meta_key` is the metadata key an identified event carries
     /// its content key under; `types` are the event types that carry content identity
-    /// (every other type keeps per-append identity untouched); `subject_of` splits a
-    /// content key into `(the prefix EVERY key naming the same subject begins with,
-    /// the content generation this key belongs to)` and answers `None` for a key that
-    /// is not of the caller's content-key shape.
+    /// (every other type keeps per-append identity untouched); `split` locates, WITHIN
+    /// a content key, `(the prefix EVERY key naming the same subject begins with, the
+    /// content generation this key belongs to)` and answers `None` for a key that is
+    /// not of the caller's content-key shape.
+    ///
+    /// The ranges `split` returns are CHECKED, never trusted (see
+    /// [`ContentIdentity::split_of`]): a policy whose ranges do not describe a
+    /// well-formed split of the key it was handed is treated as naming no generation
+    /// at all, which appends - the fail-safe direction.
     pub fn new(
         meta_key: impl Into<String>,
         types: impl IntoIterator<Item = impl Into<String>>,
-        subject_of: fn(&str) -> Option<(&str, &str)>,
+        split: ContentKeySplit,
     ) -> Self {
         ContentIdentity {
             meta_key: meta_key.into(),
             types: types.into_iter().map(Into::into).collect(),
-            subject_of,
+            split,
         }
     }
 
@@ -255,11 +276,42 @@ impl ContentIdentity {
         self.types.iter().any(|t| t == type_)
     }
 
-    /// Split a content key into `(subject prefix, generation)`; `None` when the key is
-    /// not of the configured content-key shape (in which case it names no generation
-    /// and its append is never suppressed - the fail-safe direction).
+    /// WHERE `key`'s subject prefix and content generation lie within it, or `None`
+    /// when the key is not of the configured content-key shape (in which case it names
+    /// no generation and its append is never suppressed - the fail-safe direction).
+    ///
+    /// Every range the policy hands back is VALIDATED here, once, so no adapter has to
+    /// re-derive the checks and none can skip them. A split is well formed only when:
+    ///
+    /// - the subject STARTS THE KEY (`subject.start == 0`). "Subject prefix" is not a
+    ///   description, it is the property a store's range seek rests on: every key
+    ///   naming one subject is exactly the keys beginning with it, which is what turns
+    ///   "this subject's history" into one bounded range instead of a scan;
+    /// - the generation lies at or after the subject's end and within the key;
+    /// - both ranges are non-inverted and land on character boundaries, so slicing
+    ///   them can never panic on a multi-byte key.
+    ///
+    /// A policy that breaks any of them names no generation, and an event whose key
+    /// names no generation appends. A misconfigured composition root therefore
+    /// DEGRADES to an unguarded store; it can never drop a fact.
+    pub fn split_of(&self, key: &str) -> Option<(Range<usize>, Range<usize>)> {
+        let (subject, generation) = (self.split)(key)?;
+        let well_formed = subject.start == 0
+            && subject.end <= generation.start
+            && generation.start <= generation.end
+            && generation.end <= key.len()
+            && key.is_char_boundary(subject.end)
+            && key.is_char_boundary(generation.start)
+            && key.is_char_boundary(generation.end);
+        well_formed.then_some((subject, generation))
+    }
+
+    /// [`ContentIdentity::split_of`] as the two slices themselves - borrows INTO `key`
+    /// by construction, because they are cut from validated ranges rather than handed
+    /// over by the policy.
     pub fn subject_of<'k>(&self, key: &'k str) -> Option<(&'k str, &'k str)> {
-        (self.subject_of)(key)
+        let (subject, generation) = self.split_of(key)?;
+        Some((&key[subject], &key[generation]))
     }
 }
 
@@ -271,6 +323,32 @@ impl std::fmt::Debug for ContentIdentity {
             .finish_non_exhaustive()
     }
 }
+
+/// The metadata key an adapter stamps on an event it wrote while its content-identity
+/// guard was NOT JUDGING - the guard's own degradation, recorded in the log it guards.
+///
+/// A guard that has stopped defending has to SAY SO, and this is the one place it can
+/// say it durably. Stderr is not a record: the process that degrades is usually a
+/// short-lived one whose output nobody is reading, and the symptom (a log growing
+/// again) shows up days later in a different process. So the fact is written where
+/// every other fact this system reasons about is written - into the log - and it is
+/// written WITHOUT a new event type or a new serialized form: it rides as one extra
+/// metadata pair on events the append was already writing, which `rigger validate`,
+/// any read of the store, and any operator with a SQL prompt can see.
+///
+/// It is stamped ONLY on events of a type the guard COVERS - the derived-index types
+/// the policy names - so a domain event is never rewritten by a store that merely
+/// happened to be unhealthy while it landed.
+pub const META_GUARD_DEGRADED: &str = "content_guard_degraded";
+
+/// [`META_GUARD_DEGRADED`]: the guard had no usable content-key index, so it judged
+/// nothing and every event of a covered type in that append was written through.
+pub const GUARD_DEGRADED_NO_INDEX: &str = "no-index";
+
+/// [`META_GUARD_DEGRADED`]: a subject's latest-generation walk exceeded its step
+/// budget, so its current generation was UNDETERMINED and nothing was suppressed
+/// against it.
+pub const GUARD_DEGRADED_UNDETERMINED: &str = "generations-exceeded";
 
 #[derive(Debug, Error)]
 pub enum Error {

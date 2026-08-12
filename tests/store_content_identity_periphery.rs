@@ -36,6 +36,7 @@
 //! the spawn and progress seams - is compiled UNCONDITIONALLY, so this whole suite runs
 //! in BOTH feature lanes.
 
+use std::ops::Range;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
@@ -215,7 +216,7 @@ impl EventStore for PortDouble {
 /// the same file begins with, the content generation)`. This is the shape the project's
 /// ingest layer mints; it is written HERE, in the test, because the policy is injected
 /// configuration and the store must never carry a key format of its own.
-fn path_subject_of(key: &str) -> Option<(&str, &str)> {
+fn path_subject_of(key: &str) -> Option<(Range<usize>, Range<usize>)> {
     let (prefix, rest) = key.split_once('/')?;
     if prefix.is_empty() || rest.is_empty() {
         return None;
@@ -229,17 +230,19 @@ fn path_subject_of(key: &str) -> Option<(&str, &str)> {
     if file.len() <= prefix.len() + 1 || hash.is_empty() {
         return None;
     }
-    Some((&key[..file.len() + 1], hash))
+    let subject_end = file.len() + 1; // through the `@` that ends the subject
+    Some((0..subject_end, subject_end..subject_end + hash.len()))
 }
 
 /// A content-key shape this project never mints: `<subject>|<generation>`. Used to prove
 /// the store parses nothing itself.
-fn pipe_subject_of(key: &str) -> Option<(&str, &str)> {
+fn pipe_subject_of(key: &str) -> Option<(Range<usize>, Range<usize>)> {
     let (subject, generation) = key.split_once('|')?;
     if subject.is_empty() || generation.is_empty() {
         return None;
     }
-    Some((&key[..subject.len() + 1], generation))
+    let subject_end = subject.len() + 1;
+    Some((0..subject_end, subject_end..subject_end + generation.len()))
 }
 
 /// The policy the project would configure: its real metadata key and its real derived
@@ -1262,5 +1265,266 @@ fn the_built_binary_cites_only_positions_the_log_actually_holds() {
         2,
         "a progress report is recorded in its own store and never in the run stream, so the \
          position it cites belongs to a different log and the two can never be confused"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The policy is a PORT, and the port is only as good as what it refuses
+// ---------------------------------------------------------------------------
+
+/// A PORT MUST NOT BE SATISFIABLE BY A VALUE IT CANNOT HONOR.
+///
+/// The guard needs to know where in a content key the generation ENDS - that offset is
+/// what lets it step past a whole generation in one index seek instead of walking a
+/// file's every recorded event. A policy that handed back two strings could satisfy the
+/// signature while pointing nowhere into the key it was given, and then the guard could
+/// not locate anything, would quietly stop suppressing, and would report exactly what an
+/// unguarded store reports. That failure is INVISIBLE from outside: `written == handed`
+/// is what a working store says when there is nothing to suppress.
+///
+/// So the port hands back RANGES, which cannot point at another allocation, and it
+/// VALIDATES them: the subject must start the key, the generation must lie within it at
+/// or after the subject, and every boundary must be a character boundary. A policy that
+/// breaks any of those names no generation at all - which appends. A composition root
+/// that gets this wrong therefore degrades to an unguarded store, loudly enough to see
+/// in the row count, and can never drop a fact or panic a writer on a multi-byte path.
+#[test]
+fn a_policy_whose_ranges_do_not_describe_the_key_guards_nothing_and_never_panics() {
+    // The subject does not START the key, so "every key naming this subject begins with
+    // it" - the property the range seek rests on - is false.
+    fn detached_subject(key: &str) -> Option<(Range<usize>, Range<usize>)> {
+        Some((1..4, 4..key.len()))
+    }
+    // The generation runs past the end of the key it was handed.
+    fn past_the_end(key: &str) -> Option<(Range<usize>, Range<usize>)> {
+        Some((0..key.len(), key.len()..key.len() + 8))
+    }
+    // An inverted range: a slice that cannot be taken.
+    fn inverted(key: &str) -> Option<(Range<usize>, Range<usize>)> {
+        Some((0..key.len(), key.len()..0))
+    }
+    // A boundary in the MIDDLE of a multi-byte character - the one that would panic.
+    fn mid_character(key: &str) -> Option<(Range<usize>, Range<usize>)> {
+        Some((0..4, 4..key.len()))
+    }
+
+    let key = "gc/é.rs@h1#0";
+    assert!(!key.is_char_boundary(4), "the fixture key is multi-byte");
+
+    for (named, split) in [
+        (
+            "a subject that does not start the key",
+            detached_subject as fn(&str) -> Option<(Range<usize>, Range<usize>)>,
+        ),
+        ("a generation past the end of the key", past_the_end),
+        ("an inverted range", inverted),
+        ("a boundary inside a character", mid_character),
+    ] {
+        let identity = ContentIdentity::new(META_REPLAY_KEY, DERIVED_INDEX_TYPES, split);
+        assert_eq!(
+            identity.split_of(key),
+            None,
+            "{named} does not describe a split of the key, so it names no generation"
+        );
+        assert_eq!(identity.subject_of(key), None, "{named}");
+
+        // And the store built on it DEGRADES to appending, twice over, rather than
+        // suppressing on a split it cannot trust.
+        let store = Store::open(":memory:")
+            .unwrap()
+            .with_content_identity(identity);
+        let events = vec![keyed(TYPE_CODE_ENTITY_EXTRACTED, key)];
+        for round in 0..2 {
+            assert_eq!(
+                store
+                    .append("run", ExpectedRevision::Any, &events)
+                    .unwrap()
+                    .written(),
+                1,
+                "{named}, round {round}: an unusable split appends - it never drops, and \
+                 never panics on a multi-byte key"
+            );
+        }
+    }
+
+    // THE CONTROL, on the same shape: a policy that does describe its key suppresses.
+    let store = Store::open(":memory:")
+        .unwrap()
+        .with_content_identity(project_policy());
+    let events = vec![keyed(TYPE_CODE_ENTITY_EXTRACTED, "gc/src/a.rs@h1#0")];
+    assert_eq!(
+        store
+            .append("run", ExpectedRevision::Any, &events)
+            .unwrap()
+            .written(),
+        1
+    );
+    assert_eq!(
+        store
+            .append("run", ExpectedRevision::Any, &events)
+            .unwrap()
+            .written(),
+        0,
+        "the difference between the arms above and this one is the POLICY, not the fixture"
+    );
+}
+
+/// THE GUARD ON A LOG THAT IS ALREADY BIG, WITH A CONTROL BESIDE IT.
+///
+/// Every other fixture in this suite is a handful of rows in a fresh `:memory:` store,
+/// and a handful of rows cannot tell a guard that is working from a guard that has
+/// switched itself off: at four rows both answers look plausible, and a probe that
+/// degraded into a full table walk still returns the right verdict. This one runs on a
+/// FILE-BACKED store carrying an established history - hundreds of files, several
+/// content generations deep, with domain events interleaved - and it pins the guard's
+/// value as a DIFFERENCE:
+///
+///  - the control, an unguarded handle on that same log, re-appends the whole re-derived
+///    index, which is precisely the unbounded growth this spec exists to stop;
+///  - the treatment, a guarded handle on it, writes NOTHING;
+///  - and the three things that must still land, land: a file whose content changed, a
+///    file REVERTED to a generation it has moved past, and a domain event.
+#[test]
+fn on_an_established_log_the_guard_is_the_only_thing_that_stops_the_duplication() {
+    const FILES: usize = 120;
+    const PER_BATCH: usize = 4;
+
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let path = dir.path().join("events.db");
+    let path = path.to_str().expect("a utf-8 path").to_string();
+
+    let file_batch = |file: usize, hash: &str| -> Vec<Event> {
+        (0..PER_BATCH)
+            .map(|i| {
+                keyed(
+                    if i % 2 == 0 {
+                        TYPE_CODE_ENTITY_EXTRACTED
+                    } else {
+                        TYPE_EDGE_INFERRED
+                    },
+                    &format!("gc/src/f{file:04}.rs@{hash}#{i}"),
+                )
+            })
+            .collect()
+    };
+
+    // An established log: every file recorded at h1, a third of them changed to h2, a
+    // ninth changed again to h3, with domain events interleaved throughout.
+    let seed = Store::open(&path).expect("a file-backed store opens");
+    for file in 0..FILES {
+        seed.append("proj", ExpectedRevision::Any, &file_batch(file, "h1"))
+            .unwrap();
+        if file % 3 == 0 {
+            seed.append("proj", ExpectedRevision::Any, &file_batch(file, "h2"))
+                .unwrap();
+        }
+        if file % 9 == 0 {
+            seed.append("proj", ExpectedRevision::Any, &file_batch(file, "h3"))
+                .unwrap();
+        }
+        if file % 10 == 0 {
+            seed.append(
+                "proj",
+                ExpectedRevision::Any,
+                &[Event::new(TYPE_REVIEW_FINDING, b"a finding".to_vec())],
+            )
+            .unwrap();
+        }
+    }
+    let established = held_positions(&seed, "proj").len();
+    assert!(
+        established > 600,
+        "the fixture is an ESTABLISHED log, not a handful of rows: {established} events"
+    );
+    drop(seed);
+
+    // The current generation of every file, which is what a re-derivation over an
+    // unchanged tree hands the store again on the next run.
+    let rederived: Vec<Event> = (0..FILES)
+        .flat_map(|file| {
+            let hash = if file % 9 == 0 {
+                "h3"
+            } else if file % 3 == 0 {
+                "h2"
+            } else {
+                "h1"
+            };
+            file_batch(file, hash)
+        })
+        .collect();
+
+    // THE CONTROL. An unguarded handle on this same log writes every one of them.
+    let unguarded = Store::open(&path).unwrap();
+    assert_eq!(
+        unguarded
+            .append("proj", ExpectedRevision::Any, &rederived)
+            .unwrap()
+            .written(),
+        rederived.len(),
+        "with no guard the whole re-derived index lands again - the growth this spec exists \
+         to stop"
+    );
+    let after_control = held_positions(&unguarded, "proj").len();
+    assert_eq!(after_control, established + rederived.len());
+    drop(unguarded);
+
+    // THE TREATMENT. A guarded handle on the same log writes nothing at all.
+    let guarded = Store::open(&path)
+        .unwrap()
+        .with_content_identity(project_policy());
+    let appended = guarded
+        .append("proj", ExpectedRevision::Any, &rederived)
+        .unwrap();
+    assert_eq!(
+        appended.written(),
+        0,
+        "every key handed in is its file's CURRENT generation and already recorded"
+    );
+    assert_eq!(appended.handed(), rederived.len());
+    assert_eq!(
+        appended.last(),
+        None,
+        "an append that wrote nothing says so"
+    );
+    assert_eq!(
+        held_positions(&guarded, "proj").len(),
+        after_control,
+        "and the log did not grow by one row"
+    );
+
+    // A file whose content CHANGED still lands, whole.
+    let changed = file_batch(7, "h4");
+    assert_eq!(
+        guarded
+            .append("proj", ExpectedRevision::Any, &changed)
+            .unwrap()
+            .written(),
+        changed.len(),
+        "a new generation is not redundant"
+    );
+
+    // A REVERT - file 7 driven back to h1, a generation it has moved past - is a CHANGE.
+    let reverted = file_batch(7, "h1");
+    assert_eq!(
+        guarded
+            .append("proj", ExpectedRevision::Any, &reverted)
+            .unwrap()
+            .written(),
+        reverted.len(),
+        "an ever-recorded test would swallow this and strand the projection on h4 forever"
+    );
+
+    // And a domain event still appends, on a log where the guard is demonstrably ON.
+    assert_eq!(
+        guarded
+            .append(
+                "proj",
+                ExpectedRevision::Any,
+                &[Event::new(TYPE_REVIEW_FINDING, b"a finding".to_vec())],
+            )
+            .unwrap()
+            .written(),
+        1,
+        "identical domain events are two facts, whatever the guard is doing"
     );
 }
