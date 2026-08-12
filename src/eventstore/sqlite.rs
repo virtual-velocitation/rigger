@@ -237,15 +237,11 @@ impl Store {
 
     /// The DDL for the content-key index `name` under a policy keyed on `meta_key`.
     ///
-    /// WHAT THIS ARTIFACT COSTS, stated because this store exists to BOUND the log and
-    /// a guard that quietly grows it by a third has not bounded anything. The index
-    /// holds one entry per event of a covered type, carrying that event's content key -
-    /// a path-and-hash string, not a small integer - so it measures a comparable
-    /// fraction of the rows it indexes: on a log of the scale this spec was written for
-    /// it is a hundreds-of-megabytes artifact, roughly a third of the store's size at
-    /// the moment the guard is switched on. It is worth that only against what it
-    /// removes: the duplication it stops is UNBOUNDED (the whole derived index
-    /// re-appended per run, measured at 39.5x), so a fixed proportional cost buys a
+    /// WHAT THIS ARTIFACT COSTS, stated because this store exists to BOUND the log. It
+    /// carries a content key - a path-and-hash string, not a small integer - for every
+    /// row it indexes, so it is a real addition to the store's size. It is worth that
+    /// only against what it removes: the duplication it stops is UNBOUNDED (the whole
+    /// derived index re-appended per run, measured at 39.5x), so a bounded cost buys a
     /// growth rate. On a log that never receives a duplicate append it is pure
     /// overhead, which is why it is built LAZILY - a store nobody appends covered
     /// events to never pays for it at all - and why RECLAIMING it is a named
@@ -347,10 +343,7 @@ impl Store {
     /// design and not a convention: the metadata key derived facts carry is a code-owned
     /// constant minted in one place, so "this project's content keys" is a single answer
     /// and a second, differently-keyed policy over the same database is not a
-    /// configuration this system can produce. If a future composition root produced one
-    /// anyway, the two would reclaim each other's artifact and their probes would fall
-    /// back to table walks - a cost, in the same fail-safe direction as everything else
-    /// here, never a dropped fact.
+    /// configuration this system can produce.
     ///
     /// The build's own `Result` is deliberately NOT the verdict - a statement that ran is
     /// not an index, and a commit can still fail - so it is discarded here and the

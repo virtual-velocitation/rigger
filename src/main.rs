@@ -5599,12 +5599,8 @@ fn cmd_emit(args: &[String]) -> Res {
             .expect("json! built an object")
             .insert("meta".to_string(), serde_json::Value::Object(meta));
     }
-    match mcpserver::emit_event(&store, conductor::STREAM, Some(&graph), &tool_args)? {
-        Some(pos) => {
-            println!("emitted {typ} (position {pos}) and folded it into the context graph")
-        }
-        None => println!("emitted {typ}: the store recorded it already, nothing was appended"),
-    }
+    let pos = mcpserver::emit_event(&store, conductor::STREAM, Some(&graph), &tool_args)?;
+    println!("emitted {typ} (position {pos}) and folded it into the context graph");
     Ok(())
 }
 
@@ -5644,10 +5640,8 @@ fn cmd_progress(args: &[String]) -> Res {
     // Append to the SEPARATE progress store - never the run stream.
     let prog_backend = Store::open(&loc.file("progress.db"))?;
     let prog_store = Namespaced::new(&prog_backend, &loc.identity());
-    match rigger::progress::record(&prog_store, &run_id, id, activity)? {
-        Some(pos) => println!("progress recorded for {id} (position {pos})"),
-        None => println!("progress recorded for {id}: the store appended nothing"),
-    }
+    let pos = rigger::progress::record(&prog_store, &run_id, id, activity)?;
+    println!("progress recorded for {id} (position {pos})");
     Ok(())
 }
 

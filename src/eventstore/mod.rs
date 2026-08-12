@@ -194,8 +194,42 @@ impl Appended {
     /// The position of the LAST event written, or `None` when the append wrote
     /// nothing at all (an empty batch, or every event suppressed). Positions are
     /// strictly increasing, so this is also the greatest position written.
+    ///
+    /// This is the BATCH question, and its absence is a legitimate answer: a batch may
+    /// hold nothing to write, or hold only events an adapter's guard recognised. A caller
+    /// that handed over exactly ONE event is asking a different question and asks
+    /// [`Appended::one`] instead.
     pub fn last(&self) -> Option<Position> {
         self.placements.iter().rev().find_map(|p| *p)
+    }
+
+    /// The ONE position issued for the ONE event a single-event append handed over, or
+    /// the error a store that did not write it has earned. `what` names the thing being
+    /// recorded, so the failure reads as what the caller asked for rather than as an
+    /// internal type name.
+    ///
+    /// This is the single authority for what an absence MEANS to a caller that appended
+    /// exactly one event: nothing was recorded, and the caller cannot say why. Such a
+    /// caller has no second answer available - it cannot fold, cite, or print a position
+    /// the store never issued - so every one of them reports the absence identically here,
+    /// rather than each deciding for itself whether to fabricate a position, return a
+    /// silent success, discard the report, or explain a cause it cannot know.
+    ///
+    /// A report that does not answer exactly one event fails too: handing back the last of
+    /// several positions would answer a question the caller did not ask.
+    pub fn one(&self, what: &str) -> Result<Position, Error> {
+        // No "event store" prefix: `Error::Backend`'s own Display already opens with one,
+        // and a message that repeats it reads as a stutter to the operator.
+        match self.placements.as_slice() {
+            [Some(p)] => Ok(*p),
+            [] | [None] => Err(Error::Backend(format!(
+                "reported writing nothing for {what}"
+            ))),
+            many => Err(Error::Backend(format!(
+                "answered a single-event append for {what} with {} slots",
+                many.len()
+            ))),
+        }
     }
 }
 
@@ -810,6 +844,123 @@ mod redact_tests {
         assert_eq!(
             redact_conn("no rigger store found"),
             "no rigger store found"
+        );
+    }
+}
+
+/// A port that ACCEPTS every append and reports writing nothing - the one answer every
+/// single-event seam has to surface rather than absorb. It lives here, beside the
+/// accessor that decides what that answer means, so each seam's test holds it to the SAME
+/// double instead of to a local one that could drift into a friendlier shape.
+///
+/// Reads answer EMPTY rather than failing: a seam that reads before it appends (a
+/// compare-and-append) must reach its append to be tested at all.
+#[cfg(test)]
+pub(crate) struct SilentStore;
+
+#[cfg(test)]
+impl EventStore for SilentStore {
+    fn append(
+        &self,
+        _stream: &str,
+        _expected: ExpectedRevision,
+        events: &[Event],
+    ) -> Result<Appended, Error> {
+        Ok(Appended::from_placements(vec![None; events.len()]))
+    }
+    fn read_stream(
+        &self,
+        _stream: &str,
+        _from: Revision,
+        _dir: Direction,
+    ) -> Result<Vec<Event>, Error> {
+        Ok(Vec::new())
+    }
+    fn read_all(
+        &self,
+        _from: Position,
+        _dir: Direction,
+        _filter: &Filter,
+    ) -> Result<Vec<Event>, Error> {
+        Ok(Vec::new())
+    }
+    fn subscribe_all(&self, _from: Position, _filter: &Filter) -> Result<Subscription, Error> {
+        Err(Error::Backend(
+            "the silent double answers appends only".into(),
+        ))
+    }
+    fn subscribe_stream(&self, _stream: &str, _from: Revision) -> Result<Subscription, Error> {
+        Err(Error::Backend(
+            "the silent double answers appends only".into(),
+        ))
+    }
+}
+
+/// THE ONE MEANING OF AN ABSENCE ON A SINGLE-EVENT APPEND, tested where it is decided.
+///
+/// Every seam that appends exactly one event reads its report through `Appended::one`, so
+/// these tests pin the answer all of them share. Whether a seam still ASKS it is a
+/// different question, and each seam pins that itself.
+#[cfg(test)]
+mod appended_one_tests {
+    use super::{Appended, Error};
+
+    #[test]
+    fn a_written_event_yields_the_position_the_store_issued() {
+        let report = Appended::all(vec![41]);
+        assert_eq!(
+            report
+                .one("the decision of u1")
+                .expect("the store wrote it"),
+            41,
+            "the accessor hands back the store's own position, never a derived one"
+        );
+    }
+
+    #[test]
+    fn a_store_that_wrote_nothing_is_an_error_naming_what_was_lost() {
+        let report = Appended::from_placements(vec![None]);
+        let err = report
+            .one("the decision of u1")
+            .expect_err("an event nobody can locate has not been recorded");
+        let message = err.to_string();
+        assert!(
+            matches!(err, Error::Backend(_)),
+            "a port that accepted the append and wrote nothing is a backend failure, not a \
+             concurrency conflict: {message}"
+        );
+        assert!(
+            message.contains("nothing"),
+            "the message says the store wrote nothing: {message}"
+        );
+        assert!(
+            message.contains("the decision of u1"),
+            "and names what the caller was recording, so the loss is identifiable: {message}"
+        );
+    }
+
+    #[test]
+    fn an_empty_report_is_the_same_failure_and_never_a_position() {
+        let err = Appended::default()
+            .one("the decision of u1")
+            .expect_err("a report with no slot at all placed no event either");
+        assert!(
+            err.to_string().contains("nothing"),
+            "an empty report and a suppressed slot are the same answer to a one-event \
+             caller: no position was issued"
+        );
+    }
+
+    #[test]
+    fn a_report_answering_more_than_one_event_yields_no_position() {
+        let err = Appended::all(vec![7, 9])
+            .one("the decision of u1")
+            .expect_err("a two-event report does not answer a one-event caller");
+        let message = err.to_string();
+        assert!(
+            !message.contains('9'),
+            "and it must not silently hand back the last of several positions as though it \
+             were the one: {message}"
         );
     }
 }

@@ -406,23 +406,21 @@ pub fn park_in_run(
 /// `subject` names WHAT was being recorded - the spawn id - so a failure reads as the
 /// thing the operator asked for rather than as an internal type name.
 ///
-/// The run-lifecycle types this module writes are outside every content-identity policy
-/// (the type test is asked FIRST, so no such policy can reach them), which is exactly
-/// why a store reporting that it wrote nothing here is a broken port rather than a case
-/// to absorb: it surfaces as an error naming what happened, never as a fabricated
-/// position that a later citation would carry forward as truth.
+/// What an absence means is not decided here: [`crate::eventstore::Appended::one`] decides
+/// it, once, for every single-event append in the codebase. This function only names the subject it
+/// was recording, so the one failure it can raise says what was lost.
 fn one_position(store: &dyn EventStore, subject: &str, ev: &Event) -> Result<Position, Error> {
     store
         .append(STREAM, ExpectedRevision::Any, std::slice::from_ref(ev))?
-        .last()
-        .ok_or_else(|| {
-            // No "event store" prefix: `Error::Backend`'s own Display already opens with
-            // one, and a message that repeats it reads as a stutter to the operator.
-            Error::Backend(format!(
-                "reported writing nothing for the {} of {subject} on {STREAM:?}",
-                ev.type_
-            ))
-        })
+        .one(&what(&ev.type_, subject))
+}
+
+/// How a spawn-stream write names itself in a failure: the event TYPE, the SUBJECT it was
+/// about, and the stream it was bound for. One phrasing for every seam in this module, so
+/// the compare-and-append half and the plain-append half cannot drift into two vocabularies
+/// for the same loss.
+fn what(type_: &str, subject: &str) -> String {
+    format!("the {type_} of {subject} on {STREAM:?}")
 }
 
 /// Fold the [`TYPE_SPAWN_REQUESTED`] events in `events` into the spawn requests
@@ -708,17 +706,11 @@ pub fn record_result_if_absent(
             None => ExpectedRevision::NoStream,
         };
         match store.append(STREAM, expected, std::slice::from_ref(&ev)) {
-            // `Some(position)` is "I recorded it, here"; the store answering that it wrote
-            // nothing is not a recorded result, so it is reported as such rather than
-            // dressed up as one.
-            Ok(appended) => {
-                return appended.last().map(Some).ok_or_else(|| {
-                    Error::Backend(format!(
-                        "reported writing nothing for the result of {}",
-                        res.id
-                    ))
-                })
-            }
+            // `Ok(None)` from THIS function means "a result already stood, so I chose to
+            // write nothing" - the idempotent no-op. A store that wrote nothing is a
+            // different answer entirely, and the shared authority raises it as the failure
+            // it is rather than letting it collapse into the no-op.
+            Ok(appended) => return appended.one(&what(&ev.type_, &res.id)).map(Some),
             // The stream moved under us; re-read and re-decide. If the racing writer
             // recorded THIS id, the re-check returns `None` and nothing is clobbered.
             Err(Error::Conflict { .. }) => continue,
