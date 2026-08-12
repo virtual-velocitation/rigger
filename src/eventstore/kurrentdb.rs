@@ -297,6 +297,65 @@ impl Store {
     }
 }
 
+/// Where a successful append ack lets the adapter say the batch landed - and nothing more
+/// than that.
+#[derive(Debug)]
+enum AckPlacement {
+    /// The ONE event's own commit position, issued by the server and reportable as is.
+    Issued(Position),
+    /// The batch occupies the `n` revisions ENDING at the ack's revision; the positions
+    /// must be read back from the stream starting at this revision.
+    ReadBackFrom(Revision),
+}
+
+/// Read a successful append ack for what the SERVER ISSUED, refusing anything it did not.
+///
+/// The client renders an ABSENT value as a zero in both fields of the ack it hands back:
+/// its "no position" case maps to the start of the log (commit 0) and its "no stream"
+/// case maps to revision 0. A zero is therefore ambiguous by construction - the server
+/// saying "none" is spelled exactly like the first location in the log - and the adapter
+/// must never resolve that ambiguity in its own favour, because both fabrications are
+/// permanent once folded:
+///
+/// - a fabricated commit position of 0 is folded at position 0, which the projection's
+///   applied ledger then marks applied FOREVER, swallowing the genuine event recorded
+///   there;
+/// - a fabricated revision under-runs the batch's first revision into the NEGATIVE, and
+///   `read_forward`'s `revision >= from` test admits a negative `from` from the stream's
+///   start - so the read-back would return the stream's FIRST `n` events and report some
+///   earlier append's placements as this one's.
+///
+/// So each is refused, with an error that says the write LANDED and only the reporting
+/// failed - the same shape [`Store::read_back_positions`] uses for a read-back it cannot
+/// resolve. A refusal is recoverable; a fabricated position is not.
+fn placement_of_ack(
+    stream: &str,
+    n: usize,
+    commit: u64,
+    next_expected_version: u64,
+) -> Result<AckPlacement, Error> {
+    if n == 1 {
+        if commit == 0 {
+            return Err(Error::Backend(format!(
+                "kurrentdb: append to {stream:?} COMMITTED 1 event but the ack carries no \
+                 position for it, so the position it landed at cannot be reported; the \
+                 event is durable in the log"
+            )));
+        }
+        return Ok(AckPlacement::Issued(commit as Position));
+    }
+    let first = (next_expected_version as Revision) - (n as Revision - 1);
+    if first < 0 {
+        return Err(Error::Backend(format!(
+            "kurrentdb: append to {stream:?} COMMITTED {n} event(s) but the ack reports \
+             stream revision {next_expected_version}, which places the batch before \
+             revision 0, so the positions the server issued cannot be reported; the \
+             events are durable in the log"
+        )));
+    }
+    Ok(AckPlacement::ReadBackFrom(first))
+}
+
 impl EventStore for Store {
     fn append(
         &self,
@@ -333,18 +392,38 @@ impl EventStore for Store {
             // and it is owed in full: each reported position must be one the server
             // ISSUED for that event.
             //
-            // A single-event append gets that for free (the write's own commit
-            // position IS that event's). A multi-event append does not: KurrentDB's
+            // A single-event append can take that from the write's own commit position,
+            // but ONLY when the server actually issued one. The client renders an
+            // absent position as a ZERO commit (its `NoPosition` case maps to the start
+            // of the log), so a zero is the server saying it issued none - not a
+            // location. Reporting it would hand the projection position 0, which its
+            // applied ledger then marks applied forever, swallowing the genuine event
+            // recorded there. So it is REFUSED, the same way an unresolvable read-back
+            // is: the write landed and the error says so.
+            //
+            // A multi-event append cannot use the commit position at all: KurrentDB's
             // `$all` position is a byte offset, so the earlier events' positions are
             // not derivable from the last one by any arithmetic. They are READ BACK
             // from the stream - the batch occupies the `n` revisions ending at
-            // `next_expected_version` - never invented.
-            Ok(w) if events.len() == 1 => Ok(Appended::all(vec![w.position.commit as Position])),
+            // `next_expected_version` - never invented. That arithmetic has the same
+            // absent-value hazard: an ack carrying no stream revision renders as zero,
+            // which for a batch computes a NEGATIVE first revision, and a negative
+            // `from` is admitted by `read_forward`'s `revision >= from` test - so the
+            // read-back would return the stream's FIRST n events and report another
+            // append's placements as this one's. A first revision below zero is
+            // therefore refused rather than read.
             Ok(w) => {
-                let n = events.len();
-                let first = (w.next_expected_version as Revision) - (n as Revision - 1);
-                let written = self.read_back_positions(stream, first, n)?;
-                Ok(Appended::all(written))
+                match placement_of_ack(
+                    stream,
+                    events.len(),
+                    w.position.commit,
+                    w.next_expected_version,
+                )? {
+                    AckPlacement::Issued(position) => Ok(Appended::all(vec![position])),
+                    AckPlacement::ReadBackFrom(first) => Ok(Appended::all(
+                        self.read_back_positions(stream, first, events.len())?,
+                    )),
+                }
             }
             // The server already reports the stream's authoritative current
             // revision in the conflict payload; use it directly rather than
@@ -511,6 +590,64 @@ async fn forward_loop(
             }
             Err(_) => {} // timeout; re-check stop
         }
+    }
+}
+
+/// The append ack is read WITHOUT a server, because that is the only way this can be
+/// covered at all: every other test in this module needs a live KurrentDB in a container
+/// and skips itself when there is none, so the honesty obligation would otherwise be
+/// pinned by nothing on an ordinary run.
+#[cfg(test)]
+mod ack {
+    use super::*;
+
+    #[test]
+    fn a_single_event_reports_the_position_the_server_issued() {
+        assert!(matches!(
+            placement_of_ack("run", 1, 4096, 7),
+            Ok(AckPlacement::Issued(4096))
+        ));
+    }
+
+    #[test]
+    fn a_single_event_whose_ack_carries_no_position_is_refused_not_reported_as_zero() {
+        let err = placement_of_ack("run", 1, 0, 7).expect_err("a zero commit is an absence");
+        let message = err.to_string();
+        assert!(
+            message.contains("COMMITTED 1 event") && message.contains("durable"),
+            "the refusal must say the write LANDED and only the reporting failed: {message}"
+        );
+        // And it is a refusal, not a position: nothing here can be folded at 0.
+        assert!(!matches!(
+            placement_of_ack("run", 1, 0, 7),
+            Ok(AckPlacement::Issued(_))
+        ));
+    }
+
+    #[test]
+    fn a_batch_reports_the_revision_span_the_ack_names() {
+        assert!(matches!(
+            placement_of_ack("run", 3, 4096, 9),
+            Ok(AckPlacement::ReadBackFrom(7))
+        ));
+        // The whole stream, starting at its very first revision, is a legitimate span.
+        assert!(matches!(
+            placement_of_ack("run", 3, 4096, 2),
+            Ok(AckPlacement::ReadBackFrom(0))
+        ));
+    }
+
+    #[test]
+    fn a_batch_whose_ack_carries_no_revision_is_refused_not_read_back_from_a_negative() {
+        // The "no stream" ack renders as revision 0; for a batch of 3 that arithmetic
+        // yields -2, and a negative `from` is admitted by the stream read, which would
+        // report the stream's FIRST three positions as this append's.
+        let err = placement_of_ack("run", 3, 4096, 0).expect_err("a batch cannot end at 0");
+        let message = err.to_string();
+        assert!(
+            message.contains("COMMITTED 3 event") && message.contains("durable"),
+            "the refusal must say the write LANDED and only the reporting failed: {message}"
+        );
     }
 }
 

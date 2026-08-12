@@ -399,23 +399,27 @@ pub fn park_in_run(
     if !run_id.is_empty() {
         ev = ev.with_meta(crate::run::META_RUN_ID, run_id);
     }
-    one_position(store, &ev)
+    one_position(store, &req.id, &ev)
 }
 
 /// The global position of the ONE event `ev` landed at, appended to the spawn stream.
+/// `subject` names WHAT was being recorded - the spawn id - so a failure reads as the
+/// thing the operator asked for rather than as an internal type name.
 ///
 /// The run-lifecycle types this module writes are outside every content-identity policy
 /// (the type test is asked FIRST, so no such policy can reach them), which is exactly
 /// why a store reporting that it wrote nothing here is a broken port rather than a case
 /// to absorb: it surfaces as an error naming what happened, never as a fabricated
 /// position that a later citation would carry forward as truth.
-fn one_position(store: &dyn EventStore, ev: &Event) -> Result<Position, Error> {
+fn one_position(store: &dyn EventStore, subject: &str, ev: &Event) -> Result<Position, Error> {
     store
         .append(STREAM, ExpectedRevision::Any, std::slice::from_ref(ev))?
         .last()
         .ok_or_else(|| {
+            // No "event store" prefix: `Error::Backend`'s own Display already opens with
+            // one, and a message that repeats it reads as a stutter to the operator.
             Error::Backend(format!(
-                "event store reported writing nothing for a {} event on {STREAM:?}",
+                "reported writing nothing for the {} of {subject} on {STREAM:?}",
                 ev.type_
             ))
         })
@@ -657,7 +661,7 @@ pub fn record_result(store: &dyn EventStore, res: &SpawnResult) -> Result<Positi
     let ev = res
         .to_event()
         .map_err(|e| Error::Backend(format!("serialize spawn result {}: {e}", res.id)))?;
-    one_position(store, &ev)
+    one_position(store, &res.id, &ev)
 }
 
 /// Record `res` to the run's event log ONLY when the spawn has no result yet, as a
@@ -710,7 +714,7 @@ pub fn record_result_if_absent(
             Ok(appended) => {
                 return appended.last().map(Some).ok_or_else(|| {
                     Error::Backend(format!(
-                        "event store reported writing nothing for the result of {}",
+                        "reported writing nothing for the result of {}",
                         res.id
                     ))
                 })

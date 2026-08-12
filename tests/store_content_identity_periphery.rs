@@ -118,6 +118,9 @@ impl Projection for CapturingProjection {
 struct PortDouble {
     report: Vec<Option<Position>>,
     handed: AtomicUsize,
+    /// Whether the double insists its report answers the batch it is handed. False only
+    /// for the deliberate liar below.
+    exact: bool,
 }
 
 impl PortDouble {
@@ -125,6 +128,18 @@ impl PortDouble {
         PortDouble {
             report,
             handed: AtomicUsize::new(0),
+            exact: true,
+        }
+    }
+
+    /// A port that reports a DIFFERENT number of slots than it was handed. It is
+    /// port-ILLEGAL - the contract is one slot per handed event - and it exists so the
+    /// fold authority can be driven against a report it must refuse instead of absorb.
+    fn miscounting(report: Vec<Option<Position>>) -> Self {
+        PortDouble {
+            report,
+            handed: AtomicUsize::new(0),
+            exact: false,
         }
     }
 }
@@ -141,11 +156,13 @@ impl EventStore for PortDouble {
         events: &[Event],
     ) -> Result<Appended, StoreError> {
         self.handed.fetch_add(events.len(), Ordering::SeqCst);
-        assert_eq!(
-            events.len(),
-            self.report.len(),
-            "the double is built for one exact batch size"
-        );
+        if self.exact {
+            assert_eq!(
+                events.len(),
+                self.report.len(),
+                "the double is built for one exact batch size"
+            );
+        }
         Ok(Appended::from_placements(self.report.clone()))
     }
     fn read_stream(
@@ -416,6 +433,38 @@ fn a_port_that_wrote_nothing_is_never_folded_at_a_fabricated_position() {
         "nothing was written, so nothing is folded - in particular nothing at position 0"
     );
     assert_eq!(cap.batch_calls(), 0, "no fold call is made at all");
+}
+
+/// A report that does not ANSWER the batch is refused, not absorbed.
+///
+/// The fold authority stamps positions by ZIPPING the report against the batch it handed
+/// in, so one slot per handed event is not a nicety - it is what makes slot `i` mean
+/// event `i`. A report of a different length silently re-aligns every slot after the
+/// discrepancy onto the wrong event, and the graph's ledger is keyed by position, so the
+/// misattribution is permanent. Iterating the report cannot notice this on its own: a
+/// slot index the batch cannot answer simply yields nothing, which reads exactly like a
+/// suppression. So the check is explicit, it happens BEFORE anything is folded, and it
+/// names both counts.
+#[test]
+fn a_report_that_does_not_answer_the_batch_is_refused_rather_than_folded() {
+    let miscounting = PortDouble::miscounting(vec![Some(7)]);
+    let cap = CapturingProjection::default();
+    let events: Vec<Event> = (0..3)
+        .map(|i| Event::new("Derived", vec![i as u8]))
+        .collect();
+
+    let err = append_and_fold_batch(&miscounting, Some(&cap as &dyn Projection), "run", &events)
+        .expect_err("a report that cannot name what was written is not a smaller fold");
+
+    let message = err.to_string();
+    assert!(
+        message.contains('1') && message.contains('3'),
+        "the refusal must name both counts so the broken adapter is identifiable: {message}"
+    );
+    assert!(
+        cap.folded().is_empty() && cap.batch_calls() == 0,
+        "and nothing is folded from a report that cannot be trusted to name a position"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -809,16 +858,31 @@ fn the_content_key_index_is_built_lazily_by_the_first_append_that_could_be_suppr
     let path = dir.path().join("events.db");
     let path_str = path.to_str().expect("a utf-8 path").to_string();
 
+    // Asked of the COMMITTED DEFINITION, not of a name: the index the probes need is the
+    // one built on THIS policy's metadata key, and an artifact built on any other answers
+    // none of the guard's questions. An independent connection reads it, so what is
+    // asserted is what the database holds rather than what a handle believes.
     let index_exists = || {
         let conn = rusqlite::Connection::open(&path_str).expect("an independent reader opens");
-        let n: i64 = conn
-            .query_row(
-                "SELECT count(*) FROM sqlite_master WHERE type='index' AND name=?1",
-                rusqlite::params!["idx_events_content_key"],
-                |r| r.get(0),
+        let defs: Vec<String> = conn
+            .prepare(
+                "SELECT sql FROM sqlite_master \
+                 WHERE type = 'index' AND tbl_name = 'events' AND sql IS NOT NULL",
             )
+            .and_then(|mut s| {
+                s.query_map([], |r| r.get::<_, String>(0))
+                    .and_then(|rows| rows.collect())
+            })
             .expect("sqlite_master is readable");
-        n == 1
+        let built: Vec<&String> = defs
+            .iter()
+            .filter(|sql| sql.contains(META_REPLAY_KEY) && sql.contains("json_extract"))
+            .collect();
+        assert!(
+            built.len() <= 1,
+            "one policy needs exactly one artifact: {built:?}"
+        );
+        built.len() == 1
     };
 
     let store = Store::open(&path_str)
