@@ -4,8 +4,8 @@
 //! The criterion's own behaviour - which rows the prune keeps, what the file weighs afterwards,
 //! what the command printed, the loud refusal on a backend that cannot compact - is pinned by
 //! `tests/reset_derived_compaction.rs`. This file does not re-litigate any of it. It covers the
-//! four boundaries that unit is judged at but which its own tests cannot reach from inside a
-//! single-project, single-invocation view:
+//! boundaries that unit is judged at but which its own tests cannot reach from inside a
+//! single-project, single-store, single-invocation view:
 //!
 //!   1. **The namespace boundary of a store-level prune.** `Store::prune_derived_index` works on
 //!      the backend DIRECTLY, beneath the `Namespaced` decorator that scopes every ordinary read
@@ -32,10 +32,24 @@
 //!   6. **The shipped operator-facing artifacts.** The two rendered consumer documents and the
 //!      binary's own usage registry are what an operator actually reads. They are asserted on the
 //!      COMMITTED bytes and on the RUNNING binary, with no render in the loop.
+//!   7. **The two-store dissociation the composition made load-bearing.** `reset` now drives TWO
+//!      prunes over TWO different stores, and each states in its own output that it leaves the
+//!      other alone - `--runs` prints "the event log is untouched", the shipped `--derived`
+//!      guidance says the graph is unaffected. Neither claim is reachable from a test that runs
+//!      one mode against one store, so both are pinned here against a project whose event log AND
+//!      context graph are populated, together with the composition that follows from them: running
+//!      the two together lands EXACTLY the two effects, neither more nor less.
+//!   8. **The run history, read back through the binary after a compaction.** The shipped guidance
+//!      promises that the whole run history `rigger stats` reads survives the prune. Rows surviving
+//!      in the table is not that promise: the run read-model rides the namespace-scoped GLOBAL read
+//!      (a `LIKE`-filtered scan across the file), a different path from the `read_stream` the
+//!      revision-cursor test drives, and it is the one an operator actually looks at.
 //!
 //! Plus the command's own flag registry at the edges the composition opened: each mode named at
 //! most once, and the two modes composing in EITHER order.
 
+use rigger::contextgraph::sqlite::Projector;
+use rigger::contextgraph::Projection;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::{PrunedDerived, Store};
 use rigger::eventstore::{Direction, Error, Event, EventStore, ExpectedRevision};
@@ -1010,4 +1024,445 @@ fn the_committed_operator_documents_ship_the_derived_prunes_guidance() {
              guidance must not have drifted apart"
         );
     }
+}
+
+// ---------------------------------------------------------------------------------------
+// 8. Two piles, two prunes: each sheds ONLY its own, and composing them does exactly both
+// ---------------------------------------------------------------------------------------
+
+/// The identity every fixture in this section is pinned to, so projects living under different
+/// temp directories resolve to the SAME namespace and their stores compare row for row.
+const PINNED_ID: &str = "compaction-fixture";
+
+/// The decision the DEAD run recorded. It is the graph's half of the fixture: `--runs` must drop
+/// its node, which is what makes "the graph changed" a fact rather than an assumption.
+const DEAD_DECISION: &str = "d-dead-run";
+
+/// A temp project whose identity is PINNED in `.rigger/project.id` - the first rung the binary's
+/// identity resolution reads, and the one [`project_identity`] mirrors. Without it each fixture
+/// would take its identity from its own temp directory name, so two identically-seeded projects
+/// would write their events under two different stream names and could not be compared.
+fn pinned_project() -> tempfile::TempDir {
+    let dir = temp_project();
+    std::fs::write(dir.path().join(".rigger").join("project.id"), PINNED_ID)
+        .expect("pin the project identity");
+    dir
+}
+
+fn graph_db(root: &Path) -> PathBuf {
+    root.join(".rigger").join("graph.db")
+}
+
+/// The context graph's LIVE content: its nodes, and the edges that have not been retired. This is
+/// what "the graph is unaffected" has to mean - the file itself is rebuilt by the `--runs` vacuum,
+/// so bytes on disk would answer the wrong question.
+fn graph_rows(db: &Path) -> (Vec<String>, Vec<String>) {
+    let conn = rusqlite::Connection::open(db).expect("open the context graph");
+    let mut nodes: Vec<String> = conn
+        .prepare("SELECT id, kind, COALESCE(attrs,''), project FROM nodes")
+        .unwrap()
+        .query_map([], |r| {
+            Ok(format!(
+                "{}|{}|{}|{}",
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?
+            ))
+        })
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    nodes.sort();
+    let mut edges: Vec<String> = conn
+        .prepare("SELECT from_id, to_id, rel, project, tier FROM edges WHERE valid_to IS NULL")
+        .unwrap()
+        .query_map([], |r| {
+            Ok(format!(
+                "{}|{}|{}|{}|{}",
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?
+            ))
+        })
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    edges.sort();
+    (nodes, edges)
+}
+
+/// A row with its event id dropped. Ids are minted per event, so two identically-seeded projects
+/// agree on every column BUT that one; comparing their logs is a comparison of this shape.
+fn shape(rows: &[Row]) -> Vec<(i64, String, String, Vec<u8>, String, i64)> {
+    rows.iter()
+        .map(|r| (r.0, r.1.clone(), r.2.clone(), r.4.clone(), r.5.clone(), r.6))
+        .collect()
+}
+
+/// Where two row lists first part company, named compactly: `position/type/revision` on each side.
+/// The comparisons below stay EXACT (whole rows, payload bytes included) - this only decides what a
+/// failure prints, because a raw dump of two logs is unreadable in a gate log.
+fn first_difference<T: PartialEq + std::fmt::Debug>(left: &[T], right: &[T]) -> String {
+    for (i, (l, r)) in left.iter().zip(right.iter()).enumerate() {
+        if l != r {
+            return format!("index {i}: {l:?} vs {r:?}");
+        }
+    }
+    format!("lengths {} vs {}", left.len(), right.len())
+}
+
+/// The compact form of a row a failure names: position, type, and per-stream revision.
+fn row_marks(rows: &[Row]) -> Vec<String> {
+    rows.iter()
+        .map(|r| format!("{}/{}/{}", r.0, r.2, r.6))
+        .collect()
+}
+
+/// Seed BOTH of the project's stores from ONE trajectory, the way a real project accumulates them:
+/// a dead run that recorded a decision, the active run that superseded it, and `rounds`
+/// re-recordings of two derived keys - then fold the log as it was WRITTEN into `.rigger/graph.db`.
+///
+/// Each prune therefore has its own pile waiting: the graph holds a dead run's node for `--runs`,
+/// the log holds the duplicated derived index for `--derived`. That is the precondition for
+/// separating "this prune did nothing to the other store" from "there was nothing to do".
+fn seed_both_stores(root: &Path, rounds: u64) {
+    let id = project_identity(root);
+    let mut events = vec![
+        Event::new("RunStarted", br#"{"run":"dead","criteria":["c"]}"#.to_vec())
+            .with_valid_from(UNIX_EPOCH + Duration::from_secs(10)),
+    ];
+    events.push(
+        Event::new(
+            "DecisionMade",
+            format!(
+                r#"{{"id":"{DEAD_DECISION}","summary":"s","governs":["src/a.rs"],"supersedes":""}}"#
+            )
+            .into_bytes(),
+        )
+        .with_valid_from(UNIX_EPOCH + Duration::from_secs(11)),
+    );
+    events.push(
+        Event::new("RunStarted", br#"{"run":"live","criteria":["c"]}"#.to_vec())
+            .with_valid_from(UNIX_EPOCH + Duration::from_secs(20)),
+    );
+    for r in 0..rounds {
+        events.push(keyed(
+            rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+            entity("alpha"),
+            KEY_DEF,
+            1_000 + r,
+        ));
+        events.push(keyed(
+            rigger::contextgraph::TYPE_EDGE_INFERRED,
+            edge("alpha"),
+            KEY_REF,
+            1_000 + r,
+        ));
+    }
+
+    let backend = Store::open(event_log(root).to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, &id);
+    store
+        .append(rigger::conductor::STREAM, ExpectedRevision::Any, &events)
+        .expect("seed the event log");
+
+    // Fold the log AS WRITTEN - each event carrying the position the store gave it - so the graph
+    // is the projection of this log rather than of a pre-append copy of it.
+    let written = store
+        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
+        .expect("read the seeded log back");
+    let graph =
+        Projector::open(graph_db(root).to_str().unwrap(), &id).expect("open the context graph");
+    graph.apply_batch(&written).expect("fold the seeded log");
+}
+
+/// `rigger reset` drives TWO prunes over TWO stores, and each one tells the operator it left the
+/// other alone: `reset --runs` prints "the event log is untouched", and the shipped `--derived`
+/// guidance says the graph is unaffected. Both claims are load-bearing precisely BECAUSE the modes
+/// compose - an operator who runs them together has no way to attribute a loss to one of them, so
+/// each has to be safe for the other's store on its own.
+///
+/// Neither claim is reachable from a test that runs one mode against one store, which is why
+/// nothing held them before: `tests/reset_derived_compaction.rs` never populates a context graph,
+/// and the `--runs` prune predates this unit's second mode. Here both stores are populated with a
+/// pile for EACH prune - a dead run's node for `--runs`, duplicated derived index rows for
+/// `--derived` - so "it did not touch the other store" is separated from "there was nothing to do".
+///
+/// The DISSOCIATION is the point, in both directions: `--runs` changes the graph and leaves every
+/// event row byte-for-byte, `--derived` deletes event rows and leaves the graph's content
+/// identical. The composition then has exactly one honest outcome - the two effects, neither more
+/// nor less - and that is asserted against the two single-mode results rather than restated, so a
+/// composed reset that pruned harder (or that let one mode's read see the other's writes) cannot
+/// pass by agreeing with a hand-written expectation.
+#[test]
+fn each_reset_mode_sheds_only_its_own_accumulation_and_composing_them_does_exactly_both() {
+    const ROUNDS: u64 = 5;
+
+    let runs_only = pinned_project();
+    let derived_only = pinned_project();
+    let composed = pinned_project();
+    for project in [&runs_only, &derived_only, &composed] {
+        assert_eq!(
+            project_identity(project.path()),
+            PINNED_ID,
+            "the fixtures must all resolve to one identity, or their stores are not comparable"
+        );
+        seed_both_stores(project.path(), ROUNDS);
+    }
+
+    let seed_log = raw_rows(&event_log(runs_only.path()));
+    let seed_graph = graph_rows(&graph_db(runs_only.path()));
+    assert!(
+        !seed_log.is_empty() && !seed_graph.0.is_empty() && !seed_graph.1.is_empty(),
+        "the seed must populate BOTH stores, or nothing below proves anything"
+    );
+    assert!(
+        shape(&raw_rows(&event_log(derived_only.path()))) == shape(&seed_log),
+        "the three fixtures must start from an identical log; they differ at {}",
+        first_difference(
+            &row_marks(&raw_rows(&event_log(derived_only.path()))),
+            &row_marks(&seed_log)
+        )
+    );
+    assert_eq!(
+        graph_rows(&graph_db(derived_only.path())),
+        seed_graph,
+        "the three fixtures must start from an identical graph"
+    );
+
+    // `--runs` PRUNES THE GRAPH AND ONLY THE GRAPH. Its own report promises the event log is
+    // untouched, so every row keeps its bytes AND its numbering: a row that survived but was
+    // renumbered or repositioned is not an untouched log.
+    let (out, err, ok) = run_rigger(runs_only.path(), &["reset", "--runs"]);
+    assert!(ok, "reset --runs must succeed; stderr: {err}\n{out}");
+    let after_runs_log = raw_rows(&event_log(runs_only.path()));
+    assert!(
+        after_runs_log == seed_log,
+        "reset --runs reports that the event log is untouched, so every row must survive \
+         byte-for-byte, position and revision included; the log differs at {}, and the command \
+         said: {out:?}",
+        first_difference(&row_marks(&after_runs_log), &row_marks(&seed_log))
+    );
+    let after_runs_graph = graph_rows(&graph_db(runs_only.path()));
+    let dropped: Vec<&String> = seed_graph
+        .0
+        .iter()
+        .filter(|n| !after_runs_graph.0.contains(n))
+        .collect();
+    assert!(
+        dropped.iter().any(|n| n.contains(DEAD_DECISION)),
+        "the --runs prune must actually drop the dead run's decision node, or 'the log survived \
+         it' is a claim about a prune that did nothing; it dropped {dropped:?}"
+    );
+
+    // `--derived` COMPACTS THE LOG AND ONLY THE LOG. The shipped guidance tells an operator the
+    // graph is unaffected - which it can be, because every recording of a key folds to the same
+    // rows, so dropping the superseded ones changes nothing the projection holds.
+    let (out, err, ok) = run_rigger(derived_only.path(), &["reset", "--derived"]);
+    assert!(ok, "reset --derived must succeed; stderr: {err}\n{out}");
+    assert_eq!(
+        graph_rows(&graph_db(derived_only.path())),
+        seed_graph,
+        "the shipped guidance says the graph is unaffected by --derived, so its live content must \
+         be identical; the command said: {out:?}"
+    );
+    let after_derived_log = raw_rows(&event_log(derived_only.path()));
+    assert_eq!(
+        seed_log.len() - after_derived_log.len(),
+        2 * (ROUNDS as usize - 1),
+        "the --derived prune must shed the superseded recordings of both keys, or 'the graph \
+         survived it' is a claim about a prune that did nothing; it said: {out:?}"
+    );
+
+    // COMPOSED: exactly the two effects. The log is what `--derived` alone leaves and the graph is
+    // what `--runs` alone leaves - so neither mode prunes harder in company, and neither one's read
+    // is disturbed by the other's writes.
+    let (out, err, ok) = run_rigger(composed.path(), &["reset", "--runs", "--derived"]);
+    assert!(
+        ok,
+        "reset --runs --derived must succeed; stderr: {err}\n{out}"
+    );
+    let composed_log = raw_rows(&event_log(composed.path()));
+    assert!(
+        shape(&composed_log) == shape(&after_derived_log),
+        "the composed reset must leave exactly the log --derived alone leaves; it differs at {}, \
+         and the command said: {out:?}",
+        first_difference(&row_marks(&composed_log), &row_marks(&after_derived_log))
+    );
+    assert_eq!(
+        graph_rows(&graph_db(composed.path())),
+        after_runs_graph,
+        "the composed reset must leave exactly the graph --runs alone leaves; it said: {out:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------------------
+// 9. The run history an operator reads, after a compaction, through the binary
+// ---------------------------------------------------------------------------------------
+
+/// How many rows of a DERIVED index type the log holds - the pile the prune is entitled to shed,
+/// counted apart from everything else it is not.
+fn derived_rows(db: &Path) -> usize {
+    raw_rows(db)
+        .iter()
+        .filter(|r| rigger::ingest::is_derived_index_type(&r.2))
+        .count()
+}
+
+/// Seed a project with a real run history - two runs, one clean unit and one escalated, each
+/// gated - INTERLEAVED with the derived duplication the prune exists to shed, so the compaction
+/// deletes rows from the very stream the run read-model reads.
+fn seed_run_history_and_duplication(root: &Path, rounds: u64) {
+    let mut events: Vec<Event> = Vec::new();
+    let mut at = 10u64;
+    let push = |type_: &str, data: &str, at: &mut u64| {
+        *at += 1;
+        Event::new(type_, data.as_bytes().to_vec())
+            .with_valid_from(UNIX_EPOCH + Duration::from_secs(*at))
+    };
+    events.push(push(
+        "RunStarted",
+        r#"{"run":"r1","criteria":["c one"]}"#,
+        &mut at,
+    ));
+    events.push(push(
+        "UnitStarted",
+        r#"{"id":"u1","agent":"worker"}"#,
+        &mut at,
+    ));
+    events.push(push(
+        "GateVerdict",
+        r#"{"gate":"tests","pass":true}"#,
+        &mut at,
+    ));
+    events.push(push(
+        "UnitIntegrated",
+        r#"{"id":"u1","commit":"aaa"}"#,
+        &mut at,
+    ));
+    for r in 0..rounds {
+        events.push(keyed(
+            rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+            entity("alpha"),
+            KEY_DEF,
+            1_000 + r,
+        ));
+    }
+    events.push(push(
+        "RunStarted",
+        r#"{"run":"r2","criteria":["c two"]}"#,
+        &mut at,
+    ));
+    events.push(push(
+        "UnitStarted",
+        r#"{"id":"u2","agent":"worker"}"#,
+        &mut at,
+    ));
+    events.push(push(
+        "GateVerdict",
+        r#"{"gate":"tests","pass":false}"#,
+        &mut at,
+    ));
+    events.push(push("UnitEscalated", r#"{"id":"u2"}"#, &mut at));
+    for r in 0..rounds {
+        events.push(keyed(
+            rigger::contextgraph::TYPE_EDGE_INFERRED,
+            edge("alpha"),
+            KEY_REF,
+            2_000 + r,
+        ));
+    }
+
+    let backend = Store::open(event_log(root).to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, &project_identity(root));
+    store
+        .append(rigger::conductor::STREAM, ExpectedRevision::Any, &events)
+        .expect("seed the run history");
+}
+
+/// The shipped guidance promises, in the paragraph that tells an operator it is safe to delete
+/// from an append-only log, that "the whole run history `rigger stats` and replay read" survives
+/// the compaction. Section 6 proves the SENTENCE ships; this proves the BINARY honors it.
+///
+/// Rows surviving in the table is not the same promise, for two reasons this test exists to close.
+/// The run read-model rides the namespace-scoped GLOBAL read - a `LIKE`-filtered scan across the
+/// whole file - not the `read_stream` the revision-cursor test drives, and the two prefix
+/// comparisons in this store are deliberately not the same one. And the fold that turns those
+/// events into a report is index-and-order sensitive: unit outcomes are attributed to the run
+/// whose `RunStarted` precedes them, so deleting rows from the MIDDLE of the stream is exactly the
+/// shape that would misattribute a unit to the wrong run while every surviving row still looked
+/// perfectly intact in the table.
+///
+/// So the report itself is compared, byte for byte, across the compaction - in both views, since
+/// the default view reads only the latest run while `--all` folds every run in the log. The
+/// duplication is interleaved BETWEEN the two runs so the prune deletes from between them, and the
+/// pruned count is asserted first: an equality across a prune that removed nothing proves nothing.
+#[test]
+fn the_run_history_the_shipped_guidance_promises_reads_back_identically_after_a_compaction() {
+    const ROUNDS: u64 = 6;
+    let dir = temp_project();
+    let root = dir.path();
+    seed_run_history_and_duplication(root, ROUNDS);
+
+    let (before, err, ok) = run_rigger(root, &["stats"]);
+    assert!(ok, "stats must succeed on the seeded log; stderr: {err}");
+    let (before_all, err, ok) = run_rigger(root, &["stats", "--all"]);
+    assert!(
+        ok,
+        "stats --all must succeed on the seeded log; stderr: {err}"
+    );
+
+    // The report must actually be a report of this history, or the equality below is an equality
+    // between two "no runs" messages.
+    assert!(
+        before.contains("(1/1 units escalated"),
+        "the default view must report the LATEST run's escalation; got:\n{before}"
+    );
+    assert!(
+        before_all.contains("(1/2 units escalated"),
+        "the --all view must aggregate both seeded runs; got:\n{before_all}"
+    );
+
+    let derived_before = derived_rows(&event_log(root));
+    assert_eq!(
+        derived_before,
+        2 * ROUNDS as usize,
+        "the seed must actually bloat the log with both keys' re-recordings"
+    );
+    let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
+    assert!(ok, "reset --derived must succeed; stderr: {err}\n{out}");
+    // The precondition is stated over the DERIVED rows alone, deliberately: a total-row delta
+    // would also be satisfied by a prune that ate a run event for every duplicate it spared, which
+    // is precisely the damage the equality below exists to catch.
+    assert_eq!(
+        derived_rows(&event_log(root)),
+        2,
+        "the compaction must leave one recording per key, or the report's survival is a claim \
+         about a prune that did nothing; it said: {out:?}"
+    );
+
+    let (after, err, ok) = run_rigger(root, &["stats"]);
+    assert!(
+        ok,
+        "stats must still succeed on the compacted log; stderr: {err}"
+    );
+    assert_eq!(
+        after, before,
+        "the shipped guidance promises the run history rigger stats reads survives the \
+         compaction, so the report must be byte-identical across it"
+    );
+
+    let (after_all, err, ok) = run_rigger(root, &["stats", "--all"]);
+    assert!(
+        ok,
+        "stats --all must still succeed on the compacted log; stderr: {err}"
+    );
+    assert_eq!(
+        after_all, before_all,
+        "the historical aggregate reads EVERY run in the log, so it must survive the compaction \
+         whole - not just the latest run's slice of it"
+    );
 }
