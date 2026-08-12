@@ -1359,7 +1359,12 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     //   made every new run re-append the WHOLE index. They are seeded from the WHOLE stream
     //   instead, via the one predicate that owns the content-key format
     //   ([`crate::ingest::project_scoped_replay_keys`]) - latest-generation-per-file, never
-    //   ever-recorded, so a file reverted to earlier content still re-emits and supersedes.
+    //   ever-recorded, so a file reverted to earlier content still re-emits.
+    //
+    // This is the SEED only. Both arms feed ONE set that the emit sinks then EXTEND with every key
+    // they append and never shrink, so "latest generation per file" describes the set at run start,
+    // not for the rest of the process - see [`replayed_keys`](RunCtx::replayed_keys) for the
+    // two-phase reading and why the seed is the phase that governs.
     //
     // The type test comes first in BOTH arms, so the partition is a property of the code rather
     // than of the key's spelling: a derived event is excluded here even if its key looks like a
@@ -1881,9 +1886,10 @@ struct RunCtx<'a> {
     /// that never failed). Integrated/escalated units are terminal and skipped before
     /// the lifecycle, so their presence here is harmless.
     prior_attempts: HashMap<String, u32>,
-    /// The set of REPLAY KEYS an emit may be suppressed against. It is a PARTITION over two
-    /// scopes with two different lifetimes, decided BY EVENT TYPE (spec 60), not one set with
-    /// one meaning - so read the half a key belongs to before reading membership.
+    /// The set of REPLAY KEYS an emit may be suppressed against. Its SEED is a PARTITION over two
+    /// scopes decided BY EVENT TYPE (spec 60), not one seed with one meaning - so read the half a
+    /// key was seeded into before reading membership. Both halves then share ONE lifetime: every
+    /// key this process emits is inserted, and no key is ever removed.
     ///
     /// The RUN-SCOPED half is every NON-derived key (spec 04, criterion 4): seeded at run start
     /// from THIS run's slice of the prior log's [`META_REPLAY_KEY`] metadata and extended as this
@@ -1893,12 +1899,29 @@ struct RunCtx<'a> {
     /// of duplicate UnitStarted/green/verified/reviewed/ManualReview events no matter how many
     /// step processes replay it.
     ///
-    /// The PROJECT-SCOPED half is the four derived index types' content keys, seeded from the
-    /// WHOLE stream through [`crate::ingest::project_scoped_replay_keys`] and holding each file's
-    /// LATEST recorded generation only. Membership there means the opposite of the other half's:
-    /// "already recorded for this project by ANY run", precisely the keys this run has NOT
-    /// emitted. Its sole consumer is [`emit_keyed_batch`](RunCtx::emit_keyed_batch), the ingest
-    /// sink; nothing else may read it as a this-run fact.
+    /// The PROJECT-SCOPED half is the four derived index types' content keys, and it has a
+    /// TWO-PHASE life that must be read as two phases:
+    ///
+    /// 1. SEEDED at run start from the WHOLE stream through
+    ///    [`crate::ingest::project_scoped_replay_keys`], which returns each file's LATEST recorded
+    ///    generation and no earlier one. In that phase membership means "already recorded for this
+    ///    project by ANY run", so it names keys this run has not itself emitted - the opposite of
+    ///    the run-scoped half's meaning, and the phase every suppression decision is made in.
+    /// 2. EXTENDED by its sole consumer [`emit_keyed_batch`](RunCtx::emit_keyed_batch), which
+    ///    inserts EVERY key it appends and retires no superseded generation. From the first batch
+    ///    onward the half is therefore "latest generation as of run start, PLUS everything this
+    ///    process emitted", which is neither latest-generation-per-file nor a this-run-only fact.
+    ///
+    /// Which phase a read lands in is what matters. On the RUN path the seed governs: the walk is
+    /// bounded to once per process by
+    /// [`ingest_project_into_graph`](RunCtx::ingest_project_into_graph), which swaps a flag and
+    /// returns, and that one walk hands the sink each batch identity (`gc`/`gd` per file) exactly
+    /// once - so no suppression decision a run takes is ever weighed against a key phase 2 added.
+    /// The walk-and-emit half [`ingest_project_batches`](RunCtx::ingest_project_batches) carries NO
+    /// such guard, so a direct second call in the same process (what the unit tests drive) IS
+    /// weighed against the extended set, which is not the set a later step would seed from the log.
+    /// Nothing may read this half as a this-run fact, and nothing may read it once the ingest sink
+    /// has run as a latest-generation fact.
     replayed_keys: Mutex<HashSet<String>>,
     /// The recorded gate verdicts keyed by their replay key -> `(pass, evidence)`, seeded
     /// ONCE at run start from the prior log's `GateVerdict` events and extended as this
@@ -2160,8 +2183,10 @@ impl RunCtx<'_> {
     }
 
     /// The batched analogue of [`emit_keyed`](RunCtx::emit_keyed): given a file's WHOLE keyed batch,
-    /// drop the events whose key is already recorded (the replay dedup, UNCHANGED - an already-seen
-    /// key appends nothing), then append the SURVIVORS in ONE transaction and fold them in ONE graph
+    /// drop the events whose key is already in [`replayed_keys`](RunCtx::replayed_keys) (the replay
+    /// dedup, UNCHANGED - an already-seen key appends nothing) and INSERT every key it keeps, so
+    /// this sink both reads and grows that set and retires no superseded generation from it; then
+    /// append the SURVIVORS in ONE transaction and fold them in ONE graph
     /// transaction via [`append_and_fold_batch`](RunCtx::append_and_fold_batch) (spec 49's per-file
     /// cadence). Each survivor is rebuilt exactly as `emit_keyed` builds it - a fresh event carrying
     /// the replay key, its payload round-tripped through the same serialize path - and an event whose
@@ -6622,25 +6647,32 @@ impl RunCtx<'_> {
         // because its recurrence is a property of one run, while the four derived index types are
         // seeded from the WHOLE stream through the ONE shared predicate
         // ([`crate::ingest::project_scoped_replay_keys`]), because a file's content hash does not
-        // change because a new run started. Inside that project-scoped half only a file's LATEST
-        // recorded generation suppresses:
+        // change because a new run started. That half is SEEDED latest-generation-per-file and then
+        // EXTENDED with every key this process emits (see [`replayed_keys`](RunCtx::replayed_keys)),
+        // so what a run suppresses is decided by the SEED - the run reaches this walk at most once
+        // per process through `ingest_project_into_graph`'s guard, which THIS function deliberately
+        // does not carry, so a caller that drives it twice is weighed against the extended set:
         //
         // - an UNCHANGED file re-hashes to exactly that generation's keys, so its whole batch is
         //   already recorded and it appends NOTHING - on this run and on every later run, forever;
         // - a file whose content differs from its latest recorded batch re-emits WHATEVER BATCH THE
-        //   WALK HANDED THIS SINK, whole, `fresh` head included, and supersedes its prior structural
-        //   edges by 29a's mechanism. That INCLUDES a file REVERTED to content it held at an earlier
-        //   generation, whose keys are byte-identical to records the log still carries: it re-emits
-        //   not because its keys are new but because those records are no longer the file's latest
-        //   generation. Seeding from every key ever recorded would strand the graph on the
+        //   WALK HANDED THIS SINK, whole. That INCLUDES a file REVERTED to content it held at an
+        //   earlier generation, whose keys are byte-identical to records the log still carries: it
+        //   re-emits not because its keys are new but because those records are no longer the file's
+        //   latest generation. Seeding from every key ever recorded would strand the graph on the
         //   superseded version instead.
         //
-        // Both bullets are claims about what this sink APPENDS, and they reach only files the walk
-        // emits a batch for. A file that now extracts to NOTHING (an ordinary edit removing its last
-        // definition and reference) is dropped by the walk before this sink sees it: no batch means
-        // no supersede, so its prior entities and edges stay live and no skip decision was involved.
-        // And whether an appended batch then FOLDS is `append_and_fold_batch`'s best-effort contract,
-        // not this partition's - a lost fold leaves the log right and the graph behind.
+        // Both bullets are claims about what this sink APPENDS, and nothing more. What a re-emitted
+        // batch RETIRES belongs to the FOLD and covers only the code half: a code batch carries a
+        // `fresh` head and 29a's fresh-head mechanism retires that file's prior structural edges as
+        // the fold applies it, while a design batch sets no `fresh` head at all, so re-emitting one
+        // adds its edges without retiring the ones its earlier generation left live. The two bullets
+        // also reach only files the walk emits a batch for. A file that now extracts to NOTHING (an
+        // ordinary edit removing its last definition and reference) is dropped by the walk before
+        // this sink sees it: no batch means no supersede, so its prior entities and edges stay live
+        // and no skip decision was involved. And whether an appended batch then FOLDS is
+        // `append_and_fold_batch`'s best-effort contract, not this partition's - a lost fold leaves
+        // the log right and the graph behind.
         //
         // The dedup lock is held only around the key set (released before the append), so a concurrent
         // unit in the wave still appends its own keyed events in parallel.
@@ -12436,9 +12468,13 @@ mod tests {
         )
         .unwrap();
 
-        // Re-ingest on the SAME ctx: its replay-key set carries the first pass's keys (exactly as a
-        // later step's log-seeded set would), so the unchanged file is skipped and the changed file
-        // re-emits.
+        // Re-ingest on the SAME ctx: its replay-key set carries the first pass's keys, so the
+        // unchanged file is skipped and the changed file re-emits. That set is the IN-MEMORY one
+        // this process EXTENDED, which is NOT the set a later step seeds from the log: a log-seeded
+        // set holds each file's latest generation only, this one holds every key the process
+        // emitted. The two agree here because churn.rs moves FORWARD to a generation neither set
+        // holds; they differ on a REVERT, which criterion 3's proof owns and which nothing in this
+        // test exercises.
         ctx.ingest_project_batches();
 
         // Unchanged file: NOT re-ingested - its recorded symbol is still emitted exactly once.

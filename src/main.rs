@@ -3265,19 +3265,27 @@ fn derive_extent_end(_file: &str, _source: &str, _start: u32, _name: &str) -> Re
 /// is to populate it) rather than the courier walk-up that refuses a missing store. On an EXISTING
 /// store it refreshes incrementally through the ONE shared suppression predicate
 /// ([`rigger::ingest::project_scoped_replay_keys`]) the live run also seeds from, never a second
-/// copy here: the seen-key set holds the keys of each file's LATEST recorded derived-index batch
-/// and nothing else, so an unchanged file's batch is already wholly recorded and re-ingests
-/// nothing, while a file whose content differs from its latest recorded batch re-emits every event
-/// the walk extracted for it. That includes a file REVERTED to content it held at an earlier
-/// generation - its keys are byte-identical to records the log still carries, and it re-emits
-/// precisely because those records are no longer that file's latest generation. Both halves of that
-/// are claims about what this command APPENDS, over the files the walk emits a batch for: a file the
-/// walk hands over NO batch for - one deleted from the tree, or one an ordinary edit emptied of its
-/// last definition and reference - reaches no suppression decision here at all and retires nothing,
-/// and a batch whose append lands but whose fold does not leaves the log right and the graph behind
-/// (`append_and_fold_batch` folds best-effort by contract). The light lane compiles no extraction
-/// pass, so `graph build` there degrades to an empty graph (it still creates the store) and exits
-/// 0, never an error.
+/// copy here. The seen-key set lives in two phases: it is SEEDED with the keys of each file's
+/// LATEST recorded derived-index batch and no earlier one, then EXTENDED with every key this build
+/// appends, retiring nothing - so "latest generation per file" describes the seed, not the set
+/// after the first batch. The SEED is what every suppression decision is taken against, because one
+/// walk hands this command each batch identity (`gc`/`gd` per file) exactly once and this command
+/// walks once. On that seed an unchanged file's batch
+/// is already wholly recorded and re-ingests nothing, while a file whose content differs from its
+/// latest recorded batch re-emits every event the walk extracted for it. That includes a file
+/// REVERTED to content it held at an earlier generation - its keys are byte-identical to records the
+/// log still carries, and it re-emits precisely because those records are no longer that file's
+/// latest generation. Both halves of that are claims about what this command APPENDS, over the files
+/// the walk emits a batch for: a file the walk hands over NO batch for - one deleted from the tree,
+/// or one an ordinary edit emptied of its last definition and reference - reaches no suppression
+/// decision here at all and retires nothing, and a batch whose append lands but whose fold does not
+/// leaves the log right and the graph behind (`append_and_fold_batch` folds best-effort by
+/// contract). What a re-emitted batch RETIRES is the FOLD's doing and reaches the code half only:
+/// a code batch carries a `fresh` head whose 29a mechanism supersedes that file's prior structural
+/// edges, while a design batch sets no `fresh` head, so re-emitting one adds edges without retiring
+/// the ones its earlier generation left live. The light lane compiles no extraction pass, so
+/// `graph build` there degrades to an empty graph (it still creates the store) and exits 0, never
+/// an error.
 fn cmd_graph_build(_args: &[String]) -> Res {
     // Bootstrap the store like `run`/`step` do (create-or-open under the cwd's `.rigger/`), NOT the
     // courier `require_store_dir` walk-up that refuses when none exists.
@@ -3329,6 +3337,11 @@ fn cmd_graph_build(_args: &[String]) -> Res {
         // Keep only the not-yet-seen events of this file's batch, stamping each survivor with its
         // replay key (the same content-keyed dedup a run seeds from the log). A batch already wholly
         // recorded (an unchanged file on a re-build) survives to nothing and appends nothing.
+        // `insert` both TESTS and EXTENDS `seen`: every key this build keeps joins the set and no
+        // superseded generation is retired from it, so from here on `seen` is the log-derived seed
+        // PLUS this build's own emissions. That is harmless because the walk yields each batch
+        // identity (`gc`/`gd` per file) once and this command walks once, so no later batch is ever
+        // weighed against a key an earlier one added.
         let survivors: Vec<Event> = keyed
             .iter()
             .filter(|(key, _)| seen.insert(key.clone()))
