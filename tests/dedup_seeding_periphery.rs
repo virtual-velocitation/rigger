@@ -762,7 +762,7 @@ fn recorded_derived_events(root: &std::path::Path) -> usize {
 /// The contract this diff writes at all three sites it owns (`docs/architecture.md` 5.5, the run
 /// sink's comment in `src/conductor.rs`, and `cmd_graph_build`'s rustdoc in `src/main.rs`) is
 /// LOG-relative and has two halves: after any mix of skipping and re-ingest, the log holds each
-/// file's LATEST content generation IN FULL, and only what changed is ever re-parsed or re-emitted.
+/// file's LATEST content generation IN FULL, and only what changed is ever re-emitted.
 /// Every other test here sees a single content generation per file - a fresh build, a re-build over
 /// a byte-identical tree, or keys pre-claimed before their file was ever ingested - so the half of
 /// the predicate that RETIRES a file's earlier generation when a later one is recorded is driven
@@ -809,7 +809,7 @@ fn a_mixed_build_holds_every_files_latest_generation_and_re_emits_only_what_chan
     );
 
     // Move exactly ONE file's content generation. `beta.rs` and the design doc are untouched, so
-    // their batches must be skipped while `alpha.rs`'s must be re-parsed and re-emitted whole.
+    // their batches must be skipped while `alpha.rs`'s must be re-emitted whole.
     std::fs::write(
         root.join("src/alpha.rs"),
         "pub fn alpha_helper() {}\npub fn alpha_caller() { alpha_helper(); }\npub fn alpha_extra() { alpha_caller(); }\n",
@@ -831,7 +831,7 @@ fn a_mixed_build_holds_every_files_latest_generation_and_re_emits_only_what_chan
         "the edited file's batch must be re-emitted, so the build cannot report nothing; got:\n{out2}"
     );
 
-    // HALF ONE - only what changed was re-parsed or re-emitted. Every key this build ADDED to the
+    // HALF ONE - only what changed was re-emitted. Every key this build ADDED to the
     // log must belong to the file that moved; a key appended for an unchanged file would mean the
     // skip did not happen and the log grows on every build, which is the defect this criterion ends.
     let recorded_after = recorded_derived_keys(root);

@@ -728,18 +728,24 @@ is deduped under can never drift between them. Four properties define it:
   - **Latest generation per file, never ever-recorded.** A batch is suppressed only when its hash
     equals the hash of the LATEST batch recorded for that same file. A changed file - **including
     one reverted to content it held at an earlier recorded generation** - differs from its latest
-    batch, so it re-emits in full and supersedes its prior structural edges. An ever-recorded key
-    set would match the reverted content's old records, re-emit nothing, and strand the graph on a
-    superseded version of that file.
+    batch, so it re-emits in full. An ever-recorded key set would match the reverted content's old
+    records, re-emit nothing, and strand the graph on a superseded version of that file. What the
+    re-emitted batch then RETIRES is a different mechanism's doing, not this rule's, and it covers
+    only the code half: a code batch carries a `fresh` head, and the fold's two `fresh` arms are the
+    only callers of `supersede_file_edges`, so the file's prior structural edges are retired by that
+    spec 29a mechanism. The design half sets no `fresh` head at all, so a re-emitted design batch
+    adds its edges without retiring the ones its earlier generation left live.
 
   The net contract is stated against the LOG, because the log is the only thing this predicate
   decides: after any mix of skipping and re-ingest, the log holds each file's LATEST content
-  generation in full, and only what changed is ever re-parsed or re-emitted. Whether the live graph
-  then equals a cold rebuild is a property of the FOLD, not of this rule - suppression withholds
-  only an append whose content the log already records, so it can leave the graph no further behind
-  than the fold already left it. Three cases sit outside the contract by construction, and all three
-  for the same reason: **no batch is folded for the file at all**, so there is no suppression
-  decision in them to blame.
+  generation in full, and only what changed is ever re-emitted. Whether the live graph then equals a
+  cold rebuild is a property of the FOLD, not of this rule - suppression withholds only an append
+  whose content the log already records, so it can leave the graph no further behind than the fold
+  already left it. Cases do sit outside the contract, and NOT for one shared reason; what follows
+  names some of them and is not a closed enumeration.
+
+  In these three, **no batch is folded for the file at all**, so no suppression decision is involved
+  in them:
 
   - **A file the tree no longer holds.** Retiring a file's structure is driven by that file's OWN
     batch (`supersede_file_edges` runs inside the fold of the batch), and the walk emits no batch for
@@ -753,6 +759,18 @@ is deduped under can never drift between them. Four properties define it:
     best-effort by contract - a fold failure never fails an append that already landed durably - so
     the log is right and the graph is behind. The append IS recorded, so a later run correctly skips
     it; healing that half is the append-and-fold authority's obligation, not the skip rule's.
+
+  These two sit outside it for other reasons, so no single explanation covers the set:
+
+  - **The design half retires nothing, even when its batch IS folded.** The fold's design arms only
+    ensure nodes and add edges; `supersede_file_edges` is reached from the `fresh` code arms alone.
+    Deleting a section from a design doc therefore re-emits and re-folds that doc's whole batch and
+    still leaves the retired `SPECIFIES` and reference edges live.
+  - **A code walk lowered from a PERSISTED symbols index.** The code half loads a persisted index
+    when the project has one and only builds a fresh one when it does not. On such a project the
+    batches - and therefore the content the suppression decision is made against - describe what
+    that index holds rather than what the tree currently holds, so a suppression decision IS made
+    and it is made against stale content.
 
   The projection's only DELETE path is the explicit `Projector::prune` primitive, so shedding a
   removed file's facts is a deliberate act, never a consequence of the next ingest.

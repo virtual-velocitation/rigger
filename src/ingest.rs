@@ -291,14 +291,21 @@ fn derived_key_parts(key: &str) -> Option<(&str, &str)> {
 /// 3. **Latest per file, never ever-recorded.** Only the keys of each identity's LATEST recorded
 ///    generation are returned. A file's earlier generations are deliberately absent: content
 ///    REVERTED to a generation the file has since moved past differs from its latest recorded
-///    batch, so it must re-emit and supersede the newer structural edges. An ever-recorded key set
-///    would match the old records, re-emit nothing, and strand the graph on a superseded version of
-///    that file forever.
+///    batch, so it must re-emit. An ever-recorded key set would match the old records, re-emit
+///    nothing, and strand the graph on a superseded version of that file forever. Whether the
+///    re-emitted batch then RETIRES the newer structural edges is the FOLD's business, not this
+///    predicate's: only the code half's `fresh` head drives `supersede_file_edges`, and the design
+///    half sets no `fresh` head at all.
 ///
 /// This is project-scoped ON PURPOSE: derived index facts are facts about the project's files, not
 /// about a run, so a NEW run inherits them and an unchanged file appends nothing on every
 /// subsequent run forever. Run-scoped seeding stays exactly as it is for every other replay key
 /// (unit lifecycle, gate verdicts, breaker trips), whose recurrence IS a property of one run.
+///
+/// What this function returns is a SEED, and a seed only. Each sink owns the set it builds from it
+/// and both EXTEND that set with the keys they emit without retiring a superseded generation, so
+/// "latest generation per file" is a statement about this return value at the moment it is taken,
+/// never about a sink's set once the sink has run.
 pub fn project_scoped_replay_keys(prior: &[Event]) -> std::collections::HashSet<String> {
     // identity -> (that identity's latest recorded generation, the keys of that generation)
     let mut latest: std::collections::HashMap<String, (String, Vec<String>)> =
@@ -346,10 +353,10 @@ pub fn ingest_project_batched(
 
 /// The suppression predicate's OWN contract, at the unit level: which recorded keys it hands a
 /// sink, given a stream. Both lanes compile it, because the predicate is not `symbols`-gated - it
-/// reads recorded events, it does not walk a tree. The SEAM-level proofs live with their criteria:
-/// that a prior run's non-ingest key never suppresses this run's keyed emit, and that a reverted
-/// file survives the full suppression stack, are pinned at the conductor's seeding seam and over a
-/// cold rebuild respectively, not here.
+/// reads recorded events, it does not walk a tree. The two SEAM-level proofs BELONG to their own
+/// criteria and are not in this tree yet: that a prior run's non-ingest key never suppresses this
+/// run's keyed emit is criterion 2's, and that a reverted file survives the full suppression stack
+/// is criterion 3's.
 #[cfg(test)]
 mod dedup_tests {
     use super::{derived_key_parts, project_scoped_replay_keys, META_REPLAY_KEY};
