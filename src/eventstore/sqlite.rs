@@ -511,10 +511,21 @@ fn sql_literal(s: &str) -> String {
 /// there would be silent (still correct, but a whole-table walk per append, which is
 /// the very cost this guard exists to avoid).
 ///
-/// Two escapes, both required and neither optional: the JSON path spells a quote or a
-/// backslash inside its quoted member name with a backslash, and the finished path is
-/// then a SQL string literal like any other, so it goes through [`sql_literal`] rather
-/// than being pasted between hand-written quotes.
+/// TWO nested quotings, and both are the caller's string: the metadata key is a JSON
+/// member name inside a path, and that whole path is then a SQL string literal. So the
+/// key is escaped for JSON (a backslash or a quote inside a member name is spelled with a
+/// backslash) and the finished path goes through [`sql_literal`] like any other literal,
+/// rather than being pasted between hand-written quotes - a single apostrophe in a
+/// consumer's key would otherwise end the literal early and leave the rest of the path as
+/// stray SQL.
+///
+/// ONE SHAPE THIS CANNOT ADDRESS, and it fails safe rather than silently wrong: SQLite's
+/// JSON path parser accepts an escaped backslash inside a quoted member name but NOT an
+/// escaped double quote (3.46). A metadata key carrying a `"` is therefore not reachable
+/// by any `json_extract` path, so every probe answers "not recorded" and the guard
+/// SUPPRESSES NOTHING for such a policy - it appends, which is the fail-safe direction,
+/// and never mistakes one key for another. Pinned by
+/// `a_metadata_key_that_no_json_path_can_address_suppresses_nothing`.
 fn key_expr(meta_key: &str) -> String {
     let path = format!(
         "$.\"{}\"",
@@ -1678,6 +1689,96 @@ mod content_identity_guard {
             None,
             "a budget that cannot cover every generation must answer UNDETERMINED, so the \
              append goes through"
+        );
+    }
+
+    /// THE RENDERED SQL IS SQL, WHATEVER THE POLICY IS SPELLED WITH. The metadata key and
+    /// the covered type names are configuration (a consumer's strings, not this module's)
+    /// rendered into statement text once, so they are the one place a quote could end a
+    /// literal early and leave the remainder as stray SQL. Both go through the same
+    /// escaper, and the store is driven here with a policy carrying an apostrophe (the
+    /// character that ends a SQL literal) and a backslash (the one that escapes inside a
+    /// JSON path) in BOTH the metadata key and a covered type name.
+    #[test]
+    fn a_policy_spelled_with_quotes_and_backslashes_still_guards() {
+        let awkward = "re'play\\key";
+        let awkward_type = "Ty'pe\\A";
+        let store = Store::open(":memory:")
+            .unwrap()
+            .with_content_identity(ContentIdentity::new(awkward, [awkward_type], subject_of));
+        let h1 = [Event::new(awkward_type, b"payload".to_vec()).with_meta(awkward, "gc/a.rs@h1#0")];
+        // A broken rendering shows up as a backend error (unparsable) or as a probe that
+        // never matches (mis-escaped); the two appends below separate both from working.
+        assert_eq!(
+            store
+                .append("run", ExpectedRevision::Any, &h1)
+                .expect("the rendered probes must be valid SQL")
+                .written(),
+            1
+        );
+        assert_eq!(
+            store
+                .append("run", ExpectedRevision::Any, &h1)
+                .expect("and stay valid on the suppressing path")
+                .written(),
+            0,
+            "the guard reads the awkward metadata key just as well as a plain one"
+        );
+    }
+
+    /// A metadata key NO JSON path can address fails SAFE. SQLite's path parser accepts an
+    /// escaped backslash inside a quoted member name but not an escaped double quote, so a
+    /// key carrying a `"` is unreachable by `json_extract` however it is spelled. The guard
+    /// must then suppress NOTHING - append, the fail-safe direction - and must never
+    /// silently read some OTHER key's value as this one's.
+    #[test]
+    fn a_metadata_key_that_no_json_path_can_address_suppresses_nothing() {
+        let unreachable = "quo\"ted";
+        let store = Store::open(":memory:")
+            .unwrap()
+            .with_content_identity(ContentIdentity::new(
+                unreachable,
+                DERIVED_INDEX_TYPES,
+                subject_of,
+            ));
+        let h1 = [Event::new(TYPE_CODE_ENTITY_EXTRACTED, b"payload".to_vec())
+            .with_meta(unreachable, "gc/a.rs@h1#0")];
+        store.append("run", ExpectedRevision::Any, &h1).unwrap();
+        assert_eq!(
+            store
+                .append("run", ExpectedRevision::Any, &h1)
+                .expect("an unaddressable key is not an error")
+                .written(),
+            1,
+            "a probe that cannot see the key answers 'not recorded', so the append goes \
+             through"
+        );
+        assert_eq!(rows(&store, "run"), 2);
+    }
+
+    /// A policy that covers NO type suppresses nothing - and, just as importantly, renders
+    /// SQL that PARSES. `type IN ()` is not valid SQL, so a store configured this way would
+    /// fail every append rather than simply guard nothing; `type IN (NULL)` is never true,
+    /// which is exactly what covering no type means.
+    #[test]
+    fn a_policy_that_covers_no_type_renders_parsable_sql_and_suppresses_nothing() {
+        assert_eq!(type_list(&[]), "NULL");
+        let store = Store::open(":memory:")
+            .unwrap()
+            .with_content_identity(ContentIdentity::new(
+                META_REPLAY_KEY,
+                Vec::<String>::new(),
+                subject_of,
+            ));
+        let h1 = batch("src/a.rs", "h1");
+        store.append("run", ExpectedRevision::Any, &h1).unwrap();
+        assert_eq!(
+            store
+                .append("run", ExpectedRevision::Any, &h1)
+                .expect("an empty type set must still render SQL that parses")
+                .written(),
+            2,
+            "covering no type suppresses nothing"
         );
     }
 
