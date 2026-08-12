@@ -38,12 +38,16 @@ than letting the planner guess.
 
 ### F3 - The self-contradictory spec (the most expensive single failure)
 
-A spec prescribed a mechanism (dedup against every key ever recorded), asserted a property of it
-("a changed file hashes to fresh keys"), and demanded a constraint (the folded graph equals the
-current tree) that the prescribed mechanism violates in a corner case the author never walked
-(a file REVERTED to earlier content). No implementation can satisfy a contradiction; the review
-panel spent SIX attempts correctly rejecting partial resolutions before the spec was amended.
-The panel even ruled `cause: spec-ambiguity` - the system explicitly billing the spec author.
+When a spec states requirements in more than one form - a prescribed mechanism, asserted
+properties of that mechanism, and independent constraints on the outcome - the forms can
+contradict each other in a corner case the author never walked, and the contradiction is
+invisible until an implementation reaches it. No implementation can satisfy a contradiction:
+every attempt violates one clause or another, each rejection is individually correct, and the
+run churns until someone re-reads the SPEC instead of the diffs. The tell is rejections that
+keep citing the same constraint against different, otherwise-reasonable implementations - or a
+review verdict that names the cause as spec ambiguity outright. (Recorded cost: six attempts
+rejected against one unwalked corner - a file reverting to earlier content - before the spec
+was amended.)
 
 **Countermeasure:** the constraints walk. Take every Global constraint and every criterion and
 walk them against the standard corner-case list: empty input, repeated input, REVERT/rollback to
@@ -106,20 +110,22 @@ the spec, the model, or the panel - misdiagnoses it.
 (they cite checkable facts) and separate infra findings from semantic ones. Fix infra in the
 binary via its own spec; never let it masquerade as review strictness.
 
-### F9 - As-built prose that keeps earning new rejections
+### F9 - Unbounded claim surface: prose that says more than the artifact owes
 
-A unit whose CODE was ratified burned four consecutive attempts on its DOCUMENTATION: each
-remedial rewrite of an as-built narrative added a fresh universal claim ("no suppression
-decision is involved", "it can leave the graph no further behind", "cases sit outside the
-contract") that the next adversarial round falsified against the code. The adjudicator's own
-post-mortem: the enumeration is where every falsehood came from, and a shorter true section
-clears the bar a longer one has to earn universal-by-universal.
+Every statement in a reviewed artifact is a claim that can be falsified, and prose invites
+stronger claims than anything else: universal quantifiers ("never", "only", "all"), exhaustive
+enumerations, and reassuring guarantees nobody asked for. Under adversarial review each
+unnecessary claim is an independent way to fail - and remediation makes it WORSE by default,
+because the natural way to fix a falsified statement is to write a longer, more qualified one,
+which adds new claims to falsify. The result is an artifact whose verified core is done while
+its claim surface grows a fresh defect per round and never converges. (Recorded cost: four
+consecutive rejections of a unit whose code was ratified and untouched throughout.)
 
-**Countermeasure, at spec time:** when a criterion demands documentation, ask for the RULE
-stated short and pinned by an accuracy test, never an exhaustive enumeration of cases or
-guarantees the section does not owe. Write the bound into the criterion ("re-render the
-paragraph so it states the rule; no new enumeration"). At remediation time the same discipline
-is "prefer deletion to replacement": most falsified prose is a claim nobody asked for.
+**Countermeasure, at spec time:** bound the claim surface in the criterion itself - demand the
+RULE stated short and pinned by an accuracy check, and say explicitly that no enumeration of
+cases or guarantees beyond it is owed. **At remediation time:** prefer deletion to replacement -
+a claim the artifact does not owe is removed, not repaired - and treat any fix that ADDS a
+universal as the failure mode repeating.
 
 ## Amending a spec mid-run
 
