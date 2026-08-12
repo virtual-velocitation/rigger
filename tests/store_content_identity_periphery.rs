@@ -48,7 +48,8 @@ use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{
     Appended, ContentIdentity, Direction, Error as StoreError, Event, EventStore, ExpectedRevision,
-    Filter, Position, Revision, Subscription,
+    Filter, Position, Revision, Subscription, GUARD_DEGRADED_NO_INDEX, GUARD_DEGRADED_UNDETERMINED,
+    META_GUARD_DEGRADED,
 };
 use rigger::ingest::{append_and_fold_batch, DERIVED_INDEX_TYPES, META_REPLAY_KEY};
 
@@ -1526,5 +1527,336 @@ fn on_an_established_log_the_guard_is_the_only_thing_that_stops_the_duplication(
             .written(),
         1,
         "identical domain events are two facts, whatever the guard is doing"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The degradation mark: what a guard that has stopped defending says, and where
+// ---------------------------------------------------------------------------
+
+/// The NAME of the content-key index this project's policy needs, read off the database
+/// rather than derived in the test. The store owns that name; a test that recomputed it
+/// would pin the derivation instead of the artifact, and would keep passing after the
+/// derivation and the store drifted apart.
+fn content_key_index_name(path: &str) -> String {
+    let conn = rusqlite::Connection::open(path).expect("an independent reader opens");
+    let mut stmt = conn
+        .prepare(
+            "SELECT name, sql FROM sqlite_master \
+             WHERE type = 'index' AND tbl_name = 'events' AND sql IS NOT NULL",
+        )
+        .expect("sqlite_master is readable");
+    let mut named: Vec<String> = stmt
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+        .expect("sqlite_master is queryable")
+        .map(|row| row.expect("a sqlite_master row"))
+        .filter(|(_, sql)| sql.contains(META_REPLAY_KEY) && sql.contains("json_extract"))
+        .map(|(name, _)| name)
+        .collect();
+    assert_eq!(
+        named.len(),
+        1,
+        "one policy needs exactly one content-key artifact: {named:?}"
+    );
+    named.pop().expect("just asserted one")
+}
+
+/// Run maintenance SQL through an INDEPENDENT connection - the operator's shell, or
+/// another process - so what the store meets is the database's real state and not
+/// something a handle was told.
+fn sql(path: &str, statements: &str) {
+    rusqlite::Connection::open(path)
+        .expect("an independent writer opens")
+        .execute_batch(statements)
+        .expect("the maintenance statements run");
+}
+
+/// The `meta` column exactly as the log holds it, in log order, for one stream - what an
+/// operator with a SQL prompt sees, with no Rust type in the way.
+fn stored_meta(path: &str, stream: &str) -> Vec<String> {
+    let conn = rusqlite::Connection::open(path).expect("an independent reader opens");
+    let mut stmt = conn
+        .prepare("SELECT meta FROM events WHERE stream = ?1 ORDER BY position")
+        .expect("the events table is readable");
+    let rows: Vec<String> = stmt
+        .query_map([stream], |r| r.get::<_, String>(0))
+        .expect("the events table is queryable")
+        .map(|row| row.expect("an events row"))
+        .collect();
+    rows
+}
+
+/// A GUARD THAT HAS STOPPED DEFENDING SAYS SO, AND AN OPERATOR CAN SEE IT.
+///
+/// The three constants this criterion adds ([`META_GUARD_DEGRADED`] and the two reasons)
+/// are a public vocabulary and a new SERIALIZED form: a metadata pair persisted onto
+/// every covered row an unjudging append writes. `src/eventstore/mod.rs` promises that
+/// "any read of the store, and any operator with a SQL prompt" can see it, and that
+/// promise is not a statement about one struct's method - it spans the port, the
+/// project-scoping decorator every command actually composes, both read paths, and the
+/// bytes in the file. No in-crate test can reach any of that: the store's own tests
+/// drive a bare `:memory:` handle and read it back through one method on that same
+/// handle.
+///
+/// The mark's whole value is that its PRESENCE is information, so this drives the guard
+/// through both of its states on one log: off (every fact still lands, and every covered
+/// row says why it was not judged) and back on (nothing is stamped, and the suppression
+/// resumes). A mark that appeared on a healthy append would be noise an operator learns
+/// to ignore.
+#[test]
+fn a_guard_that_stopped_defending_says_so_in_the_log_it_guards() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let path = dir.path().join("events.db");
+    let path = path.to_str().expect("a utf-8 path").to_string();
+    let scoped = "proj-alpha-run"; // what the decorator names the stream on disk
+
+    // A HEALTHY log first, so the artifact exists to be taken away and the events the
+    // degraded append re-offers are genuinely current.
+    {
+        let store = Store::open(&path)
+            .unwrap()
+            .with_content_identity(project_policy());
+        let alpha = Namespaced::new(&store, "alpha");
+        let port: &dyn EventStore = &alpha;
+        port.append("run", ExpectedRevision::Any, &batch("src/a.rs", "h1"))
+            .unwrap();
+        assert_eq!(
+            port.append("run", ExpectedRevision::Any, &batch("src/a.rs", "h1"))
+                .unwrap()
+                .written(),
+            0,
+            "the fixture starts with the guard demonstrably ON"
+        );
+    }
+
+    // Take the artifact away in the one way a handle cannot paper over: occupy its name
+    // with a table, so every build this policy attempts fails to commit.
+    let index = content_key_index_name(&path);
+    sql(
+        &path,
+        &format!("DROP INDEX {index}; CREATE TABLE {index}(blocker);"),
+    );
+
+    let store = Store::open(&path)
+        .unwrap()
+        .with_content_identity(project_policy());
+    let alpha = Namespaced::new(&store, "alpha");
+    let port: &dyn EventStore = &alpha;
+
+    // Two covered events at a generation that IS recorded and IS current - a healthy
+    // guard suppresses both - one of them carrying the caller's own metadata beside its
+    // content key, plus a domain event carrying the same caller metadata.
+    let handed = vec![
+        Event::new(TYPE_CODE_ENTITY_EXTRACTED, b"payload".to_vec())
+            .with_meta(META_REPLAY_KEY, "gc/src/a.rs@h1#0")
+            .with_meta("courier", "u4"),
+        keyed(TYPE_EDGE_INFERRED, "gc/src/a.rs@h1#1"),
+        Event::new(TYPE_REVIEW_FINDING, b"a finding".to_vec()).with_meta("courier", "u4"),
+    ];
+    let appended = port.append("run", ExpectedRevision::Any, &handed).unwrap();
+    assert_eq!(
+        appended.written(),
+        3,
+        "no usable index, no suppression: the fail-safe direction is to WRITE, which is \
+         exactly why the degradation has to be recorded - the log simply starts growing \
+         again and nothing else says why"
+    );
+
+    let recorded = port.read_stream("run", 0, Direction::Forward).unwrap();
+    assert_eq!(
+        recorded.len(),
+        5,
+        "the seeded pair plus the three just written"
+    );
+    let written = &recorded[2..];
+    for (i, event) in written.iter().take(2).enumerate() {
+        assert_eq!(
+            event.meta.get(META_GUARD_DEGRADED).map(String::as_str),
+            Some(GUARD_DEGRADED_NO_INDEX),
+            "covered event {i} was admitted by a guard that was not judging, and names WHICH \
+             defence gave way - `no-index` and `generations-exceeded` ask for different remedies"
+        );
+    }
+    assert_eq!(
+        written[2].meta.get(META_GUARD_DEGRADED),
+        None,
+        "a domain event is never rewritten by a store that merely happened to be unhealthy \
+         while it landed"
+    );
+
+    // The mark is ADDITIVE. It rides on events the append was already writing, so it may
+    // not displace what the caller put there - least of all the content key the guard's
+    // own index is built on.
+    assert_eq!(
+        written[0].meta.get("courier").map(String::as_str),
+        Some("u4"),
+        "the caller's own metadata survives verbatim"
+    );
+    assert_eq!(
+        written[0].meta.get(META_REPLAY_KEY).map(String::as_str),
+        Some("gc/src/a.rs@h1#0"),
+        "and so does the content key, or the row stops being findable by the very index \
+         whose absence is being reported"
+    );
+    assert_eq!(
+        written[2].meta.get("courier").map(String::as_str),
+        Some("u4"),
+        "an unmarked domain event keeps its metadata too"
+    );
+
+    // THE OTHER READ PATH. `read_stream` and `read_all` are different statements, and a
+    // subscription resume and a projection rebuild take the second one.
+    let globally = port
+        .read_all(0, Direction::Forward, &Filter::default())
+        .unwrap();
+    assert_eq!(
+        globally
+            .iter()
+            .filter_map(|e| e.meta.get(META_GUARD_DEGRADED))
+            .count(),
+        2,
+        "the global read surfaces the same two marks the stream read does"
+    );
+
+    // AND THE BYTES. The claim is that an operator with a SQL prompt sees it, which is a
+    // claim about the file - read here through a connection that knows nothing about
+    // this crate's types.
+    let on_disk = stored_meta(&path, scoped);
+    assert_eq!(on_disk.len(), 5);
+    assert!(
+        on_disk[2].contains(META_GUARD_DEGRADED) && on_disk[2].contains(GUARD_DEGRADED_NO_INDEX),
+        "the reason is IN the row, not in a process that has since exited: {}",
+        on_disk[2]
+    );
+    assert!(
+        on_disk[2].contains("courier"),
+        "beside the caller's own pairs, in one meta object: {}",
+        on_disk[2]
+    );
+    assert!(
+        !on_disk[4].contains(META_GUARD_DEGRADED),
+        "and not on the domain row: {}",
+        on_disk[4]
+    );
+
+    // GIVE THE ARTIFACT BACK. A guard that is judging stamps nothing, so the mark means
+    // what it says, and the suppression it was not doing resumes.
+    drop(alpha);
+    drop(store);
+    sql(&path, &format!("DROP TABLE {index};"));
+
+    let healed = Store::open(&path)
+        .unwrap()
+        .with_content_identity(project_policy());
+    let alpha = Namespaced::new(&healed, "alpha");
+    let port: &dyn EventStore = &alpha;
+    let fresh = port
+        .append("run", ExpectedRevision::Any, &batch("src/b.rs", "h1"))
+        .unwrap();
+    assert_eq!(fresh.written(), 2, "a new subject's first generation lands");
+    assert_eq!(
+        port.append("run", ExpectedRevision::Any, &batch("src/b.rs", "h1"))
+            .unwrap()
+            .written(),
+        0,
+        "and the guard is genuinely back on - the rows the degraded append wrote did not \
+         confuse it"
+    );
+    let after = port.read_stream("run", 0, Direction::Forward).unwrap();
+    assert!(
+        after[5..]
+            .iter()
+            .all(|e| !e.meta.contains_key(META_GUARD_DEGRADED)),
+        "a healthy append stamps nothing: the mark's PRESENCE is the information"
+    );
+}
+
+/// THE TWO OFF STATES ARE DIFFERENT FACTS, and only the reason on the row tells them
+/// apart. `no-index` says an artifact is missing - rebuild it. `generations-exceeded`
+/// says the artifact is there and one subject has recorded more generations than the
+/// probe may step through - that subject needs compaction, and rebuilding the index
+/// would change nothing. A single "the guard is unwell" mark would send an operator to
+/// the wrong remedy, so this drives the second state through the same public port and
+/// the same decorator as the first, and pins that a subject the walk CAN answer is still
+/// guarded on the very same log.
+#[test]
+fn an_exhausted_generation_walk_names_a_different_defence_than_a_missing_index() {
+    // The store's latest-generation walk has a step budget it keeps to itself. This
+    // fixture has to exceed it, so it is deliberately far above any plausible bound; the
+    // assertion below fails loudly if the budget ever grows past it, rather than quietly
+    // ceasing to reach the state it exists to cover.
+    const GENERATIONS: usize = 1500;
+
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let path = dir.path().join("events.db");
+    let path = path.to_str().expect("a utf-8 path").to_string();
+
+    let store = Store::open(&path)
+        .unwrap()
+        .with_content_identity(project_policy());
+    let alpha = Namespaced::new(&store, "alpha");
+    let port: &dyn EventStore = &alpha;
+
+    // One subject with more recorded generations than the walk may step through. They go
+    // in as one append: every verdict is taken against the state the log was in when the
+    // append started, so none of them is redundant and none of them walks.
+    let history: Vec<Event> = (0..GENERATIONS)
+        .map(|i| {
+            keyed(
+                TYPE_CODE_ENTITY_EXTRACTED,
+                &format!("gc/src/a.rs@h{i:06}#0"),
+            )
+        })
+        .collect();
+    assert_eq!(
+        port.append("run", ExpectedRevision::Any, &history)
+            .unwrap()
+            .written(),
+        GENERATIONS,
+        "every generation of the deep subject is a genuinely new fact"
+    );
+
+    // A shallow subject on the SAME log, so the two verdicts can be compared.
+    port.append("run", ExpectedRevision::Any, &batch("src/b.rs", "h1"))
+        .unwrap();
+
+    // Re-offering a RECORDED but no-longer-current generation of the deep subject is
+    // what sends the probe walking.
+    let stale = vec![keyed(TYPE_CODE_ENTITY_EXTRACTED, "gc/src/a.rs@h000000#0")];
+    let appended = port.append("run", ExpectedRevision::Any, &stale).unwrap();
+    assert_eq!(
+        appended.written(),
+        1,
+        "an undetermined walk never suppresses - it appends, which is the only safe \
+         direction when the guard does not know what the subject is currently at"
+    );
+
+    let recorded = port.read_stream("run", 0, Direction::Forward).unwrap();
+    let last = recorded.last().expect("the append landed");
+    assert_eq!(
+        last.meta.get(META_GUARD_DEGRADED).map(String::as_str),
+        Some(GUARD_DEGRADED_UNDETERMINED),
+        "the duplicate this let through is EXPLAINABLE rather than mysterious, and it names \
+         the walk rather than the index - if this fails with `None`, the walk's step budget \
+         has grown past this fixture's {GENERATIONS} generations and the fixture, not the \
+         guard, is what needs raising"
+    );
+
+    // The degradation is one append's fact about one walk, not a latch on the store: the
+    // shallow subject, whose current generation the walk answers in a step or two, is
+    // still guarded on this same log and still stamps nothing.
+    let shallow = port
+        .append("run", ExpectedRevision::Any, &batch("src/b.rs", "h1"))
+        .unwrap();
+    assert_eq!(
+        shallow.written(),
+        0,
+        "a subject the walk CAN answer keeps its guard while another subject is beyond it"
+    );
+    let after = port.read_stream("run", 0, Direction::Forward).unwrap();
+    assert_eq!(
+        after.len(),
+        recorded.len(),
+        "and that suppression wrote no row for a mark to ride on"
     );
 }
