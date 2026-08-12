@@ -60,11 +60,16 @@ menu, not a mystery.
   exits 0 and prints each prunable accumulation with its MEASURED reclaimable size and the flag
   that prunes it (`--runs`: dead-run graph rows and bytes; `--derived`: redundant derived-index
   rows and bytes), so the operator discovers the safe surface by running the obvious command.
-  With a flag, behavior is unchanged.
+  On a backend where a prune is unavailable (the server backend, where `--derived` refuses by
+  design), the menu SAYS SO on that line rather than omitting it or faking a size - the menu
+  is honest per backend. With a flag, behavior is unchanged.
 - **`rigger validate` gains two operational advisories** (`src/main.rs::cmd_validate`,
   advisory-warn like the model-drift line, never failing validation): (a) INDEX STALENESS -
-  when the persisted symbols index disagrees with the tree beyond a small tolerance (measured
-  by the existing per-file content hashes), warn and name `rigger reindex`; (b) LOG BLOAT -
+  when the persisted symbols index disagrees with the tree, warn and name `rigger reindex`.
+  COST-BOUNDED by construction: the check compares the index's path set against the tree's
+  (added/removed files, a walk without reads) plus the existing per-file content hashes of a
+  small deterministic sample - never a full-tree rehash, because validate is a preflight an
+  operator must not learn to skip for being slow; (b) LOG BLOAT -
   when the derived-index types' duplication factor in the log exceeds a threshold (distinct
   payload keys vs rows, one aggregate query), warn with the measured factor and name
   `rigger reset --derived`. Consumers upgrading with pre-fix bloated logs meet the fix at the

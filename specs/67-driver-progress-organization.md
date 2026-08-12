@@ -38,7 +38,9 @@ describing the work, with the role and attempt as suffix - never a slug a human 
   `Adversary`, `Adjudicator`, `Plan-Critique`) so the reader always knows WHO is acting; the
   action phrase states that persona's MANDATE - what it does to the unit - because the
   criterion sentence alone would render every tier of one unit identically. The role map in
-  the driver: implementer "implement"; the sdet lens "evaluate testing effectiveness";
+  the driver: implementer "implement"; sdet-author (a Build-phase authoring role, live in
+  production runs today) "author the discriminating tests for";
+  the sdet lens "evaluate testing effectiveness";
   the architecture lens "evaluate architectural integrity"; adversary "challenge the
   findings, assumptions, and rigor of <roster>" (its mandate is to DISPROVE the other
   agents' work - surface assumptions not grounded in reality and quality gaps the tiers

@@ -48,13 +48,20 @@ orchestrator's own surfaces the moment it happens instead of waiting to be polle
   `dashboard: not serving (marker names dead pid <N>) - run 'rigger dash' or the next step
   restarts it` instead of a URL that answers to nobody. The `--json` shape carries the same
   truth as a field.
-- **The driver pushes anomalies as they happen** (`workflows/rigger.js`): the moment a step's
-  returned wave or status carries an attention event - a unit ESCALATED, the run HALTED with a
-  reason, a worker's death recorded for the Nth time on one unit, the spawn budget entering
-  its final tenth - the driver emits a `log()` narrator line naming the event and the response
-  skill, so the orchestrating session sees it live in its own progress surface (and in the
-  transcript) without polling anything. The driver's behavior is otherwise byte-for-byte
-  unchanged: log lines only, no new stops, no retry-rule changes.
+- **The step wire carries attention; the driver relays it** (`src/main.rs::cmd_step` /
+  `src/spawn.rs::Step`, then `workflows/rigger.js`): anomalies push through ONE additive,
+  optional `attention` array on the step's JSON line, stamped by `rigger step` from the
+  conductor's LIVE state exactly as the existing `halted` field is (the field the pure log
+  fold cannot see is exactly the field the step must stamp) - the driver must never scrape or
+  infer what the wire does not say. Each entry names the event and the unit: a unit ESCALATED,
+  the run HALTED with its reason, a worker's death recorded for the Nth time on one unit, the
+  spawn budget crossing into its final tenth. THRESHOLD EVENTS ARE STAMPED ONCE PER CROSSING,
+  conductor-side (the breaker's idempotency discipline), so a long run never spams. The field
+  is serde-defaulted and omitted when empty, keeping a clean run's wire byte-stable. The
+  driver renders each entry as a `log()` narrator line naming the event and its response
+  skill, so the orchestrating session sees it live in its own progress surface without polling
+  anything. The driver's behavior is otherwise byte-for-byte unchanged: log lines only, no new
+  stops, no retry-rule changes.
 
 ## Notes (non-criteria)
 
@@ -72,8 +79,12 @@ orchestrator's own surfaces the moment it happens instead of waiting to be polle
 - Both feature lanes stay green: `cargo fmt --check`; `cargo clippy --all-targets -D warnings`;
   `cargo test` - on default features AND `--no-default-features`.
 - The docs-drift gate stays green over the registry; `rigger setup` remains non-destructive.
-- Push is additive-only: the driver gains narrator lines, never new failure modes; status
-  gains truth, never a changed exit status; `node --check` passes on the template.
+- Push is additive-only: the step JSON gains one optional serde-defaulted `attention` field
+  (omitted when empty; an older driver ignores it, a newer driver on an older binary logs
+  nothing - graceful in both mix directions), the driver gains narrator lines, never new
+  failure modes; status gains truth, never a changed exit status; `node --check` passes on
+  the template. The marker LIFECYCLE (write-after-bind, self-heal) is spec 62's - this spec
+  only makes status VERIFY before it prints.
 
 ## Done when
 
@@ -87,12 +98,15 @@ orchestrator's own surfaces the moment it happens instead of waiting to be polle
   prints the not-serving line (naming the dead pid and the restart) and no URL; with a
   live serving dash, today's URL line is unchanged; `--json` carries the same truth. This
   criterion OWNS the status dash line.
-- [ ] a test proves THE DRIVER PUSHES ESCALATIONS: a wave whose step reports a unit escalated
-  (or a halted run) produces a narrator log line naming the unit, the event, and the
-  response skill, at the wave it happened - not only in the fixpoint stop message. This
-  criterion OWNS the driver push; its log-only bound is pinned (no stop-path change).
-- [ ] a test proves THE DRIVER PUSHES ATTRITION: a worker death recorded repeatedly for one
-  unit and a spawn budget entering its final tenth each produce their narrator line once
-  per threshold crossing, never per wave. This criterion OWNS the attrition push.
+- [ ] a test proves THE STEP STAMPS ATTENTION: a step during which a unit escalated, the run
+  halted, a worker's death recurred, or the budget crossed into its final tenth prints the
+  additive `attention` array naming each event and unit - stamped from live conductor state,
+  once per threshold crossing, omitted entirely on a clean step so today's wire is
+  byte-stable. This criterion OWNS the wire stamp.
+- [ ] a test proves THE DRIVER RELAYS ATTENTION: each `attention` entry produces a narrator
+  log line naming the event, the unit, and the response skill, at the wave it arrived - and
+  the driver renders ONLY what the wire says (an entry-less step logs nothing). This
+  criterion OWNS the relay; the wire stamp is the previous criterion's, and its log-only
+  bound is pinned (no stop-path change).
 - [ ] both feature lanes green (fmt, clippy, test on default and `--no-default-features`),
   including `node --check` on the template.

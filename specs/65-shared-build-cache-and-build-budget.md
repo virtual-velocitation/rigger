@@ -23,14 +23,23 @@ than bundled, applied uniformly to every build the loop runs.
   (`build.cache_dir`, default `<state home>/rigger/build-cache` so every project and worktree
   on the machine shares one cache) and `CARGO_INCREMENTAL=0` (incremental output defeats
   wrapper caching; the warm per-unit target dirs from spec 64 carry the incremental win
-  instead).
-- **Machine-wide build budget** (`build.max_concurrent`, default bounded): a flock-based slot
-  directory (the machine-wide-flock precedent from the accelerator construct lock) caps how
-  many builds run concurrently ACROSS every rigger process on the machine; the N+1th build
-  waits for a slot rather than stacking another compiler fleet into memory. Slots are held
-  for the build's duration and auto-release on crash (flock semantics). `build.jobs`
-  optionally caps each build's internal parallelism (`CARGO_BUILD_JOBS`), so slots x jobs can
-  be sized to the machine.
+  instead). Failure directions, decided here: a NAMED wrapper whose binary is absent or whose
+  cache dir cannot be created errors loudly at run start (the operator configured it; silence
+  would fake a cache); under `auto`, an unusable wrapper or dir skips the whole layer and
+  reports "none" through validate - configured-explicit fails, discovered-implicit degrades.
+- **Machine-wide build budget** (`build.max_concurrent`, DEFAULT 4; `0` means unlimited, the
+  `budget: 0` convention): a flock-based slot directory caps how many builds run concurrently
+  ACROSS every rigger process on the machine; the N+1th build waits for a slot rather than
+  stacking another compiler fleet into memory. THE AUTHORITATIVE STATE IS THE SLOT FILES: a
+  fixed set of `slot-<i>.lock` files under the OS temp dir (the machine-wide-flock precedent
+  of the accelerator construct lock - temp dir, not the repo, because the budget spans every
+  project on the machine), each held via exclusive flock for the build's duration and
+  auto-released by the kernel on any exit, clean or crashed. An in-process counter, an
+  environment variable, or any state a crash strands is NOT an implementation of this budget.
+  A HUNG build holds its slot - by design, since the kernel frees it the moment the process
+  dies and the existing agent liveness watchdogs are what kill hung work; the budget adds no
+  second reaper. `build.jobs` optionally caps each build's internal parallelism
+  (`CARGO_BUILD_JOBS`), so slots x jobs can be sized to the machine.
 - **Honest surfaces**: `rigger validate` reports the RESOLVED build environment - wrapper
   (which binary, or "none found" under auto, or the hard error for a named-but-absent one),
   cache dir, slot budget - so an operator sees at a glance whether the cache is actually

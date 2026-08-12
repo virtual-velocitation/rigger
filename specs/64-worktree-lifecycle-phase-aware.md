@@ -32,10 +32,17 @@ agents into inventing private CARGO_TARGET_DIR workarounds against the shared-ta
   spawn self-heals in the binary rather than in an agent's opening minutes. Agents stop
   needing their improvised `git worktree add` recovery; the persona guidance that grew around
   the failure can retire once this lands.
-- **Crash reclamation is unchanged** (`src/worktree.rs::sweep_terminal`): the step-start sweep
-  keeps its merged-only rule and remains the reaper for worktrees a crashed process leaked.
-  A PARKED unit's branch is unmerged by definition, so the sweep already leaves it alone -
-  the premature remover was the stage driver, not the sweep.
+- **Crash reclamation learns liveness** (`src/worktree.rs::sweep_terminal` + its caller): the
+  step-start sweep remains the reaper for worktrees a crashed process leaked, but its
+  merged-only ancestry rule is NOT sufficient alone: a parked unit whose attempt produced an
+  EMPTY diff has a branch tip that IS an ancestor of the run branch while the unit is live in
+  review (a recorded, recurring case - review-only and docs-scoped units), and the ancestry
+  rule would sweep its worktree mid-review. The sweep therefore skips any worktree whose unit
+  is LIVE in the current run - liveness derived from the CURRENT run's slice of the event log
+  (the same run-scoped fold the conductor already reads), never from a process-memory list -
+  and reclaims only worktrees that are both merged-or-dead AND not live. The premature remover
+  was the stage driver; the sweep's new liveness conjunct closes the empty-diff corner the
+  ancestry test cannot see.
 - **Lifecycle invariant restated** (comments at the remove site and on `sweep_terminal`): the
   conductor owns the worktree's whole lifecycle, where the lifetime is the UNIT'S LIFECYCLE
   (create at first need, remove at terminal), not the conductor process's. The durable-branch
@@ -75,6 +82,9 @@ agents into inventing private CARGO_TARGET_DIR workarounds against the shared-ta
 - [ ] a test proves ENSURE-ON-PARK: with the assigned worktree deleted out-of-band after a
   park, the conductor's next hand-off (or the park itself, whichever the seam makes honest)
   restores it on the unit branch at the recorded tip before the agent consumes it.
-- [ ] a test proves the SWEEP STILL RECLAIMS CRASH RESIDUE: a worktree whose branch is merged
-  into the run branch is swept at step start, and an unmerged (parked) unit's worktree is not.
+- [ ] a test proves the SWEEP STILL RECLAIMS CRASH RESIDUE WITHOUT EATING LIVE UNITS: a
+  merged worktree whose unit is NOT live is swept at step start; an unmerged parked unit's is
+  not; and a LIVE parked unit whose branch tip equals the run tip (the empty-diff case) is
+  NOT swept despite passing the ancestry test - liveness read from the current run's log
+  slice.
 - [ ] both feature lanes green (fmt, clippy, test on default and `--no-default-features`).

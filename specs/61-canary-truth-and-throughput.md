@@ -28,9 +28,11 @@ takes (issues #24 and #22). Two defects and one cost problem:
 - **Attribution** (`src/canary.rs`): a tier catches the defect when it raises a finding about
   the anchor under tolerant matching - the finding's `about` entry and the item's `anchor`
   refer to the same file whether the reviewer spelled it repo-relative, absolute, or as a path
-  suffix. The scored `caught_by` is populated from the findings each tier actually raised, per
-  tier, exactly as the in-process tests already model. If a live run's findings genuinely
-  cannot be attributed (a tier raised nothing), the per-tier line says so honestly.
+  suffix. Tolerance is BOUNDED at path-segment boundaries: `corpus/a.rs` matches anchor `a.rs`
+  because the suffix begins at a `/`, while `extra.rs` does not - a substring match would score
+  the wrong file. The scored `caught_by` is populated from the findings each tier actually
+  raised, per tier, exactly as the in-process tests already model. If a live run's findings
+  genuinely cannot be attributed (a tier raised nothing), the per-tier line says so honestly.
 - **No fake zeros** (`src/canary.rs`, scorecard render): a rate is printed ONLY when its inputs
   were actually measured. When attribution recovered nothing for any item that was
   nevertheless correctly rejected, the per-tier line renders `n/a` with a one-line reason
@@ -60,15 +62,24 @@ takes (issues #24 and #22). Two defects and one cost problem:
 - **Per-spawn timing in stats** (`src/metrics.rs` / `src/main.rs::cmd_stats`): per-agent wall
   time becomes derivable from the log: `rigger stats` pairs each recorded spawn request with
   its recorded result by spawn id and reports duration aggregates (per tier/agent: count,
-  total, mean), so "which tier dominates a run's wall clock" is answerable with data. If the
-  recorded result event does not already carry what pairing needs, it gains a meta stamp on
-  the EXISTING event - no new event type.
+  total, mean), so "which tier dominates a run's wall clock" is answerable with data. A
+  request with NO recorded result (a dead worker) is excluded from every duration aggregate
+  and reported as its own unpaired count - a fabricated or zero duration must never enter a
+  mean. If the recorded result event does not already carry what pairing needs, it gains a
+  meta stamp on the EXISTING event - no new event type.
 
 ## Notes (non-criteria)
 
 - Tier semantics are unchanged: lenses are collectively one tier for catch purposes; the
   adjudicator's position-bias stability probe (natural + reversed order) stays as is.
 - The corpus format, defect classes, and fail-closed adjudication authority are untouched.
+- Crash-resume disposition, decided here: a canary run is ONE-SHOT and run-scope-free. An
+  interrupted run is restarted from scratch; the per-item stdout lines already printed are its
+  partial record, and no resume/replay machinery is owed by any unit.
+- Concurrency-vs-determinism, decided here: the fan-out and sharding criteria are pinned with
+  the DETERMINISTIC test driver the existing unit tests use - a live-model run is not
+  reproducible and is not what those criteria measure. Parallelism must not reorder or alter
+  what the fake driver's serial run scores.
 - No new event type is introduced anywhere in this spec.
 
 ## Global constraints
@@ -86,15 +97,18 @@ takes (issues #24 and #22). Two defects and one cost problem:
 ## Done when
 
 - [ ] a test proves TOLERANT ATTRIBUTION: a finding naming the anchor as an absolute path, a
-  repo-relative path, or a path suffix scores the raising tier into `caught_by`, and a finding
-  about an unrelated file still does not. This criterion OWNS the catch test.
+  repo-relative path, or a segment-boundary path suffix scores the raising tier into
+  `caught_by`, and a finding about an unrelated file - including one whose name merely ENDS
+  with the anchor's text without a segment boundary - still does not. This criterion OWNS the
+  catch test.
 - [ ] a test proves NO FAKE ZEROS: a scorecard whose items were correctly rejected but carry
   empty attribution renders the per-tier line as `n/a` with a reason, never `0/N (0.0%)`.
 - [ ] a test proves FALSE POSITIVES ARE FIRST-CLASS: a corpus with a rejected known-good
   control renders a control/false-positive line reporting it directly on the summary.
 - [ ] a test proves LENS FAN-OUT: within one item the tier-1 lenses run concurrently while the
   adversary observes all lens findings and the adjudicator observes the adversary's - pinned
-  at the scheduling seam, with scored outcomes identical to the serial order's.
+  at the scheduling seam with the deterministic test driver, scored outcomes identical to the
+  serial order's.
 - [ ] a test proves ITEM SHARDING AND THE JOBS CAP: independent corpus items run concurrently,
   `--jobs <n>` bounds total concurrent spawns (with a default greater than 1), and the single
   aggregated scorecard is identical to a serial run's.
@@ -106,5 +120,6 @@ takes (issues #24 and #22). Two defects and one cost problem:
 - [ ] a test proves FINDINGS VOLUME: each per-item record carries the count of findings each
   tier raised, and the scorecard aggregates it per tier.
 - [ ] a test proves SPAWN TIMING: `rigger stats` reports per-agent duration aggregates derived
-  by pairing recorded spawn requests with their results by spawn id, with no new event type.
+  by pairing recorded spawn requests with their results by spawn id, excludes unpaired
+  requests from every aggregate while reporting their count, with no new event type.
 - [ ] both feature lanes green (fmt, clippy, test on default and `--no-default-features`).

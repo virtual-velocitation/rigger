@@ -54,6 +54,14 @@ The mockup file is the visual contract for all of the below; it renders standalo
 
 - Node palette and shapes as mocked: functions blue, types teal, traits violet, concepts amber,
   files slate, memory pink; exact values in the mockup file's token block.
+- Test seams, decided here so no unit has to: the Rust view DTOs are pinned by cargo tests; the
+  in-page JS behavior (lens purity, card anatomy, handoff, overview collapse) is pinned by the
+  node-gated runtime harnesses this dashboard already uses (the spec-42/55/59 precedent) -
+  node present runs them, node absent skips them, and the cargo lanes stay authoritative for
+  everything Rust.
+- Degrade, decided here: a lens whose grain the projection does not hold yet (no concepts
+  derived, no communities assigned, an empty graph) renders a labeled empty state naming the
+  command that populates it - never an error, never a blank canvas.
 - The mockups use real entities from this repo; the implementation derives everything from the
   live graph, of any target project.
 - No new event type is introduced anywhere in this spec.
@@ -78,9 +86,11 @@ The mockup file is the visual contract for all of the below; it renders standalo
   and memory counts, and a card chip resolves to a lens handoff target of the chip's own
   taxonomy carrying the chosen subject.
 - [ ] a test proves the FILES LENS: file nodes sized by entity count with weighted `uses`
-  edges, directory hulls, and a card listing the file's top entities as code-lens handoffs.
+  edges, directory hulls, and a card listing the file's top entities - the handoff MECHANICS
+  those entities ride are criterion 2's, NOT this one's.
 - [ ] a test proves the CONCEPTS LENS: concept nodes sized by evidence weight with
-  shared-evidence edges, and a card listing top evidence as handoffs.
+  shared-evidence edges, and a card listing top evidence - handoff mechanics again
+  criterion 2's, NOT this one's.
 - [ ] a test proves the SUBJECT VIEW: clicking a node re-seeds to its one-hop neighborhood and
   the docked memory rail lists the subject's governing decisions/findings/concepts without
   adding nodes to the layout.
