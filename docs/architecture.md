@@ -741,12 +741,14 @@ is deduped under can never drift between them. Four properties define it:
   generation **as the walk lowered it** in full, and only what changed is ever re-emitted. That
   qualifier is load-bearing and the last bullet below is why: the walk's view of a file is not always
   the tree's. Whether the live graph then equals a cold rebuild is a property of the FOLD, not of
-  this rule - suppression withholds only an append whose content the log already records, so it can
-  leave the graph no further behind than the fold already left it. Cases do sit outside the contract,
-  and NOT for one shared reason; what follows names some of them and is not a closed enumeration.
+  this rule - suppression withholds only an append whose content the log already records: it is
+  correct about the LOG, and a lost fold is therefore NOT self-healing by re-ingest, because the
+  skip withholds exactly the re-append that would have re-folded it; only the append-and-fold
+  authority can heal that half. In each case below, the log stays right while the GRAPH or the TREE
+  diverges from it; what follows names some of them and is not a closed enumeration.
 
-  In these three, **no batch is folded for the file at all**, so no suppression decision is involved
-  in them. Read "the walk no longer sees it" strictly, because the two halves differ: the design half
+  In these three, **no batch is folded for the file at all**. Read "the walk no longer sees it"
+  strictly, because the two halves differ: the design half
   reads the LIVE tree (`walk_guarded` + a file read per path), so a path that is gone is gone to it,
   while the code half lowers from a PERSISTED symbols index when the project has one (the last bullet
   below). A path the tree has deleted that such an index still lists IS handed over as a batch, DOES
