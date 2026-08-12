@@ -12673,6 +12673,593 @@ mod tests {
         );
     }
 
+    // ---- Spec 60 criterion 3 (THE CHANGE PATH, AND THE REVERT THAT IS ONE) ----
+    //
+    // What a re-ingest APPENDS when the tree moved, and what the graph then holds - proved over the
+    // FULL suppression stack, criterion 1's sink rule and criterion 4's storage guard both in place
+    // at once. The two layers are proved TOGETHER because the failure this contract forbids is
+    // invisible to either layer's own test: a revert that survives the sink and is swallowed by the
+    // store (or the reverse) leaves the log looking right to whichever layer is asked, and strands
+    // the graph on a superseded generation of that file with no recovery - re-folding the log
+    // replays the same suppression.
+    //
+    // This criterion adds NO production code. The rules it pins belong to criteria 1 and 4; the
+    // helpers below are the fixture that puts both of them in front of one run.
+
+    /// The `<prefix>/<file>@<hash>#<i>` split a COMPOSITION ROOT injects into the store's
+    /// content-identity guard: `(the prefix every key naming this file's batch begins with, the
+    /// content generation that batch belongs to)`.
+    ///
+    /// It lives in the fixture because it is CONFIGURATION, not vocabulary the store owns - the key
+    /// format belongs to [`crate::ingest`], which BUILDS it, and the store must never parse a key of
+    /// its own ([`crate::eventstore::ContentIdentity`]). Split from the RIGHT: a real path may itself
+    /// carry `@` or `#`.
+    ///
+    /// The proof does not TRUST this split to match the real format. It is asserted against a key the
+    /// REAL walk emitted (see `spec60_guard_is_judging`), so a change to the key authority reddens
+    /// this proof instead of silently switching the guard off underneath it.
+    #[cfg(feature = "symbols")]
+    fn spec60_content_key_split(
+        key: &str,
+    ) -> Option<(std::ops::Range<usize>, std::ops::Range<usize>)> {
+        let (prefix, remainder) = key.split_once('/')?;
+        if prefix.is_empty() || remainder.is_empty() {
+            return None;
+        }
+        let (head, index) = key.rsplit_once('#')?;
+        if index.is_empty() || !index.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        let (file, hash) = head.rsplit_once('@')?;
+        if file.len() <= prefix.len() + 1 || hash.is_empty() {
+            return None;
+        }
+        let subject_end = file.len() + 1; // through the `@` that ends the subject
+        Some((0..subject_end, subject_end..subject_end + hash.len()))
+    }
+
+    /// The run's event log WITH criterion 4's storage guard configured on it, exactly as a
+    /// composition root would - the real metadata key and the real derived-index type set the ingest
+    /// layer uses, so the second layer of the stack is the one that ships, not a fixture of its own.
+    #[cfg(feature = "symbols")]
+    fn spec60_guarded_store() -> Store {
+        Store::open(":memory:").unwrap().with_content_identity(
+            crate::eventstore::ContentIdentity::new(
+                crate::ingest::META_REPLAY_KEY,
+                crate::ingest::DERIVED_INDEX_TYPES,
+                spec60_content_key_split,
+            ),
+        )
+    }
+
+    /// Assert the configured guard is REALLY JUDGING this store, so every claim about "the full
+    /// stack" below is about a stack that is actually there.
+    ///
+    /// Two things have to hold and neither is safe to assume. First the injected policy must agree
+    /// with the key authority: `sample` is a key the REAL walk emitted, and the policy must find a
+    /// subject and a generation in it. Second the guard must be INDEXED - it suppresses nothing until
+    /// its content-key index is committed, and a guard that is not suppressing reports exactly what
+    /// an unguarded store reports. So this re-appends an event whose key is its subject's LATEST
+    /// recorded generation and requires the store to write NOTHING: a positive control for the very
+    /// suppression the revert must escape.
+    #[cfg(feature = "symbols")]
+    fn spec60_guard_is_judging(store: &Store, latest: &Event, sample: &str) {
+        let identity = crate::eventstore::ContentIdentity::new(
+            crate::ingest::META_REPLAY_KEY,
+            crate::ingest::DERIVED_INDEX_TYPES,
+            spec60_content_key_split,
+        );
+        assert!(
+            identity.subject_of(sample).is_some(),
+            "the injected policy must split a key the REAL walk emitted ({sample}); the fixture's \
+             split has drifted from the ingest key authority - fix the split, not this assertion"
+        );
+        let before = store
+            .read_stream(STREAM, 0, Direction::Forward)
+            .unwrap()
+            .len();
+        store
+            .append(STREAM, ExpectedRevision::Any, std::slice::from_ref(latest))
+            .unwrap();
+        let after = store
+            .read_stream(STREAM, 0, Direction::Forward)
+            .unwrap()
+            .len();
+        assert_eq!(
+            after, before,
+            "positive control: re-appending an event whose key IS its subject's latest recorded \
+             generation must be a storage no-op. It appended, so the guard is not judging (no \
+             committed content-key index, or a policy that does not cover this event) and every \
+             claim below about surviving the storage layer would be vacuous"
+        );
+    }
+
+    /// A COLD REBUILD of the graph from the tree AS IT STANDS: a fresh log and a fresh projection,
+    /// fed by the SAME walk / content-key / append-and-fold authority `rigger graph build` runs on an
+    /// empty store, with an empty seen-set because nothing is recorded yet. This is the reference
+    /// Global constraint 4 names - whatever mix of dedup and re-ingest the live graph went through,
+    /// it must equal this.
+    #[cfg(feature = "symbols")]
+    fn spec60_cold_rebuild(root: &str) -> (Store, crate::contextgraph::sqlite::Projector) {
+        let store = Store::open(":memory:").unwrap();
+        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+        let mut seen: HashSet<String> = HashSet::new();
+        crate::ingest::ingest_project_batched(root, |keyed| {
+            let survivors: Vec<Event> = keyed
+                .iter()
+                .filter(|(key, _)| seen.insert(key.clone()))
+                .map(|(key, ev)| (*ev).clone().with_meta(META_REPLAY_KEY, key.as_str()))
+                .collect();
+            let _ = crate::ingest::append_and_fold_batch(
+                &store,
+                Some(&graph as &dyn Projection),
+                STREAM,
+                &survivors,
+            );
+        });
+        (store, graph)
+    }
+
+    /// What a TRAVERSAL SEES from `seed`, as a comparable value: the reachable nodes with their
+    /// attributes, and the currently-valid edges among them.
+    ///
+    /// Bi-temporal coordinates (positions, validity stamps) are deliberately dropped - a log three
+    /// campaigns appended to and a rebuild that appended once legitimately date the same fact
+    /// differently, and Global constraint 4 is about the graph a reader GETS, not about when each row
+    /// was written. A superseded edge is dropped for the same reason it is invisible to every
+    /// consumer: it no longer holds.
+    #[cfg(feature = "symbols")]
+    #[allow(clippy::type_complexity)]
+    fn spec60_reachable(
+        graph: &dyn Projection,
+        seed: &[String],
+    ) -> (
+        BTreeSet<(String, String, BTreeMap<String, String>)>,
+        BTreeSet<(String, String, String, String)>,
+    ) {
+        let g = graph.subgraph(seed, 3).unwrap();
+        let nodes: BTreeSet<(String, String, BTreeMap<String, String>)> = g
+            .nodes
+            .iter()
+            .map(|n| (n.id.clone(), n.kind.clone(), n.attrs.clone()))
+            .collect();
+        let edges: BTreeSet<(String, String, String, String)> = g
+            .edges
+            .iter()
+            .filter(|e| e.valid_to.is_none())
+            .map(|e| (e.from.clone(), e.rel.clone(), e.to.clone(), e.tier.clone()))
+            .collect();
+        // Two EMPTY neighborhoods compare equal and prove nothing, and both sides of the comparison
+        // can go empty for reasons that have nothing to do with the contract (a seed the fold never
+        // built a node for, a rebuild handed the wrong root). So an empty answer is a broken
+        // fixture, and it says so here rather than passing silently on either side.
+        assert!(
+            !nodes.is_empty() && !edges.is_empty(),
+            "a comparison over an EMPTY neighborhood proves nothing: the seed {seed:?} reached \
+             {} node(s) and {} valid edge(s)",
+            nodes.len(),
+            edges.len()
+        );
+        (nodes, edges)
+    }
+
+    /// The names of the code entities a traversal from `file` reaches - the observable form of "this
+    /// file's structural edges", since an entity whose containing edge was superseded is no longer
+    /// reachable from its file however long its node row survives.
+    #[cfg(feature = "symbols")]
+    fn spec60_reached_entities(graph: &dyn Projection, file: &str) -> BTreeSet<String> {
+        graph
+            .subgraph(&[file.to_string()], 3)
+            .unwrap()
+            .nodes
+            .iter()
+            .filter(|n| n.kind == contextgraph::KIND_CODE_ENTITY)
+            .filter_map(|n| n.attrs.get("name").cloned())
+            .collect()
+    }
+
+    /// Spec 60 criterion 3, first half (THE CHANGE PATH): editing ONE file between runs re-emits
+    /// exactly THAT file's whole batch and supersedes its prior structural edges, while every
+    /// untouched file still appends nothing.
+    ///
+    /// It drives the REAL [`run`] entry twice over one store, because a run's suppression decisions
+    /// are taken against a seed read from the LOG at run start - a second walk inside one process is
+    /// weighed against the set that process extended instead, which is a different question. The
+    /// store carries criterion 4's content-identity guard throughout, so what the sink lets through
+    /// still has to get past the storage layer.
+    ///
+    /// "Exactly that file's whole batch" is not hand-listed: the expected key set is what a COLD
+    /// REBUILD of the current tree records for that file, so the assertion cannot drift from what the
+    /// walk actually extracts.
+    #[cfg(feature = "symbols")]
+    #[test]
+    fn editing_one_file_between_runs_re_emits_only_that_files_batch_and_supersedes_its_edges() {
+        let repo = init_repo();
+        let root = repo.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(root.join("specs")).unwrap();
+        // Each code file carries a definition AND a reference to it, so both halves of the code
+        // index are present (`CodeEntityExtracted` + `EdgeInferred`) and there is a structural edge
+        // for a change to supersede. Each file references only its OWN definition, so one file's
+        // generation can never move another's edge tiers. A real design doc drives the `gd` half and
+        // is never touched, so "an untouched file appends nothing" covers BOTH ingest prefixes.
+        std::fs::write(
+            root.join("src/stable.rs"),
+            "pub fn stable_symbol() {}\npub fn stable_caller() { stable_symbol(); }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/churn.rs"),
+            "pub fn alpha_symbol() {}\npub fn churn_caller() { alpha_symbol(); }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("specs/29c-unified-traversal-tiers.md"),
+            include_str!("../specs/29c-unified-traversal-tiers.md"),
+        )
+        .unwrap();
+        let repo_path = root.to_str().unwrap().to_string();
+
+        let st = spec60_guarded_store();
+        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+        let driver = Stub::new();
+
+        // The four derived index types named from the GRAPH's own constants, never through the
+        // predicate under test - a proof must not inherit the bug it hunts.
+        let is_derived = |e: &Event| -> bool {
+            e.type_ == contextgraph::TYPE_CODE_ENTITY_EXTRACTED
+                || e.type_ == contextgraph::TYPE_EDGE_INFERRED
+                || e.type_ == contextgraph::TYPE_DOC_CONCEPT_EXTRACTED
+                || e.type_ == contextgraph::TYPE_DOC_LINK_EXTRACTED
+        };
+        // The derived-index replay keys a slice of the log carries for one file, in append order.
+        let keys_for = |events: &[Event], file: &str| -> Vec<String> {
+            let marker = format!("/{file}@");
+            events
+                .iter()
+                .filter(|e| is_derived(e))
+                .filter_map(|e| e.meta.get(META_REPLAY_KEY).cloned())
+                .filter(|k| k.contains(&marker))
+                .collect()
+        };
+        let campaign = |unit: &str, criterion: &str| -> Config {
+            let mut cfg = Config::default();
+            cfg.agents.insert("a".into(), agent("a"));
+            cfg.workflow.stages.insert(
+                unit.into(),
+                Stage {
+                    name: unit.into(),
+                    agent: "a".into(),
+                    coverage: criterion.into(),
+                    ..Default::default()
+                },
+            );
+            cfg
+        };
+        let deps_for = |criterion: &str| Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: Some(&graph),
+            criteria: vec![criterion.to_string()],
+        };
+
+        // Run one records generation A of both files and the design doc.
+        run(
+            &campaign("s1", "first criterion"),
+            &deps_for("first criterion"),
+        )
+        .unwrap();
+        let after_one = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let stable_gen_a = keys_for(&after_one, "src/stable.rs");
+        let churn_gen_a = keys_for(&after_one, "src/churn.rs");
+        let doc_gen_a = keys_for(&after_one, "specs/29c-unified-traversal-tiers.md");
+        assert!(
+            !stable_gen_a.is_empty() && !churn_gen_a.is_empty() && !doc_gen_a.is_empty(),
+            "sanity: run one must record a derived-index batch for both code files and the design \
+             doc, else there is nothing for a change to leave alone"
+        );
+        assert!(
+            spec60_reached_entities(&graph, "src/churn.rs").contains("alpha_symbol"),
+            "sanity: run one's graph must reach the churn file's generation-A definition"
+        );
+
+        // Change ONLY churn.rs. stable.rs and the design doc stay byte-identical.
+        std::fs::write(
+            root.join("src/churn.rs"),
+            "pub fn beta_symbol() {}\npub fn churn_caller() { beta_symbol(); }\n",
+        )
+        .unwrap();
+
+        // Run two: a FRESH `RunStarted`, so its ingest keys come from the log, not from this run.
+        run(
+            &campaign("s2", "second criterion"),
+            &deps_for("second criterion"),
+        )
+        .unwrap();
+        let after_two = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert_eq!(
+            after_two
+                .iter()
+                .filter(|e| e.type_ == crate::run::TYPE_RUN_STARTED)
+                .count(),
+            2,
+            "the second campaign must mint its OWN fresh RunStarted (else the test proves nothing)"
+        );
+        let second_slice = crate::run::current_run(&after_two);
+
+        // The untouched files append NOTHING - in either ingest half.
+        assert!(
+            keys_for(second_slice, "src/stable.rs").is_empty(),
+            "an untouched code file must append no derived-index event on a later run; it appended \
+             {:?}",
+            keys_for(second_slice, "src/stable.rs")
+        );
+        assert!(
+            keys_for(second_slice, "specs/29c-unified-traversal-tiers.md").is_empty(),
+            "an untouched design doc must append no derived-index event on a later run; it \
+             appended {:?}",
+            keys_for(second_slice, "specs/29c-unified-traversal-tiers.md")
+        );
+
+        // The changed file re-emits its WHOLE batch: exactly the keys a cold rebuild of the tree as
+        // it now stands records for it - no more (nothing spurious) and no fewer (no half-landed
+        // batch, which is what a store guard applying its test to its own siblings would leave).
+        let (cold_store, cold_graph) = spec60_cold_rebuild(&repo_path);
+        let cold_log = cold_store
+            .read_stream(STREAM, 0, Direction::Forward)
+            .unwrap();
+        let expected: Vec<String> = keys_for(&cold_log, "src/churn.rs");
+        let re_emitted: Vec<String> = keys_for(second_slice, "src/churn.rs");
+        assert!(
+            !expected.is_empty(),
+            "sanity: a cold rebuild must record a batch for the changed file"
+        );
+        assert_eq!(
+            re_emitted, expected,
+            "a changed file must re-emit exactly its whole batch, in the walk's own order"
+        );
+        assert_ne!(
+            re_emitted, churn_gen_a,
+            "sanity: generation B's keys must differ from generation A's, else the fixture never \
+             changed the file's content"
+        );
+
+        // The re-emitted batch SUPERSEDED the file's prior structural edges: a traversal from the
+        // file now reaches generation B's definition and no longer reaches generation A's.
+        let reached = spec60_reached_entities(&graph, "src/churn.rs");
+        assert!(
+            reached.contains("beta_symbol"),
+            "the changed file's new definition must be reachable after the re-ingest; reached \
+             {reached:?}"
+        );
+        assert!(
+            !reached.contains("alpha_symbol"),
+            "the changed file's PRIOR structural edges must be superseded, so its old definition is \
+             no longer reachable from it; reached {reached:?}"
+        );
+
+        // And the whole neighborhood matches a cold rebuild of the current tree, for the file that
+        // changed and for the file that did not.
+        for file in ["src/churn.rs", "src/stable.rs"] {
+            let seed = vec![file.to_string()];
+            assert_eq!(
+                spec60_reachable(&graph, &seed),
+                spec60_reachable(&cold_graph, &seed),
+                "after the change path, the live graph around {file} must equal what a cold \
+                 rebuild from the current tree produces"
+            );
+        }
+
+        // The storage guard was in place the whole time - asserted, not assumed.
+        let latest = after_two
+            .iter()
+            .find(|e| {
+                is_derived(e)
+                    && e.meta
+                        .get(META_REPLAY_KEY)
+                        .is_some_and(|k| k == &re_emitted[0])
+            })
+            .cloned()
+            .expect("the re-emitted batch's first event is in the log");
+        spec60_guard_is_judging(&st, &latest, &re_emitted[0]);
+    }
+
+    /// Spec 60 criterion 3, second half (A REVERT IS A CHANGE): a file driven BACK to content it held
+    /// at an earlier RECORDED generation re-ingests, and the live graph then equals a cold rebuild
+    /// from the current tree.
+    ///
+    /// This is the case an EVER-RECORDED suppression test wedges, at either layer. The reverted
+    /// file's content keys are BYTE-IDENTICAL to records the log still carries from its first
+    /// generation, so a set seeded with every key ever recorded matches them and emits nothing, and a
+    /// store guard that asked "has this key ever been recorded" swallows whatever the sink did let
+    /// through. Either way the graph stays on the SUPERSEDED generation forever - re-folding the log
+    /// replays the same suppression, so there is no recovery. Both layers are therefore in front of
+    /// this run at once: a revert that survives one and is swallowed by the other is exactly the
+    /// outcome Global constraint 4 forbids, and it is invisible to either layer's own test.
+    #[cfg(feature = "symbols")]
+    #[test]
+    fn a_file_reverted_to_an_earlier_recorded_generation_re_ingests_and_matches_a_cold_rebuild() {
+        const GEN_A: &str = "pub fn alpha_symbol() {}\npub fn churn_caller() { alpha_symbol(); }\n";
+        const GEN_B: &str = "pub fn beta_symbol() {}\npub fn churn_caller() { beta_symbol(); }\n";
+
+        let repo = init_repo();
+        let root = repo.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/stable.rs"),
+            "pub fn stable_symbol() {}\npub fn stable_caller() { stable_symbol(); }\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("src/churn.rs"), GEN_A).unwrap();
+        let repo_path = root.to_str().unwrap().to_string();
+
+        let st = spec60_guarded_store();
+        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+        let driver = Stub::new();
+
+        let is_derived = |e: &Event| -> bool {
+            e.type_ == contextgraph::TYPE_CODE_ENTITY_EXTRACTED
+                || e.type_ == contextgraph::TYPE_EDGE_INFERRED
+                || e.type_ == contextgraph::TYPE_DOC_CONCEPT_EXTRACTED
+                || e.type_ == contextgraph::TYPE_DOC_LINK_EXTRACTED
+        };
+        let keys_for = |events: &[Event], file: &str| -> Vec<String> {
+            let marker = format!("/{file}@");
+            events
+                .iter()
+                .filter(|e| is_derived(e))
+                .filter_map(|e| e.meta.get(META_REPLAY_KEY).cloned())
+                .filter(|k| k.contains(&marker))
+                .collect()
+        };
+        let campaign = |unit: &str, criterion: &str| -> Config {
+            let mut cfg = Config::default();
+            cfg.agents.insert("a".into(), agent("a"));
+            cfg.workflow.stages.insert(
+                unit.into(),
+                Stage {
+                    name: unit.into(),
+                    agent: "a".into(),
+                    coverage: criterion.into(),
+                    ..Default::default()
+                },
+            );
+            cfg
+        };
+        let deps_for = |criterion: &str| Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: Some(&graph),
+            criteria: vec![criterion.to_string()],
+        };
+        let mut campaigns = 0;
+        let mut run_over_the_tree = |criterion: &'static str| {
+            campaigns += 1;
+            let unit = format!("s{campaigns}");
+            run(&campaign(&unit, criterion), &deps_for(criterion)).unwrap();
+            st.read_stream(STREAM, 0, Direction::Forward).unwrap()
+        };
+
+        // Generation A, recorded.
+        let after_one = run_over_the_tree("first criterion");
+        let gen_a_keys = keys_for(&after_one, "src/churn.rs");
+        assert!(
+            !gen_a_keys.is_empty(),
+            "sanity: run one must record generation A of the file to be reverted to"
+        );
+
+        // Generation B: the file moves forward, and A stops being its latest recorded generation.
+        std::fs::write(root.join("src/churn.rs"), GEN_B).unwrap();
+        let after_two = run_over_the_tree("second criterion");
+        let gen_b_keys = keys_for(crate::run::current_run(&after_two), "src/churn.rs");
+        assert!(
+            !gen_b_keys.is_empty() && gen_b_keys != gen_a_keys,
+            "sanity: run two must record a DIFFERENT generation of the file; it recorded \
+             {gen_b_keys:?} against generation A's {gen_a_keys:?}"
+        );
+        assert!(
+            spec60_reached_entities(&graph, "src/churn.rs").contains("beta_symbol"),
+            "sanity: the graph must be on generation B before the revert"
+        );
+
+        // THE REVERT: byte-identical to generation A, whose every key the log still carries.
+        std::fs::write(root.join("src/churn.rs"), GEN_A).unwrap();
+        let after_three = run_over_the_tree("third criterion");
+        assert_eq!(
+            after_three
+                .iter()
+                .filter(|e| e.type_ == crate::run::TYPE_RUN_STARTED)
+                .count(),
+            3,
+            "each campaign must mint its OWN fresh RunStarted (else the test proves nothing)"
+        );
+        let third_slice = crate::run::current_run(&after_three);
+        let re_emitted = keys_for(third_slice, "src/churn.rs");
+
+        // The revert re-emitted the WHOLE batch, under generation A's own keys - which is the
+        // discrimination: every one of them was ALREADY recorded, so an ever-recorded test at either
+        // layer would have emitted nothing here.
+        assert_eq!(
+            re_emitted, gen_a_keys,
+            "a file reverted to an earlier recorded generation must re-emit that generation's whole \
+             batch; it emitted {re_emitted:?} against generation A's {gen_a_keys:?}"
+        );
+        // The keys really were already recorded before this run - the fixture is not quietly proving
+        // something easier than the revert case.
+        let before_third: usize = after_two.len();
+        for key in &gen_a_keys {
+            assert!(
+                after_two[..before_third]
+                    .iter()
+                    .any(|e| e.meta.get(META_REPLAY_KEY) == Some(key)),
+                "the fixture is vacuous unless {key} was already recorded before the revert"
+            );
+            assert_eq!(
+                after_three
+                    .iter()
+                    .filter(|e| e.meta.get(META_REPLAY_KEY) == Some(key))
+                    .count(),
+                2,
+                "the storage guard must let a reverted generation's key through - the log must \
+                 carry {key} once from generation A and once from the revert"
+            );
+        }
+        // The untouched file still appends nothing across all of it.
+        assert!(
+            keys_for(third_slice, "src/stable.rs").is_empty(),
+            "an untouched file must still append nothing on the run that re-ingests a reverted one"
+        );
+
+        // The graph came BACK: generation A's definition is reachable again and generation B's is
+        // superseded - not left live beside it.
+        let reached = spec60_reached_entities(&graph, "src/churn.rs");
+        assert!(
+            reached.contains("alpha_symbol") && !reached.contains("beta_symbol"),
+            "after the revert the graph must be on generation A, with generation B's structural \
+             edges superseded; reached {reached:?}"
+        );
+
+        // Global constraint 4, stated as it reads: after this mix of dedup and re-ingest, the LIVE
+        // graph equals what a cold rebuild from the CURRENT tree produces.
+        let (_cold_store, cold_graph) = spec60_cold_rebuild(&repo_path);
+        for file in ["src/churn.rs", "src/stable.rs"] {
+            let seed = vec![file.to_string()];
+            assert_eq!(
+                spec60_reachable(&graph, &seed),
+                spec60_reachable(&cold_graph, &seed),
+                "after a revert, the live graph around {file} must equal what a cold rebuild from \
+                 the current tree produces"
+            );
+        }
+
+        // The storage guard was judging throughout: it never recorded a degradation, and it still
+        // suppresses an append of the generation the file is NOW at. So the revert got past a guard
+        // that was actually on, not past one that had quietly stopped defending.
+        assert!(
+            !after_three
+                .iter()
+                .any(|e| e.meta.contains_key(crate::eventstore::META_GUARD_DEGRADED)),
+            "no event may be stamped as written by a guard that was not judging"
+        );
+        let latest = after_three
+            .iter()
+            .find(|e| {
+                is_derived(e)
+                    && e.meta
+                        .get(META_REPLAY_KEY)
+                        .is_some_and(|k| k == &re_emitted[0])
+            })
+            .cloned()
+            .expect("the re-emitted batch's first event is in the log");
+        spec60_guard_is_judging(&st, &latest, &re_emitted[0]);
+    }
+
     /// Spec 60 criterion 2 (RUN-SCOPING SURVIVES): the seeding above turned `replayed_keys` into a
     /// PARTITION over two scopes, and this pins the half criterion 1 widened nothing in - the
     /// RUN-SCOPED half every non-derived key still lives in. A prior run's non-ingest replay key
