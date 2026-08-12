@@ -8,7 +8,7 @@
 //! outcome over a real tree (`conductor::tests::a_second_run_over_an_unchanged_tree_...`). What
 //! neither can see is the boundary:
 //!
-//! 1. The three new items (`DERIVED_INDEX_TYPES`, `is_derived_index_type`,
+//! 1. The four new items (`META_REPLAY_KEY`, `DERIVED_INDEX_TYPES`, `is_derived_index_type`,
 //!    `project_scoped_replay_keys`) are now PUBLIC API with an EXTERNAL consumer - `src/main.rs`
 //!    reaches them as `rigger::ingest::...` across the crate boundary. Nothing drove them from
 //!    outside the crate.
@@ -16,10 +16,15 @@
 //!    its long-standing WRITER (`key_batch`). A hand-spelled key cannot prove the reader accepts
 //!    what the writer actually mints; if the two ever drift, the predicate degrades SILENTLY to
 //!    "suppresses nothing" and the log resumes growing without bound. These tests round-trip REAL
-//!    minted keys.
+//!    minted keys - including for paths that carry the key format's own `@` separator, a shape
+//!    only a real walk over a real tree can prove the writer ever mints.
 //! 3. `cmd_graph_build` - the SECOND dedup sink, which this criterion owns alongside the run's -
 //!    now seeds from that same predicate. Its type-first behaviour is only observable end to end,
 //!    through the built binary and a store the test seeds.
+//! 4. The replay-key METADATA NAME is now owned by `rigger::ingest` and RE-EXPORTED as
+//!    `rigger::conductor::META_REPLAY_KEY`, which every existing caller names. A stamping half and
+//!    a reading half that address the slot through two different constants is a boundary no
+//!    single-module test can see, and it fails silently: nothing suppresses, and the log grows.
 //!
 //! Scope is strictly criterion 1. The run-scoping boundary for NON-ingest keys (criterion 2), the
 //! run-level change/revert path (criterion 3) and the store-layer append guard (criterion 4) are
@@ -35,9 +40,12 @@ use rigger::eventstore::Event;
 use rigger::ingest::{is_derived_index_type, project_scoped_replay_keys, DERIVED_INDEX_TYPES};
 use std::collections::BTreeSet;
 
-/// An event of `type_` carrying `key` in the replay-key metadata slot the conductor owns - the
-/// exact shape both ingest sinks stamp on what they append, built here through the crate's public
-/// `Event` API so the test pins the recorded form rather than an in-crate helper.
+/// An event of `type_` carrying `key` in the replay-key metadata slot - the exact shape both ingest
+/// sinks stamp on what they append, built here through the crate's public `Event` API so the test
+/// pins the recorded form rather than an in-crate helper. The slot is addressed through
+/// `rigger::conductor::META_REPLAY_KEY`, the spelling every existing caller of the crate uses;
+/// that it is the SAME name the owning `rigger::ingest` module publishes, and therefore the same
+/// slot the predicate reads, is itself pinned below rather than assumed here.
 fn keyed(type_: &str, key: &str) -> Event {
     Event::new(type_, Vec::new()).with_meta(rigger::conductor::META_REPLAY_KEY, key)
 }
@@ -175,6 +183,66 @@ fn the_predicate_is_a_pure_function_of_the_recorded_stream() {
     );
 }
 
+/// CONTRACT at the crate boundary: the replay-key METADATA NAME is ONE name, owned beside the key
+/// authority, and the conductor's is that same name rather than a second spelling of it.
+///
+/// The name is a WIRE fact, and its two halves now live in different modules. `rigger::ingest`
+/// OWNS the constant, because it both builds the `<prefix>/<file>@<hash>#<i>` key and parses it
+/// back in the suppression predicate; `rigger::conductor::META_REPLAY_KEY` - the spelling every
+/// existing caller, both ingest sinks, and every other test in this file name - is a RE-EXPORT of
+/// it. A second constant declared in the conductor under a different literal would compile, and it
+/// would leave every other test in this suite green: they all stamp AND read through the conductor
+/// spelling, so writer and reader would still agree with each other. What would break is the seam
+/// between them - the sinks would stamp under one name while the predicate read another, every
+/// fresh emit would look unrecorded, nothing would ever be suppressed, and the log would resume
+/// growing without bound, which is the exact defect this criterion exists to end. Nothing else
+/// pins that, so it is pinned here: as the published equality, and as the behaviour the equality
+/// buys - a key written under EITHER export is read back through the other, and by the predicate.
+#[test]
+fn the_replay_key_metadata_name_is_one_name_owned_beside_the_key_authority() {
+    assert_eq!(
+        rigger::ingest::META_REPLAY_KEY,
+        rigger::conductor::META_REPLAY_KEY,
+        "the conductor's replay-key name must BE the ingest module's, never a second spelling"
+    );
+    assert!(
+        !rigger::ingest::META_REPLAY_KEY.is_empty(),
+        "the replay-key metadata name must name a real slot"
+    );
+
+    // The slot itself: a key stamped through the caller-facing export must be readable through the
+    // owning module's - one slot, one name, whichever path a consumer reaches it by.
+    let key = "gc/src/a.rs@h1#0";
+    let stamped_by_a_sink = keyed(TYPE_CODE_ENTITY_EXTRACTED, key);
+    assert_eq!(
+        stamped_by_a_sink
+            .meta
+            .get(rigger::ingest::META_REPLAY_KEY)
+            .map(String::as_str),
+        Some(key),
+        "a key stamped through the conductor's export must be readable under the owning module's"
+    );
+
+    // ... and the predicate, which reads through the owning module's name, must recognise a key
+    // stamped through EITHER export. That recognition is the whole point of there being one name.
+    let expected = BTreeSet::from([key.to_string()]);
+    for (via, event) in [
+        ("the conductor's re-export", stamped_by_a_sink),
+        (
+            "the ingest module's own constant",
+            Event::new(TYPE_CODE_ENTITY_EXTRACTED, Vec::new())
+                .with_meta(rigger::ingest::META_REPLAY_KEY, key),
+        ),
+    ] {
+        let seen: BTreeSet<String> = project_scoped_replay_keys(&[event]).into_iter().collect();
+        assert_eq!(
+            seen, expected,
+            "the suppression predicate must read a key stamped through {via}; a stamping half and \
+             a reading half that address two different slots suppress nothing at all"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // The seam tests below need the extraction pass to have a tree to walk, so they are `symbols`-gated
 // exactly as the walk is. In the light lane the walk is a documented no-op that mints no key, so
@@ -206,6 +274,32 @@ fn temp_ingestable_project() -> tempfile::TempDir {
         include_str!("../specs/29c-unified-traversal-tiers.md"),
     )
     .unwrap();
+    dir
+}
+
+/// A throwaway project whose sources sit under DIRECTORIES WHOSE NAMES CONTAIN `@` - the shape a
+/// vendored, version-pinned or scoped dependency folder really takes on disk, and one rigger must
+/// handle because it indexes whatever project it is pointed at. The two files share the whole span
+/// to the LEFT of their first `@` and differ only to its right, so any left-to-right read of the
+/// content key collapses them onto a single batch identity.
+#[cfg(feature = "symbols")]
+fn temp_project_with_at_signs_in_its_paths() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let _ = std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(root)
+        .status();
+    std::fs::create_dir_all(root.join(".rigger")).unwrap();
+    for (pkg, name) in [("pkg@1.2.3", "alpha"), ("pkg@4.5.6", "beta")] {
+        let package = root.join("src").join(pkg);
+        std::fs::create_dir_all(&package).unwrap();
+        std::fs::write(
+            package.join("lib.rs"),
+            format!("pub fn {name}_helper() {{}}\npub fn {name}_caller() {{ {name}_helper(); }}\n"),
+        )
+        .unwrap();
+    }
     dir
 }
 
@@ -338,6 +432,65 @@ fn a_real_batchs_generation_is_recovered_from_the_key_the_walk_minted() {
         design_keys.is_subset(&suppressed),
         "the untouched design half must stay suppressed by the same recorded stream - one file's \
          new generation must not disturb another file's identity"
+    );
+}
+
+/// ROUND-TRIP CONTRACT for the one path shape the key format is AMBIGUOUS about, over keys the
+/// shipped walk really mints, and then through the shipped binary.
+///
+/// `<prefix>/<file>@<hash>#<i>` reuses `@` and `#` as separators, and a project's own file paths
+/// may contain both. The reader therefore splits from the RIGHT, at the writer's own trailing
+/// separators, so the batch identity is the WHOLE `<prefix>/<file>` span. The unit layer pins that
+/// rule against keys a human typed, which can only prove the reader is self-consistent: it cannot
+/// prove the WRITER ever mints a key of that shape, so a hand-spelled case could be guarding a
+/// shape that never occurs on any real tree. This drives the SHIPPED walk over a real tree whose
+/// directory names carry `@`, so the keys under test are minted, not invented.
+///
+/// The failure it guards is a LOST FILE, not a noisy log. Read left to right, both files below cut
+/// at their first `@`, collapsing onto the single identity `gc/src/pkg`; their (mis-parsed)
+/// generations then differ, so the later file RETIRES the earlier file's keys, the earlier file's
+/// batch stops being suppressed, and every subsequent build re-appends it forever. The two
+/// assertions catch exactly that: the predicate must return every minted key, and a re-build over
+/// the byte-identical tree must append nothing.
+#[cfg(feature = "symbols")]
+#[test]
+fn two_real_files_under_at_sign_paths_keep_two_batch_identities_end_to_end() {
+    let dir = temp_project_with_at_signs_in_its_paths();
+    let root = dir.path();
+
+    let recorded = minted(root);
+    let keys: BTreeSet<String> = recorded.iter().map(|(k, _)| k.clone()).collect();
+    assert!(
+        keys.iter().any(|k| k.contains("pkg@1.2.3"))
+            && keys.iter().any(|k| k.contains("pkg@4.5.6")),
+        "sanity: the shipped walk must really mint content keys for paths containing `@` - the \
+         whole premise of splitting the key from the right; got {keys:?}"
+    );
+
+    let suppressed: BTreeSet<String> = project_scoped_replay_keys(&as_recorded(&recorded))
+        .into_iter()
+        .collect();
+    assert_eq!(
+        suppressed, keys,
+        "every file's own minted keys must survive: no file's batch may retire another's because \
+         their paths happen to share a span to the left of an `@`"
+    );
+
+    // The consequence, through the SHIPPED binary: two builds over a byte-identical tree, and the
+    // second appends nothing. Were the two files reading as one identity, the retired file's batch
+    // would be unsuppressed and re-appended on this build and on every build after it.
+    let (out, err, ok) = run_rigger(root, &["graph", "build"]);
+    assert!(ok, "graph build must succeed; stderr: {err}; stdout: {out}");
+    assert!(
+        ingested_count(&out) > 0,
+        "sanity: the first build must ingest these files; got:\n{out}"
+    );
+    let (out2, err2, ok2) = run_rigger(root, &["graph", "build"]);
+    assert!(ok2, "a second graph build must succeed; stderr: {err2}");
+    assert_eq!(
+        ingested_count(&out2),
+        0,
+        "a re-build over a byte-identical tree whose paths contain `@` must append NOTHING; got:\n{out2}"
     );
 }
 
