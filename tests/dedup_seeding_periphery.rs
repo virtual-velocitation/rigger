@@ -25,6 +25,10 @@
 //!    `rigger::conductor::META_REPLAY_KEY`, which every existing caller names. A stamping half and
 //!    a reading half that address the slot through two different constants is a boundary no
 //!    single-module test can see, and it fails silently: nothing suppresses, and the log grows.
+//! 5. The predicate is PROJECT-scoped, so a `RunStarted` in the stream it is handed must not change
+//!    its answer. The run entry's own end-to-end proof of that needs a tree to walk and is
+//!    therefore `symbols`-gated, while the predicate is compiled and called in BOTH lanes and is
+//!    the surface a future consumer meets - so the light lane, and the API edge, are pinned here.
 //!
 //! Scope is strictly criterion 1. The run-scoping boundary for NON-ingest keys (criterion 2), the
 //! run-level change/revert path (criterion 3) and the store-layer append guard (criterion 4) are
@@ -180,6 +184,81 @@ fn the_predicate_is_a_pure_function_of_the_recorded_stream() {
         project_scoped_replay_keys(&[Event::new(TYPE_CODE_ENTITY_EXTRACTED, Vec::new())])
             .is_empty(),
         "a derived event with no replay key at all names no generation, so it suppresses nothing"
+    );
+}
+
+/// CONTRACT: a RUN BOUNDARY in the stream is not a boundary to this predicate - it is what
+/// PROJECT-scoped means, stated at the public API every consumer reaches it through.
+///
+/// Both sinks hand this function a WHOLE multi-run stream and take its answer as "what is already
+/// recorded". The word that makes that safe is project-scoped: a file's content hash does not
+/// change because a new run started, so a `RunStarted` and the lifecycle facts that follow it must
+/// leave the answer exactly as it was. The regression this guards is not hypothetical - it is the
+/// PRIOR behaviour this criterion removes, in which the derived keys were scoped to the current
+/// run's slice, so every new run saw an empty ingest-key set and re-appended the whole derived
+/// index. A predicate that re-acquired any run awareness would restore precisely that defect.
+///
+/// Nothing else pins it HERE, at the predicate, and in the LIGHT lane nothing pins it at all: the
+/// run entry's own end-to-end proof needs a tree to walk, so it is `symbols`-gated, while this
+/// predicate is compiled and called in both lanes. It is also the layer a future consumer meets -
+/// the predicate is the shared authority, so a caller that is neither of today's two sinks inherits
+/// this contract and no test of either sink covers it.
+///
+/// Two directions, both killable. A run-scoped read returns the empty set for the first file (its
+/// generation was recorded by the EARLIER run) and reddens the first assertion. A first-generation
+/// -wins read keeps the second file's superseded generation live across the boundary and reddens
+/// the second. The rule is one rule over the whole stream, and a run boundary is invisible to it.
+#[test]
+fn derived_keys_recorded_by_an_earlier_run_still_seed_the_next_run() {
+    // What an earlier run recorded: one file's code batch, another file's design batch, and that
+    // second file at a generation it will move past.
+    let mut stream = vec![
+        keyed(TYPE_CODE_ENTITY_EXTRACTED, "gc/src/steady.rs@h1#0"),
+        keyed(TYPE_EDGE_INFERRED, "gc/src/steady.rs@h1#1"),
+        keyed(TYPE_DOC_CONCEPT_EXTRACTED, "gd/docs/moving.md@h1#0"),
+        keyed(TYPE_DOC_LINK_EXTRACTED, "gd/docs/moving.md@h1#1"),
+    ];
+
+    // A NEW run begins and records its own lifecycle facts, exactly as a real log carries them.
+    stream.push(Event::new(rigger::run::TYPE_RUN_STARTED, Vec::new()));
+    stream.push(keyed(TYPE_UNIT_STARTED, "u-alpha/started"));
+    stream.push(keyed(TYPE_GATE_VERDICT, "u-alpha/fmt#0"));
+    stream.push(keyed(TYPE_DECISION_MADE, "u-alpha/decided#0"));
+
+    // ... and in that new run, ONE of the two files moves to a new content generation.
+    stream.push(keyed(TYPE_DOC_CONCEPT_EXTRACTED, "gd/docs/moving.md@h2#0"));
+    stream.push(keyed(TYPE_DOC_LINK_EXTRACTED, "gd/docs/moving.md@h2#1"));
+
+    let seed: BTreeSet<String> = project_scoped_replay_keys(&stream).into_iter().collect();
+
+    // DIRECTION ONE - the untouched file's generation was recorded by the EARLIER run and must
+    // still suppress. Scope the read to the current run and this set is missing it, so the file's
+    // whole batch re-appends on this run and on every run after it: the unbounded growth this
+    // criterion exists to end.
+    let steady: BTreeSet<String> = ["gc/src/steady.rs@h1#0", "gc/src/steady.rs@h1#1"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    assert!(
+        steady.is_subset(&seed),
+        "a file untouched since an EARLIER run must still be suppressed by what that run recorded \
+         - a run boundary is not a boundary to a project-scoped seed; missing {:?}",
+        steady.difference(&seed).collect::<Vec<_>>()
+    );
+
+    // DIRECTION TWO - the file that moved in the LATER run keeps only its newest generation live,
+    // so the retirement is computed over the WHOLE stream and not within one run's slice.
+    assert_eq!(
+        seed,
+        BTreeSet::from([
+            "gc/src/steady.rs@h1#0".to_string(),
+            "gc/src/steady.rs@h1#1".to_string(),
+            "gd/docs/moving.md@h2#0".to_string(),
+            "gd/docs/moving.md@h2#1".to_string(),
+        ]),
+        "the seed must be each file's latest generation across the whole stream: the untouched \
+         file's earlier-run keys live, the moved file's superseded generation retired, and none of \
+         the new run's own lifecycle keys admitted"
     );
 }
 
