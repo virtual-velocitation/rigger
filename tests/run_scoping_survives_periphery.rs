@@ -1,7 +1,7 @@
 //! Periphery (contract / API / integration) tests for spec 60 criterion 2: RUN-SCOPING SURVIVES
 //! the project-scoped ingest dedup. A non-ingest replay key recorded by a PRIOR run must never
-//! suppress the current run's own keyed emit, and a non-derived event is ineligible for
-//! project-scoped suppression whatever its key looks like.
+//! suppress the current run's own keyed emit, and a non-derived event is ineligible for the
+//! project-scoped arm of the seed whatever its key looks like.
 //!
 //! These run OUTSIDE the crate, over the library's PUBLIC surface, so they guard the boundary the
 //! inside-out unit tests are structurally blind to. Criterion 2 adds no production code of its
@@ -264,12 +264,12 @@ fn the_keys_a_real_run_mints_are_eligible_in_shape_yet_never_suppressible_by_typ
     );
 
     // DIRECTION TWO - and yet, over the REAL log where those same keys belong to `GateVerdict`
-    // events, the predicate offers nothing at all. No domain or lifecycle event a run records can
-    // be suppressed by the project-scoped half, however its key is spelled.
+    // events, the predicate offers nothing at all. No domain or lifecycle event a run records
+    // contributes a key to the project-scoped arm of the seed, however its key is spelled.
     assert!(
         project_scoped_replay_keys(&log).is_empty(),
-        "a non-derived event is ineligible for project-scoped suppression whatever its key looks \
-         like; over a real run's log the predicate returned {:?}",
+        "a non-derived event is ineligible for the project-scoped arm of the seed whatever its \
+         key looks like; over a real run's log the predicate returned {:?}",
         project_scoped_replay_keys(&log)
     );
 }

@@ -12809,12 +12809,12 @@ mod tests {
              <prefix>/<file>@<hash>#<i> content key - fix the fixture, not this assertion"
         );
         // And yet: over the REAL log, in which that key belongs to a `GateVerdict`, the predicate
-        // offers nothing at all. Type first - the key never reaches the comparison, so no run's
-        // domain event can be suppressed by the project-scoped half however it is spelled.
+        // offers nothing at all. Type first - the key never reaches the comparison, so the
+        // project-scoped arm of the seed never reads a non-derived event's key, however spelled.
         assert!(
             crate::ingest::project_scoped_replay_keys(&after_two).is_empty(),
-            "a non-derived event is ineligible for project-scoped suppression whatever its key \
-             looks like; the predicate returned {:?}",
+            "a non-derived event is ineligible for the project-scoped arm of the seed whatever \
+             its key looks like; the predicate returned {:?}",
             crate::ingest::project_scoped_replay_keys(&after_two)
         );
     }
