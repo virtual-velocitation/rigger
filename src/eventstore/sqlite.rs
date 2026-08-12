@@ -368,8 +368,9 @@ impl Store {
     ///
     /// Stepping past a generation uses the byte offsets of the slices the POLICY handed
     /// back, never a separator this module knows: `subject_of` returns borrows INTO the
-    /// key, so the key's leading `subject + generation` span is arithmetic on those
-    /// borrows. The store still parses no key format of its own.
+    /// key, so the span to skip is arithmetic on those borrows (see
+    /// [`generation_span`], which also explains why the skip has to reach one character
+    /// PAST the generation to be sound). The store still parses no key format of its own.
     ///
     /// Candidates are filtered by asking the policy for each one's subject, because a
     /// prefix range is a superset: a file whose path itself contains the generation
@@ -423,7 +424,7 @@ impl Store {
             let mut bound = successor(&key);
             if let Some((candidate, generation)) = guard.identity.subject_of(&key) {
                 if candidate == subject {
-                    if let Some(span) = leading_span(&key, generation) {
+                    if let Some(span) = generation_span(&key, generation) {
                         bound = bound.max(prefix_upper_bound(&key[..span]));
                     }
                     if let Some(at) = at {
@@ -559,15 +560,38 @@ fn successor(s: &str) -> String {
     format!("{s}\u{0}")
 }
 
-/// The length of `whole`'s leading span that ends where `part` ends, when `part` is a
-/// borrow INTO `whole`; `None` when it is not (a policy that returned a slice of some
-/// other string). Pure offset arithmetic on two slices of one allocation - it is how the
-/// walk steps past a whole generation without knowing any key's format.
-fn leading_span(whole: &str, part: &str) -> Option<usize> {
-    let base = whole.as_ptr() as usize;
-    let at = part.as_ptr() as usize;
-    let end = at.checked_sub(base)?.checked_add(part.len())?;
-    (end <= whole.len() && whole.is_char_boundary(end)).then_some(end)
+/// The length of `key`'s leading span whose every continuation belongs to the SAME
+/// generation as `key` - the prefix the walk skips to step past one whole generation in a
+/// single index seek. `None` when no such span can be established, and the walk then
+/// advances by one key.
+///
+/// It is `generation`'s end in `key` PLUS THE CHARACTER THAT FOLLOWS IT, and that extra
+/// character is what makes the skip sound rather than merely fast. A generation may be a
+/// string PREFIX of another one - a subject recorded at `h1` and later at `h12` - and a
+/// skip that stopped at the generation's own end would jump past `<subject>h1`, which
+/// `<subject>h12#0` sorts inside. The later generation would then be invisible, the walk
+/// would report the superseded `h1` as current, and re-offering `h1` (a REVERT) would be
+/// suppressed and lost. Including the delimiter narrows the skipped range to keys that
+/// carry the generation AND the character that ends it, which `h12` does not.
+///
+/// So the span exists only while the generation is followed by something. A key whose
+/// generation runs to its very END is not skippable at all - nothing there distinguishes
+/// it from a longer generation that starts the same way - and it answers `None`, which
+/// costs a step per key for a policy shaped that way and is correct for every policy.
+///
+/// `generation` must be a borrow INTO `key` (the [`ContentIdentity`] contract returns
+/// borrows of the key it was handed); a slice of any other string answers `None`. The
+/// offsets are arithmetic on two slices of one allocation - it is how the walk steps past
+/// a generation without knowing any key's format.
+fn generation_span(key: &str, generation: &str) -> Option<usize> {
+    let base = key.as_ptr() as usize;
+    let at = generation.as_ptr() as usize;
+    let end = at.checked_sub(base)?.checked_add(generation.len())?;
+    if end > key.len() || !key.is_char_boundary(end) {
+        return None;
+    }
+    let delimiter = key[end..].chars().next()?;
+    Some(end + delimiter.len_utf8())
 }
 
 /// FNV-1a over the bytes of `s`. Used only to give an index NAME a per-policy suffix, so
@@ -1552,6 +1576,53 @@ mod content_identity_guard {
                  plan was {plan}\nsql: {sql}"
             );
         }
+    }
+
+    /// A GENERATION THAT IS A STRING PREFIX OF ANOTHER is still found. `h1` and `h12` are
+    /// two unrelated generations, but `<subject>h12#0` sorts INSIDE the key range that
+    /// begins `<subject>h1`, so a walk that stepped past "everything beginning with this
+    /// key's subject and generation" would skip `h12` outright, read the file as still at
+    /// `h1`, and then suppress a re-offer of `h1` - which by then is a REVERT, and the
+    /// only thing that could put the graph back on the file's earlier content.
+    ///
+    /// This is the case that decides how far the generation skip may reach: past the
+    /// character that DELIMITS the generation, never merely past the generation.
+    #[test]
+    fn a_generation_that_is_a_string_prefix_of_a_later_one_is_still_found() {
+        let store = Store::open(":memory:")
+            .unwrap()
+            .with_content_identity(identity());
+        store
+            .append("run", ExpectedRevision::Any, &batch("src/a.rs", "h1"))
+            .unwrap();
+        store
+            .append("run", ExpectedRevision::Any, &batch("src/a.rs", "h12"))
+            .unwrap();
+
+        // The file is at h12, so h1 is SUPERSEDED and re-offering it must append.
+        assert_eq!(
+            store
+                .append("run", ExpectedRevision::Any, &batch("src/a.rs", "h1"))
+                .unwrap()
+                .written(),
+            2,
+            "h12 is this file's latest generation, so h1 is a revert and must append"
+        );
+        // ...and now h1 is current again, so h12 in turn appends and h1 does not.
+        assert_eq!(
+            store
+                .append("run", ExpectedRevision::Any, &batch("src/a.rs", "h1"))
+                .unwrap()
+                .written(),
+            0
+        );
+        assert_eq!(
+            store
+                .append("run", ExpectedRevision::Any, &batch("src/a.rs", "h12"))
+                .unwrap()
+                .written(),
+            2
+        );
     }
 
     /// THE BOUND, driven rather than asserted about: the walk costs one step per recorded
