@@ -2064,3 +2064,257 @@ fn an_exhausted_generation_walk_names_a_different_defence_than_a_missing_index()
         "and that suppression wrote no row for a mark to ride on"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The policy is CONFIGURATION, so a log outlives the policy that guarded it
+// ---------------------------------------------------------------------------
+
+/// Every content-key artifact the FILE carries, as `(name, definition)` sorted by name,
+/// read through an INDEPENDENT connection.
+///
+/// Deliberately not filtered by any one policy's metadata key: this is the question
+/// "what does the database carry" rather than "is the artifact I expect present", which
+/// is the only shape that can see an artifact left behind by a policy nobody configures
+/// any more. `json_extract` is what makes a content-key index recognizable without
+/// knowing whose key it reads.
+fn content_key_artifacts(path: &str) -> Vec<(String, String)> {
+    let conn = rusqlite::Connection::open(path).expect("an independent reader opens");
+    let mut stmt = conn
+        .prepare(
+            "SELECT name, sql FROM sqlite_master \
+             WHERE type = 'index' AND tbl_name = 'events' AND sql IS NOT NULL \
+             ORDER BY name",
+        )
+        .expect("sqlite_master is readable");
+    stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+        .expect("sqlite_master is queryable")
+        .map(|row| row.expect("a sqlite_master row"))
+        .filter(|(_, sql)| sql.contains("json_extract"))
+        .collect()
+}
+
+/// A LOG THAT MEETS A NEW POLICY IS GUARDED BY THAT POLICY, AND STOPS CARRYING THE OLD
+/// ONE'S ARTIFACT.
+///
+/// The guard's policy is injected at the composition root, and a composition root is a
+/// thing that gets EDITED: the metadata key derived facts ride under is a code-owned
+/// constant, so the day it is renamed, every existing database is a log built under one
+/// policy that a new binary opens under another. That is not an exotic configuration, it
+/// is what an upgrade IS, and nothing about it is visible from inside one store's tests:
+/// the crate's own reconfiguration test drives one `:memory:` handle whose builder is
+/// called twice and reads back index definitions, which is the artifact question, on the
+/// composition (one connection, one process) that a deployment never has.
+///
+/// So this drives the deployment shape - two independently opened handles on ONE FILE,
+/// the second one being what a redeployed binary is - and asks the three questions an
+/// operator would:
+///
+///  - is the new policy's guard actually LIVE against a log full of another policy's
+///    rows, or did it inherit an artifact that answers nothing it asks and quietly stop
+///    suppressing (the silent degradation this index's name exists to prevent);
+///  - does the file stop carrying the retired artifact, which SQLite would otherwise
+///    maintain on every insert forever - on a criterion whose whole purpose is to BOUND
+///    the store, one dead index per rename is the guard growing what it was built to
+///    shrink;
+///  - and are the facts recorded under the RETIRED key safe, which is the direction that
+///    matters: they name no generation to the live policy, so they append. A store that
+///    read them through the old key's eyes would drop facts on the day the policy
+///    changed, which is the one failure this guard may never have.
+#[test]
+fn a_log_that_meets_a_new_policy_is_guarded_by_it_and_stops_carrying_the_retired_artifact() {
+    // The key a previous build of this project would have carried its content keys
+    // under. It is not `META_REPLAY_KEY`, which is the whole point.
+    const RETIRED_KEY: &str = "content_key_v1";
+
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let path = dir.path().join("events.db");
+    let path = path.to_str().expect("a utf-8 path").to_string();
+
+    let under_retired_key = |key: &str| {
+        Event::new(TYPE_CODE_ENTITY_EXTRACTED, b"payload".to_vec()).with_meta(RETIRED_KEY, key)
+    };
+    let retired_generation = vec![under_retired_key("gc/src/a.rs@h1#0")];
+
+    // ROUND ONE: the retired policy guards this log, and mints its own artifact doing it.
+    {
+        let store = Store::open(&path)
+            .expect("a file-backed store opens")
+            .with_content_identity(ContentIdentity::new(
+                RETIRED_KEY,
+                DERIVED_INDEX_TYPES,
+                path_subject_of,
+            ));
+        assert_eq!(
+            store
+                .append("run", ExpectedRevision::Any, &retired_generation)
+                .unwrap()
+                .written(),
+            1,
+            "the first recording of a generation lands"
+        );
+        assert_eq!(
+            store
+                .append("run", ExpectedRevision::Any, &retired_generation)
+                .unwrap()
+                .written(),
+            0,
+            "and the retired policy really was guarding this log - without this, round two \
+             proves nothing"
+        );
+    }
+    let retired_artifacts = content_key_artifacts(&path);
+    assert_eq!(
+        retired_artifacts.len(),
+        1,
+        "the retired policy left exactly one artifact behind: {retired_artifacts:?}"
+    );
+    let (retired_name, retired_ddl) = retired_artifacts[0].clone();
+    assert!(
+        retired_ddl.contains(RETIRED_KEY),
+        "and it reads the retired key, which nothing will carry again: {retired_ddl}"
+    );
+
+    // ROUND TWO: a FRESH handle on that same file under the CURRENT policy - a redeployed
+    // binary opening the database it inherited.
+    let store = Store::open(&path)
+        .expect("the second handle opens the same file")
+        .with_content_identity(project_policy());
+    let current = batch("src/a.rs", "h1");
+    assert_eq!(
+        store
+            .append("run", ExpectedRevision::Any, &current)
+            .unwrap()
+            .written(),
+        current.len(),
+        "the current policy's first batch is new to it, whatever the log holds under \
+         another key"
+    );
+    assert_eq!(
+        store
+            .append("run", ExpectedRevision::Any, &current)
+            .unwrap()
+            .written(),
+        0,
+        "the new policy's guard is LIVE on an inherited log: it minted the artifact its \
+         own probes seek rather than inheriting one that indexes a key nothing carries"
+    );
+    assert!(
+        stored_meta(&path, "run")
+            .iter()
+            .all(|meta| !meta.contains(META_GUARD_DEGRADED)),
+        "and it never had to announce a degradation to get there: a policy change is a \
+         supported configuration, not an outage"
+    );
+
+    // The FILE now carries the live policy's artifact, and only it.
+    let live_artifacts = content_key_artifacts(&path);
+    assert_eq!(
+        live_artifacts.len(),
+        1,
+        "one configured policy, one artifact: an index no policy uses is still maintained \
+         on every insert and still occupies the file, so it is reclaimed rather than left \
+         behind: {live_artifacts:?}"
+    );
+    let (live_name, live_ddl) = live_artifacts[0].clone();
+    assert_ne!(
+        live_name, retired_name,
+        "the live artifact is not the retired one wearing a new policy's expectations"
+    );
+    assert!(
+        live_ddl.contains(META_REPLAY_KEY),
+        "it indexes the key the configured policy actually reads: {live_ddl}"
+    );
+
+    // THE DIRECTION THAT MATTERS. A fact carried under the retired key names no
+    // generation to the live policy, so it appends - twice over, because a guard that
+    // suppressed it would be dropping facts it cannot judge.
+    for round in 0..2 {
+        assert_eq!(
+            store
+                .append("run", ExpectedRevision::Any, &retired_generation)
+                .unwrap()
+                .written(),
+            1,
+            "round {round}: an event whose key the configured policy does not read is not \
+             a duplicate, it is unjudgeable - and unjudgeable appends"
+        );
+    }
+}
+
+/// A GUARD MAY NOT WEAKEN THE CONCURRENCY CONTRACT IT SITS IN FRONT OF, and the append
+/// that would be cheapest to shortcut is the one where it must not.
+///
+/// Optimistic concurrency is the port's promise to every writer that hands in an
+/// expectation: the append happens against the revision the caller last read, or it
+/// fails with what the revision actually is. Suppression sits UNDER that promise - it is
+/// a decision about which rows to write, taken after the expectation has been settled -
+/// and an all-suppressed append is exactly the shape where the two are easy to confuse.
+/// It writes nothing, so an implementation that reasons "nothing to write, nothing to
+/// conflict with" and answers early is both plausible and silently wrong: a writer whose
+/// expectation is stale would be told its append succeeded against a stream that has
+/// moved under it, which is the read-modify-write race the expectation exists to catch.
+/// The mistake is invisible in the row counts, because there are none either way.
+///
+/// No test outside this crate references the port's conflict at all, and every in-crate
+/// one drives an UNGUARDED store, so this pins the composition: a guarded store, a batch
+/// whose every event the guard would suppress, and all three expectations.
+#[test]
+fn an_all_suppressed_append_still_answers_a_stale_expectation_with_a_conflict() {
+    let store = guarded();
+    let h1 = batch("src/a.rs", "h1");
+    store
+        .append("run", ExpectedRevision::Any, &h1)
+        .expect("the first recording lands");
+    let landed = store.read_stream("run", 0, Direction::Forward).unwrap();
+    assert_eq!(landed.len(), h1.len(), "the fixture recorded its batch");
+
+    // The stream is at revision 1. A writer pinning revision 0 read it before that batch
+    // landed, and its append - every event of which the guard would suppress - must be
+    // refused on the expectation, not accepted on the emptiness of its write.
+    let refused = store
+        .append("run", ExpectedRevision::Exact(0), &h1)
+        .expect_err("a stale expectation is a conflict even when nothing would be written");
+    match refused {
+        StoreError::Conflict { actual, .. } => assert_eq!(
+            actual,
+            (h1.len() - 1) as Revision,
+            "and the conflict reports the revision the stream is ACTUALLY at, which is \
+             what the caller re-reads from"
+        ),
+        other => panic!("the expectation must be answered by the port's conflict, got {other}"),
+    }
+    // NoStream is the same question asked by a writer that believes it is first.
+    assert!(
+        matches!(
+            store.append("run", ExpectedRevision::NoStream, &h1),
+            Err(StoreError::Conflict { .. })
+        ),
+        "a stream that exists is not a stream that does not, whatever the guard would do \
+         with the batch"
+    );
+
+    // The CONTROL, and the reason the two above are not simply a store that refuses
+    // everything: the current expectation succeeds, writes nothing, and moves nothing.
+    let accepted = store
+        .append(
+            "run",
+            ExpectedRevision::Exact((h1.len() - 1) as Revision),
+            &h1,
+        )
+        .expect("the current expectation is honored");
+    assert_eq!(accepted.handed(), h1.len(), "one slot per event handed in");
+    assert_eq!(
+        accepted.written(),
+        0,
+        "and the guard still suppressed the whole batch - the expectation was settled \
+         BEFORE that verdict, not instead of it"
+    );
+
+    let after = store.read_stream("run", 0, Direction::Forward).unwrap();
+    assert_eq!(
+        after.iter().map(|e| e.revision).collect::<Vec<_>>(),
+        landed.iter().map(|e| e.revision).collect::<Vec<_>>(),
+        "a refused append and an all-suppressed one leave the stream exactly where it was, \
+         so the next writer's expectation is still the revision it just read"
+    );
+}
