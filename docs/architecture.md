@@ -752,7 +752,7 @@ is deduped under can never drift between them. Four properties define it:
   reads the LIVE tree (`walk_guarded` + a file read per path), so a path that is gone is gone to it,
   while the code half lowers from a PERSISTED symbols index when the project has one (the last bullet
   below). A path the tree has deleted that such an index still lists IS handed over as a batch, DOES
-  reach a suppression decision, and is therefore outside these three:
+  reach a suppression decision, and is outside these three:
 
   - **A file the walk no longer sees.** Retiring a file's structure is driven by that file's OWN
     batch (`supersede_file_edges` runs inside the fold of the batch), and the walk emits no batch for
@@ -769,7 +769,7 @@ is deduped under can never drift between them. Four properties define it:
     the log is right and the graph is behind. The append IS recorded, so a later run correctly skips
     it; healing that half is the append-and-fold authority's obligation, not the skip rule's.
 
-  These two sit outside it for other reasons, so no single explanation covers the set:
+  These two sit outside those three for other reasons:
 
   - **The design half retires nothing, even when its batch IS folded.** The fold's design arms only
     ensure nodes and add edges; `supersede_file_edges` is reached from the `fresh` code arms alone.
