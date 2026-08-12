@@ -698,6 +698,119 @@ impl Store {
         tx.commit().map_err(be)?;
         Ok(renamed as usize)
     }
+
+    /// Prune the DUPLICATION an already-bloated log accumulated in its derived index, and reclaim
+    /// the disk it held: for each type in `types`, keep the LATEST event per distinct content key
+    /// (read from `meta_key`) within each stream under `stream_prefix`, delete every earlier
+    /// recording of that key, then `VACUUM` so the file actually shrinks.
+    ///
+    /// This is the COMPACTION half of spec 60 - the supported way to shed duplication a store
+    /// accreted BEFORE the ingest dedup existed. The dedup above the port stops new duplication;
+    /// this removes the pile already on disk. Deleting rows and reclaiming a file is a mechanic of
+    /// the embedded store, so it lives here rather than on the port: a backend that cannot do it
+    /// says so to the operator instead of silently reporting a prune that did not happen.
+    ///
+    /// Three properties, each load-bearing:
+    ///
+    /// 1. **Per KEY, not per subject.** A content key names a file AND its content generation, so
+    ///    a superseded generation is a DISTINCT key whose latest recording survives. Keeping only
+    ///    the latest key per file would delete the history a revert re-reads.
+    /// 2. **Nothing else is touched.** Only the named `types` are eligible, and within them only a
+    ///    row whose key is recorded again LATER in the same stream. A row with no key at all names
+    ///    no content generation and is never provably redundant, so it is left alone - the
+    ///    fail-safe direction. Every surviving row keeps its position, its per-stream revision, and
+    ///    its bytes: this deletes rows, it never rewrites one.
+    /// 3. **The gaps it leaves are safe.** Deleting from the middle of a stream leaves holes in
+    ///    that stream's revisions, which is exactly why [`Store::append`] reads the stream's
+    ///    current revision as `MAX(revision)` rather than counting rows - see the comment there.
+    pub fn prune_derived_index(
+        &self,
+        stream_prefix: &str,
+        meta_key: &str,
+        types: &[&str],
+    ) -> Result<PrunedDerived, Error> {
+        let key = key_expr(meta_key);
+        // Every recording of a covered key EXCEPT the last one in its stream. `ROW_NUMBER` ranks a
+        // key's recordings newest-first, so `rn = 1` is the surviving one and everything beyond it
+        // is a superseded duplicate.
+        let sql = format!(
+            "DELETE FROM events WHERE position IN (
+               SELECT position FROM (
+                 SELECT position, ROW_NUMBER() OVER (
+                          PARTITION BY stream, {key} ORDER BY position DESC) AS rn
+                 FROM events
+                 WHERE type = ?1
+                   AND substr(stream, 1, length(?2)) = ?2
+                   AND {key} IS NOT NULL
+               ) WHERE rn > 1
+             )"
+        );
+
+        let mut guard = self.conn.lock().unwrap();
+        let mut removed: Vec<(String, usize)> = Vec::with_capacity(types.len());
+        {
+            // ONE transaction for the whole prune: a partial compaction is not a state an operator
+            // can reason about, and `BEGIN IMMEDIATE` takes the write lock up front so a concurrent
+            // appender queues on `busy_timeout` rather than failing a deferred lock upgrade.
+            let tx = guard
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(be)?;
+            {
+                let mut stmt = tx.prepare(&sql).map_err(be)?;
+                for t in types {
+                    let n = stmt.execute(params![t, stream_prefix]).map_err(be)?;
+                    removed.push(((*t).to_string(), n));
+                }
+            }
+            tx.commit().map_err(be)?;
+        }
+
+        // VACUUM cannot run inside a transaction, so it follows the commit. Read the page count
+        // FIRST: the committed deletes have moved their pages onto the freelist, which `page_count`
+        // still counts - that is the pre-compaction size the reclamation is measured against.
+        let page_size: i64 = guard
+            .query_row("PRAGMA page_size", [], |r| r.get(0))
+            .map_err(be)?;
+        let before: i64 = guard
+            .query_row("PRAGMA page_count", [], |r| r.get(0))
+            .map_err(be)?;
+        guard.execute_batch("VACUUM").map_err(be)?;
+        // Fold the WAL back into the main file so the shrink lands on disk NOW rather than at some
+        // later checkpoint: the reported reclamation must match what the operator sees on disk.
+        guard
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
+            .map_err(be)?;
+        let after: i64 = guard
+            .query_row("PRAGMA page_count", [], |r| r.get(0))
+            .map_err(be)?;
+        let reclaimed_pages = before.saturating_sub(after).max(0) as u64;
+
+        Ok(PrunedDerived {
+            removed,
+            reclaimed_bytes: reclaimed_pages * page_size.max(0) as u64,
+        })
+    }
+}
+
+/// What one [`Store::prune_derived_index`] pass removed: the rows deleted PER TYPE (in the order
+/// the caller named the types, including the types nothing was removed from), and the bytes the
+/// vacuum reclaimed on disk.
+///
+/// Per type, not just a total, because that is what an operator can check a prune against: a
+/// single number cannot be compared to what the log was expected to hold.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PrunedDerived {
+    /// `(type, rows deleted)`, in the order the caller named the types.
+    pub removed: Vec<(String, usize)>,
+    /// Bytes the vacuum reclaimed on disk.
+    pub reclaimed_bytes: u64,
+}
+
+impl PrunedDerived {
+    /// Every row this pass deleted, across all types.
+    pub fn total_removed(&self) -> usize {
+        self.removed.iter().map(|(_, n)| n).sum()
+    }
 }
 
 fn be<E: std::fmt::Display>(e: E) -> Error {
@@ -953,14 +1066,23 @@ impl EventStore for Store {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(be)?;
 
-        let count: i64 = tx
+        // The stream's current revision is the HIGHEST revision it holds, not its row count minus
+        // one. The two agree on every stream that has only ever been appended to, and they part
+        // company the moment a stream has had rows DELETED from it - which the supported
+        // compaction (`Store::prune_derived_index`) does, leaving holes in the revision sequence.
+        // A count-derived cursor would then reissue a revision the stream still holds and collide
+        // on the `UNIQUE(stream, revision)` index, so a compacted store would refuse the next
+        // append. Compaction may not renumber the survivors to close the holes (that would REWRITE
+        // events it is only allowed to preserve), so the CURSOR moves instead of the rows. It is
+        // also the cheaper read: `MAX(revision)` is a seek on the tail of the `UNIQUE(stream,
+        // revision)` index, where a `COUNT(*)` walks every row the stream holds.
+        let last_revision: Revision = tx
             .query_row(
-                "SELECT COUNT(*) FROM events WHERE stream = ?1",
-                [stream],
+                "SELECT COALESCE(MAX(revision), ?2) FROM events WHERE stream = ?1",
+                params![stream, NO_STREAM],
                 |r| r.get(0),
             )
             .map_err(be)?;
-        let last_revision: Revision = count - 1; // NO_STREAM (-1) when the stream is empty
         let ok = match expected {
             ExpectedRevision::Any => true,
             ExpectedRevision::NoStream => last_revision == NO_STREAM,
@@ -980,7 +1102,7 @@ impl EventStore for Store {
         // per-stream revision, so the revision cursor advances only on a write and the
         // stream ends up advanced by exactly the events written.
         let mut placements: Vec<Option<Position>> = Vec::with_capacity(events.len());
-        let mut revision = count;
+        let mut revision = last_revision + 1;
         // Every suppression verdict is taken against the log as it stood when this
         // append began, BEFORE any of this batch's own rows exist.
         let verdicts = self.redundant_flags(&tx, stream, events, readiness)?;

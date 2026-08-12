@@ -28,8 +28,22 @@ impl<'a> Namespaced<'a> {
     pub fn new(inner: &'a dyn EventStore, project: &str) -> Self {
         Namespaced {
             inner,
-            prefix: format!("proj-{project}-"),
+            prefix: Self::prefix_for(project),
         }
+    }
+
+    /// The stream-name prefix that scopes `project`'s streams - the ONE place the namespace's
+    /// wire form is written.
+    ///
+    /// It is published because a store-level MAINTENANCE operation has to address a project's
+    /// streams without going through the decorator: the compacting prune
+    /// (`sqlite::Store::prune_derived_index`) works on the backend directly, since deleting rows
+    /// and reclaiming the file are not port operations. Reading the prefix from here rather than
+    /// re-spelling `proj-<id>-` at the call site keeps that maintenance and every namespaced read
+    /// and write agreeing on the same boundary, so a change to the form can never leave a
+    /// maintenance command addressing streams that no longer exist.
+    pub fn prefix_for(project: &str) -> String {
+        format!("proj-{project}-")
     }
 
     fn scoped(&self, stream: &str) -> String {
