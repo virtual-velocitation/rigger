@@ -4,6 +4,7 @@
 //! revision)` index give optimistic concurrency; `$all` is `ORDER BY position`.
 
 use std::collections::BTreeMap;
+use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
@@ -13,7 +14,8 @@ use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
 use super::{
     Appended, ContentIdentity, Direction, Error, Event, EventStore, ExpectedRevision, Filter,
-    Position, Revision, Subscription, NO_STREAM,
+    Position, Revision, Subscription, GUARD_DEGRADED_NO_INDEX, GUARD_DEGRADED_UNDETERMINED,
+    META_GUARD_DEGRADED, NO_STREAM,
 };
 
 const SCHEMA: &str = "
@@ -60,19 +62,20 @@ pub struct Store {
     /// The configured content-identity policy and the SQL rendered from it, or `None`
     /// for a store with no guard (which appends everything through).
     guard: Option<Guard>,
-    /// Whether the content-key index this handle's policy needs is COMMITTED, with the
-    /// definition this policy renders. Latched true only after that definition has been
-    /// read back out of `sqlite_master` in its own statement, so a build that was rolled
-    /// back can never leave the handle believing the index is there: an unlatched handle
-    /// re-checks (and re-attempts) on the next append. While it is false the guard
-    /// suppresses NOTHING - see [`Store::redundant_flags`].
-    index_ready: AtomicBool,
 }
 
-/// The configured guard: the policy, the index its probes require, and the probe
-/// statements - all rendered from the policy ONCE, at configuration time, so the text
-/// the query planner sees can never drift from the indexed expression (they are built
-/// from the same key expression).
+/// The configured guard: the policy, the index its probes require, the probe
+/// statements, and whether that index is THERE - all rendered from the policy ONCE, at
+/// configuration time, so the text the query planner sees can never drift from the
+/// indexed expression (they are built from the same key expression).
+///
+/// The readiness latch lives HERE, beside the policy it is a fact about, and not on the
+/// [`Store`]. A latch on the store is a second field that can disagree with the first:
+/// reconfiguring a handle replaces the policy, and a latch left behind then reports
+/// "the index is ready" about an index that policy never built - so the guard believes
+/// it is seeking an index while every probe walks the table, under the append's write
+/// lock. Held on the guard, the latch is created with the policy and dies with it:
+/// there is no second value to reset and nothing to keep in step.
 struct Guard {
     identity: ContentIdentity,
     /// The name of the index the probes seek, derived from the configured metadata key.
@@ -89,6 +92,65 @@ struct Guard {
     /// Both halves come from one index seek, and from ONE type test - so the type gate
     /// cannot be present for the candidate and absent for its date.
     step_sql: String,
+    /// Whether THIS policy's content-key index is COMMITTED, with the definition this
+    /// policy renders. Latched true only after that definition has been read back out
+    /// of `sqlite_master` in its own statement, so a build that was rolled back can
+    /// never leave the handle believing the index is there: an unlatched guard
+    /// re-checks (and re-attempts) on the next append. While it is false the guard
+    /// suppresses NOTHING - see [`Store::redundant_flags`].
+    index_ready: AtomicBool,
+}
+
+/// Whether the guard is in a position to JUDGE one particular append - decided BEFORE
+/// the append's write transaction opens, because settling it is what may have to build
+/// an index.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Readiness {
+    /// Nothing to judge: no policy configured, or nothing in this batch that the
+    /// configured policy covers. Not a degradation - the guard was not asked.
+    Idle,
+    /// The content-key index this policy needs is committed, so every probe is a seek.
+    Indexed,
+    /// The guard COVERS something in this batch and has no usable index. It suppresses
+    /// nothing (a probe without the index is a table walk under the write lock, which
+    /// costs more than the duplication it removes), and it says so: see
+    /// [`GUARD_DEGRADED_NO_INDEX`].
+    Unindexed,
+}
+
+/// What a bounded latest-generation walk ESTABLISHED about one subject.
+///
+/// `Absent` and `Undetermined` are deliberately different values even though neither
+/// suppresses. `Absent` is an answer - this subject has recorded no generation - and it
+/// is the normal state of every subject the log has not seen. `Undetermined` is the
+/// walk admitting it ran out of budget before it could answer, which is the guard
+/// failing to do its job, and a guard that fails silently is the failure mode this
+/// layer has already been rebuilt for once. Keeping them apart is what lets the append
+/// record the second and stay quiet about the first.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Latest {
+    /// The generation this subject is currently at.
+    At(String),
+    /// The subject has no recorded generation on this stream.
+    Absent,
+    /// The walk exceeded its step budget, so the current generation is not known.
+    Undetermined,
+}
+
+/// One append's suppression verdicts, and what the guard COULD NOT DO while taking them.
+///
+/// The two travel together because they are decided together and are both facts about
+/// the same append: the flags say which events the store may skip, and `degraded` says
+/// whether those flags were taken by a guard that was actually able to judge. A caller
+/// cannot get one without the other, which is what keeps a degradation from being
+/// dropped on the floor between the probe and the write.
+struct Verdicts {
+    /// One verdict per handed event, in input order.
+    redundant: Vec<bool>,
+    /// Why the guard was not judging, when it was not - one of
+    /// [`GUARD_DEGRADED_NO_INDEX`] / [`GUARD_DEGRADED_UNDETERMINED`], stamped under
+    /// [`META_GUARD_DEGRADED`] onto the covered events this append writes.
+    degraded: Option<&'static str>,
 }
 
 impl Store {
@@ -99,7 +161,6 @@ impl Store {
         Ok(Store {
             conn: Arc::new(Mutex::new(conn)),
             guard: None,
-            index_ready: AtomicBool::new(false),
         })
     }
 
@@ -145,6 +206,10 @@ impl Store {
                  GROUP BY {key} ORDER BY {key} ASC LIMIT 1"
             ),
             identity,
+            // A NEW policy starts with a NEW latch, unlatched. This is the whole
+            // reconfiguration story: there is no flag left over from the policy this
+            // one replaces, so nothing has to be reset and nothing can be forgotten.
+            index_ready: AtomicBool::new(false),
         });
         self
     }
@@ -171,6 +236,22 @@ impl Store {
     }
 
     /// The DDL for the content-key index `name` under a policy keyed on `meta_key`.
+    ///
+    /// WHAT THIS ARTIFACT COSTS, stated because this store exists to BOUND the log and
+    /// a guard that quietly grows it by a third has not bounded anything. The index
+    /// holds one entry per event of a covered type, carrying that event's content key -
+    /// a path-and-hash string, not a small integer - so it measures a comparable
+    /// fraction of the rows it indexes: on a log of the scale this spec was written for
+    /// it is a hundreds-of-megabytes artifact, roughly a third of the store's size at
+    /// the moment the guard is switched on. It is worth that only against what it
+    /// removes: the duplication it stops is UNBOUNDED (the whole derived index
+    /// re-appended per run, measured at 39.5x), so a fixed proportional cost buys a
+    /// growth rate. On a log that never receives a duplicate append it is pure
+    /// overhead, which is why it is built LAZILY - a store nobody appends covered
+    /// events to never pays for it at all - and why RECLAIMING it is a named
+    /// responsibility rather than an accident: see
+    /// [`Store::ensure_content_key_index`], which sweeps every content-key index that
+    /// is not the configured policy's.
     ///
     /// Spelled WITHOUT `IF NOT EXISTS` on purpose: SQLite strips that clause when it
     /// stores a definition in `sqlite_master`, so omitting it makes this text exactly
@@ -209,35 +290,95 @@ impl Store {
     ///    `BEGIN IMMEDIATE` would add its whole duration to a window every other process
     ///    is queued behind, on top of the append itself. Its own transaction keeps the
     ///    append's write window the size of the append.
+    /// 4. **The build is IDEMPOTENT UNDER THE LOCK, and it reclaims what it replaces.**
+    ///    Everything above this line is decided outside the write lock, so on a cold
+    ///    store every handle that starts before the first one commits reaches the build
+    ///    with the same verdict. Re-reading the committed definition once the lock is
+    ///    held turns k racing rebuilds of a multi-hundred-megabyte artifact into one
+    ///    build and k-1 no-ops - see [`Store::build_content_key_index`], which is also
+    ///    where an index left behind by a policy that is no longer configured is
+    ///    dropped.
     ///
     /// It is reached only from an append that carries a suppressible event, so a store
     /// that is only ever read, or only ever written with uncovered types, never builds it.
     fn ensure_content_key_index(&self, conn: &mut Connection, guard: &Guard) -> bool {
-        if self.index_ready.load(Ordering::SeqCst) {
+        if guard.index_ready.load(Ordering::SeqCst) {
             return true;
         }
         if committed_index_ddl(conn, &guard.index_name).as_deref() == Some(guard.index_ddl.as_str())
+            && stale_content_key_indexes(conn, &guard.index_name).is_empty()
         {
-            self.index_ready.store(true, Ordering::SeqCst);
+            guard.index_ready.store(true, Ordering::SeqCst);
             return true;
         }
-        // The build's own Result is deliberately NOT the verdict - a statement that ran is
-        // not an index, and a commit can still fail - so it is discarded and the committed
-        // state is read instead.
-        let _ = (|| -> rusqlite::Result<()> {
-            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            tx.execute_batch(&format!(
-                "DROP INDEX IF EXISTS {};\n{};",
-                guard.index_name, guard.index_ddl
-            ))?;
-            tx.commit()
-        })();
+        self.build_content_key_index(conn, guard);
         let ready = committed_index_ddl(conn, &guard.index_name).as_deref()
             == Some(guard.index_ddl.as_str());
         if ready {
-            self.index_ready.store(true, Ordering::SeqCst);
+            guard.index_ready.store(true, Ordering::SeqCst);
         }
         ready
+    }
+
+    /// Build this policy's content-key index, and drop every content-key index that is
+    /// not it, in ONE write transaction.
+    ///
+    /// THE FIRST THING IT DOES UNDER THE LOCK IS LOOK AGAIN. The decision to build was
+    /// taken outside the write lock, which is the only place it could have been taken -
+    /// and on a cold store that means every handle that starts before the first builder
+    /// COMMITS arrives here having seen no index. Without this re-read each of them
+    /// drops and recreates the artifact the previous one just committed, serially,
+    /// holding the exclusive write lock for the whole build: with four cold handles that
+    /// is four builds and seconds of lock against a five-second busy timeout, and every
+    /// bystander process appending an ordinary event in that window - a worker's
+    /// self-report, a courier's death record - fails with a lock error rather than
+    /// waiting. One re-read collapses that to a single build; the others find their work
+    /// already done and commit nothing. This is the SUCCESS path, not a misuse path: it
+    /// is what a cold store with more than one appender does.
+    ///
+    /// THE SWEEP is the same transaction's other half. The index's NAME carries the
+    /// policy's metadata key, so a store reconfigured onto a different key mints a
+    /// different artifact - and the previous one would otherwise stay committed forever,
+    /// answering no question anyone asks while still being maintained on every single
+    /// insert. Whoever builds the live index is the one process that knows which
+    /// artifacts are dead, so reclaiming them is its job and nobody else's.
+    ///
+    /// The sweep rests on ONE policy per store at a time, which is a property of the
+    /// design and not a convention: the metadata key derived facts carry is a code-owned
+    /// constant minted in one place, so "this project's content keys" is a single answer
+    /// and a second, differently-keyed policy over the same database is not a
+    /// configuration this system can produce. If a future composition root produced one
+    /// anyway, the two would reclaim each other's artifact and their probes would fall
+    /// back to table walks - a cost, in the same fail-safe direction as everything else
+    /// here, never a dropped fact.
+    ///
+    /// The build's own `Result` is deliberately NOT the verdict - a statement that ran is
+    /// not an index, and a commit can still fail - so it is discarded here and the
+    /// caller reads the committed state instead.
+    fn build_content_key_index(&self, conn: &mut Connection, guard: &Guard) {
+        let _ = (|| -> rusqlite::Result<()> {
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let mut ddl = String::new();
+            for name in stale_content_key_indexes(&tx, &guard.index_name) {
+                ddl.push_str(&format!("DROP INDEX IF EXISTS {name};\n"));
+            }
+            if committed_index_ddl(&tx, &guard.index_name).as_deref()
+                != Some(guard.index_ddl.as_str())
+            {
+                ddl.push_str(&format!(
+                    "DROP INDEX IF EXISTS {};\n{};",
+                    guard.index_name, guard.index_ddl
+                ));
+            }
+            if ddl.is_empty() {
+                // Another handle built it while this one queued for the lock. Nothing to
+                // write, so nothing is written: the transaction ends having touched no
+                // page, and the artifact is not rebuilt.
+                return Ok(());
+            }
+            tx.execute_batch(&ddl)?;
+            tx.commit()
+        })();
     }
 
     /// Whether `events` carries anything this store's guard could suppress: an event of a
@@ -268,27 +409,47 @@ impl Store {
         tx: &rusqlite::Transaction<'_>,
         stream: &str,
         events: &[Event],
-        indexed: bool,
-    ) -> Result<Vec<bool>, Error> {
-        let Some(guard) = &self.guard else {
-            return Ok(vec![false; events.len()]);
+        readiness: Readiness,
+    ) -> Result<Verdicts, Error> {
+        let judged_nothing = |degraded| Verdicts {
+            redundant: vec![false; events.len()],
+            degraded,
         };
-        // NO USABLE INDEX, NO SUPPRESSION. Without it every probe becomes a walk of the
-        // table, and a guard that costs an unbounded walk per append is worse than the
-        // duplication it removes - so the store appends, which is the fail-safe direction
-        // this whole layer is built on (it can only ever write MORE, never drop).
-        if !indexed {
-            return Ok(vec![false; events.len()]);
+        let Some(guard) = &self.guard else {
+            return Ok(judged_nothing(None));
+        };
+        match readiness {
+            Readiness::Idle => return Ok(judged_nothing(None)),
+            // NO USABLE INDEX, NO SUPPRESSION. Without it every probe becomes a walk of
+            // the table, and a guard that costs an unbounded walk per append is worse
+            // than the duplication it removes - so the store appends, which is the
+            // fail-safe direction this whole layer is built on (it can only ever write
+            // MORE, never drop). It is also RECORDED: the events this append writes
+            // carry the reason, because a defense that has switched itself off in
+            // silence is one nobody discovers until the log is huge again.
+            Readiness::Unindexed => return Ok(judged_nothing(Some(GUARD_DEGRADED_NO_INDEX))),
+            Readiness::Indexed => {}
         }
         // One latest-generation lookup per DISTINCT subject in the batch, not per event:
         // a file's whole batch shares one subject.
-        let mut current: std::collections::HashMap<String, Option<String>> =
+        let mut current: std::collections::HashMap<String, Latest> =
             std::collections::HashMap::new();
-        let mut flags = Vec::with_capacity(events.len());
+        let mut degraded = None;
+        let mut redundant = Vec::with_capacity(events.len());
         for event in events {
-            flags.push(self.is_redundant(tx, guard, stream, event, &mut current)?);
+            redundant.push(self.is_redundant(
+                tx,
+                guard,
+                stream,
+                event,
+                &mut current,
+                &mut degraded,
+            )?);
         }
-        Ok(flags)
+        Ok(Verdicts {
+            redundant,
+            degraded,
+        })
     }
 
     /// Whether appending `event` would be redundant: its type carries content identity,
@@ -301,7 +462,8 @@ impl Store {
         guard: &Guard,
         stream: &str,
         event: &Event,
-        current: &mut std::collections::HashMap<String, Option<String>>,
+        current: &mut std::collections::HashMap<String, Latest>,
+        degraded: &mut Option<&'static str>,
     ) -> Result<bool, Error> {
         if !guard.identity.covers(&event.type_) {
             return Ok(false);
@@ -323,10 +485,17 @@ impl Store {
             let latest = self.latest_generation(tx, guard, stream, subject)?;
             current.insert(subject.to_string(), latest);
         }
-        Ok(current
-            .get(subject)
-            .and_then(|g| g.as_deref())
-            .is_some_and(|latest| latest == generation))
+        Ok(match current.get(subject) {
+            Some(Latest::At(latest)) => latest == generation,
+            Some(Latest::Undetermined) => {
+                // The walk could not establish this subject's current generation, so
+                // nothing is suppressed against it - and the append RECORDS that it was
+                // written by a guard which was not judging.
+                *degraded = Some(GUARD_DEGRADED_UNDETERMINED);
+                false
+            }
+            _ => false,
+        })
     }
 
     /// The content generation a subject is CURRENTLY at: the one named by the
@@ -367,11 +536,12 @@ impl Store {
     /// already the subject's latest, which no dating can change. A generation the file
     /// has moved past is never appended partially: the guard suppresses none of it.
     ///
-    /// Stepping past a generation uses the byte offsets of the slices the POLICY handed
-    /// back, never a separator this module knows: `subject_of` returns borrows INTO the
-    /// key, so the span to skip is arithmetic on those borrows (see
-    /// [`generation_span`], which also explains why the skip has to reach one character
-    /// PAST the generation to be sound). The store still parses no key format of its own.
+    /// Stepping past a generation uses the byte RANGES the POLICY located the parts at,
+    /// never a separator this module knows: [`ContentIdentity::split_of`] answers WHERE
+    /// in the key each part lies, so the span to skip is arithmetic on those offsets
+    /// (see [`generation_span`], which also explains why the skip has to reach one
+    /// character PAST the generation to be sound). The store still parses no key format
+    /// of its own.
     ///
     /// Candidates are filtered by asking the policy for each one's subject, because a
     /// prefix range is a superset: a file whose path itself contains the generation
@@ -380,21 +550,24 @@ impl Store {
     /// letting it answer would let one file's generation retire another's. A foreign
     /// subject is skipped WHOLE for the same reason a generation is: by its own range.
     ///
-    /// Answers `None` for a subject with no recorded generation AND for a walk that ran
-    /// out of steps; both mean "not established as current", and neither suppresses.
+    /// Answers [`Latest::Absent`] for a subject with no recorded generation and
+    /// [`Latest::Undetermined`] for a walk that ran out of steps. Neither suppresses -
+    /// but only the second is a degradation, and telling them apart is what lets the
+    /// append record it.
     fn latest_generation(
         &self,
         tx: &rusqlite::Transaction<'_>,
         guard: &Guard,
         stream: &str,
         subject: &str,
-    ) -> Result<Option<String>, Error> {
+    ) -> Result<Latest, Error> {
         self.latest_generation_within(tx, guard, stream, subject, LATEST_GENERATION_STEPS)
     }
 
     /// [`Store::latest_generation`] with the step budget given explicitly, so the bound
     /// itself is drivable: a walk handed fewer steps than the subject has generations
-    /// must answer `None` (undetermined), never the best generation it happened to reach.
+    /// must answer [`Latest::Undetermined`], never the best generation it happened to
+    /// reach.
     fn latest_generation_within(
         &self,
         tx: &rusqlite::Transaction<'_>,
@@ -402,39 +575,48 @@ impl Store {
         stream: &str,
         subject: &str,
         steps: usize,
-    ) -> Result<Option<String>, Error> {
+    ) -> Result<Latest, Error> {
         let end = prefix_upper_bound(subject);
         let mut step = tx.prepare_cached(&guard.step_sql).map_err(be)?;
         let mut lo = subject.to_string();
         let mut latest: Option<(Position, String)> = None;
+        let settled = |latest: Option<(Position, String)>| match latest {
+            Some((_, generation)) => Latest::At(generation),
+            None => Latest::Absent,
+        };
         for _ in 0..steps {
             if lo >= end {
-                return Ok(latest.map(|(_, generation)| generation));
+                return Ok(settled(latest));
             }
             let found: Option<(String, Option<i64>)> = step
                 .query_row(params![stream, &lo, &end], |r| Ok((r.get(0)?, r.get(1)?)))
                 .optional()
                 .map_err(be)?;
             let Some((key, at)) = found else {
-                return Ok(latest.map(|(_, generation)| generation));
+                return Ok(settled(latest));
             };
             // The next bound, in three preferences: past this key's whole generation when
             // the policy named one, past a FOREIGN subject's whole range when the key
             // belongs to another subject nested in this one's, and otherwise past just
             // this key. Each is strictly greater than `key`, so the walk always advances.
             let mut bound = successor(&key);
-            if let Some((candidate, generation)) = guard.identity.subject_of(&key) {
+            if let Some((candidate, generation)) = guard.identity.split_of(&key) {
+                // A validated split's subject STARTS the key, and this key already begins
+                // with `subject` (it came out of `subject`'s own range) - so a candidate
+                // longer than `subject` is a subject NESTED inside it, with no further
+                // test needed.
+                let candidate = &key[candidate];
                 if candidate == subject {
-                    if let Some(span) = generation_span(&key, generation) {
+                    if let Some(span) = generation_span(&key, &generation) {
                         bound = bound.max(prefix_upper_bound(&key[..span]));
                     }
                     if let Some(at) = at {
                         let at = at as Position;
                         if latest.as_ref().is_none_or(|(seen, _)| at > *seen) {
-                            latest = Some((at, generation.to_string()));
+                            latest = Some((at, key[generation].to_string()));
                         }
                     }
-                } else if candidate.len() > subject.len() && key.starts_with(candidate) {
+                } else if candidate.len() > subject.len() {
                     bound = bound.max(prefix_upper_bound(candidate));
                 }
             }
@@ -442,7 +624,38 @@ impl Store {
         }
         // Out of steps: the subject's latest generation is UNDETERMINED, and an
         // undetermined probe never suppresses.
-        Ok(None)
+        Ok(Latest::Undetermined)
+    }
+
+    /// The metadata this store RECORDS for `event` - the caller's own, verbatim, except
+    /// when the guard was not judging while this append ran.
+    ///
+    /// A guard that has stopped defending has to leave a trace, and the log is the only
+    /// durable place it has: the degradation is invisible from the outside (an append
+    /// that suppresses nothing looks exactly like an append with nothing to suppress),
+    /// and the symptom shows up as a log growing again, days later, in another process.
+    /// So the reason rides as ONE extra metadata pair - no new event type, no new
+    /// serialized form, nothing to backfill - on the events this append was already
+    /// writing, and any read of the store surfaces it.
+    ///
+    /// It is stamped ONLY on events of a type the policy COVERS. A domain event is never
+    /// rewritten by a store that merely happened to be unhealthy while it landed: the
+    /// derived-index events this rides on are the guard's own subject matter, and their
+    /// metadata is the natural place for a fact about how they were admitted.
+    fn recorded_meta(&self, event: &Event, degraded: Option<&'static str>) -> String {
+        let Some(reason) = degraded else {
+            return meta_json(&event.meta);
+        };
+        let covered = self
+            .guard
+            .as_ref()
+            .is_some_and(|g| g.identity.covers(&event.type_));
+        if !covered {
+            return meta_json(&event.meta);
+        }
+        let mut meta = event.meta.clone();
+        meta.insert(META_GUARD_DEGRADED.to_string(), reason.to_string());
+        meta_json(&meta)
     }
 
     /// Whether any stream whose name starts with `prefix` holds an event. An EXACT
@@ -565,6 +778,39 @@ fn committed_index_ddl(conn: &Connection, name: &str) -> Option<String> {
     .flatten()
 }
 
+/// Every committed content-key index that is NOT `keep` - the artifacts a policy that is
+/// no longer configured left behind.
+///
+/// They are dead weight in the exact sense that matters to a store whose purpose is to
+/// stay bounded: an index built for another metadata key answers no question this store
+/// asks (its indexed expression reads a key nothing carries any more, so every entry in
+/// it is NULL), yet SQLite still maintains it on every single insert and still stores it
+/// in the file. Nobody else can identify them - only the handle holding the live policy
+/// knows which name is the live one - so the build sweeps them.
+///
+/// The match is an EXACT prefix comparison on the shared stem, never a `LIKE` pattern:
+/// the stem carries no wildcard today, and a comparison that would change meaning if it
+/// ever did is not one to leave in a DROP path.
+fn stale_content_key_indexes(conn: &Connection, keep: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT name FROM sqlite_master \
+         WHERE type = 'index' AND substr(name, 1, length(?1)) = ?1 AND name <> ?2 \
+         ORDER BY name",
+    ) else {
+        return names;
+    };
+    let Ok(rows) = stmt.query_map(params![CONTENT_KEY_INDEX_STEM, keep], |r| {
+        r.get::<_, String>(0)
+    }) else {
+        return names;
+    };
+    for row in rows.flatten() {
+        names.push(row);
+    }
+    names
+}
+
 /// The smallest string strictly greater than `s`. Used as an INCLUSIVE lower bound that
 /// excludes `s` itself and nothing else: no string sorts between `s` and `s` with a NUL
 /// appended.
@@ -591,18 +837,14 @@ fn successor(s: &str) -> String {
 /// it from a longer generation that starts the same way - and it answers `None`, which
 /// costs a step per key for a policy shaped that way and is correct for every policy.
 ///
-/// `generation` must be a borrow INTO `key` (the [`ContentIdentity`] contract returns
-/// borrows of the key it was handed); a slice of any other string answers `None`. The
-/// offsets are arithmetic on two slices of one allocation - it is how the walk steps past
-/// a generation without knowing any key's format.
-fn generation_span(key: &str, generation: &str) -> Option<usize> {
-    let base = key.as_ptr() as usize;
-    let at = generation.as_ptr() as usize;
-    let end = at.checked_sub(base)?.checked_add(generation.len())?;
-    if end > key.len() || !key.is_char_boundary(end) {
-        return None;
-    }
-    let delimiter = key[end..].chars().next()?;
+/// `generation` is the RANGE the policy located the generation at, already validated by
+/// [`ContentIdentity::split_of`] as lying inside `key` on character boundaries - so the
+/// generation's end is read off the TYPE rather than recovered by comparing addresses,
+/// and a policy cannot hand back something that merely looks like a slice of the key.
+/// The store still parses no key format of its own; it only asks where the parts are.
+fn generation_span(key: &str, generation: &Range<usize>) -> Option<usize> {
+    let end = generation.end;
+    let delimiter = key.get(end..)?.chars().next()?;
     Some(end + delimiter.len_utf8())
 }
 
@@ -692,11 +934,15 @@ impl EventStore for Store {
         // process queues behind. `indexed` is false when the store has no guard, when the
         // batch has nothing the guard could suppress, or when the index is not there -
         // and a false answer suppresses nothing.
-        let indexed = match &self.guard {
+        let readiness = match &self.guard {
             Some(g) if Self::has_suppressible(g, events) => {
-                self.ensure_content_key_index(&mut guard, g)
+                if self.ensure_content_key_index(&mut guard, g) {
+                    Readiness::Indexed
+                } else {
+                    Readiness::Unindexed
+                }
             }
-            _ => false,
+            _ => Readiness::Idle,
         };
         // BEGIN IMMEDIATE, not the default BEGIN DEFERRED: acquire the write lock up
         // front so a second connection (a separate process - the death courier racing
@@ -744,8 +990,8 @@ impl EventStore for Store {
         let mut revision = count;
         // Every suppression verdict is taken against the log as it stood when this
         // append began, BEFORE any of this batch's own rows exist.
-        let redundant = self.redundant_flags(&tx, stream, events, indexed)?;
-        for (e, redundant) in events.iter().zip(redundant) {
+        let verdicts = self.redundant_flags(&tx, stream, events, readiness)?;
+        for (e, redundant) in events.iter().zip(verdicts.redundant) {
             if redundant {
                 placements.push(None);
                 continue;
@@ -758,7 +1004,7 @@ impl EventStore for Store {
                     e.type_,
                     e.id,
                     e.data,
-                    meta_json(&e.meta),
+                    self.recorded_meta(e, verdicts.degraded),
                     to_nanos(e.valid_from),
                     recorded_at,
                     revision
@@ -932,7 +1178,7 @@ mod content_identity_guard {
     /// NEVER parse a key itself - the split is configuration, so that the format stays
     /// owned by the module that builds it. Splitting from the RIGHT is load-bearing: a
     /// real path may itself contain `@` or `#`.
-    fn subject_of(key: &str) -> Option<(&str, &str)> {
+    fn subject_of(key: &str) -> Option<(Range<usize>, Range<usize>)> {
         let (prefix, remainder) = key.split_once('/')?;
         if prefix.is_empty() || remainder.is_empty() {
             return None;
@@ -945,7 +1191,14 @@ mod content_identity_guard {
         if file.len() <= prefix.len() + 1 || hash.is_empty() {
             return None;
         }
-        Some((&key[..file.len() + 1], hash))
+        let subject_end = file.len() + 1; // through the `@` that ends the subject
+        Some((0..subject_end, subject_end..subject_end + hash.len()))
+    }
+
+    /// `subject_of` as the two slices, for assertions that read better as text.
+    fn split(key: &str) -> Option<(&str, &str)> {
+        let (subject, generation) = subject_of(key)?;
+        Some((&key[subject], &key[generation]))
     }
 
     /// The policy under test: the real metadata key and the real derived-index type set
@@ -977,21 +1230,17 @@ mod content_identity_guard {
     #[test]
     fn subject_of_splits_from_the_right_so_a_path_may_carry_an_at_or_a_hash() {
         assert_eq!(
-            subject_of("gc/src/a.rs@h1#0"),
+            split("gc/src/a.rs@h1#0"),
             Some(("gc/src/a.rs@", "h1")),
             "the subject prefix runs up to and including the generation separator"
         );
         assert_eq!(
-            subject_of("gd/a#1/b@2/c.md@deadbeef#12"),
+            split("gd/a#1/b@2/c.md@deadbeef#12"),
             Some(("gd/a#1/b@2/c.md@", "deadbeef")),
             "a path containing both `@` and `#` still yields the whole path as the subject"
         );
         for malformed in ["gc/src/a.rs@h1", "gc/src/a.rs#0", "gc/@h1#0", "gc/a.rs@#0"] {
-            assert_eq!(
-                subject_of(malformed),
-                None,
-                "{malformed:?} names no generation"
-            );
+            assert_eq!(split(malformed), None, "{malformed:?} names no generation");
         }
     }
 
@@ -1501,7 +1750,12 @@ mod content_identity_guard {
         );
         assert_eq!(rows(&store, "run"), 4);
         assert!(
-            !store.index_ready.load(Ordering::SeqCst),
+            !store
+                .guard
+                .as_ref()
+                .expect("configured")
+                .index_ready
+                .load(Ordering::SeqCst),
             "a build that never committed must never be remembered as done"
         );
 
@@ -1680,15 +1934,23 @@ mod content_identity_guard {
                 .unwrap()
         };
         assert_eq!(
-            within(4).as_deref(),
-            Some("h3"),
+            within(4),
+            Latest::At("h3".to_string()),
             "three generations plus the step that proves the range exhausted is all it costs"
         );
         assert_eq!(
             within(3),
-            None,
+            Latest::Undetermined,
             "a budget that cannot cover every generation must answer UNDETERMINED, so the \
-             append goes through"
+             append goes through - and it must say UNDETERMINED rather than ABSENT, which \
+             is what makes the degradation recordable"
+        );
+        assert_eq!(
+            store
+                .latest_generation_within(&tx, guard, "run", "gc/src/never.rs@", 4)
+                .unwrap(),
+            Latest::Absent,
+            "a subject the log has never recorded is an ANSWER, not a degradation"
         );
     }
 
@@ -1805,6 +2067,346 @@ mod content_identity_guard {
         assert!(!in_range("gc/src/a.rsZ@h1#0"));
         assert!(!in_range("gc/src/b.rs@h1#0"));
         assert_eq!(prefix_upper_bound(""), char::MAX.to_string());
+    }
+
+    /// A store's other guarded policy, keyed on a DIFFERENT metadata key - so it needs a
+    /// different index and answers a different question.
+    fn other_identity() -> ContentIdentity {
+        ContentIdentity::new(OTHER_META_KEY, DERIVED_INDEX_TYPES, subject_of)
+    }
+
+    const OTHER_META_KEY: &str = "other_replay_key";
+
+    fn other_keyed(type_: &str, key: &str) -> Event {
+        Event::new(type_, b"payload".to_vec()).with_meta(OTHER_META_KEY, key)
+    }
+
+    /// The readiness latch is a fact about A POLICY'S INDEX, so it belongs to the policy
+    /// and dies with it. RECONFIGURING MUST BUILD THE NEW POLICY'S OWN INDEX.
+    ///
+    /// A latch held beside the policy instead of on it is a second value that can
+    /// disagree with the first, and this is the disagreement: the handle has latched
+    /// "ready" about the index the FIRST policy built, the second policy needs a
+    /// different index entirely (its expression reads a different metadata key), and the
+    /// latch answers for it. The guard then believes every probe is a seek while every
+    /// probe is a full table walk with a `json_extract` per row - inside the append's
+    /// exclusive write transaction, which every other process on that store is queued
+    /// behind. Nothing about the ANSWERS changes, which is why only the artifact can
+    /// witness it.
+    #[test]
+    fn reconfiguring_builds_the_new_policys_index_and_never_inherits_the_olds_readiness() {
+        let store = Store::open(":memory:")
+            .unwrap()
+            .with_content_identity(identity());
+        store
+            .append("run", ExpectedRevision::Any, &batch("src/a.rs", "h1"))
+            .unwrap();
+        assert!(
+            store
+                .guard
+                .as_ref()
+                .expect("configured")
+                .index_ready
+                .load(Ordering::SeqCst),
+            "the first policy's index is built and latched"
+        );
+
+        let store = store.with_content_identity(other_identity());
+        let (name, wanted) = {
+            let g = store.guard.as_ref().expect("reconfigured");
+            assert!(
+                !g.index_ready.load(Ordering::SeqCst),
+                "a new policy starts unlatched: the latch is created with it, not \
+                 inherited from the policy it replaces"
+            );
+            (g.index_name.clone(), g.index_ddl.clone())
+        };
+
+        store
+            .append(
+                "run",
+                ExpectedRevision::Any,
+                &[other_keyed(TYPE_CODE_ENTITY_EXTRACTED, "gc/src/b.rs@h1#0")],
+            )
+            .unwrap();
+
+        assert_eq!(
+            committed_index_ddl(&store.conn.lock().unwrap(), &name).as_deref(),
+            Some(wanted.as_str()),
+            "the reconfigured store builds ITS OWN index; a latch that outlived the \
+             policy it described would leave every probe walking the table"
+        );
+    }
+
+    /// AN INDEX ANOTHER HANDLE ALREADY COMMITTED IS NOT REBUILT. This is the success
+    /// path of a cold store with more than one appender, not a misuse path.
+    ///
+    /// Both handles here are cold, and the decision to build is necessarily taken
+    /// OUTSIDE the write lock - so on a cold store every handle that starts before the
+    /// first one commits arrives at the build having seen no index. The build's first
+    /// act under the lock is therefore to look again. Without that re-read this racer
+    /// drops and recreates the artifact the winner just committed, holding the exclusive
+    /// write lock for the whole rebuild, and every bystander process appending an
+    /// ordinary event in that window fails on the busy timeout rather than waiting.
+    ///
+    /// `PRAGMA schema_version` is the witness because it counts SCHEMA CHANGES and
+    /// nothing else: a build that writes nothing leaves it exactly where it was, while a
+    /// needless `DROP` plus `CREATE` moves it by two.
+    #[test]
+    fn a_racing_cold_handle_finds_the_index_under_the_lock_and_rebuilds_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("run.db");
+        let path = path.to_str().unwrap().to_string();
+        let schema_version = |at: &str| -> i64 {
+            Connection::open(at)
+                .unwrap()
+                .query_row("PRAGMA schema_version", [], |r| r.get(0))
+                .unwrap()
+        };
+
+        let winner = Store::open(&path)
+            .unwrap()
+            .with_content_identity(identity());
+        // The racer is opened and configured while the store is still COLD, which is
+        // exactly the state a handle is in when it passes the check taken outside the
+        // lock and decides to build.
+        let racer = Store::open(&path)
+            .unwrap()
+            .with_content_identity(identity());
+        let name = racer.guard.as_ref().expect("configured").index_name.clone();
+        assert!(
+            committed_index_ddl(&racer.conn.lock().unwrap(), &name).is_none(),
+            "both handles start with nothing committed to find"
+        );
+
+        winner
+            .append("run", ExpectedRevision::Any, &batch("src/a.rs", "h1"))
+            .unwrap();
+        let built = schema_version(&path);
+
+        {
+            let guard = racer.guard.as_ref().expect("configured");
+            let mut conn = racer.conn.lock().unwrap();
+            racer.build_content_key_index(&mut conn, guard);
+        }
+
+        assert_eq!(
+            schema_version(&path),
+            built,
+            "the racer writes no DDL at all: one build, not one per handle"
+        );
+        assert_eq!(
+            racer
+                .append("run", ExpectedRevision::Any, &batch("src/a.rs", "h1"))
+                .unwrap()
+                .written(),
+            0,
+            "and it guards with the artifact it did not rebuild"
+        );
+    }
+
+    /// AN ARTIFACT NO CONFIGURED POLICY USES IS RECLAIMED, by the one handle that can
+    /// know it is dead.
+    ///
+    /// An index built for another metadata key answers no question this store asks - its
+    /// indexed expression reads a key nothing carries any more, so every entry in it is
+    /// NULL - yet SQLite still maintains it on every insert and still keeps it in the
+    /// file. On a spec whose whole purpose is to BOUND the store, leaving one behind per
+    /// policy change is the guard growing the thing it was built to shrink.
+    #[test]
+    fn an_index_left_by_a_policy_that_is_no_longer_configured_is_dropped() {
+        let store = Store::open(":memory:")
+            .unwrap()
+            .with_content_identity(identity());
+        store
+            .append("run", ExpectedRevision::Any, &batch("src/a.rs", "h1"))
+            .unwrap();
+        let abandoned = store.guard.as_ref().expect("configured").index_name.clone();
+        assert!(
+            committed_index_ddl(&store.conn.lock().unwrap(), &abandoned).is_some(),
+            "the first policy's artifact is committed"
+        );
+
+        let store = store.with_content_identity(other_identity());
+        let live = store
+            .guard
+            .as_ref()
+            .expect("reconfigured")
+            .index_name
+            .clone();
+        store
+            .append(
+                "run",
+                ExpectedRevision::Any,
+                &[other_keyed(TYPE_CODE_ENTITY_EXTRACTED, "gc/src/b.rs@h1#0")],
+            )
+            .unwrap();
+
+        let conn = store.conn.lock().unwrap();
+        assert!(
+            committed_index_ddl(&conn, &abandoned).is_none(),
+            "the dead artifact is reclaimed, not left to be maintained on every insert"
+        );
+        assert!(
+            committed_index_ddl(&conn, &live).is_some(),
+            "and the live one is there"
+        );
+        assert!(
+            stale_content_key_indexes(&conn, &live).is_empty(),
+            "nothing content-keyed is left over"
+        );
+    }
+
+    /// THE TYPE GATE IN RUST, DRIVEN BY THE ONE SHAPE THAT REACHES IT.
+    ///
+    /// Every other test of the type rule is answered before this gate: a solo domain
+    /// event never makes the batch suppressible, and a domain event carrying a key of no
+    /// content-key shape is stopped by the split instead. The gate itself is only
+    /// reached by a domain event that is (a) in a batch the guard IS judging and (b)
+    /// carrying a well-formed key that is genuinely its subject's CURRENT generation -
+    /// which is to say, everything a suppressible event has except the type. Delete the
+    /// three lines and this event is dropped; nothing else in the suite notices.
+    #[test]
+    fn a_domain_event_survives_a_judged_batch_even_carrying_a_live_content_key() {
+        let store = Store::open(":memory:")
+            .unwrap()
+            .with_content_identity(identity());
+        store
+            .append("run", ExpectedRevision::Any, &batch("src/a.rs", "h1"))
+            .unwrap();
+
+        // The derived event is redundant, so the guard is judging; the finding carries
+        // the OTHER key of that same still-current generation, already recorded.
+        let mixed = vec![
+            keyed(TYPE_CODE_ENTITY_EXTRACTED, "gc/src/a.rs@h1#0"),
+            keyed(TYPE_REVIEW_FINDING, "gc/src/a.rs@h1#1"),
+        ];
+        let appended = store.append("run", ExpectedRevision::Any, &mixed).unwrap();
+
+        assert_eq!(
+            appended.written(),
+            1,
+            "the derived duplicate is suppressed and the domain event is not"
+        );
+        assert!(
+            appended.placements()[0].is_none() && appended.placements()[1].is_some(),
+            "and the report says WHICH: {:?}",
+            appended.placements()
+        );
+        assert_eq!(
+            rows(&store, "run"),
+            3,
+            "the finding is a row in the log, on a key the guard would have suppressed \
+             for any covered type"
+        );
+    }
+
+    /// A GUARD THAT HAS STOPPED DEFENDING SAYS SO, IN THE LOG.
+    ///
+    /// Both off states are invisible from outside: an append that suppresses nothing
+    /// looks exactly like an append with nothing to suppress, and the symptom - a log
+    /// growing without bound again - surfaces days later in another process. So the
+    /// reason is recorded where every other fact here is recorded, as one metadata pair
+    /// on the covered events the append was already writing. No new event type, nothing
+    /// to backfill, and any read of the store surfaces it.
+    #[test]
+    fn an_append_written_without_an_index_records_that_the_guard_was_not_judging() {
+        let store = Store::open(":memory:")
+            .unwrap()
+            .with_content_identity(identity());
+        let name = store.guard.as_ref().expect("configured").index_name.clone();
+        // Occupy the index's name with a TABLE, so the build can never commit.
+        store
+            .conn
+            .lock()
+            .unwrap()
+            .execute_batch(&format!("CREATE TABLE {name}(blocker)"))
+            .unwrap();
+
+        let mut mixed = batch("src/a.rs", "h1");
+        mixed.push(keyed(TYPE_REVIEW_FINDING, "gc/src/a.rs@h1#9"));
+        store.append("run", ExpectedRevision::Any, &mixed).unwrap();
+
+        let recorded = store.read_stream("run", 0, Direction::Forward).unwrap();
+        assert_eq!(recorded.len(), 3);
+        for event in recorded.iter().take(2) {
+            assert_eq!(
+                event.meta.get(META_GUARD_DEGRADED).map(String::as_str),
+                Some(GUARD_DEGRADED_NO_INDEX),
+                "every covered event written by a guard that could not judge says so"
+            );
+        }
+        assert_eq!(
+            recorded[2].meta.get(META_GUARD_DEGRADED),
+            None,
+            "a domain event is never rewritten by a store that merely happened to be \
+             unhealthy while it landed"
+        );
+
+        // Free the name: the guard comes back, and a healthy append stamps nothing.
+        store
+            .conn
+            .lock()
+            .unwrap()
+            .execute_batch(&format!("DROP TABLE {name}"))
+            .unwrap();
+        store
+            .append("run", ExpectedRevision::Any, &batch("src/b.rs", "h1"))
+            .unwrap();
+        let healthy = store.read_stream("run", 0, Direction::Forward).unwrap();
+        assert!(
+            healthy[3..]
+                .iter()
+                .all(|e| !e.meta.contains_key(META_GUARD_DEGRADED)),
+            "a guard that is judging stamps nothing: the mark means what it says"
+        );
+    }
+
+    /// The OTHER off state, and it is a different fact: the index is there and the walk
+    /// still could not answer, because this one subject has recorded more generations
+    /// than the probe's step budget allows it to step through. Nothing is suppressed
+    /// (the fail-safe direction), and the events written say WHY - `generations-exceeded`
+    /// rather than `no-index`, because the two ask for different remedies.
+    #[test]
+    fn an_append_judged_by_an_exhausted_walk_records_which_defence_gave_way() {
+        let store = Store::open(":memory:")
+            .unwrap()
+            .with_content_identity(identity());
+        // One subject, more generations than the walk may step through.
+        let generations = LATEST_GENERATION_STEPS + 6;
+        for i in 0..generations {
+            store
+                .append(
+                    "run",
+                    ExpectedRevision::Any,
+                    &[keyed(
+                        TYPE_CODE_ENTITY_EXTRACTED,
+                        &format!("gc/src/a.rs@h{i:05}#0"),
+                    )],
+                )
+                .unwrap();
+        }
+
+        // Re-offering a RECORDED key is what sends the probe walking.
+        let again = vec![keyed(TYPE_CODE_ENTITY_EXTRACTED, "gc/src/a.rs@h00000#0")];
+        let appended = store.append("run", ExpectedRevision::Any, &again).unwrap();
+
+        assert_eq!(
+            appended.written(),
+            1,
+            "an undetermined probe never suppresses - it appends"
+        );
+        let last = store
+            .read_stream("run", 0, Direction::Forward)
+            .unwrap()
+            .pop()
+            .expect("the append landed");
+        assert_eq!(
+            last.meta.get(META_GUARD_DEGRADED).map(String::as_str),
+            Some(GUARD_DEGRADED_UNDETERMINED),
+            "the row carries WHICH defence gave way, so the duplicate it let through is \
+             explainable instead of mysterious"
+        );
     }
 }
 
@@ -2147,6 +2749,16 @@ mod tests {
             })
             .collect();
         let barrier = Arc::new(std::sync::Barrier::new(HANDLES));
+        // `PRAGMA schema_version` counts SCHEMA CHANGES and nothing else, so it is the
+        // exact witness for "how many times was this index built": one `CREATE INDEX` is
+        // one step, and a needless rebuild is a `DROP` plus a `CREATE`, which is two.
+        let schema_version = || -> i64 {
+            Connection::open(&path)
+                .unwrap()
+                .query_row("PRAGMA schema_version", [], |r| r.get(0))
+                .unwrap()
+        };
+        let before = schema_version();
 
         let handles: Vec<_> = stores
             .into_iter()
@@ -2182,6 +2794,15 @@ mod tests {
             vec![batch.len()],
             "exactly ONE handle writes the batch and every other suppresses it whole; \
              written per handle was {written:?}"
+        );
+        assert_eq!(
+            schema_version() - before,
+            1,
+            "and the index is built ONCE for all {HANDLES} handles. Every one of them is \
+             cold and decides to build outside the write lock, so without a re-read once \
+             the lock is held each would drop and recreate what the last one committed - \
+             a multi-hundred-megabyte artifact rebuilt per handle, serially, with every \
+             bystander appender queued behind it on the busy timeout"
         );
 
         let reader = Store::open(&path).unwrap();

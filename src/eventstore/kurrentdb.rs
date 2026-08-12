@@ -325,23 +325,28 @@ enum AckPlacement {
 ///   start - so the read-back would return the stream's FIRST `n` events and report some
 ///   earlier append's placements as this one's.
 ///
-/// So each is refused, with an error that says the write LANDED and only the reporting
-/// failed - the same shape [`Store::read_back_positions`] uses for a read-back it cannot
-/// resolve. A refusal is recoverable; a fabricated position is not.
+/// Neither is ever resolved by GUESSING. The batch case resolves it by ASKING - the
+/// positions are read back from the stream - and the single-event case does exactly the
+/// same thing rather than answering the ambiguity on its own: an ack with no position is
+/// read back from the revision the ack names, so the FIRST event ever written to a fresh
+/// log (whose commit position genuinely is 0, and whose append would otherwise be
+/// refused for succeeding) reports the position the server issued, like every other
+/// append. One resolution for both shapes, and it is the server's.
+///
+/// What remains refused is the shape no read-back can resolve: an ack whose revision is
+/// absent under a BATCH under-runs the batch's first revision into the NEGATIVE, and
+/// `read_forward`'s `revision >= from` test admits a negative `from` from the stream's
+/// start - so the read would return the stream's FIRST `n` events and report some
+/// earlier append's placements as this one's. The refusal says the write LANDED and only
+/// the reporting failed - the same shape [`Store::read_back_positions`] uses for a
+/// read-back it cannot resolve. A refusal is recoverable; a fabricated position is not.
 fn placement_of_ack(
     stream: &str,
     n: usize,
     commit: u64,
     next_expected_version: u64,
 ) -> Result<AckPlacement, Error> {
-    if n == 1 {
-        if commit == 0 {
-            return Err(Error::Backend(format!(
-                "kurrentdb: append to {stream:?} COMMITTED 1 event but the ack carries no \
-                 position for it, so the position it landed at cannot be reported; the \
-                 event is durable in the log"
-            )));
-        }
+    if n == 1 && commit != 0 {
         return Ok(AckPlacement::Issued(commit as Position));
     }
     let first = (next_expected_version as Revision) - (n as Revision - 1);
@@ -398,8 +403,10 @@ impl EventStore for Store {
             // of the log), so a zero is the server saying it issued none - not a
             // location. Reporting it would hand the projection position 0, which its
             // applied ledger then marks applied forever, swallowing the genuine event
-            // recorded there. So it is REFUSED, the same way an unresolvable read-back
-            // is: the write landed and the error says so.
+            // recorded there. So a zero is not answered here at all: it is READ BACK
+            // from the revision the ack names, exactly as a batch's positions are. That
+            // is also what keeps the first append to a fresh log - whose commit position
+            // genuinely is 0 - from failing for having succeeded.
             //
             // A multi-event append cannot use the commit position at all: KurrentDB's
             // `$all` position is a byte offset, so the earlier events' positions are
@@ -609,18 +616,30 @@ mod ack {
         ));
     }
 
+    /// An absent position is ASKED ABOUT, never answered from here. A zero commit is
+    /// ambiguous by construction - "the server said none" is spelled exactly like "the
+    /// start of the log" - and the batch path already resolves that ambiguity by reading
+    /// the stream back. The single-event path takes the SAME route rather than a
+    /// judgement of its own, which is also what stops the very first append to a fresh
+    /// log (whose commit position genuinely is 0) from failing for having succeeded.
     #[test]
-    fn a_single_event_whose_ack_carries_no_position_is_refused_not_reported_as_zero() {
-        let err = placement_of_ack("run", 1, 0, 7).expect_err("a zero commit is an absence");
-        let message = err.to_string();
+    fn a_single_event_whose_ack_carries_no_position_is_read_back_not_answered_here() {
         assert!(
-            message.contains("COMMITTED 1 event") && message.contains("durable"),
-            "the refusal must say the write LANDED and only the reporting failed: {message}"
+            matches!(
+                placement_of_ack("run", 1, 0, 7),
+                Ok(AckPlacement::ReadBackFrom(7))
+            ),
+            "the position is read back from the revision the ack names"
         );
-        // And it is a refusal, not a position: nothing here can be folded at 0.
+        // Nothing here can be folded at a fabricated 0.
         assert!(!matches!(
             placement_of_ack("run", 1, 0, 7),
             Ok(AckPlacement::Issued(_))
+        ));
+        // The stream's very first revision is a legitimate span for one event too.
+        assert!(matches!(
+            placement_of_ack("run", 1, 0, 0),
+            Ok(AckPlacement::ReadBackFrom(0))
         ));
     }
 
