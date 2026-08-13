@@ -288,6 +288,27 @@ pub const TYPE_DOC_CONCEPT_EXTRACTED: &str = "DocConceptExtracted";
 /// with the extraction pass absent - the fold arm and the edge relations live outside the feature
 /// that gates the extraction, mirroring the 29a `EdgeInferred` split.
 pub const TYPE_DOC_LINK_EXTRACTED: &str = "DocLinkExtracted";
+
+/// Whether folding a batch of `type_` SUPERSEDES the subject's prior assertions (retiring them and
+/// re-asserting at the new batch's valid-time) rather than RE-ASSERTING them in place.
+///
+/// The two halves of the derived index fold differently, and this is the ONE statement of which is
+/// which. The CODE half (`CodeEntityExtracted` / `EdgeInferred`) carries a `fresh` batch head that
+/// retires the file's prior structural edges before the batch folds its own (spec 29a criterion
+/// 3), so a re-extraction REPLACES: the live edge's valid-time is the LATEST batch's. The DESIGN
+/// half (`DocLinkExtracted` / `DocConceptExtracted`) sets no `fresh` head at all, so a
+/// re-recording re-asserts an existing edge through the upsert-live path, which keeps the
+/// EARLIEST valid-time (spec 40: the fact has held since it first became true).
+///
+/// It lives HERE, beside the type constants and the fold that implements it, because it is a FACT
+/// ABOUT THE FOLD. It is published because log MAINTENANCE has to respect it: a compaction that
+/// deletes a key's earlier recordings must carry the earliest valid-time onto the survivor for the
+/// re-asserting half (or silently re-date the fact) and must NOT for the superseding half (whose
+/// live valid-time is the surviving recording's own). One predicate, so the fold and the
+/// maintenance can never come to disagree about which half a type is in.
+pub fn refold_supersedes_prior_edges(type_: &str) -> bool {
+    matches!(type_, TYPE_CODE_ENTITY_EXTRACTED | TYPE_EDGE_INFERRED)
+}
 /// One community membership the offline detection pass emits (spec 53): the pass records one
 /// `CommunityAssigned` per member node, and the always-compiled fold turns it into a `KIND_COMMUNITY`
 /// super-node plus a live `IN_COMMUNITY` membership edge. Always compiled, so the light lane folds a

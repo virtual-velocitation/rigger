@@ -175,20 +175,24 @@ fn discipline_body(ctx: &DocsContext) -> String {
          driver (see the one-blessed-driver anti-patterns above), whereas `rigger reset \
          --runs` is a one-shot prune you run BEFORE launching the loop.\n"
     );
+    let _ = writeln!(s, "## Event log hygiene: the derived-index prune\n");
     let _ = writeln!(
         s,
-        "The EVENT LOG accumulates separately, and has its own prune: `rigger reset \
-         --derived`. Each run's project-ingest pass records the project's derived index - the \
-         code entities, inferred edges, and design links folded from your sources - and a log \
-         written before that pass deduplicated across runs holds the WHOLE index once per run, \
-         which is re-derivable duplication rather than history. `rigger reset --derived` keeps \
-         the LATEST event per replay key of each derived index type, deletes the superseded \
-         re-recordings, and vacuums so events.db shrinks on disk. Every other event survives \
-         byte-for-byte - lessons, decisions, findings, gate verdicts, and the whole run history \
-         `rigger stats` and replay read - and the graph is unaffected, because all recordings of \
-         one key fold to the same rows. The two flags COMPOSE and each prunes its own \
-         accumulation: `rigger reset --runs --derived` sheds the dead-run graph rows and the \
-         duplicated index in one pass.\n"
+        "The EVENT LOG accumulates separately from the graph, and has its own prune: `rigger \
+         reset --derived`. Each run's project-ingest pass records the project's derived index - \
+         the code entities, inferred edges, design links, and doc concepts folded from your \
+         sources - and a log written before that pass deduplicated across runs holds the WHOLE \
+         index once per run, which is re-derivable duplication rather than history. `rigger reset \
+         --derived` keeps the LATEST event per replay key of each derived index type, deletes the \
+         superseded re-recordings, and vacuums so events.db shrinks on disk. Every other event \
+         survives byte-for-byte - lessons, decisions, findings, gate verdicts, and the whole run \
+         history `rigger stats` and replay read. The live graph is unchanged: every recording of \
+         one key folds to the same rows, and the prune carries a pruned key's EARLIEST recorded \
+         valid-time onto the recording it keeps, so a design fact keeps the date it first became \
+         true rather than being re-dated to whichever recording survived. The two flags COMPOSE \
+         and each prunes its own accumulation: `rigger reset --runs --derived` sheds the dead-run \
+         graph rows and the duplicated index in one pass. Both are one-shot maintenance you run \
+         BETWEEN runs, never against a live one.\n"
     );
 
     let _ = writeln!(s, "## Spec shape\n");

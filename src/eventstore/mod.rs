@@ -303,6 +303,15 @@ impl ContentIdentity {
         &self.types
     }
 
+    /// This policy's key SPLIT, so a caller that needs the same key form under a different
+    /// metadata key or a different covered-type list builds a variant of THIS policy rather
+    /// than inventing a second parser of the same key shape. Read alongside
+    /// [`meta_key`](Self::meta_key) and [`types`](Self::types); the checked reading of it is
+    /// [`split_of`](Self::split_of), which is what every store uses.
+    pub fn split(&self) -> ContentKeySplit {
+        self.split
+    }
+
     /// Whether `type_` carries content identity - the TYPE half of the test, asked
     /// FIRST, before any key is looked at, so an event of any other type can never be
     /// suppressed however its metadata happens to be spelled.

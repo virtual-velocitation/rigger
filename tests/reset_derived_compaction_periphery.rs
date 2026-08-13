@@ -35,7 +35,7 @@
 //!   7. **The two-store dissociation the composition made load-bearing.** `reset` now drives TWO
 //!      prunes over TWO different stores, and each states in its own output that it leaves the
 //!      other alone - `--runs` prints "the event log is untouched", the shipped `--derived`
-//!      guidance says the graph is unaffected. Neither claim is reachable from a test that runs
+//!      guidance says the live graph is unchanged. Neither claim is reachable from a test that runs
 //!      one mode against one store, so both are pinned here against a project whose event log AND
 //!      context graph are populated, together with the composition that follows from them: running
 //!      the two together lands EXACTLY the two effects, neither more nor less.
@@ -215,10 +215,19 @@ fn prune_all_types(backend: &Store, prefix: &str) -> PrunedDerived {
     backend
         .prune_derived_index(
             prefix,
-            rigger::ingest::META_REPLAY_KEY,
-            &rigger::ingest::DERIVED_INDEX_TYPES,
+            &rigger::ingest::derived_index_identity(),
+            &rigger::ingest::reasserted_derived_types(),
         )
         .expect("prune the derived index")
+}
+
+/// The SHIPPED derived-index policy with one field varied - the API-edge tests below have to drive
+/// a metadata key nothing carries and a covered-type list the caller chose. They vary exactly that
+/// field of the real policy (its key SPLIT comes straight off it), so no test ever stands up a
+/// second, hand-written parser of the same key form to test the prune against.
+fn identity_with(meta_key: &str, types: &[&str]) -> ContentIdentity {
+    let shipped = rigger::ingest::derived_index_identity();
+    ContentIdentity::new(meta_key, types.to_vec(), shipped.split())
 }
 
 // ---------------------------------------------------------------------------------------
@@ -343,7 +352,11 @@ fn prune_derived_index_keeps_the_callers_type_order_and_is_a_faithful_no_op_at_i
     // ASKED FOR NOTHING. No type is eligible, so nothing is removed and nothing is reported -
     // an empty request is answered with an empty accounting, not with a guess at a default set.
     let none = backend
-        .prune_derived_index("", rigger::ingest::META_REPLAY_KEY, &[])
+        .prune_derived_index(
+            "",
+            &identity_with(rigger::ingest::META_REPLAY_KEY, &[]),
+            &[],
+        )
         .unwrap();
     assert!(
         none.removed.is_empty() && none.total_removed() == 0,
@@ -362,8 +375,8 @@ fn prune_derived_index_keeps_the_callers_type_order_and_is_a_faithful_no_op_at_i
     let wrong_key = backend
         .prune_derived_index(
             &Namespaced::prefix_for("edges"),
-            "no_such_metadata_key",
-            &rigger::ingest::DERIVED_INDEX_TYPES,
+            &identity_with("no_such_metadata_key", &rigger::ingest::DERIVED_INDEX_TYPES),
+            &rigger::ingest::reasserted_derived_types(),
         )
         .unwrap();
     assert_eq!(
@@ -399,8 +412,8 @@ fn prune_derived_index_keeps_the_callers_type_order_and_is_a_faithful_no_op_at_i
     let report = backend
         .prune_derived_index(
             &Namespaced::prefix_for("edges"),
-            rigger::ingest::META_REPLAY_KEY,
-            &reversed,
+            &identity_with(rigger::ingest::META_REPLAY_KEY, &reversed),
+            &rigger::ingest::reasserted_derived_types(),
         )
         .unwrap();
     assert_eq!(
@@ -1098,7 +1111,7 @@ fn graph_db(root: &Path) -> PathBuf {
 }
 
 /// The context graph's LIVE content: its nodes, and the edges that have not been retired. This is
-/// what "the graph is unaffected" has to mean - the file itself is rebuilt by the `--runs` vacuum,
+/// what "the live graph is unchanged" has to mean - the file itself is rebuilt by the `--runs` vacuum,
 /// so bytes on disk would answer the wrong question.
 fn graph_rows(db: &Path) -> (Vec<String>, Vec<String>) {
     let conn = rusqlite::Connection::open(db).expect("open the context graph");
@@ -1225,7 +1238,7 @@ fn seed_both_stores(root: &Path, rounds: u64) {
 
 /// `rigger reset` drives TWO prunes over TWO stores, and each one tells the operator it left the
 /// other alone: `reset --runs` prints "the event log is untouched", and the shipped `--derived`
-/// guidance says the graph is unaffected. Both claims are load-bearing precisely BECAUSE the modes
+/// guidance says the live graph is unchanged. Both claims are load-bearing precisely BECAUSE the modes
 /// compose - an operator who runs them together has no way to attribute a loss to one of them, so
 /// each has to be safe for the other's store on its own.
 ///
@@ -1303,15 +1316,15 @@ fn each_reset_mode_sheds_only_its_own_accumulation_and_composing_them_does_exact
     );
 
     // `--derived` COMPACTS THE LOG AND ONLY THE LOG. The shipped guidance tells an operator the
-    // graph is unaffected - which it can be, because every recording of a key folds to the same
-    // rows, so dropping the superseded ones changes nothing the projection holds.
+    // live graph is unchanged - which it can be, because every recording of a key folds to the
+    // same rows, so dropping the superseded ones changes nothing the projection holds.
     let (out, err, ok) = run_rigger(derived_only.path(), &["reset", "--derived"]);
     assert!(ok, "reset --derived must succeed; stderr: {err}\n{out}");
     assert_eq!(
         graph_rows(&graph_db(derived_only.path())),
         seed_graph,
-        "the shipped guidance says the graph is unaffected by --derived, so its live content must \
-         be identical; the command said: {out:?}"
+        "the shipped guidance says the live graph is unchanged by --derived, so its live content \
+         must be identical; the command said: {out:?}"
     );
     let after_derived_log = raw_rows(&event_log(derived_only.path()));
     assert_eq!(

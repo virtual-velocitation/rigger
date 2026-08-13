@@ -1156,18 +1156,41 @@ fn migrate_project_identity(
 /// connections and drops them before the caller opens the real ones, so it wires into any
 /// run-driver entry point in a single call and never touches the injected backend.
 fn migrate_local_identity() -> Res {
-    let store_path = db_path("events.db");
+    let cwd = std::env::current_dir()?;
+    migrate_identity_at(&StoreLocation {
+        dir: cwd.join(RIGGER_DIR),
+    })
+}
+
+/// The spec-09 open-time identity migration against an ALREADY-RESOLVED store
+/// ([`StoreLocation`]) - the one implementation [`migrate_local_identity`] is the cwd-anchored
+/// entry to.
+///
+/// It is anchored at the store's OWNING ROOT (the parent of the resolved `.rigger/`), the same
+/// anchor [`StoreLocation::identity`] binds the namespace to, so the migration and the streams it
+/// renames can never be computed from two different roots. A command that has already resolved
+/// which store it is about to touch - a courier, or a maintenance prune walked up from a nested
+/// worktree - calls THIS rather than re-deriving the store from the process cwd, which is how a
+/// walked-up command would otherwise migrate one store and mutate another.
+fn migrate_identity_at(loc: &StoreLocation) -> Res {
+    let store_path = loc.file("events.db");
     if !Path::new(&store_path).is_file() {
         return Ok(()); // a fresh project: no history to migrate
     }
-    let cwd = std::env::current_dir()?;
-    let minted = project_identity_at(&cwd);
-    let legacy = legacy_identity_at(&cwd);
+    // ONE root for both halves of the comparison. A `.rigger` with no parent is pathological (the
+    // resolved dir is always `<root>/.rigger`), and it falls back to the cwd exactly as
+    // [`StoreLocation::identity`] does, so the two can never disagree about which root they mean.
+    let root = match loc.dir.parent() {
+        Some(root) => root.to_path_buf(),
+        None => std::env::current_dir()?,
+    };
+    let minted = project_identity_at(&root);
+    let legacy = legacy_identity_at(&root);
     if minted == legacy {
         return Ok(()); // no minted identity distinct from the basename
     }
     let backend = open_sqlite_store(&store_path)?;
-    let graph = Projector::open(&db_path("graph.db"), &minted)?;
+    let graph = Projector::open(&loc.file("graph.db"), &minted)?;
     if let Some(n) = migrate_project_identity(&backend, &minted, &legacy, Some(&graph))? {
         eprintln!(
             "rigger: migrated project identity - renamed {n} stream(s) from the legacy \
@@ -5836,13 +5859,30 @@ fn release_ready_lines(run_events: &[Event], run_branch: &str, base: &str) -> Ve
 ///   - `--runs` (spec 21, unit 2) prunes the CONTEXT GRAPH: see [`reset_runs`].
 ///   - `--derived` (spec 60, criterion 5) compacts the EVENT LOG: see [`reset_derived`].
 ///
-/// The backend requirement of every requested mode is settled BEFORE the first prune runs, so a
-/// composed invocation either does all of its work or none of it - a half-done reset is a state
-/// an operator would have to reconstruct by hand.
+/// PRECHECKS FIRST, and exactly what they promise. The flags are parsed and the backend
+/// requirement of every requested mode is settled BEFORE the first prune runs, so a composed
+/// invocation never starts work it is already known to be unable to finish - the shape that used
+/// to leave the graph pruned and the log untouched because the log's backend was refused second.
+/// Each mode's own mutation is atomic (each is one transaction over one file), and the modes run
+/// in order: if a prune fails on a genuine IO or lock fault after an earlier one committed, the
+/// earlier prune HAS happened and is reported on stdout above the error. That is the honest
+/// statement of the composition, and it is deliberately not called all-or-nothing: two files
+/// cannot be committed together, and claiming otherwise would tell an operator not to look.
 fn cmd_reset(args: &[String]) -> Res {
     let modes = reset_modes(args)?;
 
     let (loc, selection) = require_store_dir()?;
+    // Before ANY prune reads a stream name: run the one-time spec-09 identity migration, exactly
+    // as `run` / `step` / `workflow` / `playbooks` do before they open their store. Both prunes
+    // address this project's history BY ITS CURRENT IDENTITY, and a store bloated enough to need
+    // compacting is by construction an OLD store whose history was written under the pre-identity
+    // basename namespace. Without this, `reset` would match no stream at all on exactly the log it
+    // exists for and report a perfectly successful prune of zero rows - the silent no-op this
+    // command's whole design refuses. Anchored at the RESOLVED store root, not the process cwd, so
+    // a reset run from a nested worktree migrates the store it is about to prune.
+    if selection.is_sqlite() {
+        migrate_identity_at(&loc)?;
+    }
     // Decided up front, before anything is pruned: deleting rows and reclaiming the file are
     // mechanics of the embedded log, not port operations, so `--derived` names the backend it
     // needs rather than quietly doing nothing on one that cannot compact.
@@ -5919,11 +5959,16 @@ fn reset_modes(args: &[String]) -> Result<ResetModes, Box<dyn std::error::Error>
 /// an upsert projection in which all recordings of a key fold to the same rows.
 ///
 /// It is orchestration over ONE store-mutation primitive
-/// ([`rigger::eventstore::sqlite::Store::prune_derived_index`]), given the same two authorities
-/// the ingest dedup uses - the replay-key metadata name and the four derived types, both owned by
-/// [`rigger::ingest`] - and the same namespace boundary every read and write of this project uses
-/// ([`Namespaced::prefix_for`]), so the compaction can never address a wider slice of a shared
-/// backend than the project owns.
+/// ([`rigger::eventstore::sqlite::Store::prune_derived_index`]), handed the ONE derived-index
+/// content-identity policy [`rigger::ingest::derived_index_identity`] owns (the replay-key
+/// metadata name, the four derived types, and where a key's content generation lies), and the
+/// SAME stream-prefix spelling every namespaced read and write of this project uses
+/// ([`Namespaced::prefix_for`]) - so the compaction addresses exactly the slice this project's
+/// own reads address, and a change to the namespace's wire form can never leave it addressing
+/// streams that no longer exist. That prefix is a string match, with the property a string match
+/// has: a project whose id is a prefix of another's shares its slice, exactly as `read_all`,
+/// `subscribe_all` and the identity migration already do. The boundary is inherited, not
+/// tightened here.
 ///
 /// The sqlite store is constructed through [`open_sqlite_store`], the one sqlite event-log
 /// constructor (§48), exactly as the local identity migration does when it needs the concrete
@@ -5932,8 +5977,8 @@ fn reset_derived(loc: &StoreLocation) -> Res {
     let store = open_sqlite_store(&loc.file("events.db"))?;
     let pruned = store.prune_derived_index(
         &Namespaced::prefix_for(&loc.identity()),
-        rigger::ingest::META_REPLAY_KEY,
-        &rigger::ingest::DERIVED_INDEX_TYPES,
+        &rigger::ingest::derived_index_identity(),
+        &rigger::ingest::reasserted_derived_types(),
     )?;
     let per_type = pruned
         .removed

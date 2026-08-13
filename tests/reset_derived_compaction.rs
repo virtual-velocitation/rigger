@@ -118,6 +118,12 @@ const KEY_A_DEF: &str = "gc/src/a.rs@h1#0";
 const KEY_A_REF: &str = "gc/src/a.rs@h1#1";
 const KEY_B_GEN1: &str = "gc/src/b.rs@h1#0";
 const KEY_B_GEN2: &str = "gc/src/b.rs@h2#0";
+/// The DESIGN-INTENT half of the derived index, keyed under the design prefix `gd`. It is seeded
+/// deliberately rather than left at zero: a `DocLinkExtracted` folds into a bitemporal `SPECIFIES`
+/// edge whose `valid_from` is the EARLIEST recording of the fact, so it is the one derived class a
+/// prune that merely dropped rows would silently re-date. A proof that pinned only the code half
+/// would pass while the design-intent layer diverged.
+const KEY_D_SPEC: &str = "gd/docs/design.md@h1#0";
 
 /// One row of the event log, as the table holds it. Comparing these tuples across the compaction
 /// is what "survives byte-for-byte" MEANS: same global position, stream, type, id, payload bytes,
@@ -178,6 +184,12 @@ fn code_entity(file: &str, name: &str, line: u32, fresh: bool) -> Vec<u8> {
 /// An `EdgeInferred` payload in the on-log JSON form.
 fn edge_inferred(file: &str, name: &str) -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({ "file": file, "name": name, "lang": "rust" })).unwrap()
+}
+
+/// A `DocLinkExtracted` payload in the on-log JSON form: one design-intent link, folded into a
+/// `<doc> --SPECIFIES--> <code>` edge whose valid-time is when the design fact FIRST became true.
+fn doc_link(from: &str, to: &str, rel: &str) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({ "from": from, "to": to, "rel": rel })).unwrap()
 }
 
 fn keyed(type_: &str, data: Vec<u8>, key: &str, secs: u64) -> Event {
@@ -270,6 +282,21 @@ fn seed_bloated_log(root: &Path) {
             3_000 + r as u64,
         ));
     }
+    // The DESIGN-INTENT half, re-recorded exactly like the code half. Its valid-time RISES with
+    // every re-recording, so the fold's earliest-assertion date is the FIRST round's - the fact
+    // this prune must not re-date when it keeps the last round's row.
+    for r in 0..ROUNDS {
+        events.push(keyed(
+            rigger::contextgraph::TYPE_DOC_LINK_EXTRACTED,
+            doc_link(
+                "docs/design.md",
+                "src/a.rs",
+                rigger::contextgraph::REL_SPECIFIES,
+            ),
+            KEY_D_SPEC,
+            4_000 + r as u64,
+        ));
+    }
 
     for chunk in events.chunks(500) {
         store
@@ -287,6 +314,7 @@ fn seed_bloated_log(root: &Path) {
 /// a key except its latest.
 const REMOVED_CODE_ENTITIES: usize = 3 * (ROUNDS - 1);
 const REMOVED_EDGES: usize = ROUNDS - 1;
+const REMOVED_DOC_LINKS: usize = ROUNDS - 1;
 
 // ---------------------------------------------------------------------------------------
 // The selection rule
@@ -305,7 +333,7 @@ fn reset_derived_keeps_the_latest_recording_of_every_replay_key_and_prunes_every
 
     // For every derived replay key, exactly ONE row survives, and it is the row the log recorded
     // LAST - the file's current recording, never a superseded one.
-    for key in [KEY_A_DEF, KEY_A_REF, KEY_B_GEN1, KEY_B_GEN2] {
+    for key in [KEY_A_DEF, KEY_A_REF, KEY_B_GEN1, KEY_B_GEN2, KEY_D_SPEC] {
         let kept: Vec<&Row> = after
             .iter()
             .filter(|r| derived(r) && replay_key(r).as_deref() == Some(key))
@@ -393,6 +421,72 @@ fn reset_derived_preserves_every_non_derived_event_and_every_keyless_derived_eve
 }
 
 // ---------------------------------------------------------------------------------------
+// The log this command exists for: one whose history predates the durable project identity
+// ---------------------------------------------------------------------------------------
+
+/// A bloated log is, by construction, an OLD log - and an old log's history is filed under the
+/// pre-identity namespace `proj-<repo-basename>-`. The moment `rigger init` mints
+/// `.rigger/project.id`, every command resolves the project to the MINTED id, so a prune that
+/// addressed streams by the current identity alone would match no stream at all and report a
+/// perfectly successful removal of zero rows - silently no-opping on exactly the store it exists
+/// to compact, and reporting a prune that did not happen is the one outcome an operator cannot
+/// detect.
+///
+/// So `reset` runs the same one-time identity migration every other maintenance command runs
+/// before it opens the store, and the prune then addresses the project's real history. The fixture
+/// seeds BEFORE the mint on purpose: seeding after it would file the history under the minted
+/// namespace and the assertion would hold whether or not the migration ran.
+#[test]
+fn reset_derived_compacts_a_log_whose_history_predates_the_minted_project_identity() {
+    let dir = temp_project();
+    let root = dir.path();
+    // Seeded under the LEGACY basename namespace: no `.rigger/project.id` exists yet.
+    seed_bloated_log(root);
+    let legacy = run_stream_identity(root);
+
+    // `rigger init` mints the durable identity. The history stays where it was written.
+    let (_, ierr, iok) = run_rigger(root, &["init"]);
+    assert!(iok, "rigger init must scaffold the project; stderr: {ierr}");
+    let minted = run_stream_identity(root);
+    assert_ne!(
+        minted, legacy,
+        "rigger init must mint an identity distinct from the basename, or this fixture does not \
+         reproduce the shape it exists for"
+    );
+
+    let before = rows(&event_log(root));
+    let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
+    assert!(ok, "reset --derived must succeed; stderr: {err}\n{out}");
+    let after = rows(&event_log(root));
+
+    assert!(
+        after.len() < before.len(),
+        "reset --derived must compact a log whose history predates the minted identity: \
+         {} rows before, {} after (a silent no-op here is the shape this command exists for)",
+        before.len(),
+        after.len()
+    );
+    assert!(
+        out.contains(&format!("CodeEntityExtracted {REMOVED_CODE_ENTITIES}"))
+            && out.contains(&format!("EdgeInferred {REMOVED_EDGES}"))
+            && out.contains(&format!("DocLinkExtracted {REMOVED_DOC_LINKS}")),
+        "the report must name the same per-type removals a migrated log yields; got: {out:?}"
+    );
+    // And the migration moved the history rather than duplicating it: every surviving row now
+    // lives under the MINTED namespace, none under the legacy one.
+    let minted_prefix = format!("proj-{minted}-");
+    let legacy_prefix = format!("proj-{legacy}-");
+    assert!(
+        after.iter().all(|r| r.1.starts_with(&minted_prefix)),
+        "every surviving row must live under the minted namespace {minted_prefix:?}"
+    );
+    assert!(
+        !after.iter().any(|r| r.1.starts_with(&legacy_prefix)),
+        "no row may be left behind under the legacy namespace {legacy_prefix:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------------------
 // The observable operator effects: the file shrinks, and the command says what it did
 // ---------------------------------------------------------------------------------------
 
@@ -419,7 +513,12 @@ fn reset_derived_shrinks_the_log_on_disk_and_reports_the_rows_per_type_and_the_b
         "reset --derived must report the EdgeInferred rows it removed; got: {out:?}"
     );
     assert!(
-        out.contains("DocConceptExtracted 0") && out.contains("DocLinkExtracted 0"),
+        out.contains(&format!("DocLinkExtracted {REMOVED_DOC_LINKS}")),
+        "reset --derived must report the DocLinkExtracted rows it removed - the design-intent half \
+         of the index is pruned exactly like the code half; got: {out:?}"
+    );
+    assert!(
+        out.contains("DocConceptExtracted 0"),
         "reset --derived must report every derived type, including the ones it removed nothing \
          from; got: {out:?}"
     );
@@ -488,24 +587,27 @@ fn fold_snapshot(events: &[Event], project: &str, path: &Path) -> (Vec<String>, 
         .map(|r| r.unwrap())
         .collect();
     nodes.sort();
-    // `valid_from` is deliberately NOT compared: it records when the surviving assertion was made,
-    // and pruning a fact's superseded re-recordings necessarily advances it to the recording that
-    // remains. Which facts are LIVE, what they connect, and which recording is their provenance
-    // (`source`) are what the projection's contract is about, and those must be identical.
+    // EVERY column of a live edge, `valid_from` INCLUDED. It is the one column a prune that merely
+    // deleted rows would move: the fold keeps the EARLIEST assertion of a fact, so dropping a
+    // fact's first recording re-dates it to whichever recording survives. That is invisible to a
+    // comparison of ids and provenance alone, and it is the whole value of the design-intent
+    // layer, so the snapshot compares the bitemporal interval rather than excluding it.
     let mut edges: Vec<String> = conn
         .prepare(
-            "SELECT from_id, to_id, rel, source, project, tier FROM edges WHERE valid_to IS NULL",
+            "SELECT from_id, to_id, rel, valid_from, source, project, tier FROM edges \
+             WHERE valid_to IS NULL",
         )
         .unwrap()
         .query_map([], |r| {
             Ok(format!(
-                "{}|{}|{}|{}|{}|{}",
+                "{}|{}|{}|{}|{}|{}|{}",
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
                 r.get::<_, String>(2)?,
                 r.get::<_, i64>(3)?,
-                r.get::<_, String>(4)?,
-                r.get::<_, String>(5)?
+                r.get::<_, i64>(4)?,
+                r.get::<_, String>(5)?,
+                r.get::<_, String>(6)?
             ))
         })
         .unwrap()
@@ -527,6 +629,13 @@ fn read_log(root: &Path) -> Vec<Event> {
 fn a_compacted_log_folds_to_the_same_live_graph_reads_clean_and_still_accepts_appends() {
     let dir = temp_project();
     let root = dir.path();
+    // Scaffold FIRST, then seed. `rigger init` is what mints `.rigger/project.id`, and the minted
+    // id is what every later command namespaces its streams under - so a fixture that scaffolds
+    // AFTER the prune would seed and prune under one identity and prove nothing about the
+    // identity a real project actually runs under. Ordering it first also leaves `rigger validate`
+    // below with nothing to judge except the store this test compacted.
+    let (_, ierr, iok) = run_rigger(root, &["init"]);
+    assert!(iok, "rigger init must scaffold the project; stderr: {ierr}");
     seed_bloated_log(root);
     let id = run_stream_identity(root);
 
@@ -538,7 +647,9 @@ fn a_compacted_log_folds_to_the_same_live_graph_reads_clean_and_still_accepts_ap
 
     // THE PROJECTION CONTRACT. The graph is an upsert projection, so every recording of a key
     // folds to the same rows: keeping the latest and dropping the rest leaves a log that folds to
-    // the identical live graph.
+    // the identical live graph - the same nodes, the same live edges, the same provenance AND the
+    // same bitemporal valid-from, because the prune carries a pruned key's earliest valid-time
+    // onto the recording it keeps.
     let after_graph = fold_snapshot(&read_log(root), &id, &scratch.path().join("after.db"));
     assert_eq!(
         after_graph.0, before_graph.0,
@@ -546,17 +657,37 @@ fn a_compacted_log_folds_to_the_same_live_graph_reads_clean_and_still_accepts_ap
     );
     assert_eq!(
         after_graph.1, before_graph.1,
-        "the compacted log must fold to the same live edges, with the same provenance"
+        "the compacted log must fold to the same live edges, with the same provenance and the \
+         same valid-from"
     );
     assert!(
         !before_graph.0.is_empty() && !before_graph.1.is_empty(),
         "the seeded log must actually fold to something, or the equality above proves nothing"
     );
 
-    // `rigger validate` reads the compacted store cleanly. Scaffold the workflow + agents first,
-    // so the only thing left for validate to judge is the store this test compacted.
-    let (_, ierr, iok) = run_rigger(root, &["init"]);
-    assert!(iok, "rigger init must scaffold the project; stderr: {ierr}");
+    // The equality above must not pass vacuously on the class that can actually move: the
+    // DESIGN-INTENT edge, whose whole value is the date the design fact FIRST became true. Its
+    // valid-from is pinned to the seed's EARLIEST recording (4_000s), not to the surviving row's
+    // own (4_000 + ROUNDS - 1) - the exact re-dating a delete-only prune would ship.
+    let earliest_specifies_ns = Duration::from_secs(4_000).as_nanos() as i64;
+    let specifies: Vec<&String> = after_graph
+        .1
+        .iter()
+        .filter(|row| row.contains("|SPECIFIES|"))
+        .collect();
+    assert_eq!(
+        specifies.len(),
+        1,
+        "the seed must fold exactly one live SPECIFIES edge, or the valid-from pin below proves \
+         nothing; got {specifies:?}"
+    );
+    assert!(
+        specifies[0].contains(&format!("|SPECIFIES|{earliest_specifies_ns}|")),
+        "the compacted log must keep the design fact's EARLIEST assertion date ({earliest_specifies_ns}); \
+         got {specifies:?}"
+    );
+
+    // `rigger validate` reads the compacted store cleanly.
     let (_, verr, vok) = run_rigger(root, &["validate"]);
     assert!(
         vok,
