@@ -12,14 +12,21 @@ already-damaged store.
 
 ## Design
 
-- **Append asserts monotonicity** (`src/eventstore/sqlite.rs`, the append seam): before
-  committing, the append verifies the revision it is about to write is STRICTLY GREATER than
-  the revision of the stream's LAST ROW IN POSITION ORDER (one indexed seek). A violation
-  fails the append loudly, naming the stream, both revisions, and the likely cause (a stale
-  writer after a compaction - reinstall or restart the writer). This converts silent
-  disordering into an immediate, attributable error at the FIRST bad write - the correct
-  writer never trips it (its cursor IS the max), so the assertion costs one seek and fires
-  only when the invariant is actually being broken.
+- **Append asserts monotonicity** (`src/eventstore/sqlite.rs`, inside the same transaction as
+  the cursor seek at :1081 and the insert): before committing, the append verifies the
+  revision it is about to write is STRICTLY GREATER than the revision of the stream's LAST
+  ROW IN POSITION ORDER (one indexed seek). A violation fails the append loudly, naming the
+  stream, both revisions, and the likely cause (a stale writer after a compaction - reinstall
+  or restart the writer). Constraints walk, written in: EMPTY stream - no tail row, the
+  assertion vacuously passes (the `COALESCE` seed is the cursor). CONCURRENT writers - the
+  seek, the assertion, and the insert share ONE transaction, so a racing sibling serializes
+  behind it and re-seeks a fresh tail; a race must surface as retry-or-refusal THROUGH THE
+  NAMED ERROR, never as a bare `UNIQUE(stream, revision)` constraint failure (an
+  unattributable collision is the confusing failure this spec exists to abolish).
+  CRASH-RESUME and COLD START - the tail is read from the log each append, never cached, so
+  a fresh process asserts identically. This converts silent disordering into an immediate,
+  attributable error at the FIRST bad write - the correct writer never trips it (its cursor
+  IS the max), so the assertion costs one seek inside a transaction already taken.
 - **Compaction refuses live writers** (`src/main.rs`, `rigger reset --derived`): the prune
   refuses to run while the run machinery is live - a held step lock, in-flight spawns in the
   current run's slice, or a fresh driver registration - naming what is live and instructing
@@ -55,9 +62,11 @@ already-damaged store.
 ## Done when
 
 - [ ] a test proves APPEND REFUSES DISORDER: an append whose revision would sort at or below
-  the stream's position-order tail fails loudly naming stream, revisions, and cause, and a
-  correct append (revision from the true tail) is untouched - pinned in the backend-agnostic
-  contract suite. This criterion OWNS the assertion.
+  the stream's position-order tail fails loudly naming stream, revisions, and cause; a
+  correct append is untouched; and two writers racing one stream serialize through the
+  transaction - the loser retries-or-refuses through the SAME named error, never a bare
+  unique-constraint failure - pinned in the backend-agnostic contract suite. This criterion
+  OWNS the assertion, including its concurrency face.
 - [ ] a test proves COMPACTION REFUSES LIVE WRITERS: `reset --derived` under a held step lock
   or in-flight spawns refuses naming what is live; with the machinery quiet it prunes exactly
   as today; the override flag's behavior is pinned. This criterion OWNS the guard.

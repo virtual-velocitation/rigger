@@ -59,10 +59,16 @@ orchestrator's own surfaces the moment it happens instead of waiting to be polle
   escalated unit, a dead driver (store not advancing while spawns are in flight and no step
   process holds the lock), store shrink or the out-of-order-revision signature, and a status
   dash line nothing serves. Alerts DEDUPE until their condition clears, so a long watch stays
-  quiet, not noisy. `--once` runs a single poll and exits (cron/CI integration); the
-  streaming default is what a harness monitor primitive consumes. CRUCIALLY it reads only the
-  store, the process table, and status - never the driver - because the dead-driver signal is
-  exactly the case where driver-relayed attention cannot exist.
+  quiet, not noisy. THE DEDUP STATE LIVES IN PROCESS MEMORY AND NOWHERE ELSE - a watch is an
+  observer, and an observer that writes files into the project it watches becomes a thing the
+  watched system must account for; the accepted consequence, decided here, is that a
+  RESTARTED watch re-alerts every still-standing anomaly once, which is the correct behavior
+  for a fresh observer (an operator restarting the watch wants the current picture, not a
+  prior process's memory of it). `--once` runs a single poll and exits printing every
+  currently-standing anomaly (cron/CI integration); the streaming default is what a harness
+  monitor primitive consumes. CRUCIALLY it reads only the store, the process table, and
+  status - never the driver - because the dead-driver signal is exactly the case where
+  driver-relayed attention cannot exist.
 - **`rigger status` never lies about the dash** (`src/main.rs::cmd_status`): before printing
   the dashboard URL, status VERIFIES something is serving it (the marker's liveness check the
   step path already owns); a dead marker prints
