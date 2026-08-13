@@ -56,9 +56,12 @@ orchestrator's own surfaces the moment it happens instead of waiting to be polle
   the store and status authorities on an interval (default 180s, `--interval <s>`) and prints
   ONE LINE PER ANOMALY to stdout, silent otherwise, each line naming the signal, the subject,
   and the response skill: a spawn id accumulating results without consumption (>= 3), an
-  escalated unit, a dead driver (store not advancing while spawns are in flight and no step
-  process holds the lock), store shrink or the out-of-order-revision signature, and a status
-  dash line nothing serves. Alerts DEDUPE until their condition clears, so a long watch stays
+  escalated unit, a dead driver, store shrink or the out-of-order-revision signature, and a
+  status dash line nothing serves. The dead-driver signal is a CONJUNCTION, tuned by its
+  first live false positive: store not advancing for a full hour AND no step process AND
+  every agent heartbeat stale (>30 min) - an adjudicator re-running two gate lanes writes
+  nothing to the store for half an hour while its heartbeat stays fresh, and an alert that
+  fires on quiet-but-heartbeating work teaches operators to ignore the watchdog. Alerts DEDUPE until their condition clears, so a long watch stays
   quiet, not noisy. THE DEDUP STATE LIVES IN PROCESS MEMORY AND NOWHERE ELSE - a watch is an
   observer, and an observer that writes files into the project it watches becomes a thing the
   watched system must account for; the accepted consequence, decided here, is that a
