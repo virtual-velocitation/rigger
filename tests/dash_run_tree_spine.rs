@@ -177,14 +177,14 @@ fn run_tree_spine_crosses_the_http_state_boundary() {
         ))
     };
 
-    // A free loopback port: bind an ephemeral listener, learn its port, release it, then serve
-    // there (the same ephemeral-probe pattern the dash's own `free_port_from` uses).
-    let port = TcpListener::bind(("127.0.0.1", 0))
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    // A free loopback port this harness OWNS from `bind` through `serve_on`: the listener is handed
+    // to the server, never dropped and re-bound. Releasing it first (bind port 0, read the port,
+    // drop, let `serve` re-bind) would leave the port free for the whole handoff window, so a
+    // sibling test's `bind(0)` in this same binary could be handed it; one `serve` then wins the
+    // re-bind and the loser's client CONNECTS SUCCESSFULLY to it and reads the OTHER test's fixture
+    // - a content failure no connect-error retry can see, reddening only on a loaded machine.
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let addr = listener.local_addr().unwrap();
     // The lazy `/api/graph` provider (spec 45, criterion 1): this test drives the state poll, which
     // never consults it, so an empty graph provider satisfies `serve`'s `Fn() -> Graph` bound.
     let graph_provider = |_instance: Option<&str>| Graph::default();
@@ -197,10 +197,10 @@ fn run_tree_spine_crosses_the_http_state_boundary() {
     // The landing provider (spec 50, criterion 3): this test drives the state poll, not
     // `/api/instances`, so an empty registry list satisfies `serve`'s `Fn() -> Vec<InstanceView>`.
     let instances_provider = Vec::new;
-    // A detached server thread: `serve` loops until the process ends; we drive one request.
+    // A detached server thread: `serve_on` loops until the process ends; we drive one request.
     std::thread::spawn(move || {
-        let _ = dash::serve(
-            addr,
+        let _ = dash::serve_on(
+            listener,
             provider,
             graph_provider,
             calls_provider,
@@ -276,7 +276,9 @@ fn run_tree_spine_crosses_the_http_state_boundary() {
     );
 }
 
-/// Connect to `addr`, retrying briefly while the detached `serve` thread finishes binding.
+/// Connect to `addr`, retrying briefly while the detached `serve_on` thread reaches its first
+/// accept. The port is already bound when this is called, so the retry only covers a scheduler
+/// stall, never a lost port.
 fn connect_with_retry(addr: SocketAddr) -> TcpStream {
     for _ in 0..200 {
         if let Ok(s) = TcpStream::connect(addr) {
