@@ -3459,3 +3459,364 @@ fn tail_free(subject: &str) -> (&str, &str) {
         .rsplit_once('@')
         .expect("a well-formed key carries an @ before its tail")
 }
+
+// ---------------------------------------------------------------------------------------
+// 19. The SHIPPED policy's OWN declaration - the one every other carry test replaces.
+//
+// The valid-time partition is data the store applies without understanding it, so the value that
+// arrives at the one production call site is the whole of the property. Section 16 proves the
+// store applies whatever it is told, and it proves that by handing the store a declaration each
+// case CHOSE (`derived_index_identity().with_reasserting_types(<the case's list>)`). Section 15
+// proves `ingest::reasserted_derived_types` is the fold's own partition. Neither of them ever
+// reads what `derived_index_identity` DECLARED, and the refusal in section 2 only separates
+// declared from undeclared.
+//
+// So the wiring between the two - the `.with_reasserting_types(reasserted_derived_types())` that
+// puts the fold's answer ONTO the shipped policy - is load-bearing and, until this test, unheld.
+// Its failure mode is the quietest one this unit has: an EMPTY declaration is honored by design
+// (a caller may truthfully say that none of its types re-assert), so a shipped policy that
+// declared nothing would be accepted, would delete exactly the rows it deletes today, and would
+// re-date every design fact in the log to whichever recording survived - with the graph still
+// folding, every row still intact, and every other test in this file and its sibling still green.
+// ---------------------------------------------------------------------------------------
+
+#[test]
+fn the_shipped_policy_declares_the_fold_s_own_partition_and_the_prune_applies_that_declaration() {
+    let shipped = rigger::ingest::derived_index_identity();
+
+    // IT DECLARED AT ALL - otherwise the one production call site is refused outright, which is
+    // the loud failure rather than the silent one.
+    let declared: BTreeSet<&str> = shipped
+        .reasserting()
+        .expect(
+            "the shipped derived-index policy must declare its valid-time partition: the command \
+             that uses it is refused without one",
+        )
+        .iter()
+        .map(String::as_str)
+        .collect();
+
+    // AND IT DECLARED THE FOLD'S OWN PARTITION, not merely something. Compared against the fold
+    // predicate directly rather than against `reasserted_derived_types`, so this cannot be
+    // satisfied by two helpers in `ingest` agreeing with each other while the projection means
+    // something else.
+    let implied: BTreeSet<&str> = rigger::ingest::DERIVED_INDEX_TYPES
+        .into_iter()
+        .filter(|t| !rigger::contextgraph::refold_supersedes_prior_edges(t))
+        .collect();
+    assert_eq!(
+        declared, implied,
+        "the shipped policy must declare exactly the derived types whose fold RE-ASSERTS a fact \
+         in place; anything else re-dates or back-dates facts through the shipped command"
+    );
+    assert!(
+        !declared.is_empty() && declared.len() < rigger::ingest::DERIVED_INDEX_TYPES.len(),
+        "both halves must be inhabited on the SHIPPED value, or the declaration below is not \
+         actually distinguishing anything; declared {declared:?} of {:?}",
+        rigger::ingest::DERIVED_INDEX_TYPES
+    );
+
+    // PER TYPE, THROUGH THE ACCESSOR THE STORE ITSELF CONSULTS. `reasserting()` is the
+    // declaration; `reasserts()` is the question the prune asks about one type at a time, and a
+    // membership test that disagreed with the list would be invisible to the set comparison above.
+    for type_ in rigger::ingest::DERIVED_INDEX_TYPES {
+        assert_eq!(
+            shipped.reasserts(type_),
+            Some(!rigger::contextgraph::refold_supersedes_prior_edges(type_)),
+            "the shipped policy must answer for {type_} exactly as the fold does"
+        );
+    }
+
+    // THE THIRD STATE IS STILL A THIRD STATE. The same types, asked of a policy that was never
+    // told the partition, answer `None` - not `Some(false)`. That is what makes the refusal in
+    // section 2 reachable at all, and it is the distinction a `bool` return would erase.
+    let undeclared = ContentIdentity::new(
+        rigger::ingest::META_REPLAY_KEY,
+        rigger::ingest::DERIVED_INDEX_TYPES,
+        shipped.split(),
+    );
+    for type_ in rigger::ingest::DERIVED_INDEX_TYPES {
+        assert_eq!(
+            undeclared.reasserts(type_),
+            None,
+            "an undeclared policy must answer NEITHER re-asserting nor superseding for {type_}, \
+             or a compaction cannot tell 'nothing re-asserts' from 'nobody said'"
+        );
+    }
+
+    // AND THE DECLARATION IS THE ONE THAT REACHES THE ROWS. Everything above is about a value; the
+    // property is about dates in a file. This prunes with the shipped policy EXACTLY as the
+    // command hands it over - no `with_reasserting_types` in the way - and reads the dates back
+    // out of the compacted log.
+    const PROJECT: &str = "shipped-declaration";
+    let dir = tempfile::tempdir().expect("create a scratch dir");
+    let db = dir.path().join("shipped-declaration.db");
+    seed_carry_forward_fixture(&db, PROJECT);
+    let backend = Store::open(db.to_str().unwrap()).expect("open the event log");
+    let pruned = backend
+        .prune_derived_index(&Namespaced::prefix_for(PROJECT), &shipped)
+        .expect("the shipped policy must be one the store can act on");
+    assert!(
+        pruned.total_removed() > 0,
+        "the fixture holds duplicated recordings, so the shipped policy must shed them; got \
+         {pruned:?}"
+    );
+
+    let secs = |s: u64| Duration::from_secs(s).as_nanos() as i64;
+    let dates = dates_by_key(&db);
+    let survivor = |type_: &str, key: &str| -> i64 {
+        let got = dates
+            .get(&(type_.to_string(), key.to_string()))
+            .unwrap_or_else(|| panic!("the survivor of {type_} / {key} must still be in the log"));
+        assert_eq!(
+            got.len(),
+            1,
+            "exactly one recording of {type_} / {key} may survive; got {got:?}"
+        );
+        got[0]
+    };
+    assert_eq!(
+        survivor(rigger::contextgraph::TYPE_DOC_LINK_EXTRACTED, CARRY_KEY_DOC),
+        secs(1_000),
+        "the RE-ASSERTING half's survivor must carry the date the fact first became true. It \
+         holds its group's LATEST date when the shipped policy declares an empty or wrong \
+         partition - which the store accepts, because an empty declaration is a truthful thing \
+         for some caller to say"
+    );
+    assert_eq!(
+        survivor(
+            rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+            CARRY_KEY_CODE
+        ),
+        secs(2_000),
+        "the SUPERSEDING half's survivor must keep its own recorded date; a shipped policy that \
+         over-declared would drag it back to a date its fold retired"
+    );
+}
+
+// ---------------------------------------------------------------------------------------
+// 20. The report on a log with NOTHING TO SHED - a promise the shipped documents now make.
+//
+// The committed operator guidance states, in the paragraph section 7 pins word for word, that a
+// log written since the ingest dedup existed holds one event per distinct fact, that `rigger reset
+// --derived` deletes ZERO rows from it "and reports so", and that this is the expected report
+// rather than a failure. That is a claim about the BINARY, made in a document, and the only thing
+// that can hold the two together is a test that runs the binary on such a log.
+//
+// It is the case an operator is most likely to meet first and least able to interpret: a command
+// that deletes from an append-only log printing `pruned 0` looks exactly like a command that
+// found nothing because it was pointed at the wrong store, matched no stream, or silently failed
+// - the failure this unit's own history already contains once. Nothing else in either suite
+// reaches it: every other fixture seeds duplication on purpose, because shedding it is what the
+// command is for.
+//
+// Both directions are asserted, because a sentence that always printed would satisfy the first
+// half alone while telling an operator staring at a real prune that nothing was shed.
+// ---------------------------------------------------------------------------------------
+
+/// The clause the report adds when there was nothing to shed, split into the three things it has
+/// to convey: that the state is understood, that it is the EXPECTED one, and that it is not a
+/// failure. Held as separate needles so a rewording that drops one of the three is a failure that
+/// names which one.
+const NOTHING_TO_SHED: [(&str, &str); 3] = [
+    ("say WHY nothing was shed", "no redundancy to shed"),
+    ("say the report is the EXPECTED one", "expected report"),
+    ("say it is not a failure", "not a failed prune"),
+];
+
+#[test]
+fn a_log_with_nothing_to_shed_is_reported_as_the_expected_result_and_left_exactly_as_found() {
+    // A CLEAN LOG: one recording per replay key, which is what a log written since the ingest
+    // dedup existed holds. The fixture differs from every other one in this file by exactly the
+    // round count, so "clean" here means precisely "no key recorded twice".
+    let dir = temp_project();
+    let root = dir.path();
+    seed_project(root, 1);
+    let before = raw_rows(&event_log(root));
+    let dates_before = valid_from_by_position(&event_log(root));
+    assert!(
+        !before.is_empty(),
+        "the fixture must hold events, or `pruned 0` would be true of an empty file instead of a \
+         clean one"
+    );
+
+    let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
+    assert!(
+        ok,
+        "a log with nothing to shed is not an error: the command must succeed. stdout {out:?}, \
+         stderr {err:?}"
+    );
+    assert!(
+        out.contains("pruned 0 redundant derived-index event(s)"),
+        "the command must report the count it actually removed; got {out:?}"
+    );
+    for (fact, needle) in NOTHING_TO_SHED {
+        assert!(
+            out.contains(needle),
+            "the report on a clean log must {fact} ({needle:?}); `pruned 0` on its own reads as a \
+             prune that found the wrong store. Got {out:?}"
+        );
+    }
+
+    // EVERY DECLARED TYPE IS STILL ACCOUNTED FOR, at zero. The per-type list is what tells an
+    // operator the command looked at each type rather than short-circuiting on an empty result.
+    let per_type = per_type_report(&out);
+    assert_eq!(
+        per_type
+            .iter()
+            .map(|(t, _)| t.as_str())
+            .collect::<Vec<&str>>(),
+        rigger::ingest::DERIVED_INDEX_TYPES.to_vec(),
+        "a zero prune must still account for every derived index type `ingest` declares; got \
+         {per_type:?}"
+    );
+    assert!(
+        per_type.iter().all(|(_, n)| *n == 0),
+        "no type may report a removal on a log with no duplicated key; got {per_type:?}"
+    );
+
+    // AND THE LOG IS EXACTLY AS IT WAS FOUND. Not merely the same number of rows: the same rows,
+    // and the same dates. The carry runs over the re-asserting types on every invocation, and a
+    // carry that did not guard on a key being recorded more than once would rewrite `valid_from`
+    // on rows this prune reported it had left alone - a mutation no row count can see.
+    assert_eq!(
+        raw_rows(&event_log(root)),
+        before,
+        "a prune that shed nothing must leave every row byte-for-byte, VACUUM included"
+    );
+    assert_eq!(
+        valid_from_by_position(&event_log(root)),
+        dates_before,
+        "a prune that shed nothing must re-date nothing: the carry only ever rewrites the \
+         survivor of a key that WAS recorded more than once"
+    );
+
+    // THE SHIPPED DOCUMENT PROMISED EXACTLY THIS, and the promise is only worth what the binary
+    // does. Read from the committed bytes an operator opens, so the two cannot drift apart with
+    // the renderer green.
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for rel in SHIPPED_DOCS {
+        let shipped = std::fs::read_to_string(manifest.join(rel))
+            .unwrap_or_else(|e| panic!("the operator document {rel} must ship: {e}"));
+        assert!(
+            shipped.contains("deletes ZERO rows from it and reports so"),
+            "the committed {rel} must tell an operator what a clean log reports, or the run above \
+             is behavior nobody was promised"
+        );
+    }
+
+    // THE OTHER DIRECTION: on a log that DOES hold duplication the clause is absent, so it reads
+    // as a statement about this log rather than as boilerplate the command always prints.
+    let bloated = temp_project();
+    seed_project(bloated.path(), 4);
+    let (out, err, ok) = run_rigger(bloated.path(), &["reset", "--derived"]);
+    assert!(
+        ok,
+        "the bloated prune must succeed; stdout {out:?}, stderr {err:?}"
+    );
+    assert!(
+        !out.contains("pruned 0 redundant derived-index event(s)"),
+        "the bloated fixture must actually shed rows, or the contrast below is between two \
+         identical cases; got {out:?}"
+    );
+    for (fact, needle) in NOTHING_TO_SHED {
+        assert!(
+            !out.contains(needle),
+            "a prune that DID shed rows must not {fact} ({needle:?}): a clause that always prints \
+             tells an operator watching a real compaction that there was nothing to compact. Got \
+             {out:?}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// 21. The COMMAND's rendering of a reclamation it could not measure.
+//
+// Section 2 pins the store primitive: a reader parked on the write-ahead log makes the truncating
+// checkpoint decline, the freed pages stay in the `-wal` file, and `reclaimed_bytes` is `None`
+// rather than a page-count delta the operator's own `ls` would contradict. `None` is only half the
+// honesty, though - the operator never sees an `Option`. They see one line of prose, and the arm
+// that renders `None` is a different piece of code from the one that produced it, reachable only
+// by running the shipped binary against a log somebody else is reading.
+//
+// That is not an exotic state. A second rigger process reading the log - a dashboard, a status
+// call, a concurrent agent - is the ordinary condition of the store this command exists to
+// compact, so the arm an operator is likeliest to hit is the one no test drives.
+// ---------------------------------------------------------------------------------------
+
+/// What the command says when the reclamation IS a measurement, and when it is not. The two are
+/// asserted against each other rather than in isolation: each report must carry its own phrase and
+/// NOT the other's, which is what separates "the command rendered the state it was in" from "the
+/// command prints one of these regardless".
+const MEASURED: &str = "byte(s) on disk";
+const UNMEASURED: &str = "could not be folded back into the file";
+
+#[test]
+fn the_command_reports_an_unmeasurable_reclamation_as_unmeasured_rather_than_as_a_byte_count() {
+    const ROUNDS: u64 = 6;
+
+    // THE CONTENDED RUN. The reader is parked BEFORE the binary starts and released only after it
+    // exits, so the checkpoint is refused for the whole of the command's life. An open read
+    // transaction from a second connection is exactly what a second rigger process holds.
+    let dir = temp_project();
+    let root = dir.path();
+    seed_project(root, ROUNDS);
+    let reader =
+        rusqlite::Connection::open(event_log(root)).expect("open a second connection to the log");
+    reader
+        .execute_batch("BEGIN")
+        .expect("begin the reader's transaction");
+    let _: i64 = reader
+        .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
+        .expect("take a read snapshot");
+
+    let (contended, err, ok) = run_rigger(root, &["reset", "--derived"]);
+    assert!(
+        ok,
+        "a reader on the log does not fail the prune - the deletes commit before the checkpoint \
+         is ever asked for. stdout {contended:?}, stderr {err:?}"
+    );
+    drop(reader);
+
+    // THE CONTROL. A second project seeded identically, with nobody reading it.
+    let solo_dir = temp_project();
+    seed_project(solo_dir.path(), ROUNDS);
+    let (uncontended, err, ok) = run_rigger(solo_dir.path(), &["reset", "--derived"]);
+    assert!(
+        ok,
+        "the uncontended prune must succeed; stdout {uncontended:?}, stderr {err:?}"
+    );
+
+    // THE DELETES ARE THE SAME. Whatever the reclamation says, a parked reader must not change
+    // WHICH rows the command sheds, or the report below is describing two different prunes.
+    assert_eq!(
+        per_type_report(&contended),
+        per_type_report(&uncontended),
+        "a reader parked on the log must not change what the prune removes; contended \
+         {contended:?}, uncontended {uncontended:?}"
+    );
+    assert!(
+        per_type_report(&contended).iter().any(|(_, n)| *n > 0),
+        "the fixture must actually shed rows, or neither report is about a prune that reclaimed \
+         anything; got {contended:?}"
+    );
+
+    // AND EACH REPORT CARRIES ITS OWN PHRASE, AND ONLY ITS OWN.
+    assert!(
+        uncontended.contains(MEASURED) && !uncontended.contains(UNMEASURED),
+        "with nobody holding the write-ahead log the checkpoint completes, so the command must \
+         report the bytes it measured; got {uncontended:?}"
+    );
+    assert!(
+        contended.contains(UNMEASURED) && !contended.contains(MEASURED),
+        "while a reader held the write-ahead log the freed pages never left it, so the command \
+         must say the reclamation was UNMEASURED rather than print a byte count the operator's \
+         own `ls` contradicts; got {contended:?}"
+    );
+    assert!(
+        contended.contains("next checkpoint"),
+        "the unmeasured report must tell an operator where the freed pages went, or it reads as a \
+         prune that failed to reclaim rather than one whose reclamation was deferred; got \
+         {contended:?}"
+    );
+}
