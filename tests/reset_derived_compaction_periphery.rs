@@ -75,6 +75,16 @@
 //!      failed write - the loop re-reads and retries it forever. Invisible to both sides: the
 //!      compaction suites record no result, and every test of that write runs on a densely
 //!      numbered stream, where the two cursors agree.
+//!  13. **The OTHER reader that same sentence names.** The shipped paragraph promises the run
+//!      history "`rigger stats` and replay read" survives the prune. Item 8 above proves the
+//!      `stats` half; `replay` is the other name in the sentence and it reaches the log by a
+//!      THIRD path again - it lifts its BASELINE through the per-stream `read_stream`, which
+//!      orders by the very REVISION sequence the compaction gapped, and folds that slice into a
+//!      baseline whose unit outcomes are attributed POSITIONALLY, by the `RunStarted` that
+//!      precedes them. Neither the global `LIKE`-filtered scan item 8 drives nor the current-run
+//!      slice item 10 drives is that path, so an assumption of a dense revision sequence anywhere
+//!      along it would print a different baseline column after the prune while every surviving
+//!      row still looked perfectly intact in the table.
 //!
 //! Plus the command's own flag registry at the edges the composition opened: each mode named at
 //! most once, and the two modes composing in EITHER order.
@@ -2295,4 +2305,170 @@ fn a_compacted_run_stream_still_answers_the_couriers_compare_and_append() {
         after_second, recorded,
         "the no-op must be a no-op on the log too, byte-for-byte"
     );
+}
+
+// ---------------------------------------------------------------------------------------
+// 14. The OTHER reader the shipped sentence names: `rigger replay`, over a compacted log
+// ---------------------------------------------------------------------------------------
+
+/// Run `git <args...>` inside the throwaway repo, and fail the test with git's own message if it
+/// does not succeed - a silently skipped `commit` would leave `--against HEAD` with no rev to
+/// check out, and the test would then be asserting on an error message.
+fn git_in(root: &Path, args: &[&str]) {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .output()
+        .expect("run git in the throwaway repo");
+    assert!(
+        out.status.success(),
+        "git {args:?} must succeed in the throwaway repo: {}",
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
+}
+
+/// A throwaway project whose COMMITTED tree carries a valid rigger config.
+///
+/// `rigger replay --against <rev>` reads the candidate config OUT OF THE REPO at that rev, so a
+/// project with an on-disk config but nothing committed cannot be replayed at all. `rigger init`
+/// scaffolds that config and pins the project identity in `.rigger/project.id`, so it runs BEFORE
+/// any seed: a seed written under the identity the directory name implies would land in a stream
+/// the binary then never reads back.
+fn committed_config_project() -> tempfile::TempDir {
+    let dir = temp_project();
+    let root = dir.path();
+    // The repo's own identity, so the commit below never depends on the machine's git config.
+    git_in(root, &["config", "user.email", "periphery@example.invalid"]);
+    git_in(root, &["config", "user.name", "periphery"]);
+    let (out, err, ok) = run_rigger(root, &["init"]);
+    assert!(
+        ok,
+        "rigger init must scaffold the config `--against` checks out; stderr: {err}\n{out}"
+    );
+    git_in(root, &["add", "-A"]);
+    git_in(root, &["commit", "-q", "-m", "the candidate config"]);
+    dir
+}
+
+/// The shipped paragraph this unit adds tells an operator that deleting from an append-only log is
+/// safe because "the whole run history `rigger stats` and replay read" survives it. Section 7
+/// proves the SENTENCE ships and section 9 proves the binary honors the `stats` half of it. This
+/// proves the half the sentence names second, which no test in either suite drives.
+///
+/// It is a different path through the store, not a second helping of section 9. `rigger stats`
+/// folds the namespace-scoped GLOBAL read - a `LIKE`-filtered scan ordered by POSITION - and
+/// `rigger status` (section 11) folds the current-run slice. `rigger replay` lifts its baseline
+/// with `read_stream(conductor::STREAM, 0, Direction::Forward)`: the per-stream read, ordered by
+/// the very REVISION sequence this compaction punches holes in, and the only one of the three
+/// whose ordering key the prune touches. It then attributes that slice POSITIONALLY, folding unit
+/// outcomes onto the `RunStarted` that precedes them, and the duplication the seed interleaves
+/// sits BETWEEN the two seeded runs - exactly where a misordered or short read would move a unit
+/// from one run's column into the other's while every surviving row still looked intact.
+///
+/// The equality is asserted on the printed diff, which is where an operator would see it, and it
+/// is bracketed by two preconditions so it cannot pass vacuously: the command is shown to be
+/// deterministic on this fixture BEFORE the prune (otherwise a difference afterwards would be
+/// unattributable), and the prune is shown to have actually deleted rows from the stream the
+/// baseline is read from (otherwise the equality is an equality across a no-op).
+#[test]
+fn the_replay_the_shipped_guidance_names_lifts_the_same_baseline_out_of_a_compacted_log() {
+    const ROUNDS: u64 = 6;
+    let dir = committed_config_project();
+    let root = dir.path();
+    seed_run_history_and_duplication(root, ROUNDS);
+
+    let replay = ["replay", "latest", "--against", "HEAD"];
+    let (before, err, ok) = run_rigger(root, &replay);
+    assert!(
+        ok,
+        "replay must succeed against the seeded log; stderr: {err}\nstdout: {before}"
+    );
+
+    // The diff must be a diff OF THIS HISTORY. `latest` resolves to the second seeded run, and
+    // its baseline column must carry that run's recorded outcome - without this, the equality
+    // below could hold between two reports of an empty baseline.
+    assert!(
+        before.contains("baseline run r2"),
+        "the replay must name the latest seeded run as its baseline; got:\n{before}"
+    );
+    // And the column must be the fold of THAT run, not of the first seeded one. The two runs are
+    // deliberately mirror images - r1 integrates its unit on a passing gate, r2 escalates its unit
+    // on a failing one - so an off-by-one slice of the stream would land on a baseline whose every
+    // row still parses. `escalation rate` is the discriminator: 100% is r2, 0.0% is r1.
+    let baseline_column = replay_baseline_column(&before);
+    for (metric, expected) in [("units started", "1"), ("escalation rate", "100.0%")] {
+        let found = baseline_column
+            .iter()
+            .find(|(m, _)| m == metric)
+            .map(|(_, v)| v.as_str());
+        assert_eq!(
+            found,
+            Some(expected),
+            "the baseline column must be the fold of the LATEST seeded run: {metric} must read \
+             {expected}; got:\n{before}"
+        );
+    }
+
+    // PRECONDITION: the command is deterministic on this fixture. Asserted before anything is
+    // pruned, so a difference after the prune can only be the prune.
+    let (again, err, ok) = run_rigger(root, &replay);
+    assert!(
+        ok,
+        "a second replay must succeed against the same log; stderr: {err}\nstdout: {again}"
+    );
+    assert_eq!(
+        again, before,
+        "replay must be deterministic on an unchanged log, or the comparison across the \
+         compaction proves nothing about the compaction"
+    );
+
+    // PRECONDITION: the prune actually deletes from the stream the baseline is read from.
+    let derived_before = derived_rows(&event_log(root));
+    assert_eq!(
+        derived_before,
+        2 * ROUNDS as usize,
+        "the seed must actually bloat the log with both keys' re-recordings"
+    );
+    let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
+    assert!(ok, "reset --derived must succeed; stderr: {err}\n{out}");
+    assert_eq!(
+        derived_rows(&event_log(root)),
+        2,
+        "the compaction must leave one recording per key, or the baseline's survival is a claim \
+         about a prune that did nothing; it said: {out:?}"
+    );
+
+    let (after, err, ok) = run_rigger(root, &replay);
+    assert!(
+        ok,
+        "replay must still succeed against the compacted log; stderr: {err}\nstdout: {after}"
+    );
+    assert_eq!(
+        after, before,
+        "the shipped guidance promises the run history replay reads survives the compaction, so \
+         the baseline it lifts through the gapped per-stream read must print identically"
+    );
+}
+
+/// The `(metric, baseline)` pairs out of the replay diff's baseline column - the middle column of
+/// `  <metric>  <baseline>  <candidate>`, under the two header lines.
+///
+/// Parsed from the RIGHT: a metric label contains spaces ("units started"), so splitting from the
+/// left would read the label's own second word as the baseline value and every assertion built on
+/// it would be meaningless. A changed row carries a trailing `*`, which is dropped first.
+fn replay_baseline_column(out: &str) -> Vec<(String, String)> {
+    out.lines()
+        .skip_while(|l| !l.trim_start().starts_with("metric "))
+        .skip(1)
+        .filter_map(|l| {
+            let mut cols: Vec<&str> = l.split_whitespace().collect();
+            if cols.last() == Some(&"*") {
+                cols.pop();
+            }
+            let _candidate = cols.pop()?;
+            let baseline = cols.pop()?;
+            (!cols.is_empty()).then(|| (cols.join(" "), baseline.to_string()))
+        })
+        .collect()
 }
