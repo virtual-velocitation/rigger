@@ -27,8 +27,10 @@ orchestrator's own surfaces the moment it happens instead of waiting to be polle
     exactly why progress is its own signal - each mapped BY NAME to its response skill
     (`rigger-handle-an-escalation`, `rigger-resume-a-run`, `rigger-restore-the-dash`,
     `rigger-diagnose-churn`, and for a stall: stop the driver and diagnose before another
-    round spends); and the cadence rule: look on every wave boundary you are present for,
-    and never less than once per remediation cycle.
+    round spends). The skill's FIRST instruction: on launching any run, ARM `rigger watch`
+    under your harness's background-monitor primitive so the signals interrupt you - the
+    manual five-signal look is the fallback for harnesses without one, on every wave boundary
+    you are present for and never less than once per remediation cycle.
     Anti-moves: polling git/ps as the primary view (`rigger status` is the surface), and
     hand-intervening in a run that is merely SLOW rather than stuck.
   - `rigger-restore-the-dash` - get the dashboard serving again. Tells: the printed URL does
@@ -47,6 +49,20 @@ orchestrator's own surfaces the moment it happens instead of waiting to be polle
     churn-signature table in `planning-a-spec` maps the signature to its planning-defect
     class. Anti-moves: blaming the model or the panel without the audit; reflexively raising
     `max_retries`.
+- **A driver-independent watchdog ships as `rigger watch`** (`src/main.rs`, new command): the
+  five signals as a COMMAND every consumer's orchestrator can arm, prototyped as this
+  project's own session watchdog during the stalled-frontier incident (an orchestrator that
+  needed a local script is the proof every consumer needs the command). `rigger watch` polls
+  the store and status authorities on an interval (default 180s, `--interval <s>`) and prints
+  ONE LINE PER ANOMALY to stdout, silent otherwise, each line naming the signal, the subject,
+  and the response skill: a spawn id accumulating results without consumption (>= 3), an
+  escalated unit, a dead driver (store not advancing while spawns are in flight and no step
+  process holds the lock), store shrink or the out-of-order-revision signature, and a status
+  dash line nothing serves. Alerts DEDUPE until their condition clears, so a long watch stays
+  quiet, not noisy. `--once` runs a single poll and exits (cron/CI integration); the
+  streaming default is what a harness monitor primitive consumes. CRUCIALLY it reads only the
+  store, the process table, and status - never the driver - because the dead-driver signal is
+  exactly the case where driver-relayed attention cannot exist.
 - **`rigger status` never lies about the dash** (`src/main.rs::cmd_status`): before printing
   the dashboard URL, status VERIFIES something is serving it (the marker's liveness check the
   step path already owns); a dead marker prints
@@ -105,6 +121,12 @@ orchestrator's own surfaces the moment it happens instead of waiting to be polle
   infra-separation step - all with symptom-carrying descriptions, one operation per skill,
   command references accuracy-pinned. This criterion OWNS the skill content; registry
   install mechanics are spec 68's, NOT this spec's.
+- [ ] a test proves THE WATCHDOG: `rigger watch --once` on a store seeded with a
+  multi-result spawn, an escalated unit, and an out-of-order tail prints one line per anomaly
+  naming signal, subject, and response skill; on a clean store it prints nothing; the
+  streaming mode dedupes a persisting anomaly until it clears. This criterion OWNS the
+  watchdog command; the driver-relayed attention push is the wire criteria's, NOT this
+  one's - the watchdog must work with the driver dead.
 - [ ] a test proves STATUS NEVER LIES ABOUT THE DASH: with a marker naming a dead pid, status
   prints the not-serving line (naming the dead pid and the restart) and no URL; with a
   live serving dash, today's URL line is unchanged; `--json` carries the same truth. This
